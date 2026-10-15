@@ -1,11 +1,11 @@
 ---
 yulius-task: d52601d9-b519-4553-b399-d84a2d8c34bf
-status: in-progress
+status: done
 ---
 
 # SPEC-141: agents cannot push or merge into the production branch
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #139 (part of task #118, SPEC-138)
 Scope authorization: task #139: "Fix GitHub issue #486 […] Make it so only a person can move the
@@ -70,12 +70,12 @@ protected that way.
 ## Plan
 
 - [x] Spec and ADR-0114 record the design: narrowed agent tokens plus a production ruleset only people bypass
-- [ ] Agents' Git and gh get a narrowed App token, never the owner's
-- [ ] New projects' production ruleset restricts updates to admins, and the fake GitHub enforces it
-- [ ] Yulius checks whether agents could write a branch through GitHub's rules
-- [ ] Onboarding reports a production branch agents could write
-- [ ] An integration test proves an agent-side push or merge into production is refused
-- [ ] Docs, independent review and gates are done and the change is delivered
+- [x] Agents' Git and gh get a narrowed App token, never the owner's
+- [x] New projects' production ruleset restricts updates to admins, and the fake GitHub enforces it
+- [x] Yulius checks whether agents could write a branch through GitHub's rules
+- [x] Onboarding reports a production branch agents could write
+- [x] An integration test proves an agent-side push or merge into production is refused
+- [x] Docs, independent review and gates are done and the change is delivered
 
 ## Acceptance criteria
 
@@ -119,3 +119,31 @@ protected that way.
   is a change of its own. Recorded in ADR-0114 and on #486.
 - One production ruleset with the admin bypass is kept (review minor 3): a fast-forward promotion
   needs the bypass for the pull-request rule too.
+
+## Evidence
+
+Run on 2026-10-15 in this task's worktree.
+
+- `scripts/dev ci` at `ba90129c`: exit 0. Repository checks, Python unit tests, `cargo check`,
+  `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --profile ci` (1751 tests run:
+  1751 passed, 16 skipped), doctests, `cargo deny`, `cargo shear`, `cargo doc`. The first run at
+  `f781aee0` failed at clippy (`cmp_owned` in the fake), fixed in `ba90129c`. The final commit only
+  adds a prompt clause with its assertion, comment rewraps and this section:
+  `cargo test -p yulius-app --lib onboarding` passed after it.
+- `cargo test -p yulius --test main -- production_branch::`: 2 passed. With the production
+  ruleset's `restrict_updates` turned off, `an_agents_push_or_merge_into_production_is_refused`
+  fails (`branch_guard … is_guarded()`), so the test proves the fix (AC2).
+- `agent_hooks::the_agents_git_never_holds_the_owners_token`, `task_ownership::` (20 tests),
+  `import_server::`, `sessions::`, `projects::`, `playground::`: passed (AC1, AC4).
+- `cargo test -p yulius-github --features fake --test client`: `agent_tokens_*`,
+  `a_branch_is_guarded_only_by_rules_the_token_cannot_bypass`, the ruleset body test: passed (AC3).
+- `cargo test -p yulius-import`: the CLI prints the onboarding warnings: passed.
+- `scripts/dev security` (Vidoc): **not run**, exit 2: Vidoc rejected the key (HTTP 401, invalid
+  or expired token), as since 2026-10-14 (ADR-0104: unrun, not passed).
+- Independent review in a fresh session (`om-code-review`): round 1 at `f781aee0` asked for changes
+  (3 majors); round 2 at `ba90129c` approved, with major 3 accepted as the recorded known limit
+  AC6 (#54 part B, issue #486 left open).
+- Not testable here: GitHub's real enforcement of the ruleset and of narrowed tokens (no real
+  GitHub call in tests; this task may not change repository settings). The fake models GitHub's
+  documented semantics; the `current_user_can_bypass` reading and the admin-role bypass for
+  organization owners are not verified against GitHub.

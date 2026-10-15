@@ -146,8 +146,7 @@ impl App {
     /// The GitHub token of the person who owns `task` (SPEC-070; its creator until a hand-over),
     /// for what Yulius does on GitHub for the task (F 2026-10-11): its pushes and pull requests for
     /// it and the agent's delivery tools (never the agent's own Git and `gh`, ADR-0114), so GitHub
-    /// shows that person as
-    /// the actor. `None` when the owner has no usable token — no linked GitHub account (the
+    /// shows that person as the actor. `None` when the owner has no usable token — no linked GitHub account (the
     /// superadmin, ACC-012), a disabled or deleted account, or a sign-in that can no longer be
     /// refreshed. The caller then acts as the GitHub App, and the task's terminal says so once
     /// (again after a hand-over).

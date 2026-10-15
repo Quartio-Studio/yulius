@@ -26,10 +26,10 @@ is not forced through Yulius's egress proxy (`HTTPS_PROXY` is advisory under sli
   grants is asked (an older App may lack Issues or Commit statuses); no Contents: write, no token.
 - **The production branch carries a ruleset only people bypass.** Restrict updates (`update`),
   restrict deletions and block force pushes on the production branch, with the Repository admin
-  role as the only bypass actor, always (organization owners hold that role on every repository). GitHub then
-  refuses the App's token, and so the agent's `git push` (with or without `--no-verify`), `gh pr
-  merge`, auto-merge, the merge and contents APIs, and workflows' `GITHUB_TOKEN`. A person's
-  promotion (ADR-0110) runs with their own token and passes when they are a repository admin.
+  role as the only bypass actor, always (organization owners hold that role on every repository;
+  not verified against GitHub here). GitHub then refuses the App's token, and so the agent's
+  `git push` (with or without `--no-verify`), `gh pr merge`, auto-merge, the merge and contents
+  APIs, and workflows' `GITHUB_TOKEN`. A person's promotion (ADR-0110) runs with their own token and passes when they are a repository admin.
 - **Yulius creates it and checks it.** New projects get that ruleset. For every repository Yulius
   asks GitHub, with an agent token, which rules apply to the production branch and whether that
   token can bypass them (`current_user_can_bypass`). Onboarding reports a production branch the

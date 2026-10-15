@@ -338,8 +338,9 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          workflow whose jobs need a runner Yulius CI lacks (Windows, macOS) cannot be translated: \
          keep that workflow, and record why in a decision record and your summary; nobody needs \
          to accept it. Commit that deletion but do not push it yourself: your own GitHub token \
-         may never change workflow files (ADR-0114), so your `git push` of it is refused; Yulius \
-         pushes your branch with its own token at the end of your turn. Only if Yulius reports \
+         may never change workflow files (ADR-0114), so any `git push` of this branch from then on \
+         is refused: do not push this branch yourself in this task; Yulius pushes it with its own \
+         token at the end of your turn. Only if Yulius reports \
          that GitHub refused its push too, because the Yulius GitHub App may not change workflow \
          files (its Workflows permission), keep .github/workflows/, finish everything else, mark \
          that step skipped with this reason, and say in the pull request that the deletion \
@@ -1299,6 +1300,10 @@ mod tests {
         assert!(prompt.contains("Workflows permission"));
         // ADR-0114: the agent's own token never changes workflow files; Yulius's push carries it.
         assert!(prompt.contains("do not push it yourself"), "{prompt}");
+        assert!(
+            prompt.contains("do not push this branch yourself"),
+            "{prompt}"
+        );
         // F 2026-10-11: the preparation agent had no Rust toolchain afterwards.
         assert!(prompt.contains("development environment") && prompt.contains("rustup"));
         assert!(
