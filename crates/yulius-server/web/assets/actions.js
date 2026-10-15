@@ -531,13 +531,20 @@ export function openPromptDialog(ctx, task) {
   // An image's number among the prompt's images in order, gone ones too, as the queue card counts
   // (SPEC-168); one number per name (SPEC-180).
   let numbers = new Map();
+  // A file named twice is one file: each mention reads and opens the one the list shows.
+  let same = (index) => index;
+  // The list's thumbnails, to show a picture its own read could not load once a later read does.
+  const tiles = new Map(); // index → (url) => void
   /** Opens image `index` full size, once however often it is asked meanwhile. */
   const opening = new Set();
-  const openImage = async (file, index) => {
+  const openImage = async (file, mention) => {
+    const index = same(mention);
     if (opening.has(index)) return;
     opening.add(index);
     try {
-      openAttachment({ name: file.name }, { image: await read(index) });
+      const url = await read(index);
+      tiles.get(index)?.(url);
+      openAttachment({ name: file.name }, { image: url });
     } catch (error) {
       if (error.code !== 'aborted') errorToast(error, `Couldn’t open ${file.name}`);
     } finally {
@@ -575,13 +582,17 @@ export function openPromptDialog(ctx, task) {
     }
     const n = numbers.get(file.name);
     const img = h('img', { alt: file.name });
-    const item = h(tag, { class: 'prompt-file image' },
+    const face = [
       h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => openImage(file, index) },
         img, h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(n))),
-      h('span', { class: 'prompt-file-name' }, file.name));
-    read(index).then((url) => {
+      h('span', { class: 'prompt-file-name' }, file.name)];
+    const item = h(tag, { class: 'prompt-file image' }, face);
+    const show = (url) => {
       img.src = url;
-    }).catch((error) => {
+      if (!item.contains(img)) item.replaceChildren(...face);
+    };
+    tiles.set(index, show);
+    read(index).then(show).catch((error) => {
       if (error.code !== 'aborted') item.replaceChildren(icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'Couldn’t load it'));
     });
     return item;
@@ -619,6 +630,7 @@ export function openPromptDialog(ctx, task) {
       if (file && !listed.has(key)) listed.set(key, part.file);
     }
     const below = [...listed.values()];
+    same = (index) => (files[index] ? listed.get(`${files[index].name}\n${Boolean(files[index].available)}`) ?? index : index);
     setChildren(modal.body, h('div', { class: 'stack' },
       editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
       below.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, below.map((n) => fileItem(files[n], n))) : null));
