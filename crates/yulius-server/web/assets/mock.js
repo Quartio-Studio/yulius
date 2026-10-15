@@ -540,6 +540,43 @@ function announcePulls(db, sandboxId) {
   emit(db, { type: 'pulls.updated', sandbox_id: sandboxId });
 }
 
+/**
+ * A clock that moves only when a test says (`pullclock=manual`, SPEC-144): the store plans its pull
+ * request reads on it, and `advanceClock(ms)` runs the timers that come due on the way, in order.
+ */
+function manualClock(start) {
+  let now = start;
+  let nextId = 1;
+  const timers = new Map(); // id → { at, fn, every }
+  const add = (fn, ms, every) => {
+    const id = nextId;
+    nextId += 1;
+    timers.set(id, { at: now + Math.max(0, ms), fn, every });
+    return id;
+  };
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => add(fn, ms, 0),
+    clearTimeout: (id) => { timers.delete(id); },
+    setInterval: (fn, ms) => add(fn, ms, Math.max(1, ms)),
+    clearInterval: (id) => { timers.delete(id); },
+    advance(ms) {
+      const end = now + ms;
+      for (;;) {
+        let next = null;
+        for (const [id, timer] of timers) if (timer.at <= end && (!next || timer.at < next[1].at)) next = [id, timer];
+        if (!next) break;
+        const [id, timer] = next;
+        now = timer.at;
+        if (timer.every) timer.at += timer.every;
+        else timers.delete(id);
+        timer.fn();
+      }
+      now = end;
+    },
+  };
+}
+
 /** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
 function resync(db) {
   emit(db, { type: 'resync' });
@@ -4370,6 +4407,9 @@ export function createMockTransport(params) {
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for
+  // `pullclock=manual`: the store's pull request reads run on a clock only `advanceClock(ms)` moves.
+  const pullClock = params.get('pullclock') === 'manual' ? manualClock(Date.now()) : undefined;
+  db.advanceClock = (ms) => { if (!pullClock) throw new Error('advanceClock needs pullclock=manual'); pullClock.advance(ms); };
   // Releases the held Git overview reads, the newest first (an older read answering last).
   db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
@@ -4422,6 +4462,7 @@ export function createMockTransport(params) {
     kind: 'mock',
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
+    pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);

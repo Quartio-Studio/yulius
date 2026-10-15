@@ -178,6 +178,7 @@ type Mocked = {
     gitReads: () => number;
     gitRequests: number;
     releaseGit: () => void;
+    advanceClock: (ms: number) => void;
   };
 };
 const mocked = <T>(browser: Browser, run: (m: Mocked['__yuliusMock']) => T) => browser.evaluate(`(${run.toString()})(window.__yuliusMock)`) as Promise<T>;
@@ -253,14 +254,19 @@ test('announced reads of a sandbox keep their gap', async ({ app, browser }) => 
 });
 
 test('announcements within the gap make one read when it has passed', async ({ app, browser }) => {
-  await app.open(mock('/s/studio', '&pullgap=1500'));
+  // The store's read clock is the mock's: only advanceClock moves it, so the announcements come
+  // within the gap however slow the host is (#444: on real time a loaded host reached them after
+  // the gap, so the first read at once and the other two one more read after it).
+  await app.open(mock('/s/studio', '&pullgap=1500&pullclock=manual'));
   await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
   const before = await handledSoFar(browser, 'Improve the code, before');
   await mocked(browser, (m) => {
     m.changePull('sb_studio', 520, { state: 'merged' });
     for (let i = 0; i < 3; i += 1) m.announcePulls('sb_studio');
   });
-  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 10_000 });
+  expect(await handledSoFar(browser, 'Improve the code, within the gap')).toBe(before);
+  await mocked(browser, (m) => m.advanceClock(1500));
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged');
   expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before + 1);
 });
 
