@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A run that ends while Yulius is down keeps its metrics (SPEC-143, ADR-0117, task #124, fixes
+  #385 and #389). A run that ends before a watcher of this process read its transcript to its end
+  (reconciliation finds it exited, or a reattach gets its exit at once from a lingering host) is
+  counted from its transcript window (SPEC-091's recount), lines written while Yulius was down
+  included, instead of saving an empty snapshot, which replaced its tokens, turns and active time
+  with NULLs; when the count finds nothing the row stays. `App::recover` starts the metrics recount only after
+  a reconciliation that succeeded, now proven by a test; SPEC-002 lists `metrics_recounts`.
+
 - task_done, supervision and merge_train tests hold under host load (SPEC-140, ADR-0115, task #127;
   fixes #404, #464, #353, #443). Two product races fixed: a hook whose client gave up after its 5 s
   is still applied to its end (a slow Stop used to be cut off before setting Done), and a stop that

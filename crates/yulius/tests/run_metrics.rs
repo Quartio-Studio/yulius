@@ -210,3 +210,145 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
     second.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// Signals `pid` (a process this test started through the first server).
+fn signal(pid: u32, signal: nix::sys::signal::Signal) -> TestResult {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(i32::try_from(pid)?), signal)?;
+    Ok(())
+}
+
+/// SPEC-143 RDM-001 (#385): a run whose agent exits while Yulius is down, its host gone too, is
+/// ended by the next start's reconciliation, with no watcher of that process having read it. Its
+/// figures come from its transcript — the lines written while Yulius was down included — and are
+/// never replaced by the empty snapshot of a run nobody watched.
+#[test]
+fn a_run_that_ends_while_yulius_is_down_keeps_its_metrics() -> TestResult {
+    ends_while_down(HostAfterExit::Gone)
+}
+
+/// SPEC-143 RDM-001 (#385, review round 1): the agent exits while Yulius is down and its host
+/// still lingers (30 s) to hand the exit over: the next start reattaches and gets the exit at once,
+/// before its watcher has read the run's transcript. The run is counted, not saved empty.
+#[test]
+fn a_run_whose_exit_waits_for_the_next_start_keeps_its_metrics() -> TestResult {
+    ends_while_down(HostAfterExit::Lingering)
+}
+
+/// What became of the run's host by the next start.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostAfterExit {
+    /// Gone (its linger ended): reconciliation finds the exit record.
+    Gone,
+    /// Still waiting to hand the exit to a server: reconciliation reattaches.
+    Lingering,
+}
+
+fn ends_while_down(host_after_exit: HostAfterExit) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (id, run, before) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Metrics").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"/work 1500 first\r").await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        wait_for("the run's metrics", Duration::from_secs(30), || {
+            let found = saved(&data, &run.id);
+            async move {
+                found.is_some_and(|s| {
+                    s.output.is_some() && s.turns == Some(1) && s.active_ms.is_some()
+                })
+            }
+        })
+        .await?;
+        let before = saved(&data, &run.id).ok_or("saved")?;
+        Ok::<_, Box<dyn std::error::Error>>((id, run, before))
+    })?;
+    // Yulius goes down (a deploy): its tasks are dropped, the run's host and agent live on.
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    // While it is down a background agent of the run answers, then the agent exits and its host
+    // goes too (no server attached to hand the exit to).
+    let mut found = Vec::new();
+    transcripts(&data.join("sandboxes"), &mut found, &mut 100_000);
+    let session = found
+        .iter()
+        .find(|p| p.components().any(|c| c.as_os_str() == ".claude"))
+        .ok_or("the session transcript")?;
+    let sub = session.with_extension("").join("subagents");
+    std::fs::create_dir_all(&sub)?;
+    std::fs::write(
+        sub.join("agent-a1.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({"type": "assistant", "isSidechain": true,
+                "timestamp": now_rfc3339(), "message": {"id": "msg_sub_1",
+                "model": "fake-model", "content": [], "stop_reason": "end_turn",
+                "usage": {"input_tokens": 3, "output_tokens": 1000}}})
+        ),
+    )?;
+    signal(
+        run.child_pid.ok_or("agent pid")?,
+        nix::sys::signal::Signal::SIGTERM,
+    )?;
+    let run_dir = PathBuf::from(&run.run_dir);
+    let second = runtime()?;
+    second.block_on(async {
+        wait_for("the agent's exit record", Duration::from_secs(30), || {
+            let exited = matches!(
+                yulius_ptyhost::inspect_run_dir(&run_dir),
+                yulius_ptyhost::RunDirState::Exited(_)
+            );
+            async move { exited }
+        })
+        .await?;
+        if host_after_exit == HostAfterExit::Gone {
+            let status: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(run_dir.join("status.json"))?)?;
+            let host = status["ptyhost_pid"].as_u64().ok_or("host pid")?;
+            // A host whose linger already ended is gone as well.
+            let _ = signal(u32::try_from(host)?, nix::sys::signal::Signal::SIGKILL);
+        }
+
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        app.reconcile().await?;
+        wait_for("the run's end", Duration::from_secs(30), || async {
+            attempts(&app, &id)
+                .await
+                .first()
+                .is_some_and(|a| a.state.is_terminal())
+        })
+        .await?;
+        wait_for("the save at the run's end", Duration::from_secs(30), || {
+            let found = saved(&data, &run.id);
+            async move { found.is_some_and(|s| s.at > before.at) }
+        })
+        .await?;
+        let after = saved(&data, &run.id).ok_or("the run's figures")?;
+        assert_eq!(
+            (after.output, after.turns),
+            (before.output.map(|o| o + 1000), before.turns),
+            "the run keeps its turn and gets its background agent's tokens: {after:?} after \
+             {before:?}"
+        );
+        assert!(
+            after.active_ms.is_some() && after.active_ms >= before.active_ms,
+            "active time is not lost: {after:?} after {before:?}"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
