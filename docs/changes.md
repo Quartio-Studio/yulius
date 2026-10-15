@@ -12,6 +12,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
   notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
   sent as a teammate's tab hid no longer leaves their caret drawn.
+- The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
+  crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
+  the narrow-strip e2e test now checks that no strip chip's text overflows its box.
+- The Tasks page shows how tasks hang together (SPEC-164, ADR-0135, task #154). A List / Graph
+  switch (`?view=graph`, also the sidebar Working group's "Show as a graph") opens Starts next (the
+  queued tasks in the order they get a free session: supertasks first, then the longest queued),
+  Chains and rules (chains, start rules and supertask holds drawn left to right, one arrow per link,
+  each card a link to the task), Prepared and On their own. Built in the browser from the task
+  summaries; no API change.
 - The Editor never opens a file twice, and a moved image placeholder is never shown as selected
   text (SPEC-166, task #156). The task's screenshots, two editors stacked in one host, were #394,
   fixed by #523 before this task. Reproducing them showed the Editor still broke another way:
