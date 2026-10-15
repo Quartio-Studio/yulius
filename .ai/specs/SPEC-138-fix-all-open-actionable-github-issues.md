@@ -50,15 +50,16 @@ The triage covered 63 open issues on 2026-10-15, against `dev` at 43731493 (PR #
 are four lanes, each running one task at a time, so at most four Rust builds run beside the other
 tasks (the sandbox's disk quota, #240):
 
-| Lane | Tasks (issues) |
+| Lane | Tasks (issues), one after another |
 | --- | --- |
-| A: delivery, supervisor, onboarding | #366 #448 → #385 #389 → #346 #453 → #406 #431 #399 |
-| B: tests under load, CI, playgrounds | #404 #464 #353 #443 → #460 #485 #488 → #411 → #409 #420 → #410 |
-| C: web UI and e2e | #438 #444 #461 #469 #415 → #349 #356 #354 #394 → #489 #439 #463 → #477 #478 #436 → #350 #380 #363 → #348 #331 #407 #449 |
-| D: security and features | #486 → #466 → #395 → #416 |
+| A: delivery, supervisor, onboarding | #123 (#366 #448) → #124 (#385 #389) → #125 (#346 #453) → #126 (#406 #431 #399) |
+| B: tests under load, CI, playgrounds | #127 (#404 #464 #353 #443) → #128 (#460 #485) → #129 (#488) → #130 (#411) → #131 (#409 #420) → #132 (#410) |
+| C: web UI and e2e | #133 (#438 #444 #461 #469 #415) → #134 (#354 #349 #356 #394) → #135 (#489 #439 #463) → #136 (#477 #478 #436) → #137 (#350 #380 #363) → #138 (#348 #331 #407 #449) |
+| D: security and features | #139 (#486) → #140 (#466) → #141 (#395) → #142 (#416) |
 
 Lane C starts after this task, because this task edits the e2e files that lane C's first tasks
-also edit. The task numbers are in the Evidence section.
+also edit. Each chained task is told: create no issue, check first whether its issues are
+already fixed, fix them test-first, and close each issue once its fix is on `dev`.
 
 **This task's own defects:**
 - **#424.** GitHub now issues installation tokens as `ghs_<APPID>_<JWT>`, about 520 characters

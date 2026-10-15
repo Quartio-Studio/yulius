@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Open GitHub issues triaged and the first fixes delivered (SPEC-138, task #118). Of 63 open issues:
+  - #423, #425 and #465 were already fixed and are closed.
+  - The rest go to 20 chained tasks (#123–#142) in four lanes, or stay open with a comment naming
+    what only a person can provide (#321, #412, #470 and the checkpoint issues).
+
+  This task fixes:
+  - **#424:** GitHub's stateless installation tokens (`ghs_<APPID>_<JWT>`, about 520 characters)
+    are now redacted whole from transcripts, Git errors and GitHub errors. Before, transcripts
+    kept them in full, and the error redactors left the JWT's payload and signature.
+  - **#475:** `secret_copy_to_env` refuses a `.env` whose quoted value never closes, naming the
+    line, rather than appending names inside that value.
+  - **#430, #446, #455:** the `context_full` tests wait for the audit rows they check, and in the
+    e2e suite opening or reloading a mock page waits for the mock, so tests no longer fail on a
+    busy machine for those reasons.
+
 - Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
   table records, as things happen, a task's waits before it starts, its states (needs you and how
   long a person took to answer included), steps with the tokens and agent work spent in them, runs,
