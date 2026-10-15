@@ -720,6 +720,47 @@ test('a tab clicked while a redraw is held back is the one clicked, and is chose
   await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
 });
 
+// #477 review: the redraw held back during a press still comes when no click follows (released
+// off the tab), and a click on a tab closed during the press chooses nothing.
+test('a press released off its tab still redraws the strip, and a tab closed while pressed is not chosen', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  for (const name of ['README.md', 'AGENTS.md']) {
+    await tree.getByRole('treeitem', name).click();
+    await editorShown(browser);
+    await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
+  }
+  await tree.getByRole('treeitem', /src$/).click();
+  await tree.getByRole('treeitem', /api$/).click();
+  await tree.getByRole('treeitem', 'checkout.rs').click();
+  await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+  const close = (path: string) => browser.evaluate((p) => (document.querySelector(`.ed-tab[data-path="${p}"] .ed-tab-close`) as HTMLElement).click(), path);
+
+  // Pressed, README closed meanwhile, released below the strip: no click, the strip redraws.
+  let box = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  await close('README.md');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height * 4);
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['AGENTS.md', 'src/api/checkout.rs']);
+  await expect(screen.getByRole('tab', /^checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
+
+  // The pressed tab itself closes during the press: the click on it chooses nothing.
+  box = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  await close('AGENTS.md');
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs']);
+  await expect(screen.getByRole('tab', /^checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
+  expect(await inEditor(browser, 'me', 'return Boolean(ed.getModel()) && !ed.getModel().isDisposed()'), 'the open file’s model').toBe(true);
+});
+
 // #477 (SPEC-127 review round 2): the presence loop itself (unit, in the page). A file closed with
 // an update on its way still leaves once that is answered, and nothing is armed after `destroy()`;
 // refusals of access or input are not sent again, while too many requests and a lost one are.
