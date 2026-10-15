@@ -787,6 +787,22 @@ items, and a menu of 8 or more items opens with a filter box
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
 
+The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
+is drawn from the task summaries the store already holds, with no endpoint of its own:
+`taskgraph.js` reads each open task's `after` (a chain, or a start rule's `#N`s), `held_by`,
+`supertask`, `status` and `state_since` into the queue in start order, a layered graph (a column
+per longest path, rows by barycenter, cycles never followed) drawn as HTML cards over SVG arrows,
+the prepared tasks and the rest, and redraws on the store's `tasks` events.
+
+```mermaid
+flowchart LR
+  S["store.js tasksOf(sandbox)"] -->|"after, held_by, supertask, status, state_since"| M["taskgraph.js taskStructure"]
+  EV["task.updated / task.created"] --> S
+  M --> Q["Starts next (supertasks first, then longest queued)"]
+  M --> L["layered layout: columns, rows"] --> V["cards (links) over SVG arrows"]
+  M --> R["Prepared, On their own"]
+```
+
 ```mermaid
 flowchart LR
   PI["promptinput.js (files inside the text)"] -->|"value with @'path' in place"| C
