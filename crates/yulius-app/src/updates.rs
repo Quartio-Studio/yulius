@@ -1,9 +1,10 @@
 //! Instance updates from `main` of Quartio-Studio/yulius (SPEC-001 OPS-006..OPS-009, SPEC-002
 //! ADR-18).
 //!
-//! **Detect.** Every hour (and on "Check now", at most every 30 s) the build's commit is compared
-//! with `main` through the GitHub API, read with the GitHub App's token for that repository, else
-//! the configured read token, else anonymously. The result is cached; superadmins are told.
+//! **Detect.** Every hour (and on "Check now" or opening the instance page, at most every 30 s) the
+//! build's commit is compared with `main` through the GitHub API, read with the GitHub App's token
+//! for that repository, else the configured read token, else anonymously. The result is cached;
+//! superadmins are told.
 //!
 //! **Update.** Nothing updates by itself. A superadmin confirms the offered commit, then one run
 //! moves through `building` (the root helper builds the commit; tasks keep working) →

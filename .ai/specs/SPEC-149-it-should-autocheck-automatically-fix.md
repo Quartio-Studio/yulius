@@ -7,7 +7,7 @@ status: in-progress
 
 Status: in-progress
 Date: 2026-10-15
-Owner: Yulius task #143
+Owner: Yulius task #143, issue #500
 Scope authorization: the person's request (task #143), with a screenshot of Instance → Updates
 reading "Checked 35 min ago with the GitHub App" beside "Check now": "it should autocheck
 automatically, fix".

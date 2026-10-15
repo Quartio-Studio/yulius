@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Opening Settings → Instance checks `main` at once (SPEC-149, ADR-0123, task #143): the page no
+  longer shows a check up to an hour old until "Check now". The server reuses a check younger than
+  30 s; a failed automatic check keeps the last result without an error toast.
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
