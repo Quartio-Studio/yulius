@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock, mockReady } from './support.ts';
+import { failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -456,7 +456,6 @@ test('mouse use while disconnected says nothing; typed input still warns', async
   await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
-  await mockReady(browser);
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { goOffline(): void } }).__yuliusMock.goOffline());
   await expect(browser.locator('.taskview .term-conn')).toBeVisible();
   // A click is not input the person sent: no "Not connected" notice for it (SPEC-098).

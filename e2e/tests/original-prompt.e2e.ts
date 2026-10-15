@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -54,7 +54,6 @@ test('the sidebar menu opens it too, and a failed load says why', async ({ app, 
 test('a prompt starting with --- is text, and files outside the task’s folders are not served', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
-  await mockReady(browser);
   const attachments = '/srv/yulius/sandboxes/sb_studio/attachments';
   await touchTask(browser, 'sb_studio', 12, {
     prompt: [
@@ -90,7 +89,6 @@ test('a prompt starting with --- is text, and files outside the task’s folders
 test('a file inside the prompt shows in place, files after the text below it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
-  await mockReady(browser);
   const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
   await touchTask(browser, 'sb_studio', 12, {
     // The text's own private-use marker characters never place a file (SPEC-124 review).

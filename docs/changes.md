@@ -12,6 +12,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   comes while a run is launching (a switch, a start) asks the run once it is attached instead of
   waiting 20 s for the escalation. Tests wait for a stop within the stop escalation plus a margin and
   say what they saw; merge train tests share one deadline under nextest's 120 s.
+- Open GitHub issues triaged and the first fixes delivered (SPEC-138, task #118). Of 63 open issues:
+  - #423, #425 and #465 were already fixed and are closed.
+  - The rest go to 20 chained tasks (#123–#142) in four lanes, or stay open with a comment naming
+    what only a person can provide (#321, #412, #470 and the checkpoint issues).
+
+  This task fixes:
+  - **#424:** GitHub's stateless installation tokens (`ghs_<APPID>_<JWT>`, about 520 characters)
+    are now redacted whole from transcripts, Git errors and GitHub errors. Before, transcripts
+    kept them in full, and the error redactors left the JWT's payload and signature.
+  - **#475:** `secret_copy_to_env` refuses a `.env` whose quoted value never closes, naming the
+    line, rather than appending names inside that value.
+  - **#430, #446, #455:** the `context_full` tests wait for the audit rows they check, and in the
+    e2e suite opening or reloading a mock page waits for the mock, so tests no longer fail on a
+    busy machine for those reasons.
 - `yulius wait` and `delivery_merge` report the current push state, not a stale note (SPEC-139,
   ADR-0113, task #123, fixes #366 and #448). A head GitHub's branch already has counts as pushed
   even when `git push` reported a failure, and clears the earlier note; `yulius wait` drops a
