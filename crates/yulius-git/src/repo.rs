@@ -174,6 +174,8 @@ impl Git {
     /// a directory, or a configuration file that is a link, is refused before any write: Git would
     /// read or write configuration elsewhere (SPEC-176).
     pub fn scrub_transport_config(&self, repo: &Path) -> Result<(), GitError> {
+        // Whole keys: a prefix would also take `submodule.<name>.url` of a submodule named so.
+        const KEYS: &[&str] = &["submodule.recurse"];
         const PREFIXES: &[&str] = &[
             "http.",
             "https.",
@@ -187,7 +189,6 @@ impl Git {
             "core.alternaterefscommand",
             "fetch.recursesubmodules",
             "push.recursesubmodules",
-            "submodule.recurse",
             "remote.origin.proxy",
             "remote.origin.pushurl",
             "remote.origin.uploadpack",
@@ -230,7 +231,8 @@ impl Git {
                 .lines()
                 .filter(|name| {
                     let lower = name.to_ascii_lowercase();
-                    PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+                    KEYS.contains(&lower.as_str())
+                        || PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
                 })
                 .map(str::to_owned)
                 .collect();

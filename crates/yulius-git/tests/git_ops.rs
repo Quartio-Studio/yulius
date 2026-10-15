@@ -1518,6 +1518,7 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
         ("push.recurseSubmodules", "on-demand"),
         ("user.name", "Kept Name"),
         ("submodule.lib.url", "https://example.invalid/lib.git"),
+        ("submodule.recurse-lib.url", "https://example.invalid/r.git"),
     ];
     // The same key twice, apart.
     fx.raw(
@@ -1546,6 +1547,10 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
     assert!(
         left.contains(&"submodule.lib.url"),
         "an initialised submodule stays: {left:?}"
+    );
+    assert!(
+        left.contains(&"submodule.recurse-lib.url"),
+        "a submodule named recurse-… stays: {left:?}"
     );
     assert!(left.contains(&"remote.origin.url"), "{left:?}");
     Ok(())

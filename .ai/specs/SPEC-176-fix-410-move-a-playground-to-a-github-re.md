@@ -164,7 +164,9 @@ GitHub from then on.
   initialised submodule's `submodule.<name>.url`; a test pins that the move never fetches GitHub
   through the clone (a planted refspec that no scrub removes changes nothing; it fails when the move
   fetches the configured `origin`). A `.git/commondir` pointing elsewhere is the pre-existing
-  #54 part B class: the scrub and Git then read the same file, so the token is not exposed.
+  #54 part B class: the scrub and Git then read the same file, so the token is not exposed. The
+  next review approved with one nit, fixed test-first: `submodule.recurse` is matched as a whole
+  key, so a submodule named `recurse-…` keeps its url.
 - **Live or queued tasks hold the move.** Their agents were started with a playground's briefing,
   tools and Git credentials, and a running playground merge or armed CI merge would land on the
   bare `origin` after the push. Requiring them to be stopped first (they continue after the move
