@@ -204,6 +204,9 @@ pub trait SandboxStore: Send + Sync {
         state: &str,
         task: Option<&TaskId>,
     ) -> AppResult<()>;
+    /// Moves the onboarding state from `from` to `to` only while it is still `from`; `false`
+    /// (nothing written) when it changed meanwhile (SPEC-153 OLC-001).
+    async fn transition_onboarding(&self, id: &SandboxId, from: &str, to: &str) -> AppResult<bool>;
     /// Marks removed.
     async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
     /// Renames the slug of a removed sandbox of `owner/name` holding `slug` to

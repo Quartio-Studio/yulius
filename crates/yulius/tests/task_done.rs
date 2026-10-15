@@ -2296,6 +2296,99 @@ fn a_done_task_can_be_archived() -> TestResult {
     Ok(())
 }
 
+/// The details of the sandbox's onboarding audit entries (`<from> -> <to>`), oldest first.
+fn onboarding_audit(data: &Path, sandbox: &SandboxId) -> Result<Vec<String>, BoxError> {
+    let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+    let mut query = db.prepare(
+        "SELECT detail FROM audit_log WHERE action = 'sandbox.onboarding' AND target = ?1 \
+         ORDER BY id",
+    )?;
+    let rows = query.query_map([sandbox.as_str()], |row| row.get::<_, Option<String>>(0))?;
+    Ok(rows.filter_map(Result::ok).flatten().collect())
+}
+
+/// SPEC-153 OLC-001 (#406): an admin's Skip that lands while Start onboarding is starting the
+/// onboarding task (held at its run's attach) is never undone: the sandbox stays `skipped`.
+#[test]
+fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            FakeAgentOptions::default(),
+            0,
+            Some(host.clone()),
+            None,
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        app.deps
+            .store
+            .set_onboarding(&sandbox, "pending", None)
+            .await?;
+        let person = app.deps.store.user(&user).await?.ok_or("user")?;
+        let browser = yulius_app::auth::AuthContext {
+            user: person.clone(),
+            csrf_token: Some("csrf".into()),
+            session_hash: Some("session".into()),
+        };
+        let admin = yulius_app::auth::AuthContext {
+            user: person,
+            csrf_token: None,
+            session_hash: None,
+        };
+        host.arm();
+        let starter = Arc::clone(&app);
+        let sid = sandbox.to_string();
+        let start = tokio::spawn(async move { starter.approve_onboarding(&browser, &sid).await });
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        // The start is inside `start_run`; the admin skips now.
+        let skipper = Arc::clone(&app);
+        let sid = sandbox.to_string();
+        let skip = tokio::spawn(async move { skipper.skip_onboarding(&admin, &sid).await });
+        wait_for("the skip", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .sandbox(&sandbox)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|s| s.onboarding_state == "skipped")
+        })
+        .await?;
+        host.release();
+        let started = tokio::time::timeout(Duration::from_secs(60), start).await??;
+        tokio::time::timeout(Duration::from_secs(60), skip).await???;
+        started?;
+        let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
+        assert_eq!(
+            record.onboarding_state,
+            "skipped",
+            "a start that ran during the skip wrote over it: {:?}",
+            onboarding_audit(&data, &sandbox)?
+        );
+        let audit = onboarding_audit(&data, &sandbox)?;
+        let skipped_at = audit
+            .iter()
+            .position(|entry| entry.ends_with("-> skipped"))
+            .ok_or("no skip audited")?;
+        assert_eq!(skipped_at, audit.len() - 1, "{audit:?}");
+        let prep = record.onboarding_task_id.ok_or("no onboarding task")?;
+        stop(&app, &prep).await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-039 (DDL-001): a Done task can be deleted like an ended one: its idle session is closed
 /// first, and the deletion returns only once the run has ended, so nothing of it is left behind.
 #[test]
