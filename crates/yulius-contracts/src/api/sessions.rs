@@ -176,6 +176,9 @@ pub enum TranscriptBlock {
     Meta {
         /// Text.
         text: String,
+        /// Cut at the bound (additive: absent reads as `false`).
+        #[serde(default)]
+        truncated: bool,
     },
 }
 
@@ -186,6 +189,10 @@ pub struct TranscriptDiff {
     pub path: String,
     /// Replaced passages (a `Write` is one hunk with an empty `old`).
     pub hunks: Vec<DiffHunk>,
+    /// A side of a hunk was cut at the bound, or hunks past the most kept were dropped
+    /// (additive: absent reads as `false`).
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// One replacement.
@@ -214,6 +221,7 @@ mod tests {
                     old: "a".into(),
                     new: "b".into(),
                 }],
+                truncated: false,
             }),
         };
         let json = serde_json::to_value(&block)?;
