@@ -59,6 +59,24 @@ test('a second file opened while the editor loads waits for all of Monaco: one e
   })).toEqual(['made', 'made']);
 });
 
+// #534 (SPEC-166): a file opened again before its first open showed it (a double-click on its row,
+// here while Monaco loads too) waits for that open: one tab. The file reads are held so both clicks
+// land before either read ends; the next file's read starts after they are answered.
+test('a file clicked twice before its tab shows opens one tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/content'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'AGENTS.md').dblclick();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await editorShown(browser);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.ed-tab')].map((tab) => (tab as HTMLElement).dataset.path))).toEqual(['AGENTS.md', 'README.md']);
+  expect(await browser.evaluate(() => document.querySelectorAll('.ed-host .monaco-editor').length)).toBe(1);
+});
+
 // Review of SPEC-148: one creation shared by every opening must not keep a failure: the next
 // file opened makes the editor again, as before the creation was shared. Made once: a failure
 // after Monaco made the editor (its setup threw) leaves no second editor behind.
