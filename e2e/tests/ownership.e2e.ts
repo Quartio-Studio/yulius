@@ -47,13 +47,12 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
   await screen.getByRole('button', 'Hand over').click();
   await expect(screen.getByText('@anna-q owns this task:')).toBeVisible();
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
-  // The terminal asks again: mkarp now watches it.
-  await expect(screen.getByText('Read-only: @anna-q owns this task')).toBeVisible();
-  // A watcher cannot send anything: its mouse selects text again.
-  await expect.poll(programMouse, { message: 'the watcher keeps the mouse for selection' }).toBe(false);
+  // mkarp now watches it: the session as its transcript, no terminal to send anything to (SPEC-179).
+  await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.taskview .xterm').length), { message: 'a watcher has no terminal' }).toBe(0);
   // anna-q hands it back: mkarp writes again and the program gets the mouse again.
   await touch(browser, 'sb_studio', 12, { owner: { login: 'mkarp' }, controlRequest: null });
-  await expect(screen.getByText('Read-only: @anna-q owns this task')).toBeHidden();
+  await expect(browser.locator('.taskview .watch')).toBeHidden();
   await expect.poll(programMouse, { message: 'the writer hands the program its mouse again' }).toBe(true);
 });
 

@@ -66,7 +66,8 @@ reference face crawls along the top between the corners.
   live transcript in the terminal's place and opens no terminal socket; when control passes to the
   viewer the terminal comes back (and goes again when they hand it over), without a reload. The
   transcript prints entries as the Sessions view does (`>` prompts, `⏺` messages and calls, `⎿`
-  results, diffs, folds). A prompt the owner typed shows as theirs (`@owner` beside its time).
+  results, diffs, folds). A prompt sent into the session shows as the TUI's `>` line with its
+  time; a tool result that arrives after its call is printed inside that call.
 - **WAT-003 It streams.** While the task is live (`isLive`) and the page is shown, the view asks for
   new lines about every 1.5 s with `from=end`, `seen` and `session`, one request at a time, and
   appends what came. A new session (a continue that started another) or a transcript rewritten
@@ -103,7 +104,7 @@ reference face crawls along the top between the corners.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [ ] The server serves a task's live transcript to its watchers, cheaply when nothing changed
-- [ ] Someone else's task shows its live transcript instead of a broken terminal, following new output and the owner's prompts
+- [x] Someone else's task shows its live transcript instead of a broken terminal, following new output and the owner's prompts
 - [ ] The live transcript keeps the terminal's colours, and ownership is said clearly in the view and the sidebar
 - [ ] An electro-blue pixel octopus with the reference face crawls between the top corners of a watched task
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -153,9 +154,11 @@ reference face crawls along the top between the corners.
 - **Reuse the Sessions renderer.** `pages/sessions.js` exports a transcript list (entries and the
   results shown in their calls) that both views use; the live view adds its palette, lane and
   polling in `watchview.js`. Moving the renderer to its own module would collide with task #137.
-- **"The owner's input" is the prompts the owner sends.** What is typed before Enter lives only in
-  the PTY's screen; reading it would mean parsing Claude Code's drawing. Prompts appear when sent,
-  with the owner's name.
+- **"The owner's input" is the prompts sent into the session.** What is typed before Enter lives
+  only in the PTY's screen; reading it would mean parsing Claude Code's drawing. Prompts appear when
+  sent. They are not labelled with the owner's name: Yulius also types into sessions (goals, wakes,
+  queued messages), and the transcript does not say who sent a prompt. The locked line names who is
+  at the keyboard instead.
 - **The octopus moves by script, its tentacles by CSS.** Corner-to-corner travel depends on the
   lane's width and rests at random lengths: Web Animations from a script (as the cockroach). The
   tentacle and blink frames are CSS `steps()` on SVG groups (as the spider), so reduced motion stops

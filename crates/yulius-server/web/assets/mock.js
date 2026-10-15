@@ -235,7 +235,9 @@ function seed(params) {
     // Waits for #4 to be Done (TSK-012).
     t('sb_product', 7, 'Invoice emails', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
-    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q', working: 7 * MIN }),
+    // anna-q's request, owned by mkarp, who can only read the project now: their own task's terminal
+    // stays read-only for want of write access (someone else's is watched as its transcript, SPEC-179).
+    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q', owner: 'mkarp', working: 7 * MIN }),
   ];
   {
     const invoices = db.tasks.find((x) => x.id === 'tsk_product_4');
@@ -3475,6 +3477,25 @@ route('GET', `/api/sessions/${ID}/transcript`, ({ db, p, query }) => {
   const more = doc.transcript.some((e) => e.line > last) && entries.length === limit;
   return { session: sessionView(db, doc), entries, next: more ? last + 1 : null, skipped_lines: 0 };
 });
+// A task's live session for the people watching it (SPEC-179 WAT-001): its session document's
+// entries, grown by `appendTranscript` as the session writes. The size is the entries' JSON.
+route('GET', `/api/tasks/${ID}/transcript`, ({ db, p, query }) => {
+  const task = taskOf(db, p[0]);
+  db.transcriptReads = (db.transcriptReads || 0) + 1;
+  const doc = sessionDocs(db).find((d) => d.kind === 'task' && d.task_id === task.id);
+  if (!doc) return { session_id: null, doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
+  const lines = doc.transcript;
+  const end = lines.length ? lines[lines.length - 1].line + 1 : 0;
+  const bytes = JSON.stringify(lines).length;
+  const from = query.has('from') ? Number(query.get('from')) : null;
+  const limit = Math.min(500, Math.max(1, Number(query.get('limit') || 200)));
+  const base = { session_id: doc.session_id, doc_id: null, next: null, bytes, earlier: false, skipped_lines: 0 };
+  if (from !== null && Number(query.get('seen')) === bytes && query.get('session') === doc.session_id) return { ...base, entries: [], end: from };
+  if (from === null) return { ...base, doc_id: doc.id, entries: lines.slice(-limit), end, earlier: lines.length > limit };
+  const entries = lines.filter((e) => e.line >= from).slice(0, limit);
+  const more = entries.length === limit && lines.some((e) => e.line > entries[entries.length - 1].line);
+  return { ...base, entries, next: more ? entries[entries.length - 1].line + 1 : null, end: more ? entries[entries.length - 1].line + 1 : end };
+});
 route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
   const doc = sessionDocOf(db, p[0]);
   const sandbox = sandboxOf(db, doc.sandbox_id);
@@ -4561,6 +4582,23 @@ export function createMockTransport(params) {
     const response = await handleFetch(db, path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'X-Yulius-CSRF': db.me.csrf_token } });
     resync(db);
     return response.status;
+  };
+  // The session of a task writes more (SPEC-179): `appendTranscript('sb_studio', 12, [{ role,
+  // text } | { role, blocks }])`, numbered on from its last line; a task without one gets one.
+  db.appendTranscript = (sandboxId, number, items) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    const docs = sessionDocs(db);
+    let doc = docs.find((d) => d.kind === 'task' && d.task_id === task.id);
+    if (!doc) {
+      doc = { id: `ses_task_${number}`, sandbox_id: sandboxId, kind: 'task', task_id: task.id, session_id: `live-${number}`, title: task.title, author: task.created_by, git_branch: task.branch, started_at: new Date().toISOString(), ended_at: null, imported_at: null, bytes: 0, redactions: 0, continued_in: null, transcript: [] };
+      docs.push(doc);
+    }
+    let line = doc.transcript.length ? doc.transcript[doc.transcript.length - 1].line + 1 : 0;
+    for (const item of items) {
+      const blocks = item.blocks || [{ type: 'text', text: item.text, truncated: false }];
+      doc.transcript.push({ line, role: item.role, at: item.at || (item.role === 'user' ? new Date().toISOString() : null), sidechain: false, blocks });
+      line += 1;
+    }
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):

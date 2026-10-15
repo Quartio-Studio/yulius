@@ -536,6 +536,66 @@ export function scheduleCockroaches(well, { random = Math.random, timer = { set:
   };
 }
 
+/**
+ * A transcript's entries as the TUI prints them (SPEC-075), in an `<ol>`, for a page that adds them
+ * as they come: the Sessions view page by page, a watched task as its session writes (SPEC-179).
+ * Each tool result shows inside the call it answers; a result that arrives after its call (a later
+ * page or read) prints that call again with it. `target` marks the line a search opened.
+ */
+export function transcriptEntries({ target = null } = {}) {
+  const el = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });
+  const results = new Map(); // tool_use_id → result, shown inside its call
+  const calls = new Map(); // tool_use id → the entry printed with that call: { item, node }
+
+  function entry(item) {
+    const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
+    const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
+    if (!shown.length) return null;
+    const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
+    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
+    // A prompt (typed or a command) carries its time, as turns start there.
+    const when = label === 'Prompt' && item.at;
+    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
+      h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
+      shown,
+      when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
+  }
+
+  /** Prints `entries` after those already shown; calls already shown take their new results. */
+  function append(entries) {
+    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_result') results.set(b.tool_use_id, { ...b });
+    const answered = new Set();
+    for (const item of entries) {
+      for (const b of item.blocks) {
+        if (b.type !== 'tool_result' || !calls.has(b.tool_use_id)) continue;
+        results.get(b.tool_use_id).shown = true;
+        answered.add(calls.get(b.tool_use_id));
+      }
+    }
+    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_call' && results.has(b.id)) results.get(b.id).shown = true;
+    for (const printed of answered) {
+      const fresh = entry(printed.item);
+      if (fresh && printed.node.isConnected) printed.node.replaceWith(fresh);
+      printed.node = fresh || printed.node;
+    }
+    for (const item of entries) {
+      const node = entry(item);
+      if (!node) continue;
+      el.append(node);
+      for (const b of item.blocks) if (b.type === 'tool_call') calls.set(b.id, { item, node });
+    }
+  }
+
+  /** Forgets every entry (a new session, or one rewritten). */
+  function clear() {
+    results.clear();
+    calls.clear();
+    el.replaceChildren();
+  }
+
+  return { el, append, clear };
+}
+
 /** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
 const lockedPrompt = () => h('div', { class: 'ss-locked' }, mark('>', 'prompt'), h('span', { class: 'ss-line-body' }, 'Read-only session · nothing can be sent'), icon('lock', { size: 14 }));
 
@@ -549,7 +609,6 @@ export function mountSessionView(ctx, sandbox, id, route) {
   let alive = true;
   let loading = false;
   let stopCockroaches = () => {};
-  const results = new Map(); // tool_use_id → result, shown inside its call
 
   const titleEl = h('h1', { class: 'page-title gt-title' }, 'Session');
   const meta = h('div', { class: 'gt-meta' });
@@ -559,7 +618,8 @@ export function mountSessionView(ctx, sandbox, id, route) {
     h('a', { class: 'gt-back', href: href(back), dataset: { route: back, restore: 'page' } }, icon('back', { size: 14 }), 'Sessions'),
     h('div', { class: 'gt-title-row' }, titleEl, actions),
     meta, notice);
-  const entriesEl = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });
+  const transcript = transcriptEntries({ target });
+  const entriesEl = transcript.el;
   const earlier = h('div', { class: 'ss-more' });
   const more = h('div', { class: 'ss-more' });
   const body = h('div', { class: 'ss-body' }, placeholder('Loading the transcript…', 'loading'));
@@ -615,27 +675,6 @@ export function mountSessionView(ctx, sandbox, id, route) {
     }
   }
 
-  function entry(item) {
-    const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
-    const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
-    if (!shown.length) return null;
-    const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
-    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
-    // A prompt (typed or a command) carries its time, as turns start there.
-    const when = label === 'Prompt' && item.at;
-    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
-      h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
-      shown,
-      when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
-  }
-
-  function append(entries) {
-    // Results are shown inside the call they answer (when both are on this page).
-    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_result') results.set(b.tool_use_id, { ...b });
-    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_call' && results.has(b.id)) results.get(b.id).shown = true;
-    entriesEl.append(...entries.map(entry).filter(Boolean));
-  }
-
   function renderMore() {
     setChildren(more, next !== null && next !== undefined
       ? h('button', { type: 'button', class: 'btn', disabled: loading, onClick: () => load(next) }, loading ? 'Loading…' : 'Load more')
@@ -661,7 +700,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
         setChildren(body, earlier, tui);
         stopCockroaches = scheduleCockroaches(tui);
       }
-      append(page.entries || []);
+      transcript.append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) {
         stopCockroaches();
         setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
