@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
+  crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
+  the narrow-strip e2e test now checks that no strip chip's text overflows its box.
 - The Tasks page shows how tasks hang together (SPEC-164, ADR-0135, task #154). A List / Graph
   switch (`?view=graph`, also the sidebar Working group's "Show as a graph") opens Starts next (the
   queued tasks in the order they get a free session: supertasks first, then the longest queued),
