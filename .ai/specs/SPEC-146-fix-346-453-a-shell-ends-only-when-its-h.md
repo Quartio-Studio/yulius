@@ -1,11 +1,11 @@
 ---
 yulius-task: 8c58b04e-641c-46e9-a5bf-d71893d2c897
-status: in-progress
+status: done
 ---
 
 # SPEC-146: a shell ends only when its host is proven gone; a launch /goal is watched again after a restart
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #125 (part of task #118, SPEC-138 lanes)
 Scope authorization: the person's request (task #125): fix GitHub issues #346 and #453. "A sandbox
@@ -56,7 +56,7 @@ Both concern the supervisor's process lifecycle across ends and restarts:
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| SHE-001 | When a shell (terminal or Superagent) asked to end has not exited within `shell_exit_ms` (configuration, 10 s by default), its host is terminated. Only when `terminate` succeeds (or the shell exited meanwhile) is it recorded as ended and its run directory removed. When `terminate` fails the shell stays live: it keeps its registration, run directory and viewers, it is listed and attachable again (a close is no longer pending), the failure is logged, and its viewers get a notice. Closing it again (or the idle reaper) retries; its own exit is still recorded by its pump. The same holds when the connection to its host is lost while its host or its process lives on (a host killed, a child that survives it): it is recorded as ended only once `terminate` succeeds. | `shells.rs` `a_terminal_whose_host_cannot_be_ended_stays_live`, `a_terminal_whose_host_died_but_whose_process_survives_stays_live` |
+| SHE-001 | When a shell (terminal or Superagent) asked to end has not exited within `shell_exit_ms` (configuration, 10 s by default), its host is terminated. Only when `terminate` succeeds (or the shell exited meanwhile) is it recorded as ended and its run directory removed. When `terminate` fails the shell stays live: it keeps its registration, run directory and viewers, it is listed and attachable again (a close is no longer pending), the failure is logged, and its viewers get a notice. Closing it again (or the idle reaper) retries; its own exit is still recorded by its pump. The same holds when the connection to its host is lost while its host or its process lives on (a host killed, a child that survives it): it is recorded as ended only once `terminate` succeeds. Such a shell stays registered but disconnected: its output no longer reaches viewers until a close, the idle reaper or a restart's adoption. | `shells.rs` `a_terminal_whose_host_cannot_be_ended_stays_live`, `a_terminal_whose_host_died_but_whose_process_survives_stays_live` |
 | SHE-002 | The Superagent's usage-limit move (SPEC-074 SUP-004) starts the new Superagent only once the old one ended. When the old host may still run, no second Superagent starts: the old one stays on its subscription, live and no longer `switching`, and its viewers are told that it could not move because its process could not be ended. The limit stays recorded on the subscription (SUP-003) and handled (SUP-002). | `cockpit.rs` `a_superagent_whose_host_cannot_be_ended_is_not_moved` |
 | SHE-003 | Notices: a terminal "This terminal's process could not be ended, so it keeps running. Close it again to retry."; the Superagent "The Superagent's process could not be ended, so it keeps running." and, during a move, "The Superagent could not move to another subscription: its process could not be ended, so it stays on this one." | the tests above |
 | GWR-001 | A run whose launch prompt is a `/goal` (SPEC-117 ONE-001, ONE-003) has a `launch-goal-pending` marker in its run directory, written before the spawn. The goal watch removes it when it ends with an outcome: the goal recorded, the task flagged (goal not taken, trust dialog unanswered). It stays when the watch ends because the run is no longer live. | `first_message.rs` `a_launch_goal_recorded_before_a_restart_is_not_watched_again` (recorded), `a_launch_goal_unrecorded_across_a_restart_is_watched_again` (flagged) |
@@ -70,8 +70,8 @@ Both concern the supervisor's process lifecycle across ends and restarts:
 - [x] The Superagent's usage-limit move waits for the old host to be gone (#346)
 - [x] A launch /goal held across a restart is watched again (#453)
 - [x] Docs, ADR and changes
-- [ ] Independent review and fixes
-- [ ] Gates green, evidence and delivery
+- [x] Independent review and fixes
+- [x] Gates green, evidence and delivery
 
 ## Acceptance criteria
 
@@ -128,9 +128,49 @@ Both concern the supervisor's process lifecycle across ends and restarts:
 - **A lost connection checks the host's state too** (review round 1): `terminate_recorded` kills
   the child's group before the host, so its likeliest failure leaves a dead host and a surviving
   child; the pump, seeing the connection lost, used to record the end then. It now terminates
-  when the host or the child lives and keeps the shell live when that fails.
+  when the host or the child lives and keeps the shell live when that fails. Such a shell is not
+  reconnected (review round 2): it stays registered and listed, without output, until a close,
+  the idle reaper (24 h without viewers; a Superagent cannot be closed) or a restart's adoption
+  ends or reattaches it. A bounded reattach-and-terminate retry loop was weighed and left out
+  for ADR-0050's reason: it only matters for a process that survives SIGKILL, and recording the
+  end instead could start a second Superagent on the same conversation.
 - **Not in this change** (noted on #346): an unadoptable run directory at start and a shell whose
   start failed (`discard_shell`) still ignore `terminate`'s result, and the account-switch path
   ADR-0050 left open. A person who runs `/clear` while Yulius is down, after the launch goal was
   recorded, moves the watcher to a session without a goal record: the restarted watch would flag
   a goal that was taken (review round 1 nit; unlikely, accepted).
+
+## Evidence
+
+- Checked on `dev` first: neither issue was fixed (`await_shell_exit` ignored `terminate`'s result;
+  `reconcile` started no goal watch, and the transcript replay never set `goal_submitted`).
+- Test-first, each failing before its fix:
+  - `shells::a_terminal_whose_host_cannot_be_ended_stays_live`: the viewer got
+    `{"type":"exit","status":"closed","code":null}` after `shell_exit_ms`.
+  - `cockpit::a_superagent_whose_host_cannot_be_ended_is_not_moved`: no "could not move" notice;
+    the move went on.
+  - `first_message::a_launch_goal_unrecorded_across_a_restart_is_watched_again`: no marker, no
+    rewatch.
+  - `first_message::a_launch_goal_recorded_before_a_restart_is_not_watched_again`: with the
+    marker but without `goal_recorded`, the restarted watch flagged the task ("Claude Code did not
+    take the task's goal").
+  - `shells::a_terminal_whose_host_died_but_whose_process_survives_stays_live` (review round 1):
+    the lost connection recorded the end (`exit` frame).
+- Targeted suites: `shells::`, `cockpit::`, `first_message::`, `supervision::`, `task_done::`,
+  `recovery::`, `run_metrics::` all pass; `finish::tests::a_replayed_transcript_reduces_to_its_final_state`
+  passes.
+- `scripts/dev ci` (repository check, script tests, check, fmt, clippy `-D warnings`, nextest,
+  doctests, deny, shear, doc): exit 0 on `b981cefa` (1788 tests passed, 16 skipped) and on
+  `2469b45b` (1789 passed, 16 skipped).
+- `scripts/dev security`: not run, exit 2. Vidoc rejects the key (HTTP 401, issue #470); reported
+  as unrun under ADR-0104.
+- Independent review: round 1 approved `b981cefa` with minors (a lost connection with a surviving
+  child still recorded the end; "noted on #346" was not yet true; GWR-001's flagged path lacked
+  evidence), all fixed (`2469b45b`, the #346 comment); round 2 approved `2469b45b`; its minors
+  (a kept-live shell after a lost connection is not reconnected, and the docs said so too
+  broadly) are recorded as an accepted limit above and in ADR-0120. Its nits (a duplicate notice
+  when a close is in flight; `terminate` blocking a worker up to 2 s, as before this change)
+  are left.
+- Not exercised here: a process truly surviving SIGKILL (simulated by the test session host's
+  `refuse_ends`, with real processes), and a real Claude Code session across a production restart
+  (the fake agent writes Claude Code shaped transcripts through the real ptyhost).
