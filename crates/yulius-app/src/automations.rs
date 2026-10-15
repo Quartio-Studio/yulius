@@ -123,7 +123,8 @@ impl RunState {
     }
 }
 
-/// How the tasks of an automation start (SPEC-078): the choices of New task's start chip.
+/// How the tasks of an automation start (SPEC-078): the choices of New task's start chip, but
+/// "At a time…" (the schedule is the automation's time).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AutomationStart {
     /// Queued: the task starts as soon as a session slot is free.
@@ -135,6 +136,8 @@ pub enum AutomationStart {
     After(TaskId),
     /// When this rule over the project's tasks is true (SPEC-017), in canonical text.
     Rule(String),
+    /// "When I decide" (SPEC-155): the task waits `prepared` until a person starts it (SPEC-105).
+    Prepared,
 }
 
 /// A stored automation.
@@ -318,6 +321,7 @@ fn input_start(input: &Automation) -> AppResult<StartInput> {
         input.supertask,
         input.after_task_id.as_deref(),
         input.start_rule.as_deref(),
+        input.prepared,
     )
 }
 
@@ -331,16 +335,24 @@ fn validate(input: &Automation) -> AppResult<Fields> {
     })
 }
 
-/// The start choice as given (SPEC-078 AUT-014): at most one of a supertask, a task to run after
-/// and a rule, as New task allows; the task and the rule are checked against the project by
-/// [`App::resolve_start`].
+/// The start choice as given (SPEC-078 AUT-014, SPEC-155 AUT-026): at most one of a supertask, a
+/// task to run after, a rule and "when I decide", as New task allows; the task and the rule are
+/// checked against the project by [`App::resolve_start`].
 fn start_input(
     supertask: bool,
     after_task_id: Option<&str>,
     start_rule: Option<&str>,
+    prepared: bool,
 ) -> AppResult<StartInput> {
     let after = after_task_id.map(str::trim).filter(|t| !t.is_empty());
     let rule = start_rule.map(str::trim).filter(|r| !r.is_empty());
+    if prepared {
+        return if supertask || after.is_some() || rule.is_some() {
+            Err(crate::lifecycle::prepared_alone())
+        } else {
+            Ok(StartInput::Prepared)
+        };
+    }
     match (supertask, after, rule) {
         (true, None, None) => Ok(StartInput::Supertask),
         (true, _, _) => Err(AppError::Invalid(
@@ -364,15 +376,16 @@ enum StartInput {
     Supertask,
     After(String),
     Rule(Rule),
+    Prepared,
 }
 
 impl StartInput {
     /// Whether this is the stored choice `start`, sent back unchanged.
     fn matches(&self, start: &AutomationStart) -> bool {
         match (self, start) {
-            (Self::Now, AutomationStart::Now) | (Self::Supertask, AutomationStart::Supertask) => {
-                true
-            }
+            (Self::Now, AutomationStart::Now)
+            | (Self::Supertask, AutomationStart::Supertask)
+            | (Self::Prepared, AutomationStart::Prepared) => true,
             (Self::After(id), AutomationStart::After(stored)) => id == stored.as_str(),
             (Self::Rule(rule), AutomationStart::Rule(stored)) => &rule.to_string() == stored,
             _ => false,
@@ -401,8 +414,9 @@ impl App {
         } else {
             None
         };
+        let prepared = record.start == AutomationStart::Prepared;
         let (supertask, after_task_id, after_task_number, start_rule) = match &record.start {
-            AutomationStart::Now => (false, None, None, None),
+            AutomationStart::Now | AutomationStart::Prepared => (false, None, None, None),
             AutomationStart::Supertask => (true, None, None, None),
             AutomationStart::After(id) => {
                 let number = self.deps.store.task(id).await?.map(|t| t.number);
@@ -423,6 +437,7 @@ impl App {
             after_task_id,
             after_task_number,
             start_rule,
+            prepared,
             created_via: record.created_via.as_str().to_owned(),
             next_run_at,
             last_run: last.first().map(run_view),
@@ -440,6 +455,7 @@ impl App {
         match input {
             StartInput::Now => Ok(AutomationStart::Now),
             StartInput::Supertask => Ok(AutomationStart::Supertask),
+            StartInput::Prepared => Ok(AutomationStart::Prepared),
             StartInput::After(id) => {
                 let missing = || AppError::Invalid("the task to run after does not exist".into());
                 let id = TaskId::parse(&id).map_err(|_| missing())?;
@@ -912,6 +928,7 @@ impl App {
                     given.supertask,
                     given.after_task_id.as_deref(),
                     given.start_rule.as_deref(),
+                    given.prepared,
                 )?;
                 Some(if given.matches(&record.start) {
                     record.start.clone()
@@ -930,6 +947,7 @@ impl App {
             AutomationStart::Supertask => "supertask".to_owned(),
             AutomationStart::After(id) => format!("after {id}"),
             AutomationStart::Rule(rule) => format!("when {rule}"),
+            AutomationStart::Prepared => "when I decide".to_owned(),
         });
         let detail = match (caller_detail, other) {
             (Some(caller), _) => {
@@ -1200,8 +1218,10 @@ impl App {
             .workflow_steps(&automation.sandbox_id, automation.workflow_id.as_deref())
             .await?;
         let (supertask, after, rule) = self.run_start(automation).await?;
+        // "When I decide" prepares the task without a time (SPEC-155, SPEC-105).
+        let prepared = (automation.start == AutomationStart::Prepared).then_some(None);
         let task = self
-            .create_task_ruled(
+            .create_task_held(
                 NewTask {
                     sandbox: automation.sandbox_id.clone(),
                     created_by: automation.created_by.clone(),
@@ -1220,6 +1240,7 @@ impl App {
                 },
                 after.as_ref(),
                 rule.as_ref(),
+                prepared,
             )
             .await?;
         Ok(task.id)
@@ -1234,7 +1255,7 @@ impl App {
     ) -> AppResult<(bool, Option<TaskRecord>, Option<Rule>)> {
         let parse = |text: &str| Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()));
         match &automation.start {
-            AutomationStart::Now => Ok((false, None, None)),
+            AutomationStart::Now | AutomationStart::Prepared => Ok((false, None, None)),
             AutomationStart::Supertask => Ok((true, None, None)),
             AutomationStart::Rule(text) => Ok((false, None, Some(parse(text)?))),
             AutomationStart::After(id) => {
@@ -1332,26 +1353,32 @@ impl App {
             })
     }
 
-    /// The start choice of an `automation_create`/`automation_update` call (SPEC-078 AUT-017):
-    /// `after_task` (a task number), `start_rule` and `supertask`, as `task_create` takes them;
-    /// `None` when the call gives none of them.
+    /// The start choice of an `automation_create`/`automation_update` call (SPEC-078 AUT-017,
+    /// SPEC-155 AUT-029): `after_task` (a task number), `start_rule`, `supertask` and `prepared`,
+    /// as `task_create` takes them; `None` when the call gives none of them.
     async fn agent_start(
         &self,
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Option<AutomationStart>> {
         let given = |key: &str| args.get(key).filter(|v| !v.is_null());
-        let (after, rule, supertask) =
-            (given("after_task"), given("start_rule"), given("supertask"));
-        if after.is_none() && rule.is_none() && supertask.is_none() {
+        let (after, rule, supertask, prepared) = (
+            given("after_task"),
+            given("start_rule"),
+            given("supertask"),
+            given("prepared"),
+        );
+        if after.is_none() && rule.is_none() && supertask.is_none() && prepared.is_none() {
             return Ok(None);
         }
-        let supertask = match supertask {
-            None => false,
+        let flag = |value: Option<&Value>, key: &str| match value {
+            None => Ok(false),
             Some(flag) => flag
                 .as_bool()
-                .ok_or_else(|| AppError::Invalid("`supertask` must be true or false".into()))?,
+                .ok_or_else(|| AppError::Invalid(format!("`{key}` must be true or false"))),
         };
+        let supertask = flag(supertask, "supertask")?;
+        let prepared = flag(prepared, "prepared")?;
         let rule = match rule {
             None => None,
             Some(text) => Some(
@@ -1369,7 +1396,7 @@ impl App {
                     .to_owned(),
             ),
         };
-        let input = start_input(supertask, after.as_deref(), rule)?;
+        let input = start_input(supertask, after.as_deref(), rule, prepared)?;
         Ok(Some(self.resolve_start(&caller.sandbox, input).await?))
     }
 
@@ -1459,7 +1486,7 @@ impl App {
     }
 
     /// `automation_update` agent tool: enable/disable, schedule, offset, prompt, name or the start
-    /// choice (any of `after_task`, `start_rule`, `supertask` replaces it).
+    /// choice (any of `after_task`, `start_rule`, `supertask`, `prepared` replaces it).
     ///
     /// # Errors
     /// `NotFound` outside the agent's sandbox, validation errors.
@@ -1551,19 +1578,19 @@ mod tests {
     }
 
     #[test]
-    fn a_start_choice_is_one_of_four() {
-        let now = start_input(false, None, Some("  ")).ok();
+    fn a_start_choice_is_one_of_five() {
+        let now = start_input(false, None, Some("  "), false).ok();
         assert!(matches!(now, Some(StartInput::Now)));
         assert!(matches!(
-            start_input(true, Some(""), None).ok(),
+            start_input(true, Some(""), None, false).ok(),
             Some(StartInput::Supertask)
         ));
         assert!(matches!(
-            start_input(false, Some(" t-1 "), None).ok(),
+            start_input(false, Some(" t-1 "), None, false).ok(),
             Some(StartInput::After(id)) if id == "t-1"
         ));
         assert!(matches!(
-            start_input(false, None, Some("#2  DONE")).ok(),
+            start_input(false, None, Some("#2  DONE"), false).ok(),
             Some(StartInput::Rule(rule)) if rule.to_string() == "#2 done"
         ));
         for (supertask, after, rule) in [
@@ -1572,13 +1599,35 @@ mod tests {
             (false, Some("t-1"), Some("#2 done")),
             (false, None, Some("#2 done and")),
         ] {
-            assert!(start_input(supertask, after, rule).is_err());
+            assert!(start_input(supertask, after, rule, false).is_err());
         }
         // The stored choice sent back unchanged.
         let stored = AutomationStart::Rule("#2 done".into());
-        assert!(start_input(false, None, Some("#2 DONE")).is_ok_and(|i| i.matches(&stored)));
-        assert!(start_input(false, None, Some("#3 done")).is_ok_and(|i| !i.matches(&stored)));
-        assert!(start_input(false, None, None).is_ok_and(|i| !i.matches(&stored)));
+        assert!(start_input(false, None, Some("#2 DONE"), false).is_ok_and(|i| i.matches(&stored)));
+        assert!(
+            start_input(false, None, Some("#3 done"), false).is_ok_and(|i| !i.matches(&stored))
+        );
+        assert!(start_input(false, None, None, false).is_ok_and(|i| !i.matches(&stored)));
+        // "When I decide" (SPEC-155) stands alone; blank fields beside it are none.
+        assert!(matches!(
+            start_input(false, Some(" "), Some(""), true).ok(),
+            Some(StartInput::Prepared)
+        ));
+        for (supertask, after, rule) in [
+            (true, None, None),
+            (false, Some("t-1"), None),
+            (false, None, Some("#2 done")),
+        ] {
+            let err = start_input(supertask, after, rule, true).err();
+            assert!(
+                err.is_some_and(|e| e.to_string().contains("prepared task")),
+                "{supertask} {after:?} {rule:?}"
+            );
+        }
+        assert!(
+            start_input(false, None, None, true)
+                .is_ok_and(|i| i.matches(&AutomationStart::Prepared) && !i.matches(&stored))
+        );
     }
 
     #[test]
