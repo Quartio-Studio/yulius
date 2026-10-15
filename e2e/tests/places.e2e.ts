@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock, openSuperagent } from './support.ts';
+import { editorShown, failOnPageErrors, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -151,6 +151,7 @@ test('the editor keeps open files and unsaved text across a sandbox switch, with
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
   await content.focus();
@@ -289,6 +290,7 @@ test('a file opened just before a sandbox switch shows when the sandbox is back'
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());

@@ -267,7 +267,8 @@ home screen's first steps, a playground first; `POST /api/playgrounds` keeps the
 archive it got in `__yuliusMock.playgroundUploads`), `tasks=0` (sandboxes without tasks yet: no start rule to offer), `tasks=many` (30 more queued tasks in studio: a long "Run after" menu), `tasks=graph` (studio's tasks form a structure for the Graph view: a chain #12 → #15 → #16, a rule #17 over #12 and #16, a supertask #20 holding #8 and #21, prepared #18 and #19, a rule #22 naming the archived #1; with `graph=cycle` two tasks waiting for each other), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
-`helper=0` (no update helper), `jev=config` (a Jev key file is configured), `fail=<path>` (GET
+`helper=0` (no update helper), `jev=config` (a Jev key file is configured), `browserask=0` (no
+sign-in request from studio's browser 5 s after the start, nor its toast), `fail=<path>` (GET
 requests of that exact API path answer 500, to see a view say what failed to load), `hold=<path>` (GET
 requests of that path wait until `__yuliusMock.release()`, to see a view while it loads; `hold=frames` holds
 the browser panel's picture) or `failpost=<path>`
