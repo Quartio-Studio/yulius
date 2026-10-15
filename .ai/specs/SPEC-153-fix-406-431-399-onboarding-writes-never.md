@@ -74,7 +74,8 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 - [x] The task summary says a task never ran or waits for Start onboarding
 - [x] The web UI shows Not started and Waits for Start onboarding outside Closed
 - [x] Docs, ADR and changes
-- [ ] Independent review and fixes
+- [x] Round-1 review findings fixed test-first
+- [ ] Round-2 review approves the current head
 - [ ] Gates green, evidence and delivery
 
 ## Acceptance criteria

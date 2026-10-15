@@ -676,7 +676,7 @@ impl App {
             self.publish_task(&task.id).await;
         }
         let resting = task.status.is_resting();
-        let started = !resting || !store.attempts(&task.id).await?.is_empty();
+        let started = !resting || store.has_attempts(&task.id).await?;
         if !started {
             return Ok(record.onboarding_state);
         }
@@ -834,7 +834,8 @@ impl App {
                 if OnboardingState::parse(&record.onboarding_state)
                     .is_some_and(OnboardingState::blocks_tasks)
                 {
-                    // Not reached while the state only moves forward; never a silent non-skip.
+                    // Defensive and untested: not reached while the state only moves forward under
+                    // the lock (pending, preparing, ready). Never a silent non-skip.
                     tracing::warn!(sandbox = %id, state = record.onboarding_state, "skip kept losing to onboarding writes");
                     return Err(AppError::Conflict(
                         "onboarding is changing state; try again".into(),
@@ -956,21 +957,23 @@ impl App {
         }
         // Only from the `pending` read before the start: an admin's skip landing while the task
         // started stays (#406). A refresh that saw the task start may have written `preparing`
-        // already, as `system`: the person who started it is audited all the same.
+        // (or `ready`) already, as `system`: the person who started it is audited all the same.
         if !self
             .set_onboarding_state(&record, OnboardingState::Preparing, actor)
             .await?
-            && self.onboarding_state_of(sandbox).await? == OnboardingState::Preparing.as_str()
         {
-            store
-                .audit(
-                    self.now(),
-                    actor,
-                    "sandbox.onboarding.start",
-                    Some(sandbox.as_str()),
-                    Some("Start onboarding (already preparing)"),
-                )
-                .await?;
+            let now = self.onboarding_state_of(sandbox).await?;
+            if OnboardingState::parse(&now) != Some(OnboardingState::Skipped) {
+                store
+                    .audit(
+                        self.now(),
+                        actor,
+                        "sandbox.onboarding.start",
+                        Some(sandbox.as_str()),
+                        Some(&format!("Start onboarding (already {now})")),
+                    )
+                    .await?;
+            }
         }
         Ok(true)
     }
