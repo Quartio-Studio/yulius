@@ -158,8 +158,10 @@ function seed(params) {
     failPath: params.get('fail') || null,
     failedReads: 0,
     holdPath: params.get('hold') || null,
-    // failpost=<path> does the same to POST requests, to show how an action says it failed.
+    // failpost=<path> does the same to POST requests, to show how an action says it failed;
+    // `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
+    failedPosts: 0,
 
     nextId: 100,
   };
@@ -3410,7 +3412,10 @@ async function handleFetch(db, url, init = {}) {
   }
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
   if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
-  if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) {
+    db.failedPosts += 1;
+    return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  }
   const headers = init.headers || {};
   if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {
     return json(403, { error: { code: 'forbidden', message: 'Missing or wrong CSRF token.' } });
