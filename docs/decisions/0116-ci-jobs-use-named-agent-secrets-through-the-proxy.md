@@ -19,7 +19,8 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 
 ## Decision
 
-- **The grant is the integration branch's.** A `[[ci.jobs]]` entry may list `secrets = ["NAME"]`.
+- **The grant is the integration branch's.** A `[[ci.jobs]]` entry may name agent secrets,
+  `secrets = "NAME OTHER"` (space-separated, like `[cd.<env>] secrets`).
   When a job starts, Yulius reads the integration branch's jobs (`origin/<integration>`, the same
   read that chooses the CI) and gives the job the list of the entry with the same name. A pull
   request's own `secrets` line grants nothing, even when its own jobs run; the person's profile

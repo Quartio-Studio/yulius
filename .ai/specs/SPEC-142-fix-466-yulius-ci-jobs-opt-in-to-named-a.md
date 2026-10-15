@@ -51,9 +51,9 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
 
 ## Requirements
 
-- CSE-001: A `[[ci.jobs]]` entry may have `secrets`, a list of agent secret names (`SecretName`
-  rules), at most 8, without repeats. An invalid list is a configuration error naming the job.
-  Matrix values inherit the definition's list.
+- CSE-001: A `[[ci.jobs]]` entry may have `secrets`, agent secret names (`SecretName` rules)
+  separated by spaces (`secrets = "VIDOC_API_KEY"`), at most 8, without repeats. An invalid list
+  is a configuration error naming the job. Matrix values inherit the definition's list.
 - CSE-002: The secrets a job may use are those that the integration branch's `[[ci.jobs]]` entry
   of the same name lists, read when the job starts (`App::ci_gate`). A `secrets` list in a pull
   request's own `yulius.toml` grants nothing, whether or not its own jobs run. The person's profile
@@ -88,18 +88,18 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
 ## Plan
 
 - [x] Spec SPEC-142 and the ADR on the CI secret trust boundary, validated
-- [ ] [[ci.jobs]] entries declare secrets, parsed and validated in the domain
-- [ ] CI jobs authenticate to the egress proxy as ci:<run> with only their named, host-bound secrets, audited
-- [ ] An opted-in CI job gets the proxy, CA and placeholders from the integration branch's grant; a PR's own grant is ignored
-- [ ] The Vidoc gate runs in a Yulius CI pull request checkout
-- [ ] The security job runs on PR heads; docs, ADR-0104 and the yulius-verify skill updated
+- [x] [[ci.jobs]] entries declare secrets, parsed and validated in the domain
+- [x] CI jobs authenticate to the egress proxy as ci:<run> with only their named, host-bound secrets, audited
+- [x] An opted-in CI job gets the proxy, CA and placeholders from the integration branch's grant; a PR's own grant is ignored
+- [x] The Vidoc gate runs in a Yulius CI pull request checkout
+- [x] The security job runs on PR heads; docs, ADR-0104 and the yulius-verify skill updated
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Gates green, merged into dev on green CI, issue #466 closed
 
 ## Acceptance criteria
 
-- `secrets = ["A", "B"]` parses into the job and its matrix jobs; a bad name, a repeat, more than 8
-  or a non-list is a configuration error naming the job.
+- `secrets = "A B"` parses into the job and its matrix jobs and renders back; a bad name, a repeat,
+  an empty list, more than 8 or a non-string is a configuration error on its line.
 - A run on a real ptyhost: the job granted `API_KEY` on the integration branch sees
   `API_KEY=yulius-secret-API_KEY`, a proxy credential and a readable CA bundle, and nothing of
   another agent secret of the sandbox; a job without a grant sees no proxy, no CA and no
@@ -149,6 +149,10 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   the shared clone, so the branch would appear in the sandbox), and a URL rewrite in the CI
   checkout's environment (the CLI's `git fetch origin <default>` would then rewrite the shared
   clone's `refs/remotes/origin/*` from the mirror).
+- `secrets` is a space-separated string, not the TOML array of the task's example
+  (`["VIDOC_API_KEY"]`): the domain's strict TOML subset has no non-empty arrays, and the same
+  file already names secrets that way (`[cd.<env>] secrets`) and lists matrix values that way.
+  Teaching the parser arrays for one key would make two spellings of one idea.
 - Exit 2 does not fail the `security` job (CSE-007): it means only a person can make the scan run
   (#470, a missing host binding), and failing every pull request for it would stop all delivery.
   The job prints the reason, and the docs say the check enforces findings only once the scan runs.

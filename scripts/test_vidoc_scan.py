@@ -459,6 +459,56 @@ class PullRequestCi(unittest.TestCase):
         self.assertIn("pull request #7", out.getvalue())
 
 
+class SecurityJob(unittest.TestCase):
+    """SPEC-142 CSE-007: the `security` CI job is granted VIDOC_API_KEY and runs the gate on pull
+    request heads only; findings fail it, and until a scan can run (#470) exit 2 does not."""
+
+    def job(self):
+        import tomllib
+        config = tomllib.loads((Path(__file__).resolve().parent.parent / "yulius.toml").read_text())
+        jobs = [job for job in config["ci"]["jobs"] if job["name"] == "security"]
+        self.assertEqual(len(jobs), 1, "one security job")
+        return jobs[0]
+
+    def run_job(self, ref, code):
+        root = Path(tempfile.mkdtemp(prefix="vidoc-job-"))
+        self.addCleanup(shutil.rmtree, root)
+        (root / "scripts").mkdir()
+        (root / "scripts" / "bootstrap.py").write_text("import sys\nsys.exit(0)\n")
+        dev = root / "scripts" / "dev"
+        dev.write_text(f"#!/bin/sh\necho \"dev $*\" >> ran\nexit {code}\n")
+        dev.chmod(0o755)
+        result = subprocess.run(["/bin/sh", "-c", self.job()["command"]], cwd=root,
+                                env={"PATH": os.environ.get("PATH", ""), "YULIUS_CI": "1",
+                                     "YULIUS_CI_REF": ref},
+                                capture_output=True, text=True, timeout=60)
+        ran = (root / "ran").read_text() if (root / "ran").exists() else ""
+        return result.returncode, result.stdout + result.stderr, ran
+
+    def test_it_is_granted_the_vidoc_key_only(self):
+        self.assertEqual(self.job()["secrets"], "VIDOC_API_KEY")
+
+    def test_a_pull_request_head_passes_or_fails_with_the_scan(self):
+        for code, expected in ((0, 0), (1, 1)):
+            with self.subTest(code=code):
+                exit_code, _, ran = self.run_job("pr/3", code)
+                self.assertEqual(exit_code, expected)
+                self.assertEqual(ran, "dev security\n")
+
+    def test_a_scan_that_cannot_run_does_not_fail_the_job_but_says_so(self):
+        exit_code, output, ran = self.run_job("pr/3", 2)
+        self.assertEqual((exit_code, ran), (0, "dev security\n"))
+        self.assertIn("did not run", output)
+        self.assertIn("#470", output)
+
+    def test_other_heads_are_not_scanned(self):
+        for ref in ("branch/dev", "branch/main", "train/3+4"):
+            with self.subTest(ref=ref):
+                exit_code, output, ran = self.run_job(ref, 1)
+                self.assertEqual((exit_code, ran), (0, ""))
+                self.assertIn("pull request", output)
+
+
 class Gate(unittest.TestCase):
     def test_clean_scan_passes_and_names_it(self):
         api, cli = api_for(), FakeCli()

@@ -1276,6 +1276,24 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-142 CSE-007: Yulius's own CI grants the Vidoc key to its `security` job only.
+    #[test]
+    fn the_repositorys_own_ci_grants_the_vidoc_key_to_security_only() -> TestResult {
+        let config = parse_yulius_toml(include_str!("../../../../yulius.toml"))?;
+        let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        let granted: Vec<(&str, &[String])> = jobs
+            .iter()
+            .filter(|j| !j.secrets.is_empty())
+            .map(|j| (j.name.as_str(), j.secrets.as_slice()))
+            .collect();
+        assert_eq!(
+            granted,
+            [("security", &["VIDOC_API_KEY".to_owned()][..])],
+            "{jobs:?}"
+        );
+        Ok(())
+    }
+
     /// SPEC-134 CDC-001: every invalid form names its line.
     #[test]
     fn cd_tables_refuse_what_cannot_run() {

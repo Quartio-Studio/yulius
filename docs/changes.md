@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Yulius CI jobs can use agent secrets, and the Vidoc scan runs on every pull request (SPEC-142,
+  ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
+  and only the integration branch's entry of the job's name counts: a pull request's own grant
+  gives nothing. A granted job gets placeholders, the CA bundle and a proxy credential of its own,
+  never a value; the proxy client it names, `ci:<run>`, uses only those secrets toward their bound
+  hosts, and every use is in the secrets audit. This repository's new `security` job runs
+  `scripts/dev security` on pull request heads, in a private clone that reaches its base without a
+  GitHub credential. Findings fail it; while the stored key is rejected (#470), "did not run"
+  (exit 2) does not.
+
 - Agents can no longer push to, merge into or fast-forward the production branch with a person's
   token (SPEC-141, ADR-0114, task #139, issue #486). The agent's Git and `gh` now hold an App
   installation token restricted to the repository and to contents, pull requests and issues
