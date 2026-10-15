@@ -83,7 +83,7 @@ CI (STG-2xx):
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| STG-201 | A CI run's `queue` span runs from queued to started (or to its end when it never started), with the reason it waited (`lane busy`, the disk wait text); its `run` span from start to end with the state, the commit, the reference and who asked; each job a `job` span with its exit code and state, and its wait for a job slot; a rerun is a new run (its own spans), a requeue ends what ran (`requeued`) and opens a new queue span; a result reused from an identical tree is marked `reused` and excluded from durations and trends. | store trigger test; integration `local_ci` stages |
+| STG-201 | A CI run's `queue` span runs from queued to started (or to its end when it never started), with the reason it waited (`lane busy`, the disk wait text); its `run` span from start to end with the state, the commit, the reference and who asked; each job a `job` span with its exit code and state (and, since SPEC-154, `cpu_ms`, `memory_peak_mb` and `disk_written_mb` when measured), and its wait for a job slot; a rerun is a new run (its own spans), a requeue ends what ran (`requeued`) and opens a new queue span; a result reused from an identical tree is marked `reused` and excluded from durations and trends. | store trigger test; integration `local_ci` stages |
 | STG-202 | A job's preparation (checkout) is a `prepare` span recorded by Yulius. | integration |
 | STG-203 | Inside a job, a line `::yulius-stage <name>` starts a `stage` span (ending the one before) and `::yulius-stage-end` ends it; the job's end ends an open stage with the job's outcome. `::yulius-measure k=v …` adds figures (tests, cache hits…) to the open stage or the job. Test summaries of common runners (cargo nextest, cargo test, pytest, Playwright) are read into `tests_passed`, `tests_failed`, `tests_skipped`, `tests_flaky`. The times are Yulius's, taken as the line is read. | `stages::tests::*`; integration |
 | STG-204 | Yulius's own gate prints its stages (`doctor`, `check`, `lint`, `test`, `deps`, `docs`). | xtask test |
@@ -162,7 +162,10 @@ Show (STG-4xx):
   inside CD it would hide CI and tasks, and the Dashboard keeps the overview only.
 - **Not in this change** (recorded as follow-up): a job's actual CPU, memory and disk use
   ([#488](https://github.com/Quartio-Studio/yulius/issues/488)); CI jobs share the sandbox's `ci/`
-  cgroup today, so per-job use needs its own accounting. Cache hits are figures a job prints
+  cgroup today, so per-job use needs its own accounting. Delivered by
+  [SPEC-154](SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md): a CI job's `job` span and a CD
+  run's `run` span carry `cpu_ms`, `memory_peak_mb` and `disk_written_mb` from the process host's
+  accounting (ADR-0127), and stage rows their CPU and memory p50/p90. Cache hits are figures a job prints
   (`::yulius-measure cache_hits=…`). Onboarding and automation runs are tasks, so their stages are
   the task's; promotions are a CD production run's `promote` span and a task's `promoted` delivery
   stage.

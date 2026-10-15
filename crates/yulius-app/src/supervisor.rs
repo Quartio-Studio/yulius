@@ -3701,6 +3701,7 @@ mod tests {
             code,
             signal,
             spawn_failed: false,
+            usage: None,
         };
         let normal = TaskEvent::Exited { normal: true };
         let crashed = TaskEvent::Exited { normal: false };
@@ -3738,6 +3739,7 @@ mod tests {
             code: Some(0),
             signal: None,
             spawn_failed: true,
+            usage: None,
         };
         assert_eq!(
             super::exit_event(&spawn, Some("prompt_input_exit")),

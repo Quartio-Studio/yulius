@@ -126,6 +126,7 @@ impl FakeWriter {
                     code: None,
                     signal: Some(15),
                     spawn_failed: false,
+                    usage: None,
                 }))
                 .await;
         }
@@ -241,6 +242,7 @@ impl SessionHost for FakeHost {
                         code: Some(code),
                         signal: None,
                         spawn_failed: false,
+                        usage: None,
                     }))
                     .await;
             }

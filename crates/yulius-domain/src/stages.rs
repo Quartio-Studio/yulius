@@ -239,15 +239,49 @@ fn marker(rest: &str) -> Option<OutputEvent> {
     (!figures.is_empty()).then_some(OutputEvent::Measures(figures))
 }
 
+/// What a CI job or a CD run used, as its process host measured it when it reaped it (SPEC-154,
+/// ADR-0127), in the units of its span's figures `cpu_ms`, `memory_peak_mb`, `disk_written_mb`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceUse {
+    /// User plus system CPU time of its processes, in milliseconds.
+    pub cpu_ms: i64,
+    /// The largest peak resident memory of any one of its processes, in MiB.
+    pub memory_peak_mb: i64,
+    /// What its processes wrote to storage, in MiB; `None` where the host does not account for it.
+    pub disk_written_mb: Option<i64>,
+}
+
+impl ResourceUse {
+    /// From the host's figures: MiB rounded to the nearest, a non-zero memory peak at least 1.
+    #[must_use]
+    pub fn measured(cpu_ms: u64, max_rss_bytes: u64, written_bytes: Option<u64>) -> Self {
+        const MIB: u64 = 1 << 20;
+        let mib = |bytes: u64| bytes / MIB + u64::from(bytes % MIB >= MIB / 2);
+        let int = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+        let memory = if max_rss_bytes > 0 {
+            mib(max_rss_bytes).max(1)
+        } else {
+            0
+        };
+        Self {
+            cpu_ms: int(cpu_ms),
+            memory_peak_mb: int(memory),
+            disk_written_mb: written_bytes.map(|bytes| int(mib(bytes))),
+        }
+    }
+}
+
 /// What Yulius records of a span itself: a job's figures never overwrite these.
-pub const RESERVED_FIGURES: [&str; 29] = [
+pub const RESERVED_FIGURES: [&str; 32] = [
     "account_id",
     "action",
     "active_ms",
     "branch",
     "cache_read",
     "cache_write",
+    "cpu_ms",
     "cpus",
+    "disk_written_mb",
     "effort",
     "exit_code",
     "exit_reason",
@@ -257,6 +291,7 @@ pub const RESERVED_FIGURES: [&str; 29] = [
     "matrix",
     "measured_by",
     "memory_mb",
+    "memory_peak_mb",
     "model",
     "output_tokens",
     "pr",
@@ -551,6 +586,44 @@ mod tests {
         assert!(
             !figure_name("tests_passed"),
             "only a runner's summary counts tests"
+        );
+    }
+
+    /// SPEC-154 USE-004: what Yulius measured a job using cannot be set by its output.
+    #[test]
+    fn measured_use_is_reserved() {
+        let got = events(
+            &["::yulius-measure cpu_ms=1 memory_peak_mb=1 disk_written_mb=1 cache_hits=2\n"],
+            false,
+        );
+        assert_eq!(
+            got,
+            vec![OutputEvent::Measures(vec![("cache_hits".into(), 2.0)])]
+        );
+    }
+
+    /// SPEC-154: the process host's figures in the span's units, rounded to the nearest; a
+    /// process that ran is never 0 MiB, a job that wrote nothing wrote 0.
+    #[test]
+    fn measured_use_is_in_milliseconds_and_mebibytes() {
+        let used = ResourceUse::measured(1_234, (5 << 20) + (600 << 10), Some(0));
+        assert_eq!(
+            used,
+            ResourceUse {
+                cpu_ms: 1_234,
+                memory_peak_mb: 6,
+                disk_written_mb: Some(0),
+            }
+        );
+        assert_eq!(ResourceUse::measured(0, 100 << 10, None).memory_peak_mb, 1);
+        assert_eq!(ResourceUse::measured(0, 0, None).memory_peak_mb, 0);
+        assert_eq!(
+            ResourceUse::measured(u64::MAX, u64::MAX, Some(3 << 19)),
+            ResourceUse {
+                cpu_ms: i64::MAX,
+                memory_peak_mb: 1 << 44,
+                disk_written_mb: Some(2),
+            }
         );
     }
 
