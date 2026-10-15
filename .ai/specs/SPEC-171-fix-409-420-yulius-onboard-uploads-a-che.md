@@ -147,6 +147,12 @@ ends: coming in from a local checkout, and going away.
   bundle takes far less, and the second completion then makes the playground itself. The sandbox
   host's own state of a sandbox (`<data>/sysroots/<id>`, `runtime/sandboxes/<id>`) is the host's,
   and the purge leaves it, as ADR-0139 says.
+- **Review round 2 (approved), decided:** two `--playground` runs of different checkouts by the
+  same person at once supersede each other (one open upload per person is the bound on abandoned
+  uploads; a cap of several is the alternative if people need it), and a chunk written just as its
+  job is superseded can leave that one chunk (≤ 8 MiB) behind. Both need the same person's
+  simultaneous runs. Fixed: a store error while re-checking a purge is reported, not read as done;
+  the skip of an already applied bundle is limited to playgrounds and to branches still present.
 
 ## Evidence
 

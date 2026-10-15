@@ -211,9 +211,10 @@ impl App {
             });
         }
         // Checked again under the claim: a purge beside this one may have finished meanwhile.
-        if !store.pending_purges().await.is_ok_and(|p| p.contains(id)) {
+        let pending = store.pending_purges().await;
+        if !pending.as_ref().is_ok_and(|p| p.contains(id)) {
             self.ci_release(id);
-            return Ok(purged());
+            return pending.map(|_| purged());
         }
         let deleted = self.delete_playground_code(&sandbox).await;
         self.ci_release(id);

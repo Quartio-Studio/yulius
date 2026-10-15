@@ -942,7 +942,7 @@ impl App {
                         .await?;
                 }
                 let bundle_refs = match &manifest.bundle {
-                    Some(bundle) => match self.applied_bundle(&sid, &ctx.user, bundle).await? {
+                    Some(bundle) => match self.applied_bundle(&sandbox, &ctx.user, bundle).await? {
                         // The same person's same bundle is already here (SPEC-171: a re-run).
                         Some(refs) => refs,
                         None => {
@@ -1011,16 +1011,26 @@ impl App {
         })
     }
 
-    /// The branches an earlier completed job of `user` in `sandbox` made from the same bundle,
-    /// when there is one: importing it again changes nothing (a playground made from it holds its
-    /// branches as its own, and none are listed).
+    /// In a playground, the branches an earlier completed job of `user` made from the same
+    /// bundle, while they all still exist: importing it again would change nothing (a playground
+    /// made from it holds its branches as its own, and none are listed). A GitHub sandbox imports
+    /// every bundle, as before (SPEC-171).
     async fn applied_bundle(
         &self,
-        sandbox: &SandboxId,
+        sandbox: &SandboxRecord,
         user: &UserRecord,
         bundle: &FileRef,
     ) -> AppResult<Option<Vec<String>>> {
-        for job in self.deps.store.import_jobs(sandbox, JOB_LIST_LIMIT).await? {
+        if !sandbox.is_playground() {
+            return Ok(None);
+        }
+        let repo = self.sandbox_repo(&sandbox.id);
+        for job in self
+            .deps
+            .store
+            .import_jobs(&sandbox.id, JOB_LIST_LIMIT)
+            .await?
+        {
             if job.user_id != user.id {
                 continue;
             }
@@ -1033,6 +1043,12 @@ impl App {
                     .is_some_and(|b| b.sha256 == bundle.sha256 && b.size == bundle.size)
             });
             if same {
+                for branch in &applied.bundle_refs {
+                    let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+                    if !self.deps.git.branch_exists(&repo, short).await? {
+                        return Ok(None);
+                    }
+                }
                 return Ok(Some(applied.bundle_refs));
             }
         }
