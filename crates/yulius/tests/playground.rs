@@ -1661,3 +1661,45 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
     nothing_on_github(&h)?;
     Ok(())
 }
+
+/// PCI-004 (#411): a person's merge in a playground with CI never arms: while Yulius CI tests the
+/// head merged into `dev` it is a 409 saying so, and once that run passed it squashes.
+#[tokio::test]
+async fn a_persons_merge_waits_for_green() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
+
+    let waiting = merge(&h, &owner, "t1").await?;
+    assert_eq!(waiting.status, StatusCode::CONFLICT, "{:?}", waiting.body);
+    assert!(
+        text(&waiting).contains("Yulius CI is testing"),
+        "{:?}",
+        waiting.body
+    );
+    assert_eq!(git(&origin, &["rev-parse", "dev"])?.trim(), dev);
+    let again = merge(&h, &owner, "t1").await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{:?}", again.body);
+    let runs = ci_overview(&h, &owner, &body).await?;
+    assert_eq!(
+        runs["runs"]
+            .as_array()
+            .map(|r| r.iter().filter(|r| r["reference"] != "branch/dev").count()),
+        Some(1),
+        "asking again tests nothing more: {runs}"
+    );
+
+    ci_settle(&h, &owner, &body).await?;
+    let merged = merge(&h, &owner, "t1").await?;
+    assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
+    assert_eq!(
+        merged.body["stage"], "merged_integration",
+        "{:?}",
+        merged.body
+    );
+    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    nothing_on_github(&h)?;
+    Ok(())
+}
