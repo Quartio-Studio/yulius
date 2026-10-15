@@ -69,7 +69,7 @@ Both concern the supervisor's process lifecycle across ends and restarts:
 - [x] A terminal ends only when its host is proven gone (#346)
 - [x] The Superagent's usage-limit move waits for the old host to be gone (#346)
 - [x] A launch /goal held across a restart is watched again (#453)
-- [ ] Docs, ADR and changes
+- [x] Docs, ADR and changes
 - [ ] Independent review and fixes
 - [ ] Gates green, evidence and delivery
 
