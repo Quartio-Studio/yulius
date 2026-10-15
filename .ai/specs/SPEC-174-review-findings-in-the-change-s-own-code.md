@@ -126,7 +126,9 @@ lets an agent defer a finding in its own change's code to an issue:
   text, then passed; `the_shipped_catalog_is_valid` failed at 1,713 bytes (Feature) before the
   workflows were shortened.
 - `scripts/dev ci`: exit 0 at 51a91ca0 (1849 tests passed), at 59888ce1 (1849) and at d6a3f527
-  (1852); rerun on the final head below.
+  (1852). After round 3's fixes and a merge of dev, the first run failed `cargo doc`: a public doc
+  linked a private constant. Fixed in b9d594c4, where `scripts/dev ci` passed (exit 0, 1853 tests
+  passed). The head after it changes only this Evidence.
 - `a_long_goal_shrinks_before_a_mandatory_part_is_cut` failed before the shrink ("isolated false:
   ## Architecture cut"), passes now; `the_shipped_catalog_is_valid` failed at 1,683 bytes (Fix) once
   the cap became 1,444.
