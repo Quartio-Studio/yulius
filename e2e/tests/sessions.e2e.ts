@@ -752,6 +752,121 @@ test('a long diff that scrolls shows its keyboard focus', async ({ app, browser 
   await expect(browser.locator('.ss-tui .ss-note-text[tabindex="0"]')).toHaveCount(1);
 });
 
+// #350: the server cuts each side of an edit at 16 Ki characters and keeps 20 hunks; a cut diff
+// claims no count and says it was cut.
+test('a diff the server cut claims no line count and says it was cut', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const write = '.ss-tui details.ss-tool:has-text("Write(e2e/fixtures/users.json)")';
+  await expect(browser.locator(`${write} > summary`)).toContainText(/⎿\s*Wrote e2e\/fixtures\/users\.json$/);
+  await expect(browser.locator(`${write} > summary`)).not.toContainText(/\d+ lines?/);
+  await expect(browser.locator(write)).toHaveAttribute('open', '');
+  await expect(browser.locator(`${write} .ss-cut`)).toHaveText('Cut here: the change is longer.');
+  await expect(browser.locator(`${write} .ss-cut`)).toBeVisible();
+  // A whole diff keeps its count and says nothing of a cut.
+  await expect(browser.locator('.ss-tui details.ss-tool > summary:has-text("Write(e2e/wait.ts)")')).toContainText(/Wrote 3 lines to e2e\/wait\.ts/);
+  await expect(browser.locator('.ss-tui details.ss-tool:has-text("Write(e2e/wait.ts)") .ss-cut')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// #380: a context the server cut says so, and its size is a lower bound.
+test('a context the server cut says so when opened and reads its size as at least', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const note = '.ss-tui details.ss-note';
+  await expect(browser.locator(note)).toHaveCount(1);
+  await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(at least 16 KiB\)$/);
+  await expect(browser.locator(`${note} .ss-cut`)).toBeHidden();
+  await browser.locator(`${note} > summary`).click();
+  await expect(browser.locator(`${note} .ss-note-text`)).toContainText('Hook context: flaky test history');
+  await expect(browser.locator(`${note} .ss-cut`)).toHaveText('Cut here: the context is longer.');
+  await expect(browser.locator(`${note} .ss-cut`)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  // A whole context keeps its plain size (SPEC-090).
+  await app.open(mock('/s/studio/sessions/ses_task_4'));
+  await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
+  await expect(browser.locator('.ss-tui .ss-cut')).toHaveCount(0);
+});
+
+// #363: a block is a region when it scrolls as laid out, not by an estimate made for a wide page.
+test('a result that scrolls only on a phone is a named region there and no tab stop on a desktop', async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const call = '.ss-tui details.ss-tool:has-text("Bash(npx playwright test --list)")';
+  await browser.locator(`${call} > summary`).click();
+  const result = browser.locator(`${call} .ss-result`);
+  await expect(result).toHaveAttribute('role', 'region');
+  await expect(result).toHaveAttribute('aria-label', 'Result of Bash(npx playwright test --list)');
+  await expect(result).toHaveAttribute('tabindex', '0');
+  const scrolls = () => browser.evaluate(() => { const el = document.querySelector('.ss-result[data-region="Result of Bash(npx playwright test --list)"]')!; return el.scrollHeight > el.clientHeight; });
+  expect(await scrolls()).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Wide, the same 16 lines fit: no tab stop, no region.
+  await browser.setViewport({ width: 1280, height: 900 });
+  await expect(result).not.toHaveAttribute('tabindex', '0');
+  await expect(result).not.toHaveAttribute('role', 'region');
+  expect(await scrolls()).toBe(false);
+  // Narrow again, it is reachable again.
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(result).toHaveAttribute('role', 'region');
+});
+
+// Review round 1 of SPEC-177: region names tell blocks apart, a cut output says "output", and a
+// block that stops scrolling while it has the keyboard keeps its tab stop until it loses it.
+test('scroll regions have distinct names and a cut output says so', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const named = (label: string) => browser.locator(`.ss-tui [role="region"][aria-label="${label}"]`);
+  await expect(named('Changed lines of e2e/login.spec.ts (1 of 2)')).toHaveCount(1);
+  await expect(named('Changed lines of e2e/login.spec.ts (2 of 2)')).toHaveCount(1);
+  await browser.locator('.ss-tui li[data-line="19"] details.ss-tool > summary').nth(0).click();
+  await expect(named('Result (line 19)')).toHaveCount(1);
+  // Two results without their call in one entry: the second counts on, no second "(line 19)".
+  const orphans = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="19"] .ss-result')].map((el) => el.getAttribute('data-region')));
+  expect(orphans).toEqual(['Result (line 19)', 'Result (line 19, 2)']);
+  // The command first run on line 1 keeps its name; the second run names its line.
+  await browser.locator('.ss-tui li[data-line="21"] details.ss-tool > summary').click();
+  await expect(named('Result of Bash(npx playwright test login) (line 21)')).toHaveCount(1);
+  await expect(browser.locator('.ss-tui li[data-line="20"] .ss-cut')).toHaveText('Cut here: the output is longer.');
+  // Names repeated in one entry are told apart too (review round 2).
+  const codes = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="23"] .ss-code, .ss-tui li[data-line="24"] .ss-code')].map((el) => el.getAttribute('data-region')));
+  expect(codes).toEqual(['Code', 'Code (line 24)', 'Code (line 24, 2)']);
+  const hunks = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="25"] .ss-diff-hunk')].map((el) => el.getAttribute('data-region')));
+  expect(hunks).toEqual(['Changed lines of e2e/steps.ts (1 of 2 shown)', 'Changed lines of e2e/steps.ts (2 of 2 shown)']);
+  // A cut edit claims no count either (#350); read as text, the entry may be off screen.
+  const preview = await browser.evaluate(() => document.querySelector('.ss-tui li[data-line="25"] details.ss-tool > summary .ss-preview')?.textContent ?? null);
+  expect(preview).toBe('⎿Updated e2e/steps.ts');
+  expect(await axeViolations(browser)).toEqual([]);
+  // A region named after its call names it as the line above it does: "Update", not "Edit".
+  const regions = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui [data-region]')].map((el) => el.getAttribute('data-region')));
+  expect(regions.filter((name) => /Edit\(/.test(name ?? ''))).toEqual([]);
+});
+
+test('a region that stops scrolling keeps its tab stop while it has the keyboard (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions'));
+  const states = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { markRegion } = await import(url);
+    const box = document.createElement('pre');
+    Object.assign(box.style, { maxHeight: '480px', overflow: 'auto', margin: '0' });
+    box.dataset.region = 'Code';
+    for (const [key, value] of Object.entries({ tabindex: '0', role: 'region', 'aria-label': 'Code' })) box.setAttribute(key, value);
+    box.textContent = 'short';
+    document.body.append(box);
+    const state = () => [box.getAttribute('role'), box.getAttribute('tabindex')].join(' ');
+    box.focus();
+    markRegion(box);
+    markRegion(box);
+    const focused = state();
+    box.blur();
+    const left = state();
+    box.textContent = 'line\n'.repeat(200);
+    markRegion(box);
+    const scrolls = state();
+    box.remove();
+    return { focused, left, scrolls };
+  });
+  expect(states).toEqual({ focused: 'region 0', left: ' ', scrolls: 'region 0' });
+});
+
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions?q=fulfilling'));
   await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).click();

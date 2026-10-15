@@ -1269,7 +1269,7 @@ fn block_texts(block: &mut TranscriptBlock) -> Vec<&mut String> {
     match block {
         TranscriptBlock::Text { text, .. }
         | TranscriptBlock::Thinking { text, .. }
-        | TranscriptBlock::Meta { text }
+        | TranscriptBlock::Meta { text, .. }
         | TranscriptBlock::ToolResult { text, .. } => vec![text],
         TranscriptBlock::ToolCall {
             summary,
