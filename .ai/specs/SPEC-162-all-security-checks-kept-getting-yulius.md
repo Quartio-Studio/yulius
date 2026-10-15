@@ -1,11 +1,11 @@
 ---
 yulius-task: 9d64844f-957b-49eb-8bb7-bcb40e400f53
-status: draft
+status: done
 ---
 
 # SPEC-162: A CI job that could not run ends skipped, and the security job gets its key
 
-Status: draft
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #153, issue #530 (part of #466)
 Scope authorization: task #153: "All security checks kept getting: […] Security scan not run: No
@@ -60,10 +60,10 @@ proxy) so that it can run.
 
 ## Plan
 
-- [ ] Jobs that exit with `YULIUS_CI_SKIP_CODE` end skipped, and runs of passed and skipped jobs pass
-- [ ] Skipped jobs show as Skipped in the commit status, `ci_status` and the CI page
-- [ ] The security job ends skipped when the scan could not run and gets VIDOC_API_KEY
-- [ ] Docs, ADR-0133 and changes say how a job is skipped; review and gates green
+- [x] Jobs that exit with `YULIUS_CI_SKIP_CODE` end skipped, and runs of passed and skipped jobs pass
+- [x] Skipped jobs show as Skipped in the commit status, `ci_status` and the CI page
+- [x] The security job ends skipped when the scan could not run and gets VIDOC_API_KEY
+- [x] Docs, ADR-0133 and changes say how a job is skipped; review and gates green
 
 ## Acceptance criteria
 
@@ -97,3 +97,40 @@ proxy) so that it can run.
   skip on the job and in the status.
 - **Every "could not run" exit of the scan is skipped**, not just "no key": a rejected key or an
   unbound host is equally "nothing was scanned", and the job's output names the reason.
+
+## Evidence
+
+- **Red, then green.** Each new test was run before its fix and failed for the stated reason:
+  - `local_ci::a_job_that_exits_with_the_skip_code_ends_skipped`: the job read `failed` and the run
+    `failed` before the exit mapping. Before `copied_job_verdict`, the reused run's `scan` read
+    `passed`. Before the matrix match, the reused `split (2)` read `passed`.
+  - The `ci::` domain tests didn't compile without `RunState::Skipped` and `RunSummary::skipped`.
+    The running status read `1 of 3 jobs passed` without the skipped count.
+  - `mcp_text::tests::a_run_shows_why_a_job_was_skipped` failed because a skipped job's output was
+    hidden.
+  - e2e `a skipped job reads Skipped, not Passed` failed with no `3 jobs · 2 passed · 1 skipped`.
+  - `test_vidoc_scan.SecurityJob`: exit 0 instead of 78, no grant, and other heads exited 0.
+  - `spec_format::config::…security_job_alone_is_granted_the_vidoc_key` failed with no grant.
+- **`scripts/dev ci`, head 76dcb349 (before review):** nextest 1816 passed, 18 skipped. Python: 101
+  tests OK. The doctest step then failed because a `target/` artifact vanished while I ran cargo
+  concurrently in the same target directory, an environment race.
+- **`scripts/dev ci`, head b9fb16cb (final code):**
+  - lint, the repository contracts and Python (104 tests, OK) passed.
+  - nextest ran 1826 tests: 1825 passed, 18 skipped, and 1 failed:
+    `supervision::a_usage_limit_moves_the_session_to_the_next_account` timed out at 60 s under host
+    load. It is unrelated to this change (supervision and accounts; this branch doesn't touch them)
+    and passes alone 3 out of 3 times. It is the #308 flake back, filed as #539, and not retried
+    into green.
+- **e2e:** `npx e2e run tests/ci.e2e.ts tests/places.e2e.ts tests/cd.e2e.ts tests/pipeline.e2e.ts`
+  passed 40 of 40 on b9fb16cb.
+- **Review:** three independent read-only rounds.
+  - Round 1 (76dcb349): copied verdicts and unscanned heads still read Passed, plus minor findings.
+    All fixed test-first.
+  - Round 2 (35e4e6c0): tree reuse matched matrix values by their shared key. Fixed test-first.
+  - Round 3 approved b9fb16cb.
+- **Vidoc scan: not run.** The person asked not to run security hardening now, and per ADR-0104 it is
+  recorded as unrun. On this pull request, the `security` CI job gets no key, because the grant is
+  read from `dev`. The first run after the merge gets it.
+- **Not testable here:** the running instance is built from `main`, so until a person promotes `dev`
+  it gives jobs no `YULIUS_CI_SKIP_CODE`, and the job exits 0 with `security scan skipped` in its
+  output. The Skipped state shows once the instance runs this code.
