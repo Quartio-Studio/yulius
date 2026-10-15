@@ -564,7 +564,7 @@ The manifest flow requests these repository permissions:
 | --- | --- | --- |
 | Contents | Read and write | Clone and fetch repositories; push task branches (as the task's creator); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
-| Issues | Read and write | Agents log follow-up work, bugs and flaky tests as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
+| Issues | Read and write | Agents log what lies outside their change (pre-existing bugs, flaky tests they did not cause, nits left after review; [ADR-0141](decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)) as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
 | Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
 | Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |

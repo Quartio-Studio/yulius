@@ -133,7 +133,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     ),
     (
         "issue_create",
-        "log follow-up work, a bug or a flaky test as a ready GitHub issue",
+        "log a pre-existing bug or flaky test as a ready GitHub issue",
     ),
     (
         "ci_status",
@@ -656,8 +656,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
          400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
-         given only the diff range, the spec and skill `om-code-review`); fix findings \
-         test-first; after 3 rounds, decide and record why.\n\
+         given only the diff range, the spec and skill `om-code-review`), which marks findings own \
+         code or pre-existing; answer each in the pull request. Fix own code test-first, never as \
+         an issue (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
          - When the work is ready (spec valid if needed, steps done, all committed), Yulius \
          pushes your branch and opens the pull request at the end of your turn or when you call \
          `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
@@ -666,9 +667,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
-         - File follow-up work, bugs and flaky tests as issues (`issue_create`) instead of \
-         widening this task. Report a bug you confirm (yours or one met on the way) with \
-         `issue_create` unless an open issue tracks it (then reference it); a task told not to \
+         - Report a bug you confirm (one you fix or met on the way), a flaky test you did not cause \
+         or a nit left after 3 rounds with `issue_create`, saying why it is outside your change, \
+         unless an open issue tracks it (then reference it); a task told not to \
          create issues never does, and comments or says it in its summary instead. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
@@ -700,8 +701,9 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          current in your clone. Stay current by merging `origin/{integration}` and rerun the \
          tests after a conflict.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
-         given only the diff range, the spec and skill `om-code-review`); fix findings \
-         test-first.\n\
+         given only the diff range, the spec and skill `om-code-review`), which marks each finding \
+         own code or pre-existing. Fix every own-code finding test-first before the merge, \
+         whatever the round, never deferring it.\n\
          - Before delivery, run every project gate yourself. When the work is ready (spec valid \
          if needed, steps done, all committed) and the review approved the exact head, call \
          `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
@@ -710,7 +712,8 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          here as one commit once that passed. While it runs the merge is armed: start `yulius \
          wait` with run_in_background and end your turn. If it refuses, do what it says and call \
          it again.\n\
-         - Put follow-up work in your summary.\n\n",
+         - Put only what is outside your change (a pre-existing bug, a flaky test it did not \
+         cause, a nit left after 3 rounds) in your summary.\n\n",
         branch = code(&input.task.branch, 200),
     )
 }
@@ -1379,8 +1382,21 @@ mod tests {
             "Report a bug you confirm",
             "unless an open issue tracks it",
             "`ci_status`",
+            "marks findings own code or pre-existing",
+            "answer each in the pull request",
+            "never as an issue",
+            "after 3 rounds: keep fixing, split the change or `needs_you`",
+            "saying why it is outside your change",
         ] {
             assert!(text.contains(needle), "missing {needle}");
+        }
+        // SPEC-174 (ADR-0141): a finding in the change's own code is never deferred to an issue.
+        for gone in [
+            "decide and record why",
+            "File follow-up work",
+            "log follow-up work",
+        ] {
+            assert!(!text.contains(gone), "{gone} is gone\n{text}");
         }
     }
 
@@ -1819,6 +1835,9 @@ mod tests {
             "`yulius wait`",
             "`ci_status`",
             "`ci_rerun`",
+            "marks each finding own code or pre-existing",
+            "Fix every own-code finding",
+            "only what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");
         }
@@ -1826,6 +1845,7 @@ mod tests {
             "opens the pull request",
             "`delivery_deploy`",
             "no Yulius CI",
+            "Put follow-up work in your summary",
         ] {
             assert!(!text.contains(absent), "{absent} in {text}");
         }
