@@ -301,6 +301,9 @@ pub struct BriefingInput<'a> {
     /// A playground (SPEC-099): its Git stays on the server; no pull request or deploy, and Yulius
     /// CI tests a task's head merged into the integration branch (SPEC-163).
     pub playground: bool,
+    /// Runs join the sandbox's namespace holder (SPEC-002 ADR-22), whose containment leaves no
+    /// container engine (SPEC-173).
+    pub isolated: bool,
 }
 
 fn floor_boundary(text: &str, max: usize) -> usize {
@@ -1219,6 +1222,7 @@ mod tests {
             foundations: Foundations::default(),
             now: Timestamp(1_791_352_800_000),
             playground: false,
+            isolated: false,
         })
     }
 
@@ -1829,6 +1833,34 @@ mod tests {
         ] {
             assert!(!text.contains(absent), "{absent} in {text}");
         }
+        Ok(())
+    }
+
+    /// SPEC-173 CTR-001 (task #163, #550): an agent in an isolated sandbox found the `docker`
+    /// client but no engine only after designing a deploy around it. Its briefing says there is
+    /// no container engine and names what works; a briefing without isolation claims nothing.
+    #[test]
+    fn an_isolated_sandboxs_briefing_says_there_is_no_container_engine() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let isolated = BriefingInput {
+            isolated: true,
+            ..base(&profile, &layout)?
+        };
+        let text = build_briefing(&isolated, DEFAULT_BUDGET_BYTES);
+        for present in [
+            "## Containers",
+            "no container engine",
+            "Yulius CI",
+            "`DOCKER_HOST=ssh://",
+            "rollback",
+            "`apt`",
+        ] {
+            assert!(text.contains(present), "{present} not in {text}");
+        }
+        let plain = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
+        assert!(!plain.contains("## Containers"), "{plain}");
+        assert!(!plain.contains("no container engine"), "{plain}");
         Ok(())
     }
 }
