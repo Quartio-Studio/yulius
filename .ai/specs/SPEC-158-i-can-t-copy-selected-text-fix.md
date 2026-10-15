@@ -1,11 +1,11 @@
 ---
 yulius-task: d2d08698-665d-44d4-b8c5-9189cdf8a403
-status: in-progress
+status: done
 ---
 
 # SPEC-158: text Claude Code selects in the web terminal reaches the clipboard
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: task #149
 Scope authorization: the person's request (task #149), "I can't copy selected text. Fix.", with a
@@ -51,8 +51,8 @@ person's clipboard, as it is in a native terminal.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Full e2e suite green and the spec's evidence recorded
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Full e2e suite green and the spec's evidence recorded
 
 ## Acceptance criteria
 
@@ -94,3 +94,32 @@ person's clipboard, as it is in a native terminal.
 ## Open questions
 
 None.
+
+## Evidence
+
+- Root cause: Claude Code 2.1.292's `setClipboard` returns `ESC ]52;c;<base64>` (read from the
+  installed CLI); the web UI had no OSC 52 handler (`grep` found none, and no xterm clipboard
+  addon in `vendor/xterm`).
+- Regression test first (f6c52b97): `npx e2e run tests/terminal.e2e.ts` failed: the key table
+  test (`osc52Text is not a function`) and the OSC 52 test (`expected [] to equal
+  ["StringContaining \"Read 142 lines\""]`, nothing written). After the fix (37493fa3): 14/14
+  passed.
+- Review round 1 (`om-code-review`, fresh session, head 37493fa3): REQUEST CHANGES, one major (no
+  test for the read-only gate) and minors. Tests first (b56375c1): the stale program copy check
+  failed (`expected 3 to be 2`); the read-only test failed with the `can_write` gate removed
+  (`expected ["not yours"]`, a temporary mutation, reverted). Fixed in 2d58bdf3: 15/15 passed.
+  Round 2 (head 2d58bdf3): APPROVE with nits; the cheap ones were taken in the next commit.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`), on 37493fa3: exit 0. Repository check,
+  cargo check, fmt, clippy, nextest (1810 passed, 17 skipped), doctests, deny, shear and doc. The
+  later commits touch JS, e2e tests and docs only; `python3 scripts/check_repository.py` passed on
+  the final head after merging `origin/dev`.
+- Full e2e suite (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`), on 2d58bdf3 plus the nits, at
+  host load ~45: 460 passed, 1 skipped, 4 failed with timeouts (onboarding, rail,
+  queued-messages and the terminal margin test, which failed at its first line before any
+  clipboard code). `--last-failed`: 4/4 passed. Filed as #525 (same pattern as #506, #510).
+  `terminal.e2e.ts` 15/15 again after merging `origin/dev`.
+- `scripts/dev security`: exit 2, not run. Vidoc rejected the key (HTTP 401), as tracked by
+  #470 (ADR-0104). Not passed.
+- Not run here: Safari and Firefox (the e2e suite runs Chromium only; the refused write is
+  simulated by a rejecting `writeText`), and real Claude Code in a browser (the mock reproduces
+  its OSC 52 copy).
