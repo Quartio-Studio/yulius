@@ -707,8 +707,8 @@ test('a selection is drawn behind the text in rounded shapes that glide with it'
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-type Presence = { scope: string; sandbox_id?: string | null; user_id: string; client?: string; name: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean };
-type MockPresence = { __yuliusMock: { notes: Record<string, { revision: number }>; presenceSent?: Array<{ scope: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean; client?: string }>; notePresence: (event: Presence) => void; failNoteSaves: boolean; failPresence: boolean; resyncNow: () => void; keepaliveRequests: string[] } };
+type Presence = { scope: string; sandbox_id?: string | null; user_id: string; client?: string; name: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean; seq?: number };
+type MockPresence = { __yuliusMock: { notes: Record<string, { revision: number }>; presenceSent?: Array<{ scope: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean; client?: string; seq: number }>; notePresence: (event: Presence) => void; failNoteSaves: boolean; failPresence: boolean; resyncNow: () => void; keepaliveRequests: string[] } };
 
 /** A teammate's presence, as the server relays it. */
 const teammate = (browser: Browser, event: Presence) =>
@@ -866,6 +866,39 @@ test('one person in two tabs stays shown until both have left', async ({ app, br
   // Both in alice's colour.
   await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: { anchor: 8, head: 8 } });
   await expect.poll(async () => new Set((await peersShown(browser)).map((p) => p.colour)).size).toBe(1);
+});
+
+// #463 (SPEC-170 TKS-003): a leave sent with `keepalive` as a teammate's tab hid can overtake their
+// update still on its way. Updates are numbered per tab, and the older one, arriving last, is dropped.
+test('a teammate’s update arriving after their leave draws nobody', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+
+  // The page numbers its own updates, growing.
+  await selectText(browser, 0, 3);
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toEqual({ anchor: 0, head: 3 });
+  await selectText(browser, 4, 7);
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toEqual({ anchor: 4, head: 7 });
+  const seqs = (await sent(browser)).map((update) => update.seq);
+  expect(seqs.length).toBeGreaterThan(1);
+  expect(seqs.every((seq, i) => seq > (i ? seqs[i - 1] : 0))).toBe(true);
+
+  const alice = { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision };
+  await teammate(browser, { ...alice, selection: { anchor: 0, head: 3 }, seq: 5 });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['alice']);
+  // Their leave (7) overtook their update 6, which arrives last: it is older, so nobody stays drawn.
+  await teammate(browser, { ...alice, selection: null, seq: 7 });
+  await teammate(browser, { ...alice, selection: { anchor: 4, head: 4 }, seq: 6 });
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision, selection: { anchor: 8, head: 8 }, seq: 1 });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['bob']);
+
+  // A newer update from that tab shows them again; an unnumbered one (an older page) is drawn.
+  await teammate(browser, { ...alice, selection: { anchor: 2, head: 2 }, seq: 8 });
+  await teammate(browser, { scope: 'team', user_id: 'usr_carol', name: 'carol', revision, selection: { anchor: 1, head: 1 } });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name).sort()).toEqual(['alice', 'bob', 'carol']);
 });
 
 test('Escape puts a dragged tab back, and a forced-colours screen gets the native selection', async ({ app, browser, screen }) => {

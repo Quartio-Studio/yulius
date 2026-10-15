@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Tools and the keyboard stay where the person left them, and presence leaves arrive last
+  (SPEC-170, ADR-0138, task #135, fixes #489, #439, #463). A sandbox left while its page still
+  loads comes back with no tool open, not the other sandbox's; the Shell shown again for another
+  task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
+  notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
+  sent as a teammate's tab hid no longer leaves their caret drawn.
 - An isolated sandbox's agent is told there is no container engine (SPEC-173, ADR-0140, task #163,
   fixes #550). An agent of another project had designed a deployer around a local Docker daemon
   before finding that `docker` exists but no daemon does: the sandbox's containment refuses what one

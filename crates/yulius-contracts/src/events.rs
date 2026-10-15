@@ -105,6 +105,9 @@ pub enum UiEvent {
         selection: Option<NoteSelection>,
         /// They just opened it: the others answer with their own.
         hello: bool,
+        /// Their tab's update number, as they sent it: an older one arriving late is dropped
+        /// (SPEC-170 TKS-003). 0: not numbered.
+        seq: u64,
     },
     /// Someone's selection in a file open in the editor (SPEC-127), relayed as they sent it to the
     /// people who may read the sandbox's files (its writers). `selection: null` means they left it;
@@ -129,6 +132,9 @@ pub enum UiEvent {
         selection: Option<NoteSelection>,
         /// They just opened it: the others answer with their own.
         hello: bool,
+        /// Their tab's update number, as they sent it: an older one arriving late is dropped
+        /// (SPEC-170 TKS-003). 0: not numbered.
+        seq: u64,
     },
     /// The sandbox's pull requests may have changed (a delivery stage moved, a Yulius CI run was
     /// queued, started or ended): watching clients read the Git overview again (SPEC-108).
