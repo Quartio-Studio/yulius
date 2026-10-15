@@ -130,9 +130,9 @@ pub struct TaskRuntime {
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
-    /// Why Yulius could not push the agent's head (the head, the text), for `yulius wait`: the
-    /// agent learns it instead of waiting for a run that never comes (SPEC-050 DLV-201).
-    pub(crate) push_problem: Mutex<Option<(String, String)>>,
+    /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
+    /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
+    pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,

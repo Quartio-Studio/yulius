@@ -432,6 +432,20 @@ impl GitPort for GitAdapter {
         blocking(move || git.push(&repo, "origin", &refspec)).await
     }
 
+    async fn remote_branch_head(
+        &self,
+        repo: &Path,
+        branch: &str,
+        token: &Secret,
+    ) -> AppResult<Option<String>> {
+        let (git, repo, branch) = (
+            self.git_with_token(token),
+            repo.to_path_buf(),
+            branch.to_owned(),
+        );
+        blocking(move || git.remote_branch_head(&repo, "origin", &branch)).await
+    }
+
     async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
         let (git, repo, a, b) = (self.git(), repo.to_path_buf(), a.to_owned(), b.to_owned());
         blocking(move || Ok(git.merge_base(&repo, &a, &b).ok())).await
