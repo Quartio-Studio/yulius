@@ -95,6 +95,40 @@ test('the earlier CD address opens the CD tab, and a deploy with it', async ({ a
   await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
 });
 
+// SPEC-151 CCD-003, review round 1: the tab left is gone. Its late answers draw nothing, and a
+// deploy it started opens no dialog over the other tab nor names itself in the address.
+test('a tab left behind draws nothing when its answers come late', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd', '&hold=/api/sandboxes/sb_studio/cd'));
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('heading', '3 jobs from yulius.toml on the integration branch')).toBeVisible();
+  await expect(screen.getByRole('region', 'Dev environment')).toBeHidden();
+  await expect(screen.getByRole('button', 'Check for commits')).toBeVisible();
+  await expect(screen.getByRole('button', 'Set up CD with an agent')).toBeHidden();
+
+  // A production deploy whose answer comes after the person went to CI.
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusMock: { holdCdDeploy?: Promise<void> }; __releaseDeploy?: () => void };
+    w.__yuliusMock.holdCdDeploy = new Promise((resolve) => { w.__releaseDeploy = resolve; });
+  });
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  await expect(confirm).toBeHidden();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as { __releaseDeploy: () => void }).__releaseDeploy(); });
+  // The deploy itself went out: the CD tab lists it.
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(browser.locator('.item-card:has-text("Production")').first()).toContainText('Deploying');
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('dialog', 'Deploy')).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+});
+
 test('production deploys only after the project slug is typed', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/cd'));
   await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();

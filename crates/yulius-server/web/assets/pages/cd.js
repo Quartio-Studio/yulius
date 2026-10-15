@@ -205,6 +205,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       if (expect) body.expect = expect;
       if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
       const run = await ctx.api.post(`${base}/cd/${env}/deploy`, body);
+      // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens there.
+      if (destroyed) return;
       toast(env === 'dev' ? 'Deploying dev.' : 'Deploying production.', { kind: 'ok' });
       reload({ quiet: true });
       showRun(run.run_id);
@@ -227,6 +229,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
 
   /** A run's output in a dialog, refreshed while it runs. */
   function showRun(id) {
+    if (destroyed) return;
     if (openRun) openRun.close();
     let poll = null;
     const head = h('div', { class: 'row-wrap' });

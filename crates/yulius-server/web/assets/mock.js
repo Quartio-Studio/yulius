@@ -1718,7 +1718,7 @@ function cdOverview(db, sid) {
 }
 
 route('GET', `/api/sandboxes/${ID}/cd`, ({ db, p }) => cdOverview(db, p[0]));
-route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const cd = cdOf(db, p[0]);
   const name = p[1] === 'production' ? 'prod' : p[1];
@@ -1730,6 +1730,8 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, ({ db, p, body }) => {
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
   if (cd.runs.some((r) => r.environment === name && progressCd(r).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
+  // A test can hold the answer (`__yuliusMock.holdCdDeploy = promise`), as a promotion takes a while.
+  if (db.holdCdDeploy) await db.holdCdDeploy;
   db.nextId += 1;
   const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, name === 'prod' && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {});
   cd.runs.unshift(run);
