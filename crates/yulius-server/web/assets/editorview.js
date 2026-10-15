@@ -65,9 +65,12 @@ const KEYWORDS = {
 
 let monacoPromise = null;
 
-/** Loads Monaco once (AMD build; workers come from the same origin). */
+/**
+ * Loads Monaco once (AMD build; workers come from the same origin), resolving when all of
+ * `editor.main` has run. `window.monaco` is no sign of that: Monaco's main chunk sets it before the
+ * chunk that registers five of its services has run, and an editor made then lacks them (#394).
+ */
 function loadMonaco() {
-  if (window.monaco) return Promise.resolve(window.monaco);
   if (monacoPromise) return monacoPromise;
   monacoPromise = new Promise((resolve, reject) => {
     const script = document.createElement('script');
@@ -520,8 +523,22 @@ export function createEditorView(ctx, sandbox, getTask) {
   window.addEventListener('pagehide', onPageHide);
 
   // ---------------------------------------------------------------- files and tabs
-  async function ensureEditor() {
-    if (editor) return true;
+  let editorReady = null;
+  /**
+   * The one editor of this view: files opened while Monaco loads wait for the same one (#394). A
+   * creation that failed (Monaco not loaded, or the editor threw) is tried again by the next file.
+   */
+  function ensureEditor() {
+    if (!editorReady) {
+      editorReady = createEditor().then(
+        (made) => { if (!made) editorReady = null; return made; },
+        (error) => { editorReady = null; throw error; },
+      );
+    }
+    return editorReady;
+  }
+
+  async function createEditor() {
     try {
       monaco = await loadMonaco();
     } catch (error) {
@@ -545,10 +562,19 @@ export function createEditorView(ctx, sandbox, getTask) {
       roundedSelection: false,
       cursorSmoothCaretAnimation: 'on',
     });
-    layer = createEditorLayer(monaco, editor);
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
-    editor.onDidChangeCursorPosition(() => renderStatus());
-    editor.onDidChangeCursorSelection(() => { if (active && active.presence) active.presence.soon(); });
+    try {
+      layer = createEditorLayer(monaco, editor);
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
+      editor.onDidChangeCursorPosition(() => renderStatus());
+      editor.onDidChangeCursorSelection(() => { if (active && active.presence) active.presence.soon(); });
+    } catch (error) {
+      // Half set up: gone, so the next file's try makes the one editor of this host again.
+      if (layer) layer.destroy();
+      editor.dispose();
+      layer = null;
+      editor = null;
+      throw error;
+    }
     return true;
   }
 
@@ -875,6 +901,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       active = null;
       if (editor) editor.dispose();
       editor = null;
+      editorReady = null;
     },
   };
 }

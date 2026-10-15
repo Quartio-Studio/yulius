@@ -90,7 +90,27 @@ export function axeViolations(browser: Browser): Promise<string[]> {
   });
 }
 
-/** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
+/**
+ * Budget for the Editor's first opening, which loads Monaco (about 120 files, 3.8 MB of script to
+ * parse): on a starved runner that takes longer than an assertion's 5 s (#320, #356). It bounds
+ * that one condition, not the steps after it.
+ */
+export const MONACO_LOAD_MS = 60_000;
+
+/**
+ * Waits until the Editor shows a Monaco editor, within Monaco's cold load (`MONACO_LOAD_MS`).
+ * Touch `window.monaco.editor` only after it: Monaco's main chunk sets `window.monaco` before its
+ * last chunk has registered its services, and the first call into the API fixes the services every
+ * editor gets. A call in that gap (a poll of `getEditors()`) makes the editor's idle-time setup
+ * throw "depends on UNKNOWN service ICodeLensCache" (#394).
+ */
+export async function editorShown(browser: Browser): Promise<void> {
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-host .monaco-editor') !== null), {
+    timeout: MONACO_LOAD_MS,
+    message: 'the Editor never showed a Monaco editor (Monaco did not load)',
+  }).toBe(true);
+}
+
 /**
  * Waits until the task view's terminal shows its first screen. The task view asks for the
  * keyboard when it opens, and that request lands when the terminal shows, over a button or link
@@ -112,6 +132,7 @@ export async function openSuperagent(browser: Browser, screen: Screen): Promise<
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
 }
 
+/** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
 export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
   return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);

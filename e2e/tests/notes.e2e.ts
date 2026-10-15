@@ -1,8 +1,15 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock as mockPage } from './support.ts';
 
 failOnPageErrors();
+
+/**
+ * A mock page without the sandbox browser's sign-in request 5 s after the start (`browserask=0`):
+ * while a notepad has the keyboard its toast moves to the top, over the Notes tabs (WCAG 2.4.11),
+ * and stays while pointed at, so a slow run would click or hover the toast instead (#349).
+ */
+const mock = (path: string, options = '') => mockPage(path, `&browserask=0${options}`);
 
 // Auto-saved notes (SPEC-041): the rail's Notes tool holds a notepad per sandbox and one for the
 // team. They save by themselves, a teammate's edit shows up, and edits made at the same time end
@@ -389,6 +396,11 @@ test('text kept over a reload survives hides and tab switches while the notes ca
   await screen.getByRole('tab', 'Team').click();
   await screen.getByRole('tab', 'This sandbox').click();
   await setMock(browser, 'failNoteLoads', false);
+  // Until a load succeeds the notepad is empty; each failed load doubles the pause before the next
+  // (up to 30 s), so on a busy machine the next retry can come long after 5 s (#349). Coming back
+  // to the tab loads it at once.
+  await screen.getByRole('tab', 'Team').click();
+  await screen.getByRole('tab', 'This sandbox').click();
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('written during a deploy');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   expect(await stored(browser, 'sandbox:sb_studio')).toBe('written during a deploy');
