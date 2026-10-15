@@ -3377,6 +3377,12 @@ function sessionDocs(db) {
     entry(20, 'user', [{ type: 'meta', text: `<local-command-stdout>${Array.from({ length: 40 }, (_, i) => `Usage line ${i}`).join('\n')}`, truncated: true }]),
     entry(21, 'assistant', [call('b3', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
     entry(22, 'user', [result('b3', Array.from({ length: 40 }, (_, i) => `  ✓ ${i + 1} [chromium] › e2e/login.spec.ts:${i + 1}`).join('\n'))]),
+    // Long code blocks: one, then two in one message (review round 2).
+    entry(23, 'assistant', [text(`Before:\n\`\`\`ts\n${Array.from({ length: 40 }, (_, i) => `await page.waitForTimeout(${i});`).join('\n')}\n\`\`\``)]),
+    entry(24, 'assistant', [text(['After:', '```ts', ...Array.from({ length: 40 }, (_, i) => `await expect(page.getByText('${i}')).toBeVisible();`), '```', 'And the helper:', '```ts', ...Array.from({ length: 40 }, (_, i) => `export const step${i} = ${i};`), '```'].join('\n'))]),
+    // A MultiEdit cut past its hunks names what it shows (review round 2).
+    entry(25, 'assistant', [call('m2', 'MultiEdit', 'e2e/steps.ts', { file_path: 'e2e/steps.ts' }, { path: 'e2e/steps.ts', hunks: [{ old: 'a', new: 'b' }, { old: 'c', new: 'd' }], truncated: true })]),
+    entry(26, 'user', [result('m2', 'Applied 21 edits to e2e/steps.ts')]),
   ];
   // Claude Code's wrappers as recorded (a slash command, its output, a `!` command, reminders).
   const meta = (t) => ({ type: 'meta', text: t });

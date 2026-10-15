@@ -253,7 +253,8 @@ function diffView(diff) {
   return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
     diff.hunks.map((hunk, index) => {
       const { head, removed, added, tail } = hunkLines(hunk);
-      const label = `Changed lines of ${diff.path}${count > 1 ? ` (${index + 1} of ${count})` : ''}`;
+      // A cut diff may have had more hunks than it shows (#350).
+      const label = `Changed lines of ${diff.path}${count > 1 ? ` (${index + 1} of ${count}${diff.truncated ? ' shown' : ''})` : ''}`;
       return h('pre', { class: 'ss-diff-hunk', ...scroller([...head, ...removed, ...added, ...tail].join('\n'), label) },
         head.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)),
         removed.map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)),
@@ -603,7 +604,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   const results = new Map(); // tool_use_id → result, shown inside its call
   // Scrolling blocks are regions as laid out, again when their width changes (#363).
   const regions = typeof ResizeObserver === 'function' ? new ResizeObserver((changes) => changes.forEach((change) => markRegion(change.target))) : null;
-  const regionNames = new Set(); // a name used again (a command run twice) names its line
+  const regionNames = new Set(); // a name used again (a command run twice) names its line, then a count
 
   const titleEl = h('h1', { class: 'page-title gt-title' }, 'Session');
   const meta = h('div', { class: 'gt-meta' });
@@ -691,9 +692,12 @@ export function mountSessionView(ctx, sandbox, id, route) {
     entriesEl.append(...added);
     for (const li of added) {
       for (const el of li.querySelectorAll('[data-region]')) {
-        if (regionNames.has(el.dataset.region)) {
-          el.dataset.region = `${el.dataset.region} (line ${li.dataset.line})`;
-          if (el.hasAttribute('aria-label')) el.setAttribute('aria-label', el.dataset.region);
+        const base = el.dataset.region;
+        let name = base;
+        for (let n = 1; regionNames.has(name); n += 1) name = `${base} (line ${li.dataset.line}${n > 1 ? `, ${n}` : ''})`;
+        if (name !== base) {
+          el.dataset.region = name;
+          if (el.hasAttribute('aria-label')) el.setAttribute('aria-label', name);
         }
         regionNames.add(el.dataset.region);
         if (regions) regions.observe(el);

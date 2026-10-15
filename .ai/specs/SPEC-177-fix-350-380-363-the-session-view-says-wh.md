@@ -58,11 +58,13 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   while it has the keyboard stays a region until the keyboard leaves it.
 - **SCV-004 (#363).** Region names say whose block it is, naming the call as its line does:
   `Result of Bash(npm test)`, `Input of Grep(…)`, `Changed lines of path` with `(n of m)` for
-  several hunks, and `Result (line N)` for a result whose call is not on the page. A name already
-  used in the view (a command run twice, a second added context) adds ` (line N)`.
+  several hunks (`(n of m shown)` for a cut diff), and `Result (line N)` for a result whose call is
+  not on the page. A name already used in the view (a command run twice, a second added context)
+  adds ` (line N)`, and ` (line N, 2)`, … when it repeats within that entry.
 - **SCV-005 (review round 1).** A cut meta block whose last line is command output says "Cut here:
   the output is longer."; an opened result whose call is not on the page keeps a name for its
-  summary ("Tool result", for assistive technology).
+  summary ("Tool result", for assistive technology). A `summary` record cut at the message bound
+  is `truncated` too (review round 2), so every cut text says so.
 
 ## Plan
 
@@ -73,6 +75,7 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
 - [x] Docs, ADR and changes updated
 - [x] Gates green and independent review passed
 - [x] Review round 1 findings fixed: focus kept, unique names, cut output, tests
+- [x] Review round 2 findings fixed: names unique within an entry, cut hunk counts, cut summaries
 
 ## Acceptance criteria
 
@@ -130,4 +133,9 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   ADR-0104 counts exit 2 as not run, not passed). Yulius CI's `security` job runs it on the PR.
 - Independent review round 1 (fresh session, om-code-review) at 290f72ff: APPROVE, no blocker or
   major; its minors and nits in this change's code were fixed test-first in 0cc94e50.
+- Review round 2 at e40cd270: APPROVE; its minor (two long code blocks in one message shared
+  `Code (line 24)`) and nits (`(n of m shown)` for a cut diff; a cut `summary` record said
+  `truncated: false`) fixed test-first: the new e2e assertion failed on e40cd270's page
+  (`["Code","Code (line 24)","Code (line 24)"]`) and the Rust summary assertion failed before
+  `entry_of` set the flag. `sessions.e2e.ts`: 25 passed after the fix.
 

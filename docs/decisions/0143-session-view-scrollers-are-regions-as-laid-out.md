@@ -28,7 +28,7 @@ be measured until they come near it.
   by the keyboard.
 - Region names say whose block it is: `Result of Bash(npm test)`, `Input of …`, `Changed lines of
   path (n of m)` for several hunks, `Result (line N)` for a result whose call is on another page;
-  a name already used in the view adds ` (line N)`.
+  a name already used in the view adds ` (line N)` (then ` (line N, 2)`, … within one entry).
 
 ## Alternatives
 

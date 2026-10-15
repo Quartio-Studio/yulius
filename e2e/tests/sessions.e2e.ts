@@ -754,7 +754,7 @@ test('a long diff that scrolls shows its keyboard focus', async ({ app, browser 
 
 // #350: the server cuts each side of an edit at 16 Ki characters and keeps 20 hunks; a cut diff
 // claims no count and says it was cut.
-test('a diff the server cut claims no line count and says it was cut', async ({ app, browser, screen }) => {
+test('a diff the server cut claims no line count and says it was cut', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
   const write = '.ss-tui details.ss-tool:has-text("Write(e2e/fixtures/users.json)")';
   await expect(browser.locator(`${write} > summary`)).toContainText(/⎿\s*Wrote e2e\/fixtures\/users\.json$/);
@@ -764,7 +764,7 @@ test('a diff the server cut claims no line count and says it was cut', async ({ 
   await expect(browser.locator(`${write} .ss-cut`)).toBeVisible();
   // A whole diff keeps its count and says nothing of a cut.
   await expect(browser.locator('.ss-tui details.ss-tool > summary:has-text("Write(e2e/wait.ts)")')).toContainText(/Wrote 3 lines to e2e\/wait\.ts/);
-  await expect(screen.getByText('Cut here: the change is longer.')).toHaveCount(1);
+  await expect(browser.locator('.ss-tui details.ss-tool:has-text("Write(e2e/wait.ts)") .ss-cut')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -823,6 +823,11 @@ test('scroll regions have distinct names and a cut output says so', async ({ app
   await browser.locator('.ss-tui li[data-line="21"] details.ss-tool > summary').click();
   await expect(named('Result of Bash(npx playwright test login) (line 21)')).toHaveCount(1);
   await expect(browser.locator('.ss-tui li[data-line="20"] .ss-cut')).toHaveText('Cut here: the output is longer.');
+  // Names repeated in one entry are told apart too (review round 2).
+  const codes = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="23"] .ss-code, .ss-tui li[data-line="24"] .ss-code')].map((el) => el.getAttribute('data-region')));
+  expect(codes).toEqual(['Code', 'Code (line 24)', 'Code (line 24, 2)']);
+  const hunks = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="25"] .ss-diff-hunk')].map((el) => el.getAttribute('data-region')));
+  expect(hunks).toEqual(['Changed lines of e2e/steps.ts (1 of 2 shown)', 'Changed lines of e2e/steps.ts (2 of 2 shown)']);
   expect(await axeViolations(browser)).toEqual([]);
   // A region named after its call names it as the line above it does: "Update", not "Edit".
   const regions = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui [data-region]')].map((el) => el.getAttribute('data-region')));

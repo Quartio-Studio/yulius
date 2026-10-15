@@ -244,10 +244,10 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
     let mut blocks = Vec::new();
     let role = match kind {
         "summary" => {
-            let text = str_field(record, "summary")?;
+            let (text, truncated) = cut(str_field(record, "summary")?, MAX_TEXT_CHARS);
             blocks.push(TranscriptBlock::Text {
-                text: clean(&bounded(text, MAX_TEXT_CHARS), false),
-                truncated: false,
+                text: clean(&text, false),
+                truncated,
             });
             "summary"
         }
@@ -938,6 +938,18 @@ mod tests {
             cut_off && text.len() == MAX_TEXT_CHARS,
             "a system line over it is cut"
         );
+        // A summary line is cut at the message bound and says so too (review round 2).
+        let summary = |text: String| -> Result<bool, Box<dyn std::error::Error>> {
+            let line = json!({"type": "summary", "summary": text});
+            match entry_of(0, &line, &mut EnvCalls::default())
+                .and_then(|entry| entry.blocks.into_iter().next())
+            {
+                Some(TranscriptBlock::Text { truncated, .. }) => Ok(truncated),
+                other => Err(format!("not text: {other:?}").into()),
+            }
+        };
+        assert!(!summary("s".repeat(MAX_TEXT_CHARS))?);
+        assert!(summary("s".repeat(MAX_TEXT_CHARS + 1))?);
         let old: TranscriptBlock = serde_json::from_value(json!({"type": "meta", "text": "x"}))?;
         assert_eq!(
             old,
