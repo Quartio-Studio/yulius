@@ -18,7 +18,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#399:** the task summary says `not_started` and `awaits_start_onboarding`. The UI reads the
     onboarding task of a `pending` sandbox "Waits for Start onboarding", and a task that never ran
     "Not started". Neither is in the Closed group, tab or count.
-
 - Opening Settings → Instance checks `main` at once (SPEC-149, ADR-0123, task #143): the page no
   longer shows a check up to an hour old until "Check now". The server reuses a check younger than
   30 s; a failed automatic check keeps the last result without an error toast.
