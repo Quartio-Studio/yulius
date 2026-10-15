@@ -2576,6 +2576,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* ---- CD page (pages/cd.js) */
 .cd-envs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
 .cd-env { min-width: 0; }
+.cd-env-head { display: flex; align-items: flex-start; gap: 8px; }
+.cd-env-name { flex: 1; min-width: 0; min-height: var(--control-md); }
+.cd-env-head > .btn { flex: none; }
 .cd-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
 .cd-facts dt { color: var(--muted); }
 .cd-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
