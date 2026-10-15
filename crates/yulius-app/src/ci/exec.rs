@@ -8,9 +8,9 @@
 //! tail stored. The environment has no secret: no task token, provider credential or GitHub
 //! token. A job the integration branch's `[[ci.jobs]]` entry grants agent secrets gets their
 //! placeholders and the egress proxy with a credential of its own, never a value (SPEC-142,
-//! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared by its lanes (up to
-//! [`super::CiSettings::lanes`] runs at once, so a job's installs there must tolerate a concurrent
-//! run), and each job keeps a persistent checkout per lane ([`checkout_name`]), so caches
+//! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared
+//! by its lanes (up to [`super::CiSettings::lanes`] runs at once, so a job's installs there must
+//! tolerate a concurrent run), and each job keeps a persistent checkout per lane ([`checkout_name`]), so caches
 //! (dependency downloads, build outputs) survive between runs.
 
 use std::path::{Path, PathBuf};
@@ -698,11 +698,12 @@ impl App {
                 Vec::new()
             }
         };
-        let (mut given, mut missing) = (Vec::new(), Vec::new());
+        let (mut given, mut missing, mut production) = (Vec::new(), Vec::new(), Vec::new());
         for name in &grant {
-            let found = records.iter().any(|r| &r.name == name && !r.cd_prod);
-            match SecretName::parse(name) {
-                Ok(parsed) if found => {
+            let record = records.iter().find(|r| &r.name == name);
+            match (record, SecretName::parse(name)) {
+                (Some(record), _) if record.cd_prod => production.push(name.as_str()),
+                (Some(_), Ok(parsed)) => {
                     plan.env.push((name.clone(), placeholder(&parsed)));
                     given.push(name.as_str());
                 }
@@ -717,6 +718,12 @@ impl App {
             note.push_str(&format!(
                 " (not in the sandbox's agent secrets: {})",
                 missing.join(", ")
+            ));
+        }
+        if !production.is_empty() {
+            note.push_str(&format!(
+                " (production-deploy secrets are never given to CI: {})",
+                production.join(", ")
             ));
         }
         let token = self

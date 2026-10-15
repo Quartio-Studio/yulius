@@ -169,3 +169,10 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   follow-up (exit 2 fails again once a scan runs), also noted on #466. n1: wording fixed. n2
   (a `secrets` line before `name` reports job `?`, as `matrix` does) and n3 (one cached read per
   job start) stay as they are.
+- Review round 2 (fresh session) approved 9c138d10 with two minors and two nits, all fixed
+  test-first: the grant is verified against the clone as it is and the clone is fetched only when
+  that fails, so a concurrent fetch no longer withholds the key
+  (`local_ci::a_grant_verifies_without_a_fresh_fetch_when_the_clone_has_the_head` failed before);
+  a granted production-deploy secret is reported as such, not as missing; ADR-0116 notes the
+  mirror kept on disk; a long doc line is wrapped. Out of scope and noted on #466: the sandbox
+  clone's fetch with an installation token reads repository config agents can write (#54 part B).

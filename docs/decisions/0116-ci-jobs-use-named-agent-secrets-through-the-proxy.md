@@ -66,8 +66,10 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 - As for agents, the proxy variables are advisory: a job can ignore them and reach the network
   directly, but it then holds only placeholders.
 - Removing a name from the integration branch's `yulius.toml` takes effect for the next job.
-- A granted job costs a fetch and a GitHub call when it starts; when either fails, the job runs
-  without its secrets and its output says why.
+- A granted job costs a GitHub call when it starts, and a fetch only when the sandbox clone lacks
+  the head GitHub reports; when verification still fails, the job runs without its secrets and its
+  output says why. A sandbox with a granted job keeps a CD mirror under `<data>/cd/<sandbox>/`,
+  as one that deploys does.
 - The sandbox clone stays writable by CI jobs, so a pull request can still change which jobs a
   later run of the sandbox executes (not what they may use). That is older than this decision and
   belongs to its own change.

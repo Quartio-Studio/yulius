@@ -697,11 +697,17 @@ impl App {
         let mirror_lock = mirror_lock(&sandbox.id);
         let _mirror = mirror_lock.lock().await;
         let profile = delivery_profile(sandbox);
-        self.dlv_refresh_clone(sandbox).await?;
         let token = self.dlv_installation_token(sandbox).await?;
-        let head = self
-            .cd_verified_head(sandbox, &profile.integration_branch, &token)
-            .await?;
+        let branch = &profile.integration_branch;
+        // The clone usually has the head already; it is fetched only when it does not, so a
+        // concurrent fetch or a network blip does not withhold a grant (review round 2).
+        let head = match self.cd_verified_head(sandbox, branch, &token).await {
+            Ok(head) => head,
+            Err(_) => {
+                self.dlv_refresh_clone(sandbox).await?;
+                self.cd_verified_head(sandbox, branch, &token).await?
+            }
+        };
         let jobs = self
             .ci_jobs_at(&self.cd_mirror(&sandbox.id), &head)
             .await

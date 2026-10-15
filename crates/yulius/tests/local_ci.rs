@@ -1435,10 +1435,44 @@ async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
         "{granted}"
     );
     assert!(
-        granted.contains("not in the sandbox's agent secrets: PROD_KEY"),
+        granted.contains("production-deploy secrets are never given to CI: PROD_KEY"),
         "{granted}"
     );
     let plain = output_of(&outputs, "plain")?;
     assert!(plain.contains("key=none other=none prod=none"), "{plain}");
+    Ok(())
+}
+
+/// SPEC-142, review round 2: a fetch of the shared clone that fails (a concurrent fetch holding a
+/// ref lock, a network blip) does not withhold a grant the clone can already verify.
+#[tokio::test]
+async fn a_grant_verifies_without_a_fresh_fetch_when_the_clone_has_the_head() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"scan\"\nsecrets = \"API_KEY\"\ncommand = 'echo \"key=${API_KEY:-none}\"'\n"
+            .to_owned()
+    })
+    .await?;
+    let created = f
+        .post(
+            "/api/sandboxes/s1/agent-secrets",
+            Some(serde_json::json!({
+                "name": "API_KEY", "hosts": ["api.test"], "injection": "bearer",
+                "value": "api-key-value-0123456789",
+            })),
+        )
+        .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    f.h.app.enable_egress(None);
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // From now on every fetch of the shared clone fails.
+    git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["remote", "set-url", "origin", "/nonexistent/origin.git"],
+    )?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let scan = output_of(&outputs, "scan")?;
+    assert!(scan.contains("key=yulius-secret-API_KEY"), "{scan}");
     Ok(())
 }
