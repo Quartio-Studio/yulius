@@ -1,8 +1,10 @@
 // The new-task prompt with its files inside the text (SPEC-124, ADR-0101). A file pasted or
-// dropped lands at the caret (the drop point) as an inline atom: an image as a thumbnail, another
-// file as a chip with its name. An atom is one character for editing: arrows step over it,
+// dropped lands at the caret (the drop point) as an inline atom, a placeholder one line high: an
+// image as `Image N`, another file as a chip with its name (SPEC-150; the composer's tray shows
+// the files themselves). An atom is one character for editing: arrows step over it,
 // Backspace and Delete remove it, a selection takes it along. It moves by dragging it, or by
-// cutting (⌘/Ctrl+X) and pasting (⌘/Ctrl+V) it, the keyboard way. The text is plain: pasted text
+// cutting (⌘/Ctrl+X) and pasting (⌘/Ctrl+V) it, the keyboard way, and `place` puts a file at a
+// point (a tray thumbnail dropped on the text, `PLACE_TYPE`) or at the caret. The text is plain: pasted text
 // stays text, formatting commands are refused, and the Markdown keys of mdinput.js work as in a
 // textarea.
 //
@@ -23,6 +25,8 @@ import { mentionOf, splitMentions } from './promptparts.js';
 
 /** One atom in the model's text. */
 export const ATOM = '\uFFFC';
+/** A drag carrying a file's path to put in the text (a tray thumbnail, SPEC-150). */
+export const PLACE_TYPE = 'application/x-yulius-file';
 /** Steps the undo history keeps. */
 const HISTORY_MAX = 100;
 /** Typing within this long of the last typing joins its undo step (within a word). */
@@ -34,7 +38,8 @@ const sameAtoms = (a, b) => a.length === b.length && a.every((atom, i) => atom.p
 /**
  * A prompt text box. Options:
  *   label, placeholder, keyshortcuts, maxLength   its accessible name, hint, keys and length cap
- *   face(path)        how a file looks: `{ name, image? }` (`image` a URL to draw it from)
+ *   face(path)        how a file looks: `{ name, label?, image? }` (`label` its placeholder's text,
+ *                     the name by default; `image` true for an image)
  *   known(path)       whether a pasted mention names a file of this prompt (it becomes the file)
  *   onChange()        after every change of the text, by the person or by an edit
  *   onSubmit()        ⌘/Ctrl+Enter
@@ -51,6 +56,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   let dragged = null; // the file being dragged, while it is
   let moving = null; // `[start, end]` of this box's own selection or file being dragged
   let pendingCount = 0;
+  let kept = null; // the caret when the box last lost the keyboard (`place` puts a file there)
   const history = { states: [], index: -1, kind: '', at: 0 };
 
   // ---------------------------------------------------------------- the DOM and the model
@@ -65,9 +71,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
         h('span', { class: 'pi-spinner', 'aria-hidden': 'true' }), h('span', { class: 'pi-file-name' }, 'Uploading…'));
     } else {
       const look = face(atom.path) || { name: atom.path.split('/').pop() };
-      node = h('span', { class: ['pi-atom', look.image ? 'pi-image' : 'pi-file'], dataset: { path: atom.path }, title: look.name });
-      if (look.image) node.append(h('img', { src: look.image, alt: look.name, draggable: 'false' }));
-      else node.append(icon('file', { size: 14 }), h('span', { class: 'pi-file-name' }, look.name));
+      node = h('span', { class: ['pi-atom', look.image ? 'pi-image' : 'pi-file'], dataset: { path: atom.path }, title: look.name },
+        icon(look.image ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, look.label || look.name));
       node.draggable = true;
     }
     node.contentEditable = 'false';
@@ -475,6 +480,11 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     event.preventDefault();
     if (!editable()) { dragDone(); return; }
     const target = offsetAtPoint(event.clientX, event.clientY);
+    const placing = !moving && [...event.dataTransfer.types].includes(PLACE_TYPE) ? event.dataTransfer.getData(PLACE_TYPE) : '';
+    if (placing && known(placing)) {
+      place(placing, target);
+      return;
+    }
     if (moving) {
       const [start, end] = moving;
       dragDone();
@@ -508,6 +518,47 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     onChange();
   }
 
+  /**
+   * Puts file `path` at model offset `to` (the caret kept when the box lost the keyboard, by
+   * default): its first placeholder moves there, or one is inserted when the text holds none. One
+   * undo step.
+   */
+  function place(path, to = null) {
+    if (!editable()) return;
+    const { plain, atoms } = scan();
+    const at = Math.min(to ?? (kept ? kept[1] : plain.length), plain.length);
+    const index = atoms.findIndex((atom) => atom.path === path);
+    el.focus({ preventScroll: true });
+    if (index === -1) {
+      replace(at, at, ATOM, [{ path }], null, { files: true });
+      return;
+    }
+    let pos = -1;
+    for (let seen = 0; seen <= index; seen += 1) pos = plain.indexOf(ATOM, pos + 1);
+    move(pos, pos + 1, at);
+  }
+
+  /** Takes every placeholder of file `path` out of the text: one undo step. */
+  function remove(path) {
+    const { plain, atoms } = scan();
+    if (!atoms.some((atom) => atom.path === path)) return;
+    const focused = document.activeElement === el;
+    const [start, end] = focused ? selection() : [plain.length, plain.length];
+    let next = '';
+    const left = [];
+    const gone = []; // the offsets of the placeholders taken out
+    plain.split(ATOM).forEach((text, i) => {
+      if (i > 0 && atoms[i - 1].path === path) gone.push(next.length + gone.length);
+      else if (i > 0) { next += ATOM; left.push(atoms[i - 1]); }
+      next += text;
+    });
+    draw(next, left);
+    const shift = (o) => o - gone.filter((at) => at < o).length;
+    if (focused) select(shift(start), shift(end));
+    record('edit');
+    if (el.isConnected) onChange();
+  }
+
   /** Shows the caret where a drop at this point of the window lands. */
   function showPoint(x, y) {
     if (!editable()) return;
@@ -528,23 +579,21 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     if (at !== null) setTimeout(() => select(at, at + 1));
   });
 
+  // Where `place` puts a file by default: the caret the person left.
+  el.addEventListener('focusout', () => { kept = selection(); });
+
   // ---------------------------------------------------------------- the composer's side
 
-  function setValue(text, appended = []) {
+  function setValue(text) {
     let plain = '';
     const atoms = [];
     for (const piece of splitMentions(String(text ?? '').replace(/\r\n?/g, '\n').replaceAll(ATOM, ''))) {
       if ('path' in piece && known(piece.path)) { plain += ATOM; atoms.push({ path: piece.path }); } else plain += 'text' in piece ? piece.text : piece.mention;
     }
-    // Files this text does not hold yet (a draft from before SPEC-124) follow it.
-    const missing = appended.filter((path) => !atoms.some((atom) => atom.path === path));
-    if (missing.length) {
-      plain = `${plain}${plain && !/\s$/.test(plain) ? '\n' : ''}${ATOM.repeat(missing.length)}`;
-      atoms.push(...missing.map((path) => ({ path })));
-    }
     draw(plain, atoms);
     history.states = [];
     history.index = -1;
+    kept = null;
     record('set');
   }
 
@@ -553,7 +602,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     /** The prompt as sent: each file at its place as `@'<path>'` (a file uploading is left out). */
     get value() { const { plain, atoms } = scan(); return asText(plain, atoms); },
     set value(text) { setValue(text); },
-    /** Sets the text (mentions of known files become files; `appended` paths follow it); a new history. */
+    /** Sets the text (mentions of known files become files); a new history. */
     setValue,
     /** The text without its files. */
     text() { const { plain } = scan(); return plain.replaceAll(ATOM, ''); },
@@ -576,8 +625,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     focus(options) { el.focus(options); },
     /**
      * Where files uploading now will land: at the caret, or at a drop's point (`event`). A
-     * placeholder shows there until `insert(paths)` puts the files in its place (or at the end
-     * when it was taken out meanwhile) or `cancel()` takes it away.
+     * placeholder shows there until `insert(paths)` puts the files in its place (none when it was
+     * taken out meanwhile: the tray keeps them) or `cancel()` takes it away.
      */
     begin(event) {
       if (!editable()) return null;
@@ -588,12 +637,9 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
         : selection();
       replace(start, end, ATOM, [{ pending: id }], null, { files: true });
       return {
-        /** The files take the placeholder's place (after the text when it was taken out). */
+        /** The files take the placeholder's place (nowhere when it was taken out). */
         insert(paths) {
-          const files = paths.map((path) => ({ path }));
-          if (swapPending(id, files)) return;
-          const { plain } = scan();
-          replace(plain.length, plain.length, ATOM.repeat(files.length), files, null, { files: true });
+          swapPending(id, paths.map((path) => ({ path })));
         },
         cancel() {
           swapPending(id, []);
@@ -609,14 +655,11 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     },
     /** Shows the caret where something dropped at this point lands. */
     showPoint,
-    /** Adds files after the text, one undo step (an upload that ended in another view). */
-    append(paths) {
-      if (!paths.length) return;
-      const { plain } = scan();
-      const gap = plain && !/\s$/.test(plain) ? '\n' : '';
-      replace(plain.length, plain.length, gap + ATOM.repeat(paths.length), paths.map((path) => ({ path })), null, { files: true });
-    },
-    /** Draws the files again (a thumbnail became available), the caret kept. */
+    /** Puts a file at the caret the person left (its placeholder moves there, or one is added). */
+    place: (path) => place(path),
+    /** Takes a file's placeholders out of the text (it left the tray). */
+    remove,
+    /** Draws the files again (their numbers changed), the caret kept. */
     refresh() {
       const focused = document.activeElement === el;
       const [start, end] = focused ? selection() : [0, 0];

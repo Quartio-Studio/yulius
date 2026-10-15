@@ -13,7 +13,8 @@ import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
-import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, placeFiles, withoutMarks } from './promptinput.js';
+import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
+import { mentionOf } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -546,11 +547,12 @@ export function mountComposer(ctx, sandbox) {
   const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : null;
   const draft = draftFor(userId, sandbox.id);
   const remember = (options) => saveDraft(userId, sandbox.id, options);
-  // Files added to the prompt sit inside its text (SPEC-124): an image as a thumbnail drawn from
-  // its file (an object URL of this view), or from its stored thumbnail after a reload; another
-  // file as a chip with its name. `known` holds every file this view has seen, so one deleted
-  // and brought back (undo, a cut and paste) is the same file; the draft keeps the ones in the
-  // text. A file opened in a tab has its own URL (`tabUrls`).
+  // Files added to the prompt show in the tray above it (SPEC-150), an image as a thumbnail drawn
+  // from its file (an object URL of this view) or from its stored thumbnail after a reload, which
+  // opens large; inside the text each sits as a placeholder (SPEC-124), `Image N` for an image (N
+  // its number in the tray), a file's name otherwise. `known` holds every file this view has seen,
+  // so one deleted and brought back (undo, a cut and paste) is the same file; the draft keeps the
+  // tray's files. A file opened in a tab has its own URL (`tabUrls`).
   const known = new Map();
   const urls = new Map();
   const tabUrls = new Map();
@@ -563,11 +565,20 @@ export function mountComposer(ctx, sandbox) {
     }
     return item.thumb || null;
   };
+  const isImage = (item) => /^image\//.test(item.type || (item.file && item.file.type) || '');
+  /** An image's number in the tray (1 for the first image), 0 when it is not there. */
+  const imageNumber = (path) => draft.attached.filter(isImage).findIndex((item) => item.path === path) + 1;
   const prompt = createPromptInput({
     label: 'Task prompt',
     placeholder: 'Describe what you want to build, fix or find out. Paste or drop images where they belong. Lists and Markdown work.',
     keyshortcuts: SUBMIT_ARIA,
-    face: (path) => { const item = known.get(path); return item ? { name: item.name, image: imageOf(item) } : null; },
+    face: (path) => {
+      const item = known.get(path);
+      if (!item) return null;
+      if (!isImage(item)) return { name: item.name };
+      const n = imageNumber(path);
+      return { name: item.name, image: true, label: n ? `Image ${n}` : 'Image' };
+    },
     known: (path) => known.has(path),
     onChange: () => {
       // A composer gone (an upload that ended after the person left) no longer speaks for the draft.
@@ -575,6 +586,7 @@ export function mountComposer(ctx, sandbox) {
       draft.text = prompt.value;
       keepAttached();
       remember();
+      renderTray();
       // Editing the prompt withdraws a split proposal made for the old text.
       if (split) clearSplit();
     },
@@ -592,15 +604,66 @@ export function mountComposer(ctx, sandbox) {
       return tabUrls.get(path);
     } });
   }
-  prompt.setValue(draft.text, draft.attached.map((item) => item.path));
-  /** The draft keeps the files its text holds, in order. */
+  prompt.setValue(draft.text);
+  /** The tray keeps every file it has and gains one the text holds without it (an undone ×). */
   function keepAttached() {
-    const paths = [...new Set(prompt.paths())];
-    const next = paths.map((path) => known.get(path)).filter(Boolean);
-    if (next.length !== draft.attached.length || next.some((item, i) => item !== draft.attached[i])) draft.attached = next;
+    const missing = [...new Set(prompt.paths())].filter((path) => !draft.attached.some((item) => item.path === path));
+    const back = missing.map((path) => known.get(path)).filter(Boolean);
+    if (!back.length) return;
+    draft.attached = [...draft.attached, ...back];
+    prompt.refresh(); // its number
   }
   keepAttached();
   draft.text = prompt.value;
+  /** The tray's files without a placeholder in the text: sent after the text, as older prompts. */
+  const unplaced = () => { const placed = new Set(prompt.paths()); return draft.attached.filter((item) => !placed.has(item.path)); };
+
+  // The tray (SPEC-150): every uploaded file, in upload order. A thumbnail opens the file large;
+  // × takes it out of the tray and its placeholders out of the text (one undo step); a file the
+  // text does not hold yet has a button putting it at the caret, and every tile drags into the
+  // text, where its placeholder lands (moving there when the text holds it).
+  const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
+  function renderTray() {
+    const placed = new Set(prompt.paths());
+    let n = 0;
+    tray.hidden = !draft.attached.length;
+    setChildren(tray, draft.attached.map((item) => {
+      const image = imageOf(item);
+      const number = isImage(item) ? (n += 1) : 0;
+      const face = [
+        image ? h('img', { src: image, alt: '', draggable: 'false' }) : icon(isImage(item) ? 'image' : 'file', { size: 20 }),
+        number ? h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(number)) : null,
+        h('span', { class: 'composer-attachment-name' }, item.name),
+      ];
+      const open = image || item.file
+        ? h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${item.name}`, onClick: () => openFile(item.path) }, ...face)
+        : h('span', { class: 'composer-attachment-open', title: `${item.name}: attach it again to open it here` }, ...face);
+      const here = placed.has(item.path);
+      const tile = h('li', { class: ['composer-attachment', !here && 'unplaced'], title: here ? item.name : `${item.name}: not in the text, sent after it` },
+        open,
+        write ? iconButton('x', `Remove ${item.name}`, () => removeFile(item), { class: 'composer-attachment-remove' }) : null,
+        write && !here ? iconButton('plus', `Put ${item.name} in the text`, () => prompt.place(item.path), { class: 'composer-attachment-place' }) : null);
+      if (write) {
+        tile.draggable = true;
+        tile.addEventListener('dragstart', (event) => {
+          if (!event.dataTransfer) return;
+          event.dataTransfer.effectAllowed = 'copyMove';
+          event.dataTransfer.setData(PLACE_TYPE, item.path);
+          event.dataTransfer.setData('text/plain', mentionOf(item.path));
+        });
+      }
+      return tile;
+    }));
+  }
+  /** Takes a file out of the tray and its placeholders out of the text. */
+  function removeFile(item) {
+    draft.attached = draft.attached.filter((other) => other !== item);
+    for (const map of [urls, tabUrls]) if (map.has(item.path)) { URL.revokeObjectURL(map.get(item.path)); map.delete(item.path); }
+    remember();
+    prompt.remove(item.path);
+    prompt.refresh();
+    renderTray();
+  }
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
   let preview = null;
@@ -666,6 +729,7 @@ export function mountComposer(ctx, sandbox) {
     for (const map of [urls, tabUrls]) { for (const url of map.values()) URL.revokeObjectURL(url); map.clear(); }
   }
   setChildren(box,
+    tray,
     prompt.el,
     previewEl,
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
@@ -688,25 +752,17 @@ export function mountComposer(ctx, sandbox) {
     // At the place kept when they came, in this composer; an upload that ends after the person
     // left still joins the draft (DRF-002), after the text of the composer open then.
     const here = place && !destroyed;
-    if (here) arriving = new Set(items.map((item) => item.path));
     attachToDraft(userId, sandbox.id, draft, items);
-    arriving = null;
     if (here && items.every((item) => known.has(item.path))) place.insert(items.map((item) => item.path));
   } });
-  // Files being put in their place right now: not appended as late ones.
-  let arriving = null;
-  /** The draft changed elsewhere: files it gained follow the text, a cleared draft empties it. */
+  /** The draft changed elsewhere: the tray shows the files it gained, a cleared draft empties it. */
   function draftChanged() {
     learn();
-    if (!draft.text && !draft.attached.length) {
-      if (prompt.value) prompt.setValue('');
-      return;
-    }
-    const shown = new Set(prompt.paths());
-    const late = draft.attached.map((item) => item.path).filter((path) => !shown.has(path) && !(arriving && arriving.has(path)));
-    if (late.length) prompt.append(late);
-    else prompt.refresh(); // a thumbnail came
+    if (!draft.text && !draft.attached.length && prompt.value) prompt.setValue('');
+    prompt.refresh(); // numbers, or a thumbnail came
+    renderTray();
   }
+  renderTray();
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
@@ -1174,7 +1230,7 @@ export function mountComposer(ctx, sandbox) {
   // One task per press: two presses must not start two sessions (singleFlight).
   const start = singleFlight(async () => {
     const text = prompt.text().trim();
-    const value = prompt.value.trim();
+    const value = withAttachments(prompt.value.trim(), unplaced());
     if (!text) { if (prompt.hidden) setPreview(false); prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
     if (split || prompt.disabled) return; // the card is open (its buttons decide), or starting is blocked
     // Started from this composer before the person left and came back: not twice.

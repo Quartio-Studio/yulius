@@ -159,7 +159,7 @@ test('files dropped or pasted on the new-task prompt sit in its text, at the car
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['dragenter', 'dragover']));
   await expect(browser.locator('.composer-box .drop-overlay')).toHaveText('Drop to add to the prompt');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['drop']));
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   await expect.poll(() => promptText(browser)).toBe('Fix the layout in [screen-shot.png]');
 
   await browser.evaluate(() => {
@@ -169,7 +169,7 @@ test('files dropped or pasted on the new-task prompt sit in its text, at the car
     input.focus();
     input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   });
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(2);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(2);
   await expect.poll(() => promptText(browser)).toMatch(/^Fix the layout in \[screen-shot\.png\]\[pasted-\d{8}-\d{6}\.png\]$/);
 
   // SPEC-025 ATT-001: a file opens from the prompt's preview; an image previews in a dialog that

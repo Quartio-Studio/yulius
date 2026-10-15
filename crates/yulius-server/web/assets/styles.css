@@ -1405,16 +1405,41 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .prompt-input { overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
 .prompt-input.pi-empty::before { content: attr(data-placeholder); float: left; height: 0; color: var(--text-faint); pointer-events: none; }
 .prompt-input[aria-disabled="true"] { cursor: not-allowed; }
-/* A file in the text: one character, a thumbnail or a chip, never wider than the box. */
+/* The tray (SPEC-150): every uploaded file above the text; a thumbnail opens large, × removes it,
+   + puts a file not in the text yet at the caret, and a tile drags into the text. */
+.composer-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 12px 16px 0; list-style: none; }
+.composer-box.previewing .composer-attachments { display: none; }
+.composer-attachment {
+  position: relative; display: flex; align-items: center; justify-content: center; width: 72px; height: 72px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); color: var(--text-2); overflow: hidden;
+}
+.composer-attachment[draggable="true"] { cursor: grab; }
+.composer-attachment.unplaced { border-style: dashed; }
+.composer-attachment-open {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; border: 0;
+  background: transparent; color: inherit; cursor: pointer;
+}
+button.composer-attachment-open:has(img) { cursor: zoom-in; }
+span.composer-attachment-open { cursor: default; }
+.composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
+.composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
+.composer-attachment-name { position: absolute; inset: auto 0 0; padding: 0 4px; overflow: hidden; background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.composer-attachment-number {
+  position: absolute; top: 2px; left: 2px; min-width: 18px; padding: 0 4px; border-radius: var(--radius); background: var(--surface);
+  color: var(--text); font-size: var(--fs-xs); font-weight: 600; line-height: 18px; text-align: center;
+}
+.composer-attachment .btn-icon { position: absolute; width: 24px; height: 24px; min-width: 0; padding: 0; background: var(--surface); }
+.composer-attachment-remove { top: 2px; right: 2px; }
+.composer-attachment-place { right: 2px; bottom: 18px; }
+/* A file in the text: one character, a placeholder one line high, never wider than the box. */
 .pi-atom {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%; margin: 0 2px; vertical-align: bottom;
   border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface));
   color: var(--text-2); white-space: nowrap; cursor: grab; user-select: all;
 }
 .pi-atom:hover { border-color: var(--accent-border-strong); }
-.pi-image { max-width: min(160px, 100%); padding: 0; overflow: hidden; }
-.pi-image img { display: block; max-width: 100%; height: 64px; object-fit: cover; pointer-events: none; }
-.pi-file, .pi-pending { height: 1.6em; padding: 0 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.pi-file, .pi-image, .pi-pending { height: 1.6em; padding: 0 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.pi-image { color: var(--text); }
 .pi-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pi-pending { border-style: dashed; cursor: progress; }
 .pi-spinner { flex: none; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin var(--duration-spin) linear infinite; }
