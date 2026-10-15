@@ -35,7 +35,11 @@ use yulius_domain::time::Timestamp;
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
-const WAIT: Duration = Duration::from_secs(50);
+/// Every wait of a test shares one deadline from its start (SPEC-140 TWT-002): nextest kills a test
+/// at 120 s (`slow-timeout` 30 s × `terminate-after` 4, `.config/nextest.toml`), and a test that
+/// misses its deadline 20 s before reports what it saw. The red train test takes 9 to 10 s alone
+/// and 37 to 41 s in 8 copies at once beside 24 busy loops (load 34 to 79).
+const BUDGET: Duration = Duration::from_secs(100);
 
 /// One job: two pull requests that each add a `clash-*` file pass alone and fail together (the
 /// kind of conflict no merge shows, F 2026-10-13: two records taking one number).
@@ -150,6 +154,8 @@ fn valid_spec(task: &str) -> String {
 
 struct Fixture {
     h: support::Harness,
+    /// When the test's waits give up ([`BUDGET`] from its start).
+    deadline: tokio::time::Instant,
     alice: Creds,
     sandbox: SandboxId,
     origin: PathBuf,
@@ -157,6 +163,7 @@ struct Fixture {
 }
 
 async fn fixture() -> BoxResult<Fixture> {
+    let deadline = tokio::time::Instant::now() + BUDGET;
     // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ytr").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
@@ -216,6 +223,7 @@ async fn fixture() -> BoxResult<Fixture> {
     git(&repo, &["config", "user.email", "alice@yulius.test"])?;
     Ok(Fixture {
         h,
+        deadline,
         alice,
         sandbox: sandbox.id,
         origin,
@@ -405,7 +413,6 @@ impl Fixture {
     /// Dispatches `app`'s CI until no run is queued or running and every ended run's commit
     /// status was published (or has a note why not).
     async fn settle(&self, app: &Arc<App>) -> TestResult {
-        let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             app.ci_dispatch().await;
             let runs = self.runs(app).await?;
@@ -415,7 +422,7 @@ impl Fixture {
             if !busy {
                 return Ok(());
             }
-            if tokio::time::Instant::now() > deadline {
+            if tokio::time::Instant::now() > self.deadline {
                 return Err(format!("CI did not settle: {runs:?}").into());
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
@@ -498,13 +505,12 @@ impl Fixture {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = BoxResult<bool>>,
     {
-        let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             app.merge_armed(&self.sandbox).await;
             if done().await? {
                 return Ok(());
             }
-            if tokio::time::Instant::now() > deadline {
+            if tokio::time::Instant::now() > self.deadline {
                 let runs: Vec<String> = self
                     .runs(app)
                     .await?
@@ -714,7 +720,6 @@ async fn a_red_train_falls_back_to_one_by_one_merges() -> TestResult {
     // One by one, as before: the first green and up to date merges on its own run; the others
     // are brought up to date and run again, each on its own.
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
-    let deadline = tokio::time::Instant::now() + WAIT;
     let failed = |n: u32| {
         let f = &f;
         let worktree = worktrees[n as usize - 1].clone();
@@ -739,7 +744,7 @@ async fn a_red_train_falls_back_to_one_by_one_merges() -> TestResult {
                 break pair;
             }
         }
-        if tokio::time::Instant::now() > deadline {
+        if tokio::time::Instant::now() > f.deadline {
             return Err(format!("{:?}: {}", f.merges(), f.trains_file(&app)).into());
         }
         tokio::time::sleep(Duration::from_millis(150)).await;

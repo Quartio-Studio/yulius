@@ -835,6 +835,67 @@ pub async fn insert_sandbox(
     Ok(())
 }
 
+/// What a stop may take beyond its escalation: terminating the run's host and recording its end,
+/// on a starved runner (SPEC-140 TWT-001). That takes under a second measured at load 79. With the
+/// default 20 s escalation a stop may take 60 s, which suits a test that is short before its stop
+/// (nextest kills at 120 s).
+pub const STOP_SETTLE: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// Stops `tasks` and waits until none is live (see [`wait_stopped`]).
+pub async fn stop_tasks(app: &Arc<App>, tasks: &[&yulius_domain::ids::TaskId]) -> TestResult {
+    for id in tasks {
+        app.stop_task_now(id).await?;
+    }
+    wait_stopped(app, tasks).await
+}
+
+/// Waits until none of `tasks` is live, all together, within the product's own bound for a stop:
+/// after `stop_escalation_ms` the run's host is terminated and the run recorded as lost (SPEC-065
+/// END-001), plus [`STOP_SETTLE`]. A miss says each live task's status and its runs' states; a
+/// deleted task counts as stopped.
+pub async fn wait_stopped(app: &App, tasks: &[&yulius_domain::ids::TaskId]) -> TestResult {
+    let bound = std::time::Duration::from_millis(app.config.stop_escalation_ms) + STOP_SETTLE;
+    let deadline = tokio::time::Instant::now() + bound;
+    loop {
+        let mut live = Vec::new();
+        for id in tasks {
+            if let Some(task) = app.deps.store.task(id).await?
+                && task.status.is_live()
+            {
+                live.push(task);
+            }
+        }
+        if live.is_empty() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            let mut seen = Vec::new();
+            for task in live {
+                let runs: Vec<String> = app
+                    .deps
+                    .store
+                    .attempts(&task.id)
+                    .await?
+                    .iter()
+                    .map(|a| format!("{} {:?} {:?}", a.id, a.state, a.exit_reason))
+                    .collect();
+                seen.push(format!(
+                    "{} {} (runs: {})",
+                    task.id,
+                    task.status.as_str(),
+                    runs.join(", ")
+                ));
+            }
+            return Err(format!(
+                "timed out waiting for the stop after {bound:?}: {}",
+                seen.join("; ")
+            )
+            .into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// The real harness planning with the fake agent executable.
 pub mod agents;
 /// The real ptyhost whose next attach a test can hold (SPEC-077).

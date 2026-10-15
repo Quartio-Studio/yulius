@@ -973,6 +973,14 @@ impl App {
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
             };
+            // A waiting or resting task with no run left: an intent of a stop or close that ended
+            // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
+            // ends keeps it for that run's end.
+            if store.live_attempt(&task.id).await?.is_none()
+                && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
+            {
+                *intent = None;
+            }
             if !store
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?
@@ -1898,6 +1906,18 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        // A stop or close that came while the run was launching found no run to ask: it asks now,
+        // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
+        // comes later finds the run itself; the host takes a second request as the first.
+        let ending = runtime
+            .intent
+            .lock()
+            .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close)));
+        if ending {
+            // The stop may have come before this run existed, so it armed no escalation for it.
+            self.arm_escalation(task_id, Some(attempt.id.clone()));
+            request_shutdown(&runtime).await;
+        }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
         // it): the screen shows that viewer's size from the start, never the spawn size first,
         // and the PTY follows (TSK-006, F 2026-10-10).
@@ -2532,6 +2552,10 @@ impl App {
                         )
                         .await?
                 {
+                    // An earlier stop's intent that no run consumed goes with it (STP-002).
+                    if let Ok(mut intent) = self.runtime(task_id).intent.lock() {
+                        *intent = None;
+                    }
                     self.end_pause(task_id, "cancelled").await;
                     self.publish_task(task_id).await;
                     self.advance_chains(task_id).await;
