@@ -177,6 +177,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       clearTimeout(timer);
       if (reading) reading.abort();
       if (octopus) octopus.stop();
+      transcript.destroy();
       document.removeEventListener('visibilitychange', visibility);
     },
   };
