@@ -855,9 +855,10 @@ behind (an update), up to date, ahead (a development build), diverged — and th
 (≤ 250); an unknown build gets the latest 20 commits. Credentials, in order: the App's
 installation token for that repository (`repository_token`), the read token of
 `YULIUS_UPDATE_TOKEN_FILE`, else anonymous; a refusal tries the next. Checks run 60 s after start
-and then every hour (`YULIUS_UPDATE_CHECK_MINUTES`), and on "Check now" (a check younger than 30 s
-is reused); the result lives in memory. A changed offer publishes `update.updated`; the UI turns it
-into the superadmin's notification and banner. The summary is the titles of the new commits
+and then every hour (`YULIUS_UPDATE_CHECK_MINUTES`), and on "Check now" and on opening the
+instance page (SPEC-149; a check younger than 30 s is reused); the result lives in memory. A
+changed offer publishes `update.updated`; the UI turns it into the superadmin's notification and
+banner. The summary is the titles of the new commits
 (merges and promotions left out, conventional prefixes and `(#n)` removed): "A · B · C and N more".
 
 **Order: build first, pause second.** The draft order was pause → build → restart → resume. A
