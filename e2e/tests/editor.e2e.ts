@@ -60,37 +60,48 @@ test('a second file opened while the editor loads waits for all of Monaco: one e
 });
 
 // Review of SPEC-148: one creation shared by every opening must not keep a failure: the next
-// file opened makes the editor again, as before the creation was shared.
-test('a file opened after the editor could not be made makes it then', async ({ app, browser, screen }) => {
-  await browser.addInitScript(() => {
-    type Api = { editor: { create: (...args: unknown[]) => unknown; e2eOnce?: boolean } };
-    let api: Api | undefined;
-    let failed = false;
-    // Monaco sets `window.monaco` (twice: its main chunk, then editor.main): its first editor fails.
-    Object.defineProperty(window, 'monaco', { configurable: true, get: () => api, set: (next: Api) => {
-      api = next;
-      if (next.editor.e2eOnce) return;
-      const create = next.editor.create;
-      next.editor.create = (...args: unknown[]) => {
-        if (!failed) { failed = true; throw new Error('the editor could not be made (on purpose)'); }
-        return create.apply(next.editor, args);
-      };
-      next.editor.e2eOnce = true;
-    } });
+// file opened makes the editor again, as before the creation was shared. Made once: a failure
+// after Monaco made the editor (its setup threw) leaves no second editor behind.
+for (const [where, when] of [['the editor could not be made', 'create'], ['the made editor could not be set up', 'setup']] as const) {
+  test(`a file opened after ${where} makes it then, once`, async ({ app, browser, screen }) => {
+    await browser.addInitScript((point) => {
+      type Editor = { addCommand: (...args: unknown[]) => unknown };
+      type Api = { editor: { create: (...args: unknown[]) => Editor; e2eOnce?: boolean } };
+      let api: Api | undefined;
+      let failed = false;
+      const fail = () => { failed = true; throw new Error('the editor could not be made (on purpose)'); };
+      // Monaco sets `window.monaco` (twice: its main chunk, then editor.main): its first editor fails.
+      Object.defineProperty(window, 'monaco', { configurable: true, get: () => api, set: (next: Api) => {
+        api = next;
+        if (next.editor.e2eOnce) return;
+        const create = next.editor.create;
+        next.editor.create = (...args: unknown[]) => {
+          if (!failed && point === 'create') fail();
+          const made = create.apply(next.editor, args);
+          if (!failed && point === 'setup') {
+            const addCommand = made.addCommand;
+            made.addCommand = () => { made.addCommand = addCommand; return fail(); };
+          }
+          return made;
+        };
+        next.editor.e2eOnce = true;
+      } });
+    }, when);
+    await app.open(mock('/s/studio/t/12'));
+    await screen.getByRole('button', /^Show tools/).click();
+    await screen.getByRole('button', 'Editor').click();
+    const readme = screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md');
+    await readme.click();
+    // The failure is the page's (an unhandled rejection of the click); expected here, then cleared.
+    const errors = () => browser.evaluate(() => (window as unknown as { __e2eErrors: string[] }).__e2eErrors);
+    await expect.poll(errors, { timeout: MONACO_LOAD_MS }).toEqual([expect.stringContaining('the editor could not be made (on purpose)')]);
+    await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.splice(0); });
+    await readme.click();
+    await editorShown(browser);
+    await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
+    expect(await browser.evaluate(() => document.querySelectorAll('.ed-host .monaco-editor').length)).toBe(1);
   });
-  await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', /^Show tools/).click();
-  await screen.getByRole('button', 'Editor').click();
-  const readme = screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md');
-  await readme.click();
-  // The failure is the page's (an unhandled rejection of the click); expected here, then cleared.
-  const errors = () => browser.evaluate(() => (window as unknown as { __e2eErrors: string[] }).__e2eErrors);
-  await expect.poll(errors, { timeout: MONACO_LOAD_MS }).toEqual([expect.stringContaining('the editor could not be made (on purpose)')]);
-  await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.splice(0); });
-  await readme.click();
-  await editorShown(browser);
-  await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
-});
+}
 
 type WithMonaco = Window & { monaco: { editor: { getEditors(): { getRawOptions(): { wordWrap?: string } }[] } } };
 

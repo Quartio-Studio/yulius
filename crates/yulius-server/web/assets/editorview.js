@@ -562,10 +562,19 @@ export function createEditorView(ctx, sandbox, getTask) {
       roundedSelection: false,
       cursorSmoothCaretAnimation: 'on',
     });
-    layer = createEditorLayer(monaco, editor);
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
-    editor.onDidChangeCursorPosition(() => renderStatus());
-    editor.onDidChangeCursorSelection(() => { if (active && active.presence) active.presence.soon(); });
+    try {
+      layer = createEditorLayer(monaco, editor);
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
+      editor.onDidChangeCursorPosition(() => renderStatus());
+      editor.onDidChangeCursorSelection(() => { if (active && active.presence) active.presence.soon(); });
+    } catch (error) {
+      // Half set up: gone, so the next file's try makes the one editor of this host again.
+      if (layer) layer.destroy();
+      editor.dispose();
+      layer = null;
+      editor = null;
+      throw error;
+    }
     return true;
   }
 
