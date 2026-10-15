@@ -223,6 +223,7 @@ export function mountTasksPage(ctx, sandbox) {
       const failed = error ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {})) : null;
       // Each view loads in its own shape (SPEC-120); the Graph has no toolbar.
       const graph = view === 'graph';
+      viewSwitch.querySelectorAll('input').forEach((input) => { input.checked = input.value === view; });
       toolbar.hidden = graph;
       listHost.hidden = graph;
       graphHost.hidden = !graph;
@@ -410,7 +411,7 @@ export function mountTasksPage(ctx, sandbox) {
     if (typing(event.target)) return;
     if (event.key === '/' && (onPage || !event.target.closest('.panel, dialog, .menu, [role="menu"]'))) { event.preventDefault(); openSearch(); return; }
     if (!onPage) return;
-    const links = view === 'graph' ? [...graphHost.querySelectorAll('.tg-item, a.tg-node')] : [...listHost.querySelectorAll('.tl-link')];
+    const links = view === 'graph' ? [...graphHost.querySelectorAll('a.tg-item, a.tg-node')] : [...listHost.querySelectorAll('.tl-link')];
     const index = links.indexOf(document.activeElement);
     const move = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 }[event.key];
     if (move && (index >= 0 || event.key === 'j' || event.key === 'k')) {

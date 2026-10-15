@@ -136,6 +136,20 @@ test('A live update keeps the focused card and the frame scrolled where it was (
   expect(await browser.evaluate(() => ({ focused: (document.activeElement as HTMLElement).dataset.number ?? null, left: (document.querySelector('.tg-frame') as HTMLElement).scrollLeft }))).toEqual({ focused: '16', left: 200 });
 });
 
+test('A live update keeps a focused row of a list section; "." on a card does nothing (TGR-006)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/tasks?view=graph', GRAPH));
+  const row = '.tg-queue .tg-queue-item:nth-child(2) .tg-item';
+  await expect(browser.locator(row)).toBeVisible();
+  await browser.evaluate((sel) => (document.querySelector(sel) as HTMLElement).focus(), row);
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 8, { title: 'Nightly feedback digest v2' }));
+  await expect(browser.locator(row)).toContainText('v2');
+  await expect(browser.locator(row)).toBeFocused();
+  await browser.evaluate(() => (document.querySelector('.tg-node[data-number="15"]') as HTMLElement).focus());
+  await browser.keyboard.press('.');
+  await expect(browser.locator('[role="menu"]')).toHaveCount(0);
+  await expect(browser.locator('.tg-node[data-number="15"]')).toBeFocused();
+});
+
 test('The Graph loads in its own shape, and with nothing open shows one empty state (TGR-005)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/tasks?view=graph', `${GRAPH}&hold=/api/sandboxes/sb_studio/tasks`));
   const shape = '#main .skeleton[role="status"]';
