@@ -88,6 +88,16 @@ async fn fixture_with(
     account: bool,
     data_dir: Option<PathBuf>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_ending(account, data_dir, None).await
+}
+
+/// [`fixture_with`], optionally with another wait for a shell's exit before its host is
+/// terminated (`shell_exit_ms`).
+async fn fixture_ending(
+    account: bool,
+    data_dir: Option<PathBuf>,
+    exit_ms: Option<u64>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
@@ -99,6 +109,9 @@ async fn fixture_with(
             config.contained = false;
             if let Some(data) = data_dir {
                 config.data_dir = data;
+            }
+            if let Some(ms) = exit_ms {
+                config.shell_exit_ms = ms;
             }
         })),
         ..HarnessOptions::default()
@@ -1566,6 +1579,66 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
     let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
     assert!(record.contains("\"account\":\"acc-b\""), "{record}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-146 SHE-002 (#346): a usage limit in a Superagent whose process cannot be ended (the end
+/// request is lost and `terminate` fails) starts no second one on the same conversation: the old
+/// one stays live on its subscription, the panel finds it, and its viewer is told why.
+#[tokio::test]
+async fn a_superagent_whose_host_cannot_be_ended_is_not_moved() -> TestResult {
+    let f = fixture_ending(false, None, Some(500)).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+
+    f.gate.refuse_ends(true);
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        limited_conversation(1_791_400_000),
+    )?;
+    let notice = loop {
+        let notice = read_message(&mut socket, "notice").await?;
+        if notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("could not move"))
+        {
+            break notice;
+        }
+    };
+    assert_eq!(
+        notice["text"],
+        "The Superagent could not move to another subscription: its process could not be \
+         ended, so it stays on this one."
+    );
+    // The panel's start waits for the move's start lock: the move is over when it answers.
+    assert_eq!(cockpit_id(&f, &f.alice).await?, id, "the same Superagent");
+    let live: Vec<String> =
+        f.h.app
+            .sandbox_shells(&sid())
+            .into_iter()
+            .filter(|shell| !shell.has_ended())
+            .map(|shell| shell.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![id.clone()], "no second Superagent");
+    // SUP-003 still holds: acc-a is recorded limited.
+    let usage = usage_of(&f.h, "acc-a").await?;
+    assert_eq!(usage["limit_reached"], true, "{usage}");
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "echo kept-$((3+4))\r"}).to_string(),
+        ))
+        .await?;
+    read_until(&mut socket, &mut screen, "kept-7").await?;
+    f.gate.refuse_ends(false);
     f.h.app.end_all_shells().await;
     Ok(())
 }

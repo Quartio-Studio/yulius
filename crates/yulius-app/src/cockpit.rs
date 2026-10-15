@@ -34,7 +34,7 @@ use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::model::{AccountRecord, SandboxRecord, UserRecord};
 use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch, WatchFrom};
-use crate::shells::{COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
+use crate::shells::{COCKPIT_NOT_MOVED, COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
 
 /// The Cockpit's display name.
 pub const COCKPIT_NAME: &str = "Cockpit";
@@ -403,7 +403,14 @@ impl App {
             }
         };
         runtime.switching.store(true, Ordering::SeqCst);
-        self.end_shells(std::slice::from_ref(runtime)).await;
+        if !self.end_shells(std::slice::from_ref(runtime)).await {
+            // Its process may still run: a second one would write the same conversation, whose
+            // transcript the move replaces (SPEC-146 SHE-002). It stays here, live.
+            runtime.switching.store(false, Ordering::SeqCst);
+            tracing::warn!(shell = %runtime.id(), "the cockpit stays on its subscription: its process could not be ended");
+            runtime.notice(COCKPIT_NOT_MOVED);
+            return false;
+        }
         match self.start_cockpit(&owner, &record, &account, true).await {
             Ok(started) => {
                 tracing::info!(from = %runtime.id(), to = %started.id, account = %account.id, "cockpit moved to another subscription after a usage limit");
