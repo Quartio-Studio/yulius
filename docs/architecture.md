@@ -1039,6 +1039,32 @@ sequenceDiagram
     end
 ```
 
+## Updates
+
+An update from `main` (SPEC-002 ADR-18) builds while tasks work, then freezes every task at once
+(SPEC-160, ADR-0131): the server asks the process host to move each run's agent tree into its own
+cgroup `…/sandboxes/<sandbox>/agents/run-<attempt>` and freeze it (`yulius_sandbox::freeze`), so the
+agent stops mid-turn with nothing to notice while its ptyhost keeps serving. The root helper
+restarts the service; the new server releases and thaws the tasks one by one. A run that cannot be
+frozen (no delegated cgroup) pauses at its turn boundary through the hook hold instead.
+
+```mermaid
+sequenceDiagram
+  participant S as Server (updates.rs)
+  participant H as Process host (freeze)
+  participant K as Kernel cgroup v2
+  participant R as Root helper
+  S->>R: build request (tasks keep working)
+  R-->>S: built
+  S->>H: freeze(run) for every live task
+  H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
+  K-->>H: cgroup.events frozen 1
+  S->>R: install request (two passes all frozen)
+  R->>S: stop, back up, install, start, health check
+  S->>H: thaw(run) one by one after releasing each task
+  H->>K: cgroup.freeze=0
+```
+
 ## Agent primitives
 
 Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),

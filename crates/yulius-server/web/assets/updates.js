@@ -28,7 +28,7 @@ export function phaseText(phase, run) {
       const pct = p && p.total ? ` ${Math.floor((p.done / p.total) * 100)}%` : '';
       return `Building the update${pct}. Tasks keep working.`;
     }
-    case 'pausing': return `Updating ${BRAND.name}: tasks pause at their next step.`;
+    case 'pausing': return `Updating ${BRAND.name}: tasks are pausing.`;
     case 'restarting': return `${BRAND.name} is restarting for an update. Tasks continue right after.`;
     case 'resuming': return 'Updated. Resuming tasks…';
     default: return '';
@@ -46,7 +46,7 @@ export async function confirmAndStartUpdate(ctx, available) {
       h('p', null, available.summary),
       h('ol', { class: 'update-confirm-steps' },
         h('li', null, 'The new version is built on this server. Tasks keep working; this takes several minutes.'),
-        h('li', null, 'Each task then pauses at its next step, and the server restarts (about a minute). The agents don’t notice; terminals stay open.'),
+        h('li', null, 'Tasks then pause at once, mid-step, and the server restarts (about a minute). The agents don’t notice; terminals stay open.'),
         h('li', null, 'Tasks continue one by one. If the new version fails its check, the previous version and its database come back.'))),
     confirmLabel: `Update to ${available.short}`,
   });
