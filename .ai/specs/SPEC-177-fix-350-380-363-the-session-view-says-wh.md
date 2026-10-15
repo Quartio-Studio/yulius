@@ -1,11 +1,11 @@
 ---
 yulius-task: d519c05d-44fd-45a0-b26e-b35c52bc8a37
-status: in-progress
+status: done
 ---
 
 # SPEC-177: The session view says when the server cut a diff or a context, and every scroller is reachable
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #137, issues #350, #380, #363 (part of task #118, SPEC-138)
 Scope authorization: task #137: "Fix GitHub issues #350, #380 and #363 of Quartio-Studio/yulius
@@ -113,3 +113,21 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   demoted under the keyboard; repeated names add their line; names use the TUI's labels.
   `render_text` capping hunks at 40/80 lines without a marker is older than this change and is
   left as it is (noted in the task summary; this task creates no issues).
+
+## Evidence
+
+- Test-first: the two `transcripts.rs` tests did not compile without the `truncated` fields; the
+  three new `sessions.e2e.ts` tests failed on dev's page ("Wrote 400 lines to …", "Context added
+  (16 KiB)", no `role` at 390 px); the review-round tests failed before their fixes (no
+  `… (line 21)` name; a focused region lost its tab stop).
+- `cargo nextest run -p yulius-app -p yulius-contracts transcripts sessions`: 8 passed.
+- `scripts/dev ci` at 0cc94e50 (dev 5599635c merged): exit 0; fmt, clippy, repository contracts,
+  1874 nextest tests passed (18 skipped), doctests, deps. (At 290f72ff: first run failed on
+  `cargo fmt --check` only, fixed; then 1869 passed.)
+- `npx e2e run tests/sessions.e2e.ts`: 25 passed. Full `npx e2e run` at 0cc94e50: 529 passed,
+  1 skipped (55 files); at 290f72ff: 527 passed.
+- `scripts/dev security`: **unrun** (exit 2: Vidoc answered HTTP 401 for the agent key, #470;
+  ADR-0104 counts exit 2 as not run, not passed). Yulius CI's `security` job runs it on the PR.
+- Independent review round 1 (fresh session, om-code-review) at 290f72ff: APPROVE, no blocker or
+  major; its minors and nits in this change's code were fixed test-first in 0cc94e50.
+
