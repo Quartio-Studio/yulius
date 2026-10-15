@@ -111,14 +111,15 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 
 ## Plan
 
-- [ ] Spec and loaded reproduction of #354, #349, #356, #394
-- [ ] The e2e server answers a page's burst of requests under load (#354)
-- [ ] Notes tests wait on the retried load and the save (#349)
-- [ ] Archive's Stopped toggle and quick Archive hold under load (#356)
-- [ ] Editor opens a file from the tree under load (#356)
-- [ ] Monaco opens without UNKNOWN service errors (#394)
-- [ ] Each file 10 loaded runs and the full suite twice under load
-- [ ] ADR-0122, architecture, e2e README and changes
+- [x] Spec and loaded reproduction of #354, #349, #356, #394
+- [x] The e2e server answers a page's burst of requests under load (#354)
+- [x] Notes tests wait on the retried load and the save (#349)
+- [x] Archive's Stopped toggle and quick Archive hold under load (#356)
+- [x] Editor opens a file from the tree under load (#356)
+- [x] Monaco opens without UNKNOWN service errors (#394)
+- [ ] Each file 10 loaded runs
+- [ ] Full suite twice in a row under load
+- [x] ADR-0122, architecture, e2e README and changes
 - [ ] Independent review findings resolved
 - [ ] Merged into dev on green CI and issues closed
 
