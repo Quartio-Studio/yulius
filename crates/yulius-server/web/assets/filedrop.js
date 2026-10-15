@@ -508,7 +508,8 @@ export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) 
 
 /**
  * The prompt text a task starts with: `text`, then each attached file as an `@path` mention, one
- * per line (the files of a split task, SPEC-124 keeps the others in place). Claude Code attaches
+ * per line (the files of a split task, and the composer's files without a placeholder in the text,
+ * SPEC-150; SPEC-124 keeps the others in place). Claude Code attaches
  * a mentioned file itself, an image as an image, so the agent sees it without having to find and
  * read it.
  */
@@ -523,8 +524,9 @@ const VIEWABLE_TYPE = /^(application\/pdf|audio\/|video\/)/;
 const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-sh|x-yaml|yaml|toml)\b)/;
 
 /**
- * Opens a file attached on the new-task composer (SPEC-025). An image previews in a dialog at
- * full size (`image`: its URL, or a draft's stored thumbnail once the file is gone). Otherwise the
+ * Opens a file attached on the new-task composer (SPEC-025). An image previews in a dialog,
+ * fitted to the window or at its own size (`image`: its URL, or a draft's stored thumbnail once the
+ * file is gone). Otherwise the
  * file (`item.file`, this page only) opens in a new tab as plain text when it is text, as it is
  * when it is a PDF, audio or video, and downloads when it is anything else. An attached file is
  * untrusted: a tab opened from this page shares its origin, so it never opens as a page.
@@ -532,7 +534,15 @@ const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-sh|x-yaml|yaml|t
  */
 export function openAttachment(item, { image, url }) {
   if (image) {
-    openModal({ title: item.name, wide: true, className: 'attachment-modal', body: h('img', { class: 'attachment-preview', src: image, alt: item.name }) });
+    // Fitted to the window; "Actual size" (a click on the image) shows it at its own size,
+    // scrollable, and fits it again (SPEC-150).
+    const zoom = h('button', { type: 'button', class: 'attachment-zoom', 'aria-pressed': 'false', 'aria-label': 'Actual size', title: 'Actual size' },
+      h('img', { class: 'attachment-preview', src: image, alt: item.name }));
+    zoom.addEventListener('click', () => {
+      const on = zoom.getAttribute('aria-pressed') !== 'true';
+      zoom.setAttribute('aria-pressed', String(on));
+    });
+    openModal({ title: item.name, wide: true, className: 'attachment-modal', body: zoom });
     return;
   }
   if (!item.file) return;
@@ -585,7 +595,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
 
   const enqueue = (carried, spot = null) => {
     let used = false;
-    const kept = spot && { insert: (paths) => { used = true; spot.insert(paths); } };
+    const kept = spot && { insert: (...args) => { used = true; spot.insert(...args); } };
     queue = queue.then(() => run(carried, kept)).catch((error) => {
       status.error(failure(error));
       status.end('The upload stopped.');

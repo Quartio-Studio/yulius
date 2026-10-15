@@ -230,8 +230,11 @@ sequenceDiagram
 A task's agent is a native Claude Code session, and its first message is in before a person can
 type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
 [decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
-attached on the new-task composer are uploaded to the sandbox's drafts folder, and each sits in
-the prompt's text where it was pasted or dropped: the prompt is stored with it there as the
+attached on the new-task composer are uploaded to the sandbox's drafts folder and show in the
+composer's tray, and each sits in the prompt's text as a placeholder where it was pasted, dropped
+or placed from the tray ([SPEC-150](../.ai/specs/SPEC-150-fix-the-ux-i-d-expect-uploading-images-a.md),
+[decision 0124](decisions/0124-uploaded-files-sit-in-a-tray-the-text-holds-placeholders.md)); a
+file without one follows the text. The prompt is stored with it there as the
 mention `@'<path>'` (an older prompt has its files after the text, a line `@path` each), and
 `Request::parse` keeps that order everywhere the prompt goes
 ([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
