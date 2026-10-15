@@ -30,7 +30,10 @@ test('a file from the tree opens in an editor tab', async ({ app, browser, scree
 test('a second file opened while the editor loads waits for all of Monaco: one editor, no errors', async ({ app, browser, screen }) => {
   let release = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
-  await browser.route(/\/vendor\/monaco\/vs\/toggleHighContrast-[^/]*\.js$/, async (route) => { await held; await route.continue(); });
+  let holds = 0;
+  // The chunk that registers the services (`grep -l ICodeLensCache vendor/monaco/vs/*.js`): if a
+  // Monaco update renames it, `holds` stays 0 and this test says so instead of holding nothing.
+  await browser.route(/\/vendor\/monaco\/vs\/toggleHighContrast-[^/]*\.js$/, async (route) => { holds += 1; await held; await route.continue(); });
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
@@ -38,6 +41,7 @@ test('a second file opened while the editor loads waits for all of Monaco: one e
   await tree.getByRole('treeitem', 'README.md').click();
   // Monaco's main chunk has run (it sets `window.monaco`); its services chunk is held back.
   await expect.poll(() => browser.evaluate(() => 'monaco' in window), { timeout: MONACO_LOAD_MS }).toBe(true);
+  expect(holds, 'the services chunk was held back').toBe(1);
   await tree.getByRole('treeitem', 'AGENTS.md').click();
   release();
   await editorShown(browser);
@@ -53,6 +57,39 @@ test('a second file opened while the editor loads waits for all of Monaco: one e
       try { return ed.getContribution(id) ? 'made' : 'missing'; } catch (error) { return String(error); }
     });
   })).toEqual(['made', 'made']);
+});
+
+// Review of SPEC-148: one creation shared by every opening must not keep a failure: the next
+// file opened makes the editor again, as before the creation was shared.
+test('a file opened after the editor could not be made makes it then', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    type Api = { editor: { create: (...args: unknown[]) => unknown; e2eOnce?: boolean } };
+    let api: Api | undefined;
+    let failed = false;
+    // Monaco sets `window.monaco` (twice: its main chunk, then editor.main): its first editor fails.
+    Object.defineProperty(window, 'monaco', { configurable: true, get: () => api, set: (next: Api) => {
+      api = next;
+      if (next.editor.e2eOnce) return;
+      const create = next.editor.create;
+      next.editor.create = (...args: unknown[]) => {
+        if (!failed) { failed = true; throw new Error('the editor could not be made (on purpose)'); }
+        return create.apply(next.editor, args);
+      };
+      next.editor.e2eOnce = true;
+    } });
+  });
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const readme = screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md');
+  await readme.click();
+  // The failure is the page's (an unhandled rejection of the click); expected here, then cleared.
+  const errors = () => browser.evaluate(() => (window as unknown as { __e2eErrors: string[] }).__e2eErrors);
+  await expect.poll(errors, { timeout: MONACO_LOAD_MS }).toEqual([expect.stringContaining('the editor could not be made (on purpose)')]);
+  await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.splice(0); });
+  await readme.click();
+  await editorShown(browser);
+  await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
 });
 
 type WithMonaco = Window & { monaco: { editor: { getEditors(): { getRawOptions(): { wordWrap?: string } }[] } } };
@@ -285,8 +322,11 @@ async function bobClick(browser: Browser, selector: string, text?: string) {
   }, [selector, text ?? '']), { message: `click ${selector} ${text ?? ''}` }).toBe(true);
 }
 
-/** Bob's editor shows `name` (opened from the tree, in his own signed-in window). */
-async function bobOpens(browser: Browser, name: string) {
+/**
+ * Bob's editor shows `name` (opened from the tree, in his own signed-in window). His first opening
+ * (`cold`) loads Monaco in his window and gets its budget; later ones the default.
+ */
+async function bobOpens(browser: Browser, name: string, { cold = false } = {}) {
   await bobClick(browser, '.ed-tree [role="treeitem"]', name);
   await expect.poll(() => browser.evaluate((file) => {
     const w = (window as unknown as { __bob: EdWindow & Window }).__bob;
@@ -294,7 +334,7 @@ async function bobOpens(browser: Browser, name: string) {
     return w.document.querySelector('.ed-tab.active')?.getAttribute('data-path') === file
       && w.document.querySelector('.ed-host .monaco-editor') !== null
       && Boolean(w.monaco.editor.getEditors()[0]?.getModel()?.getValue());
-  }, name), { timeout: MONACO_LOAD_MS }).toBe(true);
+  }, name), cold ? { timeout: MONACO_LOAD_MS } : {}).toBe(true);
 }
 
 // SPEC-127 AC-127-1: two signed-in people (this page as mkarp, a second window as bob, the mock
@@ -318,7 +358,7 @@ test('two people in one file see each other’s caret, name and selection in the
     return Boolean(show) || buttons.some((b) => (b.getAttribute('aria-label') ?? '').startsWith('Hide tools'));
   })).toBe(true);
   await bobClick(browser, '.rail button', 'Editor');
-  await bobOpens(browser, 'README.md');
+  await bobOpens(browser, 'README.md', { cold: true });
 
   // Each selects; each sees the other: their name, a caret and a selection in their colour.
   await inEditor(browser, 'me', 'ed.focus(); ed.setSelection({ startLineNumber: 1, startColumn: 3, endLineNumber: 1, endColumn: 8 })');

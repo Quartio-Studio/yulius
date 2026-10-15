@@ -3,11 +3,13 @@
 `python3 -m http.server` as the suite ran it before kept up only on a quiet machine (#354):
 - its listen queue holds 5 connections (`socketserver`'s default). The kernel drops a SYN beyond
   it, and the browser waits 1 s, then 3 s, before trying again. On a loaded machine the accept
-  loop is not scheduled for a while, and a page opens about 75 modules at once (Monaco about 120
-  more), so first loads stalled past the tests' 5 s waits;
-- it speaks HTTP/1.0, which closes the connection after each answer, so every module costs a new
+  loop is not scheduled for a while, while every worker's page loads about 75 modules (Monaco
+  about 120 more files), six connections at a time each, so first loads stalled past the tests'
+  5 s waits;
+- it speaks HTTP/1.0, which closes the connection after each answer, so every file costs a new
   connection, and another place in that queue.
-This one queues 1024 connections and keeps connections alive, as any production server does. It serves the same files with the same answers otherwise.
+This one queues 1024 connections and keeps them alive, as any production server does. It serves
+the same files with the same answers otherwise.
 """
 import functools
 import http.server

@@ -1,8 +1,15 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock as mockPage } from './support.ts';
 
 failOnPageErrors();
+
+/**
+ * A mock page without the sandbox browser's sign-in request 5 s after the start (`browserask=0`):
+ * while a notepad has the keyboard its toast moves to the top, over the Notes tabs (WCAG 2.4.11),
+ * and stays while pointed at, so a slow run would click or hover the toast instead (#349).
+ */
+const mock = (path: string, options = '') => mockPage(path, `&browserask=0${options}`);
 
 // Auto-saved notes (SPEC-041): the rail's Notes tool holds a notepad per sandbox and one for the
 // team. They save by themselves, a teammate's edit shows up, and edits made at the same time end
@@ -523,8 +530,7 @@ test('a conflict on Me is always with the person’s own other tab, even under a
 // SPEC-112: the tabs in any order, Team first by default.
 
 test('Team comes first and opens first; the tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
-  // The pointer goes to the tabs: no browser sign-in toast may come over them (#349).
-  await app.open(mock('/s/studio', '&browserask=0'));
+  await app.open(mock('/s/studio'));
   await openNotes(screen, null);
   expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
   await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
@@ -567,7 +573,7 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
   await browser.reload();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
-  await app.open(mock('/s/product', '&browserask=0')); // the same page: only the address's path changes
+  await app.open(mock('/s/product'));
   expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
 
   // A stored order that is not the three tabs is ignored.
@@ -578,8 +584,7 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
 });
 
 test('the tabs show a grip and say they can be clicked or dragged', async ({ app, browser, screen }) => {
-  // The pointer goes to the tabs: no browser sign-in toast may come over them (#349).
-  await app.open(mock('/s/studio', '&browserask=0'));
+  await app.open(mock('/s/studio'));
   await openNotes(screen, null);
   // SPEC-136 NOT-022/023: a decorative grip before each name, a title naming click and drag (the keys
   // are announced once, through aria-keyshortcuts).
@@ -864,8 +869,7 @@ test('one person in two tabs stays shown until both have left', async ({ app, br
 });
 
 test('Escape puts a dragged tab back, and a forced-colours screen gets the native selection', async ({ app, browser, screen }) => {
-  // The pointer goes to the tabs: no browser sign-in toast may come over them (#349).
-  await app.open(mock('/s/studio', '&browserask=0'));
+  await app.open(mock('/s/studio'));
   await openNotes(screen, null);
   const me = await screen.getByRole('tab', 'Me').boundingBox();
   const team = await screen.getByRole('tab', 'Team').boundingBox();

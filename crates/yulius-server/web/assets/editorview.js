@@ -524,9 +524,17 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   // ---------------------------------------------------------------- files and tabs
   let editorReady = null;
-  /** The one editor of this view: files opened while Monaco loads wait for the same one (#394). */
+  /**
+   * The one editor of this view: files opened while Monaco loads wait for the same one (#394). A
+   * creation that failed (Monaco not loaded, or the editor threw) is tried again by the next file.
+   */
   function ensureEditor() {
-    if (!editorReady) editorReady = createEditor().then((made) => { if (!made) editorReady = null; return made; });
+    if (!editorReady) {
+      editorReady = createEditor().then(
+        (made) => { if (!made) editorReady = null; return made; },
+        (error) => { editorReady = null; throw error; },
+      );
+    }
     return editorReady;
   }
 

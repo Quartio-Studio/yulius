@@ -11,10 +11,11 @@ task #134, issues #354, #349, #356 and #394. Keeps [ADR-0039](0039-ci-jobs-get-t
 On the shared VM under load (load average 40–78) the e2e suite failed first-load waits with no
 product defect: headings, regions, the notes' save state, xterm rows, the Editor's first tab.
 - The suite served the UI with `python3 -m http.server`. Its listen queue holds 5 connections, and
-  it answers HTTP/1.0, closing the connection after every answer. A page opens about 75 modules at
-  once and Monaco about 120 more files. When the loaded machine does not schedule the server's
-  accept loop in time, the kernel drops the SYNs beyond the queue and the browser tries again
-  after 1 s, then 3 s. A passing full run at load 35–53 overflowed the queue 491 times.
+  it answers HTTP/1.0, closing the connection after every answer. A page loads about 75 modules
+  and Monaco about 120 more files, six connections at a time, each file on a new connection, and
+  every worker at once. When the loaded machine does not schedule the server's accept loop in time,
+  the kernel drops the SYNs beyond the queue and the browser tries again after 1 s, then 3 s. In
+  the benchmark of SPEC-148 the old server's slowest request took over a second in every round.
 - Monaco threw "depends on UNKNOWN service ICodeLensCache" (and four more services) when the
   Editor opened under load. Monaco's main chunk sets `window.monaco` before the chunk that
   registers those services has run, and the first call into its API fixes the services every

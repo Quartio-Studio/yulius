@@ -29,11 +29,13 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 
 - **#354, the test server.** The suite served the UI with `python3 -m http.server`. Its listen
   queue holds 5 connections (`socketserver.TCPServer.request_queue_size`), and it speaks HTTP/1.0,
-  which closes the connection after every answer. A page opens about 75 modules at once
-  (`index.html` preloads them) and Monaco about 120 more files. On a loaded machine the server's
-  accept loop is not scheduled for a while, the queue overflows, and the kernel drops the SYNs
-  beyond it: the browser tries again after 1 s, then 3 s. The full suite at load 35–53 overflowed
-  the queue 491 times (each a stall of at least a second) even in a run that passed. A benchmark
+  which closes the connection after every answer. A page loads about 75 modules (`index.html`
+  preloads them) and Monaco about 120 more files, six connections at a time per page, each file on
+  a new connection, and every worker does so at once. On a loaded machine the server's accept loop
+  is not scheduled for a while, the queue overflows, and the kernel drops the SYNs beyond it: the
+  browser tries again after 1 s, then 3 s. During a full suite at load 35–53 that passed, the
+  sandbox's network namespace counted 491 listen-queue overflows (`TcpExtListenOverflows` counts
+  every listener there, other tasks' servers too, so it shows the scale, not this server alone). A benchmark
   of the UI's 201 scripts and stylesheets, three clients of six connections each (like Chromium's
   per-host limit), at load 36: the stock server's slowest request took 1.06–1.51 s in every round
   (a dropped SYN's retransmission) and a round 3.4–4.8 s; with keep-alive and a 1024-deep queue
@@ -76,6 +78,11 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
     for an AWS sign-in 5 s after the start, its toast moves to the top edge while the notepad has
     the keyboard (WCAG 2.4.11, `dom.js` `avoidFocus`) and pauses while pointed at. A fast run
     hovered before it came. The drag and Escape tests point at the same tabs.
+  - The "two people in one file" failures of the reproduction at line 313 (Bob closes his Editor):
+    one was the page not answering an evaluate within 5 s at load 74, the other Bob still shown
+    after 5 s. With the server and Monaco changes the test passed 10 of 10 (in 100 `editor.e2e.ts`
+    runs at load 23–93); no ordering fault was found in `presence.js` (a leave waits for the update
+    on its way, then goes).
   - `terminal.e2e.ts` "a read-only viewer cannot paste" failed 1 of 10 waiting for the page's
     "Read-only" banner at load about 90; the test then pasted into xterm without waiting for the
     terminal, which comes after that banner.
@@ -98,8 +105,9 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 | E2L-003 | Tests touch `window.monaco.editor` only after the Editor shows a Monaco editor (`editorShown` in `support.ts`, the DOM's `.ed-host .monaco-editor`). The Editor's first opening in a test waits for it with the cold load's budget (`MONACO_LOAD_MS`, 60 s, as before in `terminal.e2e.ts` and `filedrop.e2e.ts`); every other wait keeps its default budget. | `editor.e2e.ts`, `terminal.e2e.ts`, `filedrop.e2e.ts`, `places.e2e.ts` |
 | E2L-004 | The notes test that keeps text over a reload while loads fail reads the text only after a load that can succeed: once loads may succeed again it switches tabs, which loads the notepad at once, instead of waiting out a backoff that a busy machine stretches past 5 s. | `notes.e2e.ts` "text kept over a reload survives…" |
 | E2L-005 | The Stopped toggle keeps its state and the keyboard when the sidebar list is rebuilt while it is folded and focused, and Enter still unfolds it. | `archive.e2e.ts` "the Stopped toggle keeps its state and the keyboard when the list is rebuilt between presses" (fails with a rebuild that resets the toggle) |
-| E2L-006 | The notes tests that point at the tab strip (drag, grip, Escape) open the mock with `browserask=0`, which leaves out the sandbox browser's sign-in request 5 s after the start. Its toast moves to the top while the notepad has the keyboard (WCAG 2.4.11), covers the tabs and stays while pointed at, so a slow run hovered the toast, not the tab. | `notes.e2e.ts` "Team comes first…", "the tabs show a grip…", "Escape puts a dragged tab back…" |
+| E2L-006 | `notes.e2e.ts` opens every mock page with `browserask=0`, which leaves out the sandbox browser's sign-in request 5 s after the start. Its toast moves to the top while a notepad has the keyboard (WCAG 2.4.11), covers the Notes tabs and stays while pointed at, so a slow run hovered or clicked the toast, not the tab. | `notes.e2e.ts` ("the tabs show a grip…" failed 10 of 10 under load before) |
 | E2L-007 | "a read-only viewer cannot paste" pastes only once the terminal shows (`terminalShown`): the page's read-only banner is the sandbox's and comes before the terminal and its first state. | `terminal.e2e.ts` "a read-only viewer cannot paste" |
+| E2L-008 | A view whose editor creation failed (Monaco did not load, or making the editor threw) makes it again at the next file opened, as before the creation was shared. | `editor.e2e.ts` "a file opened after the editor could not be made makes it then" |
 
 ## Plan
 

@@ -56,7 +56,7 @@ class Serve(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_a_missing_file_is_404_and_the_connection_goes_on(self):
+    def test_a_missing_file_is_404_and_the_next_request_is_answered(self):
         self.start()
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:

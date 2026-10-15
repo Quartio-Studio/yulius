@@ -111,7 +111,6 @@ export async function editorShown(browser: Browser): Promise<void> {
   }).toBe(true);
 }
 
-/** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
 /**
  * Waits until the task view's terminal shows its first screen. The task view asks for the
  * keyboard when it opens, and that request lands when the terminal shows, over a button or link
@@ -133,6 +132,7 @@ export async function openSuperagent(browser: Browser, screen: Screen): Promise<
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
 }
 
+/** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
 export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
   return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
