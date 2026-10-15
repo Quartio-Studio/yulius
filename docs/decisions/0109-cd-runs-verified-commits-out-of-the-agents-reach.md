@@ -89,9 +89,9 @@ build them, and a command that runs a repository script would run agent-written 
 - Every project states its CD explicitly, even when it deploys nothing yet.
 - Both deploy over the sandbox's network; production has only the host's base tools, which its
   scripts complete in `$YULIUS_CD_CACHE`.
-- Agents can still block a deploy by breaking the sandbox clone (it is refused, never misled);
-  and they still hold their task owner's GitHub token, which can write the production branch
-  outside Yulius (issue #486).
+- Agents can still block a deploy by breaking the sandbox clone (it is refused, never misled).
+  They no longer hold their task owner's GitHub token: [ADR-0114](0114-agents-hold-a-token-github-refuses-on-production.md)
+  (issue #486).
 - What the CD page shows is read from the clone as last fetched; what a deploy runs is verified
   again at the deploy.
 - `[[delivery.environments]]` keep working for projects that use them; new projects use CD.
