@@ -316,8 +316,11 @@ impl App {
     async fn freeze_pass(&self, run_id: &str) {
         let _pass = self.updates.freezing.lock().await;
         let attempts = self.deps.store.live_attempts().await.unwrap_or_default();
-        if self.unfreezable_in_turn(&attempts).await {
-            self.thaw_unconfirmed_and_frozen().await;
+        // "Continue without waiting" installs now: every run that can be frozen is, whatever the
+        // others do.
+        let proceed = self.updates.proceed.load(Ordering::SeqCst);
+        if !proceed && self.unfreezable_in_turn(&attempts).await {
+            self.thaw_while_one_works().await;
             return;
         }
         for attempt in &attempts {
@@ -365,9 +368,16 @@ impl App {
             }
         }
         // A run refused in this pass may be in a turn.
-        if self.unfreezable_in_turn(&attempts).await {
-            self.thaw_unconfirmed_and_frozen().await;
+        if !proceed && self.unfreezable_in_turn(&attempts).await {
+            self.thaw_while_one_works().await;
         }
+    }
+
+    /// Nothing stays frozen while a run that cannot be frozen works: the runs this drain froze,
+    /// and those a server that restarted mid-drain froze (swept).
+    async fn thaw_while_one_works(&self) {
+        self.thaw_unconfirmed_and_frozen().await;
+        self.sweep_frozen_runs().await;
     }
 
     async fn still_draining(&self, run_id: &str) -> bool {
@@ -1055,7 +1065,7 @@ impl App {
                 self.freeze_pass(&run.id).await;
                 let progress = self.pause_progress().await;
                 let proceed = self.updates.proceed.load(Ordering::SeqCst);
-                let ready = proceed || progress.waiting.is_empty();
+                let ready = proceed || progress.paused >= progress.total;
                 let passes = if ready {
                     self.updates.ready_passes.fetch_add(1, Ordering::SeqCst) + 1
                 } else {
@@ -1312,6 +1322,17 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let settling: HashSet<TaskId> = self
+            .updates
+            .frozen
+            .lock()
+            .map(|f| {
+                f.iter()
+                    .filter(|(_, run)| matches!(run.state, FreezeState::Freezing(_)))
+                    .map(|(task, _)| task.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut tasks: Vec<TaskId> = store
             .live_attempts()
             .await
@@ -1337,7 +1358,8 @@ impl App {
                 .is_some_and(|at| now.saturating_sub(*at) <= HELD_FRESH_MS);
             if policy::at_pause_point(task.status, task.activity, recently_held) {
                 paused += 1;
-            } else if waiting.len() < MAX_WAITING_SHOWN {
+            } else if !settling.contains(id) && waiting.len() < MAX_WAITING_SHOWN {
+                // A run being frozen is not "still in a turn" (OPS-014).
                 let sandbox = store
                     .sandbox(&task.sandbox_id)
                     .await
@@ -1439,7 +1461,7 @@ impl App {
             RunState::Draining => {
                 let mut pause = self.pause_progress().await;
                 pause.deadline = Some(rfc3339(run.state_since.plus_millis(DRAIN_MAX_MS)));
-                message = Some(if pause.waiting.is_empty() {
+                message = Some(if pause.paused >= pause.total {
                     "Every task is paused. Restarting next.".to_owned()
                 } else {
                     format!("Pausing tasks: {} of {} paused.", pause.paused, pause.total)

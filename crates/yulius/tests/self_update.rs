@@ -665,6 +665,11 @@ async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResul
         view["run"]["tasks"]["paused"], 1,
         "not confirmed: not paused"
     );
+    assert_eq!(
+        view["run"]["tasks"]["waiting"],
+        json!([]),
+        "being frozen is not still in a turn"
+    );
     for _ in 0..4 {
         let _ = i.h.app.update_round().await;
     }
@@ -707,13 +712,16 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     let ctx = support_ctx(&i).await?;
     let app = i.h.app.clone();
     let mut cancel = tokio::spawn(async move { app.cancel_update(&ctx).await.map(|_| ()) });
-    loop {
-        let view = get(&i, &i.admin).await?;
-        if view["run"]["state"] == "cancelled" {
-            break;
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let view = get(&i, &i.admin).await?;
+            if view["run"]["state"] == "cancelled" {
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::task::yield_now().await;
-    }
+    })
+    .await??;
     // Without serialization the cancel's thaw would finish here, before the freeze is recorded.
     let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut cancel).await;
     release.send(()).map_err(|_| "release")?;
@@ -722,7 +730,7 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
         Ok(done) => done??,
         Err(_) => cancel.await??,
     }
-    let _ = i.h.app.update_round().await;
+    // Thawed by the cancel itself, before any later round's backstop.
     assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
     Ok(())
 }
@@ -825,5 +833,35 @@ async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
     );
     let view = restarted.update_view(&support_ctx(&i).await?).await?;
     assert_eq!(view.run.ok_or("run")?.state, "rolled_back");
+    Ok(())
+}
+
+/// Review round 2: "Continue without waiting" freezes every run that can be frozen, even while a
+/// run that cannot be frozen is still in its turn; a server restarted mid-drain sweeps the runs
+/// its predecessor froze while such a run works.
+#[tokio::test]
+async fn continuing_without_waiting_still_freezes_what_it_can() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Unsupported);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    assert!(host.frozen().is_empty());
+
+    // A server restarted mid-drain does not know what its predecessor froze: it sweeps.
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(OLD, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let sweeps = host.sweeps.load(Ordering::SeqCst);
+    let _ = restarted.update_round().await;
+    assert!(host.sweeps.load(Ordering::SeqCst) > sweeps);
+
+    restarted.proceed_update(&support_ctx(&i).await?).await?;
+    let _ = restarted.update_round().await;
+    assert_eq!(host.frozen(), vec![RUN_IDLE.to_owned()]);
+    assert_eq!(
+        i.helper.last().map(|r| r.action),
+        Some(HelperAction::Install)
+    );
     Ok(())
 }
