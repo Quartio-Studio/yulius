@@ -1893,6 +1893,16 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        // A stop or close that came while the run was launching found no run to ask: it asks now,
+        // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
+        // comes later finds the run itself; the host takes a second request as the first.
+        let ending = runtime
+            .intent
+            .lock()
+            .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close)));
+        if ending {
+            request_shutdown(&runtime).await;
+        }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
         // it): the screen shows that viewer's size from the start, never the spawn size first,
         // and the PTY follows (TSK-006, F 2026-10-10).
