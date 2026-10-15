@@ -1,11 +1,11 @@
 ---
 yulius-task: 869c8c44-10c2-4281-b069-018137e3dfdb
-status: draft
+status: done
 ---
 
 # SPEC-169: The pull request chip stays on one line in a crowded step strip
 
-Status: draft
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #161, issue #542
 Scope authorization: task #161: two screenshots of the task strip's "PR #523" chip broken onto two
@@ -44,9 +44,9 @@ strip width. The step label and the state give way first, as they already do (#3
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -70,3 +70,26 @@ strip width. The step label and the state give way first, as they already do (#3
 - **What else the cause touches.** Any fixed-height chip in a shrinking flex row without `nowrap`
   can do the same. The other strip chips sit in `.strip-extras` (`nowrap`), and `.strip-status` is
   `nowrap` and clips its text with an ellipsis, so only the PR chip was exposed.
+
+## Evidence
+
+- Reproduced with a throwaway probe in the mock (task #13, Shell panel open). Before the fix, at
+  strip 459/499 px: `.strip-pr` was 64/69 px wide with `scrollHeight` 29 > `clientHeight` 22. After
+  the fix it is 82 px wide and 22 high at every swept width.
+- Regression test first (commit `d29d8ac2`, before the fix):
+  `npx e2e run tests/responsive.e2e.ts`: 1 failed, 24 passed, with
+  `ASSERTION_FAILED: expected ["PR #520"] to equal []` in "a task beside a tool panel keeps room for
+  its step count in a narrow strip".
+- With the fix (`8d0f7c0c`): `npx e2e run tests/responsive.e2e.ts` passed 25/25, before and after
+  merging `origin/dev`. Full suite `npx e2e run`: exit 0, 480 passed, 1 skipped (54 files passed,
+  1 skipped).
+- `python3 scripts/bootstrap.py` exit 0; `scripts/dev ci` exit 0 (nextest: 1839 tests run, 1839
+  passed, 18 skipped; lint, docs and deps steps passed).
+- `scripts/dev security`: **unrun**, exit 2 ("Vidoc rejected the key (HTTP 401: Invalid or expired
+  token)"), the known key problem (#470). Per ADR-0104, an exit 2 is recorded as not run, not as
+  passed.
+- At strip widths of 300 px and below (a tool panel in an 800-960 px window), the strip already
+  overflowed before this change (`scrollWidth` 302 vs 140-300). With the chip at its full width it
+  overflows by 18 px more (320). That is a separate layout defect, filed as #543.
+- Independent review in a fresh session (`om-code-review`, read-only, diff `origin/dev...HEAD`):
+  verdict given with `delivery_merge` on this head.
