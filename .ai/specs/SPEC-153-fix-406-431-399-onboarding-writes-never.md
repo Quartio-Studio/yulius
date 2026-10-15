@@ -38,8 +38,10 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 - The review nit of #406 (the web mock creates its preparation task only after its own 422 checks,
   and not with a task to run after or a rule) was already done on `dev` by #405 (the mock's
   `preparation()` is called lazily after every 422 check, and `before || preparation()` skips it
-  with a predecessor). The server has the same ordering fault itself: `create_task_held` calls
-  `onboarding_wait`, which creates the onboarding task, before it refuses an empty prompt.
+  with a predecessor). On the server, `create_task_held` calls `onboarding_wait` (which creates
+  the onboarding task) before its own prompt check, but every request path validates the prompt,
+  mode, harness, workflow and predecessor first (`create_task_as`), so a refused request already
+  creates nothing; a regression test now says so.
 - `App::archive_task` (`tasks.rs`) closes a running Done onboarding task with
   `close_task_and_wait` so that `ensure_archive_allowed` sees the run's end (SPEC-106 OTR-004).
   No test covers it. `close_task_and_wait` (`supervisor.rs`) returns "stop the task before
@@ -56,7 +58,7 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OLC-001 | Every onboarding state change is a compare-and-set from the state it was decided on (`SandboxStore::transition_onboarding`: `UPDATE … WHERE onboarding_state = <read>`); a change whose state moved meanwhile writes nothing and is not audited. `start_onboarding` writes `preparing` only from the `pending` it read before starting the task; `refresh_onboarding` returns the current state when its write lost. A skip is retried from the state it finds (at most 4 reads; states only move forward while it holds the lock), so a start or refresh landing between its read and its write never makes it fail. | Rust `task_done::a_skip_during_start_onboarding_stays_skipped`; store unit test `onboarding_transitions_only_from_the_state_read` |
-| OLC-002 | A new task request refused for its prompt (empty or over 64 KiB) creates no onboarding task in a `pending` sandbox. | Rust `import_server::a_refused_new_task_creates_no_onboarding_task` |
+| OLC-002 | A new task request refused for its prompt (empty or over 64 KiB) creates no onboarding task in a `pending` sandbox. Already true on `dev` (validated before the gate); kept by a regression test. | Rust `import_server::a_refused_new_task_creates_no_onboarding_task` |
 | OLC-003 | Archiving a live, Done onboarding-origin task with a plan step open, in a `preparing` sandbox whose project validates, answers 200: the task is closed and archived and the sandbox `ready`. | Rust `task_done::a_done_onboarding_task_is_archived_and_the_sandbox_is_ready` (fails with `close_task_now`: the plan is open, so only the run's end makes the sandbox ready) |
 | OLC-004 | The 409 for a task that is neither closed, resting nor stopping when an archive or a deletion closes it reads "the task is changing state; stop the task first" for both. `archive_task` documents its 409s: a live task that is not Done, a session still closing, a session that could not be ended, and the onboarding task of a blocking sandbox. | review of the text; `cargo doc` |
 | OLC-005 | The task summary says whether a resting task never ran: `not_started` is true for a `closed` task with no attempt; `awaits_start_onboarding` is true when that task is the onboarding task of its `pending` sandbox. Both default to false (older servers). | Rust `import_server::onboarding_starts_only_from_the_browser` (pending: both true; after Start: both false), `import_server::a_skipped_onboarding_task_reads_not_started` |
@@ -67,7 +69,7 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 
 - [x] Spec and plan for #406, #431 and #399
 - [ ] Onboarding state writes are compare-and-set, so a Skip survives Start onboarding
-- [ ] A refused new task creates no onboarding task
+- [x] A refused new task creates no onboarding task
 - [ ] A live Done onboarding task's archive is tested; the close 409 reads stop the task first
 - [ ] The task summary says a task never ran or waits for Start onboarding
 - [ ] The web UI shows Not started and Waits for Start onboarding outside Closed
@@ -80,8 +82,7 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 - With Start onboarding held inside `start_run` and an admin's Skip landing meanwhile, the sandbox
   ends `skipped` and the audit log has no `skipped -> preparing`. Fails without OLC-001.
 - `transition_onboarding` from a state the sandbox no longer has changes nothing and says so.
-- An empty prompt in a `pending` sandbox answers 422 and leaves the task list empty. Fails
-  without OLC-002.
+- An empty prompt in a `pending` sandbox answers 422 and leaves the task list empty.
 - OLC-003's test passes, and fails when `archive_task` uses `close_task_now` for it.
 - The task list API of a `pending` sandbox with a waiting task shows the onboarding task with
   `not_started` and `awaits_start_onboarding`; after Skip, `not_started` alone; once started,
@@ -130,5 +131,5 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
   without running, so it sits with the stopped tasks, not under Closed.
 - **The server, not the UI, decides `awaits_start_onboarding`.** The task rows (sidebar, list,
   task page) read only the task; the sandbox state there may be stale. The server knows both.
-- **The mock nit of #406** was already done by #405; this change fixes the server's own order
-  (OLC-002) instead.
+- **The mock nit of #406** was already done by #405. The server's matching order was checked
+  (OLC-002): it holds, so only a regression test is added.
