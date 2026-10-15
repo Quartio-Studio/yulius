@@ -235,8 +235,29 @@ test('leaving and coming back while Start onboarding runs still shows it loading
   await expect(starting).toBeVisible();
   await expect(starting.getByRole('button')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Start onboarding')).toHaveCount(0);
-  await browser.evaluate(() => (window as unknown as Mocked).__release!());
+  // The start's own ending waits for its read of the tasks (held), which brings a title only that
+  // read has: once it shows, the start has said all it says. The mock makes task #1 as the start
+  // reaches it.
+  await expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { tasks: { sandbox_id: string; number: number }[]; sandboxes: { id: string; slug: string }[] } }).__yuliusMock;
+    const id = db.sandboxes.find((s) => s.slug === 'website')!.id;
+    return db.tasks.some((t) => t.sandbox_id === id && t.number === 1);
+  })).toBe(true);
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked & { __releaseTasks?: () => void };
+    const db = w.__yuliusMock as unknown as { holdPath: string; held: Promise<void>; tasks: { sandbox_id: string; number: number; title: string }[] };
+    const id = w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id;
+    db.holdPath = `/api/sandboxes/${id}/tasks`;
+    db.held = new Promise<void>((resolve) => { w.__releaseTasks = resolve; });
+    db.tasks.find((t) => t.sandbox_id === id && t.number === 1)!.title = 'Read again';
+    w.__release!();
+  });
   await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+  await browser.evaluate(() => (window as unknown as { __releaseTasks: () => void }).__releaseTasks());
+  await expect.poll(() => browser.evaluate(() => document.title)).toMatch(/Read again/);
+  // One start, one toast: the page that opened the task says so, the composer left says nothing
+  // (#436).
+  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.toast .toast-msg')].map((el) => el.textContent).filter((text) => text?.startsWith('Onboarding')))).toEqual(['Onboarding started: opened #1.']);
 });
 
 test('New task on a sandbox being onboarded stays on its onboarding task', async ({ app, browser, screen }) => {

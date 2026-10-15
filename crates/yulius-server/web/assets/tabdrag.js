@@ -3,7 +3,9 @@
 // pixels the tab follows the pointer, the tabs it passes slide aside, and on release it settles
 // into its place from where it was let go; Escape puts it back. The click that ends a drag (or an
 // Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
-// would redraw during a drag waits (`dragging`) and redraws when it ends (`cancelled` or `commit`).
+// would redraw during a press waits (`dragging`) and redraws when it ends (`commit` after a drag,
+// `cancelled` otherwise: after the click that ends a plain press, so the tab pressed is the one
+// clicked).
 
 /** How far a pressed tab moves before it is dragged rather than clicked. */
 const DRAG_THRESHOLD_PX = 4;
@@ -78,7 +80,9 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {} }) 
   function end(event) {
     if (!drag || event.pointerId !== drag.pointerId) return;
     const state = done();
-    if (!state.moved) { cancelled(); return; } // a click: a redraw held back meanwhile happens now
+    // A click: a redraw held back meanwhile happens after it (the click follows this pointerup),
+    // or the browser may drop a click whose pressed element was replaced (#477).
+    if (!state.moved) { setTimeout(cancelled, 0); return; }
     dragged = true; // the click after this release
     setTimeout(() => { dragged = false; }, 0); // a release outside the tab clicks nothing
     const dx = event.clientX - state.startX;

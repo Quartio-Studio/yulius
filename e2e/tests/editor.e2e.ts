@@ -679,3 +679,161 @@ test('a tab closed while another is dragged keeps the drag going, and the order 
   await browser.mouse.up();
   await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs', 'AGENTS.md']);
 });
+
+// #477: a redraw held back during a plain click on a tab runs after the click, so the element
+// pressed is the one clicked (Firefox drops a click whose pressed element was replaced).
+test('a tab clicked while a redraw is held back is the one clicked, and is chosen', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  for (const name of ['README.md', 'AGENTS.md']) {
+    await tree.getByRole('treeitem', name).click();
+    await editorShown(browser);
+    await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
+  }
+  await tree.getByRole('treeitem', /src$/).click();
+  await tree.getByRole('treeitem', /api$/).click();
+  await tree.getByRole('treeitem', 'checkout.rs').click();
+  await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+
+  // What the pressed tab and the clicked one are when the click arrives.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __pressed: Element | null; __clicks: { same: boolean; connected: boolean; path: string }[] };
+    w.__clicks = [];
+    document.addEventListener('pointerdown', (event) => { w.__pressed = (event.target as Element).closest('.ed-tab'); }, true);
+    document.addEventListener('click', (event) => {
+      if (!event.isTrusted) return; // the close mark's own click below
+      const tab = (event.target as Element).closest('.ed-tab') as HTMLElement | null;
+      if (tab) w.__clicks.push({ same: tab === w.__pressed, connected: Boolean(w.__pressed && w.__pressed.isConnected), path: tab.dataset.path ?? '' });
+    }, true);
+  });
+  const box = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  // README closes meanwhile: the strip's redraw waits for the press to end.
+  await browser.evaluate(() => (document.querySelector('.ed-tab[data-path="README.md"] .ed-tab-close') as HTMLElement).click());
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['AGENTS.md', 'src/api/checkout.rs']);
+  expect(await browser.evaluate(() => (window as unknown as { __clicks: unknown[] }).__clicks)).toEqual([{ same: true, connected: true, path: 'AGENTS.md' }]);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
+});
+
+// #477 review: the redraw held back during a press still comes when no click follows (released
+// off the tab), and a click on a tab closed during the press chooses nothing.
+test('a press released off its tab still redraws the strip, and a tab closed while pressed is not chosen', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  for (const name of ['README.md', 'AGENTS.md']) {
+    await tree.getByRole('treeitem', name).click();
+    await editorShown(browser);
+    await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
+  }
+  await tree.getByRole('treeitem', /src$/).click();
+  await tree.getByRole('treeitem', /api$/).click();
+  await tree.getByRole('treeitem', 'checkout.rs').click();
+  await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+  const close = (path: string) => browser.evaluate((p) => (document.querySelector(`.ed-tab[data-path="${p}"] .ed-tab-close`) as HTMLElement).click(), path);
+
+  // Pressed, README closed meanwhile, released below the strip: no click, the strip redraws.
+  let box = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  await close('README.md');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height * 4);
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['AGENTS.md', 'src/api/checkout.rs']);
+  await expect(screen.getByRole('tab', /^checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
+
+  // The pressed tab itself closes during the press: the click on it chooses nothing.
+  box = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  await close('AGENTS.md');
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs']);
+  await expect(screen.getByRole('tab', /^checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
+  expect(await inEditor(browser, 'me', 'return Boolean(ed.getModel()) && !ed.getModel().isDisposed()'), 'the open file’s model').toBe(true);
+});
+
+// #477 (SPEC-127 review round 2): the presence loop itself (unit, in the page). A file closed with
+// an update on its way still leaves once that is answered, and nothing is armed after `destroy()`;
+// refusals of access or input are not sent again, while too many requests and a lost one are.
+test('a destroyed presence sends its waiting leave and arms no timer; only lost or throttled updates go again', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    type Presence = { setShown(shown: boolean): void; soon(): void; destroy(options?: { going?: boolean }): void };
+    type Create = (options: { put(body: unknown, options: { keepalive: boolean }): Promise<void>; state(): unknown; draw(): void; myId: string }) => Presence;
+    const { createPresence } = await import('/assets/presence.js' as string) as { createPresence: Create };
+    // The timers presence.js arms and has not cleared or run, told apart by where they were armed.
+    const live = new Map<number, number>();
+    const realSet = window.setTimeout;
+    const realClear = window.clearTimeout;
+    window.setTimeout = ((fn: () => void, ms?: number) => {
+      if (!(new Error().stack ?? '').includes('/assets/presence.js')) return realSet(fn, ms);
+      const id = realSet(() => { live.delete(id); fn(); }, ms);
+      live.set(id, ms ?? 0);
+      return id;
+    }) as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => { if (id !== undefined) live.delete(id); realClear(id); }) as typeof window.clearTimeout;
+    const settle = () => new Promise((resolve) => realSet(resolve, 0));
+    try {
+      // Destroyed with an update on its way: the leave waits for its answer, then goes once.
+      const sent: { selection: unknown; keepalive: boolean }[] = [];
+      const answers: { resolve(): void; reject(error: unknown): void }[] = [];
+      const presence = createPresence({
+        put: (body, { keepalive }) => {
+          sent.push({ selection: (body as { selection: unknown }).selection, keepalive });
+          return new Promise<void>((resolve, reject) => answers.push({ resolve, reject }));
+        },
+        state: () => ({ revision: 1, selection: { anchor: 0, head: 1 } }),
+        draw: () => {},
+        myId: 'me',
+      });
+      presence.setShown(true);
+      presence.soon(); // a change while the hello is on its way: a timer armed
+      const armedBefore = live.size;
+      presence.destroy({ going: false });
+      const afterDestroy = { sent: sent.length, timers: live.size };
+      answers[0].resolve();
+      await settle();
+      const afterAnswer = { sent: sent.slice(1), timers: live.size };
+      answers[1].reject({ status: 503 }); // the leave is not sent again
+      await settle();
+      const destroyed = { armedBefore, afterDestroy, afterAnswer, finally: { sent: sent.length, timers: live.size } };
+
+      // Each refusal of the hello: is a retry armed?
+      const retried: Record<string, number[]> = {};
+      for (const status of [403, 404, 409, 422, 429, 503, 0]) {
+        live.clear();
+        const refused = createPresence({
+          put: () => Promise.reject(status ? { status } : new Error('lost')),
+          state: () => ({ revision: 1, selection: { anchor: 0, head: 0 } }),
+          draw: () => {},
+          myId: 'me',
+        });
+        refused.setShown(true);
+        await settle();
+        retried[status || 'lost'] = [...live.values()];
+        for (const id of live.keys()) realClear(id);
+        live.clear();
+      }
+      return { destroyed, retried };
+    } finally {
+      window.setTimeout = realSet;
+      window.clearTimeout = realClear;
+    }
+  });
+  expect(result.destroyed).toEqual({
+    armedBefore: 1,
+    afterDestroy: { sent: 1, timers: 0 },
+    afterAnswer: { sent: [{ selection: null, keepalive: false }], timers: 0 },
+    finally: { sent: 2, timers: 0 },
+  });
+  expect(result.retried).toEqual({ 403: [], 404: [], 409: [], 422: [], 429: [1000], 503: [1000], lost: [1000] });
+});

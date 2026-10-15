@@ -15,6 +15,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   queued task, or a failed push leaves the playground as it was
   (`POST /api/sandboxes/{sid}/move-to-github`).
 
+- A held redraw never eats a click or a drag, and one Start onboarding shows one toast (SPEC-175,
+  task #136, fixes #477, #478, #436). A plain click on an Editor tab while a strip redraw waited
+  activates the tab (the redraw runs after the click; the browser dropped the click before); a
+  drag from the new-task prompt that a thumbnail's redraw interrupted is refused on drop instead
+  of pasting a copy of itself; and leaving the sandbox's page and coming back while onboarding
+  starts no longer shows two toasts. New tests cover a presence leave naming a link to a folder,
+  a destroyed presence's waiting leave and which refusals are retried.
 - Queued messages show and take files as placeholders (SPEC-168, ADR-0137, task #158). The
   "Queued messages" card no longer shows a request's files as raw `@'/path'` mentions: each is a
   placeholder (`Image N`, or the file's name) that opens the image, or downloads the file, on a

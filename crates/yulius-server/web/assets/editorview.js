@@ -809,7 +809,8 @@ export function createEditorView(ctx, sandbox, getTask) {
         tab.dirty ? h('span', { class: 'sr-only' }, ', modified') : null,
         // Not a button: see closableTabKeys. Delete or Backspace closes the focused tab.
         h('span', { class: 'ed-tab-close', 'aria-hidden': 'true', title: `Close ${name}`, onClick: (event) => { event.stopPropagation(); closeTab(tab); } }, tab.dirty ? '●' : '×'));
-      button.addEventListener('click', () => { if (!tabDrag.clickConsumed()) activate(tab); });
+      // A tab closed while pressed (its strip redraws after the click) chooses nothing.
+      button.addEventListener('click', () => { if (!tabDrag.clickConsumed() && tabs.includes(tab)) activate(tab); });
       button.addEventListener('auxclick', (event) => { if (event.button === 1) closeTab(tab); });
       button.addEventListener('keydown', (event) => {
         if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {

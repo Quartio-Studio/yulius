@@ -202,14 +202,15 @@ sequenceDiagram
     (the send throttle), and a leave computes none. A performance change without its own test (the
     presence e2e cover the mapping it keeps).
   - Minors: refusals that cannot succeed (403, 404, 409, 422) are not retried (429, 408, 5xx and
-    lost ones still are); a strip redraw during a drag waits for the drag to end (e2e failing
-    before); a demoted writer's stream stops getting presence after its re-check and the task
+    lost ones still are); a strip redraw during a press waits for the press to end (e2e failing
+    before; after a plain click it runs after the click, SPEC-175 #477); a demoted writer's stream stops getting presence after its re-check and the task
     worktree root are covered in Rust; the two-person test's selection waits for Monaco's new
     boxes (it could pass on the old ones; under load it once failed the other way). Kept: Escape
     and press-without-move are covered through Notes' tests of the same `tabdrag.js`; suspend
     and resume across sandboxes reuse `syncPresence` with `suspended` (not separately tested).
 - Final review (approve `26bd661e`); its minors (a redraw held during a click in Firefox, test
-  gaps for the nit fixes) are #477, decided after three rounds rather than a fourth.
+  gaps for the nit fixes) are #477, decided after three rounds rather than a fourth. Fixed and
+  covered by SPEC-175 (task #136).
 - The two-person test failed twice in full, loaded e2e runs. Once (before the fixes of round 1)
   Bob stayed shown after closing the Editor, never seen again in 300+ runs since; once the page
   logged Monaco's "depends on UNKNOWN service ICodeLensCache" (#394, older than this task, first

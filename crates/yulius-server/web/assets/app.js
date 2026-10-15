@@ -734,7 +734,9 @@ function createApp(root, transport) {
   /** Opens a sandbox's composer (the one in view, or used last) and puts the cursor in the prompt. */
   function openNewTask(target) {
     document.body.classList.remove('drawer-open');
-    const sandbox = target || defaultSandbox();
+    const given = target || defaultSandbox();
+    // As the store has it now: the object handed in may be older (#436).
+    const sandbox = given && (store.sandboxById(given.id) || given);
     // While onboarding runs, the sandbox's page is its onboarding task (SPEC-111): go there
     // directly, not through the page that would open it again.
     const onboarding = sandbox && sandbox.onboarding === 'preparing' && !store.tasksError(sandbox.id)
