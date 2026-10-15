@@ -1,11 +1,11 @@
 ---
 yulius-task: 2d6fefb0-76d5-40f5-8b7b-48e66d27e07a
-status: in-progress
+status: done
 ---
 
 # SPEC-152: the CD page's environment cards read right at every width
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #146
 Scope authorization: task #146 ("UX of CD is a little bit broken, fix", with a screenshot of
@@ -55,8 +55,8 @@ card's geometry, the button's emphasis or the promoted commit.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green on the branch merged with current dev
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
 
@@ -89,3 +89,33 @@ card's geometry, the button's emphasis or the promoted commit.
   reads "the integration branch".
 - **What the cause could also break:** any other page that draws a header as `row-wrap` with a
   spacer has the same wrap. The CD page is the one reported; others aren't changed here.
+
+## Evidence
+
+- **Regression tests fail first.** `e2e/tests/cd.e2e.ts` at 7ae85127, which has the tests but not
+  the fix, gave 3 failures:
+  - `primary: true` on the disabled dev button;
+  - production's button `sameRow: false`, 151 px from the right edge at 390 px (mock `product`);
+  - facts "First promotes the integration branch into main …".
+
+  The reviewer reproduced them by running the suite against `cd.js` and `styles.css` from e37fdd21.
+- **Fix.** `npx e2e run tests/cd.e2e.ts`: 7 of 7 passed at 042ae6e6 and again after review round 1
+  (eecc8c67). Checked by eye in the Yulius browser at 1280 px: mock `product` (button top right,
+  badge wrapped, dead "Deploy dev" plain) and mock `studio` ("Promotes quartio at 9f3c2a1 into
+  main").
+- **Review.** Independent read-only reviewer in a fresh session: APPROVE at 042ae6e6, no blocker or
+  major. One minor (the product block lacked the scroll and axe checks) and two nits (wait on
+  "Not defined" before measuring; the full promotion text in the first test) were fixed in
+  eecc8c67. The reviewer ran `scripts/dev check`, `scripts/dev lint` and `scripts/dev test` (1784
+  passed, 16 skipped).
+- **`scripts/dev ci`.** Exit 0 at eecc8c67 (nextest: 1784 passed, 16 skipped).
+- **`scripts/dev security`.** Exit 2, unrun, not passed: Vidoc rejected the key (HTTP 401), as
+  tracked in #470 (ADR-0104). Yulius CI's `security` job reports the same way.
+- **Whole e2e suite** (`npx e2e run`, host load 60–90, after merging `origin/dev` 070abcdd): 431
+  passed, 15 failed, 1 skipped. Every failure is a timeout in a file this change doesn't touch
+  (editor, ownership, notes, places, consistency, pipeline).
+  - Rerun of those six files: pipeline passed; the others timed out again at load ~80.
+  - The same consistency, notes and places tests also time out on untouched `origin/dev` at the
+    same load.
+  - Tracked by #506 and #356 (editor, ownership) and #510 (consistency, notes, places, pipeline;
+    filed by this task).
