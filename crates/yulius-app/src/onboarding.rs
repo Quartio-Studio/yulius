@@ -337,10 +337,13 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          nothing is lost, run it, then delete .github/workflows/ in the same pull request. A \
          workflow whose jobs need a runner Yulius CI lacks (Windows, macOS) cannot be translated: \
          keep that workflow, and record why in a decision record and your summary; nobody needs \
-         to accept it. If GitHub refuses that push because the Yulius GitHub App may not change \
-         workflow files (its Workflows permission), keep .github/workflows/, finish everything \
-         else, mark that step skipped with this reason, and say in the pull request that the \
-         deletion follows once an admin grants the permission.\n\
+         to accept it. Commit that deletion but do not push it yourself: your own GitHub token \
+         may never change workflow files (ADR-0114), so your `git push` of it is refused; Yulius \
+         pushes your branch with its own token at the end of your turn. Only if Yulius reports \
+         that GitHub refused its push too, because the Yulius GitHub App may not change workflow \
+         files (its Workflows permission), keep .github/workflows/, finish everything else, mark \
+         that step skipped with this reason, and say in the pull request that the deletion \
+         follows once an admin grants the permission.\n\
          8. {gate} {cd}\n\
          9. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
@@ -442,7 +445,8 @@ fn production_ruleset_fix(repo: &str, branch: &str) -> String {
     format!(
         "A repository admin must add a branch ruleset on GitHub (https://github.com/{repo}/settings/rules): \
          target `{branch}`, enforcement Active, rules Restrict updates, Restrict deletions and Block \
-         force pushes, and only the Repository admin role in the bypass list (never the Yulius App)."
+         force pushes, and only the Repository admin role in the bypass list (never the Yulius App). \
+         Classic branch protection is not counted."
     )
 }
 
@@ -1293,6 +1297,8 @@ mod tests {
         assert!(prompt.contains("Yulius pushes your branch, opens the pull request"));
         assert!(prompt.contains("Do not open it yourself"));
         assert!(prompt.contains("Workflows permission"));
+        // ADR-0114: the agent's own token never changes workflow files; Yulius's push carries it.
+        assert!(prompt.contains("do not push it yourself"), "{prompt}");
         // F 2026-10-11: the preparation agent had no Rust toolchain afterwards.
         assert!(prompt.contains("development environment") && prompt.contains("rustup"));
         assert!(

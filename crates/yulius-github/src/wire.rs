@@ -91,6 +91,13 @@ pub(crate) struct WireInstallation {
     pub(crate) account: Option<WireOwner>,
 }
 
+/// An installation's granted App permissions (`GET /app/installations/{id}`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireInstallationPermissions {
+    #[serde(default)]
+    pub(crate) permissions: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireInstallationRepos {
     #[serde(default)]

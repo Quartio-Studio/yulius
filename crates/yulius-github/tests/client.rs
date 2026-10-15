@@ -1297,6 +1297,40 @@ async fn agent_tokens_are_narrowed_to_the_agent_permissions() -> TestResult {
     Ok(())
 }
 
+/// Review of SPEC-141 (major 1): an App installed without some of the agent permissions (an App
+/// created before Issues or Commit statuses were requested, or with Checks withheld) still gives
+/// agents a token, asking only for what the installation grants; GitHub refuses a request for
+/// more, and never an Administration or Workflows permission is asked.
+#[tokio::test]
+async fn agent_tokens_ask_only_for_what_the_installation_grants() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    fake.withhold_permission("issues");
+    fake.withhold_permission("checks");
+    let client = GitHubClient::new(fake.config())?;
+    let path = format!("/app/installations/{installation}/access_tokens");
+
+    client.create_agent_token(installation, "app").await?;
+    let body: serde_json::Value = serde_json::from_str(
+        &fake
+            .requests()
+            .into_iter()
+            .find(|r| r.path == path)
+            .ok_or("token request")?
+            .body,
+    )?;
+    assert_eq!(
+        body["permissions"],
+        serde_json::json!({
+            "contents": "write",
+            "pull_requests": "write",
+            "statuses": "read",
+            "metadata": "read"
+        })
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
     let (fake, client) = setup().await?;

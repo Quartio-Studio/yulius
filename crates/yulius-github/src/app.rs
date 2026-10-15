@@ -11,7 +11,8 @@ use crate::time::parse_rfc3339;
 use crate::types::{InstallationToken, Repo};
 use crate::validate;
 use crate::wire::{
-    WireInstallation, WireInstallationRepos, WireInstallationToken, WireManifestConversion,
+    WireInstallation, WireInstallationPermissions, WireInstallationRepos, WireInstallationToken,
+    WireManifestConversion,
 };
 
 /// Cached installation tokens are reused until this long before they expire.
@@ -124,11 +125,7 @@ impl GitHubClient {
             None => serde_json::json!({}),
         };
         if agent {
-            body["permissions"] = AGENT_TOKEN_PERMISSIONS
-                .iter()
-                .map(|(name, access)| ((*name).to_owned(), (*access).into()))
-                .collect::<serde_json::Map<_, _>>()
-                .into();
+            body["permissions"] = self.agent_permissions(installation_id, &jwt).await?;
         }
         let wire: WireInstallationToken =
             self.send_json(Method::POST, url, Some(&jwt), body).await?;
@@ -148,6 +145,36 @@ impl GitHubClient {
             cache.insert(key, token.clone());
         }
         Ok(token)
+    }
+
+    /// [`AGENT_TOKEN_PERMISSIONS`] as far as the installation grants them: GitHub refuses a token
+    /// request for a permission the installation lacks, and an App created before one was
+    /// requested lacks it (`docs/operations.md`). A write it grants only as read is asked as read.
+    async fn agent_permissions(
+        &self,
+        installation_id: u64,
+        jwt: &Secret,
+    ) -> Result<serde_json::Value, GitHubError> {
+        let id = installation_id.to_string();
+        let url = self.api_url(&["app", "installations", &id])?;
+        let installation: WireInstallationPermissions = self.get_json(url, Some(jwt)).await?;
+        let granted = |name: &str| installation.permissions.get(name).map(String::as_str);
+        let mut asked = serde_json::Map::new();
+        for (name, access) in AGENT_TOKEN_PERMISSIONS {
+            let access = match granted(name) {
+                Some("write") => *access,
+                Some("read") => "read",
+                _ => continue,
+            };
+            asked.insert((*name).to_owned(), access.into());
+        }
+        if asked.get("contents").and_then(serde_json::Value::as_str) != Some("write") {
+            return Err(GitHubError::Forbidden {
+                message: "the GitHub App has no Contents: write permission; agents get no token"
+                    .into(),
+            });
+        }
+        Ok(asked.into())
     }
 
     fn cached_token(

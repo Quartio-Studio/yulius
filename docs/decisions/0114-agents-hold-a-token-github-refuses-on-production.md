@@ -22,10 +22,11 @@ is not forced through Yulius's egress proxy (`HTTPS_PROXY` is advisory under sli
   an App installation token restricted to the sandbox's repository and to contents: write, pull
   requests: write, issues: write, checks: read, commit statuses: read and metadata: read. Never the
   owner's token. Without Administration it cannot touch rulesets, branch protection, deploy keys or
-  settings; without Workflows it cannot add a GitHub Actions workflow.
+  settings; without Workflows it cannot add a GitHub Actions workflow. Only what the installation
+  grants is asked (an older App may lack Issues or Commit statuses); no Contents: write, no token.
 - **The production branch carries a ruleset only people bypass.** Restrict updates (`update`),
   restrict deletions and block force pushes on the production branch, with the Repository admin
-  role (and Organization admin for an organization) as the only bypass actors, always. GitHub then
+  role as the only bypass actor, always (organization owners hold that role on every repository). GitHub then
   refuses the App's token, and so the agent's `git push` (with or without `--no-verify`), `gh pr
   merge`, auto-merge, the merge and contents APIs, and workflows' `GITHUB_TOKEN`. A person's
   promotion (ADR-0110) runs with their own token and passes when they are a repository admin.
@@ -60,4 +61,16 @@ is not forced through Yulius's egress proxy (`HTTPS_PROXY` is advisory under sli
 - An agent's own pushes, comments and issues show the Yulius App on GitHub; commits keep the
   owner as author. An agent cannot push a change to `.github/workflows`: Yulius's own push of the
   task branch (the owner's token) carries the onboarding commit that removes them.
-- A person's terminal keeps the person's own token: it is theirs, not an agent's.
+- A person's terminal keeps the person's own token, and the superadmin's (who has no GitHub
+  identity) the App's full repository token: they are people's terminals, not agents'.
+- **Remaining hole: Yulius's own Git in the task's worktree.** Yulius's push of a task branch and
+  its merge of the integration branch into a worktree run `git` on the server with the owner's
+  token in that one command's environment, inside a repository whose `.git/config` the agent can
+  write. The fixed `-c` hardening (no hooks, fsmonitor or `ext::`) does not stop every
+  config-driven command (for example `core.sshCommand` with an `ssh://` remote), so an agent can
+  still obtain the owner's token, and run code on the host, that way. This is issue #54 part B
+  (read-only repository config, or network Git from a mirror only Yulius writes), set aside by a
+  person on 2026-10-09; until it is built, a repository admin's token can still reach an agent,
+  and #486 stays open for it.
+- Classic branch protection is not read: a branch protected only that way is reported as writable.
+- A new project whose ruleset GitHub refuses (a private repository on a free plan) is only logged.

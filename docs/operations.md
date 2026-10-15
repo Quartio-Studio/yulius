@@ -651,7 +651,9 @@ involved.
    - Install what `uses:` steps installed on the machine or in the job's command.
 2. `git rm -r .github/workflows` in the same commit, then open the pull request. Yulius tests it with
    the CI it adds, because the integration branch has none yet.
-3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2.
+3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2. Yulius pushes
+   it with the task owner's token at the end of the agent's turn: the agent's own token never has
+   Workflows (ADR-0114).
 4. Turn GitHub Actions off for the repository (see "GitHub App permissions").
 5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
    enforces the delivery profile either way.

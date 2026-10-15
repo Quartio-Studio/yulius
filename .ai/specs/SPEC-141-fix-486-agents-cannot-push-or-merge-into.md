@@ -46,13 +46,15 @@ protected that way.
 - R1. `/internal/git-credential` (the agent's Git credential helper and `yulius gh-token`) issues an
   agent token: an installation token of the App restricted to the sandbox's repository and to the
   permissions contents: write, pull requests: write, issues: write, checks: read, commit statuses:
-  read, metadata: read. Never the owner's user token; no administration, no workflows. Commit
-  authorship stays the owner's (the Git identity in the run is unchanged).
+  read, metadata: read, as far as the installation grants each (GitHub refuses a request for more;
+  a write granted only as read is asked as read; without Contents: write no token). Never the
+  owner's user token; never administration or workflows. Commit authorship stays the owner's (the
+  Git identity in the run is unchanged).
 - R2. Without an installed App the agent gets no token (409 "the GitHub App is not installed"); a
   playground still gets none.
 - R3. The production ruleset Yulius creates for new projects also restricts updates (`update`
-  rule) and keeps deletion and force pushes blocked, with repository admins (and, for an
-  organization, organization admins) as the only bypass actors. The App is never a bypass actor.
+  rule) and keeps deletion and force pushes blocked, with the Repository admin role as the only
+  bypass actor (organization owners hold it on every repository). The App is never a bypass actor.
 - R4. Yulius can tell whether its agents could write a branch: through GitHub's branch rules and
   each applying ruleset's `current_user_can_bypass`, asked with an agent token. The branch is
   guarded only when an active `update` rule and an active `deletion` rule apply from rulesets the
@@ -88,6 +90,9 @@ protected that way.
   warning; a guarded one carries none (R5).
 - AC5. On Quartio-Studio/yulius a person must still add the ruleset: the issue stays open with a
   comment naming it (task rule), until then GitHub accepts the narrowed token's push to `main`.
+- AC6 (known limit, not met here). Yulius's own server-side Git in a task's worktree still carries
+  the owner's token in an agent-writable repository (issue #54 part B, set aside by a person on
+  2026-10-09); ADR-0114 records it and the issue stays open for it.
 
 ## Test plan
 
@@ -107,4 +112,10 @@ protected that way.
   bypass; Yulius checks and reports it. A proxy or credential-helper rule was rejected because an
   agent holding a real token bypasses both.
 - Agents keep no Workflows permission: the onboarding commit that removes `.github/workflows` is
-  pushed by Yulius (the owner's token) at the end of the turn, not by the agent's own `git push`.
+  pushed by Yulius (the owner's token) at the end of the turn, not by the agent's own `git push`;
+  the preparation prompt and `ci_setup` say so (review round 1, major 2).
+- Review round 1, major 3 (owner's token through Yulius's own Git in the worktree): not fixed in
+  this change. It is #54 part B, which a person set aside; rebuilding server-side Git on a mirror
+  is a change of its own. Recorded in ADR-0114 and on #486.
+- One production ruleset with the admin bypass is kept (review minor 3): a fast-forward promotion
+  needs the bypass for the pull-request rule too.

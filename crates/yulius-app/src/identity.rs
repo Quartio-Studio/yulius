@@ -13,7 +13,8 @@
 //!   host path;
 //! - Git in user processes authenticates through the credential helper with a workspace token
 //!   that the internal listener maps to the user's own GitHub token (the superadmin, who has no
-//!   GitHub identity, gets the App's token for the sandbox's repository, as agents do, ACC-012)
+//!   GitHub identity, gets the App's full token for the sandbox's repository, ACC-012: a person's
+//!   terminal, unlike an agent's narrowed one, ADR-0114)
 //!   ([`App::workspace_git_credential`]); a grant is checked against the user's current access
 //!   on every use;
 //! - the GitHub CLI is logged in the same way: a `gh` shim first on `PATH` fetches that token per

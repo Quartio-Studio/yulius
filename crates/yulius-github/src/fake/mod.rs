@@ -999,6 +999,24 @@ async fn handle(
         ("POST", ["app", "installations", id, "access_tokens"]) => {
             installation_token(state, &identity, id, &json_body)
         }
+        ("GET", ["app", "installations", id]) => {
+            if identity != Identity::App {
+                return error(401, "A JSON web token could not be decoded");
+            }
+            match id
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| state.installations.get(&id))
+            {
+                Some((account, _)) => reply(
+                    200,
+                    json!({"id": id.parse::<u64>().unwrap_or_default(),
+                        "account": {"login": account},
+                        "permissions": granted_permissions(state)}),
+                ),
+                None => error(404, "Not Found"),
+            }
+        }
         ("GET", ["app", "installations"]) => {
             if identity != Identity::App {
                 return error(401, "A JSON web token could not be decoded");
@@ -1146,6 +1164,28 @@ fn oauth_token(state: &mut FakeState, body: &[u8]) -> Response {
     )
 }
 
+/// The App's permissions as its manifest requests them, without the withheld ones.
+fn granted_permissions(state: &FakeState) -> Value {
+    let all = [
+        ("contents", "write"),
+        ("pull_requests", "write"),
+        ("issues", "write"),
+        ("checks", "read"),
+        ("statuses", "write"),
+        ("workflows", "write"),
+        ("administration", "write"),
+        ("metadata", "read"),
+        ("members", "read"),
+        ("actions", "read"),
+    ];
+    Value::Object(
+        all.iter()
+            .filter(|(name, _)| !state.withheld.contains(*name))
+            .map(|(name, access)| ((*name).to_owned(), json!(access)))
+            .collect(),
+    )
+}
+
 fn installation_token(
     state: &mut FakeState,
     identity: &Identity,
@@ -1163,6 +1203,19 @@ fn installation_token(
     }
     let serial = FakeGitHub::next_id(state);
     let token = format!("ghs_{serial:036}");
+    if let Some(asked) = body["permissions"].as_object() {
+        let granted = granted_permissions(state);
+        let covered = asked.iter().all(|(name, access)| {
+            let has = granted[name].as_str();
+            has == Some("write") || (has.is_some() && access == "read")
+        });
+        if !covered {
+            return error(
+                422,
+                "The permissions requested are not granted to this installation.",
+            );
+        }
+    }
     state.installation_tokens.insert(token.clone(), id);
     let permissions = if body["permissions"].is_object() {
         state
@@ -1332,7 +1385,11 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
             reply(200, Value::Array(paginate(&rules, query)))
         }
         ("GET", ["rulesets", id]) => {
-            let Some(ruleset) = repo.rulesets.iter().find(|r| r["id"].to_string() == *id) else {
+            let Some(ruleset) = repo
+                .rulesets
+                .iter()
+                .find(|r| r["id"].as_u64() == id.parse().ok())
+            else {
                 return error(404, "Not Found");
             };
             let mut shown = ruleset.clone();
@@ -1346,7 +1403,8 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
         }
         ("DELETE", ["rulesets", id]) => {
             let before = repo.rulesets.len();
-            repo.rulesets.retain(|r| r["id"].to_string() != *id);
+            repo.rulesets
+                .retain(|r| r["id"].as_u64() != id.parse().ok());
             if repo.rulesets.len() == before {
                 return error(404, "Not Found");
             }
