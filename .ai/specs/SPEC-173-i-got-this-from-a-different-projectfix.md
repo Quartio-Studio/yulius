@@ -113,5 +113,7 @@ setup or a rollback around a Docker daemon it cannot have.
   - the hook wiring test was added and shown to fail with the wiring removed.
   The overflow that exists without this change (a 600-byte goal under a Fix workflow already loses
   `## Architecture`) is #555.
+- **Gate after the review fixes and a merge of `origin/dev` (#547):** `scripts/dev ci` at `da11cf61` →
+  exit 0; nextest 1850 tests run, 1850 passed, 18 skipped.
 - **Not run here:** the host-level isolation suite (`YULIUS_ISOLATION_TEST=1`) cannot run inside a
   sandbox. This change does not touch containment.
