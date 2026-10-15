@@ -8,7 +8,8 @@
 // is true while its task is being created, so a composer opened meanwhile does not start it again. Each attachment is
 // `{ path, name, type, at, thumb?, file? }`: the file was uploaded at once (SPEC-014), so only its
 // server path is needed to start the task; `text` holds each file where it sits as `@'<path>'`
-// (SPEC-124), and `attached` the files of that text, in order; `file` (this page only) draws its thumbnail, `thumb` (a
+// (SPEC-124), and `attached` every uploaded file, the tray's, in order (SPEC-150: one without a
+// place in the text is sent after it); `file` (this page only) draws its thumbnail, `thumb` (a
 // small data URL) draws it after a reload.
 //
 // Stored in `localStorage` under `yulius.draft.<user id>.<sandbox id>`, written shortly after each

@@ -25,6 +25,10 @@ to upload images first and then position placeholders, and to keep zooming the i
 - **A tray tile positions its file**: dragged into the text, the file's placeholder lands at the
   drop point (moved there when the text holds it, inserted otherwise); a file not in the text has
   a button putting it at the caret left in the prompt.
+- **The tray is part of the prompt's undo history**: each undo step keeps the tray's files, so
+  undo and redo of × restore exactly the tray (order and numbers included) and undoing a paste
+  takes its upload out of the tray. A file arriving with no edit (an upload that ended after the
+  person left) is attached in every step.
 - **A file without a placeholder stays attached** and is sent after the text, as an `@path` line,
   which is how every older prompt reads; the draft's `attached` is the tray.
 - **The image dialog fits the image to the window**, and a toggle ("Actual size", or a click on
@@ -46,4 +50,8 @@ to upload images first and then position placeholders, and to keep zooming the i
   the tray's × does.
 - An older draft's files show in the tray instead of being appended to its text.
 - Late uploads (ending after the person left the composer) join the tray, not the text.
-- The tray hides while the Preview shows: the Preview draws each placed file in the formatted text.
+- The tray hides while the Preview shows: the Preview draws each placed file in the formatted text
+  and lists the others after it, as they are sent.
+- `Image N` is the composer's label only: the agent gets each file's path in place, and Claude Code
+  numbers the images it receives itself, in text order, so "in Image 2" written in the prompt can
+  mean another number there.

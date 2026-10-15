@@ -592,6 +592,8 @@ export function mountComposer(ctx, sandbox) {
     },
     onSubmit: () => start(),
     onOpen: (path) => openFile(path),
+    // The tray is part of each undo step: undo brings a removed file back in its place.
+    attached: { read: () => [...draft.attached], write: (list) => { draft.attached = list; } },
   });
   /** Opens a file of the prompt: an image previews, another file opens in a tab or downloads. */
   function openFile(path) {
@@ -611,6 +613,7 @@ export function mountComposer(ctx, sandbox) {
     const back = missing.map((path) => known.get(path)).filter(Boolean);
     if (!back.length) return;
     draft.attached = [...draft.attached, ...back];
+    prompt.amend();
     prompt.refresh(); // its number
   }
   keepAttached();
@@ -623,8 +626,12 @@ export function mountComposer(ctx, sandbox) {
   // text does not hold yet has a button putting it at the caret, and every tile drags into the
   // text, where its placeholder lands (moving there when the text holds it).
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
+  let traySeen = null; // what the tray shows: drawn again only when that changes
   function renderTray() {
     const placed = new Set(prompt.paths());
+    const seen = draft.attached.map((item) => `${item.path}\n${placed.has(item.path)}\n${Boolean(item.thumb || item.file)}`).join('\n\n');
+    if (seen === traySeen && tray.childElementCount === draft.attached.length) return;
+    traySeen = seen;
     let n = 0;
     tray.hidden = !draft.attached.length;
     setChildren(tray, draft.attached.map((item) => {
@@ -635,12 +642,15 @@ export function mountComposer(ctx, sandbox) {
         number ? h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(number)) : null,
         h('span', { class: 'composer-attachment-name' }, item.name),
       ];
+      // Named as its placeholder is: "Image 2, shot.png".
+      const named = number ? `Image ${number}, ${item.name}` : item.name;
       const open = image || item.file
-        ? h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${item.name}`, onClick: () => openFile(item.path) }, ...face)
+        ? h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${named}`, onClick: () => openFile(item.path) }, ...face)
         : h('span', { class: 'composer-attachment-open', title: `${item.name}: attach it again to open it here` }, ...face);
       const here = placed.has(item.path);
       const tile = h('li', { class: ['composer-attachment', !here && 'unplaced'], title: here ? item.name : `${item.name}: not in the text, sent after it` },
         open,
+        here ? null : h('span', { class: 'sr-only' }, 'Not in the text: sent after it.'),
         write ? iconButton('x', `Remove ${item.name}`, () => removeFile(item), { class: 'composer-attachment-remove' }) : null,
         write && !here ? iconButton('plus', `Put ${item.name} in the text`, () => prompt.place(item.path), { class: 'composer-attachment-place' }) : null);
       if (write) {
@@ -655,14 +665,20 @@ export function mountComposer(ctx, sandbox) {
       return tile;
     }));
   }
-  /** Takes a file out of the tray and its placeholders out of the text. */
+  /**
+   * Takes a file out of the tray and its placeholders out of the text: one undo step. The keyboard
+   * goes to the next file's tile (the one before, the prompt when none is left).
+   */
   function removeFile(item) {
+    if (prompt.readOnly || prompt.disabled) return;
+    const index = draft.attached.indexOf(item);
     draft.attached = draft.attached.filter((other) => other !== item);
-    for (const map of [urls, tabUrls]) if (map.has(item.path)) { URL.revokeObjectURL(map.get(item.path)); map.delete(item.path); }
-    remember();
-    prompt.remove(item.path);
+    if (!prompt.remove(item.path)) prompt.commit();
     prompt.refresh();
     renderTray();
+    const tile = tray.children[Math.min(index, tray.children.length - 1)];
+    const next = tile && tile.querySelector('button');
+    if (next) next.focus({ preventScroll: true }); else prompt.focus({ preventScroll: true });
   }
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
@@ -750,15 +766,25 @@ export function mountComposer(ctx, sandbox) {
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
   attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items, place) => {
     // At the place kept when they came, in this composer; an upload that ends after the person
-    // left still joins the draft (DRF-002), after the text of the composer open then.
+    // left still joins the draft (DRF-002), in the tray of the composer open then (SPEC-150).
     const here = place && !destroyed;
+    arriving = here;
     attachToDraft(userId, sandbox.id, draft, items);
-    if (here && items.every((item) => known.has(item.path))) place.insert(items.map((item) => item.path));
+    arriving = false;
+    const paths = items.map((item) => item.path);
+    if (here && items.every((item) => known.has(item.path))) place.insert(paths, draft.attached.filter((item) => paths.includes(item.path)));
   } });
-  /** The draft changed elsewhere: the tray shows the files it gained, a cleared draft empties it. */
+  // Files arriving at their placeholder right now: attached from their paste's undo step on, not in
+  // every step.
+  let arriving = false;
+  /**
+   * The draft changed elsewhere: the tray shows the files it gained (in every undo step: they came
+   * with no edit of this prompt), a cleared draft empties it.
+   */
   function draftChanged() {
     learn();
     if (!draft.text && !draft.attached.length && prompt.value) prompt.setValue('');
+    if (!arriving) prompt.adopt(draft.attached);
     prompt.refresh(); // numbers, or a thumbnail came
     renderTray();
   }
@@ -888,7 +914,7 @@ export function mountComposer(ctx, sandbox) {
 
   // Preview: the prompt formatted, read-only, in the box's place; Edit (or a click) goes back.
   function setPreview(on) {
-    if (on && !prompt.value.trim()) { toast('Nothing to preview yet.', { kind: 'info' }); return; }
+    if (on && !prompt.value.trim() && !unplaced().length) { toast('Nothing to preview yet.', { kind: 'info' }); return; }
     if (preview) { preview.destroy(); preview = null; }
     if (on) {
       // Each file shows where it sits in the formatted text (SPEC-124).
@@ -897,17 +923,18 @@ export function mountComposer(ctx, sandbox) {
       const markdown = withoutMarks(plain).replace(new RegExp(ATOM, 'g'), () => `${FILE_MARK}${n++}${FILE_MARK_END}`);
       preview = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
       // Each file shows where it sits in the formatted text (SPEC-124), and opens from there.
-      placeFiles(preview.el, (i) => {
-        const item = known.get(paths[i]);
-        if (!item) return null;
+      const shown = (item) => {
         const image = imageOf(item);
         const face = image ? h('img', { class: 'pi-preview-image', src: image, alt: item.name })
           : [icon('file', { size: 14 }), h('span', { class: 'pi-file-name' }, item.name)];
         return image || item.file
           ? h('button', { type: 'button', class: ['pi-preview-file', !image && 'pi-atom pi-file'], 'aria-label': `Open ${item.name}`, onClick: () => openFile(item.path) }, face)
           : h('span', { class: 'pi-atom pi-file', title: `${item.name}: attach it again to open it here` }, face);
-      });
-      setChildren(previewEl, preview.el);
+      };
+      placeFiles(preview.el, (i) => { const item = known.get(paths[i]); return item ? shown(item) : null; });
+      // The files without a placeholder follow the text, as they are sent (SPEC-150).
+      const after = unplaced();
+      setChildren(previewEl, preview.el, after.length ? h('div', { class: 'pi-preview-after', role: 'group', 'aria-label': 'Sent after the text' }, after.map(shown)) : null);
       previewEl.style.minHeight = `${prompt.el.offsetHeight}px`;
     } else {
       setChildren(previewEl, null);

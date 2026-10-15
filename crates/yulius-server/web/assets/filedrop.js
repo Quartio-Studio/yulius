@@ -508,7 +508,8 @@ export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) 
 
 /**
  * The prompt text a task starts with: `text`, then each attached file as an `@path` mention, one
- * per line (the files of a split task, SPEC-124 keeps the others in place). Claude Code attaches
+ * per line (the files of a split task, and the composer's files without a placeholder in the text,
+ * SPEC-150; SPEC-124 keeps the others in place). Claude Code attaches
  * a mentioned file itself, an image as an image, so the agent sees it without having to find and
  * read it.
  */
@@ -595,7 +596,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
 
   const enqueue = (carried, spot = null) => {
     let used = false;
-    const kept = spot && { insert: (paths) => { used = true; spot.insert(paths); } };
+    const kept = spot && { insert: (...args) => { used = true; spot.insert(...args); } };
     queue = queue.then(() => run(carried, kept)).catch((error) => {
       status.error(failure(error));
       status.end('The upload stopped.');

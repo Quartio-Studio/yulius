@@ -292,7 +292,7 @@ test('an image opened from the tray fits the window and zooms to its actual size
     data.items.add(new File([blob], 'wide.png', { type: 'image/png' }));
     document.querySelector('.composer-prompt')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   });
-  await screen.getByRole('button', 'Open wide.png').click();
+  await screen.getByRole('button', 'Open Image 1, wide.png').click();
   await expect(screen.getByRole('dialog', 'wide.png').getByRole('img', 'wide.png')).toBeVisible();
   const size = () => browser.evaluate(() => {
     const img = document.querySelector('dialog.modal img') as HTMLImageElement;

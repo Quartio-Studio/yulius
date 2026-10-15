@@ -44,10 +44,10 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | TRY-001 | Every file uploaded to the composer (paste, drop) shows in a tray above the text, labelled "Attached files", in upload order: an image as a thumbnail with its number, another file as a tile with its name. The tray is hidden while empty. | e2e `inline-images` |
-| TRY-002 | A click (or Enter/Space) on an image's thumbnail opens it large; another file opens as before (SPEC-025: a tab as plain text, PDF/media as it is, else a download). × on a tile removes the file from the tray and its placeholders from the text, one undo step; undo brings both back. | e2e `inline-images` |
+| TRY-002 | A click (or Enter/Space) on an image's thumbnail (named "Open Image N, <name>") opens it large; another file opens as before (SPEC-025: a tab as plain text, PDF/media as it is, else a download). × on a tile removes the file from the tray and its placeholders from the text, one undo step; undo brings both back in their place and order, redo removes them again. The tray is part of every undo step: undoing a paste takes its upload out of the tray. After ×, the keyboard goes to the next tile (the prompt when none is left). | e2e `inline-images` |
 | TRY-003 | In the text an image is a placeholder one line high, `Image N` (N its number in the tray) with a small image icon; another file is its name, as before. The placeholder's tooltip is the file's name; a double-click opens the file. Typing beside a placeholder keeps the line's height. | e2e `inline-images` |
-| TRY-004 | A paste or drop still puts the placeholder at the caret (the drop point). Placeholders move as in SPEC-124 (drag, ⇧+arrow then cut and paste). Dragging a tray thumbnail into the text puts that file's placeholder at the drop point: it moves there when the text already holds it, else it is inserted; one undo step. The keyboard way for a tray file is its "Put at the caret" button. | e2e `inline-images` |
-| TRY-005 | Deleting a placeholder keeps the file in the tray. A file in the tray with no placeholder reaches the task after the text (an `@path` line, as older prompts), so the agent still gets it. | e2e `inline-images` |
+| TRY-004 | A paste or drop still puts the placeholder at the caret (the drop point). Placeholders move as in SPEC-124 (drag, ⇧+arrow then cut and paste). Dragging a tray thumbnail into the text puts that file's placeholder at the drop point: it moves there when the text already holds it, else it is inserted; one undo step. A file the text does not hold has a "Put <name> in the text" button, which puts it at the caret the person left (kept right when a × or an upload changed the text meanwhile). | e2e `inline-images` |
+| TRY-005 | Deleting a placeholder keeps the file in the tray, marked (dashed, and "Not in the text: sent after it." for screen readers). A file in the tray with no placeholder reaches the task after the text (an `@path` line, as older prompts), so the agent still gets it; the Preview lists such files after the formatted text. An upload that ends after its placeholder was deleted stays in the tray only. | e2e `inline-images` |
 | TRY-006 | The draft keeps the tray (`attached`, every uploaded file) and the text with its placeholders' mentions; a reload restores both. An older draft's files show in the tray (no longer appended to the text). An upload ending after the person left joins the tray. | e2e `drafts`, `inline-images` |
 | TRY-007 | The zoom dialog fits the image to the window; a click on it (or Enter/Space, a toggle button named "Actual size") shows it at its own size, scrollable, and again fits it. | e2e `filedrop` |
 | TRY-008 | The composer stays usable at phone width: tray tiles wrap, no horizontal page scroll. No axe violations. | e2e `inline-images` |
@@ -111,5 +111,15 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
 - **Dragging a tray thumbnail moves the file's placeholder** when it has one, so there is one
   gesture for "put this image here"; a second placeholder for the same file still comes from copy
   and paste.
+- **The tray is part of the prompt's undo history** (review round 1): each step keeps the tray's
+  files, so × is always one step, undo restores the tray's order (and so the `Image N` numbers),
+  redo never leaves a removed file to be sent, and undoing a paste takes its upload away. A file
+  that arrives with no edit (an upload ending after the person left) is in every step.
+- **`Image N` is the composer's label only.** The agent gets each file as its path in place
+  (ADR-0101), and Claude Code numbers the images it receives itself, in text order; writing "in
+  Image 2" in the prompt can point at another number there. Recorded in ADR-0124 rather than sent
+  as a label, which would change the prompt format and every reader of it.
+- **"Actual size" stays on for an image smaller than the dialog** (review nit): toggling it changes
+  nothing there, which harms nobody; measuring the space on every open was not worth it.
 - **Zoom is a fit / actual-size toggle** in the existing dialog, not a zoom slider: it answers "I
   still want to zoom the image" with one click, and pinch zoom on phones works as before.
