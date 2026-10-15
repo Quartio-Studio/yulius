@@ -3373,7 +3373,7 @@ function sessionDocs(db) {
     // output and a command run twice are told apart.
     entry(17, 'assistant', [call('m1', 'MultiEdit', 'e2e/login.spec.ts', { file_path: 'e2e/login.spec.ts' }, { path: 'e2e/login.spec.ts', hunks: [1, 2].map((n) => ({ old: Array.from({ length: 30 }, (_, i) => `  await page.waitForTimeout(${n}${i});`).join('\n'), new: Array.from({ length: 30 }, (_, i) => `  await expect(page.getByRole('heading', { name: 'Step ${n}${i}' })).toBeVisible();`).join('\n') })) })]),
     entry(18, 'user', [result('m1', 'Applied 2 edits to e2e/login.spec.ts')]),
-    entry(19, 'user', [result('gone1', Array.from({ length: 40 }, (_, i) => `e2e/report-${i}.json`).join('\n'))]),
+    entry(19, 'user', [result('gone1', Array.from({ length: 40 }, (_, i) => `e2e/report-${i}.json`).join('\n')), result('gone2', Array.from({ length: 40 }, (_, i) => `e2e/trace-${i}.zip`).join('\n'))]),
     entry(20, 'user', [{ type: 'meta', text: `<local-command-stdout>${Array.from({ length: 40 }, (_, i) => `Usage line ${i}`).join('\n')}`, truncated: true }]),
     entry(21, 'assistant', [call('b3', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
     entry(22, 'user', [result('b3', Array.from({ length: 40 }, (_, i) => `  ✓ ${i + 1} [chromium] › e2e/login.spec.ts:${i + 1}`).join('\n'))]),

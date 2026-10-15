@@ -817,8 +817,11 @@ test('scroll regions have distinct names and a cut output says so', async ({ app
   const named = (label: string) => browser.locator(`.ss-tui [role="region"][aria-label="${label}"]`);
   await expect(named('Changed lines of e2e/login.spec.ts (1 of 2)')).toHaveCount(1);
   await expect(named('Changed lines of e2e/login.spec.ts (2 of 2)')).toHaveCount(1);
-  await browser.locator('.ss-tui li[data-line="19"] details.ss-tool > summary').click();
+  await browser.locator('.ss-tui li[data-line="19"] details.ss-tool > summary').nth(0).click();
   await expect(named('Result (line 19)')).toHaveCount(1);
+  // Two results without their call in one entry: the second counts on, no second "(line 19)".
+  const orphans = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="19"] .ss-result')].map((el) => el.getAttribute('data-region')));
+  expect(orphans).toEqual(['Result (line 19)', 'Result (line 19, 2)']);
   // The command first run on line 1 keeps its name; the second run names its line.
   await browser.locator('.ss-tui li[data-line="21"] details.ss-tool > summary').click();
   await expect(named('Result of Bash(npx playwright test login) (line 21)')).toHaveCount(1);
@@ -828,6 +831,9 @@ test('scroll regions have distinct names and a cut output says so', async ({ app
   expect(codes).toEqual(['Code', 'Code (line 24)', 'Code (line 24, 2)']);
   const hunks = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui li[data-line="25"] .ss-diff-hunk')].map((el) => el.getAttribute('data-region')));
   expect(hunks).toEqual(['Changed lines of e2e/steps.ts (1 of 2 shown)', 'Changed lines of e2e/steps.ts (2 of 2 shown)']);
+  // A cut edit claims no count either (#350); read as text, the entry may be off screen.
+  const preview = await browser.evaluate(() => document.querySelector('.ss-tui li[data-line="25"] details.ss-tool > summary .ss-preview')?.textContent ?? null);
+  expect(preview).toBe('⎿Updated e2e/steps.ts');
   expect(await axeViolations(browser)).toEqual([]);
   // A region named after its call names it as the line above it does: "Update", not "Edit".
   const regions = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui [data-region]')].map((el) => el.getAttribute('data-region')));

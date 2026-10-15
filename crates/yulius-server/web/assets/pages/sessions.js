@@ -693,8 +693,11 @@ export function mountSessionView(ctx, sandbox, id, route) {
     for (const li of added) {
       for (const el of li.querySelectorAll('[data-region]')) {
         const base = el.dataset.region;
+        const line = li.dataset.line;
+        // A name that already says its line (`Result (line 19)`) counts on inside it.
+        const lined = base.endsWith(` (line ${line})`);
         let name = base;
-        for (let n = 1; regionNames.has(name); n += 1) name = `${base} (line ${li.dataset.line}${n > 1 ? `, ${n}` : ''})`;
+        for (let n = 1; regionNames.has(name); n += 1) name = lined ? `${base.slice(0, -1)}, ${n + 1})` : `${base} (line ${line}${n > 1 ? `, ${n}` : ''})`;
         if (name !== base) {
           el.dataset.region = name;
           if (el.hasAttribute('aria-label')) el.setAttribute('aria-label', name);
