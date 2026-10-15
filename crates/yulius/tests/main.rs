@@ -62,6 +62,7 @@ mod session_sync;
 mod sessions;
 mod shells;
 mod skills_mcp;
+mod stages;
 mod start_change;
 mod subscription_pool;
 mod supertask;

@@ -24,6 +24,7 @@ mod sessions;
 mod setup_auth;
 mod shells;
 mod skills;
+mod stages;
 mod status;
 mod tasks;
 mod terminal;
@@ -259,6 +260,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/cd/runs/{rid}/cancel",
             post(cd::cancel),
         )
+        .route(
+            "/api/sandboxes/{sid}/stages/timeline",
+            get(stages::timeline),
+        )
+        .route("/api/sandboxes/{sid}/stages/summary", get(stages::summary))
+        .route("/api/sandboxes/{sid}/stages/spans", get(stages::spans))
         .route("/api/sandboxes/{sid}/ci", get(ci::overview))
         .route("/api/sandboxes/{sid}/ci/sync", post(ci::sync))
         .route("/api/sandboxes/{sid}/ci/runs/{rid}", get(ci::run))
