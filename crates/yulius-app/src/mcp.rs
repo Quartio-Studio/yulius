@@ -204,7 +204,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "ci_status".into(),
-            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with, for each job that failed or errored, its failing tests' output (assertion messages, stdout and stderr, kept from all of its output) and the end of its output; with run_id and job, that job's whatever its state. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with, for each job that failed or errored, its failing tests' output (assertion messages, stdout and stderr, kept from all of its output) and the end of its output; with run_id and job, that job's output whatever its state. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
             input_schema: schema(json!({
                 "run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"},
                 "job": {"type": "string", "description": "With run_id: the name of the job whose output to show"}

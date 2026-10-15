@@ -300,11 +300,7 @@ fn job_view(job: &CiJobRecord, with_output: bool) -> CiJob {
             .zip(job.ended_at)
             .map(|(start, end)| end.millis_since(start)),
         output: with_output.then(|| job.output.clone()),
-        failures: if with_output {
-            job.failures.clone()
-        } else {
-            None
-        },
+        failures: with_output.then(|| job.failures.clone()).flatten(),
     }
 }
 

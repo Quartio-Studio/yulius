@@ -59,6 +59,8 @@ pub struct FailureScanner {
     /// Bytes of the current line past [`MAX_LINE_BYTES`].
     overlong: bool,
     block: Option<Block>,
+    /// Inside libtest's `successes:` (passing tests' output shown with `--show-output`).
+    successes: bool,
     kept: String,
     omitted: usize,
 }
@@ -115,6 +117,11 @@ impl FailureScanner {
     }
 
     fn line(&mut self, line: &str) {
+        match line {
+            "successes:" => self.successes = true,
+            "failures:" => self.successes = false,
+            _ => {}
+        }
         if let Some(block) = &mut self.block {
             let goes_on = match block.kind {
                 // Its output is indented; the next status line, the run's separator or anything
@@ -125,6 +132,7 @@ impl FailureScanner {
                 }
                 Kind::Libtest => {
                     line != "failures:"
+                        && line != "successes:"
                         && !line.starts_with("test result:")
                         && libtest_header(line).is_none()
                 }
@@ -135,8 +143,9 @@ impl FailureScanner {
             }
             self.close();
         }
-        if nextest_status(line).is_some_and(nextest_failed) || libtest_header(line).is_some() {
-            let kind = if libtest_header(line).is_some() {
+        let libtest = !self.successes && libtest_header(line).is_some();
+        if libtest || nextest_status(line).is_some_and(nextest_failed) {
+            let kind = if libtest {
                 Kind::Libtest
             } else {
                 Kind::Nextest
@@ -177,15 +186,17 @@ impl FailureScanner {
     }
 }
 
-/// A nextest status line's status (`FAIL`, `PASS`, `SIGSEGV`, `TRY 2 FAIL`…): indented capitals
-/// before a bracketed duration such as `[   0.547s]` or `[>30.000s]`.
+/// A nextest status line's status (`FAIL`, `PASS`, `SIGSEGV`, `TRY 2 FAIL`…): capitals
+/// right-aligned to 12 columns before a bracketed duration such as `[   0.547s]` or `[>30.000s]`.
+/// A test's own output is indented by 4, so a status line it printed does not line up.
 fn nextest_status(line: &str) -> Option<&str> {
     let text = line.trim_start();
-    if text.len() == line.len() {
-        return None;
-    }
+    let indent = line.len() - text.len();
     let (status, rest) = text.split_once('[')?;
     let status = status.trim_end();
+    if indent == 0 || (indent + status.len() != 12 && status.len() < 12) {
+        return None;
+    }
     let duration = rest.trim_start().trim_start_matches('>');
     let capitals = !status.is_empty()
         && status.starts_with(|c: char| c.is_ascii_uppercase())
@@ -337,6 +348,32 @@ error: test run failed
         assert!(kept.starts_with("---- bad stdout ----\n"), "{kept}");
         assert!(kept.contains("the message"), "{kept}");
         assert!(!kept.contains("test result"), "{kept}");
+    }
+
+    #[test]
+    fn libtest_passing_output_shown_with_show_output_is_not_kept() {
+        let libtest = "running 2 tests\ntest ok ... ok\ntest bad ... FAILED\n\nsuccesses:\n\n\
+                       ---- ok stdout ----\npassing noise\n\nsuccesses:\n    ok\n\nfailures:\n\n\
+                       ---- bad stdout ----\nthe message\n\nfailures:\n    bad\n\n\
+                       test result: FAILED. 1 passed; 1 failed\n";
+        let kept = scan(&[libtest]).unwrap_or_default();
+        assert!(kept.contains("the message"), "{kept}");
+        assert!(!kept.contains("passing noise"), "{kept}");
+        assert!(!kept.contains("---- ok stdout"), "{kept}");
+    }
+
+    #[test]
+    fn a_status_like_line_in_a_failing_tests_output_does_not_end_it() {
+        // nextest right-aligns its statuses to 12 columns and indents a test's output by 4.
+        let nested = "        FAIL [   0.5s] (1/1) a outer\n  stdout ───\n    \
+                      PASS [   0.1s] (1/1) inner test printed by the outer one\n    the message\n";
+        let kept = scan(&[nested]).unwrap_or_default();
+        assert!(kept.contains("the message"), "{kept}");
+        let aligned = "   LEAK-FAIL [   0.5s] (1/1) a leaky\n  stderr ───\n    leaked\n\
+                       \x20 TRY 2 FAIL [   0.5s] (1/1) a retried\n  stderr ───\n    again\n";
+        let kept = scan(&[aligned]).unwrap_or_default();
+        assert!(kept.contains("leaked") && kept.contains("again"), "{kept}");
+        assert!(kept.contains("TRY 2 FAIL ["), "{kept}");
     }
 
     #[test]
