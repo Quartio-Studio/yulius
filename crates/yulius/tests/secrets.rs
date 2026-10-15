@@ -2437,3 +2437,51 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
     assert_eq!(by_admin.status, StatusCode::OK, "{}", by_admin.body);
     Ok(())
 }
+
+/// SPEC-178 VAU-002 (review round 2, ADR-0144): `secret_verify` is the Superagent's only. A
+/// task's transcript is readable by every member who can view the project, and a matching
+/// candidate's SHA-256 is the value's: a task agent is neither served it nor answered.
+#[tokio::test]
+async fn agents_are_not_served_secret_verify() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let listed = call(
+        &w.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})),
+        &Creds {
+            bearer: Some(TOKEN_S1.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    let names: Vec<&str> = listed.body["result"]["tools"]
+        .as_array()
+        .ok_or("tools")?
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(names.contains(&"secrets_list"), "{names:?}");
+    assert!(!names.contains(&"secret_verify"), "{names:?}");
+    let refused = mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_verify",
+        json!({"secret": "STRIPE_KEY", "sha256": w.h.app.deps.crypto.sha256_hex(STRIPE.as_bytes())}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused).to_string().contains("unknown tool"),
+        "{refused}"
+    );
+    Ok(())
+}

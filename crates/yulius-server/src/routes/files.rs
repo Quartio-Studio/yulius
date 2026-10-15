@@ -3,9 +3,10 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileEntry, FilePresence, FileWritten, WriteFile,
 };
 
 use crate::AppState;
@@ -18,6 +19,9 @@ pub struct FileQuery {
     root: Option<String>,
     #[serde(default)]
     path: String,
+    /// The `sha256` the caller has: an unchanged file answers 204 (SPEC-181).
+    #[serde(default)]
+    known: Option<String>,
 }
 
 pub async fn list(
@@ -37,10 +41,13 @@ pub async fn read(
     Auth(ctx): Auth,
     Path(sid): Path<String>,
     Query(q): Query<FileQuery>,
-) -> ApiResult<Json<FileContent>> {
-    Ok(Json(
-        app.file_read(&ctx, &sid, q.root.as_deref(), &q.path)
-            .await?,
+) -> ApiResult<Response> {
+    let file = app
+        .file_read(&ctx, &sid, q.root.as_deref(), &q.path, q.known.as_deref())
+        .await?;
+    Ok(file.map_or_else(
+        || StatusCode::NO_CONTENT.into_response(),
+        |file| Json(file).into_response(),
     ))
 }
 

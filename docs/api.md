@@ -1007,8 +1007,10 @@ resolves to nothing, the run gets the server without that variable or token.
   is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
   `GET /api/sandboxes/{sid}/files?root&path` → `{"path","entries":[{"name","path",
   "kind":"file|dir|symlink","size"}],"truncated"}` (directories first; `.git` hidden; at most
-  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path` → `{"path","content":
-  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB). `PUT
+  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path&known?` → `{"path","content":
+  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB); with `known`, the
+  `sha256` the caller has (64 lowercase hex digits, else 422), an unchanged file answers 204 with
+  no body (the Editor looks at the file in front every 2 s, SPEC-181). `PUT
   /api/sandboxes/{sid}/files/content` `{"root?","path","content","base_sha256?"}` →
   `{"path","sha256","size"}`: atomic; 409 when the file changed since `base_sha256` or, without
   a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
@@ -1444,3 +1446,12 @@ task; other hooks answer as usual.
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
   for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
   redacted.
+- MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
+  `sha256sum`'s line) →
+  `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`
+  on a match only): whether the
+  candidate whose SHA-256 is given is the secret's value, without a final line break, or with its
+  line breaks as the literal `\n` the vault holds; never the value or a hash Yulius computed from
+  it. Production secrets are refused; audited once per vault generation, sandbox, caller, secret
+  and candidate (`vault.agent.verify`). The Superagent (`ck_` token) is served `secrets_list` and
+  `secret_verify`, not the other secret tools; task agents are not served `secret_verify`.

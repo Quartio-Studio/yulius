@@ -539,6 +539,15 @@ access decision within the staleness bound, never waiting on GitHub). It is not 
 proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
+The Superagent reads the agent vault too: `secrets_list` names its sandbox's agent secrets (never
+a value), and `secret_verify`, the Superagent's only (a matching candidate's hash must not reach
+a task transcript other members read), compares the SHA-256 of a value the
+person holds with the stored value and its variants (a final line break; literal `\n` as line
+breaks, since an agent secret never spans lines), answering only the kind of match and the line
+count. Both run without asking; the proxy, `.env` copies, host requests and the browser stay a
+task's ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
+[decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
@@ -1092,6 +1101,32 @@ flowchart LR
     BUS -.->|dropped| R[Reader of the sandbox]
     B --> M[Monaco decoration<br/>+ caret position]
     M --> L[editorlayer.js<br/>rounded gliding shapes]
+```
+
+The file in front follows the disk ([SPEC-181](../.ai/specs/SPEC-181-here-ui-got-bugged-a-little-bit-we-want.md),
+[decision 0146](decisions/0146-the-editor-follows-the-file-in-front-by-polling-with-its-sha.md)).
+Agents and shells write the sandbox directly, so there is no event to wait for: while the Editor is
+shown, the page visible and the sandbox in front, the browser looks at that one file every 2 s
+(and at once when the Editor or the page comes back) with the `sha256` it has, and
+`App::file_read` answers 204 when the bytes still hash to it. A newer version replaces unedited
+text as one undoable edit of the part that changed; edited text is kept and the status bar says
+"Changed on disk", and the save's 409 choice decides.
+
+```mermaid
+sequenceDiagram
+    participant E as Editor (file in front)
+    participant S as Server (App::file_read)
+    participant D as Sandbox disk
+    loop every 2 s while shown
+        E->>S: GET files/content?path&known=sha
+        S->>D: read + sha256
+        alt same sha256
+            S-->>E: 204
+        else changed (agent, shell, teammate's save)
+            S-->>E: {content, sha256}
+            E-->>E: unedited: one edit of the changed part; edited: "Changed on disk"
+        end
+    end
 ```
 
 ```mermaid

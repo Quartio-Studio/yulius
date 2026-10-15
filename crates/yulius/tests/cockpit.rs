@@ -328,6 +328,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     );
     let allowed = std::fs::read_to_string(config.join("launch-allowed-tools"))?;
     assert!(allowed.contains("mcp__yulius__tasks_list"), "{allowed}");
+    assert!(allowed.contains("mcp__yulius__secret_verify"), "{allowed}");
     assert!(
         !allowed.contains("task_create"),
         "creating asks first: {allowed}"
@@ -1215,6 +1216,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "secret_verify",
+            "secrets_list",
             "session_read",
             "sessions_search",
             "task_archive",
@@ -2317,6 +2320,328 @@ async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult
     other_cockpit(&f, &id).await?;
     let usage = usage_of(&f.h, "acc-a").await?;
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-178 VAU-001, VAU-003 (ADR-0144): the Superagent lists its own sandbox's agent secrets,
+/// names and hosts only, and is told how it checks a value and where a person manages them; the
+/// vault tools that use a value (proxy hosts, `.env` copies, the browser) stay a task's.
+#[tokio::test]
+async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    add_apify_key(&f).await?;
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let other = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"name": "OTHER_KEY", "value": "other_synthetic_value_4471"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+
+    let (listed, is_error) = cockpit_tool(&f, &token, "secrets_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["secrets"][0]["name"], "APIFY_KEY", "{listed}");
+    assert_eq!(listed["secrets"][0]["hosts"], json!(["api.apify.test"]));
+    assert_eq!(
+        listed["secrets"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
+    // The Superagent is not behind the proxy: no placeholder and no proxy injection to use.
+    for proxy_only in ["placeholder", "adds"] {
+        assert!(
+            listed["secrets"][0].get(proxy_only).is_none(),
+            "{proxy_only}: {listed}"
+        );
+    }
+    let raw = listed.to_string();
+    for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
+        assert!(!raw.contains(hidden), "{hidden} in {raw}");
+    }
+    // The Superagent's own guidance: it has no placeholders, it verifies with `secret_verify`,
+    // and a person manages secrets on the Secrets page.
+    let how = listed["how_to_use"].to_string();
+    assert!(how.contains("secret_verify"), "{how}");
+    assert!(how.contains("/s/fixture/secrets?section=agents"), "{how}");
+    assert!(!how.contains("secret_copy_to_env"), "{how}");
+
+    for tool in [
+        "secret_copy_to_env",
+        "secret_request_hosts",
+        "browser_fill_secret",
+    ] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, tool, json!({"secret": "APIFY_KEY"})).await?;
+        assert!(is_error, "{tool}: {refused}");
+        assert!(
+            refused.to_string().contains("unknown tool"),
+            "{tool}: {refused}"
+        );
+    }
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// A synthetic three-line key, as a PEM file holds it.
+const PEM_KEY: &str =
+    "-----BEGIN SYNTHETIC KEY-----\nc3ludGhldGljLWtleS1ib2R5LTQ0MTc=\n-----END SYNTHETIC KEY-----";
+
+/// SPEC-178 VAU-002 (ADR-0144): the Superagent checks a value the person holds against the vault
+/// by its SHA-256, a multi-line key (which the vault holds on one line, with literal `\n`)
+/// included, and learns how a near match differs; it never gets the value or its hash, and each
+/// check is audited with the Superagent as actor.
+#[tokio::test]
+async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    // An agent secret never spans lines: a multi-line key is stored with literal `\n`.
+    let stored = PEM_KEY.replace('\n', "\\n");
+    let added = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "FOUNDER_PRIVATE_KEY", "value": stored})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let sha = |text: &str| f.h.app.deps.crypto.sha256_hex(text.as_bytes());
+    let value_sha = sha(&stored);
+
+    for (candidate, kind) in [
+        (stored.clone(), "exact"),
+        (format!("{stored}\n"), "trailing_newline"),
+        (PEM_KEY.to_owned(), "escaped_newlines"),
+        (format!("{PEM_KEY}\n"), "escaped_newlines"),
+        (
+            format!("{}\r\n", PEM_KEY.replace('\n', "\r\n")),
+            "escaped_newlines",
+        ),
+        (PEM_KEY.replace("LTQ0MTc", "LTQ0MTg"), "different"),
+    ] {
+        // Upper-case hex is the same hash, and `sha256sum`'s own line is taken as it prints it.
+        let hash = match kind {
+            "trailing_newline" => sha(&candidate).to_uppercase(),
+            "exact" => format!("{}  key.pem\n", sha(&candidate)),
+            _ => sha(&candidate),
+        };
+        let (answer, is_error) = cockpit_tool(
+            &f,
+            &token,
+            "secret_verify",
+            json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": hash}),
+        )
+        .await?;
+        assert!(!is_error, "{kind}: {answer}");
+        assert_eq!(answer["match"], kind, "{answer}");
+        if kind == "different" {
+            assert!(answer.get("lines").is_none(), "{answer}");
+        } else {
+            assert_eq!(answer["lines"], 3, "{answer}");
+        }
+        let raw = answer.to_string();
+        assert!(!raw.contains("c3ludGhldGljLWtleS1ib2R5LTQ0MTc="), "{raw}");
+        assert!(!raw.contains(&value_sha), "{raw}");
+    }
+
+    for (args, refusal) in [
+        (
+            json!({"secret": "NO_SUCH_KEY", "sha256": value_sha}),
+            "no agent secret named",
+        ),
+        (
+            json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": "abc123"}),
+            "64 hexadecimal digits",
+        ),
+        (
+            json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha, "value": "x"}),
+            "invalid arguments",
+        ),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "secret_verify", args).await?;
+        assert!(is_error, "{refused}");
+        assert!(
+            refused.to_string().contains(refusal),
+            "{refusal}: {refused}"
+        );
+    }
+
+    let activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let checks: Vec<&Value> = activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .collect();
+    assert_eq!(checks.len(), 6, "one entry per distinct check: {checks:?}");
+    assert!(
+        checks.iter().all(|e| e["actor"] == "cockpit:alice"),
+        "{checks:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|e| e["detail"] == "FOUNDER_PRIVATE_KEY → exact"),
+        "{checks:?}"
+    );
+    // The same check again (plain hex this time) answers the same and writes no second entry.
+    let (repeated, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha}),
+    )
+    .await?;
+    assert!(!is_error, "{repeated}");
+    assert_eq!(repeated["match"], "exact", "{repeated}");
+    assert_eq!(repeated["lines"], 3, "{repeated}");
+    let again = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let count = again
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .count();
+    assert_eq!(count, 6);
+
+    // After a rotation the same check answers anew and is audited again (review round 1).
+    let id = added.body["id"].as_str().ok_or("id")?;
+    let rotated = call(
+        &f.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": "rotated-founder-key-value-1"})),
+        &f.alice,
+    )
+    .await?;
+    assert!(rotated.status.is_success(), "{:?}", rotated.body);
+    let (after, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha}),
+    )
+    .await?;
+    assert!(!is_error, "{after}");
+    assert_eq!(after["match"], "different", "{after}");
+    let rotated_activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    // The exact candidate's check, audited again under the new generation: a seventh entry. Only
+    // the count proves it, since the unrotated "different" candidate wrote the same detail before.
+    let verifies: Vec<&Value> = rotated_activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .collect();
+    assert_eq!(
+        verifies.len(),
+        7,
+        "re-audited after the rotation: {verifies:?}"
+    );
+    assert_eq!(
+        verifies[0]["detail"], "FOUNDER_PRIVATE_KEY → different",
+        "{verifies:?}"
+    );
+
+    // Another project's secret is not this Superagent's to check (sandbox scope).
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let other = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"name": "OTHER_KEY", "value": "other_synthetic_value_4471"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "OTHER_KEY", "sha256": sha("other_synthetic_value_4471")}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("no agent secret named"),
+        "{refused}"
+    );
+
+    // A production secret is refused (SPEC-134).
+    let production = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PROD_KEY", "value": "prod-synthetic-value-12345"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        production.status,
+        StatusCode::CREATED,
+        "{:?}",
+        production.body
+    );
+    {
+        use yulius_app::ports::vault::VaultStore as _;
+        let id = production.body["id"].as_str().ok_or("id")?;
+        assert!(f.h.store.vault_set_cd_prod(id, false, true).await?);
+    }
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "PROD_KEY", "sha256": sha("prod-synthetic-value-12345")}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("production secret"),
+        "{refused}"
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }

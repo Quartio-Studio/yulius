@@ -85,6 +85,14 @@ pub(crate) fn inside(root: &Path, path: &Path) -> bool {
         .is_ok_and(|rest| !rest.components().any(|part| part.as_os_str() == ".git"))
 }
 
+/// A SHA-256 as the files API writes it: 64 lowercase hex digits.
+fn is_sha256_hex(sha: &str) -> bool {
+    sha.len() == 64
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 impl App {
     /// The worktree of `task` when it belongs to `sandbox` and lies inside the sandbox
     /// directory (shared by the editor and sandbox shells). With a `writer`, they must own the
@@ -250,35 +258,44 @@ impl App {
         })
     }
 
-    /// Reads a file for the editor.
+    /// Reads a file for the editor. With `known`, the `sha256` the caller already has, an
+    /// unchanged file is `None`: the editor looks at the file in front every 2 s (SPEC-181).
     ///
     /// # Errors
-    /// As [`App::files_list`]; `Invalid` for directories.
+    /// As [`App::files_list`]; `Invalid` for directories and a malformed `known`.
     pub async fn file_read(
         &self,
         ctx: &AuthContext,
         sandbox: &str,
         root: Option<&str>,
         path: &str,
-    ) -> AppResult<FileContent> {
+        known: Option<&str>,
+    ) -> AppResult<Option<FileContent>> {
         let target = self.file_target(ctx, sandbox, root, path, false).await?;
+        if known.is_some_and(|sha| !is_sha256_hex(sha)) {
+            return Err(AppError::Invalid("known is 64 lowercase hex digits".into()));
+        }
         let file = Self::existing(&target)?;
         let meta = std::fs::metadata(&file).map_err(|e| io_error(&e))?;
         if meta.is_dir() {
             return Err(AppError::Invalid("that path is a directory".into()));
         }
         if meta.len() > MAX_FILE_BYTES {
-            return Ok(FileContent {
+            return Ok(Some(FileContent {
                 path: target.relative,
                 content: None,
                 binary: false,
                 too_large: true,
                 size: meta.len(),
                 sha256: String::new(),
-            });
+            }));
         }
-        let bytes = std::fs::read(&file).map_err(|e| io_error(&e))?;
+        // Read every 2 s while someone has the file in front: off the runtime's threads.
+        let bytes = tokio::fs::read(&file).await.map_err(|e| io_error(&e))?;
         let sha256 = self.deps.crypto.sha256_hex(&bytes);
+        if known == Some(sha256.as_str()) {
+            return Ok(None);
+        }
         let sniff = bytes
             .get(..SNIFF_BYTES.min(bytes.len()))
             .unwrap_or_default();
@@ -287,14 +304,14 @@ impl App {
         } else {
             String::from_utf8(bytes).ok()
         };
-        Ok(FileContent {
+        Ok(Some(FileContent {
             path: target.relative,
             binary: text.is_none(),
             content: text,
             too_large: false,
             size: meta.len(),
             sha256,
-        })
+        }))
     }
 
     /// Writes a file atomically if it did not change since `base_sha256` (or creates it when
@@ -528,13 +545,7 @@ impl App {
         if input.selection.is_some() && !Self::existing(&target)?.is_file() {
             return Err(AppError::Invalid("presence names a file".into()));
         }
-        if !(input.sha256.is_empty()
-            || (input.sha256.len() == 64
-                && input
-                    .sha256
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))))
-        {
+        if !(input.sha256.is_empty() || is_sha256_hex(&input.sha256)) {
             return Err(AppError::Invalid(
                 "sha256 is 64 lowercase hex digits".into(),
             ));

@@ -51,7 +51,10 @@ watching, steering and unblocking.
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). A server taken from
   `.mcp.json` whose key is an agent secret's placeholder needs the egress proxy, which the
-  Superagent does not have yet; one whose value is `${secret:NAME}` works.
+  Superagent does not have yet; one whose value is `${secret:NAME}` works. It reads the agent
+  vault (names, never values): it names the project's agent secrets and tells whether a
+  key the person holds in a file is the one in the vault, from the file's SHA-256, also when the
+  vault holds a multi-line key with literal `\n` (SPEC-178).
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
   task run on every subscription and to the Superagent, their secrets taken from the agent
   secrets. A repository's
@@ -156,7 +159,9 @@ watching, steering and unblocking.
 - **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
   selection is drawn rounded and glides, people who have the same file open see each other's
   caret, name and selection in their Notes colour (awareness only: unsaved text stays each
-  person's own), and its tabs go in any order.
+  person's own), and its tabs go in any order. The file in front follows the disk: what
+  teammates, agents and shells write shows within about 2 s while the person has not edited it
+  (SPEC-181).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
