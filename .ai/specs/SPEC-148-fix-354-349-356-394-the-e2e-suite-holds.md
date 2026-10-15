@@ -70,8 +70,15 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
   after it is in the box).
 - **#349 "a save whose answer was lost…" and #356 archive "quick Archive":** first-load waits
   (`getByRole("status", "Save state")`, `getByRole("heading")`) that timed out, as in #354.
-- **#356 archive "the keyboard stays on its control when the sidebar list is rebuilt":** see
-  Evidence for the loaded runs.
+- **#356 archive "the keyboard stays on its control when the sidebar list is rebuilt"** (the
+  Stopped toggle read `aria-expanded="false"` after its second Enter): not reproduced in 25 runs on
+  the unchanged code at load 53–73 (5 in the four-file run, then 20 of this test alone). The
+  toggle's state is the sidebar's `endedOpen`, changed only by its click and redrawn as it is by
+  every rebuild (`layout.js` `groupHead`); a rebuild restores the keyboard to the new toggle
+  (`sameControl`). Nothing in the list's rebuild can fold or unfold it, so the failure means the
+  second Enter did not reach the toggle; no code path that takes the keyboard after the terminal
+  shows was found. A regression test pins the invariant: it rebuilds the list between the two
+  presses (and checks it was rebuilt) and fails if a rebuild changes the toggle's state.
 
 ## Requirements
 
@@ -80,6 +87,7 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 | E2L-001 | The e2e runner serves the UI with `e2e/serve.py`: Python's static file handler over HTTP/1.1 keep-alive, with a listen queue of 1024 connections. A connection made while the server is busy waits in the queue instead of having its SYN dropped, and one connection carries several requests. | `scripts/test_e2e_serve.py`; loaded runs (Evidence) |
 | E2L-002 | `loadMonaco()` resolves only when all of `editor.main` has run, whatever `window.monaco` says; `ensureEditor()` makes one editor per view even when files are opened while Monaco loads. | `editor.e2e.ts` "a second file opened while the editor loads waits for all of Monaco: one editor, no errors" |
 | E2L-003 | Tests touch `window.monaco.editor` only after the Editor shows a Monaco editor (`editorShown` in `support.ts`, the DOM's `.ed-host .monaco-editor`). The Editor's first opening in a test waits for it with the cold load's budget (`MONACO_LOAD_MS`, 60 s, as before in `terminal.e2e.ts` and `filedrop.e2e.ts`); every other wait keeps its default budget. | `editor.e2e.ts`, `terminal.e2e.ts`, `filedrop.e2e.ts`, `places.e2e.ts` |
+| E2L-005 | The Stopped toggle keeps its state and the keyboard when the sidebar list is rebuilt while it is folded and focused, and Enter still unfolds it. | `archive.e2e.ts` "the Stopped toggle keeps its state and the keyboard when the list is rebuilt between presses" (fails with a rebuild that resets the toggle) |
 | E2L-004 | The notes test that keeps text over a reload while loads fail reads the text only after a load that can succeed: once loads may succeed again it switches tabs, which loads the notepad at once, instead of waiting out a backoff that a busy machine stretches past 5 s. | `notes.e2e.ts` "text kept over a reload survives…" |
 
 ## Plan
