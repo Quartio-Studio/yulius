@@ -11,6 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
     of them. `python3 -m http.server` queued 5 and closed every connection, so on a loaded machine
     the kernel dropped a page's module requests and the browser waited 1–3 s to try again.
+    Starved to a fifth of a CPU a thread, about 1 run in 400 still fails a 5 s wait; #354 stays
+    open for that.
   - **#394:** a file opened while Monaco loaded made a second editor from the half-loaded
     `window.monaco`, which lacked five services ("depends on UNKNOWN service ICodeLensCache").
     The editor now waits for all of `editor.main`, and tests touch Monaco's API only once the
