@@ -112,13 +112,11 @@ Show (STG-4xx):
 - [x] CD promotion, deploy, verify and their stages recorded, with the production confirmation
 - [x] Timelines, stage percentiles, trends, delivery figures and export served
 - [x] Pipeline page with filters, trends, stage table and export
-- [ ] Waterfalls in CI runs, CD runs and task overviews, overview on the Dashboard
+- [x] Waterfalls in CI runs, CD runs and task overviews, overview on the Dashboard
 - [x] Retention bounded and Yulius's gate prints its stages
 - [x] Docs, ADR and changes updated
-- [x] Review round 3: test counts outside the figure budget, exact summary truncation
+- [x] Review rounds 1-3 fixed: indexed backfill, bounded figures, scoped and bounded timelines, the confirmation sent
 - [x] Independent review approves the exact head
-- [x] Review round 1: backfill and triggers indexed, figures coalesced and reserved, timelines bounded and scoped, the confirmation sent
-- [x] Review round 2: a span's figure names bounded, timelines truncated exactly, test counts only from runners
 - [x] Every gate green and the merge into dev armed on Yulius CI
 
 ## Acceptance criteria
