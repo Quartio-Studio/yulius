@@ -1124,7 +1124,11 @@ impl App {
             match self
                 .deps
                 .store
-                .requeue_ci_run(&run.id, "[yulius] queued again after a restart of Yulius\n")
+                .requeue_ci_run(
+                    &run.id,
+                    "[yulius] queued again after a restart of Yulius\n",
+                    self.now(),
+                )
                 .await
             {
                 Ok(true) => tracing::info!(run = %run.id, "CI run queued again after a restart"),

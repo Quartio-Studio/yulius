@@ -316,7 +316,10 @@ impl App {
         // A job the sandbox refused over its quota (usage crossed it after the dispatcher's
         // check) and nothing failed: the run waits for disk in the queue (CI-303).
         if cancel.borrow().is_none() && requeue_for_disk(&states, no_disk) {
-            match store.requeue_ci_run(&run.id, NO_DISK_REQUEUE).await {
+            match store
+                .requeue_ci_run(&run.id, NO_DISK_REQUEUE, self.now())
+                .await
+            {
                 Ok(true) => {
                     tracing::info!(run = %run.id, "CI run queued again: the sandbox is over its disk quota");
                     self.ci_disk_backoff(&run.sandbox_id);

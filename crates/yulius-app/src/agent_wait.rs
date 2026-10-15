@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -351,12 +352,55 @@ impl App {
     }
 
     /// Ends a decision of [`App::take_armed`] in one step, as [`App::merge_armed`] does.
-    pub(crate) fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
-        let runtime = self.runtime(task);
-        let mut slot = lock_slot(&runtime);
-        if slot.finish(deciding, verdict) {
-            self.save_armed(task, slot.merge.as_ref());
+    pub(crate) async fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
+        let decided = matches!(verdict, Verdict::Decided(_));
+        {
+            let runtime = self.runtime(task);
+            let mut slot = lock_slot(&runtime);
+            if slot.finish(deciding, verdict) {
+                self.save_armed(task, slot.merge.as_ref());
+            }
         }
+        if decided {
+            self.armed_wait_ended(task, &deciding.merge).await;
+        }
+    }
+
+    /// Records an update of a task's branch onto the integration branch Yulius made (SPEC-137
+    /// STG-104): `merged`, or `conflict` (aborted, left to the agent).
+    pub(crate) async fn integration_update_span(
+        &self,
+        task: &TaskId,
+        integration: &str,
+        started: Timestamp,
+        outcome: &str,
+    ) {
+        self.record_task_span(
+            task,
+            ("update", &format!("onto {integration}")),
+            (started, self.now()),
+            outcome,
+            serde_json::json!({ "branch": integration }),
+        )
+        .await;
+    }
+
+    /// Records how long an armed merge waited for its checks, from arming to its decision
+    /// (SPEC-137 STG-104): `merged` when the task's pull request is merged now, else `dropped`.
+    async fn armed_wait_ended(&self, task: &TaskId, armed: &ArmedMerge) {
+        use yulius_domain::delivery::DeliveryStage;
+        let merged = matches!(
+            self.deps.store.delivery(task).await,
+            Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
+        );
+        self.record_task_span(
+            task,
+            ("wait", "merge_armed"),
+            (Timestamp(armed.armed_at), self.now()),
+            if merged { "merged" } else { "dropped" },
+            serde_json::json!({ "head": armed.head }),
+        )
+        .await;
     }
 
     /// Performs the armed merges of a sandbox whose checks passed (after every CI run and from
@@ -388,9 +432,15 @@ impl App {
                 continue;
             };
             let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
-            let mut slot = lock_slot(&runtime);
-            if slot.finish(&deciding, verdict) {
-                self.save_armed(&task.id, slot.merge.as_ref());
+            let decided = matches!(verdict, Verdict::Decided(_));
+            {
+                let mut slot = lock_slot(&runtime);
+                if slot.finish(&deciding, verdict) {
+                    self.save_armed(&task.id, slot.merge.as_ref());
+                }
+            }
+            if decided {
+                self.armed_wait_ended(&task.id, &deciding.merge).await;
             }
         }
     }
@@ -577,12 +627,24 @@ impl App {
         let Ok(token) = self.task_github_token(task, sandbox).await else {
             return Current::Unchanged;
         };
-        match self
+        let updating = self.now();
+        let merged = self
             .deps
             .git
             .merge_integration(worktree, &integration, &token)
-            .await
-        {
+            .await;
+        match &merged {
+            Ok(MergeIntegration::Merged(_)) => {
+                self.integration_update_span(&task.id, &integration, updating, "merged")
+                    .await;
+            }
+            Ok(MergeIntegration::Conflict(_)) => {
+                self.integration_update_span(&task.id, &integration, updating, "conflict")
+                    .await;
+            }
+            _ => {}
+        }
+        match merged {
             Ok(MergeIntegration::UpToDate) => Current::Unchanged,
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "an armed pull request could not be brought up to date");

@@ -24,6 +24,7 @@ mod sandboxes;
 mod session_docs;
 mod sessions;
 mod skills;
+mod spans;
 mod tasks;
 mod updates;
 mod users;
@@ -71,6 +72,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0025_agent_secret_requests.sql"),
     include_str!("migrations/0026_agent_secret_env_copies.sql"),
     include_str!("migrations/0027_cd_runs.sql"),
+    include_str!("migrations/0028_spans.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -640,6 +642,109 @@ mod tests {
             store.task_times(&TaskId::parse("unrun")?).await?,
             times(800, Some(4)),
             "no run yet: since it was created"
+        );
+        Ok(())
+    }
+
+    /// A version-27 database's history is backfilled into spans where it is reliably derivable
+    /// (SPEC-137 STG-004), marked `backfilled`: CI queues, runs and jobs (a reused result marked),
+    /// CD runs, task runs with their figures, steps from their events, pauses, and a live task's
+    /// current state.
+    #[tokio::test]
+    async fn version_twenty_seven_history_is_backfilled_into_spans()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store_ext::SpanStore as _;
+        use yulius_domain::ids::SandboxId;
+        use yulius_domain::stages::SubjectKind;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v27.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..27] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 27)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, state_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'waiting', 'ui', 'u1', 1, 900, 900),
+                   ('t2', 's1', 2, 'T', 'p', 'claude', 'closed', NULL, 'ui', 'u1', 1, 900, 900);
+                 INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
+                   ('a1', 't1', 1, 'claude', 'new', 'exited', '/r', 'h', x'00', 100, 400);
+                 INSERT INTO metrics (attempt_id, task_id, output_tokens, active_ms, updated_at) VALUES ('a1', 't1', 42, 7000, 400);
+                 INSERT INTO steps (id, task_id, ordinal, title, status) VALUES ('st1', 't1', 1, 'Spec', 'done');
+                 INSERT INTO step_events (step_id, task_id, at, actor, from_status, to_status) VALUES
+                   ('st1', 't1', 150, 'a', 'pending', 'in_progress'),
+                   ('st1', 't1', 160, 'a', 'in_progress', 'in_progress'),
+                   ('st1', 't1', 300, 'a', 'in_progress', 'done');
+                 INSERT INTO capacity_pauses (id, task_id, kind, started_at, ended_at, outcome) VALUES ('p1', 't1', 'limit', 200, 250, 'switched');
+                 INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, reason, requested_by, queued_at, started_at, ended_at) VALUES
+                   ('r1', 's1', 'pr/7', 'abc', 'yulius_toml', 'passed', NULL, 'yulius', 10, 20, 80),
+                   ('r2', 's1', 'branch/dev', 'abc', 'yulius_toml', 'passed', 'not run again: same tree', 'yulius', 90, 90, 90);
+                 INSERT INTO ci_jobs (id, run_id, ordinal, name, job_key, command, state, exit_code, started_at, ended_at) VALUES
+                   ('j1', 'r1', 0, 'quality', 'quality', 'make', 'passed', 0, 25, 75);
+                 INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at, ended_at) VALUES
+                   ('cd1', 's1', 'prod', 'main', 'abc', 'passed', 'mkarp', 500, 560);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let sid = SandboxId::parse("s1")?;
+        let read = |kind, id: &'static str| store.subject_spans(&sid, kind, id);
+        let shape = |spans: Vec<yulius_app::stages::SpanRecord>| {
+            spans
+                .into_iter()
+                .map(|s| {
+                    (
+                        s.kind,
+                        s.name,
+                        s.started_at.0,
+                        s.ended_at.map(|t| t.0),
+                        s.source,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let b = || "backfilled".to_owned();
+        assert_eq!(
+            shape(read(SubjectKind::CiRun, "r1").await?),
+            vec![
+                ("queue".into(), "queue".into(), 10, Some(20), b()),
+                ("run".into(), "run".into(), 20, Some(80), b()),
+                ("job".into(), "quality".into(), 25, Some(75), b()),
+            ]
+        );
+        let reused = read(SubjectKind::CiRun, "r2").await?;
+        assert!(reused.iter().all(|s| {
+            s.detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("\"reused\":true")
+        }));
+        assert_eq!(
+            shape(read(SubjectKind::CdRun, "cd1").await?),
+            vec![("run".into(), "run".into(), 500, Some(560), b())]
+        );
+        let task = read(SubjectKind::Task, "t1").await?;
+        assert_eq!(
+            shape(task.clone()),
+            vec![
+                ("run".into(), "run".into(), 100, Some(400), b()),
+                ("step".into(), "Spec".into(), 150, Some(300), b()),
+                ("pause".into(), "limit".into(), 200, Some(250), b()),
+                ("state".into(), "idle".into(), 900, None, b()),
+            ]
+        );
+        assert!(
+            task[0]
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("\"output_tokens\":42")
+        );
+        assert!(
+            read(SubjectKind::Task, "t2").await?.is_empty(),
+            "an ended task's states are not stored"
         );
         Ok(())
     }

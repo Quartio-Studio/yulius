@@ -6,6 +6,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store_ext::NeedsYouStore;
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
@@ -31,6 +32,7 @@ impl NeedsYouStore for SqliteStore {
         &self,
         task: &TaskId,
         request: Option<&NeedsYouRecord>,
+        at: Timestamp,
     ) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         let text = request
@@ -40,8 +42,9 @@ impl NeedsYouStore for SqliteStore {
         self.call(move |c| {
             let changed = c
                 .execute(
-                    "UPDATE tasks SET needs_you = ?2 WHERE id = ?1 AND needs_you IS NOT ?2",
-                    params![task, text],
+                    // `updated_at` dates the change: the request's span ends then (SPEC-137).
+                    "UPDATE tasks SET needs_you = ?2, updated_at = ?3 WHERE id = ?1 AND needs_you IS NOT ?2",
+                    params![task, text, at.0],
                 )
                 .map_err(db)?;
             Ok(changed == 1)

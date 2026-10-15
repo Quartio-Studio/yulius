@@ -455,7 +455,7 @@ pub trait CiStore: Send + Sync {
     /// Puts a `running` run and all its jobs back to `queued` (after a server restart, or a job
     /// refused over the disk quota), clearing times and replacing outputs with `note`; `false`
     /// when the run was not running.
-    async fn requeue_ci_run(&self, id: &str, note: &str) -> AppResult<bool>;
+    async fn requeue_ci_run(&self, id: &str, note: &str, at: Timestamp) -> AppResult<bool>;
     /// Records a commit status publication: `published` is the run state GitHub accepted the
     /// status of, `None` on failure with `note`; counts the attempt.
     async fn record_ci_status(
@@ -528,11 +528,12 @@ pub trait NeedsYouStore: Send + Sync {
         &self,
         task: &TaskId,
     ) -> AppResult<Option<crate::needs_you::NeedsYouRecord>>;
-    /// Records (`Some`) or ends (`None`) the request; `true` when something changed.
+    /// Records (`Some`) or ends (`None`) the request at `at`; `true` when something changed.
     async fn set_task_needs_you(
         &self,
         task: &TaskId,
         request: Option<&crate::needs_you::NeedsYouRecord>,
+        at: Timestamp,
     ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
@@ -556,6 +557,54 @@ pub trait NoteStore: Send + Sync {
     ) -> AppResult<Option<NoteRecord>>;
 }
 
+/// Spans: the measured stages of tasks, CI runs and CD runs (SPEC-137, table `spans`). The
+/// store's triggers write the spans that follow a state; these methods write the rest.
+#[async_trait]
+pub trait SpanStore: Send + Sync {
+    /// Starts (or records ended) a span; `false` when the subject already has its key.
+    async fn insert_span(&self, span: &crate::stages::NewSpan) -> AppResult<bool>;
+    /// Ends an open span of a subject at `at` (not before its start); `outcome` when known.
+    async fn end_span(
+        &self,
+        sandbox: &SandboxId,
+        kind: yulius_domain::stages::SubjectKind,
+        subject: &str,
+        key: &str,
+        at: Timestamp,
+        outcome: Option<&str>,
+    ) -> AppResult<bool>;
+    /// Sets figures of a span, or adds them to what it has (`add`).
+    async fn span_figures(
+        &self,
+        sandbox: &SandboxId,
+        kind: yulius_domain::stages::SubjectKind,
+        subject: &str,
+        key: &str,
+        figures: &[(String, f64)],
+        add: bool,
+    ) -> AppResult<()>;
+    /// A subject's spans in start order.
+    async fn subject_spans(
+        &self,
+        sandbox: &SandboxId,
+        kind: yulius_domain::stages::SubjectKind,
+        subject: &str,
+    ) -> AppResult<Vec<crate::stages::SpanRecord>>;
+    /// The queue and run spans of the CI runs of pull request `number` (alone or in a train).
+    async fn ci_reference_spans(
+        &self,
+        sandbox: &SandboxId,
+        number: u64,
+    ) -> AppResult<Vec<crate::stages::SpanRecord>>;
+    /// Spans that match `filter`, the newest `filter.limit`, in start order.
+    async fn spans_between(
+        &self,
+        filter: &crate::stages::SpanFilter,
+    ) -> AppResult<Vec<crate::stages::SpanRecord>>;
+    /// Deletes spans that started before `before`; returns how many.
+    async fn prune_spans(&self, before: Timestamp) -> AppResult<u64>;
+}
+
 /// All extension areas.
 pub trait ExtensionStores:
     WorkflowStore
@@ -574,6 +623,7 @@ pub trait ExtensionStores:
     + NeedsYouStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
+    + SpanStore
 {
 }
 
@@ -594,5 +644,6 @@ impl<T> ExtensionStores for T where
         + NeedsYouStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
+        + SpanStore
 {
 }
