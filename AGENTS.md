@@ -78,7 +78,12 @@ scripts/dev security
 Every change: before delivery run `scripts/dev security`, which scans the branch's commits with
 Vidoc through the agent secret `VIDOC_API_KEY` and fails on open critical or high findings
 ([ADR-0104](docs/decisions/0104-agents-scan-their-branch-with-vidoc-before-delivery.md)); exit 2
-(not runnable here) is unrun, not passed. `enabled` in `.config/vidoc.toml` turns the scan on (as
+(not runnable here) is unrun, not passed. Yulius CI runs it too, as the `security` job on pull
+request heads ([ADR-0116](docs/decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md);
+it gets the key as a placeholder through the egress proxy once `yulius.toml` grants it, a line that
+waits for the running instance to know `secrets`): findings
+fail the check, and "the security scan did not run" in its output is unrun, not passed. `enabled`
+in `.config/vidoc.toml` turns the scan on (as
 committed) or off ([ADR-0107](docs/decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md));
 a disabled scan exits 0 saying so and is reported as disabled, not passed.
 

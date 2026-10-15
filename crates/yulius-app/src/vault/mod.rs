@@ -55,6 +55,8 @@ pub struct VaultState {
     audited: Mutex<HashSet<String>>,
     /// Recently authenticated egress proxy clients.
     clients: runtime::ClientCache,
+    /// Proxy credentials of running CI jobs (SPEC-142).
+    ci_clients: runtime::CiClients,
 }
 
 impl VaultState {

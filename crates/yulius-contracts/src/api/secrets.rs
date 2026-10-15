@@ -281,7 +281,8 @@ pub struct CdProdAnswer {
 pub struct VaultActivity {
     /// When.
     pub at: String,
-    /// Who: a GitHub login, `superadmin`, or `task:<n>` in a sandbox.
+    /// Who: a GitHub login, `superadmin`, `task:<n>` in a sandbox, or `ci:<run>` for a CI job
+    /// (SPEC-142).
     pub actor: String,
     /// What, e.g. `vault.team.reveal`, `vault.agent.use`, `vault.agent.redacted`.
     pub action: String,

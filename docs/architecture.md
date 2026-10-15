@@ -494,6 +494,32 @@ sequenceDiagram
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
+## Agent secrets in CI jobs
+
+A CI job runs a pull request's code, so it gets an agent secret only the way an agent does, and
+only when the integration branch grants it
+([SPEC-142](../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md), ADR-0116). When a
+job starts, `App::ci_job_secrets` (`crates/yulius-app/src/ci/exec.rs`) looks up the `secrets` of
+the integration branch's `[[ci.jobs]]` entry of the same name in the integration head GitHub
+reports, taken into the CD mirror only Yulius writes (`App::ci_verified_gate`): CI jobs can write the
+sandbox clone, so its copy only says whether to look. A pull request's own `yulius.toml` is never
+asked. A granted job gets the placeholders, the CA bundle and a proxy
+credential of its own, held in memory until its process ended. The proxy's `EgressClient` is then a
+CI caller, `ci:<run>`, that may use only the granted secrets toward their bound hosts; each use is
+audited under that actor.
+
+```mermaid
+flowchart LR
+  GH["GitHub: integration head"] -->|"exact commit, objects checked"| MIR["CD mirror (Yulius only)"]
+  MIR -->|"yulius.toml, e.g. security: secrets = VIDOC_API_KEY; grant by job name"| EXEC["CI job start (ci_job_secrets)"]
+  CLONE["sandbox clone (CI jobs can write it)"] -.->|"only whether to look"| EXEC
+  PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
+  EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]
+  JOB -->|"request with yulius-secret-VIDOC_API_KEY"| X["Egress proxy: client ci:run"]
+  X -->|"value only toward bound hosts"| V["api.vidoc.dev"]
+  X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
+```
+
 ## CD (deployment)
 
 CD runs a project's deploy and verify scripts like CI runs its checks

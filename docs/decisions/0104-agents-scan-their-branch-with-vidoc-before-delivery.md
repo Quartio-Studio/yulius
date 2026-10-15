@@ -4,7 +4,10 @@
 
 Accepted. Specified in [SPEC-128](../../.ai/specs/SPEC-128-in-keys-for-agents-you-have-vidoc-securi.md).
 Amended by [0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md): `.config/vidoc.toml`
-turns the gate on or off.
+turns the gate on or off. Amended by [0116](0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md):
+Yulius CI now runs the gate as the `security` job on pull request heads, and can give it
+`VIDOC_API_KEY` as a placeholder through the egress proxy; the title's "Yulius CI does not" no
+longer holds.
 
 ## Context
 
@@ -29,8 +32,9 @@ independent reviewer must agree first. Then the agent ignores the finding in Vid
 reason, and lists it in the spec's Evidence and in the summary. When the gate cannot run (no usable
 key, a detached HEAD, uncommitted files, an unreadable default branch: exit 2), the agent reports
 it as unrun, never as passed. The gate refuses a dirty tree because the CLI uploads and scans the
-working tree, not the commits. `scripts/dev ci` and
-Yulius CI do not run the gate.
+working tree, not the commits. `scripts/dev ci` does not run the gate. (Since ADR-0116, Yulius CI
+runs it on pull request heads too, as the `security` job; findings fail that check, and until a
+scan can run, #470, its exit 2 does not.)
 
 ## Alternatives
 
@@ -48,8 +52,9 @@ Yulius CI do not run the gate.
 
 ## Consequences
 
-- Each delivered change is checked by Vidoc, but enforcement depends on the agents' discipline and
-  the review, not on the merge gate, until the follow-up issue lands.
+- Each delivered change is checked by Vidoc. Since ADR-0116 the merge gate enforces findings
+  through the `security` CI job; until the scan can run there (#470), enforcement still rests on
+  the agents' discipline and the review.
 - A scan takes 10 to 15 minutes of an agent's turn and uses the Vidoc plan's quota. The gate runs
   once per task, before the review, and again only when the code changed after a finding.
 - The gate needs `api.vidoc.dev` bound to `VIDOC_API_KEY` and Node 20 or later. Without them it
