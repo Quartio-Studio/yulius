@@ -34,7 +34,9 @@ fn prompt(text: &str) -> String {
 }
 
 fn answer(text: &str) -> String {
-    line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}))
+    line(
+        &json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}),
+    )
 }
 
 fn append(path: &Path, text: &str) -> TestResult {
@@ -152,7 +154,10 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     assert_eq!(empty.status, StatusCode::OK, "{:?}", empty.body);
     assert_eq!(empty.body["session_id"], Value::Null);
     assert_eq!(empty.body["entries"], json!([]));
-    assert_eq!((empty.body["end"].clone(), empty.body["bytes"].clone()), (json!(0), json!(0)));
+    assert_eq!(
+        (empty.body["end"].clone(), empty.body["bytes"].clone()),
+        (json!(0), json!(0))
+    );
 
     // An earlier session and the latest one: the watcher reads the latest.
     let old = w.scratch.path().join("old.jsonl");
@@ -173,7 +178,9 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     let tail = get(&w, &carol, &format!("{path}?limit=4")).await?;
     assert_eq!(tail.status, StatusCode::OK, "{:?}", tail.body);
     assert_eq!(tail.body["session_id"], "sess-live");
-    let doc = tail.body["doc_id"].as_str().ok_or("the session's document")?;
+    let doc = tail.body["doc_id"]
+        .as_str()
+        .ok_or("the session's document")?;
     let opened = get(&w, &carol, &format!("/api/sessions/{doc}")).await?;
     assert_eq!(opened.body["session_id"], "sess-live");
     assert_eq!(lines_of(&tail.body), vec![7, 8, 9, 10]);
@@ -189,21 +196,39 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
 
     // Nothing changed: answered from the file's size, without entries.
     let seen = text.len();
-    let same = get(&w, &carol, &format!("{path}?from=11&seen={seen}&session=sess-live")).await?;
+    let same = get(
+        &w,
+        &carol,
+        &format!("{path}?from=11&seen={seen}&session=sess-live"),
+    )
+    .await?;
     assert_eq!(same.status, StatusCode::OK, "{:?}", same.body);
     assert_eq!(same.body["entries"], json!([]));
-    assert_eq!((same.body["end"].clone(), same.body["bytes"].clone()), (json!(11), json!(seen)));
+    assert_eq!(
+        (same.body["end"].clone(), same.body["bytes"].clone()),
+        (json!(11), json!(seen))
+    );
 
     // The line is finished and another comes: read from `end`, the size moves on.
     append(&live, " done\"}]}}\n")?;
     append(&live, &prompt("Ship it"))?;
-    let grown = get(&w, &carol, &format!("{path}?from=11&seen={seen}&session=sess-live")).await?;
+    let grown = get(
+        &w,
+        &carol,
+        &format!("{path}?from=11&seen={seen}&session=sess-live"),
+    )
+    .await?;
     assert_eq!(lines_of(&grown.body), vec![11, 12]);
     assert_eq!(grown.body["end"], 13);
     assert!(grown.body["bytes"].as_u64().unwrap_or_default() > seen as u64);
 
     // A size seen for another session is no reason to skip the read.
-    let other = get(&w, &carol, &format!("{path}?from=0&seen={seen}&session=sess-old")).await?;
+    let other = get(
+        &w,
+        &carol,
+        &format!("{path}?from=0&seen={seen}&session=sess-old"),
+    )
+    .await?;
     assert_eq!(other.body["entries"].as_array().map(Vec::len), Some(13));
     assert_eq!(other.body["session_id"], "sess-live");
 

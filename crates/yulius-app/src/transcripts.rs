@@ -850,7 +850,10 @@ mod tests {
         text.push_str(" cart\"}}\n");
         std::fs::write(&path, text)?;
         let rest = read_page(&path, page.end, 100, MAX_PAGE_CHARS)?;
-        assert_eq!(rest.entries.iter().map(|e| e.line).collect::<Vec<_>>(), vec![7]);
+        assert_eq!(
+            rest.entries.iter().map(|e| e.line).collect::<Vec<_>>(),
+            vec![7]
+        );
         assert_eq!((rest.end, rest.next), (8, None));
         Ok(())
     }
@@ -867,12 +870,19 @@ mod tests {
         let TranscriptBlock::ToolResult { text, .. } = &tail.entries[0].blocks[0] else {
             return Err("tool result".into());
         };
-        assert!(text.contains("[REDACTED:"), "the .env read before the tail: {text}");
+        assert!(
+            text.contains("[REDACTED:"),
+            "the .env read before the tail: {text}"
+        );
         let all = read_tail(&path, 100, MAX_PAGE_CHARS)?;
         assert_eq!(all.entries.len(), 6);
         assert!(!all.earlier);
         let bounded = read_tail(&path, 100, 1)?;
-        assert_eq!(bounded.entries.len(), 1, "the text bound keeps the last entry");
+        assert_eq!(
+            bounded.entries.len(),
+            1,
+            "the text bound keeps the last entry"
+        );
         assert!(bounded.earlier);
         Ok(())
     }

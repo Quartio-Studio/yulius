@@ -17,8 +17,8 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::sessions::{
-    SessionDoc, SessionHit, SessionList, SessionTask, SnippetPart, TaskTranscript,
-    TranscriptBlock, TranscriptEntry, TranscriptPage,
+    SessionDoc, SessionHit, SessionList, SessionTask, SnippetPart, TaskTranscript, TranscriptBlock,
+    TranscriptEntry, TranscriptPage,
 };
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::import::SessionRef;
@@ -805,7 +805,8 @@ impl App {
         let docs = self.deps.store.session_docs(&task.sandbox_id).await.ok()?;
         docs.into_iter()
             .find(|doc| {
-                doc.task_id.as_ref() == Some(&task.id) && Some(doc.session_id.as_str()) == session_id
+                doc.task_id.as_ref() == Some(&task.id)
+                    && Some(doc.session_id.as_str()) == session_id
             })
             .map(|doc| doc.id)
     }
