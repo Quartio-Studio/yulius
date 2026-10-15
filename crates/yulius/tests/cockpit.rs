@@ -2354,7 +2354,11 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
     assert!(!is_error, "{listed}");
     assert_eq!(listed["secrets"][0]["name"], "APIFY_KEY", "{listed}");
     assert_eq!(listed["secrets"][0]["hosts"], json!(["api.apify.test"]));
-    assert_eq!(listed["secrets"].as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(
+        listed["secrets"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
     let raw = listed.to_string();
     for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
         assert!(!raw.contains(hidden), "{hidden} in {raw}");
@@ -2366,11 +2370,18 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
     assert!(how.contains("/s/fixture/secrets?section=agents"), "{how}");
     assert!(!how.contains("secret_copy_to_env"), "{how}");
 
-    for tool in ["secret_copy_to_env", "secret_request_hosts", "browser_fill_secret"] {
+    for tool in [
+        "secret_copy_to_env",
+        "secret_request_hosts",
+        "browser_fill_secret",
+    ] {
         let (refused, is_error) =
             cockpit_tool(&f, &token, tool, json!({"secret": "APIFY_KEY"})).await?;
         assert!(is_error, "{tool}: {refused}");
-        assert!(refused.to_string().contains("unknown tool"), "{tool}: {refused}");
+        assert!(
+            refused.to_string().contains("unknown tool"),
+            "{tool}: {refused}"
+        );
     }
     f.h.app.end_all_shells().await;
     Ok(())
@@ -2413,7 +2424,10 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         (format!("{stored}\n"), "trailing_newline"),
         (PEM_KEY.to_owned(), "escaped_newlines"),
         (format!("{PEM_KEY}\n"), "escaped_newlines"),
-        (format!("{}\r\n", PEM_KEY.replace('\n', "\r\n")), "escaped_newlines"),
+        (
+            format!("{}\r\n", PEM_KEY.replace('\n', "\r\n")),
+            "escaped_newlines",
+        ),
         (PEM_KEY.replace("LTQ0MTc", "LTQ0MTg"), "different"),
     ] {
         // Upper-case hex is the same hash.
@@ -2453,7 +2467,10 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
     ] {
         let (refused, is_error) = cockpit_tool(&f, &token, "secret_verify", args).await?;
         assert!(is_error, "{refused}");
-        assert!(refused.to_string().contains(refusal), "{refusal}: {refused}");
+        assert!(
+            refused.to_string().contains(refusal),
+            "{refusal}: {refused}"
+        );
     }
 
     let activity = call(

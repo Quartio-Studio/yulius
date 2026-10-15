@@ -182,7 +182,10 @@ mod tests {
         assert_eq!(of(PEM), Likeness::EscapedNewlines);
         assert_eq!(of(&format!("{PEM}\n")), Likeness::EscapedNewlines);
         assert_eq!(of(&PEM.replace('\n', "\r\n")), Likeness::EscapedNewlines);
-        assert_eq!(of(&format!("{}\r\n", PEM.replace('\n', "\r\n"))), Likeness::EscapedNewlines);
+        assert_eq!(
+            of(&format!("{}\r\n", PEM.replace('\n', "\r\n"))),
+            Likeness::EscapedNewlines
+        );
     }
 
     #[test]
@@ -198,7 +201,10 @@ mod tests {
     fn a_value_without_escapes_has_no_multi_line_form() {
         let value = "sk_synthetic_value_7781";
         assert_eq!(likeness(value, &digest(value)), Likeness::Exact);
-        assert_eq!(likeness(value, &digest(&format!("{value}\n"))), Likeness::TrailingNewline);
+        assert_eq!(
+            likeness(value, &digest(&format!("{value}\n"))),
+            Likeness::TrailingNewline
+        );
         assert_eq!(lines(value), 1);
         assert_eq!(lines(STORED), 3);
     }
@@ -207,8 +213,17 @@ mod tests {
     fn hashes_are_64_hex_digits_in_either_case() {
         let hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         assert_eq!(parse_sha256(hex), Some(digest("")));
-        assert_eq!(parse_sha256(&format!(" {} ", hex.to_uppercase())), Some(digest("")));
-        for bad in ["", "abc", &hex[1..], &format!("{hex}0"), &hex.replace('e', "g")] {
+        assert_eq!(
+            parse_sha256(&format!(" {} ", hex.to_uppercase())),
+            Some(digest(""))
+        );
+        for bad in [
+            "",
+            "abc",
+            &hex[1..],
+            &format!("{hex}0"),
+            &hex.replace('e', "g"),
+        ] {
             assert_eq!(parse_sha256(bad), None, "{bad}");
         }
     }

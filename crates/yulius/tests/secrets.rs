@@ -2444,9 +2444,18 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
 async fn agents_verify_a_value_of_their_projects_secrets_by_its_hash() -> TestResult {
     let w = world().await?;
     for (sandbox, body) in [
-        ("s1", json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE})),
-        ("s1", json!({"name": "PROD_KEY", "value": "prod-value-12345"})),
-        ("s2", json!({"name": "OTHER_KEY", "value": "other-value-12345"})),
+        (
+            "s1",
+            json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE}),
+        ),
+        (
+            "s1",
+            json!({"name": "PROD_KEY", "value": "prod-value-12345"}),
+        ),
+        (
+            "s2",
+            json!({"name": "OTHER_KEY", "value": "other-value-12345"}),
+        ),
     ] {
         let created = add_agent_secret(&w, &w.writer, sandbox, body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -2489,7 +2498,12 @@ async fn agents_verify_a_value_of_their_projects_secrets_by_its_hash() -> TestRe
     )
     .await?;
     assert_eq!(other["isError"], true, "{other}");
-    assert!(tool_text(&other).to_string().contains("no agent secret named"), "{other}");
+    assert!(
+        tool_text(&other)
+            .to_string()
+            .contains("no agent secret named"),
+        "{other}"
+    );
     let production = mcp_tool(
         &w.h,
         TOKEN_S1,
@@ -2499,7 +2513,9 @@ async fn agents_verify_a_value_of_their_projects_secrets_by_its_hash() -> TestRe
     .await?;
     assert_eq!(production["isError"], true, "{production}");
     assert!(
-        tool_text(&production).to_string().contains("production secret"),
+        tool_text(&production)
+            .to_string()
+            .contains("production secret"),
         "{production}"
     );
 
@@ -2512,10 +2528,11 @@ async fn agents_verify_a_value_of_their_projects_secrets_by_its_hash() -> TestRe
     )
     .await?;
     assert!(
-        activity.body.as_array().is_some_and(|a| a.iter().any(|e| e["action"]
-            == "vault.agent.verify"
-            && e["actor"] == "task:1"
-            && e["detail"] == "STRIPE_KEY → exact")),
+        activity.body.as_array().is_some_and(|a| a
+            .iter()
+            .any(|e| e["action"] == "vault.agent.verify"
+                && e["actor"] == "task:1"
+                && e["detail"] == "STRIPE_KEY → exact")),
         "{}",
         activity.body
     );
