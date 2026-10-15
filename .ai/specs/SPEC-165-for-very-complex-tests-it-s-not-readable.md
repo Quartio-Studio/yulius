@@ -75,17 +75,21 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
 ## Acceptance criteria
 
 - AC1 (STR-001, STR-002, STR-003): mock run `ci_s4` (running, eight jobs that waited 6 to 9 min
-  for a slot) shows no row named "Waiting for a job slot"; the row "engine" has a hatched and a solid
-  segment that touch, says "waited 6 min" and "running", and the rows under "Jobs" are in waiting
-  order.
-- AC2 (STR-004): in `ci_s4`, a job's "Checkout" is hidden until its job's disclosure is opened; in
-  `ci_s2`, the failed "test (2/2)" is open and the passed "quality" is folded. After opening
-  "quality" and a refresh of the dialog, it is still open.
-- AC3 (STR-005, STR-006): every waterfall shows axis ticks that start at "0" and a legend; a
-  running run shows the "now" mark.
+  for a slot, "prototypes" began waiting before "package (gateway)" but started after it) shows no
+  row named "Waiting for a job slot"; every job's hatched and solid segments touch; "engine" says
+  "waited 6 min" and "running"; the rows under "Jobs" are in waiting order. In `ci_s3`, a job
+  requeued after its process host was lost shows each attempt with its own wait, and a wait with no
+  job span keeps its own "Waiting for a job slot" row.
+- AC2 (STR-004): in `ci_s4`, "engine"'s Checkout is hidden until its disclosure is opened; after
+  the running dialog's refresh it is still open and the focused fold button still has focus. A
+  running job whose stage failed ("package (deployer)") and the failed "test (2/2)" in `ci_s2` are
+  open; the passed "quality" is folded.
+- AC3 (STR-005, STR-006): every waterfall (CI, CD, task) shows axis ticks that start at "0", each
+  label exact and different (`ci_s3`: "0, 30 s, 1 min, 1 min 30 s"); a running run shows "now";
+  the legend names every bar look in use, folded or not, and hides with the plot in Table view.
 - AC4 (STR-007, STR-008): the Table has a Waited column with "6 min" for "engine"; the CD and task
-  waterfalls still show what SPEC-137's test checks; no WCAG violation (axe), no horizontal scroll at
-  390 px.
+  waterfalls still show what SPEC-137's test checks; no WCAG violation (axe) with the plot showing
+  and a fold open; no horizontal scroll at 390 px on the CI dialog and the task page.
 
 ## Test plan
 
@@ -105,7 +109,10 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   how long, how it ended. A failure is the one case where the detail is the point. Alternatives:
   hide zero-length stages (loses evidence) or a "compact" toggle (one more control to learn).
 - **Axis ticks from the subject's start, not wall-clock times.** "4 min in" answers "where in the
-  run"; the Table keeps the clock time of each start.
+  run"; the Table keeps the clock time of each start. Ticks have their own exact label ("1 min
+  30 s", "2 h") rather than `duration()`, which rounds down and repeated "1 min" on a 30 s step.
+- **Open on any failure within.** A running job whose stage already failed opens too, and the
+  legend is computed from every span, so folding never hides a failure or an unexplained colour.
 - **Jobs still waiting with no span stay out.** A job waiting for a slot has no span until it gets
   one (`ci::exec` records the wait when it ends); the dialog's job chips show them. Recording an
   open wait span is a backend change, filed as #536.

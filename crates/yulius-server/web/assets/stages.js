@@ -164,9 +164,10 @@ function grouped(spans, heading) {
   const jobs = roots.filter((s) => s.kind === 'job' && s.subject_kind === 'ci_run').sort((a, b) => began(a) - began(b));
   const tree = { children, waits };
   if (jobs.length === 0) return [{ heading, roots, tree }];
+  const isJob = new Set(jobs);
   return [
     ...(heading ? [{ heading, roots: [], tree }] : []),
-    { heading: 'Run', roots: roots.filter((s) => !jobs.includes(s)), tree },
+    { heading: 'Run', roots: roots.filter((s) => !isJob.has(s)), tree },
     { heading: 'Jobs', roots: jobs, tree, jobs: true },
   ];
 }
@@ -178,6 +179,18 @@ const HOUR = 60 * MINUTE;
 const TICK_STEPS = [1, 2, 5, 10, 15, 30].map((n) => n * SECOND)
   .concat([1, 2, 5, 10, 15, 30].map((n) => n * MINUTE), [1, 2, 3, 6, 12, 24, 48, 168].map((n) => n * HOUR));
 const tickStep = (total) => TICK_STEPS.find((step) => total / step <= 6) || total / 6;
+
+/** A tick's time from the start, exact at every step: "30 s", "1 min 30 s", "2 h", "1 h 30 min". */
+function tickLabel(ms) {
+  if (ms === 0) return '0';
+  const s = Math.round(ms / SECOND);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m} min ${s % 60} s` : `${m} min`;
+  const hours = Math.floor(m / 60);
+  if (hours < 48) return m % 60 ? `${hours} h ${m % 60} min` : `${hours} h`;
+  return hours % 24 ? `${Math.floor(hours / 24)} d ${hours % 24} h` : `${Math.floor(hours / 24)} d`;
+}
 
 /**
  * One subject's spans as a waterfall (and a table). `related` spans (a task's CI runs) follow
@@ -197,8 +210,14 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   const at = (ms) => ((ms - start) / total) * 100;
   const tip = h('div', { class: 'chart-tip st-tip', hidden: true });
   const groups = [...grouped(spans, null), ...(related.length ? grouped(related, 'CI runs of its pull request') : [])];
-  const used = { wait: false, ran: false, running: false, failed: false };
   const anyWait = groups.some((g) => g.tree.waits.size > 0);
+  // The bar looks in use, folded or not, for the legend.
+  const used = {
+    wait: anyWait || all.some((s) => WAIT_KINDS.has(s.kind)),
+    ran: all.some((s) => s.ended_at && !WAIT_KINDS.has(s.kind) && !FAILED.has(s.outcome)),
+    running: all.some((s) => !s.ended_at && !WAIT_KINDS.has(s.kind)),
+    failed: all.some((s) => FAILED.has(s.outcome)),
+  };
 
   const bar = (from, to, classes) => h('span', {
     class: ['st-bar', ...classes],
@@ -219,10 +238,6 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   const rowOf = (span, depth, { inJobs, wait, kids, open, toggle }) => {
     const d = describe(span, inJobs, wait);
     const isWait = WAIT_KINDS.has(span.kind);
-    used.wait ||= isWait || Boolean(wait);
-    used.failed ||= d.failed;
-    used.running ||= !span.ended_at && !isWait;
-    used.ran ||= Boolean(span.ended_at) && !d.failed && !isWait;
     const bars = [
       wait ? bar(time(wait.started_at), d.from, ['st-bar-wait', 'st-bar-lead']) : null,
       bar(d.from, d.to, [isWait && 'st-bar-wait', d.failed && 'st-bar-failed', !span.ended_at && 'st-bar-running', span.source === 'backfilled' && 'st-bar-backfilled', wait && 'st-bar-tail']),
@@ -253,14 +268,16 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   };
 
   const list = h('ol', { class: 'st-rows', role: 'list', 'aria-label': `${title}: ${duration(total)} from the first start to the last end` });
+  // A span opens by itself when it or anything under it failed, so a failure is never folded away.
+  const failedWithin = (group, span) => FAILED.has(span.outcome) || (group.tree.children.get(span.key) || []).some((c) => failedWithin(group, c));
   const draw = () => {
     const rows = [];
     const walk = (group, span, depth) => {
       const kids = (group.tree.children.get(span.key) || []).length;
-      const open = kids > 0 && (view.open.has(span.key) ? view.open.get(span.key) : FAILED.has(span.outcome));
+      const open = kids > 0 && (view.open.has(span.key) ? view.open.get(span.key) : failedWithin(group, span));
       rows.push(rowOf(span, depth, {
         inJobs: Boolean(group.jobs), wait: group.tree.waits.get(span.key), kids, open,
-        toggle: () => { view.open.set(span.key, !open); draw(); list.querySelector(`[data-key="${CSS.escape(span.key)}"] .st-fold`)?.focus(); },
+        toggle: () => { view.open.set(span.key, !open); draw(); [...list.children].find((r) => r.dataset.key === span.key)?.querySelector('.st-fold')?.focus(); },
       }));
       rows[rows.length - 1].dataset.key = span.key;
       if (open) for (const child of group.tree.children.get(span.key)) walk(group, child, depth + 1);
@@ -298,14 +315,14 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
 
   // The axis: time from the subject's start, a faint line at each tick, "now" while it runs.
   const ticks = [];
-  for (let t = 0; at(start + t) < 92; t += step) ticks.push(h('span', { class: 'st-tick', style: { left: `${at(start + t)}%` } }, t === 0 ? '0' : duration(t)));
+  for (let t = 0; at(start + t) < 92; t += step) ticks.push(h('span', { class: 'st-tick', style: { left: `${at(start + t)}%` } }, tickLabel(t)));
   if (running) ticks.push(h('span', { class: 'st-tick st-tick-now', style: { left: '100%' } }, 'now'));
   const axis = h('div', { class: 'st-axis', 'aria-hidden': 'true' }, h('span'), h('span', { class: 'st-axis-ticks' }, ticks), h('span'));
   const legend = h('ul', { class: 'st-legend st-bars-legend', 'aria-label': 'What the bars mean' }, [
     used.wait && ['Waiting', 'st-bar-wait'], used.ran && ['Ran', null], used.running && ['Still running', 'st-bar-running'], used.failed && ['Failed', 'st-bar-failed'],
   ].filter(Boolean).map(([text, cls]) => h('li', null, h('span', { class: ['st-swatch', cls], 'aria-hidden': 'true' }), text)));
 
-  const plot = h('div', { class: 'st-plot', hidden: view.table, style: { '--st-step': `${(step / total) * 100}%` } }, axis, list, tip);
+  const plot = h('div', { class: 'st-plot', hidden: view.table, style: { '--st-step': `${(step / total) * 100}%` } }, legend, axis, list, tip);
   const toggle = h('button', { type: 'button', class: 'btn btn-sm db-table-toggle', 'aria-pressed': String(view.table), onClick: () => {
     view.table = !view.table;
     toggle.setAttribute('aria-pressed', String(view.table));
@@ -314,7 +331,6 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   } }, icon('tasks', { size: 14 }), 'Table');
   return h('section', { class: 'st-waterfall', 'aria-label': title },
     h('div', { class: 'st-head' }, h('h3', { class: 'st-title' }, title), h('span', { class: 'muted small' }, `${duration(total)} in all`), h('span', { class: 'spacer' }), toggle),
-    legend,
     timeline.truncated ? h('p', { class: 'muted small' }, 'Only the newest 2,000 stages are shown.') : null,
     plot, table);
 }
@@ -336,7 +352,14 @@ export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
     drawn.set(host, text);
     const key = `${sandbox.id} ${subject}`;
     if (views.get(host)?.key !== key) views.set(host, { key, open: new Map(), table: false });
+    // The control that had the keyboard keeps it through the redraw: a span's fold or the Table.
+    const focused = host.contains(document.activeElement) ? document.activeElement : null;
+    const row = focused?.closest('.st-row')?.dataset.key;
+    const wasToggle = Boolean(focused?.closest('.db-table-toggle'));
     setChildren(host, waterfall(timeline, { ...options, view: views.get(host) }));
+    const again = row ? [...host.querySelectorAll('.st-row')].find((r) => r.dataset.key === row)?.querySelector('.st-fold')
+      : wasToggle ? host.querySelector('.db-table-toggle') : null;
+    again?.focus();
   } catch (error) {
     setChildren(host, h('p', { class: 'muted small' }, `Couldn’t load the stages: ${error.message || error}`));
   }

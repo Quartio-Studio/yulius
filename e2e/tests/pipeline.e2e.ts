@@ -144,6 +144,10 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
   await expect(browser.locator('.st-row.st-job:has-text("shared") [aria-label="passed"]')).toBeVisible();
   await engineRow.hover();
   await expect(browser.locator('.st-tip')).toContainText('waited 6 min for a job slot');
+  // The plot itself, a fold open, passes axe (its buttons, marks and counts).
+  await browser.locator('.st-row.st-job:has-text("shared") .st-fold').click();
+  await expect(browser.locator('.st-row[data-key="job:j0@1/checkout"]')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
   // The table keeps the wait as a column.
   await run.getByRole('button', 'Table').click();
   await expect(run.getByRole('columnheader', 'Waited')).toBeVisible();
@@ -154,19 +158,26 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
 test('a job’s stages fold under it, a failed job opens, and the fold outlives a refresh', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
-  await expect(browser.locator('.st-row:has-text("Checkout")')).toHaveCount(0);
+  // Only the job with a failed stage (deployer) is open: one Checkout row, its own.
+  await expect(browser.locator('.st-row:has-text("Checkout")')).toHaveCount(1);
+  await expect(browser.locator('.st-row[data-key="job:j1@1/checkout"]')).toHaveCount(0);
   const fold = browser.locator('.st-row.st-job:has-text("engine") .st-fold');
   await expect(fold).toHaveAttribute('aria-expanded', 'false');
   await expect(fold).toContainText('2 stages');
   await fold.click();
   await expect(fold).toHaveAttribute('aria-expanded', 'true');
-  await expect(browser.locator('.st-row:has-text("Checkout")')).toHaveCount(1);
+  await expect(browser.locator('.st-row[data-key="job:j1@1/checkout"]')).toBeVisible();
   await expect(browser.locator('.st-row:has-text("build")')).toBeVisible();
   // The running run's dialog redraws its stages every few seconds: what was opened stays open.
   await browser.evaluate(() => { document.querySelector('.st-waterfall')?.setAttribute('data-probe', 'old'); });
   await expect(browser.locator('.st-waterfall[data-probe]')).toHaveCount(0);
   await expect(browser.locator('.st-row.st-job:has-text("engine") .st-fold')).toHaveAttribute('aria-expanded', 'true');
-  await expect(browser.locator('.st-row:has-text("Checkout")')).toHaveCount(1);
+  await expect(browser.locator('.st-row[data-key="job:j1@1/checkout"]')).toBeVisible();
+  // So does the keyboard: the fold button that had focus has it again after the redraw.
+  await browser.locator('.st-row.st-job:has-text("prototypes") .st-fold').focus();
+  await browser.evaluate(() => { document.querySelector('.st-waterfall')?.setAttribute('data-probe', 'old'); });
+  await expect(browser.locator('.st-waterfall[data-probe]')).toHaveCount(0);
+  expect(await browser.evaluate(() => document.activeElement?.closest('.st-row')?.getAttribute('data-key') ?? null)).toBe('job:j2@1');
 
   // A failed job opens by itself, on the stage that failed; a passed one stays folded.
   await app.open(mock('/s/studio/ci?run=ci_s2'));
@@ -183,7 +194,7 @@ test('every waterfall has a time axis from 0 and a legend of its bars', async ({
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
   expect(await axis()).toEqual(['0', '2 min', '4 min', '6 min', '8 min', 'now']);
-  expect(await legend()).toEqual(['Waiting', 'Ran', 'Still running']);
+  expect(await legend()).toEqual(['Waiting', 'Ran', 'Still running', 'Failed']);
 
   await app.open(mock('/s/studio/ci?run=ci_s2'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('quality');
@@ -203,6 +214,42 @@ test('every waterfall has a time axis from 0 and a legend of its bars', async ({
   expect((await axis())[0]).toBe('0');
   expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a short run’s axis names each tick once; a requeued job keeps each wait, and a lone wait keeps its row', async ({ app, browser, screen }) => {
+  const axis = () => browser.evaluate(() => [...document.querySelectorAll('.st-waterfall .st-tick')].map((t) => t.textContent));
+  await app.open(mock('/s/studio/ci?run=ci_s3'));
+  await expect(screen.getByRole('region', 'Stages of this run')).toContainText('quality');
+  expect(await axis()).toEqual(['0', '30 s', '1 min', '1 min 30 s']);
+  // Requeued after its process host was lost: each attempt with its own wait, in waiting order.
+  const rows = await jobRows(browser);
+  expect(rows.map((r) => [r.name, r.took?.replace(/\s+/g, ' ')])).toEqual([['quality', '18 swaited 6 s'], ['quality', '1 minwaited 18 s']]);
+  await expect(browser.locator('.st-row.st-job[data-key="job:j0@1"] [aria-label="error"]')).toBeVisible();
+  // A wait with no job span still shows, on its own row, under Run.
+  await expect(browser.locator('.st-row:has-text("Waiting for a job slot")')).toHaveCount(1);
+  // On a phone the CI dialog's stages fit the width.
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/ci?run=ci_s4'));
+  await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await browser.evaluate(() => { const w = document.querySelector('.st-waterfall'); return w ? w.scrollWidth <= w.clientWidth : false; })).toBe(true);
+});
+
+test('a running job whose stage failed opens, and the legend names every bar look, folded or not', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s4'));
+  await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
+  // "package (deployer)" still runs, but its "lint" stage failed: it opens on it, and the legend
+  // says what the red bar means.
+  await expect(browser.locator('.st-row.st-job:has-text("package (deployer)") .st-fold')).toHaveAttribute('aria-expanded', 'true');
+  await expect(browser.locator('.st-row:has-text("lint") [aria-label="failed"]')).toBeVisible();
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.st-bars-legend li')].map((t) => t.textContent))).toEqual(['Waiting', 'Ran', 'Still running', 'Failed']);
+  // Closed again, the legend still names the look of what it hides.
+  await browser.locator('.st-row.st-job:has-text("package (deployer)") .st-fold').click();
+  await expect(browser.locator('.st-row:has-text("lint")')).toHaveCount(0);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.st-bars-legend li')].map((t) => t.textContent))).toEqual(['Waiting', 'Ran', 'Still running', 'Failed']);
+  // The Table shows every span; the legend, which is about bars, goes with the plot.
+  await screen.getByRole('region', 'Stages of this run').getByRole('button', 'Table').click();
+  await expect(browser.locator('.st-bars-legend')).toBeHidden();
 });
 
 test('the Dashboard shows the pipeline overview and opens the Pipeline page', async ({ app, browser, screen }) => {
