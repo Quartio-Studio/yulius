@@ -102,9 +102,9 @@ fails the test although its total is far from 120 s.
 - [x] Spec: the four flakes reproduced under load, each cause named
 - [x] A stop during a run's launch ends it once attached (#464), test-first
 - [x] A hook whose client gave up is applied to its end (#404), test-first
-- [ ] Stop waits use the stop's own bound and say what they saw (#353)
-- [ ] Merge-train waits share one deadline under nextest's kill bound (#443)
-- [ ] Loaded repeat runs of every named test pass
+- [x] Stop waits use the stop's own bound and say what they saw (#353)
+- [x] Merge-train waits share one deadline under nextest's kill bound (#443)
+- [x] Loaded repeat runs of every named test pass
 - [ ] Decision record, architecture and changes log; every gate green
 - [ ] Independent review in a fresh session, findings fixed test-first
 
@@ -157,3 +157,60 @@ fails the test although its total is far from 120 s.
   stop, and the switch goes on to launch the new run of a stopped task. The window is the old run's
   exit (at most `SWITCH_TIMEOUT_MS / 2`). It is not what the tests here meet and needs its own
   regression test.
+
+## Evidence
+
+Host: this task's sandbox (12 CPUs, shared with other tasks). Load generators in the scratchpad:
+`load.sh N` (N `while :; do :; done` loops), `ioload.sh 3` (3 writers of 64 MiB files with
+`conv=fsync`), `hammer.sh` (copies of one test of the integration binary, 16 at once, each run's
+exit and time recorded). Per-wait timings came from a temporary `eprintln!` in the tests' wait
+helpers and in the hook route, not committed.
+
+Before the fixes (dev at 4373149):
+- Whole integration binary, `NEXTEST_TEST_THREADS=12 cargo nextest run -p yulius --profile ci -E
+  'binary_id(yulius::main)'` beside 16 busy loops, 3 runs: 533/533 each (114 s, 192 s, 231 s; load
+  25, 57, 69).
+- The ten tests of the issues, 4 copies each beside 16 loops: 40/40 (load 63 to 79). `merge_train`'s
+  red train test took 39.9 to 41.5 s per copy.
+- Every `task_done` test, 2 copies each beside 16 loops and the fsync writers: 64/64 (load 36).
+  Stop hooks: 246 handled, about 100 ms each, slowest 1.44 to 2.00 s.
+- `a_switch_waits_for_a_background_agent_launched_in_the_turn` alone, 4 runs: "the stop" 0.11 s,
+  20.11 s, 20.11 s, 20.15 s (the escalation).
+- `a_done_task_frees_its_slot_for_a_queued_task` alone, 5 runs: both stops 0.0003 to 0.12 s.
+- Red train test alone: 9.99 s (fixture 1.0 s, train failed at 4.7 s, two rounds 3.2 s and 0.6 s).
+  8 copies beside 24 loops: 37.1 to 40.8 s (fixture 3.6 to 9.4 s, train failed at 18.5 to 22.4 s,
+  first round 9.9 to 11.6 s, of which `merge_armed` 7.8 to 9.4 s).
+
+The new tests without their fixes:
+- `task_done::a_stop_while_the_run_is_launching_ends_it_once_attached`: FAIL, "timed out waiting for
+  the stop" (30.4 s; escalation 60 s). With the fix: PASS in 0.5 to 1.3 s.
+- `agent_hooks::a_hook_whose_client_hangs_up_is_still_applied`: FAIL, "the notice was not applied:
+  Some(Working)". With the fix: 5/5 PASS (0.18 to 0.24 s). With the layer resuming the handler after
+  1 s instead of holding it (hyper's behaviour): without the fix, FAIL when the client hangs up, 3/3
+  PASS when it stays connected (control); with the fix, 5/5 PASS.
+
+After the fixes (all commits of this branch), `hammer.sh` with 10 copies of each of the ten tests
+of the issues and the two new ones, 16 at once, beside 24 busy loops and the fsync writers, two
+rounds back to back (load 16 → 48, then 40 → 53):
+
+| Test | Runs | Failed | Mean | Max |
+| --- | --- | --- | --- | --- |
+| `agent_hooks::a_hook_whose_client_hangs_up_is_still_applied` | 20 | 0 | 0.9 s | 1.8 s |
+| `merge_train::a_red_train_falls_back_to_one_by_one_merges` | 20 | 0 | 43.2 s | 49.0 s |
+| `supervision::a_done_task_frees_its_slot_for_a_queued_task` | 20 | 0 | 3.0 s | 3.9 s |
+| `task_done::a_background_shell_keeps_the_task_working_until_it_ends` | 20 | 0 | 12.2 s | 13.4 s |
+| `task_done::a_done_task_can_be_archived` | 20 | 0 | 3.2 s | 4.2 s |
+| `task_done::a_live_monitor_keeps_the_task_working_until_it_ends` | 20 | 0 | 12.3 s | 13.6 s |
+| `task_done::a_monitor_that_never_reports_counts_until_it_expires` | 20 | 0 | 19.2 s | 23.4 s |
+| `task_done::a_stop_while_the_run_is_launching_ends_it_once_attached` | 20 | 0 | 2.0 s | 2.9 s |
+| `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` | 20 | 0 | 20.8 s | 21.8 s |
+| `task_done::a_typed_compaction_leaves_a_done_task_done` | 20 | 0 | 5.6 s | 6.5 s |
+| `task_done::an_agent_waiting_for_yulius_does_not_need_a_person` | 20 | 0 | 8.1 s | 8.9 s |
+| `task_done::an_idle_compaction_leaves_a_done_task_done` | 20 | 0 | 10.3 s | 11.2 s |
+
+"The stop" in the switch test: 0.24 to 0.32 s at the slowest (20.1 s before); in the slot test
+0.34 s at the slowest. The red train test's 49.0 s is within its 100 s budget (the old per-phase
+bound was 50 s).
+
+Also run: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^supervision::/) |
+test(/^task_done::/))'` 51/51; `test(/^merge_train::/)` 7/7; `test(/^agent_hooks::/)` 15/15.

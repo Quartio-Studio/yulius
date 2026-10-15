@@ -119,3 +119,4 @@ number differs from the file name, and a record this index does not list.
 - [0111](0111-agents-ask-a-person-with-needs-you.md): Agents ask a person to act with one tool, `needs_you`; the task stays in Needs you until a person writes to it or the agent resolves it
 - [0108](0108-the-superadmin-updates-from-the-sidebar-foot.md): The superadmin's Update button sits beside the account button in the sidebar foot; one click opens the update's confirmation
 - [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button
+- [0115](0115-a-received-hook-is-applied-to-its-end.md): A hook Yulius received is applied to its end in its own task, even when the hook client stopped waiting and closed its connection

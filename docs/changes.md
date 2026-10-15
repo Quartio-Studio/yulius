@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- task_done, supervision and merge_train tests hold under host load (SPEC-140, ADR-0115, task #127;
+  fixes #404, #464, #353, #443). Two product races fixed: a hook whose client gave up after its 5 s
+  is still applied to its end (a slow Stop used to be cut off before setting Done), and a stop that
+  comes while a run is launching (a switch, a start) asks the run once it is attached instead of
+  waiting 20 s for the escalation. Tests wait for a stop within the stop escalation plus a margin and
+  say what they saw; merge train tests share one deadline under nextest's 120 s.
 - Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
   table records, as things happen, a task's waits before it starts, its states (needs you and how
   long a person took to answer included), steps with the tokens and agent work spent in them, runs,
