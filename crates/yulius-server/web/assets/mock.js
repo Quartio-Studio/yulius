@@ -2049,6 +2049,10 @@ route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   const path = repoPath(query.get('path'));
   if (!tree.files.has(path)) fail(404, 'not_found', 'not found');
   const content = tree.files.get(path);
+  const known = query.get('known');
+  if (known !== null && !/^[0-9a-f]{64}$/.test(known)) fail(422, 'invalid', 'known is 64 lowercase hex digits');
+  (db.fileReads = db.fileReads || []).push({ path, known });
+  if (known === mockSha(content)) return json(204);
   if (tree.binary && tree.binary.has(path)) return { path, content: null, binary: true, too_large: false, size: content.length, sha256: mockSha(content) };
   return { path, content, binary: false, too_large: false, size: content.length, sha256: mockSha(content) };
 });

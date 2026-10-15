@@ -1000,8 +1000,10 @@ resolves to nothing, the run gets the server without that variable or token.
   is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
   `GET /api/sandboxes/{sid}/files?root&path` → `{"path","entries":[{"name","path",
   "kind":"file|dir|symlink","size"}],"truncated"}` (directories first; `.git` hidden; at most
-  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path` → `{"path","content":
-  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB). `PUT
+  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path&known?` → `{"path","content":
+  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB); with `known`, the
+  `sha256` the caller has (64 lowercase hex digits, else 422), an unchanged file answers 204 with
+  no body (the Editor looks at the file in front every 2 s, SPEC-181). `PUT
   /api/sandboxes/{sid}/files/content` `{"root?","path","content","base_sha256?"}` →
   `{"path","sha256","size"}`: atomic; 409 when the file changed since `base_sha256` or, without
   a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
