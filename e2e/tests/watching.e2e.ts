@@ -272,3 +272,165 @@ test('a past session keeps its spider and has no octopus', async ({ app, browser
   await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
   expect(await browser.evaluate(() => [document.querySelectorAll('.ss-tui .ss-web').length, document.querySelectorAll('.octo').length])).toEqual([1, 0]);
 });
+
+type Reads = { __yuliusMock: { failTranscriptReads?: number, transcriptQueries?: string[], newTranscriptSession: (sid: string, n: number, session: string, items: Item[]) => void } };
+
+test('a first read that failed gives way to reading on, once the session comes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await browser.evaluate(() => { (window as unknown as Reads).__yuliusMock.failTranscriptReads = 1; });
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await expect(screen.getByText(/Couldn’t load the session/)).toBeVisible();
+  // A task event meanwhile neither hides why nor ends the reading.
+  await touchTask(browser, 'sb_studio', 12, { activity: 'waiting' });
+  await expect(screen.getByText(/Couldn’t load the session/)).toBeVisible();
+  await screen.getByRole('button', 'Try again').click();
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+  await append(browser, [{ role: 'assistant', text: 'Back after the restart.' }]);
+  await expect(screen.getByText('Back after the restart.')).toBeVisible();
+});
+
+test('a failed first read retried by a task event reads on by itself', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await browser.evaluate(() => { (window as unknown as Reads).__yuliusMock.failTranscriptReads = 1; });
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await expect(screen.getByText(/Couldn’t load the session/)).toBeVisible();
+  // The task ends and starts again: the view reads, and from then on by itself, with no event.
+  await touchTask(browser, 'sb_studio', 12, { status: 'stopped_cancelled', activity: null });
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+  await touchTask(browser, 'sb_studio', 12, { status: 'running', activity: 'working' });
+  await expect.poll(() => browser.evaluate(() => (document.querySelector('.taskview .watch') as HTMLElement).dataset.reading)).toBe('live');
+  // Reading on by itself: three more reads, more than the mock's own task events (one per 16 s) make.
+  const after = await reads(browser);
+  await expect.poll(() => reads(browser), { timeout: 10_000, message: 'it polls on its own' }).toBeGreaterThan(after + 2);
+});
+
+test('a watcher reads on with the size and session it saw, and from the tail of a new session', async ({ app, browser, screen }) => {
+  await watchStudio12(app, browser);
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => ((window as unknown as Reads).__yuliusMock.transcriptQueries ?? []).some((q) => /(^|&)from=\d+/.test(q) && /seen=\d+/.test(q) && /session=b1f0-12/.test(q))), { message: 'later reads say what was seen' }).toBe(true);
+  // A continue started another session: the old lines go, the new session's tail comes.
+  await browser.evaluate(() => (window as unknown as Reads).__yuliusMock.newTranscriptSession('sb_studio', 12, 'b1f0-13', [{ role: 'user', text: 'Continue where you left off.' }]));
+  await expect(screen.getByText('Continue where you left off.')).toBeVisible();
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeHidden();
+  expect(await browser.evaluate(() => document.querySelectorAll('.watch .ss-entries > li').length)).toBe(1);
+});
+
+test('a hidden page asks for nothing until it is shown again', async ({ app, browser }) => {
+  await watchStudio12(app, browser);
+  const state = () => browser.evaluate(() => (document.querySelector('.taskview .watch') as HTMLElement).dataset.reading ?? null);
+  await expect.poll(state).toBe('live');
+  await browser.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(state).toBe('paused');
+  const reads = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.transcriptReads ?? 0);
+  await append(browser, [{ role: 'assistant', text: 'Written while nobody looked.' }]);
+  await browser.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(browser.locator('.watch .ss-entry:has-text("Written while nobody looked.")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.transcriptReads ?? 0), 'shown again, it reads at once').toBeGreaterThan(reads);
+  await expect.poll(state).toBe('live');
+});
+
+test('the watch view cancels its read when left, and task events do not put off the next read (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/watchview.js';
+    const { createWatchView } = await import(url);
+    const task = { id: 't', status: 'running', activity: 'working' };
+    const options = { taskId: 't', task: () => task, owner: () => 'anna-q', emptyMessage: () => null, sessionPath: () => '/x' };
+    // Left with a read in flight: the read is cancelled.
+    let signal: AbortSignal | null = null;
+    const hanging = createWatchView({ api: { get: (_path: string, init: { signal: AbortSignal }) => { signal = init.signal; return new Promise(() => {}); } } }, options);
+    hanging.start();
+    hanging.destroy();
+    // Events while a read waits on its timer keep that timer.
+    const timers: { set: number, clear: number } = { set: 0, clear: 0 };
+    const timer = { set: () => { timers.set += 1; return timers.set; }, clear: () => { timers.clear += 1; } };
+    const page = { session_id: 's', doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
+    const view = createWatchView({ api: { get: async () => page } }, { ...options, timer });
+    view.start();
+    for (let i = 0; i < 20 && !timers.set; i += 1) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    const before = { ...timers };
+    view.update();
+    view.update();
+    view.update();
+    view.destroy();
+    return { aborted: (signal as AbortSignal | null)?.aborted ?? null, before, after: timers };
+  });
+  expect(result.aborted).toBe(true);
+  expect(result.before.set).toBe(1);
+  expect(result.after.set, 'no new timer for an event').toBe(1);
+});
+
+test('results of several calls on one line each land in their call, and an opened fold stays open (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { transcriptEntries } = await import(url);
+    const list = transcriptEntries();
+    document.body.append(list.el);
+    const call = (id: string, summary: string) => ({ type: 'tool_call', id, name: 'Bash', summary, input: '{}', diff: null });
+    const result = (id: string, text: string) => ({ line: 0, role: 'user', at: null, sidechain: false, blocks: [{ type: 'tool_result', tool_use_id: id, text, is_error: false, truncated: false }] });
+    list.append([{ line: 0, role: 'assistant', at: null, sidechain: false, blocks: [call('a', 'npm test'), call('b', 'npm run lint')] }]);
+    (list.el.querySelector('details.ss-tool') as HTMLDetailsElement).open = true;
+    list.append([{ ...result('a', 'PASS all tests'), line: 1 }]);
+    const openAfterFirst = (list.el.querySelector('details.ss-tool') as HTMLDetailsElement).open;
+    list.append([{ ...result('b', 'no lint errors'), line: 2 }]);
+    const text = list.el.textContent;
+    const out = { entries: list.el.children.length, a: text.includes('PASS all tests'), b: text.includes('no lint errors'), openAfterFirst, openAfterSecond: (list.el.querySelector('details.ss-tool') as HTMLDetailsElement).open };
+    list.destroy();
+    list.el.remove();
+    return out;
+  });
+  expect(result).toEqual({ entries: 1, a: true, b: true, openAfterFirst: true, openAfterSecond: true });
+});
+
+test('"New messages" keeps the keyboard in the transcript, and a late result alone shows no button', async ({ app, browser, screen }) => {
+  await watchStudio12(app, browser);
+  await append(browser, Array.from({ length: 30 }, (_, i) => ({ role: 'assistant', text: `Filler ${i + 1}.` })));
+  await expect(screen.getByText('Filler 30.')).toBeVisible();
+  await browser.evaluate(() => { document.querySelector('.watch .watch-scroll')!.scrollTop = 0; });
+  // The Update call at the top gets its result: nothing new at the bottom, no button.
+  await append(browser, [{ role: 'user', blocks: [{ type: 'tool_result', tool_use_id: 't2', text: 'The file src/api/checkout.ts has been updated.', is_error: false, truncated: false }] }]);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.watch')!.textContent!.includes('Updated src/api/checkout.ts'))).toBe(true);
+  await expect(screen.getByRole('button', 'New messages')).toBeHidden();
+  await append(browser, [{ role: 'assistant', text: 'Something new at the bottom.' }]);
+  await screen.getByRole('button', 'New messages').click();
+  expect(await browser.evaluate(() => document.activeElement?.classList.contains('watch-scroll') ?? false)).toBe(true);
+});
+
+test('handing a task away while typing in its terminal leaves the keyboard on its transcript', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await browser.locator('.taskview .xterm-helper-textarea').focus();
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('watch-scroll') ?? false)).toBe(true);
+});
+
+test('turning reduced motion on while watching stops the octopus in the top-right corner', async ({ app, browser }) => {
+  await browser.addInitScript(() => {
+    const media = window.matchMedia.bind(window);
+    const motion = Object.assign(new EventTarget(), { matches: false, media: '(prefers-reduced-motion: reduce)', onchange: null, addListener() {}, removeListener() {} });
+    (window as unknown as { __motion: typeof motion }).__motion = motion;
+    window.matchMedia = (query: string) => (query.includes('prefers-reduced-motion') ? motion as unknown as MediaQueryList : media(query));
+  });
+  await watchStudio12(app, browser);
+  // Let it set off, then turn reduced motion on mid-crawl.
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.watch .octo')!.classList.contains('is-crawling')), { timeout: 10_000 }).toBe(true);
+  const state = await browser.evaluate(() => {
+    const motion = (window as unknown as { __motion: EventTarget & { matches: boolean } }).__motion;
+    motion.matches = true;
+    motion.dispatchEvent(Object.assign(new Event('change'), { matches: true }));
+    const el = document.querySelector('.watch .octo') as HTMLElement;
+    const lane = el.parentElement!.getBoundingClientRect();
+    return { still: el.classList.contains('is-still'), crawling: el.classList.contains('is-crawling'), corner: el.dataset.corner, right: Math.round(lane.right - el.getBoundingClientRect().right), moving: el.getAnimations().length };
+  });
+  expect(state).toEqual({ still: true, crawling: false, corner: 'right', right: 0, moving: 0 });
+});

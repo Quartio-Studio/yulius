@@ -3504,6 +3504,12 @@ route('GET', `/api/sessions/${ID}/transcript`, ({ db, p, query }) => {
 route('GET', `/api/tasks/${ID}/transcript`, ({ db, p, query }) => {
   const task = taskOf(db, p[0]);
   db.transcriptReads = (db.transcriptReads || 0) + 1;
+  (db.transcriptQueries = db.transcriptQueries || []).push(query.toString());
+  // Tests make the next reads fail as a server restarting would (`failTranscriptReads = 1`).
+  if (db.failTranscriptReads > 0) {
+    db.failTranscriptReads -= 1;
+    fail(502, 'unavailable', 'The server is restarting.');
+  }
   const doc = sessionDocs(db).find((d) => d.kind === 'task' && d.task_id === task.id);
   if (!doc) return { session_id: null, doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
   const lines = doc.transcript;
@@ -4621,6 +4627,14 @@ export function createMockTransport(params) {
       doc.transcript.push({ line, role: item.role, at: item.at || (item.role === 'user' ? new Date().toISOString() : null), sidechain: false, blocks });
       line += 1;
     }
+  };
+  // The task's session is another one now (a continue started it): its own lines from 0.
+  db.newTranscriptSession = (sandboxId, number, sessionId, items) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    const doc = sessionDocs(db).find((d) => d.kind === 'task' && d.task_id === task.id);
+    doc.session_id = sessionId;
+    doc.transcript = [];
+    db.appendTranscript(sandboxId, number, items);
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):

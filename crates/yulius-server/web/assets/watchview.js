@@ -24,8 +24,9 @@ const FOLLOW_SLACK = 32;
  * ({title, text, busy} or null) and `sessionPath(docId)` the Sessions page of the whole session.
  * Returns {el, start(), update(), destroy()}; `el.dataset.reading` says whether it reads on
  * (`live`), waits for the page to be shown (`paused`) or has read an ended task (`ended`).
+ * `timer` stands in for setTimeout and clearTimeout in tests.
  */
-export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessionPath }) {
+export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessionPath, timer: clock = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) } }) {
   const transcript = transcriptEntries();
   const earlier = h('p', { class: 'watch-earlier ss-dim small', hidden: true });
   const empty = h('div', { class: 'watch-empty', role: 'status', hidden: true });
@@ -36,7 +37,8 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   const lane = h('div', { class: 'watch-lane', 'aria-hidden': 'true' });
   const tui = h('div', { class: 'ss-tui ss-live' }, lane, earlier, transcript.el, empty, working, locked);
   const scroller = h('div', { class: 'watch-scroll', tabindex: 0, role: 'region', 'aria-label': 'Live transcript' }, tui);
-  const jump = h('button', { type: 'button', class: 'btn btn-sm watch-jump', hidden: true, onClick: () => toBottom() }, icon('down', { size: 14 }), 'New messages');
+  // Jumping down hides the button: the keyboard stays in the transcript, not on the page.
+  const jump = h('button', { type: 'button', class: 'btn btn-sm watch-jump', hidden: true, onClick: () => { toBottom(); scroller.focus({ preventScroll: true }); } }, icon('down', { size: 14 }), 'New messages');
   const el = h('div', { class: 'watch', dataset: { reading: 'live' } }, scroller, jump);
 
   let alive = true;
@@ -61,6 +63,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     const live = isLive(current.status);
     lockedText.textContent = live ? `@${who} is at the keyboard · you are watching` : `@${who} owns this task · you are watching`;
     working.hidden = !(current.status === 'running' && current.activity === 'working');
+    if (failed) return; // the box says why the first read failed, with Try again
     const blank = seen.loaded && !transcript.el.children.length;
     const message = blank ? (emptyMessage(current) || { title: 'Nothing written yet', text: live ? 'The session’s messages appear here as it writes them.' : 'This session has no messages to show.' }) : null;
     empty.hidden = !message;
@@ -73,11 +76,11 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   }
 
   function schedule() {
-    clearTimeout(timer);
+    clock.clear(timer);
     timer = null;
     el.dataset.reading = state();
     if (!alive || !started || el.dataset.reading !== 'live') return;
-    timer = setTimeout(read, WATCH_POLL_MS);
+    timer = clock.set(read, WATCH_POLL_MS);
   }
 
   function apply(page) {
@@ -88,15 +91,15 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       earlier.hidden = !page.earlier;
       setChildren(earlier, page.earlier ? ['Earlier messages are in the whole session', path ? [': ', h('a', { href: href(path), dataset: { route: path } }, 'open it in Sessions')] : null, '.'] : null);
     }
-    transcript.append(entries);
+    const added = transcript.append(entries);
     seen = { session: page.session_id || null, end: page.end || 0, bytes: page.bytes || 0, loaded: true };
     render();
     if (follow) toBottom();
-    else if (entries.length) jump.hidden = false;
+    else if (added) jump.hidden = false; // a result landing in a call above is not new below
   }
 
   async function read() {
-    clearTimeout(timer);
+    clock.clear(timer);
     timer = null;
     if (!alive || reading) return;
     // The tail first, and again for a session that had none; then on from where the last read ended.
@@ -123,6 +126,10 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     }
     if (!alive) return;
     if (page) {
+      if (failed) {
+        failed = false;
+        empty.hidden = true;
+      }
       // Another session (a continue started one), or this one rewritten shorter: from its tail.
       if (seen.loaded && seen.session && (page.session_id !== seen.session || page.end < seen.end)) {
         transcript.clear();
@@ -164,8 +171,9 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       render();
       if (!started) return;
       const now = state();
+      // Same state: a planned read stays as planned (events must not put it off).
       if (before === now || now === 'paused') {
-        if (!reading) schedule();
+        if (!reading && !timer && !failed) schedule();
       } else if (reading) again = true;
       else read();
     },
@@ -174,7 +182,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     },
     destroy() {
       alive = false;
-      clearTimeout(timer);
+      clock.clear(timer);
       if (reading) reading.abort();
       if (octopus) octopus.stop();
       transcript.destroy();

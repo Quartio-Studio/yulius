@@ -597,7 +597,7 @@ export function scheduleCockroaches(well, { random = Math.random, timer = { set:
 export function transcriptEntries({ target = null } = {}) {
   const el = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });
   const results = new Map(); // tool_use_id → result, shown inside its call
-  const calls = new Map(); // tool_use id → the entry printed with that call: { item, node }
+  const calls = new Map(); // tool_use id → the entry printed with that call: { item, node }, one per entry
   // Scrolling blocks are regions as laid out, again when their width changes (#363).
   const regions = typeof ResizeObserver === 'function' ? new ResizeObserver((changes) => changes.forEach((change) => markRegion(change.target))) : null;
   const regionNames = new Set(); // a name used again (a command run twice) names its line, then a count
@@ -642,7 +642,10 @@ export function transcriptEntries({ target = null } = {}) {
     }
   }
 
-  /** Prints `entries` after those already shown; calls already shown take their new results. */
+  /**
+   * Prints `entries` after those already shown; calls already shown take their new results.
+   * Returns how many entries it added at the end (results folded into earlier calls not counted).
+   */
   function append(entries) {
     for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_result') results.set(b.tool_use_id, { ...b });
     const answered = new Set();
@@ -657,18 +660,46 @@ export function transcriptEntries({ target = null } = {}) {
     for (const printed of answered) {
       const fresh = entry(printed.item);
       if (!fresh || !printed.node.isConnected) continue;
+      keepState(printed.node, fresh);
       unregister(printed.node);
       printed.node.replaceWith(fresh);
+      const focus = fresh.querySelector('[data-keep-focus]');
+      if (focus) {
+        delete focus.dataset.keepFocus;
+        focus.focus({ preventScroll: true });
+      }
       printed.node = fresh;
       register(fresh);
     }
+    let added = 0;
     for (const item of entries) {
       const node = entry(item);
       if (!node) continue;
       el.append(node);
       register(node);
-      for (const b of item.blocks) if (b.type === 'tool_call') calls.set(b.id, { item, node });
+      added += 1;
+      // The entry's calls share one record, so a result for any of them prints the entry anew.
+      const printed = { item, node };
+      for (const b of item.blocks) if (b.type === 'tool_call') calls.set(b.id, printed);
     }
+    return added;
+  }
+
+  /**
+   * An entry printed again keeps what the reader did with it: the folds they opened or closed
+   * (in order) and where the keyboard was, marked for the new entry (`data-keep-focus`).
+   */
+  function keepState(old, fresh) {
+    const before = old.querySelectorAll('details');
+    const after = fresh.querySelectorAll('details');
+    if (before.length === after.length) before.forEach((fold, index) => { after[index].open = fold.open; });
+    const active = document.activeElement;
+    if (!active || !old.contains(active)) return;
+    const path = [];
+    for (let node = active; node !== old; node = node.parentElement) path.unshift([...node.parentElement.children].indexOf(node));
+    let target = fresh;
+    for (const index of path) target = target && target.children[index];
+    (target || fresh.querySelector('summary') || fresh).dataset.keepFocus = '';
   }
 
   /** Forgets every entry (a new session, or one rewritten). */

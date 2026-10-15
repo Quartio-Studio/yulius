@@ -168,6 +168,8 @@ export function mountTaskView(ctx, sandbox, task) {
   function placeScreen() {
     if (Boolean(owner()) === Boolean(watch)) return;
     const previous = terminal;
+    // The keyboard in the screen that goes moves to the one that comes (not to the page).
+    const focused = previous.el.contains(document.activeElement);
     watch = owner() ? makeWatch() : null;
     terminal = watch ? watchingTerminal(watch) : makeTerminal();
     previous.el.replaceWith(terminal.el);
@@ -175,7 +177,7 @@ export function mountTaskView(ctx, sandbox, task) {
     termArea.classList.toggle('watching', Boolean(watch));
     if (started) {
       terminal.start();
-      if (!watch && !isPhone()) terminal.focus();
+      if (focused || (!watch && !isPhone())) terminal.focus();
     }
   }
 

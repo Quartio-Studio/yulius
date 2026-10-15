@@ -244,12 +244,36 @@ export function createOctopus(lane, { random = Math.random, timer = { set: (fn, 
     }, () => {});
   }
 
-  if (reducedMotion()) el.classList.add('is-still');
+  // Reduced motion, also when it is turned on or off while the view is open: still, top right.
+  function still(on) {
+    timer.clear(handle);
+    if (run) {
+      run.cancel();
+      run = null;
+    }
+    el.classList.toggle('is-still', on);
+    el.classList.remove('is-waving');
+    if (!on) {
+      rest(true);
+      return;
+    }
+    corner = 'right';
+    set('rest');
+    el.dataset.corner = corner;
+    el.classList.add('is-left');
+    el.classList.remove('is-right');
+    place();
+  }
+  const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const motionChanged = (event) => { if (!stopped) still(event.matches); };
+  if (motion && motion.addEventListener) motion.addEventListener('change', motionChanged);
+  if (reducedMotion()) still(true);
   else rest(true);
   return {
     el,
     stop() {
       stopped = true;
+      if (motion && motion.removeEventListener) motion.removeEventListener('change', motionChanged);
       timer.clear(handle);
       if (run) run.cancel();
       if (resize) resize.disconnect();

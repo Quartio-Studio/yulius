@@ -20,6 +20,34 @@ use yulius_domain::time::Timestamp;
 
 type Error = Box<dyn std::error::Error>;
 
+/// An agent secret's value (VLT): plain text no pattern catches, only the vault's matcher.
+const AGENT_VALUE: &str = "plainwatchvalue77qrs";
+
+/// Stores `AGENT_VALUE` as the sandbox's agent secret `DEPLOY_KEY`.
+async fn agent_secret(
+    app: &yulius_app::context::App,
+    user: &yulius_app::model::UserRecord,
+    sandbox: &SandboxId,
+) -> TestResult {
+    let ctx = yulius_app::auth::AuthContext {
+        user: user.clone(),
+        csrf_token: None,
+        session_hash: None,
+    };
+    app.create_agent_secret(
+        &ctx,
+        sandbox.as_str(),
+        &yulius_contracts::api::secrets::AgentSecretInput {
+            name: "DEPLOY_KEY".into(),
+            hosts: vec!["deploy.example.test".into()],
+            value: AGENT_VALUE.into(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// A synthetic GitHub token built at run time (no literal credential in the source).
 fn fake_token() -> String {
     format!("ghp_{}", "Wt4Ky".repeat(8))
@@ -146,6 +174,7 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     let sid = SandboxId::parse(created.body["id"].as_str().ok_or("id")?)?;
     w.h.store.set_onboarding(&sid, "ready", None).await?;
+    agent_secret(&w.h.app, &alice_user, &sid).await?;
 
     // A task that has not started yet: nothing to read, said plainly.
     let task = insert_task(&w.h.store, &sid, "t-live", &alice_user.id).await?;
@@ -169,7 +198,10 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
         text.push_str(&prompt(&format!("Step {n}")));
         text.push_str(&answer(&format!("Done step {n}")));
     }
-    text.push_str(&answer(&format!("the deploy token is {}", fake_token())));
+    text.push_str(&answer(&format!(
+        "the deploy token is {} and the code {AGENT_VALUE}",
+        fake_token()
+    )));
     // A line still being written: not read until it is complete.
     text.push_str("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"half");
     std::fs::write(&live, &text)?;
@@ -192,6 +224,10 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     assert!(
         !body.contains(&fake_token()) && body.contains("[REDACTED:github-token]"),
         "redacted as session pages are: {body}"
+    );
+    assert!(
+        !body.contains(AGENT_VALUE) && body.contains("[secret:DEPLOY_KEY]"),
+        "the sandbox's agent secrets are redacted by the vault: {body}"
     );
 
     // Nothing changed: answered from the file's size, without entries.
@@ -219,6 +255,13 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     )
     .await?;
     assert_eq!(lines_of(&grown.body), vec![11, 12]);
+    // Read from a line on, the agent's secret is redacted too.
+    let page = get(&w, &carol, &format!("{path}?from=10")).await?;
+    let page = page.body.to_string();
+    assert!(
+        !page.contains(AGENT_VALUE) && page.contains("[secret:DEPLOY_KEY]"),
+        "{page}"
+    );
     assert_eq!(grown.body["end"], 13);
     assert!(grown.body["bytes"].as_u64().unwrap_or_default() > seen as u64);
 

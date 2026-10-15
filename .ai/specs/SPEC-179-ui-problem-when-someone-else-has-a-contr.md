@@ -59,8 +59,8 @@ reference face crawls along the top between the corners.
     `bytes` the transcript's size when it was read. A reader continues with `from=end`.
   - With `seen=<bytes>&session=<session_id>` equal to the current session and its file size, the
     answer comes without reading the file: no entries, `end = from`, the same `bytes`.
-  - A task without a session yet, or whose transcript is gone, answers no entries, `end` 0, `bytes`
-    0, `session_id` null. `doc_id` (the session's document, for "the whole session in Sessions") is
+  - A task without a session yet answers no entries, `end` 0, `bytes` 0 and `session_id` null; one
+    whose transcript is not there (yet, or any more) the same with its `session_id`. `doc_id` (the session's document, for "the whole session in Sessions") is
     filled on a tail read once the session has one. Unknown task or no access: 404.
 - **WAT-002 Watchers see the transcript.** When the task has another owner, the task view shows the
   live transcript in the terminal's place and opens no terminal socket; when control passes to the
@@ -103,7 +103,7 @@ reference face crawls along the top between the corners.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The server serves a task's live transcript to its watchers, cheaply when nothing changed
+- [x] The server serves a task's live transcript to its watchers, cheaply when nothing changed
 - [x] Someone else's task shows its live transcript instead of a broken terminal, following new output and the owner's prompts
 - [x] The live transcript keeps the terminal's colours, and ownership is said clearly in the view and the sidebar
 - [x] An electro-blue pixel octopus with the reference face crawls between the top corners of a watched task
