@@ -12,6 +12,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   updates, Restrict deletions, Block force pushes, only repository admins bypass) as the person who
   owns the task, when GitHub says they are a repository admin. The agent asks a person with
   `needs_you` only when that is refused; its own token still cannot change protection.
+- Automations can prepare their tasks (SPEC-155, ADR-0128, task #142, fixes #416). The automation
+  editor's start chip, the automations API (`prepared`, beside `supertask`, `after_task_id` and
+  `start_rule`) and the `automation_create` / `automation_update` tools offer "When I decide": each
+  run, and Run now, creates the task `prepared`, and it waits for Start now. The chip, the sentence
+  and the list row name it; a run while the previous prepared task still waits is
+  `skipped_previous_active`. Stored in migration 0031 (schema version 30).
+- The CD page's environment cards read right at every width (SPEC-152, task #146, fixes #501):
+  - The deploy button stays top right, with only the title and badge wrapping beside it. Before,
+    it fell onto its own row under the title.
+  - A dev deploy that can't run is a plain button, not a grey primary slab.
+  - A promoting production names what it promotes ("Promotes dev at e37fdd2 into main") instead of
+    "First".
 - Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
   task #126, fixes #406, #431 and #399):
   - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start

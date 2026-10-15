@@ -104,7 +104,7 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   function editable(a) {
     // A PUT replaces every field: the start choice goes along (SPEC-078).
-    return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, enabled: a.enabled, supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
+    return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, enabled: a.enabled, supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) };
   }
 
   /** One run now, also when disabled; the response is the AutomationRun. */
