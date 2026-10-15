@@ -478,8 +478,9 @@ export function openDeliveryDialog(ctx, task) {
 
 /**
  * The prompt a task started with (SPEC-043): its text formatted as written, each file attached
- * inside the text shown where it sits (SPEC-124), the files after all the text listed below it.
- * An image shows as a thumbnail that opens full size, another file downloads, a file that is gone
+ * inside the text shown where it sits (SPEC-124), every file listed once below it. In the text an
+ * image is a one-line `Image N` placeholder, as in the composer (SPEC-180, SPEC-150); in the list a
+ * thumbnail with its number. Both open it full size; another file downloads; a file that is gone
  * (drafts are removed after a week) is named. Read when the dialog opens.
  */
 export function openPromptDialog(ctx, task) {
@@ -511,9 +512,42 @@ export function openPromptDialog(ctx, task) {
   const fileUrl = (index) => `/api/tasks/${enc(task.id)}/prompt/attachments/${index}`;
   // An attached file can be as large as an upload (25 MiB by default): longer than a JSON read.
   const FILE_TIMEOUT_MS = 120000;
+  // Each file is read once, for its thumbnail or its first opening, whichever comes first.
+  const reads = new Map(); // index → Promise of an object URL
+  const read = (index) => {
+    if (!reads.has(index)) {
+      reads.set(index, ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
+        const url = URL.createObjectURL(blob);
+        urls.push(url);
+        return url;
+      }));
+    }
+    return reads.get(index);
+  };
+  // An image's number among the prompt's images, in order; one number per name (SPEC-180).
+  let numbers = new Map();
+  /** An image inside the text: a placeholder one line high that opens it (SPEC-180). */
+  const imagePlaceholder = (file, index) => {
+    const n = numbers.get(file.name);
+    let opening = false;
+    const open = async () => {
+      if (opening) return;
+      opening = true;
+      try {
+        openAttachment({ name: file.name }, { image: await read(index) });
+      } catch (error) {
+        if (error.code !== 'aborted') errorToast(error, `Couldn’t open ${file.name}`);
+      } finally {
+        opening = false;
+      }
+    };
+    return h('button', { type: 'button', class: 'pi-atom pi-image prompt-atom', title: file.name, 'aria-label': `Open Image ${n}, ${file.name}`, onClick: open },
+      icon('image', { size: 14 }), h('span', { class: 'pi-file-name' }, `Image ${n}`));
+  };
   /** A file's face: `tag` is `li` in the list below the text, `span` inside it. */
   const fileItem = (file, index, tag = 'li') => {
     const inline = tag !== 'li';
+    if (inline && file.available && file.image) return imagePlaceholder(file, index);
     if (!file.available) {
       return h(tag, { class: ['prompt-file gone', inline && 'inline'] }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
     }
@@ -533,13 +567,13 @@ export function openPromptDialog(ctx, task) {
       return h(tag, { class: ['prompt-file', inline && 'inline'] }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },
         icon('download', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name)));
     }
+    const n = numbers.get(file.name);
     const img = h('img', { alt: file.name });
-    const item = h(tag, { class: ['prompt-file image', inline && 'inline'] },
-      h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open ${file.name}`, onClick: () => img.src && openAttachment({ name: file.name }, { image: img.src }) }, img),
-      inline ? null : h('span', { class: 'prompt-file-name' }, file.name));
-    ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
-      const url = URL.createObjectURL(blob);
-      urls.push(url);
+    const item = h(tag, { class: 'prompt-file image' },
+      h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => img.src && openAttachment({ name: file.name }, { image: img.src }) },
+        img, h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(n))),
+      h('span', { class: 'prompt-file-name' }, file.name));
+    read(index).then((url) => {
       img.src = url;
     }).catch((error) => {
       if (error.code !== 'aborted') item.replaceChildren(icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'Couldn’t load it'));
@@ -556,6 +590,8 @@ export function openPromptDialog(ctx, task) {
     }
     text = prompt.text || '';
     const files = Array.isArray(prompt.attachments) ? prompt.attachments : [];
+    numbers = new Map();
+    for (const file of files) if (file.image && file.available && !numbers.has(file.name)) numbers.set(file.name, numbers.size + 1);
     // The prompt in order (SPEC-124); a server without `parts` gives the text, then its files.
     const parts = Array.isArray(prompt.parts) ? prompt.parts
       : [...(text ? [{ text }] : []), ...files.map((_, attachment) => ({ attachment }))];
@@ -568,7 +604,10 @@ export function openPromptDialog(ctx, task) {
       editor = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
       placeFiles(editor.el, (n) => (files[n] ? fileItem(files[n], n, 'span') : null));
     }
-    const below = [...new Set(asParts.slice(inside).filter((part) => 'file' in part && files[part.file]).map((part) => part.file))];
+    // Every file once, in the prompt's order: those inside the text, then those after it.
+    const listed = new Map(); // name → index
+    for (const part of asParts) if ('file' in part && files[part.file] && !listed.has(files[part.file].name)) listed.set(files[part.file].name, part.file);
+    const below = [...listed.values()];
     setChildren(modal.body, h('div', { class: 'stack' },
       editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
       below.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, below.map((n) => fileItem(files[n], n))) : null));

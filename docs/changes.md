@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The original prompt reads as written (SPEC-180, fixes #565, task #167). An image inside the
+  text was a thumbnail up to 160 px high, so its line grew to the picture's height. It is now the
+  composer's one-line `Image N` placeholder, which opens the image. The "Attached files" list
+  below the text holds every file once, each image's thumbnail carrying its number.
 - Review findings in a change's own code are fixed before merge, never deferred to an issue
   (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
   report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and
