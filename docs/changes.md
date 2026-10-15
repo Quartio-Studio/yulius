@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The original prompt reads as written (SPEC-180, fixes #565, task #167). An image inside the
+  text was a thumbnail up to 160 px high, so its line grew to the picture's height. It is now the
+  composer's one-line `Image N` placeholder, which opens the image. The "Attached files" list
+  below the text holds every file once, each image's thumbnail carrying its number.
 - A playground moves to GitHub (SPEC-176, ADR-0142, task #132, fixes #410). Once GitHub is
   connected, an admin of a playground picks "Move to GitHub…" in its sandbox menu and names an empty
   repository of the instance owner that they could import (`admin` or `maintain` on it; the

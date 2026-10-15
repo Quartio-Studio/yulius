@@ -75,13 +75,9 @@ test('an image pasted mid-text stays there, deletes and comes back, moves, and r
   // The original prompt shows it there too.
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await screen.getByRole('menuitem', 'See the original prompt').click();
-  await expect(browser.locator('.prompt-modal .prompt-text').getByRole('img', { name: 'shot.png' })).toBeVisible();
-  const inView = await browser.evaluate(() => {
-    const copy = document.querySelector('.prompt-modal .prompt-text')!.cloneNode(true) as HTMLElement;
-    for (const img of copy.querySelectorAll('img')) img.replaceWith(`[${img.getAttribute('alt')}]`);
-    return copy.textContent;
-  });
-  expect(inView).toMatch(/while the header\s*\[shot\.png\]\s*is fine\./);
+  await expect(browser.locator('.prompt-modal .prompt-text').getByRole('button', { name: 'Open Image 1, shot.png' })).toBeVisible();
+  const inView = await browser.evaluate(() => document.querySelector('.prompt-modal .prompt-text')!.textContent);
+  expect(inView).toMatch(/while the header\s*Image 1\s*is fine\./);
 });
 
 test('an image dragged to another place in the text lands at the drop point', async ({ app, browser, screen }) => {
