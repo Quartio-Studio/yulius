@@ -1302,8 +1302,10 @@ function promptFileServed(task, path) {
   const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
   const uploads = `${MOCK_UPLOADS}/${task.sandbox_id}/attachments`;
   const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
-  // A task created in this page: its creator's composer uploads, where the upload route put them.
-  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`, `${uploads}/tasks/${task.id}`);
+  // The task's own folder, where the upload route puts a file dropped on its terminal or queued
+  // with a message (SPEC-168), and for a task created in this page its creator's composer uploads.
+  owned.push(`${uploads}/tasks/${task.id}`);
+  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`);
   const slash = path.lastIndexOf('/');
   const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
   return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);
@@ -1318,6 +1320,9 @@ route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
   };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  // Reads per `task/index`, so a test can tell a file was read once.
+  db.promptFileReads = db.promptFileReads || {};
+  db.promptFileReads[`${p[0]}/${p[1]}`] = (db.promptFileReads[`${p[0]}/${p[1]}`] || 0) + 1;
   const task = taskOf(db, p[0]);
   const path = promptParts(task).paths[Number(p[1])];
   if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');
@@ -2135,9 +2140,11 @@ function storeAttachment(db, sid, folder, query, body) {
   db.attachments.set(folder, names);
   return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
-route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
+route('POST', `/api/tasks/${ID}/attachments`, async ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`), as for the composer's uploads.
+  if (db.holdUpload) await db.holdUpload;
   return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {

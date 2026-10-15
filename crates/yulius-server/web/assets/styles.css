@@ -1122,8 +1122,18 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .queue-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 .queue-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .queue-request { margin: 0; padding: 8px 12px; max-height: 140px; overflow: auto; border-left: 2px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; }
-.queue-compose { display: flex; align-items: flex-end; gap: 8px; }
-.queue-input { flex: 1; min-width: 0; height: auto; min-height: var(--control-xl); padding: 6px 8px; resize: vertical; font: inherit; }
+.queue-compose { position: relative; display: flex; align-items: flex-end; gap: 8px; }
+/* A file of the request (SPEC-168): the composer's placeholder, a button that opens it. */
+.queue-request .queue-file { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
+.queue-request .queue-file:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
+/* The message box: the composer's prompt input (SPEC-168), drawn as the card's field. */
+.queue-card .queue-input {
+  flex: 1; min-width: 0; min-height: var(--control-xl); max-height: 160px; padding: 6px 8px;
+  border: 1px solid var(--border-control); border-radius: var(--radius); background: var(--bg);
+  font-size: inherit; line-height: inherit;
+}
+.queue-card .queue-input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); outline: 2px solid transparent; outline-offset: 1px; }
+.queue-compose .upload-status-float { top: auto; bottom: calc(100% + 8px); left: 0; }
 .queue-card .field-error:empty { display: none; }
 /* A waiting task has no session to send keys to: the phone's quick input gives way to the card. */
 .taskview:has(.queue-slot:not([hidden])) .quickbar { display: none; }

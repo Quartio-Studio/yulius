@@ -15,6 +15,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   queued task, or a failed push leaves the playground as it was
   (`POST /api/sandboxes/{sid}/move-to-github`).
 
+- Queued messages show and take files as placeholders (SPEC-168, ADR-0137, task #158). The
+  "Queued messages" card no longer shows a request's files as raw `@'/path'` mentions: each is a
+  placeholder (`Image N`, or the file's name) that opens the image, or downloads the file, on a
+  click. The message box is the composer's prompt input: an image pasted or dropped there uploads
+  to the task and sits at the caret as a placeholder that moves and deletes like a character, and
+  is queued at its place. Queue waits for an upload still running.
 - A playground's lifecycle at its ends (SPEC-171, ADR-0139, task #131, fixes #409 and #420).
   `yulius onboard --playground [path] [--name <name>]` brings a local checkout without GitHub into a
   new or existing playground of yours: every branch and tag, the uncommitted work (one commit on the

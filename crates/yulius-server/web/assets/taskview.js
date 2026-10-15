@@ -8,13 +8,12 @@ import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
-import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
-import { mentionOf } from './promptparts.js';
+import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -30,6 +29,8 @@ const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do',
 const STRIP_KEY = 'yulius.stepsOpen';
 // Waiting states in which a task that never started takes queued messages (SPEC-052).
 const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
+// An attached file the server serves as an image (`is_image` in yulius-domain).
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i;
 // States only a task with a run is in.
 const RAN = new Set(['running', 'switching', 'stopping']);
 
@@ -327,34 +328,156 @@ export function mountTaskView(ctx, sandbox, task) {
   // the empty terminal, where a message is typed; the request shows as the agent will get it.
   const queueSlot = h('div', { class: 'queue-slot', hidden: true });
   const requestEl = h('div', { class: 'queue-request', role: 'region', 'aria-label': 'Request', tabindex: 0 });
-  const queueBox = h('textarea', { class: 'input queue-input', rows: 2, placeholder: 'Queue a message for the agent…', 'aria-label': 'Message for the agent', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 65536 });
+  // The message box is the composer's prompt input (SPEC-168): a file pasted or dropped uploads to
+  // the task's own folder and sits at the caret as a placeholder that moves and deletes like one
+  // character; double-click opens it. Its images are numbered after the request's, in the order
+  // the text holds them: the numbers the request gives them once queued.
+  const queueFiles = new Map(); // every file uploaded here: path → { name, type, file }
+  const queueUrls = new Map(); // path → the object URL a file of the box opened with
+  let queueImages = []; // the paths of the box's images not in the request, in the text's order
+  let requestNumbers = new Map(); // each image of the request (by path) → its number
+  const WAIT_UPLOAD = 'Wait for the upload to finish.';
+  // Its own callbacks read it: null until it is made.
+  let queueBox = null;
+  queueBox = createPromptInput({
+    label: 'Message for the agent',
+    placeholder: 'Queue a message for the agent… Paste or drop images where they belong.',
+    keyshortcuts: SUBMIT_ARIA,
+    maxLength: 65536,
+    face: (path) => {
+      const item = queueFiles.get(path);
+      if (!item) return null;
+      if (!IMAGE_PATH.test(path)) return { name: item.name };
+      const n = requestNumbers.get(path) || (queueImages.includes(path) ? requestNumbers.size + queueImages.indexOf(path) + 1 : 0);
+      return { name: item.name, image: true, label: n ? `Image ${n}` : 'Image' };
+    },
+    known: (path) => queueFiles.has(path),
+    onChange: () => {
+      if (!queueBox) return;
+      const images = [...new Set(queueBox.paths().filter((path) => IMAGE_PATH.test(path) && queueFiles.has(path) && !requestNumbers.has(path)))];
+      if (images.join('\n') !== queueImages.join('\n')) { queueImages = images; queueBox.refresh(); }
+      // The upload ended (or failed): the reason no longer holds.
+      if (queueError.textContent === WAIT_UPLOAD && !queueBox.el.querySelector('.pi-pending')) queueError.textContent = '';
+    },
+    onSubmit: () => queueMessage(),
+    onOpen: (path) => openQueuedFile(path),
+  });
+  queueBox.el.classList.add('queue-input');
+  function openQueuedFile(path) {
+    const item = queueFiles.get(path);
+    if (!item) return;
+    // One URL per file, however often it opens; revoked with the view.
+    const urlOf = (blob) => {
+      if (!queueUrls.has(path)) queueUrls.set(path, URL.createObjectURL(blob));
+      return queueUrls.get(path);
+    };
+    openAttachment(item, { image: IMAGE_PATH.test(path) ? urlOf(item.file) : null, url: urlOf });
+  }
   const queueButton = h('button', { type: 'button', class: 'btn btn-primary', title: `Queue (${SUBMIT_KEYS})`, onClick: () => queueMessage() }, 'Queue');
   const queueError = h('div', { class: 'field-error', role: 'alert' });
   const queueNote = h('span', { class: 'muted' });
   // A card kept after the start (below) goes once the person has their text (SPEC-056 WUI-106).
   const queueDismiss = h('button', { type: 'button', class: 'btn', hidden: true, onClick: () => {
-    queueBox.value = '';
+    queueBox.setValue('');
     queueError.textContent = '';
     renderQueue();
     if (!isPhone()) terminal.focus();
   } }, 'Dismiss');
+  // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
+  // its number among the request's images), its name otherwise; a click reads the file from the
+  // prompt endpoint (by its index among the request's files) and opens it.
+  // One read per file at a time and one URL per file (the request only grows, so an index keeps
+  // naming its file); leaving the view stops the reads (`reads`, below) and revokes the URLs.
+  const requestUrls = new Map(); // `index\npath` → object URL
+  const requestReads = new Set();
+  destroyers.push(() => {
+    for (const url of [...requestUrls.values(), ...queueUrls.values()]) URL.revokeObjectURL(url);
+    requestUrls.clear();
+    queueUrls.clear();
+  });
+  let requestShown = null;
+  async function openRequestFile(index, path, image) {
+    const name = path.split('/').pop();
+    const key = `${index}\n${path}`;
+    if (requestReads.has(key)) return;
+    let url = requestUrls.get(key);
+    if (!url) {
+      requestReads.add(key);
+      try {
+        // An attached file can be as large as an upload: longer than a JSON read.
+        const blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
+        if (!alive) return;
+        url = URL.createObjectURL(blob);
+        requestUrls.set(key, url);
+      } catch (error) {
+        if (!alive || error.code === 'aborted') return;
+        // Gone (drafts are removed after a week), or never one of this task's files.
+        if (error.status === 404) toast(`${name} is not on the server.`, { kind: 'warn' });
+        else errorToast(error, `Couldn’t open ${name}`);
+        return;
+      } finally {
+        requestReads.delete(key);
+      }
+    }
+    if (image) openAttachment({ name }, { image: url });
+    else h('a', { href: url, download: name }).click();
+  }
+  function drawRequest(text) {
+    const { parts, paths } = parsePrompt(text);
+    // One number per image, however often the request names it (the box counts the same way).
+    const images = new Map();
+    for (const path of paths) if (IMAGE_PATH.test(path) && !images.has(path)) images.set(path, images.size + 1);
+    const numbers = paths.map((path) => images.get(path) || 0);
+    // The box's images are numbered after these.
+    if ([...images.keys()].join('\n') !== [...requestNumbers.keys()].join('\n')) {
+      requestNumbers = images;
+      queueImages = queueImages.filter((path) => !images.has(path));
+      queueBox.refresh();
+    }
+    setChildren(requestEl, parts.map((part) => {
+      if ('text' in part) return part.text;
+      const path = paths[part.file];
+      const name = path.split('/').pop();
+      const n = numbers[part.file];
+      return h('button', { type: 'button', class: ['pi-atom', 'queue-file', n ? 'pi-image' : 'pi-file'], title: name, 'aria-label': n ? `Image ${n}, ${name}` : name, onClick: () => openRequestFile(part.file, path, Boolean(n)) },
+        icon(n ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, n ? `Image ${n}` : name));
+    }));
+  }
+  const queueCompose = h('div', { class: 'queue-compose' }, queueBox.el, queueButton, queueDismiss);
   setChildren(queueSlot, h('section', { class: 'queue-card', role: 'region', 'aria-label': 'Queued messages' },
     h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'), queueNote),
     requestEl,
-    h('div', { class: 'queue-compose' }, queueBox, queueButton, queueDismiss),
+    queueCompose,
     queueError));
-  attachMarkdownInput(queueBox, { onSubmit: () => queueMessage() });
+  attachPromptDrop(ctx, {
+    box: queueCompose,
+    prompt: queueBox,
+    label: 'Drop to add to the message',
+    upload: (file, options) => taskAttachments(ctx, current.id)(file, options),
+    // A task that started meanwhile takes no more queued files (its card is gone or kept read-only).
+    writable: () => alive && !queueSlot.hidden,
+    unwritable: 'The task has started: the file was not added.',
+    onAttach: (items, place) => {
+      for (const item of items) queueFiles.set(item.path, { name: item.name, type: item.file.type, file: item.file });
+      if (place) place.insert(items.map((item) => item.path));
+    },
+  });
   let queueing = false;
   async function queueMessage() {
+    if (queueing || queueBox.readOnly) return;
+    // A file still uploading is not in the text yet: queueing now would leave it out.
+    if (queueBox.el.querySelector('.pi-pending')) { queueError.textContent = WAIT_UPLOAD; return; }
     const text = queueBox.value;
-    if (queueing || !text.trim() || queueBox.readOnly) return;
+    if (!text.trim()) return;
     queueing = true;
     queueButton.disabled = true;
     queueError.textContent = '';
     try {
       const out = await ctx.api.post(`/api/tasks/${enc(current.id)}/queued-messages`, { text });
       if (!alive) return;
-      queueBox.value = '';
+      queueBox.setValue('');
+      queueImages = [];
+      queueBox.refresh();
       if (detail) detail = { ...detail, request: out.request };
       renderQueue();
     } catch (error) {
@@ -377,7 +500,7 @@ export function mountTaskView(ctx, sandbox, task) {
     // person can copy the text into the session (SPEC-052 QMS-006, SPEC-056 WUI-106). A task that
     // ended or was archived instead takes the card away.
     const started = current.status === 'starting' || RAN.has(current.status);
-    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent);
+    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent || queueBox.el.querySelector('.pi-pending'));
     // Back to waiting before it ran: a refusal from the start no longer holds.
     if (waiting && !queueDismiss.hidden) queueError.textContent = '';
     queueSlot.hidden = !waiting && !kept;
@@ -388,8 +511,9 @@ export function mountTaskView(ctx, sandbox, task) {
     queueDismiss.hidden = !kept;
     if (kept) return;
     const text = detail.request || '';
-    if (requestEl.textContent !== text) {
-      requestEl.textContent = text;
+    if (requestShown !== text) {
+      requestShown = text;
+      drawRequest(text);
       requestEl.scrollTop = requestEl.scrollHeight; // the latest message in view
     }
   }
