@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A playground moves to GitHub (SPEC-176, ADR-0142, task #132, fixes #410). Once GitHub is
+  connected, an admin of a playground picks "Move to GitHub…" in its sandbox menu and names an empty
+  repository of the instance owner that they could import (`admin` or `maintain` on it; the
+  superadmin: one the App can access). Yulius pushes every branch and tag there in one atomic push,
+  points the sandbox's clone at it, records it (same slug, tasks, sessions and steps) and deletes
+  the server's copy; access then mirrors GitHub. A repository with anything else in it, a live or
+  queued task, or a failed push leaves the playground as it was
+  (`POST /api/sandboxes/{sid}/move-to-github`).
+
 - The session view says when the server cut a diff or a context, and every scroller is reachable
   (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
   `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the

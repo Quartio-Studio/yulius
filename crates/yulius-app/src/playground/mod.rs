@@ -19,6 +19,7 @@ use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug_base};
 
 mod folder;
+mod github;
 mod onboard;
 mod purge;
 

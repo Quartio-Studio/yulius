@@ -794,6 +794,40 @@ export function openSandboxDialog(ctx, mode = 'import') {
 }
 
 /**
+ * Move a playground into an empty GitHub repository of the instance owner (SPEC-176): its branches
+ * and tags are pushed there, its access then follows GitHub, and its tasks stay. The server refuses
+ * a repository that is not empty or a live task, and the dialog says why.
+ */
+export function openMoveToGitHubDialog(ctx, sandbox) {
+  const me = ctx.store.state.me || {};
+  const owner = (me.instance && me.instance.owner_login) || 'the GitHub owner';
+  const nameInput = h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false' });
+  nameInput.value = sandbox.name;
+  openModal({
+    title: `Move ${sandbox.name} to GitHub`,
+    body: h('div', { class: 'stack' },
+      h('p', null, `Create an empty repository of ${owner} on GitHub first (no README, license or .gitignore), and give the ${BRAND.name} GitHub App access to it. You need admin or maintain permission on it.`),
+      field('Repository name', nameInput, `${owner}/${nameInput.value}`),
+      h('p', { class: 'muted small' }, `Every branch and tag is pushed there, and this sandbox works on GitHub from then on: tasks deliver by pull request. Access then follows GitHub: whoever has no permission on the repository no longer sees it. Tasks, sessions and steps stay. Stop running tasks first.`)),
+    actions: [
+      { label: 'Cancel', value: false },
+      { label: 'Move to GitHub', kind: 'primary', run: async () => {
+        const name = nameInput.value.trim();
+        if (!REPO_NAME_RE.test(name)) {
+          invalid(nameInput, 'Use letters, digits, “.”, “-” or “_”.');
+          return false;
+        }
+        const moved = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/move-to-github`, { name });
+        ctx.store.upsertSandbox(moved);
+        toast(`${sandbox.name} moved to ${moved.repo.owner}/${moved.repo.name}.`, { kind: 'ok' });
+      } },
+    ],
+  });
+  const hint = nameInput.closest('.field').querySelector('.field-hint');
+  nameInput.addEventListener('input', () => { hint.textContent = `${owner}/${nameInput.value.trim()}`; });
+}
+
+/**
  * Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). A playground's code
  * lives only on this server: the dialog offers to delete it for good, and says so before (SPEC-171).
  */
