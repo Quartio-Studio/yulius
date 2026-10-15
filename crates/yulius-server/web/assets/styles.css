@@ -384,6 +384,8 @@ button.task-group-head:hover { color: var(--text); }
 /* Done's "Archive all" (SPEC-062) sits after the count; it reads as a button, not a heading. */
 .task-group-action { margin-right: -8px; text-transform: none; letter-spacing: normal; font-weight: 500; }
 .task-group-action[aria-disabled="true"] { opacity: 0.4; cursor: progress; }
+/* Working's "Show as a graph" (SPEC-164): an icon after the count. */
+.task-group-graph { width: 24px; height: 24px; margin-left: 4px; color: var(--muted); }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
    the nav labels' axis, age (the kebab takes the age's place on hover). */
 .task-row { position: relative; border-radius: var(--radius); }
@@ -1456,6 +1458,13 @@ span.composer-attachment-open { cursor: default; }
 .pi-pending { border-style: dashed; cursor: progress; }
 .pi-spinner { flex: none; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin var(--duration-spin) linear infinite; }
 .pi-dragging { opacity: 0.4; }
+/* A file in the selection is chosen as a whole (#535): its label is never painted as selected text,
+   the placeholder takes the selection's colour instead. */
+.pi-atom::selection, .pi-atom ::selection { background: transparent; }
+.pi-atom.pi-selected { border-color: var(--accent); background: var(--selection); color: var(--text); }
+@media (forced-colors: active) {
+  .pi-atom.pi-selected { outline: 2px solid Highlight; }
+}
 .pi-preview-image { display: block; max-width: 100%; max-height: 160px; border-radius: var(--radius); }
 .pi-preview-file { display: inline-flex; max-width: min(240px, 100%); margin: 2px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; vertical-align: middle; cursor: zoom-in; }
 .pi-preview-after { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
@@ -1713,6 +1722,47 @@ summary { cursor: pointer; }
 .tl-find { display: inline-flex; align-items: center; gap: 8px; height: var(--control-lg); padding: 0 8px; border: 0; border-radius: var(--radius); background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
 .tl-find:hover { background: var(--surface-2); color: var(--text); }
 .tl-find-text { display: inline-flex; align-items: center; gap: 4px; }
+/* The Tasks page's Graph (SPEC-164): sections of open tasks; the linked ones drawn as cards over
+   an SVG of arrows, in a frame that scrolls by itself so the page never scrolls sideways. */
+.tl-view label { height: var(--control-lg); }
+.tg { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.tg-section { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 12px 16px 16px; min-width: 0; }
+.tg-head { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.tg-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.tg-sub { margin: 4px 0 12px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tg-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.tg-queue-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tg-pos { flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--surface-3); color: var(--text-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.tg-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: var(--control-lg); padding: 0 8px; border-radius: var(--radius); color: var(--text); text-decoration: none; }
+.tg-item:hover { background: var(--surface-2); }
+.tg-item:focus-visible, .tg-node:focus-visible, .tg-frame:focus-visible { outline: none; box-shadow: var(--focus); }
+.tg-mark { flex: none; display: inline-flex; }
+.tg-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tg-item .tg-title { flex: 0 1 auto; }
+.tg-words { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tg-item .tg-words { margin-left: auto; padding-left: 12px; flex: 0 1 auto; }
+.tg-frame { overflow: auto; max-height: 70vh; padding: 4px; border-radius: var(--radius); }
+.tg-canvas { position: relative; }
+.tg-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.tg-edge { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.tg-edge-rule { stroke-dasharray: 6 4; }
+.tg-edge-hold { stroke-dasharray: 1.5 3.5; stroke-linecap: round; }
+.tg-arrowhead { fill: var(--muted); }
+.tg-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); color: var(--text); text-decoration: none; }
+a.tg-node:hover { border-color: var(--accent); }
+.tg-node-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tg-node[data-tone="attention"] { border-color: var(--warn-fg); }
+.tg-supertask { border-width: 2px; }
+.tg-context { opacity: 0.6; }
+.tg-ghost { border-style: dashed; background: transparent; color: var(--muted); }
+.tg-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0 0; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tg-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.tg-legend-line { overflow: visible; }
+@container (max-width: 520px) {
+  .tg-item { flex-wrap: wrap; height: auto; min-height: var(--control-lg); padding: 6px 8px; row-gap: 2px; }
+  .tg-item .tg-words { flex-basis: 100%; margin-left: 0; padding-left: 0; }
+}
+.tg-section { container-type: inline-size; }
 .kbd-on-accent { margin-left: 4px; border-color: transparent; background: var(--accent-strong); color: var(--accent-ink); }
 @media (max-width: 767px) {
   /* The Tasks toolbar's order on phones; filter tabs elsewhere (Secrets, MCP, Sessions) stay where they are. */
@@ -2120,6 +2170,8 @@ a.dl-task:hover { text-decoration: underline; }
   .task-quick-archive { display: none; }
   .task-group-head.group-done { height: var(--control-xl); }
   .task-group-action { height: var(--control-xl); padding: 0 12px; }
+  .task-group-head.group-working { height: var(--control-xl); }
+  .task-group-graph { width: var(--control-xl); padding: 0; }
   .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
   .nav-item { height: var(--control-xl); }
 
