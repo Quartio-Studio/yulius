@@ -140,6 +140,79 @@ test('another sandbox opens from the sandbox tabs', async ({ app, browser, scree
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
 });
 
+// Task #157 (SPEC-167): "i want the same for sandboxes - i mean this icon "you can move it"", the
+// Notes tabs' grip (SPEC-136) on the sandbox tabs, which already drag.
+test('the sandbox tabs show a grip and say they can be clicked or dragged', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const row = screen.getByRole('navigation', 'Sandboxes');
+  await expect(row.getByRole('link', /^product\b/)).toBeVisible();
+
+  // TAB-001/002: a decorative grip before each sandbox's name, a title keeping the repository and
+  // access and adding the Notes tabs' hint on its own line; "All sandboxes" does not move.
+  const tabs = await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].map((tab) => {
+    const grip = tab.querySelector<HTMLElement>('.tab-grip');
+    const box = grip?.getBoundingClientRect();
+    const name = tab.querySelector('.tab-name')?.getBoundingClientRect();
+    return {
+      name: tab.querySelector('.tab-name')?.textContent ?? null,
+      title: tab.classList.contains('tab-home') ? tab.title.replace(/ \(.*\)$/, '') : tab.title,
+      grip: grip ? { hidden: grip.getAttribute('aria-hidden'), first: tab.firstElementChild === grip, svg: !!grip.querySelector('svg'), text: grip.textContent, cursor: getComputedStyle(grip).cursor, shown: !!box && box.width > 0 && box.height > 0, gap: box && name ? Math.round(name.left - box.right) : null } : null,
+    };
+  }));
+  // 4 px between the grip and the name, as on the Notes tabs.
+  const grip = { hidden: 'true', first: true, svg: true, text: '', cursor: 'grab', shown: true, gap: 4 };
+  const hint = 'Click to open, drag to reorder';
+  expect(tabs).toEqual([
+    { name: null, title: 'All sandboxes', grip: null },
+    { name: 'studio', title: `Quartio-Studio/studio · admin access\n${hint}`, grip },
+    { name: 'product', title: `Quartio-Studio/product · admin access\n${hint}`, grip },
+    { name: 'sandbox-3', title: `Quartio-Studio/sandbox-3 · read access\n${hint}`, grip },
+  ]);
+  // The accessible names still begin with the sandboxes' names (the grip adds nothing).
+  await expect(row.getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+  await expect(row.getByRole('link', /^product\b/)).toBeVisible();
+
+  // The grip is faint on a tab at rest and takes the tab's colour when the tab is current or hovered.
+  const gripColour = (name: string) => browser.evaluate((n) => {
+    const tab = [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === n)!;
+    return { grip: getComputedStyle(tab.querySelector('.tab-grip')!).color, tab: getComputedStyle(tab).color };
+  }, name);
+  const current = await gripColour('studio');
+  expect(current.grip).toEqual(current.tab);
+  const resting = await gripColour('product');
+  expect(resting.grip).not.toEqual(resting.tab);
+  expect(await axeViolations(browser)).toEqual([]);
+  const product = await row.getByRole('link', /^product\b/).boundingBox();
+  if (!product) throw new Error('tabs not laid out');
+  await browser.mouse.move(product.x + product.width / 2, product.y + product.height / 2);
+  await expect.poll(async () => { const now = await gripColour('product'); return now.grip === now.tab; }).toBe(true);
+
+  // Dragging a tab by its grip onto another still reorders the row (synthetic drag events: they
+  // prove a drag from the grip reaches the tab's listeners).
+  await browser.evaluate(() => {
+    const tab = (n: string) => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === n)!;
+    const data = new DataTransfer();
+    tab('sandbox-3').querySelector('.tab-grip')!.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
+    tab('studio').dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
+    tab('studio').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+  });
+  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.tabrow-tabs .tab-name')].map((n) => n.textContent))).toEqual(['sandbox-3', 'studio', 'product']);
+
+  // TAB-003: without a fine pointer (mouse, pen) the grip is not shown, as on the Notes tabs.
+  const coarse = await browser.evaluate(() => {
+    const found: string[] = [];
+    const visit = (list: CSSRuleList, inside: boolean) => {
+      for (const rule of [...list]) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, inside || rule.conditionText.replace(/\s+/g, ' ').includes('not (any-pointer: fine)'));
+        else if (inside && rule instanceof CSSStyleRule) found.push(rule.cssText);
+      }
+    };
+    for (const sheet of [...document.styleSheets]) { try { visit(sheet.cssRules, false); } catch { /* another origin */ } }
+    return found.join('\n');
+  });
+  expect(coarse).toMatch(/\.tab-grip \{ display: none; \}/);
+});
+
 // Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them
 // quickly. But it should be communicated what id is for what". The screenshot's sidebar showed
 // only pull request numbers.

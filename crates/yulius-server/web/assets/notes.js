@@ -14,7 +14,7 @@
 // tab shows a grip and says it can be clicked or dragged (SPEC-136).
 
 import { enc } from './api.js';
-import { h, icon, openMenu, setChildren, skeleton } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, openMenu, setChildren, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
@@ -27,9 +27,6 @@ const TAB_KEY = 'yulius.notesTab';
 const ORDER_KEY = 'yulius.notesOrder';
 /** The tabs' order until the person moves one: Team first (SPEC-112 NOT-015). */
 export const DEFAULT_ORDER = ['team', 'sandbox', 'me'];
-/** What a tab says under the pointer: the grip before its name shows it drags (SPEC-136). The keys
- *  are announced once, through `aria-keyshortcuts`, not again in this description. */
-const TAB_HINT = 'Click to open, drag to reorder';
 /** Unsaved text per user and notepad, in sessionStorage (this browser tab only). */
 const UNSAVED_PREFIX = 'yulius.notes.unsaved.';
 /** Quiet time after the last keystroke before a save (NOT-002). */
@@ -127,7 +124,9 @@ export function createNotesView(ctx, sandbox) {
       const tab = h('button', {
         type: 'button', class: ['term-tab', selected && 'active'], role: 'tab', id: `notes-tab-${pad.key}`,
         'aria-selected': String(selected), 'aria-controls': `notes-pane-${pad.key}`, tabindex: selected ? '0' : '-1',
-        'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key }, title: TAB_HINT,
+        // The grip before the name shows the tab drags (SPEC-136); the keys are announced once,
+        // through `aria-keyshortcuts`, not again in the title.
+        'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key }, title: DRAG_TAB_HINT,
         onClick: () => { if (drag.clickConsumed()) return; select(pad, { focusTab: true }); },
       }, h('span', { class: 'notes-tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })), pad.label);
       tab.addEventListener('keydown', (event) => {
