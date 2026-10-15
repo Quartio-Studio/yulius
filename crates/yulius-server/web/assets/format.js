@@ -197,5 +197,6 @@ export function startPhrase(a) {
   if (a.supertask) return 'supertask';
   if (a.after_task_id) return a.after_task_number ? `after #${a.after_task_number}` : 'after a task';
   if (a.start_rule) return `when ${a.start_rule}`;
+  if (a.prepared) return 'when I decide';
   return '';
 }
