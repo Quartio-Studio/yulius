@@ -233,7 +233,12 @@ impl App {
         port: u16,
     ) -> AppResult<Vec<(VaultSecretRecord, AgentPayload)>> {
         let mut out = Vec::new();
-        for record in self.deps.store.vault_agent(Some(&client.sandbox_id)).await? {
+        for record in self
+            .deps
+            .store
+            .vault_agent(Some(&client.sandbox_id))
+            .await?
+        {
             if client.may_use(&record.name, record.cd_prod) && bound_to(&record, host, port) {
                 let payload: AgentPayload = self.open_payload(&record)?;
                 out.push((record, payload));
@@ -391,13 +396,27 @@ impl App {
                 format!("{exe} {SCRUB_EXEC_FLAG}"),
             ));
         }
+        self.egress_env("yulius", task_token, run_dir, launch);
+        Ok(())
+    }
+
+    /// Adds the egress proxy to a run's environment when the proxy is wired (`false` when it is
+    /// not): the proxy variables with `user:token` (secret environment), `NO_PROXY`, and the CA
+    /// bundle written to `run_dir`. Shared by agent runs and CI jobs (SPEC-142).
+    pub(crate) fn egress_env(
+        &self,
+        user: &str,
+        token: &str,
+        run_dir: &Path,
+        launch: &mut LaunchPlan,
+    ) -> bool {
         if !self.vault.egress.load(std::sync::atomic::Ordering::SeqCst) {
-            return Ok(());
+            return false;
         }
         let Some(proxy_authority) = authority(&self.config.internal_url) else {
-            return Ok(());
+            return false;
         };
-        let proxy = format!("http://yulius:{task_token}@{proxy_authority}");
+        let proxy = format!("http://{user}:{token}@{proxy_authority}");
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
             launch.secret_env.push((name.into(), proxy.clone()));
         }
@@ -425,7 +444,7 @@ impl App {
                     .push(((*name).to_owned(), path.to_string_lossy().into_owned()));
             }
         }
-        Ok(())
+        true
     }
 
     /// A streaming redactor of the task terminal for `sandbox` (`None` without agent secrets).

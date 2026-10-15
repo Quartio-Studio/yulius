@@ -1634,7 +1634,11 @@ mod tests {
         assert_eq!(config.ci[0].secrets, ["VIDOC_API_KEY", "OTHER"]);
         assert!(config.ci[1].secrets.is_empty());
         let jobs = crate::ci::project_jobs(None, &config.ci)?;
-        assert_eq!(jobs[1].secrets, ["VIDOC_API_KEY", "OTHER"], "matrix jobs inherit");
+        assert_eq!(
+            jobs[1].secrets,
+            ["VIDOC_API_KEY", "OTHER"],
+            "matrix jobs inherit"
+        );
         assert!(jobs[2].secrets.is_empty());
         assert!(
             render_yulius_toml(&config).contains("secrets = \"VIDOC_API_KEY OTHER\"\n"),

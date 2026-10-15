@@ -216,9 +216,10 @@ pub fn parse_secrets(job: &str, text: &str) -> Result<Vec<String>, CiConfigError
     let names: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
     let valid = !names.is_empty()
         && names.len() <= MAX_JOB_SECRETS
-        && names.iter().enumerate().all(|(i, name)| {
-            crate::cd::valid_secret_name(name) && !names[..i].contains(name)
-        });
+        && names
+            .iter()
+            .enumerate()
+            .all(|(i, name)| crate::cd::valid_secret_name(name) && !names[..i].contains(name));
     if valid {
         Ok(names)
     } else {

@@ -1631,11 +1631,10 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     }
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
-    let token = w
-        .h
-        .app
-        .ci_egress_open(&s1, "run-7", "job-7a", &["STRIPE_KEY".to_owned()])
-        .ok_or("no CI credential")?;
+    let token =
+        w.h.app
+            .ci_egress_open(&s1, "run-7", "job-7a", &["STRIPE_KEY".to_owned()])
+            .ok_or("no CI credential")?;
     let app: Arc<dyn EgressPolicy> = w.h.app.clone();
     let ci = app.egress_client(&token).await.ok_or("ci client")?;
     assert_eq!(ci.actor(), "ci:run-7");
@@ -1685,7 +1684,10 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         .await;
     assert!(matches!(named, EgressDecision::Refuse { status: 403, .. }));
     let elsewhere = app
-        .egress_apply(&ci, request("eu.hdr.test", "/?k=yulius-secret-HDR_KEY", &[]))
+        .egress_apply(
+            &ci,
+            request("eu.hdr.test", "/?k=yulius-secret-HDR_KEY", &[]),
+        )
         .await;
     assert_eq!(header(&elsewhere, "x-api-key"), None);
     match &elsewhere {
@@ -1725,11 +1727,10 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
     // The job ended: its credential names no client any more, and it never was a task's.
     w.h.app.ci_egress_close(&token);
     assert!(app.egress_client(&token).await.is_none());
-    let empty = w
-        .h
-        .app
-        .ci_egress_open(&s1, "run-8", "job-8a", &[])
-        .ok_or("no CI credential")?;
+    let empty =
+        w.h.app
+            .ci_egress_open(&s1, "run-8", "job-8a", &[])
+            .ok_or("no CI credential")?;
     let none = app.egress_client(&empty).await.ok_or("ci client")?;
     assert!(!app.egress_intercepts(&none, "api.stripe.test", 443).await);
     w.h.app.ci_egress_close(&empty);
