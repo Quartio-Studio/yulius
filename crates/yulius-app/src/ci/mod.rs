@@ -171,6 +171,8 @@ pub struct CiJobRecord {
     pub exit_code: Option<i32>,
     /// Output tail (empty unless read with outputs).
     pub output: String,
+    /// Its failing tests' output, kept from its whole output (SPEC-145; read with outputs).
+    pub failures: Option<String>,
     /// Started at.
     pub started_at: Option<Timestamp>,
     /// Ended at.
@@ -199,6 +201,8 @@ pub struct CiJobUpdate {
     pub exit_code: Option<i32>,
     /// Output.
     pub output: Option<String>,
+    /// Its failing tests' output (SPEC-145).
+    pub failures: Option<String>,
     /// Start.
     pub started_at: Option<Timestamp>,
     /// End.
@@ -296,6 +300,7 @@ fn job_view(job: &CiJobRecord, with_output: bool) -> CiJob {
             .zip(job.ended_at)
             .map(|(start, end)| end.millis_since(start)),
         output: with_output.then(|| job.output.clone()),
+        failures: with_output.then(|| job.failures.clone()).flatten(),
     }
 }
 
@@ -552,6 +557,7 @@ impl App {
                 reason: None,
                 exit_code: None,
                 output: String::new(),
+                failures: None,
                 started_at: None,
                 ended_at: None,
                 need: job.need,
@@ -804,6 +810,7 @@ impl App {
                 reason: Some(note.clone()),
                 exit_code: Some(0),
                 output: format!("{note}.\n"),
+                failures: None,
                 started_at: Some(now),
                 ended_at: Some(now),
                 need: job.need,

@@ -857,6 +857,18 @@ live / gone"| keep[("metrics kept;
 outcome recorded")]
 ```
 
+## CI job output
+
+A CI job's output is read from its log while it runs: the stored output is its last 512 KiB
+(escape sequences removed), and the same reads feed the stage scanner and the failure scanner
+(`FailureScanner` in `yulius-domain::ci::failures`). The failure scanner keeps every failing test's
+block it sees anywhere in the output, nextest's (`FAIL [ 0.5s] …` with its `stdout ───` and
+`stderr ───`) and libtest's, at most 8 KiB each and 32 KiB per job, in `ci_jobs.failures` when the
+job ends. `ci_status` with a `run_id` shows them before the end of a failed job's output, so a test
+that failed early in a long job stays diagnosable
+([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
+[decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
+
 ## Stages
 
 Every stage of a task, a CI run and a CD run is one row of `spans`

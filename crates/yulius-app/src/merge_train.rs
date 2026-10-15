@@ -893,6 +893,7 @@ impl App {
                 reason: Some(note.clone()),
                 exit_code: Some(0),
                 output: format!("{note}.\n"),
+                failures: None,
                 started_at: Some(now),
                 ended_at: Some(now),
                 need: job.need,
