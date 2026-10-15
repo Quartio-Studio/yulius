@@ -82,8 +82,45 @@ test('Reply on a task waiting for your reply opens the same field; Send sends', 
   // Empty text sends nothing and keeps the field open.
   await screen.getByRole('button', 'Send').click();
   await expect(field).toBeVisible();
+  expect(await typedIntoTask(browser)).toBe('');
   await field.fill('Go on');
   await screen.getByRole('button', 'Send').click();
   await expect(taskTerminal(browser)).toHaveText(/> Go on/);
   await expect(field).toBeHidden();
+});
+
+// Review of SPEC-156: a Needs you request stays while the agent asks something in the terminal (a
+// permission menu). Text typed into a field there would pick the menu's options unseen, so Reply
+// goes to the terminal, where the menu is.
+test('Reply on Needs you while the agent asks in the terminal focuses the terminal', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await askRuleset(browser);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you: Add a ruleset/);
+  await screen.getByRole('button', 'Reply').click();
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Terminal input', caret: 0 });
+  await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
+});
+
+test('a reply field that closes while typing hands the keyboard to the terminal', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await askRuleset(browser);
+  await screen.getByRole('button', 'Reply').click();
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 0 });
+  await browser.keyboard.type('Hal');
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Terminal input', caret: 0 });
+});
+
+test('Reply on a phone focuses the quick input; no field opens', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await askRuleset(browser);
+  await screen.getByRole('button', 'Reply').click();
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Quick input', caret: 0 });
+  await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
 });
