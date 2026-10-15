@@ -134,7 +134,11 @@ lets an agent defer a finding in its own change's code to an issue:
   minor: the shrink loop re-rendered up to 561 times for a short or empty goal. It now starts at
   the goal's own length; `a_tight_budget_settles_in_a_few_passes` failed with 561 passes on the
   old start and passes now. The nits: Fix line wrapping, the 1.7 KB test comment, "prompt or
-  request file". `scripts/dev ci` was rerun on the final head (below).
+  request file".
+- Round 5 (1047ae30) approved, listing one minor in own code: a goal padded with whitespace could
+  lose its text once the quote started at the trimmed length. `task_header` now quotes the trimmed
+  goal. `whitespace_around_the_goal_changes_nothing` failed before and passes now.
+  `scripts/dev ci` was rerun on the final head (below).
 - `a_long_goal_shrinks_before_a_mandatory_part_is_cut` failed before the shrink ("isolated false:
   ## Architecture cut"), passes now; `the_shipped_catalog_is_valid` failed at 1,683 bytes (Fix) once
   the cap became 1,444.

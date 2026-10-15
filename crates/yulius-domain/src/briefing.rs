@@ -836,7 +836,7 @@ fn task_header(input: &BriefingInput<'_>, goal_bytes: usize) -> String {
         "> (no goal given; ask the user)\n".to_owned()
     } else {
         // The whole request (and its attached files) is in the task's request file (SPEC-011).
-        quoted(&task.goal, goal_bytes)
+        quoted(task.goal.trim(), goal_bytes)
     };
     let workflow = task
         .workflow
@@ -2046,6 +2046,26 @@ mod tests {
             input.task.goal = "deployer ".repeat(goal_len / 9);
             let (_, passes) = fitted_parts(&input, budget, budget);
             assert!(passes <= 4, "goal {goal_len} at {budget}: {passes} passes");
+        }
+        Ok(())
+    }
+
+    /// SPEC-174 review round 5: the quote starts at the trimmed goal's length, so whitespace
+    /// around the goal never cuts it.
+    #[test]
+    fn whitespace_around_the_goal_changes_nothing() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let mut input = base(&profile, &layout)?;
+        input.task.goal = "Fix the login bug".to_owned();
+        let trimmed = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        for padded in [
+            format!("{}Fix the login bug", "\n".repeat(100)),
+            format!("Fix the login bug{}", "\n".repeat(100)),
+            format!("{}Fix the login bug{}", " ".repeat(599), "\t".repeat(80)),
+        ] {
+            input.task.goal = padded;
+            assert_eq!(build_briefing(&input, DEFAULT_BUDGET_BYTES), trimmed);
         }
         Ok(())
     }
