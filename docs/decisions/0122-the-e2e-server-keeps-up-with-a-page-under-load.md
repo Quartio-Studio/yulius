@@ -59,6 +59,7 @@ the browser closes them, which the runner's one browser per worker bounds. A tes
 Monaco call must wait for `editorShown` first. Opening two files while Monaco loads creates one
 editor; which of them is in front still depends on which file's read answers last.
 
-The suite holds down to about a fifth of a CPU per thread (SPEC-148's proof). Starved further, as
-when another suite runs on the same budget, the runner's 5 s waits run out before its reads of the
-page do, and tests fail without a defect: that is the cost of keeping the default budgets.
+At about a fifth of a CPU per thread, about 1 run in 360 still fails a default 5 s wait on a
+starved first load or read of the page (SPEC-148's proof); starved further, as when another suite
+runs on the same budget, more do, without a defect. That is the cost of keeping the default
+budgets, and the decision #354 stays open for.

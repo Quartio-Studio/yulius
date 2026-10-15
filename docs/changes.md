@@ -11,12 +11,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
     of them. `python3 -m http.server` queued 5 and closed every connection, so on a loaded machine
     the kernel dropped a page's module requests and the browser waited 1–3 s to try again.
-    Starved to a fifth of a CPU a thread, about 1 run in 360 still fails a 5 s wait; #354 stays
-    open for that.
+    Starved to a fifth of a CPU per thread, about 1 run in 360 still fails a 5 s wait; #354
+    stays open for that.
   - **#394:** a file opened while Monaco loaded made a second editor from the half-loaded
     `window.monaco`, which lacked five services ("depends on UNKNOWN service ICodeLensCache").
     The editor now waits for all of `editor.main`, and tests touch Monaco's API only once the
-    Editor shows (`editorShown`).
+    Editor shows (`editorShown`). An editor whose setup failed is disposed, so the next file
+    makes one instead of a second.
   - **#356, #349:** the Editor's first opening is waited for with Monaco's cold-load budget, and the
     kept-notes test reads the text after a load that can succeed instead of waiting out the backoff.
 - The onboarding agent protects the production branch itself (SPEC-157, ADR-0129, task #148).
