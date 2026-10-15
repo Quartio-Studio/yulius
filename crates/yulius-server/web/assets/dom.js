@@ -1037,6 +1037,11 @@ const SHAPES = {
       h('div', { class: 'item-meta' }, bar(40)))))),
   // Item cards under a section heading (Workflows, Skills).
   'item-section': (count = 3) => h('div', { class: 'stack-sm' }, h('div', { class: 'page-section-title' }, bar('lg')), SHAPES.items(count)),
+  // Choice rows of a `.list` (the New sandbox dialog's repositories and templates): a radio, a
+  // name and, with `sub`, a line under it.
+  rows: (count = 3, sub = false) => Array.from({ length: count }, (_, i) => h('div', { class: 'list-item' },
+    h('span', { class: 'skeleton-tile skeleton-radio' }),
+    h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, bar([40, 52, 34][i % 3])), sub ? h('div', { class: 'list-sub' }, bar([72, 56, 64][i % 3])) : null))),
   table: (columns = 4, rows = 4) => h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
     h('thead', null, h('tr', null, Array.from({ length: columns }, () => h('th', null, bar('md'))))),
     h('tbody', null, Array.from({ length: rows }, (_, r) => h('tr', null,
@@ -1050,7 +1055,7 @@ const SHAPES = {
 
 /**
  * The skeleton in the shape of what loads (SPEC-120): `shape` is a name of SHAPES ('items',
- * 'item-section', 'table', 'cards', 'form', 'editor'), [name, ...its sizes] such as ['table', 6] for
+ * 'item-section', 'rows', 'table', 'cards', 'form', 'editor'), [name, ...its sizes] such as ['table', 6] for
  * six columns, or a function drawing a page's own layout. An unknown name draws lines.
  */
 export function loadingShape(label, shape) {

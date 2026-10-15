@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The step strip never overflows, the keyboard survives a hidden Archive, and the last loading
+  states take their final shape (SPEC-182, ADR-0147, task #138, fixes #348, #331, #407, #449). The
+  task step strip gives way whole parts by priority (chain chips, Auto, Supertask, then the bar and
+  the pull request chip) so it never passes its edge and Task actions stays clickable beside a
+  panel; its bar is 60 px in narrow strips as SPEC-073 meant. The keyboard on a quick Archive that
+  hides moves to its row's link. The automation editor's loading start chip is a skeleton bar and
+  its Supertask tooltip reads as New task's. The New sandbox lists, the delivery and CI run dialogs,
+  a task's changes, commits and overview, and the CI hygiene and GitHub connection cards load in
+  their final layout.
 - The Editor's file in front follows the disk, and the Explorer's buttons stay in the Explorer
   (SPEC-181, ADR-0146, task #168). While the Editor is shown, the file in front is looked at every
   2 s (and at once when the Editor or the page comes back) with `known=<sha256>`; the files API

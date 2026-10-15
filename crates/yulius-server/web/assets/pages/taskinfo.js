@@ -4,7 +4,7 @@
 // /api/tasks/{tid} (TaskDetail) and the sandbox's Git overview (through the store).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, statusMark, prChip, loadError } from '../dom.js';
+import { h, icon, setChildren, placeholder, statusMark, prChip, loadError, bar } from '../dom.js';
 import { href } from '../router.js';
 import { relLong, dateTime, duration, compact, int, plural } from '../format.js';
 import { taskTime } from '../tasktime.js';
@@ -29,6 +29,22 @@ function tile(label, value, sub, extra) {
   return h('div', { class: 'stat ti-stat' }, h('span', { class: 'stat-label' }, label), h('span', { class: 'stat-value ti-value' }, value), sub ? h('span', { class: 'stat-sub' }, sub) : null, extra || null);
 }
 
+/**
+ * The overview while it loads (SPEC-120, #449): the six figures (Plan with its bar; a figure's
+ * line under it mostly takes two lines in the six-column grid), the Plan and Details cards, Stages
+ * and Sessions.
+ */
+function loadingLayout() {
+  const fact = (i) => h('div', { class: 'stat ti-stat' }, h('span', { class: 'stat-label' }, bar('md')), h('span', { class: 'stat-value ti-value' }, bar('lg')),
+    h('span', { class: 'stat-sub' }, bar(80), bar(45)), i === 3 ? h('span', { class: 'ti-progress' }) : null);
+  const card = (...lines) => h('div', { class: 'card ti-card' }, h('div', { class: 'card-title' }, bar('md')), lines);
+  return h('div', { class: 'ti-body' },
+    h('div', { class: 'stat-grid ti-facts' }, Array.from({ length: 6 }, (_, i) => fact(i))),
+    h('div', { class: 'ti-columns' }, card(bar(70), bar(55), bar(62)), card(bar(60), bar(50), bar(64), bar(40))),
+    card(h('div', { class: 'skeleton-field' })),
+    card(bar(80), bar(70)));
+}
+
 /** Mount the overview of one task. */
 export function mountTaskInfoView(ctx, sandbox, task) {
   const base = `/s/${encodeURIComponent(sandbox.slug)}`;
@@ -47,7 +63,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     h('div', { class: 'row-wrap' }, h('h2', { class: 'card-title', id: 'ti-stages' }, icon('clock', { size: 14 }), 'Stages'), h('span', { class: 'spacer' }),
       h('a', { class: 'btn btn-sm', href: href(stagesPath), dataset: { route: stagesPath } }, 'In Pipeline')),
     stagesHost);
-  const body = h('div', { class: 'ti-body' }, placeholder('Loading the task…', 'loading'));
+  const body = h('div', { class: 'ti-body' }, placeholder('Loading the task…', 'loading', loadingLayout));
   const titleEl = h('h1', { class: 'page-title gt-title' });
   const head = h('header', { class: 'gt-head' },
     h('a', { class: 'gt-back', href: href(`${base}/tasks`), dataset: { route: `${base}/tasks`, restore: 'page' } }, icon('back', { size: 14 }), 'Tasks'),
