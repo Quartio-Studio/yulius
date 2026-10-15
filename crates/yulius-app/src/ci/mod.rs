@@ -935,6 +935,7 @@ impl App {
         let summary = RunSummary {
             jobs: jobs.len(),
             passed: jobs.iter().filter(|j| j.state == RunState::Passed).count(),
+            skipped: jobs.iter().filter(|j| j.state == RunState::Skipped).count(),
             failed_job: failed.map(|j| (j.name.as_str(), j.exit_code)),
             duration_ms: run
                 .started_at
