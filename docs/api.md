@@ -1008,9 +1008,9 @@ resolves to nothing, the run gets the server without that variable or token.
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
   `PUT /api/sandboxes/{sid}/files/presence` (write) `{"root?","path","sha256?","selection":
-  {"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-127): the caller's selection in UTF-16
-  offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when unknown),
-  or `null` when they left the file; `hello` and `client` as for notepad presence. Relayed as
+  {"anchor","head"}|null,"hello"?,"client"?,"seq"?}` → 204 (SPEC-127): the caller's selection in
+  UTF-16 offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when
+  unknown), or `null` when they left the file; `hello`, `client` and `seq` as for notepad presence. Relayed as
   `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
   other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
   4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
@@ -1111,11 +1111,13 @@ resolves to nothing, the run gets the server without that variable or token.
     note again. 422 over 256 KiB of UTF-8.
     Every stored edit publishes `note.updated`.
   - `PUT /api/notes/presence` (anyone signed in) and `PUT /api/sandboxes/{sid}/notes/presence`
-    (read) `{"revision","selection":{"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-112):
-    the caller's selection in UTF-16 offsets of the text at `revision`, or `null` when they left;
-    `hello` asks the others to answer with theirs; `client` names the browser tab (at most 32
-    letters and digits). Relayed as `note.presence`, stored nowhere.
-    422 for unknown fields or an offset over 1 Mi, 404 without read access, 429 past 20 updates a
+    (read) `{"revision","selection":{"anchor","head"}|null,"hello"?,"client"?,"seq"?}` → 204
+    (SPEC-112): the caller's selection in UTF-16 offsets of the text at `revision`, or `null` when
+    they left; `hello` asks the others to answer with theirs; `client` names the browser tab (at
+    most 32 letters and digits); `seq` (an unsigned integer, default 0) grows with each update the
+    tab sends, so receivers drop one older than the newest they heard from that tab (0: not
+    numbered; SPEC-170, ADR-0138). Relayed as `note.presence`, stored nowhere.
+    422 for unknown fields, a negative `seq` or an offset over 1 Mi, 404 without read access, 429 past 20 updates a
     second per person and notepad. There is no presence for the personal notepad.
 
 ## Administration, analytics, status
@@ -1369,9 +1371,9 @@ found or moved; clients refetch `GET /api/update`),
 `{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
 only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
-"revision","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a shared notepad, to
+"revision","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a shared notepad, to
 the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
-"client","name","sha256","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a file
+"client","name","sha256","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a file
 open in the editor, only to people with write access to that sandbox; SPEC-127),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching

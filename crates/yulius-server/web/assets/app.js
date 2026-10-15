@@ -503,6 +503,7 @@ function createApp(root, transport) {
     shell.el.classList.remove('no-sandbox');
     if (wasOutside && ctx.fitSidebar) ctx.fitSidebar();
     currentSandbox = sandbox;
+    shell.panels.arrive(sandbox);
     shell.tabRow.update(sandbox.slug);
     shell.sidebar.update(route, sandbox);
     ensureTasks(sandbox).then(() => { if (currentRoute === route && shell) shell.sidebar.refresh(); });

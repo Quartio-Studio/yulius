@@ -4,7 +4,9 @@
 // again every 15 s while shown, `hello` when shown and after lost events (the others answer at
 // once, at most once a second), `null` when hidden or when the page goes (with a request that
 // outlives it), a refused or lost update again after 1 s, doubling up to 15 s, and one update on
-// its way at a time so they arrive in order. Someone not heard of for 45 s has gone.
+// its way at a time so they arrive in order. A page going away cannot wait, so each update carries
+// `seq`, growing per tab, and a receiver drops one older than the newest it heard from that tab
+// (SPEC-170). Someone not heard of for 45 s has gone.
 //
 // Nothing goes out before the source has something to say: `state({leaving})` answers `null` until
 // it can speak (a notepad not loaded yet), else `{revision, selection}` (selection `null`: not
@@ -25,18 +27,21 @@ const RETRY_MS = 1000;
 const ANSWER_GAP_MS = 1000;
 /** This browser tab, so one person's tabs are told apart. */
 export const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
+/** This tab's updates, numbered: a leave sent as the page goes may overtake one on its way (SPEC-170). */
+let lastSeq = 0;
 
 /** A refusal worth trying again (lost, too many, the server busy); access or input refusals are not. */
 const retryable = (error) => !error || !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 
 /**
  * Presence for one shared text. `put(body, {keepalive})` sends `{revision, selection, hello,
- * client}` (the caller adds what names the text); `state()` is what to say (see above); `draw()`
+ * client, seq}` (the caller adds what names the text); `state()` is what to say (see above); `draw()`
  * redraws the others from `peers` (`id` → `{userId, name, revision, selection, seen}`) and
  * `present`; `myId` is this person, whose own updates (any tab) are not drawn.
  */
 export function createPresence({ put, state, draw, myId }) {
   const peers = new Map();
+  const heard = new Map(); // tab (`user:client`) → {seq, at}: its newest numbered update, also after it left
   let present = false; // the text is shown
   let destroyed = false;
   let timer = 0;
@@ -83,7 +88,8 @@ export function createPresence({ put, state, draw, myId }) {
         send();
       }
     };
-    put({ revision: now.revision, selection, hello, client: CLIENT_ID }, { keepalive: going }).then(() => {
+    lastSeq += 1;
+    put({ revision: now.revision, selection, hello, client: CLIENT_ID, seq: lastSeq }, { keepalive: going }).then(() => {
       retryMs = RETRY_MS;
       answered();
     }, (error) => {
@@ -108,6 +114,14 @@ export function createPresence({ put, state, draw, myId }) {
   function peer(event) {
     if (destroyed || event.user_id === myId) return;
     const id = `${event.user_id}:${event.client || ''}`;
+    // An update older than one heard from that tab arrived late (its leave, sent as the page went,
+    // overtook it): dropped. Unnumbered ones (0) are taken as they come (SPEC-170 TKS-003).
+    const seq = Number(event.seq) || 0;
+    if (seq) {
+      const newest = heard.get(id);
+      if (newest && seq <= newest.seq) return;
+      heard.set(id, { seq, at: Date.now() });
+    }
     if (event.selection) peers.set(id, { userId: event.user_id, name: event.name, revision: event.revision, selection: event.selection, seen: Date.now() });
     else peers.delete(id);
     // Someone opened the text: tell them where this person is, even if it did not change (once a
@@ -157,6 +171,7 @@ export function createPresence({ put, state, draw, myId }) {
     const now = Date.now();
     let gone = false;
     for (const [id, other] of peers) if (now - other.seen > EXPIRY_MS) { peers.delete(id); gone = true; }
+    for (const [id, newest] of heard) if (now - newest.at > EXPIRY_MS) heard.delete(id);
     if (gone) draw();
     if (present && wasThere && now - lastAt >= HEARTBEAT_MS) {
       forceDue = true;

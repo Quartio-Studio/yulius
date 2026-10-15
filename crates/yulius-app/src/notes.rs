@@ -214,6 +214,7 @@ impl App {
             revision: input.revision,
             selection: input.selection,
             hello: input.hello,
+            seq: input.seq,
         };
         match &scope {
             Scope::Sandbox(sid) => self.events.publish(Some(sid.clone()), false, event),
