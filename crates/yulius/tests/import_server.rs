@@ -583,7 +583,8 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
 
 /// SPEC-157: the onboarding agent protects an unprotected production branch itself, through
 /// `production_protect`, as the person who started onboarding when they are a repository admin;
-/// a second call changes nothing, and an owner who is not an admin is sent to `needs_you`.
+/// a second call changes nothing. Another task, an owner who is not an admin and a disabled owner
+/// are refused and sent to `needs_you`, and GitHub's own refusal is passed on.
 #[tokio::test]
 async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestResult {
     use yulius_app::ports::store::{InstanceStore as _, UserStore as _};

@@ -1,11 +1,11 @@
 ---
 yulius-task: b4e6ad04-732b-4a0e-8067-4ecd223f179e
-status: in-progress
+status: done
 ---
 
 # SPEC-157: the onboarding agent protects the production branch itself
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #148
 Scope authorization: task #148: two screenshots and "btw the agent should be able to do that on
@@ -67,10 +67,10 @@ sign-in, GitHub refuses the ruleset).
 
 ## Plan
 
-- [ ] Spec and ADR-0129 record that onboarding agents protect production with the onboarding person's rights
-- [ ] Agents get a production_protect tool that adds the people-only ruleset as the task owner
-- [ ] The onboarding prompt asks the agent to protect production itself and needs_you only on refusal
-- [ ] Docs, independent review and gates are done and the change is delivered
+- [x] Spec and ADR-0129 record that onboarding agents protect production with the onboarding person's rights
+- [x] Agents get a production_protect tool that adds the people-only ruleset as the task owner
+- [x] The onboarding prompt asks the agent to protect production itself and needs_you only on refusal
+- [x] Docs, independent review and gates are done and the change is delivered
 
 ## Acceptance criteria
 
@@ -113,3 +113,29 @@ sign-in, GitHub refuses the ruleset).
   refusal can say so; a later request goes through a person or a new onboarding.
 - A disabled owner is never acted for (review round 1), as `owner_github_token` and the merge train
   already refuse.
+
+## Evidence
+
+Run on 2026-10-15 in this task's worktree.
+
+- `scripts/dev ci` at `a8a88e31`: exit 1 on one test only, `first_message::a_launch_goal_unrecorded_across_a_restart_is_watched_again`
+  ("timed out waiting for the flag" under the full run's load): the known flake tracked by open issue
+  #514, outside this change. 1812 tests run: 1811 passed, 17 skipped; every gate before nextest
+  (repository checks, Python tests, `cargo check`, fmt, clippy `-D warnings`) passed. Run alone
+  (`cargo nextest run -p yulius -E 'test(/a_launch_goal_unrecorded/)'`) it passed 3 times of 3.
+- `cargo test -p yulius --test main -- import_server::`: 8 passed, among them
+  `the_onboarding_agent_protects_production_as_its_admin_owner` (AC1-AC4). It failed before the
+  change on the prompt assertion (the prompt said "Only a person can apply it") and, in round 2,
+  on the "onboarding task" refusal before that check existed.
+- `cargo test -p yulius-app --lib -- production_protect mcp::`: 3 passed (the ruleset's rules; the
+  served descriptors match the briefing's tool list). `cargo test -p yulius-domain --lib briefing`:
+  15 passed (tool list unique and rendered, briefing within its budget).
+- `scripts/dev security` (Vidoc): **not run**, exit 2: Vidoc rejected the key (HTTP 401, invalid or
+  expired token), as since 2026-10-14 (ADR-0104: unrun, not passed).
+- Independent review in a fresh session (`om-code-review`): round 1 at `520f4e09` asked for changes
+  (major: a disabled owner was acted for; minors: scope beyond onboarding, a guessed cause in
+  GitHub's refusal, missing refusal tests), all fixed in `a8a88e31`; round 2 approved `a8a88e31`.
+  The last commit only rewords the test's doc comment and fills this section.
+- Not testable here: GitHub's real enforcement and a real admin's user token creating the ruleset
+  (no real GitHub call in tests). A playground's refusal and an owner without a GitHub identity rely
+  on the shared, already tested `refuse_in_playground` and `person_github_token` guards.
