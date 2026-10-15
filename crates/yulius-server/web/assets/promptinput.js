@@ -65,6 +65,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   let pendingCount = 0;
   let kept = null; // the caret when the box last lost the keyboard (`place` puts a file there)
   const history = { states: [], index: -1, kind: '', at: 0 };
+  // Steps cut off as a redo branch by a new edit: an upload pasted in one of them is in none.
+  const discarded = new WeakSet();
 
   // ---------------------------------------------------------------- the DOM and the model
 
@@ -205,7 +207,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     } else if (current && sameFiles && kind === 'type' && history.kind === 'type' && now - history.at < TYPING_MS && !/\s$/.test(current.plain.slice(0, current.end))) {
       history.states[history.index] = state;
     } else {
-      history.states.splice(history.index + 1);
+      for (const gone of history.states.splice(history.index + 1)) discarded.add(gone);
       history.states.push(state);
       if (history.states.length > HISTORY_MAX) history.states.shift();
       history.index = history.states.length - 1;
@@ -259,8 +261,9 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
    * Placeholder `id` becomes `files` (none: it goes), in the box and in every step of the history
    * that holds it, so it is never a step of its own and undo never shows it again. `items`, the
    * uploads, join the attached files of every step from `from` (the placeholder's step) on, and of
-   * every step when that step is gone; the steps before it never had them. False when the box no
-   * longer holds the placeholder.
+   * every step when that step fell off the history's start; the steps before it never had them,
+   * nor any step when it was cut off as a redo branch (the paste was undone). False when the box
+   * no longer holds the placeholder.
    */
   function swapPending(id, files, items = [], from = null) {
     const swap = (state) => {
@@ -278,7 +281,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     const first = history.states.indexOf(from);
     history.states.forEach((state, i) => {
       const held = swap(state) !== null;
-      if (items.length && (held || first === -1 || i >= first)) state.files = withItems(state.files, items);
+      const fromOn = first === -1 ? !discarded.has(from) : i >= first;
+      if (items.length && (held || fromOn)) state.files = withItems(state.files, items);
     });
     const focused = document.activeElement === el;
     const { plain, atoms } = scan();

@@ -162,6 +162,14 @@ Run on this branch (Linux, Chromium headless, mock mode), on a host shared with 
 - Review round 2 (fresh session) requested changes on `d72fc040` for two majors (actual-size
   clipping, an undone paste's upload). Both were fixed test-first in `021a255e`, together with the
   tests it asked for: focus after × and double-click opening a placeholder.
+- Review round 3 (fresh session) confirmed both round 2 fixes on `0c064279` and found one more
+  major: when an upload's paste was undone and then typed over, the dropped redo branch counted as
+  "the paste's step fell off the history". In addition, `i >= -1` attached the upload to every
+  step, so it was sent. Fixed test-first: `an upload ending after its paste was undone and typed
+  over…` failed on `0c064279`'s code (tray `["b.png"]`) and passes now. Steps cut off as a redo
+  branch are remembered (`discarded`), and an upload pasted in one is attached in none. Its minor
+  is fixed too: a thumbnail is stored for an upload undone out of the tray, so a redo brings it
+  back with its picture. The composer suites pass again (inline-images 19, drafts 13, filedrop 11).
 
 Not tested here: browsers other than Chromium, and a real Claude Code session receiving files sent
 after the text (the prompt format is unchanged from ADR-0101, whose tests cover it).

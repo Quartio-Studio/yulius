@@ -94,7 +94,8 @@ export function attachToDraft(userId, sandboxId, draft, items) {
   for (const item of added) {
     if (!/^image\//.test(item.type)) continue;
     thumbnail(item.file).then((thumb) => {
-      if (!thumb || drafts.get(key) !== draft || !draft.attached.includes(item)) return;
+      // Also for an upload out of the tray now: undo or redo may bring it back (SPEC-150).
+      if (!thumb || drafts.get(key) !== draft) return;
       item.thumb = thumb;
       saveDraft(userId, sandboxId);
       changed(key);

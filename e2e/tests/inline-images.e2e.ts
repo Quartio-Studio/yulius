@@ -586,6 +586,26 @@ test('an upload ending after its paste was undone stays out of the tray until th
   expect(await lastPrompt(browser)).toBe('One');
 });
 
+// SPEC-150 review round 3: typing after the undo drops the paste's redo step; the upload stays out.
+test('an upload ending after its paste was undone and typed over stays out of the tray and is not sent', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('One ');
+  await holdUploads(browser);
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await browser.keyboard.type('two');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect(browser.locator('.composer-box .upload-status-float')).toHaveText(/Added b\.png/);
+  expect(await trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('One two');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  expect(await lastPrompt(browser)).toBe('One two');
+});
+
 test('undoing a paste takes its upload out of the tray, and an upload whose placeholder went first stays in the tray only', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await screen.getByRole('textbox', 'Task prompt').click();
