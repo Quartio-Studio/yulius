@@ -378,3 +378,53 @@ test('the delivery and CI run dialogs load as their sections', async ({ app, bro
   expectSameBox(tabs, await dialogBox(browser, '.ci-tabs'), ['x', 'width']);
   expectSameBox(output, await dialogBox(browser, '.run-output'), ['x', 'width']);
 });
+
+test('a task’s changes, commits and overview load in their own layouts', async ({ app, browser, screen }) => {
+  const shape = '#main .skeleton[role="status"]';
+  // Changes: the toolbar, the file tree beside the files' summary line and file cards.
+  await app.open(mock('/s/studio/git/t/12', '&hold=/api/tasks/tsk_studio_12/changes'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Checkout API/);
+  await expect(browser.locator(shape)).toHaveText('Loading changes…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .gt-tree .gt-tree-row`).count()).toBeGreaterThanOrEqual(3);
+  expect(await browser.locator(`${shape} .gt-files > .gt-file`).count()).toBeGreaterThanOrEqual(2);
+  const toolbar = await box(browser, `${shape} .gt-toolbar`);
+  const tree = await box(browser, `${shape} .gt-tree`);
+  const file = await box(browser, `${shape} .gt-file`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(toolbar, await box(browser, '#main .gt-toolbar'), ['x', 'y', 'width', 'height']);
+  expectSameBox(tree, await box(browser, '#main .gt-tree'), ['x', 'y', 'width']);
+  expectSameBox(file, await box(browser, '#main .gt-file'), ['x', 'y', 'width']);
+
+  // Commits: rows of the commit list, as tall as the loaded ones.
+  await app.open(mock('/s/studio/git/t/12?tab=commits', '&hold=/api/tasks/tsk_studio_12/commits'));
+  await expect(browser.locator(shape)).toHaveText('Loading commits…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .gt-commits > .gt-commit`).count()).toBeGreaterThanOrEqual(3);
+  const commit = await box(browser, `${shape} .gt-commit`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(commit, await box(browser, '#main .gt-commit'), ['x', 'y', 'width', 'height']);
+
+  // The task overview: its six figures, then the Plan and Details cards.
+  await app.open(mock('/s/studio/tasks/12', '&hold=/api/tasks/tsk_studio_12'));
+  await expect(browser.locator(shape)).toHaveText('Loading the task…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .ti-facts > .ti-stat`).count()).toBe(6);
+  expect(await browser.locator(`${shape} .ti-columns > .ti-card`).count()).toBe(2);
+  const facts = await box(browser, `${shape} .ti-facts`);
+  const fact = await box(browser, `${shape} .ti-stat`);
+  const columns = await box(browser, `${shape} .ti-columns`);
+  const plan = await box(browser, `${shape} .ti-columns > .ti-card`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(facts, await box(browser, '#main .ti-facts'), ['x', 'y', 'width']);
+  expectSameBox(fact, await box(browser, '#main .ti-stat'), ['x', 'y', 'width']);
+  // The figures' height follows how their words wrap: the cards below keep their columns.
+  expectSameBox(columns, await box(browser, '#main .ti-columns'), ['x', 'width']);
+  expectSameBox(plan, await box(browser, '#main .ti-columns > .ti-card'), ['x', 'width']);
+});
