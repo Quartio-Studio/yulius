@@ -114,6 +114,53 @@ impl Git {
         Ok(())
     }
 
+    /// Pushes every branch and tag of `repo` to `url` under the same names in one atomic push
+    /// that never forces: the remote takes all of them or none (a playground moved to GitHub,
+    /// SPEC-176). The network timeout applies.
+    pub fn push_all_refs(&self, repo: &Path, url: &str) -> Result<(), GitError> {
+        validate_remote_url(url)?;
+        self.run_ok(
+            Invocation::new(self, "push", Some(repo))
+                .args(["push", "--quiet", "--atomic", "--", url])
+                .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .timeout(self.network_timeout),
+        )?;
+        Ok(())
+    }
+
+    /// The branches and tags of the repository at `url`, as it answers now (`git ls-remote`):
+    /// `(ref name, commit)` pairs sorted by name, peeled tags left out. The network timeout
+    /// applies.
+    pub fn remote_refs(&self, repo: &Path, url: &str) -> Result<Vec<(String, String)>, GitError> {
+        validate_remote_url(url)?;
+        let listed = self.run_ok(
+            Invocation::new(self, "ls-remote", Some(repo))
+                .args(["ls-remote", "--refs", "--heads", "--tags", "--", url])
+                .timeout(self.network_timeout),
+        )?;
+        let mut refs: Vec<(String, String)> = listed
+            .stdout_trimmed()
+            .lines()
+            .filter_map(|line| {
+                let (sha, name) = line.split_once('\t')?;
+                Some((name.to_owned(), sha.to_owned()))
+            })
+            .collect();
+        refs.sort();
+        Ok(refs)
+    }
+
+    /// Points the remote `name` of `repo` at `url`.
+    pub fn set_remote_url(&self, repo: &Path, name: &str, url: &str) -> Result<(), GitError> {
+        validate_remote_name(name)?;
+        validate_remote_url(url)?;
+        self.run_ok(
+            Invocation::new(self, "remote set-url", Some(repo))
+                .args(["remote", "set-url", "--", name, url]),
+        )?;
+        Ok(())
+    }
+
     /// The remote default branch (`refs/remotes/origin/HEAD`), falling back to the branch
     /// `HEAD` points at (correct for a fresh clone).
     pub fn default_branch(&self, repo: &Path) -> Result<String, GitError> {

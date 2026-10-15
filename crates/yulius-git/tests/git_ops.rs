@@ -1419,3 +1419,67 @@ fn the_cd_mirror_takes_only_the_expected_commit_and_ignores_replacements() -> Te
     assert!(refused.is_err(), "{refused:?}");
     Ok(())
 }
+
+/// SPEC-176 MPG-002/003: every branch and tag of a repository reaches an empty remote in one
+/// push, the remote's refs are read back, and a remote is repointed.
+#[test]
+fn every_branch_and_tag_is_pushed_at_once_and_read_back() -> TestResult {
+    let fx = Fixture::new()?;
+    let (origin, repo) = fx.repo_with_remote()?;
+    fx.git
+        .push(&repo, "origin", "refs/heads/main:refs/heads/dev")?;
+    fx.raw(&repo, &["tag", "v1"])?;
+    fx.raw(&repo, &["push", "--quiet", "origin", "refs/tags/v1"])?;
+    let main = fx.git.rev_parse(&repo, "HEAD")?;
+    let target = fx.path("github.git");
+    fx.git.init(&target, "main", true)?;
+    assert!(fx.git.remote_refs(&origin, path_str(&target)?)?.is_empty());
+
+    fx.git.push_all_refs(&origin, path_str(&target)?)?;
+    let want = vec![
+        ("refs/heads/dev".to_owned(), main.clone()),
+        ("refs/heads/main".to_owned(), main.clone()),
+        ("refs/tags/v1".to_owned(), main.clone()),
+    ];
+    assert_eq!(fx.git.remote_refs(&origin, path_str(&target)?)?, want);
+    assert_eq!(fx.git.remote_refs(&repo, path_str(&origin)?)?, want);
+
+    fx.git.set_remote_url(&repo, "origin", path_str(&target)?)?;
+    assert_eq!(
+        fx.raw(&repo, &["remote", "get-url", "origin"])?,
+        path_str(&target)?
+    );
+    assert!(
+        fx.git
+            .set_remote_url(&repo, "origin", "ext::sh -c x")
+            .is_err()
+    );
+    Ok(())
+}
+
+/// SPEC-176 MPG-005: the push never forces and is atomic: when one ref is refused, none moves.
+#[test]
+fn a_push_of_every_ref_is_all_or_nothing() -> TestResult {
+    let fx = Fixture::new()?;
+    let (origin, repo) = fx.repo_with_remote()?;
+    let target = fx.path("github.git");
+    fx.git.init(&target, "main", true)?;
+    // The remote's `main` has a commit the source does not.
+    let other = fx.path("other");
+    fx.git.init(&other, "main", false)?;
+    fs::write(other.join("b.txt"), "b\n")?;
+    fx.git.commit_all(&other, "other", &author())?;
+    fx.git.remote_add(&other, "origin", path_str(&target)?)?;
+    fx.git.push(&other, "origin", "refs/heads/main")?;
+    let before = fx.git.remote_refs(&repo, path_str(&target)?)?;
+    fx.git
+        .push(&repo, "origin", "refs/heads/main:refs/heads/dev")?;
+
+    assert!(fx.git.push_all_refs(&origin, path_str(&target)?).is_err());
+    assert_eq!(
+        fx.git.remote_refs(&repo, path_str(&target)?)?,
+        before,
+        "nothing moved, `dev` included"
+    );
+    Ok(())
+}
