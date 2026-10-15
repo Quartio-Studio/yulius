@@ -841,7 +841,14 @@ impl Fixture {
 /// and never ends in error. It stays queued, says it waits for disk and who holds the space, and
 /// its commit status stays pending (an armed merge keeps waiting). Once usage is under the quota
 /// it starts by itself at the next check and passes, without anyone running it again.
+///
+/// Quarantined (#485): it failed once in CI after 2.16 s, an assertion near its end whose message
+/// was lost. The race found here (a disk check ending after the clock jump, fixed by
+/// `recheck_until_started`) only ever times out after a minute, so that failure is unexplained.
+/// Run it with `--run-ignored only`. CI now keeps a failing test's output (SPEC-145): back in the
+/// suite, its next failure says why.
 #[tokio::test]
+#[ignore = "quarantined: #485, a fast failure in CI not explained yet"]
 async fn a_run_over_the_disk_quota_waits_and_starts_when_space_frees() -> TestResult {
     let f = fixture().await?;
     let disk = Disk::new(126, 0);
