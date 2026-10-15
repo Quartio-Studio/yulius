@@ -125,6 +125,12 @@ Independent reviews in fresh sessions: round 1 (head f169db2c) approved with 7 m
 and 4 nits, and round 2 (head 6dc576d5) approved with 2 minor findings and a nit. All were fixed
 test-first. Round 3 reviews the final head.
 
+Yulius CI on 0163f768 failed in `quality`: `scripts/test_vidoc_scan.py`'s `alive()` helper read
+`/proc/<pid>/stat` of a child reaped between the open and the read (`ProcessLookupError`), a race
+in a test this task does not touch (`dev` passed it). It was reproduced with a unit test that
+fails without the fix (`Alive`), and fixed: a process gone at the read counts as gone. A fourth,
+delta-only review covered this fix after the three rounds above.
+
 Not testable here: the real server and Claude Code receiving a queued image. The server path
 needs no change: uploads go to `attachments/tasks/<task>`, which `task_prompt_attachment` already
 serves. The request file and the first message already read files anywhere in the prompt
