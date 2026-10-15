@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The task strip's progress bar shows the step in progress (SPEC-159, task #150): after the
+  finished share comes the open step's share in the working colour, so "Step 2/4" no longer sits
+  beside a bar that looks a quarter done. The API's step summary carries `active_percent`.
 - The CD page's environment cards read right at every width (SPEC-152, task #146, fixes #501):
   - The deploy button stays top right, with only the title and badge wrapping beside it. Before,
     it fell onto its own row under the title.
