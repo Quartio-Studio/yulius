@@ -13,7 +13,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   tail of a long session first). "You are watching @owner's task" sits above it with Request
   control, the sidebar shows the owner's initials on their tasks, and an electro-blue pixel octopus
   with dot eyes and an ε mouth crawls between the top corners. New `GET /api/tasks/{tid}/transcript`.
-
 - The session view says when the server cut a diff or a context, and every scroller is reachable
   (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
   `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the
