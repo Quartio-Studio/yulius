@@ -347,10 +347,12 @@ impl OutputStages {
         add: bool,
     ) {
         let names = self.figure_names.entry(key.clone()).or_default();
+        // A runner's four test counts are always taken: only a job's own names share the budget.
         let accepted: Vec<(String, f64)> = values
             .into_iter()
             .filter(|(name, _)| {
-                names.contains(name)
+                name.starts_with("tests_")
+                    || names.contains(name)
                     || (names.len() < MAX_FIGURES_PER_SPAN && names.insert(name.clone()))
             })
             .collect();
@@ -682,7 +684,19 @@ impl App {
         let sandbox = self.stage_sandbox(ctx, sandbox).await?;
         let days = self.stage_days(query)?;
         let filter = Self::stage_filter(sandbox.clone(), query, days)?;
-        let spans = self.deps.store.spans_between(&filter).await?;
+        // One more than the limit says whether there were more (review round 3).
+        let mut spans = self
+            .deps
+            .store
+            .spans_between(&SpanFilter {
+                limit: filter.limit.saturating_add(1),
+                ..filter.clone()
+            })
+            .await?;
+        let truncated = spans.len() > filter.limit as usize;
+        if truncated {
+            spans.remove(0);
+        }
         // Delivery figures use every deployment and merge of the range, whatever the filters,
         // and deployments up to a month after it for the lead time of its last merges.
         let deliveries = SpanFilter {
@@ -720,7 +734,6 @@ impl App {
             .filter(|at| (filter.from.0..filter.to.0).contains(at))
             .collect();
         cd.retain(|span| span.ended_at.is_some() && span.outcome.as_deref() != Some("cancelled"));
-        let truncated = u32::try_from(spans.len()).unwrap_or(u32::MAX) >= filter.limit;
         Ok(summarize(
             &spans,
             &cd,
@@ -1199,6 +1212,19 @@ mod tests {
             }
         }
         assert_eq!(names.len(), MAX_FIGURES_PER_SPAN);
+        // Test counts never compete with a job's own names for the budget (review round 3).
+        let ops = stages.feed(
+            b"test result: ok. 3 passed; 1 failed; 0 ignored\n",
+            Timestamp(8),
+        );
+        assert_eq!(
+            ops,
+            vec![SpanOp::Figures {
+                key: "job:j1@5".into(),
+                figures: vec![("tests_passed".into(), 3.0), ("tests_failed".into(), 1.0)],
+                add: true
+            }]
+        );
         // Names it already has are still updated.
         let ops = stages.feed(b"::yulius-measure n0x0=5 brand_new=1\n", Timestamp(9));
         assert_eq!(

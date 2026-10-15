@@ -40,3 +40,5 @@ __pycache__/
 
 # APM dependencies
 apm_modules/
+# Other local build directories (a second target for parallel builds).
+target-*/
