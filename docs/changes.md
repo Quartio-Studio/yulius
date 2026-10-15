@@ -12,6 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   run, and Run now, creates the task `prepared`, and it waits for Start now. The chip, the sentence
   and the list row name it; a run while the previous prepared task still waits is
   `skipped_previous_active`. Stored in migration 0031.
+- CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
+  entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
+  Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
 - The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
   task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
   to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its

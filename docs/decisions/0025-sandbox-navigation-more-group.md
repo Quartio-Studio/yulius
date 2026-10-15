@@ -4,6 +4,7 @@
 
 Accepted. Specified in [SPEC-029](../../.ai/specs/SPEC-029-too-much-elements-here-only-cockpit-task.md).
 The Cockpit has since left `NAV` for the right panel as the Agent ([0036](0036-agent-in-the-right-panel.md)).
+CI (tests) and CD (deployment) have since become one CI/CD entry with two tabs ([0125](0125-ci-and-cd-are-one-page-with-two-tabs.md)).
 
 ## Context
 

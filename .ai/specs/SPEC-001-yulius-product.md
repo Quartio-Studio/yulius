@@ -210,7 +210,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-001 | Three zones: a left sidebar with navigation and tasks; a center that is the task's terminal; a right zone with Browser and Editor. | T 4:05–4:20, V 4:04–4:24, P(2) | E | AC-UI-1 |
 | UI-002 | Browser and Editor are hidden by default, shown as icons that expand a panel on demand. | T 4:20–4:32, T 5:50–6:00 | E | AC-UI-1 |
 | UI-003 | Everything except the left sidebar is the terminal by default, for clarity and maximum visible content. | T 4:36–4:51 | E | AC-UI-1 |
-| UI-004 | The left sidebar offers: New task, Tasks (overview), Git (incl. GitHub PRs/checks), Workflows, Skills, Automations; plus Dashboard (analytics) and MCP. Only Tasks, Git, CI (tests), Secrets and Dashboard show at once; the rest is under "More" (SPEC-029); the user's own session (the Agent, formerly the Cockpit) is in the right panel (SPEC-035). Active tasks appear at the bottom of the sidebar as in Cezar. | T 5:00–5:28, T 24:39, WA 13:08, P(2) | E | AC-UI-1 |
+| UI-004 | The left sidebar offers: New task, Tasks (overview), Git (incl. GitHub PRs/checks), Workflows, Skills, Automations; plus Dashboard (analytics) and MCP. Only Tasks, Git, CI/CD (one page with CI (tests) and CD (deployment) tabs, SPEC-151), Pipeline (stages), Secrets and Dashboard show at once; the rest is under "More" (SPEC-029); the user's own session (the Agent, formerly the Cockpit) is in the right panel (SPEC-035). Active tasks appear at the bottom of the sidebar as in Cezar. | T 5:00–5:28, T 24:39, WA 13:08, P(2) | E | AC-UI-1 |
 | UI-005 | The sidebar's task list shows each task's status as an icon (working, waiting for input, needs attention, switching, stopped, failed); the status badge in the task header is removed. | T 16:12 | E | AC-UI-3 |
 | UI-006 | Active tasks stay in the sidebar; archived tasks are not a permanent toggle — they live in a separate "Archived tasks" page reachable from the user menu, with restore. Archiving a task remains a one-click action: a sidebar row has a quick Archive button, and the Done group has "Archive all" with one Undo (SPEC-062). | T 5:36–5:47, T 33:44–34:05, WA 13:27 | E/C | AC-ARC-1 |
 | UI-007 | The large top bar (CPU/GPU/RAM/cost) and the project-name header are removed. Resource usage moves into a hidden Status panel opened by a "Status" control. | T 6:00–6:21, V 6:00–6:27 | E | AC-STA-1 |
@@ -1210,6 +1210,9 @@ observed. Live provider compatibility and deployment are reported separately fro
   what onboarding will do and its button, no task input and no skip (IMP-010, U-08; SPEC-096).
 - 2026-10-14 (task #99): a revealed secret value opens masked and shows after its eye button; a
   quick copy on hover joins the Copy button (VLT-010 new, AC-VLT-9; SPEC-114, ADR-0093).
+- 2026-10-15 (task #145): CI and CD are one CI/CD page with CI (tests) and CD (deployment) tabs like
+  the Secrets page's, one sidebar entry, `/cd` an alias of `?section=cd` (UI-004 changed; SPEC-151,
+  ADR-0125).
 - 2026-10-15 (task #113): CD (deployment) beside CI: `[cd.dev]`/`[cd.prod]` from protected branches, run in
   the sandbox, production a person's, agents never promote, `needs_you` (DLV-013 new, AC-DLV-9;
   DLV-008, GIT-002, AC-GIT-2, AC-DLV-8 changed; SPEC-134, ADR-0109..0111).
