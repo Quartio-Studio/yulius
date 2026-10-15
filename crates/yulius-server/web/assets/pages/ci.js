@@ -187,6 +187,14 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
   }
 
+  /** A run while it loads (SPEC-120, #449): its head line, the job tabs and the output box. */
+  function runLoading() {
+    return h('div', { class: 'stack' },
+      h('div', { class: 'row-wrap' }, bar('sm'), bar('lg'), bar('sm'), bar('md')),
+      h('div', { class: 'ci-tabs' }, [0, 1, 2].map(() => h('span', { class: 'ci-tab' }, bar('md')))),
+      h('div', { class: 'code-view run-output' }, bar(60), bar(40), bar(52)));
+  }
+
   /** The run's jobs and logs in a dialog, refreshed while it runs. */
   function showRun(id) {
     if (openRun) openRun.close();
@@ -200,7 +208,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     const pipeline = h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `ci_run:${id}`)), dataset: { route: pipelineHref(sandbox, `ci_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline');
     const body = h('div', { class: 'stack' }, head, stages, tabs, output);
     const modal = openModal({
-      title: 'CI run', wide: true, body: placeholder('Loading the CI run…', 'loading'),
+      title: 'CI run', wide: true, body: placeholder('Loading the CI run…', 'loading', runLoading),
       actions: [{ label: 'Close' }],
       // Closed because the page went (another address): that address stays as it is (SPEC-113).
       onClose: () => { clearTimeout(poll); openRun = null; if (!destroyed) replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci`); },

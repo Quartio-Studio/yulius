@@ -1246,6 +1246,8 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-dot { display: block; flex: none; width: 16px; height: 16px; border-radius: 50%; }
 .tl-chips-loading { display: flex; gap: 8px; }
 .tl-chips-loading[hidden] { display: none; }
+/* A radio's square in a choice row (SHAPES.rows): Chrome's 13 px box and its margins. */
+.skeleton-radio { flex: none; width: 13px; height: 13px; margin: 3px 3px 3px 4px; border-radius: 50%; }
 .skeleton-chip { width: 88px; height: var(--control-lg); border-radius: var(--radius-full); }
 .tl-tabs[aria-busy="true"] .tl-tab { cursor: default; }
 .tl-tabs[aria-busy="true"] .tl-tab:hover { background: transparent; color: var(--text-2); }

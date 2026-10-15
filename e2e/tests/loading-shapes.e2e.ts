@@ -20,6 +20,20 @@ function box(browser: Browser, selector: string): Promise<Box | null> {
   }, selector);
 }
 
+/**
+ * The rectangle of the first element matching `selector` in an open dialog, its y measured from
+ * the dialog body's top: a centred dialog moves as its content grows.
+ */
+function dialogBox(browser: Browser, selector: string): Promise<Box | null> {
+  return browser.evaluate((s) => {
+    const el = document.querySelector(`.modal .modal-body ${s}`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const top = el.closest('.modal-body')!.getBoundingClientRect().top;
+    return { x: r.x, y: r.y - top, width: r.width, height: r.height };
+  }, selector);
+}
+
 /** `actual` sits where `expected` is: the named edges and sizes within 2 px. */
 function expectSameBox(actual: Box | null, expected: Box | null, keys: (keyof Box)[] = ['x', 'y', 'width', 'height']): void {
   expect(actual).not.toBeNull();
@@ -43,6 +57,15 @@ async function expectQuietShape(browser: Browser, root: string): Promise<void> {
 }
 
 const release = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+
+type Holding = { __yuliusMock: { holdPath: string | null; held: Promise<void> | null; release: () => void; released: boolean } };
+/** Holds the mock's GET answers for `path` from now on, as `hold=` does from the page load. */
+const holdNow = (browser: Browser, path: string) => browser.evaluate((p) => {
+  const db = (window as unknown as Holding).__yuliusMock;
+  db.holdPath = p;
+  db.released = false;
+  db.held = new Promise<void>((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+}, path);
 
 test('a page of item cards loads as item cards where the cards will be', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/workflows', '&hold=/api/sandboxes/sb_studio/workflows'));
@@ -278,4 +301,80 @@ test('loading shapes keep still under reduced motion and pass in the light theme
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(shape)).toHaveCount(0);
+});
+
+// #449: the loading states left as three text bars (SPEC-120 follow-up) load in their final layout.
+
+test('the New sandbox dialog’s repository and template lists load as their rows', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&hold=/api/github/repositories'));
+  await screen.getByRole('button', 'Import repository').click();
+  const shape = '.modal .card.list > .skeleton[role="status"]';
+  const inShape = '.card.list > .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading repositories…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .list-item`).count()).toBeGreaterThanOrEqual(3);
+  const row = await dialogBox(browser, `${inShape} .list-item`);
+  const title = await dialogBox(browser, `${inShape} .list-item .list-main`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(row, await dialogBox(browser, '.card.list > .list-item'), ['x', 'y', 'width']);
+  // The title bars start where the names land, after the radio.
+  expectSameBox(title, await dialogBox(browser, '.card.list > .list-item .list-main'), ['x']);
+
+  // The templates, under the playground's fields: rows with a name and a line under it.
+  await holdNow(browser, '/api/templates');
+  await browser.locator('.modal label:has-text("Playground")').first().click();
+  await expect(screen.getByRole('dialog', 'Add sandbox').getByRole('radio', 'Playground')).toBeChecked();
+  await expect(browser.locator(shape)).toHaveText('Loading templates…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .list-item .list-sub`).count()).toBeGreaterThanOrEqual(2);
+  const template = await dialogBox(browser, `${inShape} .list-item`);
+  const name = await dialogBox(browser, `${inShape} .list-item .list-main`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(template, await dialogBox(browser, '.card.list > .list-item'), ['x', 'y', 'width']);
+  expectSameBox(name, await dialogBox(browser, '.card.list > .list-item .list-main'), ['x']);
+});
+
+test('the delivery and CI run dialogs load as their sections', async ({ app, browser, screen }) => {
+  // Delivery: the stage track over the Pull request, Task spec and Next cards. The strip reads the
+  // delivery when the task opens; the dialog's read is held after that.
+  await app.open(mock('/s/studio/t/13'));
+  await expect(browser.locator('.taskview .strip-pr')).toHaveText(/^PR #520/);
+  await holdNow(browser, '/api/tasks/tsk_studio_13/delivery');
+  await browser.locator('.taskview .strip-pr').click();
+  let shape = '.modal .modal-body > .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading delivery…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .stage-track > .stage`).count()).toBeGreaterThanOrEqual(4);
+  expect(await browser.locator(`${shape} .card`).count()).toBe(3);
+  const track = await dialogBox(browser, `> .skeleton[role="status"] .stage-track`);
+  const card = await dialogBox(browser, `> .skeleton[role="status"] .card`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(track, await dialogBox(browser, '.stage-track'), ['x', 'y', 'width']);
+  // A note that comes with the read can sit above the cards: their columns are compared.
+  expectSameBox(card, await dialogBox(browser, '.card'), ['x', 'width']);
+  await browser.keyboard.press('Escape');
+  await expect(browser.locator('.modal')).toHaveCount(0);
+
+  // A CI run: its head line, the job tabs and the output box (its stages load after the run).
+  await app.open(mock('/s/studio/ci?run=ci_s3', '&hold=/api/sandboxes/sb_studio/ci/runs/ci_s3'));
+  shape = '.modal .modal-body > .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading the CI run…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .ci-tabs > .ci-tab`).count()).toBeGreaterThanOrEqual(2);
+  const head = await dialogBox(browser, `> .skeleton[role="status"] .row-wrap`);
+  const tabs = await dialogBox(browser, `> .skeleton[role="status"] .ci-tabs`);
+  const output = await dialogBox(browser, `> .skeleton[role="status"] .run-output`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  await expect(screen.getByRole('dialog', 'CI run').getByRole('tab', /lint/)).toBeVisible();
+  expectSameBox(head, await dialogBox(browser, '.row-wrap'), ['x', 'y', 'width']);
+  expectSameBox(tabs, await dialogBox(browser, '.ci-tabs'), ['x', 'width']);
+  expectSameBox(output, await dialogBox(browser, '.run-output'), ['x', 'width']);
 });

@@ -5,7 +5,7 @@
 // itself, so no action chooses one.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js';
 import { BRAND } from './brand.js';
@@ -434,7 +434,11 @@ export function actionLabel(action) {
  * next and what blocks it. Read-only: the agent delivers the task through its workflow.
  */
 export function openDeliveryDialog(ctx, task) {
-  const modal = openModal({ title: `Delivery · #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading'), wide: true, actions: [{ label: 'Close' }] });
+  // While it loads (SPEC-120, #449): the stage track over the Pull request, Task spec and Next cards.
+  const loading = () => h('div', { class: 'stack' },
+    h('div', { class: 'stage-track' }, STAGES.map(([, label]) => h('span', { class: 'stage' }, bar(label.length > 8 ? 'md' : 'sm')))),
+    [0, 1, 2].map(() => h('div', { class: 'card card-pad stack-sm' }, h('div', { class: 'row' }, bar('lg')), bar(60))));
+  const modal = openModal({ title: `Delivery · #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading', loading), wide: true, actions: [{ label: 'Close' }] });
   const load = async () => {
     try {
       const delivery = await ctx.api.get(`/api/tasks/${enc(task.id)}/delivery`);
@@ -680,7 +684,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
 
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
-    const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading'));
+    const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading', ['rows', 4]));
     setChildren(content, search, list, h('p', { class: 'muted xs' }, `Importing needs admin or maintain permission on the repository, which must belong to the instance owner. ${BRAND.name} clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.`));
     const draw = () => {
       if (!repos) return;
@@ -716,7 +720,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
 
   /** The template list (shared by a playground and a GitHub repository). */
   const templateField = async () => {
-    const templateList = h('div', { class: 'card list' }, placeholder('Loading templates…', 'loading'));
+    const templateList = h('div', { class: 'card list' }, placeholder('Loading templates…', 'loading', ['rows', 3, true]));
     const fill = async () => {
       if (!templates) {
         try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
