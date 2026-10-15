@@ -88,3 +88,66 @@ test('a watcher asks for new lines while the task is live, and once more when it
   await expect.poll(state, { message: 'an ended task is not read again' }).toBe('ended');
   await expect(browser.locator('.watch .ss-locked')).toHaveText(/@anna-q owns this task · you are watching/);
 });
+
+test('a watched session keeps the live terminal’s colours, not a past session’s faded ones, AA in both themes', async ({ app, browser }) => {
+  await watchStudio12(app, browser);
+  for (const theme of ['dark', 'light']) {
+    const m = await browser.evaluate((name) => {
+      document.documentElement.setAttribute('data-theme', name);
+      const well = document.querySelector('.watch .ss-tui')!;
+      const color = (token: string, inside: Element) => {
+        const probe = inside.appendChild(document.createElement('span'));
+        probe.style.color = `var(${token})`;
+        const value = getComputedStyle(probe).color;
+        probe.remove();
+        return value;
+      };
+      const rgb = (value: string) => value.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number);
+      const lum = (c: number[]) => {
+        const [r, g, b] = c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const contrast = (a: string, b: string) => { const [x, y] = [lum(rgb(color(a, well))), lum(rgb(color(b, well)))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+      const page = document.body;
+      return {
+        bg: getComputedStyle(well).backgroundColor, termBg: color('--term-bg', page),
+        fg: getComputedStyle(well).color, termFg: color('--term-fg', page),
+        ok: color('--session-ok', well), green: color('--ansi-green', page),
+        err: color('--session-err', well), red: color('--ansi-red', page),
+        faded: color('--session-fg', page),
+        pairs: [contrast('--session-dim', '--session-bg'), contrast('--session-fg', '--session-prompt-bg'), contrast('--session-dim', '--session-prompt-bg'), contrast('--session-fg', '--session-add-bg'), contrast('--session-fg', '--session-del-bg'), contrast('--session-ok', '--session-bg'), contrast('--session-err', '--session-bg')],
+      };
+    }, theme);
+    expect([m.bg, m.fg], theme).toEqual([m.termBg, m.termFg]);
+    expect([m.ok, m.err], theme).toEqual([m.green, m.red]);
+    expect(m.fg, `${theme}: not the faded session colour`).not.toBe(m.faded);
+    for (const ratio of m.pairs) expect(ratio, theme).toBeGreaterThanOrEqual(4.5);
+  }
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('the view says whose task it is and that you watch it, above the transcript; the sidebar marks other people’s tasks', async ({ app, browser, screen }) => {
+  await watchStudio12(app, browser);
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText("You are watching @anna-q's task. Only @anna-q can type in it; it acts on GitHub as them.");
+  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+  // In the flow above the transcript: it covers no line of it.
+  expect(await browser.evaluate(() => {
+    const bar = document.querySelector('.taskview .attention-bar')!.getBoundingClientRect();
+    const view = document.querySelector('.taskview .watch')!.getBoundingClientRect();
+    return Math.round(view.top - bar.bottom) >= 0;
+  })).toBe(true);
+
+  // The sidebar: anna-q's initials on her task, said in words; none on mkarp's own tasks.
+  const mark = browser.locator('.task-row:has(.task-num:has-text("#12")) .task-owner');
+  await expect(mark).toHaveText('AQ');
+  expect(await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-row')].find((r) => r.querySelector('.task-num')!.textContent!.endsWith('#12'))!;
+    return [row.querySelector('.task-owner')!.getAttribute('title'), row.querySelector('.task-link')!.getAttribute('title')!.includes('owned by @anna-q'), row.querySelector('.task-link .sr-only:not(.task-num .sr-only)')!.textContent!.includes('owned by @anna-q')];
+  })).toEqual(['@anna-q owns this task', true, true]);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row')].filter((r) => !(r.querySelector('.task-owner') as HTMLElement).hidden).length), 'only someone else’s task is marked').toBe(1);
+  expect(await axeViolations(browser)).toEqual([]);
+  // Handed back: the mark goes.
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'mkarp' } });
+  await expect(mark).toBeHidden();
+});

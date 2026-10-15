@@ -417,6 +417,8 @@ button.task-group-head:hover { color: var(--text); }
 .task-chips .tl-pr-chip { padding: 0 6px; }
 .task-title { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); }
 .task-group.group-ended .task-row:not(:hover):not(.active) .task-link { color: var(--muted); }
+.task-owner { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 4px; border-radius: var(--radius-full); background: var(--surface-3); color: var(--text); font-size: var(--fs-xs); line-height: 1; font-weight: 600; letter-spacing: 0.02em; }
+.task-owner[hidden] { display: none; }
 .task-age { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
 .task-kebab { position: absolute; right: 6px; top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 /* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
@@ -2566,6 +2568,10 @@ button.task-group-head:hover { color: var(--text); }
 
 /* Someone else's task, watched as its live transcript (watchview.js, SPEC-179): the session well of
    the Sessions view in the terminal's place, scrolling on its own, the newest lines at the bottom. */
+/* The terminal's own colours, not a past session's faded ones (WAT-004). */
+.ss-live { --session-bg: var(--term-bg); --session-fg: var(--term-fg); --session-dim: var(--ansi-bright-black); --session-ok: var(--ansi-green); --session-err: var(--ansi-red); --session-border: var(--border); --session-prompt-bg: var(--live-prompt-bg); --session-add-bg: var(--live-add-bg); --session-del-bg: var(--live-del-bg); }
+/* Watching, the control card sits above the transcript, in the flow: it covers no line (WAT-005). */
+.taskview-term.watching > .attention-bar { position: relative; top: auto; right: auto; order: -1; flex: none; align-self: stretch; max-width: none; margin: 8px 16px; box-shadow: none; }
 .watch { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .watch-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 .watch-scroll:focus-visible { outline: none; box-shadow: var(--focus-inset); }

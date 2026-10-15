@@ -91,7 +91,7 @@ test('a chained task changes to When I decide; someone else sees no start chip (
 
   // Handed to someone else: read-only, no chip.
   await browser.evaluate((n) => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', n, { owner: { login: 'anna-q' } }), number);
-  await expect(screen.getByText('@anna-q owns this task:')).toBeVisible();
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await expect(bar.getByRole('button', /^Starts:/)).toHaveCount(0);
 });
 

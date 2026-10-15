@@ -172,6 +172,7 @@ export function mountTaskView(ctx, sandbox, task) {
     terminal = watch ? watchingTerminal(watch) : makeTerminal();
     previous.el.replaceWith(terminal.el);
     previous.destroy();
+    termArea.classList.toggle('watching', Boolean(watch));
     if (started) {
       terminal.start();
       if (!watch && !isPhone()) terminal.focus();
@@ -256,7 +257,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const mine = request && request.by.login === me();
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `@${owner()} owns this task: `), 'it acts on GitHub as them.', request ? ` @${request.by.login} asked for control.` : '']),
+          : [h('strong', null, `You are watching @${owner()}'s task. `), `Only @${owner()} can type in it; it acts on GitHub as them.`, request ? ` @${request.by.login} asked for control.` : '']),
       mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
         : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
@@ -550,7 +551,9 @@ export function mountTaskView(ctx, sandbox, task) {
     }
   }
 
-  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention, held, queueSlot), quickbar);
+  // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
+  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
     renderAttention();

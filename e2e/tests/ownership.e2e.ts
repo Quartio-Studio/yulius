@@ -15,7 +15,7 @@ const touch = async (browser: Browser, sandbox: string, number: number, changes:
 
 test("someone else's task is read-only, and its owner can hand it over", async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/3'));
-  await expect(screen.getByText('@anna-q owns this task:')).toBeVisible();
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   // Disabled, saying why.
   await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task')).toBeDisabled();
@@ -45,7 +45,7 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
   expect(await axeViolations(browser)).toEqual([]);
 
   await screen.getByRole('button', 'Hand over').click();
-  await expect(screen.getByText('@anna-q owns this task:')).toBeVisible();
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
   // mkarp now watches it: the session as its transcript, no terminal to send anything to (SPEC-179).
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
@@ -61,7 +61,7 @@ test('the owner declines a request for control', async ({ app, browser, screen }
   await touch(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
   await screen.getByRole('button', 'Decline').click();
   await expect(screen.getByText('@anna-q asks to take control of this task:')).toBeHidden();
-  await expect(screen.getByText('@anna-q owns this task:')).toBeHidden();
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeHidden();
 });
 
 test('a request for control leaves the way out of a chain', async ({ app, browser, screen }) => {
