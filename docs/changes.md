@@ -11,6 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   open, drag to reorder" under the repository and access. The grip is faint until the tab is
   hovered or current and is hidden on devices without a mouse or pen; "All sandboxes" has none,
   since it does not move. Both strips take the hint from one constant.
+- A CI run's stages are readable (SPEC-165, ADR-0136, task #155): each job is one row under
+  "Jobs", its wait for a job slot (hatched) running into its run, with "waited 6 min" beside how
+  long it ran and its state as an icon and a word; a job's checkout and stages fold under it (a
+  failed job opens, and what is opened survives the dialog's refresh); every waterfall has a time
+  axis with gridlines, a "now" mark and a legend; on a phone the bar goes under its name.
 - The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
   crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
   the narrow-strip e2e test now checks that no strip chip's text overflows its box.
