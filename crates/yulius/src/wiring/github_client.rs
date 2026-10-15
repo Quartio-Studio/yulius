@@ -259,6 +259,20 @@ impl GitHubPort for GitHubAdapter {
         Ok(app_secret(&t.token))
     }
 
+    async fn agent_token(
+        &self,
+        app: &GitHubAppConfig,
+        installation_id: u64,
+        repo: &str,
+    ) -> AppResult<Secret> {
+        let t = self
+            .client(app)?
+            .create_agent_token(installation_id, repo)
+            .await
+            .map_err(map_err)?;
+        Ok(app_secret(&t.token))
+    }
+
     async fn installation_repos(
         &self,
         app: &GitHubAppConfig,

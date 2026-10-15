@@ -470,6 +470,9 @@ impl GitHubPort for RepoGitHub {
     async fn installation_token(&self, _: &GitHubAppConfig, id: u64) -> AppResult<Secret> {
         Ok(Secret(format!("inst-{id}")))
     }
+    async fn agent_token(&self, _: &GitHubAppConfig, id: u64, _: &str) -> AppResult<Secret> {
+        Ok(Secret(format!("agent-inst-{id}")))
+    }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(self
             .installation_repos

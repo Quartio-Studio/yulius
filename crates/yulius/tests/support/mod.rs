@@ -182,6 +182,9 @@ impl GitHubPort for FakeGitHub {
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         Ok(Secret("inst".into()))
     }
+    async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
+        Ok(Secret("agent-inst".into()))
+    }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(Vec::new())
     }

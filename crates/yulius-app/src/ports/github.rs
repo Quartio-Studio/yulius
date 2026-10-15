@@ -319,6 +319,18 @@ pub trait GitHubPort: Send + Sync {
         let _ = repo;
         self.installation_token(app, installation_id).await
     }
+    /// The token of an agent's Git and `gh` (ADR-0114): an installation token restricted to the
+    /// repository `repo` and to the agent permissions (no administration, no workflows), which
+    /// GitHub refuses on a production branch protected by the production ruleset.
+    ///
+    /// # Errors
+    /// GitHub failures.
+    async fn agent_token(
+        &self,
+        app: &GitHubAppConfig,
+        installation_id: u64,
+        repo: &str,
+    ) -> AppResult<Secret>;
     /// Repositories the installation can access.
     async fn installation_repos(
         &self,

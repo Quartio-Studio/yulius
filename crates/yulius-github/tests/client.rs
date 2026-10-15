@@ -1155,6 +1155,42 @@ async fn repository_tokens_are_restricted_and_cached_per_repository() -> TestRes
     Ok(())
 }
 
+/// ADR-0114: an agent's token names its repository and only the agent permissions, so it can
+/// never administer the repository or add a workflow; it is cached apart from the others.
+#[tokio::test]
+async fn agent_tokens_are_narrowed_to_the_agent_permissions() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    let client = GitHubClient::new(fake.config())?;
+    let path = format!("/app/installations/{installation}/access_tokens");
+
+    let agent = client.create_agent_token(installation, "app").await?;
+    assert_eq!(agent, client.create_agent_token(installation, "app").await?);
+    let scoped = client.create_repository_token(installation, "app").await?;
+    assert_ne!(agent.token, scoped.token, "separate cache entries");
+    let bodies: Vec<serde_json::Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == path)
+        .map(|r| serde_json::from_str(&r.body))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["repositories"], serde_json::json!(["app"]));
+    assert_eq!(
+        bodies[0]["permissions"],
+        serde_json::json!({
+            "contents": "write",
+            "pull_requests": "write",
+            "issues": "write",
+            "checks": "read",
+            "statuses": "read",
+            "metadata": "read"
+        })
+    );
+    assert!(bodies[1].get("permissions").is_none());
+    Ok(())
+}
+
 #[tokio::test]
 async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
     let (fake, client) = setup().await?;

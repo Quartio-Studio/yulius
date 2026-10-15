@@ -41,6 +41,9 @@ impl GitHubPort for UnavailableGitHub {
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         unavailable()
     }
+    async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
+        unavailable()
+    }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         unavailable()
     }

@@ -6,7 +6,9 @@ use axum::http::Method;
 use serde_json::json;
 use yulius_app::auth::AuthContext;
 use yulius_app::model::TaskRecord;
-use yulius_app::ports::store::{PermissionStore as _, TaskStore as _, UserStore as _};
+use yulius_app::ports::store::{
+    InstanceStore as _, PermissionStore as _, TaskStore as _, UserStore as _,
+};
 use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::task::TaskStatus;
@@ -44,20 +46,26 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     })
 }
 
-async fn git_credential(h: &Harness, token: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let resp = call(
-        &h.internal,
-        Method::POST,
-        "/internal/git-credential",
-        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/repo.git"})),
-        &Creds {
-            bearer: Some(token.into()),
-            ..Creds::default()
-        },
+/// Who the task with live run token `token` acts as on GitHub: the login whose token opened the
+/// issue its agent asked Yulius for (Yulius's own GitHub calls carry the owner's token; the
+/// agent's shell never does, ADR-0114).
+async fn github_actor(h: &Harness, token: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let result = mcp_tool(
+        h,
+        token,
+        "issue_create",
+        json!({
+            "title": "Flaky landing test",
+            "body": "Fails 1 in 20 runs.\n\n## Acceptance criteria\n- [ ] Passes 100 runs",
+            "labels": ["type: bug", "priority: medium", "area: frontend"]
+        }),
     )
     .await?;
-    assert_eq!(resp.status, 200, "{}", resp.body);
-    Ok(resp.body["token"].as_str().ok_or("no token")?.to_owned())
+    assert_eq!(result["isError"], false, "{result}");
+    Ok(h.github
+        .actors_of("create_issue")
+        .pop()
+        .ok_or("no issue opened")?)
 }
 
 /// AC1: a new task's owner is its creator, and its summary names them.
@@ -76,7 +84,7 @@ async fn a_task_is_owned_by_its_creator() -> TestResult {
     assert_eq!(detail.status, 200, "{}", detail.body);
     assert_eq!(detail.body["owner"]["login"], "alice");
     assert_eq!(detail.body["created_by"]["login"], "alice");
-    assert_eq!(git_credential(&f.h, "tt").await?, "token-alice");
+    assert_eq!(github_actor(&f.h, "tt").await?, "alice");
     let _ = &f.alice;
     Ok(())
 }
@@ -90,7 +98,7 @@ async fn a_task_acts_on_github_as_its_owner() -> TestResult {
     owned.owner = UserId::parse("u-b")?;
     f.h.store.insert_task(&owned).await?;
     seed_live_attempt(&f.h, "t2", "tt2").await?;
-    assert_eq!(git_credential(&f.h, "tt2").await?, "token-bob");
+    assert_eq!(github_actor(&f.h, "tt2").await?, "bob");
     let summary = f.h.app.task_summary(&owned).await?;
     assert_eq!(summary.owner.login, "bob");
     assert_eq!(summary.created_by.login, "alice");
@@ -411,7 +419,7 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
     assert_eq!(passed.body["owner"]["login"], "bob");
     assert_eq!(passed.body["created_by"]["login"], "alice");
     assert_eq!(passed.body["control_request"], serde_json::Value::Null);
-    assert_eq!(git_credential(&f.h, "tt").await?, "token-bob");
+    assert_eq!(github_actor(&f.h, "tt").await?, "bob");
     assert_eq!(audited(&f.h, "task.control_requested").await?, 2);
     assert_eq!(audited(&f.h, "task.control_passed").await?, 1);
     let said = notices(&mut watch);
@@ -465,7 +473,7 @@ async fn an_absent_owners_task_passes_at_once() -> TestResult {
     let taken = control(&f, Method::POST, "", &f.bob).await?;
     assert_eq!(taken.status, 200, "{}", taken.body);
     assert_eq!(taken.body["owner"]["login"], "bob");
-    assert_eq!(git_credential(&f.h, "tt").await?, "token-bob");
+    assert_eq!(github_actor(&f.h, "tt").await?, "bob");
 
     // An owner who lost write access to the project counts as absent too.
     let g = fixture().await?;
@@ -703,11 +711,14 @@ async fn a_requester_who_cannot_work_gives_way() -> TestResult {
     Ok(())
 }
 
-/// AC2 (review): after a hand-over the agent's `gh` (a credential asked without a repository
-/// path) is the new owner's too.
+/// AC2 (review), ADR-0114: after a hand-over the agent's `gh` (a credential asked without a
+/// repository path) still gets the App's agent token, never the new owner's.
 #[tokio::test]
-async fn the_agents_gh_follows_the_owner() -> TestResult {
+async fn the_agents_gh_never_gets_the_new_owners_token() -> TestResult {
     let f = fixture().await?;
+    f.h.store.init_instance("https://yulius.test", "x").await?;
+    crate::support::configure_github_app(&f.h).await?;
+    f.h.store.set_installation(Some(7)).await?;
     assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
     assert_eq!(
         control(&f, Method::POST, "/accept", &f.alice).await?.status,
@@ -725,7 +736,7 @@ async fn the_agents_gh_follows_the_owner() -> TestResult {
     )
     .await?;
     assert_eq!(gh.status, 200, "{}", gh.body);
-    assert_eq!(gh.body["token"], "token-bob");
+    assert_eq!(gh.body["token"], "agent-inst");
     Ok(())
 }
 
