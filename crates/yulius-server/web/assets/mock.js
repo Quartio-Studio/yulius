@@ -153,8 +153,10 @@ function seed(params) {
     },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
-    // failed (in place, naming what failed, with Try again; #147).
+    // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
+    // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
+    failedReads: 0,
     holdPath: params.get('hold') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed.
     failPostPath: params.get('failpost') || null,
@@ -538,6 +540,44 @@ function emit(db, event) {
  */
 function announcePulls(db, sandboxId) {
   emit(db, { type: 'pulls.updated', sandbox_id: sandboxId });
+}
+
+/**
+ * A clock that moves only when a test says (`pullclock=manual`, SPEC-144): the store plans its pull
+ * request reads on it, and `advanceClock(ms)` runs the timers that come due on the way, in order.
+ */
+function manualClock(start) {
+  let now = start;
+  let nextId = 1;
+  const timers = new Map(); // id → { at, fn, every }
+  const add = (fn, ms, every) => {
+    const id = nextId;
+    nextId += 1;
+    timers.set(id, { at: now + (Number(ms) > 0 ? Number(ms) : 0), fn, every }); // like setTimeout: NaN or less is 0
+    return id;
+  };
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => add(fn, ms, 0),
+    clearTimeout: (id) => { timers.delete(id); },
+    setInterval: (fn, ms) => add(fn, ms, Number(ms) > 1 ? Number(ms) : 1),
+    clearInterval: (id) => { timers.delete(id); },
+    advance(ms) {
+      if (!(ms >= 0)) throw new Error(`advanceClock takes a time to move forward, not ${ms}`);
+      const end = now + ms;
+      for (;;) {
+        let next = null;
+        for (const [id, timer] of timers) if (timer.at <= end && (!next || timer.at < next[1].at)) next = [id, timer];
+        if (!next) break;
+        const [id, timer] = next;
+        now = timer.at;
+        if (timer.every) timer.at += timer.every;
+        else timers.delete(id);
+        try { timer.fn(); } catch (error) { now = end; throw error; }
+      }
+      now = end;
+    },
+  };
 }
 
 /** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
@@ -3355,7 +3395,10 @@ async function handleFetch(db, url, init = {}) {
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
-  if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
+    db.failedReads += 1;
+    return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  }
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
   if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
   if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
@@ -4370,6 +4413,9 @@ export function createMockTransport(params) {
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for
+  // `pullclock=manual`: the store's pull request reads run on a clock only `advanceClock(ms)` moves.
+  const pullClock = params.get('pullclock') === 'manual' ? manualClock(Date.now()) : undefined;
+  db.advanceClock = (ms) => { if (!pullClock) throw new Error('advanceClock needs pullclock=manual'); pullClock.advance(ms); };
   // Releases the held Git overview reads, the newest first (an older read answering last).
   db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
@@ -4422,6 +4468,7 @@ export function createMockTransport(params) {
     kind: 'mock',
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
+    pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);
