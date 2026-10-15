@@ -1,11 +1,11 @@
 ---
 yulius-task: f5066d67-9b38-48ec-a125-3015a85defbc
-status: in-progress
+status: done
 ---
 
 # SPEC-143: a run that ends while Yulius is down keeps its metrics; the recount waits for reconciliation
 
-Status: in progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #124 (part of task #118, SPEC-138 lanes)
 Scope authorization: the person's request (task #124): fix GitHub issues #385 and #389. "A run's
@@ -56,11 +56,11 @@ reconciliation that succeeded.
 ## Plan
 
 - [x] Spec and plan for #385 and #389
-- [ ] A run that ended while Yulius was down keeps or recounts its figures (#385)
-- [ ] Recount starts only after a successful reconciliation, proven by a test (#389)
-- [ ] SPEC-002 lists metrics_recounts; docs, ADR and changes
-- [ ] Independent review and fixes
-- [ ] Gates green, evidence and delivery
+- [x] A run that ended while Yulius was down keeps or recounts its figures (#385)
+- [x] Recount starts only after a successful reconciliation, proven by a test (#389)
+- [x] SPEC-002 lists metrics_recounts; docs, ADR and changes
+- [x] Independent review and fixes
+- [x] Gates green, evidence and delivery
 
 ## Acceptance criteria
 
@@ -108,3 +108,28 @@ reconciliation that succeeded.
   rules), so a count with no model means the stored row had none either; changing `put_metrics`
   to keep a stored model would touch the live save path the task keeps unchanged (review round 1,
   finding 2).
+
+## Evidence
+
+- Checked on `dev` first: neither issue was fixed (`finalize_attempt` saved the runtime snapshot on
+  every path; no test covered the recount's order; SPEC-002 had no `metrics_recounts` row).
+- Test-first: `run_metrics::a_run_that_ends_while_yulius_is_down_keeps_its_metrics` failed before
+  the fix with the run's figures turned to `(None, None)` against `(Some(1014), Some(1))`;
+  `run_metrics::a_run_whose_exit_waits_for_the_next_start_keeps_its_metrics` (review round 1) failed
+  the same way on the first fix; `metrics_recount::the_recount_waits_for_a_reconciliation_that_succeeds`
+  failed with `recover` changed to start the recount after a failed reconciliation. All pass now.
+- `cargo test -p yulius --test main -- run_metrics:: metrics_recount:: supervision::`: 42 passed,
+  1 ignored (live Claude Code).
+- `scripts/dev ci` on `3ae41bbd` (repository check, script tests, check, fmt, clippy `-D warnings`,
+  nextest, doctests, deny, shear, doc): exit 0, 1763 tests passed, 16 skipped. Also green on
+  `db551d86` and `0be8ba38`.
+- `scripts/dev security`: not run, exit 2. Vidoc rejects the key (HTTP 401, issue #470); reported
+  as unrun under ADR-0104.
+- Independent review: round 1 requested changes (a reattach to a lingering host still saved an
+  empty snapshot; the model choice; the diagram; a log), all fixed or decided above; round 2
+  approved `0be8ba38`; its minor and nits were applied (reset order, ADR wording on the start
+  path) or left as follow-ups: a test that proves the snapshot path is taken (a recount call
+  counter), `caught_up` consulting sub-agent tails, and a `current()` check before the watcher's
+  periodic save (pre-existing).
+- Not exercised here: a real Claude Code session across a production restart; the fake agent
+  writes Claude Code shaped transcripts through the real ptyhost.
