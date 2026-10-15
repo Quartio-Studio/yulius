@@ -129,7 +129,9 @@ Yulius CI on 0163f768 failed in `quality`: `scripts/test_vidoc_scan.py`'s `alive
 `/proc/<pid>/stat` of a child reaped between the open and the read (`ProcessLookupError`), a race
 in a test this task does not touch (`dev` passed it). It was reproduced with a unit test that
 fails without the fix (`Alive`), and fixed: a process gone at the read counts as gone. A fourth,
-delta-only review covered this fix after the three rounds above.
+delta-only review covered this fix after the three rounds above. `dev` fixed the same race
+meanwhile (#560), and the merge of `dev` keeps its version of the file, so this task leaves
+`scripts/` unchanged.
 
 Not testable here: the real server and Claude Code receiving a queued image. The server path
 needs no change: uploads go to `attachments/tasks/<task>`, which `task_prompt_attachment` already
