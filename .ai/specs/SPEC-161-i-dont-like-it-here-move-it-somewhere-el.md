@@ -1,11 +1,11 @@
 ---
 yulius-task: 04e5e2b7-e9a3-4738-8b4c-1acbcb3a5a01
-status: in-progress
+status: done
 ---
 
 # SPEC-161: The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #152
 Scope authorization: task #152, a screenshot of the sidebar's "Pipeline (stages)" entry with "i dont
@@ -53,12 +53,12 @@ opened the Pipeline keeps working and lands on that tab; the sidebar's Dashboard
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The sidebar drops Pipeline (stages); the Dashboard shows it as a second tab
-- [ ] Old /pipeline links, run and task links open the Dashboard's Pipeline tab, proven by e2e
-- [ ] ADR, product, architecture and UI docs describe the Dashboard's Pipeline tab
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The sidebar drops Pipeline (stages); the Dashboard shows it as a second tab
+- [x] Old /pipeline links, run and task links open the Dashboard's Pipeline tab, proven by e2e
+- [x] ADR, product, architecture and UI docs describe the Dashboard's Pipeline tab
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -101,9 +101,32 @@ opened the Pipeline keeps working and lands on that tab; the sidebar's Dashboard
 - **A tab change starts the other tab fresh** (its default range and filters), as CI/CD does; each
   tab's own state stays in the address while it is shown, and the place memory (SPEC-113) returns
   to the tab and state left.
+- **Aliases are own names only** (review round 1): `SECTION_ALIASES` is read with `Object.hasOwn`,
+  so `/s/<slug>/constructor` and the like stay Page not found.
 - **The Overview's Pipeline card keeps its link** ("Open Pipeline" to the Pipeline tab with the
   same range): a link to another address of the page mounts it again, as every page's links do.
 
 ## Evidence
 
-(Filled in when the work is done.)
+Run on head b44b97d3 (branch current with `origin/dev` 9883a45f), 2026-10-15:
+
+| Command | Result |
+| --- | --- |
+| `npx e2e run tests/pipeline.e2e.ts tests/navigation.e2e.ts` before the change | 7 failed as expected: no Section radiogroup, heading "Pipeline", a sixth sidebar entry, `/pipeline` addresses |
+| same plus `cd`, `ci`, `places`, `responsive`, `quality`, `loading-shapes`, `times`, `subscriptions` after it | pass (49 + 66 tests) |
+| review round 1 tests before their fix | `consistency.e2e.ts` failed (`/s/studio/constructor` showed Sandboxes); the refresh test failed with the Pipeline teardown removed on purpose ("expected 1 to be 0") |
+| `cd e2e && npx e2e run` (host load ~26) | pass: 468 passed, 1 skipped |
+| `scripts/dev check` | pass |
+| `scripts/dev lint` | pass |
+| `scripts/dev deps` | pass: cargo-deny and cargo-shear found no issues |
+| `scripts/dev test` | pass on b9accd0a: 1814 passed, 18 skipped. On b44b97d3 (no Rust changed since): 1813 passed, 1 failed, `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` timed out at 60 s with the task Running and both runs killed (load ~26), the open #527 |
+| `python3 scripts/check_repository.py` | pass (after `--sync-brand` moved `pipeline.js` in index.html's preloads) |
+| `scripts/dev security` | not run (exit 2): Vidoc answers HTTP 401 "Invalid or expired token" for `VIDOC_API_KEY` (#470, ADR-0104) |
+
+Independent review round 1 (fresh session, `om-code-review`, head b9accd0a): approved with four
+minors and two nits. Fixed test-first: an inherited name (`constructor`) was taken for a page alias
+and broke navigation; the refreshes the tab and the page left stop were untested; the card link
+with a 7-day range and "In Pipeline" from a deploy were untested; this spec cited a test file that
+does not exist. Accepted: the `/pipeline` link to the state already shown (Decisions, ADR-0132).
+Round 2 reviews the head that carries this Evidence; the gates of the merged head run as Yulius CI
+on the pull request.
