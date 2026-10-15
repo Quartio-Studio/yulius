@@ -35,7 +35,9 @@ is not forced through Yulius's egress proxy (`HTTPS_PROXY` is advisory under sli
   token can bypass them (`current_user_can_bypass`). Onboarding reports a production branch the
   agents could write (or one it could not check) and names the ruleset a repository admin must add.
   Yulius does not add it to existing repositories itself: changing a repository's protection is
-  that repository's admins' decision.
+  that repository's admins' decision. (Amended by [ADR-0129](0129-onboarding-agents-protect-production-as-the-onboarding-person.md):
+  the onboarding agent adds it through Yulius as the task's owner when GitHub says they are a
+  repository admin.)
 
 ## Alternatives
 
