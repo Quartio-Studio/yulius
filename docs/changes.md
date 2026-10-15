@@ -12,6 +12,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Chains and rules (chains, start rules and supertask holds drawn left to right, one arrow per link,
   each card a link to the task), Prepared and On their own. Built in the browser from the task
   summaries; no API change.
+- Reply in a task's attention bar does something visible (SPEC-156, task #147, #516). On
+  "Needs you" and "The agent is waiting for your reply" it opens a reply field in the bar; Enter or
+  Send types the answer into the session as the person's prompt, which also ends a `needs_you`
+  request, and Escape or Cancel closes it. Before, Reply only focused the terminal, which showed
+  nothing because Claude Code draws its own cursor. While the agent shows a menu in the terminal,
+  Reply still goes to the terminal, so typed text never picks a menu option unseen. Phones keep
+  their quick input.
+- The task strip's progress bar shows the step in progress (SPEC-159, task #150): after the
+  finished share comes the open step's share in the working colour, so "Step 2/4" no longer sits
+  beside a bar that looks a quarter done. The API's step summary carries `active_percent`.
 - The e2e suite holds under host load, and the Editor waits for all of Monaco (SPEC-148,
   ADR-0122, task #134):
   - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024

@@ -354,8 +354,12 @@ function stepsSummary(task) {
   const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
   const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
   const total = list.reduce((sum, s) => sum + effort(s), 0);
-  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
-  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
+  const finishedEffort = finished.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finishedEffort * 100) / total) : 0;
+  // The share in progress ends at the cumulative floor, as the server computes it (SPEC-159).
+  const activeEffort = list.filter((s) => s.status === 'in_progress').reduce((sum, s) => sum + effort(s), 0);
+  const active_percent = total ? Math.min(100, Math.floor(((finishedEffort + activeEffort) * 100) / total)) - percent : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
 }
 
 function summary(task) {
