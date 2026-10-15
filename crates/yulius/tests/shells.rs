@@ -57,6 +57,17 @@ async fn fixture_with(
     data_dir: Option<PathBuf>,
     recheck_ms: Option<u64>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_ending(contained, data_dir, recheck_ms, None).await
+}
+
+/// [`fixture_with`], optionally with another wait for a shell's exit before its host is
+/// terminated (`shell_exit_ms`).
+async fn fixture_ending(
+    contained: bool,
+    data_dir: Option<PathBuf>,
+    recheck_ms: Option<u64>,
+    exit_ms: Option<u64>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ysh").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
@@ -71,6 +82,9 @@ async fn fixture_with(
             }
             if let Some(ms) = recheck_ms {
                 config.viewer_recheck_ms = ms;
+            }
+            if let Some(ms) = exit_ms {
+                config.shell_exit_ms = ms;
             }
         })),
         ..HarnessOptions::default()
@@ -760,6 +774,141 @@ async fn a_terminal_start_whose_request_is_dropped_still_ends_live() -> TestResu
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(left, 0, "nothing left behind");
+    Ok(())
+}
+
+/// SPEC-146 SHE-001 (#346): a terminal whose host cannot be ended (the end request is lost and
+/// `terminate` fails) is not recorded as ended: it stays listed, live and attachable with its
+/// run directory and processes, and its viewer is told. Once the host can be ended, closing it
+/// again ends it.
+#[tokio::test]
+async fn a_terminal_whose_host_cannot_be_ended_stays_live() -> TestResult {
+    let f = fixture_ending(false, None, None, Some(500)).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let run_dir = f.data.join("shells").join(&id);
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut screen = String::new();
+    input(&mut socket, "echo \"up=$((40+2))\"\r").await?;
+    read_until(&mut socket, &mut screen, "up=42").await?;
+    let (host, child) = run_pids(&run_dir)?;
+
+    f.gate.refuse_ends(true);
+    let closed = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(closed.status, StatusCode::NO_CONTENT, "{:?}", closed.body);
+    // The close's own notice, then the one that says the process could not be ended.
+    loop {
+        let message = next_json(&mut socket).await?;
+        assert_ne!(message["type"], "exit", "recorded as ended: {message}");
+        if message["type"] == "notice"
+            && message["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("could not be ended"))
+        {
+            assert_eq!(
+                message["text"],
+                "This terminal's process could not be ended, so it keeps running. Close it again \
+                 to retry."
+            );
+            break;
+        }
+    }
+    let shown = listed(&list(&f, &f.writer, "s1").await?);
+    assert!(shown.iter().any(|(listed, _)| *listed == id), "{shown:?}");
+    assert!(run_dir.join("shell.json").is_file(), "run directory kept");
+    assert!(pid_alive(host) && pid_alive(child));
+    input(&mut socket, "echo \"still=$((5+5))\"\r").await?;
+    read_until(&mut socket, &mut screen, "still=10").await?;
+
+    // The host can be ended again: a second close ends the shell.
+    f.gate.refuse_ends(false);
+    let closed = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(closed.status, StatusCode::NO_CONTENT, "{:?}", closed.body);
+    loop {
+        if next_json(&mut socket).await?["type"] == "exit" {
+            break;
+        }
+    }
+    wait_for("the run directory's removal", || !run_dir.exists()).await?;
+    assert!(listed(&list(&f, &f.writer, "s1").await?).is_empty());
+    Ok(())
+}
+
+/// SPEC-146 SHE-001 (review round 1): a terminal whose host died while its process lives on (it
+/// ignores the hang-up) and cannot be ended is not recorded as ended when the connection is lost:
+/// it stays listed with its run directory and its viewer is told. A later close ends it once its
+/// process can be ended.
+#[tokio::test]
+async fn a_terminal_whose_host_died_but_whose_process_survives_stays_live() -> TestResult {
+    let f = fixture_ending(false, None, None, Some(500)).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let run_dir = f.data.join("shells").join(&id);
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let (host, child) = run_pids(&run_dir)?;
+    // The recorded child becomes a process that outlives its host: same pid, session and start.
+    input(&mut socket, "trap '' HUP; exec sleep 600\r").await?;
+    wait_for("the child to be sleep", || {
+        std::fs::read_to_string(format!("/proc/{child}/comm")).is_ok_and(|c| c.trim() == "sleep")
+    })
+    .await?;
+
+    f.gate.refuse_ends(true);
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(host),
+        nix::sys::signal::Signal::SIGKILL,
+    )?;
+    loop {
+        let message = next_json(&mut socket).await?;
+        assert_ne!(message["type"], "exit", "recorded as ended: {message}");
+        if message["type"] == "notice"
+            && message["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("could not be ended"))
+        {
+            break;
+        }
+    }
+    let shown = listed(&list(&f, &f.writer, "s1").await?);
+    assert!(shown.iter().any(|(listed, _)| *listed == id), "{shown:?}");
+    assert!(run_dir.join("shell.json").is_file(), "run directory kept");
+    assert!(pid_alive(child));
+
+    f.gate.refuse_ends(false);
+    let closed = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(closed.status, StatusCode::NO_CONTENT, "{:?}", closed.body);
+    loop {
+        if next_json(&mut socket).await?["type"] == "exit" {
+            break;
+        }
+    }
+    wait_for("the process to end", || !pid_alive(child)).await?;
+    wait_for("the run directory's removal", || !run_dir.exists()).await?;
     Ok(())
 }
 
