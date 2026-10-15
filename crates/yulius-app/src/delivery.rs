@@ -2414,15 +2414,21 @@ impl App {
         head: &str,
         token: &Secret,
     ) -> bool {
-        !head.is_empty()
-            && self
-                .deps
-                .git
-                .remote_branch_head(worktree, branch, token)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|sha| sha.eq_ignore_ascii_case(head))
+        if head.is_empty() {
+            return false;
+        }
+        match self
+            .deps
+            .git
+            .remote_branch_head(worktree, branch, token)
+            .await
+        {
+            Ok(remote) => remote.is_some_and(|sha| sha.eq_ignore_ascii_case(head)),
+            Err(err) => {
+                tracing::debug!(%branch, error = %err, "the remote's branch could not be read");
+                false
+            }
+        }
     }
 
     /// Records that `head` was pushed but its pull request could not be opened, for `yulius
@@ -2448,8 +2454,9 @@ impl App {
 
     /// Drops the note that a push of `head` failed once the remote's branch is at `head`, so
     /// `yulius wait` waits for the checks and the armed merge instead of ending on it (SPEC-139
-    /// PSH-002, #366). One read of the remote, only while such a note exists; unreadable, the
-    /// note stands.
+    /// PSH-002, #366). Without a pull request there is nothing to wait for: the note then says
+    /// the branch is pushed and how the pull request opens. One read of the remote, only while
+    /// such a note exists; unreadable, the note stands.
     pub(crate) async fn forget_push_problem_if_pushed(&self, task: &TaskRecord, head: &str) {
         let noted = self
             .runtime(&task.id)
@@ -2473,13 +2480,29 @@ impl App {
         let Ok(token) = self.task_github_token(task, &sandbox).await else {
             return;
         };
-        if self
+        if !self
             .dlv_branch_at(Path::new(worktree), branch, &note.head, &token)
             .await
-            && let Ok(mut problem) = self.runtime(&task.id).push_problem.lock()
+        {
+            return;
+        }
+        let unopened = !matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record)) if record.stage != DeliveryStage::None
+        );
+        let next = unopened.then(|| PushNote {
+            head: note.head.clone(),
+            text: format!(
+                "Yulius sees {} pushed to `{branch}`, but its pull request is not open yet: call \
+                 `delivery_merge` (or end your turn) and Yulius opens it.",
+                note.head.get(..9).unwrap_or(&note.head)
+            ),
+            failed_push: false,
+        });
+        if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock()
             && problem.as_ref() == Some(&note)
         {
-            *problem = None;
+            *problem = next;
         }
     }
 
@@ -2643,6 +2666,7 @@ impl App {
                         Some(self.set_push_problem(task_id, &head, &branch, None, &error))
                     }
                     Failed::Open => Some(self.set_open_problem(task_id, &head, &error)),
+                    // Defensive: `not_ready` already holds back what the rules refuse here.
                     Failed::Refused => {
                         self.note_undelivered(&task, &worktree, &error.public_message())
                             .await;

@@ -4118,6 +4118,40 @@ async fn deliver_opens_the_pull_request_after_a_push_that_landed() -> TestResult
     Ok(())
 }
 
+/// SPEC-139 PSH-002: when the agent pushed a head whose push Yulius could not make and no pull
+/// request is open yet, the wait ends on how to open it instead of waiting for nothing.
+#[tokio::test]
+async fn a_pushed_head_without_a_pull_request_says_how_to_open_it() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    let refused = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+
+    git(&wt, &["push", "--quiet", "origin", "feat/1-checkout-api"])?;
+    let state = wait_state(&f, &agent, &head).await?;
+    let note = state["push_problem"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("pull request is not open yet") && note.contains("`delivery_merge`"),
+        "{state}"
+    );
+    assert!(settled(&state, None)?.is_some(), "the wait ends on it");
+    Ok(())
+}
+
 /// SPEC-139 PSH-003 (#448): a `delivery_merge` that fails for a reason unrelated to pushing,
 /// after an earlier call was refused for an open step since resolved, answers with its own
 /// failure, not the older "not delivered" note about the same head.

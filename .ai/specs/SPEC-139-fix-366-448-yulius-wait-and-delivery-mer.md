@@ -46,7 +46,7 @@ wrote, never with an older one.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | PSH-001 | Every push Yulius makes of a task's head (end of turn, `delivery_merge`, Deliver…, the armed-merge upkeep, merge trains) goes through one helper. When `git push` fails but the remote says (`git ls-remote`) the branch is at that head, the push counts as done. A push that is done clears the task's note about that head. | `delivery::a_push_github_already_has_counts_as_done`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `delivery::a_push_clears_only_the_note_about_its_own_head`, `delivery::deliver_opens_the_pull_request_after_a_push_that_landed`, `git_ops::remote_branch_head_reads_the_remote_itself` |
-| PSH-002 | `yulius wait` does not end on a failed-push note for its head when the remote's branch is at that head: the note is cleared and the wait goes on to the checks and the armed merge. The check costs one read of the remote per wait request, only while such a note exists, and at most `REMOTE_HEAD_TIMEOUT` (10 s, the Git process killed after it); when the remote cannot be read in time the note stands. A note that is no push failure (not delivered, the pull request could not be opened after its push) stays. | `delivery::a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `git_ops::reading_a_remote_branch_gives_up_on_a_stalled_remote` |
+| PSH-002 | `yulius wait` does not end on a failed-push note for its head when the remote's branch is at that head: the note is cleared and the wait goes on to the checks and the armed merge. The check costs one read of the remote per wait request, only while such a note exists, and at most `REMOTE_HEAD_TIMEOUT` (10 s, the Git process killed after it) after the task's token (usually cached); when the remote cannot be read in time the note stands. Without a pull request the note is replaced by one that says the branch is pushed and to call `delivery_merge`, since there is nothing to wait for. A note that is no push failure (not delivered, the pull request could not be opened after its push) stays. | `delivery::a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `delivery::a_pushed_head_without_a_pull_request_says_how_to_open_it`, `git_ops::reading_a_remote_branch_gives_up_on_a_stalled_remote` |
 | PSH-003 | `delivery_merge` answers a failed delivery with the note that same delivery wrote (a refused push's remedy), otherwise with the failure itself, never with an older note about the same head. | `delivery::a_merge_call_answers_its_own_failure_not_an_older_note`, `delivery::a_merge_call_opens_the_pull_request_a_goal_task_still_lacks` |
 
 ## Plan
@@ -99,6 +99,11 @@ DLV-201/204 and DMG-001 tests stay green. Full gate: `scripts/dev ci`.
   remote is at the observed head counts that observed head as pushed; the newer head is pushed at
   the next end of turn or `delivery_merge`, and its own failure is noted then. Pushing an explicit
   SHA would need a new refspec form in the push guard, out of proportion for this window.
+- The token the wait's remote read needs is not put under a timeout (review round 3, minor): a
+  dropped OAuth refresh can lose a rotated refresh token, which is worse than a rare slow first
+  request. It is cached in the common case; the cost is stated in PSH-002.
+- A note about an older head stays in the slot until a delivery replaces it (review round 3, nit):
+  the wait reads only the note about its head and `delivery_merge` no longer reads the slot.
 - Reconcile in the wait endpoint, not in the CLI: the CLI has no GitHub token, and the server
   already owns the note. Once per wait request, not per poll: a note that appears during a wait
   comes from a push that has just checked GitHub itself.
