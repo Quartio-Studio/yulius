@@ -35,6 +35,7 @@ pub mod cd;
 mod disk_wait;
 mod exec;
 pub mod hygiene;
+pub(crate) mod playground;
 mod tools;
 
 use std::collections::{HashMap, HashSet};

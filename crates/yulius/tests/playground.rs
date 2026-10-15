@@ -1403,3 +1403,151 @@ async fn a_playgrounds_dev_is_tested_without_github() -> TestResult {
     nothing_on_github(&h)?;
     Ok(())
 }
+
+/// The text a successful tool call answered.
+fn answer(result: &Value) -> String {
+    assert_eq!(result["isError"], false, "{result}");
+    result["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// What `yulius wait` reads now for the agent whose task token is `token`, at `head`.
+async fn wait_state(h: &Harness, token: &str, head: &str) -> BoxResult<Value> {
+    let agent = Creds {
+        bearer: Some(token.into()),
+        ..Creds::default()
+    };
+    let r = call(
+        &h.internal,
+        Method::POST,
+        "/internal/agent/wait",
+        Some(json!({"head": head, "since": Value::Null, "timeout_secs": 1})),
+        &agent,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body)
+}
+
+/// The newest run of a playground task (`task/<n>`) in `overview`.
+fn task_run(overview: &Value) -> BoxResult<Value> {
+    overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| {
+            r["reference"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("task/"))
+        })
+        .cloned()
+        .ok_or_else(|| format!("no task run: {overview}").into())
+}
+
+/// Waits until the playground's `dev` (in its `origin`) is no longer `from`; its new head.
+async fn dev_moves(h: &Harness, body: &Value, from: &str) -> BoxResult<String> {
+    let origin = origin_of(h, body);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+        h.app.merge_armed(&sid).await;
+        let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+        if dev != from {
+            return Ok(dev);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("dev never moved".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+}
+
+/// PCI-002, PCI-003, PCI-006 (#411): the agent's `delivery_merge` in a playground with CI tests
+/// its head merged into `dev` as `dev` is now, arms the merge and leaves `dev` alone while the run
+/// goes; `yulius wait` follows that run; once it passed Yulius squashes the head, and the new
+/// `dev` head reuses the result instead of running again. GitHub hears nothing.
+#[tokio::test]
+async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let worktree = playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
+    // dev moves on after the task branched off: the run tests the head merged into the new dev.
+    let dev = push_to_dev(&h, &body, &[("other.txt", "two\n")])?;
+    h.app.ci_sync_all().await;
+    ci_settle(&h, &owner, &body).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+
+    let armed = answer(
+        &agent_tool(
+            &h,
+            "tok-t1",
+            "delivery_merge",
+            json!({"reviewed_head": head, "review_summary": "approve"}),
+        )
+        .await?,
+    );
+    assert!(armed.contains("armed: true"), "{armed}");
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?.trim(),
+        dev,
+        "nothing lands before the checks pass"
+    );
+    let run = task_run(&ci_overview(&h, &owner, &body).await?)?;
+    assert!(
+        run["label"]
+            .as_str()
+            .is_some_and(|l| l.starts_with("Task #")),
+        "{run}"
+    );
+    let candidate = run["sha"].as_str().ok_or("sha")?.to_owned();
+    let repo = sandbox_dir(&h, &body).join("repo");
+    for contained in [head.as_str(), dev.as_str()] {
+        git(
+            &repo,
+            &["merge-base", "--is-ancestor", contained, &candidate],
+        )?;
+    }
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert!(
+        ["queued", "running"].contains(&state["checks"].as_str().unwrap_or_default()),
+        "the wait follows the task's run: {state}"
+    );
+    assert_eq!(state["merge_armed"], true, "{state}");
+
+    ci_settle(&h, &owner, &body).await?;
+    let merged = dev_moves(&h, &body, &dev).await?;
+    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev^{tree}"])?.trim(),
+        git(&repo, &["rev-parse", &format!("{candidate}^{{tree}}")])?.trim(),
+        "the squash lands the tree that was tested"
+    );
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    assert_eq!(state["stage"], "merged_integration", "{state}");
+    assert!(
+        state["merge_outcome"]
+            .as_str()
+            .is_some_and(|o| o.contains("passed")),
+        "{state}"
+    );
+
+    h.app.ci_sync_all().await;
+    let overview = ci_settle(&h, &owner, &body).await?;
+    let newest = &overview["runs"][0];
+    assert_eq!(newest["sha"], merged.as_str(), "{overview}");
+    assert_eq!(newest["state"], "passed", "{overview}");
+    assert!(
+        newest["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("same tree")),
+        "the merged dev reuses the task's run: {overview}"
+    );
+    nothing_on_github(&h)?;
+    Ok(())
+}

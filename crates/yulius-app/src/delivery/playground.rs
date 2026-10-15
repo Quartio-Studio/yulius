@@ -1,17 +1,21 @@
-//! A playground's delivery (SPEC-099 PLY-007, ADR-0081): no pull request, no Yulius CI and no
-//! GitHub. `delivery_merge` and the task's merge action squash the task branch onto the
-//! playground's integration branch in its own `origin`, after the same task gates as a pull
-//! request (a valid spec where one is required, a plan with every step resolved, a clean worktree,
-//! commits to deliver), with the title a pull request would get (SPEC-069 BPL-008).
+//! A playground's delivery (SPEC-099 PLY-007, ADR-0081): no pull request and no GitHub.
+//! `delivery_merge` and the task's merge action squash the task branch onto the playground's
+//! integration branch in its own `origin`, after the same task gates as a pull request (a valid
+//! spec where one is required, a plan with every step resolved, a clean worktree, commits to
+//! deliver) and, when the playground has CI, once Yulius CI passed on the head merged into the
+//! integration branch (SPEC-163, ADR-0134), with the title a pull request would get (SPEC-069
+//! BPL-008).
 
 use std::path::Path;
 
 use yulius_contracts::api::git::Delivery;
+use yulius_domain::ci::RunState;
 use yulius_domain::delivery::DeliveryStage;
 
 use super::{
     DeliveryRecord, default_pr_title, delivery_profile, max_title_chars, past_merge, sent_title,
 };
+use crate::ci::playground::TaskChecks;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{TaskRecord, UserRecord};
@@ -20,18 +24,66 @@ use crate::ports::git::{SquashLanding, SquashRequest};
 /// Most branch commits read for the squash's title.
 const MAX_SUBJECTS: u32 = 50;
 
+/// How a playground task's merge went (SPEC-163 PCI-003).
+#[derive(Debug)]
+pub(crate) enum PlaygroundMerge {
+    /// Squashed onto the integration branch.
+    Merged(Box<Delivery>),
+    /// Yulius CI is testing the head merged into the integration branch: the run's state, and a
+    /// sentence saying so.
+    Testing(RunState, String),
+}
+
+/// The refusal of a branch that conflicts with the integration branch in `files`.
+fn conflict_refusal(branch: &str, integration: &str, files: &[String]) -> AppError {
+    AppError::Conflict(format!(
+        "`{branch}` conflicts with `{integration}` in {}: merge it into your branch \
+         (`git merge origin/{integration}`; Yulius has just brought it up to date), \
+         resolve the conflicts, commit, rerun the gates and merge again",
+        if files.is_empty() {
+            "some files".to_owned()
+        } else {
+            files.join(", ")
+        }
+    ))
+}
+
 impl App {
-    /// Squashes `task`'s branch onto its playground's integration branch as `user` (PLY-007).
+    /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
+    /// it is a `Conflict` saying so (SPEC-163 PCI-004).
+    ///
+    /// # Errors
+    /// As [`App::playground_merge`].
+    pub(crate) async fn playground_merge_now(
+        &self,
+        user: &UserRecord,
+        task: &TaskRecord,
+    ) -> AppResult<Delivery> {
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let pass = self.armed_pass(&sandbox.id);
+        let _pass = pass.lock().await;
+        match self.playground_merge(user, task, None).await? {
+            PlaygroundMerge::Merged(view) => Ok(*view),
+            PlaygroundMerge::Testing(_, note) => Err(AppError::Conflict(format!(
+                "not merged yet: {note}; merge again once it passed"
+            ))),
+        }
+    }
+
+    /// Squashes `task`'s branch onto its playground's integration branch as `user` (PLY-007), once
+    /// Yulius CI passed on its head merged into the integration branch (SPEC-163): while that run
+    /// goes, nothing lands and it says so. Callers hold the sandbox's armed-merge pass
+    /// ([`App::armed_pass`]).
     ///
     /// # Errors
     /// `Conflict` with what to do when the task is not ready, already merged, has nothing to
-    /// deliver or conflicts with the integration branch; Git failures.
+    /// deliver, conflicts with the integration branch or failed its checks; Git failures.
     pub(crate) async fn playground_merge(
         &self,
         user: &UserRecord,
         task: &TaskRecord,
         reviewed: Option<&str>,
-    ) -> AppResult<Delivery> {
+    ) -> AppResult<PlaygroundMerge> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
         let integration = profile.integration_branch.as_str();
@@ -87,6 +139,36 @@ impl App {
         let (ahead, _) = git.ahead_behind(Path::new(worktree), &base, "HEAD").await?;
         if ahead == 0 {
             return Err(nothing());
+        }
+        // Merge on green (SPEC-163 PCI-003): the head merged into the integration branch as it
+        // is now, tested by Yulius CI when the playground has CI.
+        match self.playground_task_checks(&sandbox, task, &head).await? {
+            TaskChecks::Clear => {}
+            TaskChecks::Testing(state) => {
+                return Ok(PlaygroundMerge::Testing(
+                    state,
+                    format!(
+                        "Yulius CI is testing `{branch}` at {} merged into `{integration}` (Task \
+                         #{}: {})",
+                        short(&head),
+                        task.number,
+                        state.as_str()
+                    ),
+                ));
+            }
+            TaskChecks::Failed(run) => {
+                return Err(AppError::Conflict(format!(
+                    "not merged: merge on green only: Yulius CI {} on `{branch}` at {} merged into \
+                     `{integration}` (run {}); read why with `ci_status`, fix it test-first and \
+                     commit",
+                    run.state.as_str(),
+                    short(&head),
+                    run.id
+                )));
+            }
+            TaskChecks::Conflict(files) => {
+                return Err(conflict_refusal(branch, integration, &files));
+            }
         }
         let subjects: Vec<String> = git
             .review_commits(Path::new(worktree), &base, &head, MAX_SUBJECTS)
@@ -151,16 +233,7 @@ impl App {
                 format!("{base} (already there)")
             }
             SquashLanding::Conflict(files) => {
-                return Err(AppError::Conflict(format!(
-                    "`{branch}` conflicts with `{integration}` in {}: merge it into your branch \
-                     (`git merge origin/{integration}`; Yulius has just brought it up to date), \
-                     resolve the conflicts, commit, rerun the gates and merge again",
-                    if files.is_empty() {
-                        "some files".to_owned()
-                    } else {
-                        files.join(", ")
-                    }
-                )));
+                return Err(conflict_refusal(branch, integration, &files));
             }
         };
         let next = DeliveryRecord {
@@ -195,6 +268,12 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        self.delivery_view(&task, Some(user)).await
+        Ok(PlaygroundMerge::Merged(Box::new(
+            self.delivery_view(&task, Some(user)).await?,
+        )))
     }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..9).unwrap_or(sha)
 }
