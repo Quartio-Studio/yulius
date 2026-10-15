@@ -51,11 +51,11 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
 
 ## Plan
 
-- [ ] The process host measures a reaped job's CPU, peak memory and disk writes
-- [ ] CI jobs and CD runs store their use and their spans carry it
-- [ ] The stage summary gives the p50 and p90 of CPU time and peak memory
-- [ ] The Pipeline page and the waterfall show the use
-- [ ] Docs, ADR and changes updated
+- [x] The process host measures a reaped job's CPU, peak memory and disk writes
+- [x] CI jobs and CD runs store their use and their spans carry it
+- [x] The stage summary gives the p50 and p90 of CPU time and peak memory
+- [x] The Pipeline page and the waterfall show the use
+- [x] Docs, ADR and changes updated
 - [ ] Independent review approves the exact head
 - [ ] Every gate green and the merge into dev armed on Yulius CI
 
@@ -101,5 +101,9 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
 - **Units**: CPU in whole milliseconds; memory and disk in MiB rounded to the nearest, at least 1
   for a non-zero memory peak (a running process is never 0 MiB); a disk figure of 0 is a real
   measurement (the job wrote nothing).
+- **The usage travels in `exit.json`, not in the `Exit` frame** (ADR-0127): the frame's decoder
+  refuses unknown flag bits, so a new field there would break a server and a host of different
+  versions (a detached host outlives an upgrade, ADR-0002). The host writes `exit.json` before it
+  sends the frame, so the server reads the usage from the file when the frame arrives.
 - **The waterfall shows one span's figures** (a single job has no percentile); the p50/p90 are in
   the stage table, the place that aggregates.

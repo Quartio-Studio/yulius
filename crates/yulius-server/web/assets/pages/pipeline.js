@@ -9,6 +9,7 @@ import { h, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
 import { duration, int } from '../format.js';
 import { replaceQuietly } from '../router.js';
 import { pageFrame, loader } from './common.js';
+import { BRAND } from '../brand.js';
 import { trendChart, stageTitle, loadWaterfall, subjectLabel, cpuTime, mebibytes } from '../stages.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
@@ -179,7 +180,7 @@ export function mountPipelinePage(ctx, sandbox, route) {
             h('td', { class: 'num hide-phone pl-cpu' }, pair(row.cpu_p50_ms, row.cpu_p90_ms, cpuTime)),
             h('td', { class: 'num hide-phone pl-memory' }, pair(row.memory_peak_p50_mb, row.memory_peak_p90_mb, mebibytes)));
         })))),
-      h('p', { class: 'muted small' }, `${subjectLabel('task')} stages follow each task’s states, steps, runs, pauses and delivery; CI and CD stages are their queue, jobs, deploys and the stages their output names (::yulius-stage). A job’s and a deployment’s CPU time and peak memory are what Yulius measured its processes using; the peak is the largest single process’s.`));
+      h('p', { class: 'muted small' }, `${subjectLabel('task')} stages follow each task’s states, steps, runs, pauses and delivery; CI and CD stages are their queue, jobs, deploys and the stages their output names (::yulius-stage). A job’s and a deployment’s CPU time and peak memory are what ${BRAND.name} measured its processes using; the peak is the largest single process’s.`));
   }
 
   function deliveryCard(envs) {
