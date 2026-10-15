@@ -330,11 +330,16 @@ export function mountTaskView(ctx, sandbox, task) {
   const requestEl = h('div', { class: 'queue-request', role: 'region', 'aria-label': 'Request', tabindex: 0 });
   // The message box is the composer's prompt input (SPEC-168): a file pasted or dropped uploads to
   // the task's own folder and sits at the caret as a placeholder that moves and deletes like one
-  // character; double-click opens it. Its images are numbered after the request's, in upload order.
+  // character; double-click opens it. Its images are numbered after the request's, in the order
+  // the text holds them: the numbers the request gives them once queued.
   const queueFiles = new Map(); // every file uploaded here: path → { name, type, file }
-  let queueImages = []; // the paths of the images uploaded since the last message was queued
+  const queueUrls = new Map(); // path → the object URL a file of the box opened with
+  let queueImages = []; // the paths of the box's images, in the text's order
   let requestImages = 0;
-  const queueBox = createPromptInput({
+  const WAIT_UPLOAD = 'Wait for the upload to finish.';
+  // Its own callbacks read it: null until it is made.
+  let queueBox = null;
+  queueBox = createPromptInput({
     label: 'Message for the agent',
     placeholder: 'Queue a message for the agent… Paste or drop images where they belong.',
     keyshortcuts: SUBMIT_ARIA,
@@ -347,6 +352,13 @@ export function mountTaskView(ctx, sandbox, task) {
       return { name: item.name, image: true, label: n ? `Image ${requestImages + n}` : 'Image' };
     },
     known: (path) => queueFiles.has(path),
+    onChange: () => {
+      if (!queueBox) return;
+      const images = [...new Set(queueBox.paths().filter((path) => IMAGE_PATH.test(path) && queueFiles.has(path)))];
+      if (images.join('\n') !== queueImages.join('\n')) { queueImages = images; queueBox.refresh(); }
+      // The upload ended (or failed): the reason no longer holds.
+      if (queueError.textContent === WAIT_UPLOAD && !queueBox.el.querySelector('.pi-pending')) queueError.textContent = '';
+    },
     onSubmit: () => queueMessage(),
     onOpen: (path) => openQueuedFile(path),
   });
@@ -354,7 +366,11 @@ export function mountTaskView(ctx, sandbox, task) {
   function openQueuedFile(path) {
     const item = queueFiles.get(path);
     if (!item) return;
-    const urlOf = (blob) => { const url = URL.createObjectURL(blob); fileUrls.push(url); return url; };
+    // One URL per file, however often it opens; revoked with the view.
+    const urlOf = (blob) => {
+      if (!queueUrls.has(path)) queueUrls.set(path, URL.createObjectURL(blob));
+      return queueUrls.get(path);
+    };
     openAttachment(item, { image: IMAGE_PATH.test(path) ? urlOf(item.file) : null, url: urlOf });
   }
   const queueButton = h('button', { type: 'button', class: 'btn btn-primary', title: `Queue (${SUBMIT_KEYS})`, onClick: () => queueMessage() }, 'Queue');
@@ -370,23 +386,39 @@ export function mountTaskView(ctx, sandbox, task) {
   // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
   // its number among the request's images), its name otherwise; a click reads the file from the
   // prompt endpoint (by its index among the request's files) and opens it.
-  const fileUrls = [];
-  destroyers.push(() => { fileUrls.forEach((url) => URL.revokeObjectURL(url)); fileUrls.length = 0; });
+  // One read per file at a time and one URL per file (the request only grows, so an index keeps
+  // naming its file); leaving the view stops the reads (`reads`, below) and revokes the URLs.
+  const requestUrls = new Map(); // `index\npath` → object URL
+  const requestReads = new Set();
+  destroyers.push(() => {
+    for (const url of [...requestUrls.values(), ...queueUrls.values()]) URL.revokeObjectURL(url);
+    requestUrls.clear();
+    queueUrls.clear();
+  });
   let requestShown = null;
-  async function openRequestFile(index, name, image) {
-    let blob;
-    try {
-      // An attached file can be as large as an upload: longer than a JSON read.
-      blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', timeoutMs: 120000 });
-    } catch (error) {
-      if (!alive) return;
-      if (error.status === 404) toast(`${name} is no longer on the server.`, { kind: 'warn' });
-      else errorToast(error, `Couldn’t open ${name}`);
-      return;
+  async function openRequestFile(index, path, image) {
+    const name = path.split('/').pop();
+    const key = `${index}\n${path}`;
+    if (requestReads.has(key)) return;
+    let url = requestUrls.get(key);
+    if (!url) {
+      requestReads.add(key);
+      try {
+        // An attached file can be as large as an upload: longer than a JSON read.
+        const blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
+        if (!alive) return;
+        url = URL.createObjectURL(blob);
+        requestUrls.set(key, url);
+      } catch (error) {
+        if (!alive || error.code === 'aborted') return;
+        // Gone (drafts are removed after a week), or never one of this task's files.
+        if (error.status === 404) toast(`${name} is not on the server.`, { kind: 'warn' });
+        else errorToast(error, `Couldn’t open ${name}`);
+        return;
+      } finally {
+        requestReads.delete(key);
+      }
     }
-    if (!alive) return;
-    const url = URL.createObjectURL(blob);
-    fileUrls.push(url);
     if (image) openAttachment({ name }, { image: url });
     else h('a', { href: url, download: name }).click();
   }
@@ -401,7 +433,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const path = paths[part.file];
       const name = path.split('/').pop();
       const n = numbers[part.file];
-      return h('button', { type: 'button', class: ['pi-atom', 'queue-file', n ? 'pi-image' : 'pi-file'], title: name, 'aria-label': n ? `Image ${n}, ${name}` : name, onClick: () => openRequestFile(part.file, name, Boolean(n)) },
+      return h('button', { type: 'button', class: ['pi-atom', 'queue-file', n ? 'pi-image' : 'pi-file'], title: name, 'aria-label': n ? `Image ${n}, ${name}` : name, onClick: () => openRequestFile(part.file, path, Boolean(n)) },
         icon(n ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, n ? `Image ${n}` : name));
     }));
   }
@@ -411,18 +443,24 @@ export function mountTaskView(ctx, sandbox, task) {
     requestEl,
     queueCompose,
     queueError));
-  attachPromptDrop(ctx, { box: queueCompose, prompt: queueBox, label: 'Drop to add to the message', upload: (file, options) => taskAttachments(ctx, current.id)(file, options), onAttach: (items, place) => {
-    for (const item of items) {
-      queueFiles.set(item.path, { name: item.name, type: item.file.type, file: item.file });
-      if (IMAGE_PATH.test(item.path) && !queueImages.includes(item.path)) queueImages.push(item.path);
-    }
-    if (place && alive) place.insert(items.map((item) => item.path));
-  } });
+  attachPromptDrop(ctx, {
+    box: queueCompose,
+    prompt: queueBox,
+    label: 'Drop to add to the message',
+    upload: (file, options) => taskAttachments(ctx, current.id)(file, options),
+    // A task that started meanwhile takes no more queued files (its card is gone or kept read-only).
+    writable: () => alive && !queueSlot.hidden,
+    unwritable: 'The task has started: the file was not added.',
+    onAttach: (items, place) => {
+      for (const item of items) queueFiles.set(item.path, { name: item.name, type: item.file.type, file: item.file });
+      if (place) place.insert(items.map((item) => item.path));
+    },
+  });
   let queueing = false;
   async function queueMessage() {
     if (queueing || queueBox.readOnly) return;
     // A file still uploading is not in the text yet: queueing now would leave it out.
-    if (queueBox.el.querySelector('.pi-pending')) { queueError.textContent = 'Wait for the upload to finish.'; return; }
+    if (queueBox.el.querySelector('.pi-pending')) { queueError.textContent = WAIT_UPLOAD; return; }
     const text = queueBox.value;
     if (!text.trim()) return;
     queueing = true;
@@ -433,6 +471,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (!alive) return;
       queueBox.setValue('');
       queueImages = [];
+      queueBox.refresh();
       if (detail) detail = { ...detail, request: out.request };
       renderQueue();
     } catch (error) {

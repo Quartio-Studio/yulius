@@ -324,17 +324,33 @@ test('the request shows its files as placeholders that open them', async ({ app,
     .toBe('Invoice emails: this part Image 1 looks wrong, the log is notes.txt.\nAnd Image 2\nImage 3');
   expect(await axeViolations(browser)).toEqual([]);
 
-  // A click opens the image in the preview dialog.
-  await request.getByRole('button', 'Image 1, shot.png').click();
+  // A placeholder of the request is a button to click, not a file to drag or a text to select.
+  expect(await browser.evaluate(() => {
+    const style = getComputedStyle(document.querySelector('.queue-request .queue-file')!);
+    return [style.cursor, style.userSelect];
+  })).toEqual(['pointer', 'none']);
+
+  // A click opens the image in the preview dialog; a double-click opens it once.
+  await request.getByRole('button', 'Image 1, shot.png').dblclick();
   const dialog = screen.getByRole('dialog', 'shot.png');
   await expect(dialog.getByRole('img', 'shot.png')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(1);
   await browser.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+
+  // Another file downloads under its name.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __downloads: string[][] };
+    w.__downloads = [];
+    HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement) { w.__downloads.push([this.href.slice(0, 5), this.download]); };
+  });
+  await request.getByRole('button', 'notes.txt').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __downloads: string[][] }).__downloads)).toEqual([['blob:', 'notes.txt']]);
 
   // Enter on a placeholder opens it too; a file gone from the server says so.
   await request.getByRole('button', 'Image 2, gone.png').focus();
   await browser.keyboard.press('Enter');
-  await expect(browser.locator('.toast-msg:has-text("gone.png is no longer on the server")')).toBeVisible();
+  await expect(browser.locator('.toast-msg:has-text("gone.png is not on the server")')).toBeVisible();
   await expect(screen.getByRole('dialog', 'gone.png')).toBeHidden();
 });
 
@@ -415,9 +431,47 @@ test('a message waits for its upload before it is queued', async ({ app, browser
 
   await browser.evaluate(() => (window as unknown as Holding).__release!());
   await expect(browser.locator('.queue-card .composer-prompt .pi-image')).toHaveCount(1);
+  // The upload ended: the reason no longer holds.
+  await expect(card.getByRole('alert')).toBeHidden();
   await card.getByRole('button', 'Queue').click();
   await expect(card.getByRole('region', 'Request').getByRole('button', 'Image 1, late.png')).toBeVisible();
   // The refusal is gone (an empty alert is not shown).
   expect(await browser.evaluate(() => document.querySelector('.queue-card .field-error')?.textContent ?? null)).toBe('');
   expect(await storedRequest(browser, 'tsk_product_7')).toContain(`Look: @'${TASK_UPLOADS}/late.png'`);
+});
+
+test('an image deleted before queueing gives up its number, and Backspace deletes one whole', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await card.getByRole('textbox', 'Message for the agent').click();
+  await browser.keyboard.type('A ');
+  await pasteIntoQueue(browser, 'first.png');
+  const atoms = browser.locator('.queue-card .composer-prompt .pi-image');
+  await expect(atoms).toHaveText(['Image 1']);
+  // One Backspace takes the whole placeholder.
+  await browser.keyboard.press('Backspace');
+  await expect(atoms).toHaveCount(0);
+  expect(await promptText(browser)).toBe('A ');
+  await pasteIntoQueue(browser, 'second.png');
+  // Numbered as the request will number it once queued.
+  await expect(atoms).toHaveText(['Image 1']);
+  await card.getByRole('button', 'Queue').click();
+  await expect(card.getByRole('region', 'Request').getByRole('button', 'Image 1, second.png')).toBeVisible();
+});
+
+test('an upload that ends after the task started says so in the kept card', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await card.getByRole('textbox', 'Message for the agent').click();
+  await browser.keyboard.type('Look: ');
+  await pasteIntoQueue(browser, 'late.png');
+  await expect(browser.locator('.queue-card .composer-prompt .pi-pending')).toHaveCount(1);
+  await touchProduct7(browser, { status: 'starting', started: false });
+  await expect(card).toContainText('The task has started');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect(browser.locator('.queue-card .upload-status:has-text("The task has started: the file was not added.")')).toBeVisible();
 });

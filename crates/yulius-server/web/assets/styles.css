@@ -1102,8 +1102,8 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .queue-request { margin: 0; padding: 8px 12px; max-height: 140px; overflow: auto; border-left: 2px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .queue-compose { position: relative; display: flex; align-items: flex-end; gap: 8px; }
 /* A file of the request (SPEC-168): the composer's placeholder, a button that opens it. */
-.queue-file { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
-.queue-file:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
+.queue-request .queue-file { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
+.queue-request .queue-file:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
 /* The message box: the composer's prompt input (SPEC-168), drawn as the card's field. */
 .queue-card .queue-input {
   flex: 1; min-width: 0; min-height: var(--control-xl); max-height: 160px; padding: 6px 8px;
