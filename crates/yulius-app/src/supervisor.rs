@@ -3135,11 +3135,12 @@ impl App {
         runtime.watcher_alive.store(true, Ordering::SeqCst);
         runtime.hooks_seen.store(false, Ordering::SeqCst);
         runtime.at_limit.store(false, Ordering::SeqCst);
-        if let Ok(mut u) = runtime.usage.lock() {
-            *u = UsageSnapshot::default();
-        }
+        // Unmarked before it is emptied: a run is never taken as read with an empty snapshot.
         if let Ok(mut read) = runtime.usage_read.lock() {
             *read = None;
+        }
+        if let Ok(mut u) = runtime.usage.lock() {
+            *u = UsageSnapshot::default();
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
         // A new attempt (or the same one after a restart) learns the goal from its transcript.

@@ -45,8 +45,11 @@ The SPEC-091 recount covered the upgrade that introduced it, not later restarts.
 ## Consequences
 
 - A restart never erases a run's usage; a run that worked while Yulius was down gets those lines.
-- Each run that ended while Yulius was down costs one read of its transcript window at start, off
-  the async workers.
+- Each run that ends before its watcher read its transcript costs one read of its transcript
+  window when it is ended, off the async workers (`spawn_blocking`) but on the path that ends it:
+  at start, reconciliation counts such runs one after another before the queue drains and armed
+  merges are restored, so a long outage with many large transcripts delays them by those reads
+  (review round 2, accepted: a read of a transcript is short next to a restart).
 - A counted model replaces the stored one, as a live save does; the stored model comes from the
   same window's assistant lines, so the count finds it whenever the row has one.
 - A run that exits before its watcher's first poll (a spawn failure, an exit within a second) is
