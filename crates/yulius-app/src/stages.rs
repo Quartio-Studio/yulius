@@ -246,6 +246,15 @@ impl OutputStages {
         }
     }
 
+    /// The sandbox and subject its spans belong to.
+    #[must_use]
+    pub fn subject(&self) -> (SandboxId, (SubjectKind, String)) {
+        (
+            self.sandbox.clone(),
+            (self.subject_kind, self.subject_id.clone()),
+        )
+    }
+
     /// The span under which the job's own stages go (the job, or the open CD phase).
     #[must_use]
     pub fn parent(&self) -> &str {

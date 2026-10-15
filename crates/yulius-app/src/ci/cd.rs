@@ -1070,6 +1070,12 @@ impl App {
         };
         let token = self.deps.crypto.random_bytes();
         let group = format!("cd-{}", run.id);
+        // Its deploy and verify, and the stages their output names (SPEC-137 STG-301).
+        let mut stages = crate::stages::OutputStages::cd_run(
+            sandbox.id.clone(),
+            &run.id,
+            run.environment.as_str(),
+        );
         self.ci_watch(
             run_dir,
             (&run.id, &group),
@@ -1077,7 +1083,7 @@ impl App {
             &plan,
             &token,
             &log,
-            ring,
+            (ring, &mut stages),
             cancel,
         )
         .await

@@ -283,9 +283,11 @@ BEGIN
         detail = json_set(COALESCE(detail, '{}'), '$.exit_code', NEW.exit_code, '$.reason', NEW.reason)
     WHERE subject_kind = 'ci_run' AND subject_id = NEW.run_id AND kind = 'job' AND ended_at IS NULL
         AND substr(key, 1, length('job:' || NEW.id || '@')) = 'job:' || NEW.id || '@';
-    -- Stages and waits inside the job end with it, with its outcome.
-    UPDATE spans SET ended_at = MAX(started_at, NEW.ended_at), outcome = NEW.state
-    WHERE subject_kind = 'ci_run' AND subject_id = NEW.run_id AND ended_at IS NULL
+    -- Stages inside the job end with it, with its outcome; those that ended before take it only
+    -- when it passed.
+    UPDATE spans SET ended_at = COALESCE(ended_at, MAX(started_at, NEW.ended_at)),
+        outcome = COALESCE(outcome, CASE WHEN ended_at IS NULL OR NEW.state = 'passed' THEN NEW.state END)
+    WHERE subject_kind = 'ci_run' AND subject_id = NEW.run_id AND (ended_at IS NULL OR outcome IS NULL)
         AND substr(key, 1, length('job:' || NEW.id || '@')) = 'job:' || NEW.id || '@';
 END;
 
@@ -312,10 +314,13 @@ END;
 CREATE TRIGGER spans_cd_run_end AFTER UPDATE OF ended_at ON cd_runs
 WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
 BEGIN
-    UPDATE spans SET ended_at = MAX(started_at, NEW.ended_at),
-        outcome = CASE WHEN key = 'run' OR NEW.state != 'passed' THEN NEW.state ELSE COALESCE(outcome, NEW.state) END,
-        detail = CASE WHEN key = 'run' THEN json_set(COALESCE(detail, '{}'), '$.exit_code', NEW.exit_code, '$.reason', NEW.reason) ELSE detail END
-    WHERE subject_kind = 'cd_run' AND subject_id = NEW.id AND ended_at IS NULL;
+    UPDATE spans SET detail = json_set(COALESCE(detail, '{}'), '$.exit_code', NEW.exit_code, '$.reason', NEW.reason)
+    WHERE subject_kind = 'cd_run' AND subject_id = NEW.id AND key = 'run';
+    -- What was still open ends with the run and its outcome; what ended before takes it only when
+    -- the run passed.
+    UPDATE spans SET ended_at = COALESCE(ended_at, MAX(started_at, NEW.ended_at)),
+        outcome = COALESCE(outcome, CASE WHEN ended_at IS NULL OR NEW.state = 'passed' THEN NEW.state END)
+    WHERE subject_kind = 'cd_run' AND subject_id = NEW.id AND (ended_at IS NULL OR outcome IS NULL);
 END;
 
 -- ---- Backfill what the existing tables say reliably, marked `backfilled`.
