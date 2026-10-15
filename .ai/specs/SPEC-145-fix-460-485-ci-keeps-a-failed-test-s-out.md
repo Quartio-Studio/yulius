@@ -46,7 +46,8 @@ and #485 (`local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees
 - R3. `ci_status` with `run_id` shows, for each failed job (or the job named by `job`), its failing
   tests' output before the end of its output, saying it was kept from the whole run.
 - R4. #460 and #485 are reproduced under CPU load, their causes named, and fixed with a regression
-  test each; the sibling disk-wait tests are checked for the same pattern. No retries.
+  test each; the sibling disk-wait tests are checked for the same pattern. A test whose failure
+  cannot be explained is quarantined with its issue linked. No retries.
 
 ## Plan
 
@@ -66,7 +67,33 @@ and #485 (`local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees
   huge block to its end and stops keeping at the job bound, counting the rest (R1).
 - AC3. A passing job keeps nothing (R1).
 - AC4. Each flake's cause is named in this spec and in its issue, with a test that failed before the
-  fix (R4).
+  fix; an unexplained one is quarantined (R4). See Findings.
+
+## Findings
+
+- #460, `cockpit::a_cockpit_manages_the_project_for_its_owner`. `task_create` answers while the new
+  task is `Queued`; its start fails in the background (no repository in the fixture,
+  `Failed(Precondition)`). The test then archived it, assuming it had ended. Under load the archive
+  came first and was refused ("stop the task before archiving it"), an assertion in the test's first
+  half second, as in CI (0.547 s). With a 500 ms delay before the start's launch (a temporary
+  probe), the original test fails in 0.155 s with that message; the fixed one, which waits for the
+  task to rest (`task_rests`), passes. 400 runs of it, 16 at a time on 12 CPUs with 12 busy loops,
+  passed before and after without the probe: plain load did not reach the window here.
+- #485, `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees`. One race found: the
+  disk check that notes the wait runs in the background and dates the next check from its own end
+  (`ci_disk_checked`). Ending after the test's single +61 s clock jump, it put the next check a
+  minute past the frozen clock, and the runs never started. With random delays (0-300 ms) at the
+  publish, the check and a run's start and end, the test failed 13 of 15 runs; with
+  `recheck_until_started` (time passes until the runs start), 0 of 15. That race only ever times
+  out (60 s), while CI saw a failure after 2.16 s with no timeout, near the end
+  (`all_passed`, the wait note, the final status). That failure stays unexplained: 444 runs of
+  every `local_ci::` and `cockpit::` test at 32 parallel processes with busy loops, 240 runs pinned
+  with 4 busy loops to 2 CPUs and two rounds of injected delays reproduced nothing else. The test is
+  quarantined (`#[ignore]`, #485 linked) and #485 stays open.
+- Siblings: `a_job_refused_for_disk_puts_its_run_back_in_the_queue` also jumps the clock once, but
+  no background check runs there: `ci_disk_backoff` sets the deadline before the requeue note the
+  test waits for. `a_run_waiting_for_disk_is_superseded_like_any_queued_run` asserts only states,
+  which a late publish of the check cannot change. Both passed every round, with delays too.
 
 ## Test plan
 
@@ -81,6 +108,12 @@ and #485 (`local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees
 
 ## Decisions
 
+- #485's test is quarantined rather than left running with the race fixed: the task's rule for a
+  failure whose cause is not found, and a once-in-hundreds failure that blocks other pull requests'
+  merges costs more than the coverage, which its sibling (the requeue path waits and passes once
+  space frees) keeps in part. Back in the suite, its next failure is readable (R1-R3).
+- `ci_status` shows at most 32 KiB of failing tests across a run's jobs (review round 1): more,
+  and the jobs past it point to `job`, which shows a job's own in full.
 - [ADR-0119](../../docs/decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md): scan
   the streamed output for failing tests' sections and keep them with the job, rather than keeping
   `junit.xml` (needs a per-project path setting and an XML parser; only nextest/Playwright write

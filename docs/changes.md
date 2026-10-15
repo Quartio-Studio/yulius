@@ -6,15 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
-- A failed CI test's output stays readable (SPEC-145, ADR-0119, task #128; fixes #460, #485). While a
-  job runs, Yulius keeps each failing test's block (nextest's `FAIL` line with its stdout and stderr,
-  or libtest's), at most 8 KiB each and 32 KiB per job, and `ci_status` with `run_id` shows them
-  before the end of the job's output. Two flaky tests fixed:
+- A failed CI test's output stays readable (SPEC-145, ADR-0119, task #128; fixes #460, part of #485).
+  While a job runs, Yulius keeps each failing test's block (nextest's `FAIL` line with its stdout and
+  stderr, or libtest's), at most 8 KiB each and 32 KiB per job, and `ci_status` with `run_id` shows
+  them before the end of the job's output. Flaky tests:
   - `cockpit::a_cockpit_manages_the_project_for_its_owner` archived the task it created before the
-    task's start had failed in the background; it now waits for the task to rest.
+    task's start had failed in the background; it now waits for the task to rest (#460).
   - `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` advanced the clock once,
-    and a disk check that ended after the jump dated the next check a minute later. It now lets
-    time pass until the runs start.
+    and a disk check that ended after the jump dated the next check a minute later; it now lets time
+    pass until the runs start. That race only times out, while CI saw a fast failure that stays
+    unexplained, so the test is quarantined and #485 stays open.
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
