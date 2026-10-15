@@ -189,6 +189,11 @@ impl From<StoredTeamPayload> for TeamPayload {
     }
 }
 
+/// Why a production secret refuses a use by agents (SPEC-134, round 2 M-B): one that production
+/// deploys get is never also copied into `.env` files or sent to hosts.
+pub(crate) const PRODUCTION_SECRET: &str = "this is a production secret: production deploys get it \
+and agents never do. Add a separate secret for agents";
+
 /// Agent secret payload (sealed as JSON).
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct AgentPayload {

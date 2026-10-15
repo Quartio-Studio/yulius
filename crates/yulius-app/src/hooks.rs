@@ -438,6 +438,13 @@ impl App {
         input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
+        // A person wrote to the task (they typed it, even a prompt held below): what its agent
+        // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
+        if crate::finish::is_typed_prompt(input.prompt.as_deref())
+            && self.typed_recently(&ctx.task.id).is_some()
+        {
+            self.end_needs_you(&ctx.task.id).await;
+        }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         let ctx = match store.open_pause(&ctx.task.id).await? {
@@ -956,6 +963,9 @@ fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
         test_command: commands.as_ref().is_some_and(|c| set(c.test.as_ref())),
         lint_command: commands.as_ref().is_some_and(|c| set(c.lint.as_ref())),
         actions_workflows: actions_workflows(root),
+        cd_defined: toml.is_some_and(|text| {
+            yulius_domain::spec_format::parse_yulius_toml_cd(text).is_ok_and(|cd| cd.is_defined())
+        }),
     }
 }
 

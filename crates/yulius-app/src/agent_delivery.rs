@@ -1,5 +1,6 @@
 //! Agents deliver their own work (SPEC-001 DLV-008, GIT-002; SPEC-002 ADR-19): `delivery_merge`,
-//! `delivery_deploy`, `delivery_promote`, and `issue_create` for follow-up work, bugs and flaky
+//! `delivery_deploy` (integration environments only: production is a person's, ADR-0110), and
+//! `issue_create` for follow-up work, bugs and flaky
 //! tests, refused unless the issue meets the Definition of Ready (one `type:` and one `priority:`
 //! label, at least one `area:` label, and acceptance criteria as a checklist).
 //!
@@ -363,6 +364,12 @@ impl App {
         let env = profile
             .environment(name)
             .ok_or_else(|| AppError::Invalid(format!("unknown environment '{name}'")))?;
+        if env.after == yulius_domain::delivery::Stage::Production {
+            return Err(AppError::Forbidden(format!(
+                "environment '{name}' follows production, and only a person deploys production \
+                 (ADR-0110): ask one with needs_you"
+            )));
+        }
         if env.command.is_none() || env.verify != yulius_domain::delivery::Verify::Command {
             return Err(AppError::Forbidden(format!(
                 "environment '{name}' is verified by a person; give it a deploy command and \
@@ -388,30 +395,6 @@ impl App {
         )
         .await;
         Ok(json!({"run": run}))
-    }
-
-    /// `delivery_promote`: promotes the integration branch (DLV-008). With merge-commit
-    /// promotion the first call opens the promotion pull request and a later call, once its
-    /// checks passed, merges it.
-    ///
-    /// # Errors
-    /// Every refusal of the delivery path (`promote_sandbox`).
-    pub async fn tool_delivery_promote(&self, ctx: &AgentContext) -> AppResult<Value> {
-        let auth = self.agent_authority(ctx).await?;
-        let sandbox = ctx.task.sandbox_id.to_string();
-        let result = self.promote_sandbox_for_task(&auth, &ctx.task).await?;
-        self.agent_audit(
-            ctx,
-            "delivery.agent.promote",
-            &sandbox,
-            &format!(
-                "{} {}",
-                result.result,
-                result.sha.as_deref().unwrap_or_default()
-            ),
-        )
-        .await;
-        Ok(json!({"promotion": result}))
     }
 }
 

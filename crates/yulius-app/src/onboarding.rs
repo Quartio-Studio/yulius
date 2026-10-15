@@ -111,6 +111,19 @@ that already exist do not change application code here: commit the tool's baseli
 or scope the check to what passes today, so the gate passes now and fails on new findings, and \
 file one issue (`issue_create`) to burn the baseline down. Prove every job as described above.";
 
+/// CD (deployment) at onboarding (SPEC-134 CDK-001): what deploys today is found and written down
+/// as `[cd.dev]` and `[cd.prod]`, both explicit even when empty.
+const CD_SETUP: &str = "CD (deployment), skill infra-bootstrap step 3: Detect how the project deploys \
+today: deploy or release scripts, a Dockerfile or compose file, platform files (fly.toml, \
+vercel.json, netlify.toml, Procfile, k8s/, Helm, Terraform, Ansible), deploy jobs in \
+.github/workflows, and what the README and docs say. Unless yulius.toml already has them, define \
+[cd.dev] and [cd.prod] explicitly: what exists moves into idempotent deploy and verify scripts \
+under scripts/cd/ (keep working conventions; machines and credentials come from agent secrets, \
+never the repository), and an environment with nothing to deploy yet is an empty table with an \
+`about` line saying so. A production deploy that pushes or promotes the production branch is \
+`promote = true`. Yulius reads them from the protected branches and only a person deploys \
+production. A credential or machine only a person can give: ask with needs_you and go on.";
+
 /// Title of the onboarding task of a repository that already follows the Yulius format.
 pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
 
@@ -328,8 +341,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          workflow files (its Workflows permission), keep .github/workflows/, finish everything \
          else, mark that step skipped with this reason, and say in the pull request that the \
          deletion follows once an admin grants the permission.\n\
-         8. {gate} Missing deploy environments need a person's machines and credentials: file an \
-         issue for them.\n\
+         8. {gate} {cd}\n\
          9. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
          10. Hooks: when the repository's instructions describe a hooks setup (for example \
@@ -348,6 +360,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
         problems = problems.join("\n"),
         environment = ENVIRONMENT_SETUP,
         gate = GATE_SETUP,
+        cd = CD_SETUP,
     )
 }
 
@@ -367,8 +380,10 @@ pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
          CONTRIBUTING and the development docs). They stay authoritative.\n\
          2. {ENVIRONMENT_SETUP}\n\
          3. {GATE_SETUP}\n\
-         4. Change only what the environment and the gate need (yulius.toml [commands] and \
-         [[ci.jobs]], the checks' configuration, a missing setup note in the docs), never \
+         4. {CD_SETUP}\n\
+         5. Change only what the environment, the gate and CD need (yulius.toml [commands], \
+         [[ci.jobs]] and [cd.*], scripts/cd/, the checks' configuration, a missing setup note in \
+         the docs), never \
          application code; a test changes only to run correctly on Yulius CI. When you changed something, commit it on your task branch, mark \
          every step done, get the independent review of the exact head and call \
          `delivery_merge` with that head: Yulius pushes your branch, opens the pull request into \
@@ -386,6 +401,7 @@ fn environment_steps() -> Vec<String> {
         "Install the toolchains and run the repository's own checks",
         "Wire tests and the lint, format and dead-code checks into the gate",
         "Give every project of the repository its CI job",
+        "Define CD dev and production from how the project deploys today",
         "Record the working commands in yulius.toml [commands]",
     ]
     .iter()
@@ -403,6 +419,7 @@ fn onboarding_steps() -> Vec<String> {
         "Move GitHub Actions into Yulius CI and delete them",
         "Wire tests and the lint, format and dead-code checks into the gate",
         "Give every project of the repository its CI job",
+        "Define CD dev and production from how the project deploys today",
         "Add the missing documents and check the format",
     ]
     .iter()
@@ -1239,6 +1256,38 @@ mod tests {
     /// tests, lint and format, a dead-code check and a CI job per project, existing findings
     /// baselined — instead of filing them as follow-ups (studio #57, #58), and keeps a workflow
     /// Yulius CI cannot run with a decision record instead of asking a person.
+    #[test]
+    fn prompts_detect_existing_cd_and_define_it_explicitly() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::studio());
+        let preparation = onboarding_prompt("Quartio-Studio/studio", &profile, &report);
+        let environment = environment_prompt("Quartio-Studio/studio", &profile);
+        for prompt in [&preparation, &environment] {
+            for wording in [
+                "CD (deployment)",
+                "Detect how the project deploys today",
+                "Dockerfile",
+                "deploy jobs in .github/workflows",
+                "[cd.dev] and [cd.prod]",
+                "empty",
+                "about",
+                "scripts/cd/",
+                "needs_you",
+                "a person",
+            ] {
+                assert!(prompt.contains(wording), "missing {wording:?}");
+            }
+            assert!(!prompt.contains("deploy environments need a person's machines"));
+            assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        }
+        for steps in [onboarding_steps(), environment_steps()] {
+            assert!(steps.iter().any(|s| s.contains("CD")), "{steps:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn prompts_install_the_gate_in_the_onboarding_pull_request() -> TestResult {
         let dir = tempfile::tempdir()?;

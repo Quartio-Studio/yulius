@@ -131,6 +131,9 @@ impl App {
                     args.secret
                 ))
             })?;
+        if record.cd_prod {
+            return Err(AppError::Forbidden(super::PRODUCTION_SECRET.into()));
+        }
         let merged = merge(&record.hosts, &record.requested_hosts, &asked).map_err(invalid)?;
         let sandbox = store
             .sandbox(&ctx.task.sandbox_id)
@@ -234,6 +237,9 @@ impl App {
                 "an agent changed the request meanwhile: reload to see the hosts that wait ({})",
                 record.requested_hosts.join(", ")
             )));
+        }
+        if answer.allow && record.cd_prod {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
         }
         let asked = std::mem::take(&mut record.requested_hosts);
         let by = record.requested_by.take().unwrap_or_default();

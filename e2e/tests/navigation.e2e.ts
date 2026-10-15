@@ -18,10 +18,12 @@ test('a task opens from the sidebar', async ({ app, browser, screen }) => {
 // future), Secrets and Dashboard should be here. Other should be to be expanded".
 // Then: "in CI in brackets put 'tests'": the link says what CI is; the page keeps its title.
 // Task #33 (SPEC-035) moved the Cockpit to the right, as the Agent: it is not in this list.
+// Task #113 (SPEC-134): "in CD section add deployment in brackets: 'CD (deployment)'".
 const PRIMARY: [string, string, string?][] = [
   ['Tasks', 'tasks'],
   ['Git', 'git'],
   ['CI (tests)', 'ci', 'CI'],
+  ['CD (deployment)', 'cd', 'CD'],
   ['Secrets', 'secrets'],
   ['Dashboard', 'dashboard'],
 ];

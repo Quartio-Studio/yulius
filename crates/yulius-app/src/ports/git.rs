@@ -263,6 +263,24 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, path, sha, owned_root);
         unsupported("CI checkouts")
     }
+    /// Fills the CD mirror (a bare repository only Yulius writes) with `refs/remotes/origin/<branch>`
+    /// of the sandbox clone `from`, checking every object, and requires it to be `sha`
+    /// (SPEC-134). Replacement refs are never fetched or honoured.
+    async fn cd_mirror_fetch(
+        &self,
+        mirror: &Path,
+        from: &Path,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let _ = (mirror, from, branch, sha);
+        unsupported("CD mirrors")
+    }
+    /// Writes commit `sha`'s tree of `mirror` as plain files into the new directory `dest`.
+    async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
+        let _ = (mirror, sha, dest);
+        unsupported("exporting a tree")
+    }
     /// `origin`'s branches as last fetched.
     async fn remote_branches(&self, repo: &Path) -> AppResult<Vec<BranchInfo>> {
         let _ = repo;

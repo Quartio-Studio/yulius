@@ -434,6 +434,32 @@ function agentEnvFiles(ctx, secret, reload) {
     buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null)];
 }
 
+/**
+ * Whether production CD runs get the secret (SPEC-134): an allowance of its own, apart from .env
+ * copies (which any agent of the project could then use). Only people who manage it change it.
+ */
+function agentCdProd(ctx, secret, reload) {
+  if (!secret.cd_prod && !secret.can_manage) return [];
+  const answer = async (allow) => {
+    button.disabled = true;
+    try {
+      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/cd-prod`, { allow });
+      toast(allow ? `Allowed. Production deploys get ${secret.name}.` : `Revoked. Production deploys no longer get ${secret.name}.`, { kind: 'ok' });
+    } catch (error) { errorToast(error, 'Couldn’t change it'); }
+    reload();
+  };
+  const button = !secret.can_manage ? null : secret.cd_prod
+    ? smallButton('Revoke', `Stop production deploys getting ${secret.name}`, () => answer(false))
+    : smallButton('Allow for production deploys', `Let production deploys (CD) get ${secret.name}`, () => answer(true));
+  const text = secret.cd_prod
+    ? 'Production deploys (CD) get its value; agents never do.'
+    : 'Production deploys (CD) do not get it until someone who manages it allows it here.';
+  return [h('div', { class: 'row-wrap' },
+    iconBadge('upload', 'Production', secret.cd_prod ? '' : 'warn', secret.cd_prod ? 'Allowed for production deploys' : 'Not allowed for production deploys'),
+    h('span', { class: 'small' }, text),
+    button ? h('span', { class: 'row-wrap' }, button) : null)];
+}
+
 function mountAgents(ctx, sandbox, host, actions) {
   if (!sandbox) {
     setChildren(actions);
@@ -463,6 +489,7 @@ function mountAgents(ctx, sandbox, host, actions) {
       extra: h('div', { class: 'stack-tight' },
         ...agentHosts(ctx, secret, reload),
         ...agentEnvFiles(ctx, secret, reload),
+        ...agentCdProd(ctx, secret, reload),
         h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [
         secret.can_manage ? smallButton('Show', `Show ${secret.name}`, async () => {

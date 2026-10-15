@@ -486,6 +486,14 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         ),
         Err(err) => tracing::error!(error = %err, "environment run reconciliation failed"),
     }
+    match app.reconcile_cd_runs().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            runs = n,
+            "CD runs interrupted by a restart were recorded as errors"
+        ),
+        Err(err) => tracing::error!(error = %err, "CD run reconciliation failed"),
+    }
     // Onboarding left stuck without its task (or with it archived) before SPEC-106 heals.
     match app.heal_onboarding().await {
         Ok(0) => {}

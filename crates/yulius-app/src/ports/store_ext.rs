@@ -477,6 +477,67 @@ pub trait CiStore: Send + Sync {
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
 }
 
+/// CD (deployment) runs (SPEC-134, table `cd_runs`).
+#[async_trait]
+pub trait CdStore: Send + Sync {
+    /// Inserts a running run. `Conflict` while another run of the same environment of the
+    /// sandbox is running.
+    async fn insert_cd_run(&self, run: &crate::ci::cd::CdRunRecord) -> AppResult<()>;
+    /// One run; its output only when `with_output`.
+    async fn cd_run(
+        &self,
+        id: &str,
+        with_output: bool,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// Most recent runs of a sandbox, newest first, at most `limit`, without output.
+    async fn cd_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// The newest passed run of an environment of a sandbox (what is deployed), without output.
+    async fn last_passed_cd_run(
+        &self,
+        sandbox: &SandboxId,
+        environment: yulius_domain::cd::CdEnv,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// The newest run a task's agent started, without output.
+    async fn latest_cd_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// Running runs of every sandbox, without output.
+    async fn running_cd_runs(&self) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// Replaces the output of a running run.
+    async fn set_cd_run_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Records that the task's `yulius wait` reported the ended run `id`; `true` the first time.
+    async fn mark_cd_run_reported(&self, id: &str) -> AppResult<bool>;
+    /// Ends a running run; `false` when it was not running.
+    async fn finish_cd_run(&self, id: &str, end: &crate::ci::cd::CdRunEnd) -> AppResult<bool>;
+    /// Deletes ended runs beyond the newest `keep` of each sandbox and environment and those
+    /// started before `before`, keeping each environment's newest passed run (what is deployed);
+    /// returns how many were deleted.
+    async fn prune_cd_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
+}
+
+/// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
+#[async_trait]
+pub trait NeedsYouStore: Send + Sync {
+    /// The open request of a task.
+    async fn task_needs_you(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::needs_you::NeedsYouRecord>>;
+    /// Records (`Some`) or ends (`None`) the request; `true` when something changed.
+    async fn set_task_needs_you(
+        &self,
+        task: &TaskId,
+        request: Option<&crate::needs_you::NeedsYouRecord>,
+    ) -> AppResult<bool>;
+    /// Tasks of a sandbox with an open request.
+    async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
+}
+
 /// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).
 #[async_trait]
 pub trait NoteStore: Send + Sync {
@@ -509,6 +570,8 @@ pub trait ExtensionStores:
     + UpdateStore
     + crate::ports::vault::VaultStore
     + CiStore
+    + CdStore
+    + NeedsYouStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
 {
@@ -527,6 +590,8 @@ impl<T> ExtensionStores for T where
         + UpdateStore
         + crate::ports::vault::VaultStore
         + CiStore
+        + CdStore
+        + NeedsYouStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
 {

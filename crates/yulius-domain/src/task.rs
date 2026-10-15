@@ -381,8 +381,8 @@ pub struct AttentionFacts {
     pub activity: Option<Activity>,
     /// A prompt typed into the session is held for a person's decision (TSK-013).
     pub held_prompt: bool,
-    /// The task asked a person to act in the sandbox browser and the request is pending
-    /// (BRW-004).
+    /// The task asked a person to act and the request is pending: in the sandbox browser
+    /// (BRW-004) or through `needs_you` (SPEC-134 CDT-004).
     pub browser_request: bool,
     /// A chained task whose predecessor ended other than Done (TSK-012).
     pub chain_blocked: bool,

@@ -156,6 +156,9 @@ pub struct AgentSecretView {
     /// The tasks asking to copy it (`#111`) while `env_files` is `asked`.
     #[serde(default)]
     pub env_requested_by: Option<String>,
+    /// Production CD runs get its value (SPEC-134): a person's allowance of its own.
+    #[serde(default)]
+    pub cd_prod: bool,
     /// `none`, `bearer`, `basic` or `header`.
     pub injection: String,
     /// Header of the `header` injection.
@@ -262,6 +265,15 @@ pub struct EnvFilesAnswer {
     /// The askers the person saw (`env_requested_by`), compared the same way.
     #[serde(default)]
     pub env_requested_by: Option<String>,
+}
+
+/// `POST /api/agent-secrets/{id}/cd-prod`: a person allows (or stops) production CD runs getting
+/// the secret's value (SPEC-134).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CdProdAnswer {
+    /// Allow (`true`) or revoke.
+    pub allow: bool,
 }
 
 /// One vault audit entry.

@@ -83,6 +83,9 @@ pub struct VaultSecretRecord {
     pub env_files: EnvFiles,
     /// Agent: the tasks asking to copy it while `env_files` is [`EnvFiles::Asked`] (`#111`).
     pub env_requested_by: Option<String>,
+    /// Agent: a person allowed production CD runs to get its value (SPEC-134); only
+    /// [`VaultStore::vault_set_cd_prod`] writes it.
+    pub cd_prod: bool,
 }
 
 /// Whether agents may copy an agent secret's value into the project's git-ignored `.env` files
@@ -202,6 +205,9 @@ pub trait VaultStore: Send + Sync {
         from: (EnvFiles, Option<&str>),
         to: (EnvFiles, Option<&str>),
     ) -> AppResult<bool>;
+    /// Sets whether production CD runs get the agent secret `id` (SPEC-134) when it still is
+    /// `from` (compare and set); `false` otherwise.
+    async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Records a re-authentication of a browser session.

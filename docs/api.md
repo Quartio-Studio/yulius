@@ -275,6 +275,7 @@ TaskSummary = {
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
+  "needs_you": {"action","why|null","link|null","at"}|null,   // SPEC-134: what the agent asked a person (`needs_you`)
   "background_shells": "0|1|…|null",
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
@@ -535,14 +536,17 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   through Yulius once no integration environment is pending; the outcome is added to `notes`
   and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
   work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
-  independent review approved, equal to the branch head), `delivery_deploy` (environments with a
-  command and `verify = "command"` only) and `delivery_promote`, which take these same paths with
-  the task creator's authority and are audited as `task:<n>` too (DLV-008). `issue_create`
+  independent review approved, equal to the branch head) and `delivery_deploy` (integration
+  environments with a command and `verify = "command"` only), which take these same paths with
+  the task creator's authority and are audited as `task:<n>` too (DLV-008). Agents never promote:
+  production is always a person's (ADR-0110; there is no `delivery_promote` any more), and they
+  deploy with CD (below). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,
   at least one `area:` label and an `## Acceptance criteria` checklist). On GitHub these tools
   act with the task creator's own token; a creator without a usable one (no linked account, an
   expired sign-in) gets the App's, and the task's terminal says so once (GIT-003).
-- **Promote** refuses while a merged task still has an integration environment pending, when
+- **Promote** needs an administrator and `{"confirm": "<slug>"}` (a release is a production deploy,
+  ADR-0110). It refuses while a merged task still has an integration environment pending, when
   production already equals integration, or when a fast-forward is impossible.
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
   `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
@@ -645,6 +649,72 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
   production or default branch, nor one another open pull request uses). Cleanup never forces a
   worktree removal, never removes a live task's worktree, a protected branch or one with an open
   pull request, and removes `idle` branches (unmerged, no pull request) only with `force`.
+
+## CD (deployment)
+
+A project's CD (SPEC-134, ADR-0109/0110) is two environments in `yulius.toml`, read only from
+protected branches: `[cd.dev]` at the integration branch head, `[cd.prod]` at the commit it deploys
+(the integration head when that head's `[cd.prod]` promotes, else the production head).
+
+```toml
+[cd.dev]                            # missing: "not defined"; no deploy/verify/promote: "empty"
+about = "the team's dev VM"         # one line for people (at most 300 characters)
+deploy = "scripts/cd/deploy.sh dev" # one line, /bin/sh -c in the environment's own checkout
+verify = "scripts/cd/verify.sh dev" # after a successful deploy
+secrets = "DEV_SSH_KEY DEV_HOST"    # at most 16 agent secrets, as environment variables
+
+[cd.prod]                           # the same keys, and:
+promote = true                      # a person's deploy first promotes the integration branch
+```
+
+A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
+(every object checked, replacement refs ignored). It writes the commit's files into the run's own
+directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
+containment, production on the sandbox's network only and the host's read-only system), for at most the CI job
+timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
+`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment, out of the agents' reach), a
+`HOME` made for the run and removed after it, and the real value of each named secret allowed for
+that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
+allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
+agent secret of the sandbox redacted. One run per environment at a time; a run left running by a
+restart is recorded as `error` and never run again by itself.
+
+| Method and path | Access | Result |
+| --- | --- | --- |
+| `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
+| `POST /api/sandboxes/{sid}/cd/dev/deploy` | write | the running `CdRun` |
+| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>"}` | the running `CdRun` after the promotion |
+| `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
+| `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
+| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it |
+
+```text
+CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": [CdRun] (newest 20),
+              "can_deploy_dev": true, "can_deploy_prod": false}
+CdEnvironment = {"name": "dev|prod", "label": "dev|production", "state": "not_defined|empty|ready",
+                 "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
+                 "promote", "promotes_from": "<integration head>"|null,
+                 "secrets": [{"name", "state": "ready|not_allowed|missing"}],
+                 "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
+CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|error|cancelled",
+         "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
+         "note": "promoted 'dev' to 'main' at …"|null, "reason", "exit_code", "started_at", "ended_at",
+         "output" (detail only)}
+```
+
+`expect` (optional, any deploy) is the commit the person was shown: the one deployed, or with a
+promotion the integration commit promoted; the deploy refuses (`conflict`) when the branch moved
+since. A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
+copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it.
+
+Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
+environment or a production deploy without the slug typed exactly, `conflict` for an empty or
+undefined environment, a missing or not-allowed secret ("nothing ran: …"), a running run, or a
+promotion that cannot complete now (its pull request's checks). Every run is audited before it
+starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and refused production
+deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev only; production is
+refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
+`cd_detail` in its state).
 
 ## Skills, workflows, automations, MCP
 

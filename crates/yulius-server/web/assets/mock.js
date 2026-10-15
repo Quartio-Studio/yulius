@@ -282,6 +282,7 @@ function seed(params) {
   ];
   db.runs = []; // EnvironmentRun records, newest last
   db.ci = seedCi();
+  db.cd = seedCd();
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
@@ -333,6 +334,8 @@ function summary(task) {
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
     // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
+    // What the agent asked a person to do (`needs_you`, SPEC-134).
+    needs_you: task.needs_you ? { ...task.needs_you } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
@@ -1600,6 +1603,114 @@ route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/rerun`, ({ db, p }) => {
   ci.runs.unshift(fresh);
   return ciSummary(fresh);
 });
+// ---- CD (deployment), SPEC-134: studio defines dev (a script with a secret) and production
+// (promotion, then a script); product has dev empty and production not defined yet.
+function cdRun(id, environment, branch, sha, state, minutesAgo, by, extra = {}) {
+  const started = Date.now() - minutesAgo * 60000;
+  const ended = state === 'running' ? null : started + 95000;
+  return {
+    run_id: id, environment, state, branch, commit: sha, requested_by: by,
+    deploy: environment === 'dev' ? 'scripts/cd/deploy.sh dev' : 'scripts/cd/deploy.sh prod',
+    verify: environment === 'dev' ? 'scripts/cd/verify.sh dev' : 'scripts/cd/verify.sh prod',
+    note: extra.note || null, reason: extra.reason || null, exit_code: state === 'passed' ? 0 : (state === 'failed' ? 3 : null),
+    started_at: new Date(started).toISOString(), ended_at: ended ? new Date(ended).toISOString() : null, created: Date.now(),
+    output: extra.output || `[yulius] deploying ${branch} at ${sha} to ${environment === 'dev' ? 'dev' : 'production'}\n[yulius] deploy: scripts/cd/deploy.sh ${environment}\nrsync to app-dev… done\n[yulius] verify: scripts/cd/verify.sh ${environment}\nGET /health 200\n[yulius] done\n`,
+  };
+}
+
+function seedCd() {
+  return {
+    sb_studio: {
+      environments: [
+        { name: 'dev', label: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }] },
+        { name: 'prod', label: 'production', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [] },
+      ],
+      runs: [
+        cdRun('cd_s2', 'dev', 'quartio', '7d1e0c9b8a7f6e5d', 'failed', 90, 'task #12', { reason: null, output: '[yulius] deploy: scripts/cd/deploy.sh dev\nssh: connect to host [secret:DEV_HOST] port 22: timed out\n[yulius] deploy failed with status 3; verify skipped\n' }),
+        cdRun('cd_s1', 'prod', 'main', '4be81c0d2a9f1e2d', 'passed', 26 * 60, 'mkarp', { note: "promoted 'quartio' to 'main' at 4be81c0d2a9f1e2d" }),
+      ],
+    },
+    sb_product: {
+      environments: [
+        { name: 'dev', label: 'dev', state: 'empty', branch: 'quartio', head: 'b7e9f01c2d3e4f5a', problem: null, about: 'no dev machine yet', deploy: null, verify: null, promote: false, secrets: [] },
+        { name: 'prod', label: 'production', state: 'not_defined', branch: 'main', head: 'a0b1c2d3e4f5a6b7', problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] },
+      ],
+      runs: [],
+    },
+  };
+}
+
+function cdOf(db, sid) {
+  sandboxOf(db, sid);
+  if (!db.cd[sid]) {
+    db.cd[sid] = { environments: ['dev', 'prod'].map((name) => ({ name, label: name === 'dev' ? 'dev' : 'production', state: 'not_defined', branch: name === 'dev' ? 'dev' : 'main', head: null, problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] })), runs: [] };
+  }
+  return db.cd[sid];
+}
+
+/** A running mock deploy finishes about 15 s after it started. */
+function progressCd(run) {
+  if (run.state === 'running' && Date.now() - run.created > 15000) {
+    run.state = 'passed';
+    run.exit_code = 0;
+    run.ended_at = new Date().toISOString();
+  }
+  return run;
+}
+
+const cdSummary = (run) => ({ ...run, created: undefined, output: undefined });
+
+function cdOverview(db, sid) {
+  const sandbox = sandboxOf(db, sid);
+  const cd = cdOf(db, sid);
+  const runs = cd.runs.map(progressCd);
+  return {
+    slug: sandbox.slug,
+    environments: cd.environments.map((env) => {
+      const mine = runs.filter((r) => r.environment === env.name);
+      const deployed = mine.find((r) => r.state === 'passed');
+      return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null };
+    }),
+    runs: runs.map(cdSummary),
+    can_deploy_dev: (RANK[sandbox.access] || 0) >= RANK.write,
+    can_deploy_prod: (RANK[sandbox.access] || 0) >= RANK.admin,
+  };
+}
+
+route('GET', `/api/sandboxes/${ID}/cd`, ({ db, p }) => cdOverview(db, p[0]));
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const cd = cdOf(db, p[0]);
+  const name = p[1] === 'production' ? 'prod' : p[1];
+  const env = cd.environments.find((e) => e.name === name);
+  if (!env) fail(422, 'invalid', 'the environment is dev or prod');
+  need(sandbox, name === 'prod' ? 'admin' : 'write');
+  if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
+  if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
+  if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
+  if (cd.runs.some((r) => r.environment === name && progressCd(r).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
+  db.nextId += 1;
+  const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, name === 'prod' && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {});
+  cd.runs.unshift(run);
+  return cdSummary(run);
+});
+route('GET', `/api/sandboxes/${ID}/cd/runs/${ID}`, ({ db, p }) => {
+  const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  return { ...progressCd(run), created: undefined };
+});
+route('POST', `/api/sandboxes/${ID}/cd/runs/${ID}/cancel`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  need(sandbox, run.environment === 'prod' ? 'admin' : 'write');
+  if (progressCd(run).state !== 'running') fail(409, 'conflict', 'the run already ended');
+  run.state = 'cancelled';
+  run.reason = `cancelled by ${db.me.user.login}`;
+  run.ended_at = new Date().toISOString();
+  return cdSummary(run);
+});
+
 route('GET', `/api/sandboxes/${ID}/hygiene`, ({ db, p }) => clone(ciOf(db, p[0]).hygiene));
 route('POST', `/api/sandboxes/${ID}/hygiene/scan`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -2103,7 +2214,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2261,6 +2372,16 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);
   secret.env_files = body.allow ? 'allowed' : 'no';
   secret.env_requested_by = null;
+  return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret allow it for production deploys');
+  if (Boolean(secret.cd_prod) !== Boolean(body.allow)) {
+    audit(db, body.allow ? 'vault.agent.cd_prod_allow' : 'vault.agent.cd_prod_revoke', secret.id, `${secret.name} → production CD runs`);
+    secret.cd_prod = Boolean(body.allow);
+  }
   return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {

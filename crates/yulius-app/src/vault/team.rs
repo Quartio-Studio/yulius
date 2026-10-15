@@ -175,6 +175,7 @@ impl App {
             requested_by: None,
             env_files: crate::ports::vault::EnvFiles::No,
             env_requested_by: None,
+            cd_prod: false,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault_audit(

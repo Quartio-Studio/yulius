@@ -1,7 +1,7 @@
 ---
 name: Infra bootstrap
-description: A project's engineering foundations, laid once like a senior engineer would - tests, lint, a local CI gate on our own machines, environments, docs, labels.
-when_to_use: A fresh or newly onboarded project lacks its foundations - tests, lint, a CI gate, environments or deploy, agent docs - or its GitHub Actions must move to Yulius CI.
+description: A project's engineering foundations, laid once like a senior engineer would - tests, lint, a local CI gate on our own machines, CD (deployment), docs, labels.
+when_to_use: A fresh or newly onboarded project lacks its foundations - tests, lint, a CI gate, CD (deployment), agent docs - its GitHub Actions must move to Yulius CI, or its CD must be set up or changed.
 spec: required
 tests: required
 order: 60
@@ -12,7 +12,7 @@ order: 60
 1. Survey the stack, tests, CI and deploy, then write the spec and its ADRs
 2. One local gate with format, lint, unit and integration tests
 3. GitHub Actions translated into Yulius CI, then deleted
-4. Dev and production environments with deploy and verification
+4. CD dev and production defined with deploy and verify scripts
 5. AGENTS.md, architecture and product docs, labels and templates
 
 ## Instructions
@@ -25,9 +25,12 @@ Follow `infra-bootstrap` for the content and `delivery-pipeline` for the deliver
   CI: `[commands] gate` or `[[ci.jobs]]` in `yulius.toml`. Translate every
   `.github/workflows/*` job into it (`ci_setup` lists them), run it, then delete the workflows in
   the same pull request. Never add GitHub Actions or anything that needs a paid GitHub plan.
-- Environments are `[[delivery.environments]]` with an idempotent deploy command and
-  `verify = "command"` smoke tests; secrets come from the project's agent secrets. Keys live
-  in a git-ignored `.env` beside a committed `.env.example`; agent secrets get there through
-  `secret_copy_to_env`.
+- CD is `[cd.dev]` and `[cd.prod]` in `yulius.toml`, both explicit (empty with an `about` when
+  nothing deploys yet), each with an idempotent deploy script and a verify smoke test under
+  `scripts/cd/`; secrets come from the project's agent secrets, named in `secrets`. Find how the
+  project deploys today first and move it there. Ask a person with `needs_you` for what only they
+  can give (a machine's credentials). A merge deploys nothing; production is a person's. Keys the
+  app reads live in a git-ignored `.env` beside a committed `.env.example`; agent secrets get there
+  through `secret_copy_to_env`.
 - Keep each step a small pull request when it grows (chain the next task). Afterwards the
   foundations stay stable: change them only when the product needs it, with a new ADR.

@@ -1090,8 +1090,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
@@ -1119,8 +1119,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(waiting.status, StatusCode::CONFLICT);
@@ -1136,8 +1136,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(unknown.status, StatusCode::CONFLICT);
@@ -1151,8 +1151,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
@@ -1285,8 +1285,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert!(
@@ -1358,8 +1358,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
@@ -1378,8 +1378,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(
@@ -1497,8 +1497,8 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
@@ -1696,10 +1696,12 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         "delivery_status",
         "delivery_merge",
         "delivery_deploy",
-        "delivery_promote",
+        "cd_deploy",
     ] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
     }
+    // Agents never promote: production is a person's (ADR-0110).
+    assert!(!names.iter().any(|n| n.contains("promote")), "{names:?}");
     let delivery_tools = names
         .iter()
         .filter(|n| {
@@ -1710,7 +1712,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         .count();
     assert_eq!(
         delivery_tools, 3,
-        "no other way to merge, deploy or promote: {names:?}"
+        "no other way to merge or deploy: {names:?}"
     );
     let status = rpc(
         "tools/call",
@@ -1776,7 +1778,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         pending.body
     );
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
-    // A person-verified or unknown environment is never run by an agent.
+    // A person-verified, production or unknown environment is never run by an agent.
     let deploy = rpc(
         "tools/call",
         json!({"name": "delivery_deploy", "arguments": {"environment": "rollout"}}),
@@ -1958,8 +1960,8 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(opened.body["result"], "pr_opened", "{}", opened.body);
@@ -1978,8 +1980,8 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(recorded.status, StatusCode::OK, "{}", recorded.body);
@@ -1990,8 +1992,8 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(nothing.status, StatusCode::CONFLICT);
@@ -2790,7 +2792,7 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            Some(json!({})),
+            Some(json!({"confirm": "shop"})),
             &owner,
         )
         .await?;
@@ -4028,8 +4030,8 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
         f.req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
     };
     let opened = promote().await?;

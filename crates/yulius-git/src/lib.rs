@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 mod bundle;
+mod cd;
 mod ci;
 mod commit;
 pub mod credential;

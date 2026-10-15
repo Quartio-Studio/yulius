@@ -73,8 +73,13 @@ pub async fn promote(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(sid): Path<String>,
+    body: Option<Json<serde_json::Value>>,
 ) -> ApiResult<Json<PromoteResult>> {
-    Ok(Json(app.promote_sandbox(&ctx, &sid).await?))
+    // The typed slug (ADR-0110); any other body is no confirmation.
+    let confirm = body.and_then(|Json(body)| body.get("confirm")?.as_str().map(str::to_owned));
+    Ok(Json(
+        app.promote_sandbox(&ctx, &sid, confirm.as_deref()).await?,
+    ))
 }
 
 pub async fn run_environment(

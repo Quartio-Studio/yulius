@@ -43,6 +43,7 @@ pub mod mcp_text;
 pub mod merge_train;
 pub mod metrics_recount;
 pub mod model;
+pub mod needs_you;
 pub mod notes;
 pub mod onboarding;
 pub mod playground;

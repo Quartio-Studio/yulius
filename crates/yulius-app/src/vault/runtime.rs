@@ -190,7 +190,8 @@ impl App {
     }
 
     /// The value of the agent secret `name` that applies to `sandbox` (MCP `${secret:NAME}`
-    /// references, VLT-009).
+    /// references, VLT-009). A production secret (SPEC-134) never resolves: its value would reach
+    /// an agent run's environment.
     ///
     /// # Errors
     /// Store or decryption failures.
@@ -205,7 +206,7 @@ impl App {
             .vault_agent(Some(sandbox))
             .await?
             .into_iter()
-            .find(|r| r.name == name)
+            .find(|r| r.name == name && !r.cd_prod)
         else {
             return Ok(None);
         };

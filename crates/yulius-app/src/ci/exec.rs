@@ -99,15 +99,24 @@ impl AnsiStripper {
 
 /// A CI job joins the sandbox's CI group, weighted above the agents' (SPEC-053 CPU-203), so its
 /// speed does not depend on what the agents build.
-fn ci_join(join: SandboxJoin) -> SandboxJoin {
+pub(super) fn ci_join(join: SandboxJoin) -> SandboxJoin {
     SandboxJoin {
         cgroup: join.ci_cgroup.clone().or(join.cgroup),
         ..join
     }
 }
 
+/// Where a watched process's output goes while it runs: a CI job's row, or a CD run's
+/// (SPEC-134), redacted of the sandbox's agent secrets first.
+pub(super) enum Sink<'a> {
+    /// A CI job.
+    CiJob(&'a str),
+    /// A CD run of a sandbox.
+    CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
+}
+
 /// How a job's process ended.
-enum Ended {
+pub(super) enum Ended {
     Exit(RunExit),
     Cancelled(String),
     TimedOut,
@@ -547,7 +556,7 @@ impl App {
     /// The job's containment: the sandbox's holder when it is isolated (SPEC-002 ADR-22: the
     /// job sees the packages the sandbox installed and its private network), else the previous
     /// containment.
-    fn ci_containment(
+    pub(super) fn ci_containment(
         &self,
         sandbox: &SandboxRecord,
         home: &Path,
@@ -635,18 +644,31 @@ impl App {
             .map_err(|e| format!("creating the run directory failed: {e}"))?;
         let token = self.deps.crypto.random_bytes();
         let outcome = self
-            .ci_watch(&run_dir, job, &plan, &token, &log, ring, cancel)
+            .ci_watch(
+                &run_dir,
+                (&job.id, &job.run_id),
+                Sink::CiJob(&job.id),
+                &plan,
+                &token,
+                &log,
+                ring,
+                cancel,
+            )
             .await;
         let _ = std::fs::remove_dir_all(&run_dir);
         let _ = std::fs::remove_file(&log);
         outcome
     }
 
+    /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
+    /// it to its end: its log into `ring` and `sink`, cancellation, the CI job timeout and the
+    /// output limit.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
-    async fn ci_watch(
+    pub(super) async fn ci_watch(
         &self,
         run_dir: &Path,
-        job: &CiJobRecord,
+        ids: (&str, &str),
+        sink: Sink<'_>,
         plan: &LaunchPlan,
         token: &[u8; 32],
         log: &Path,
@@ -654,7 +676,7 @@ impl App {
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
         let host = &self.deps.session_host;
-        host.spawn(run_dir, &job.id, &job.run_id, plan, token, (160, 48))
+        host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
             .map_err(|err| format!("the job could not be started: {}", err.public_message()))?;
         let attached = match host.attach(run_dir, token).await {
@@ -710,7 +732,15 @@ impl App {
                     }
                     ticks += 1;
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
-                        let _ = self.deps.store.set_ci_job_output(&job.id, &ring.text()).await;
+                        match sink {
+                            Sink::CiJob(id) => {
+                                let _ = self.deps.store.set_ci_job_output(id, &ring.text()).await;
+                            }
+                            Sink::CdRun(id, sandbox) => {
+                                let shown = self.redact_for_sandbox(sandbox, &ring.text()).await;
+                                let _ = self.deps.store.set_cd_run_output(id, &shown).await;
+                            }
+                        }
                     }
                 }
             }
@@ -862,6 +892,7 @@ mod tests {
             private_dirs: Vec::new(),
             system_passwd: None,
             system_group: None,
+            host_system: None,
         };
         let ci = ci_join(join.clone());
         assert_eq!(ci.cgroup, join.ci_cgroup);

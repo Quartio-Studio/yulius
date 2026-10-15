@@ -903,6 +903,7 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             requested_by: None,
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
+            cd_prod: false,
         })
         .await?;
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
@@ -1150,6 +1151,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             requested_by: None,
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
+            cd_prod: false,
         })
         .await?;
     let alice = browser_session(&w.h, "u-alice").await?;

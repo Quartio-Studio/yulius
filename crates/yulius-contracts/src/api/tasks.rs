@@ -99,6 +99,10 @@ pub struct TaskSummary {
     /// A prompt typed into the session that Yulius held for a decision (TSK-013).
     #[serde(default)]
     pub held_prompt: Option<Box<HeldPrompt>>,
+    /// What the agent asked a person to do (`needs_you`, SPEC-134); the task needs a person
+    /// until someone writes to it or the agent resolves it.
+    #[serde(default)]
+    pub needs_you: Option<NeedsYouView>,
     /// How "Auto" chose the task's mode and workflow when it was created (TSK-015); null when the
     /// person picked both.
     #[serde(default)]
@@ -159,6 +163,21 @@ pub struct ChainLink {
     /// plain "run after" chain.
     #[serde(default)]
     pub rule: Option<String>,
+}
+
+/// What a task's agent asked a person to do (SPEC-134 CDT-004, `needs_you`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeedsYouView {
+    /// What to do, one line.
+    pub action: String,
+    /// Why it is needed.
+    #[serde(default)]
+    pub why: Option<String>,
+    /// Where to do it (a Yulius page).
+    #[serde(default)]
+    pub link: Option<String>,
+    /// When it was asked (RFC 3339).
+    pub at: String,
 }
 
 /// A prompt held by the scope check (SPEC-001 TSK-013).
