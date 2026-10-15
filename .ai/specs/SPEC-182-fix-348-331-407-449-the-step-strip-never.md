@@ -1,11 +1,11 @@
 ---
 yulius-task: b559732f-0ea5-4053-b36a-cb4e9d9ad43a
-status: in-progress
+status: done
 ---
 
 # SPEC-182: The step strip never overflows, focus survives a hidden Archive, and the last loading states take their final shape
 
-Status: in progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #138, issues #348, #331, #407, #449 (part of task #118, SPEC-138)
 Scope authorization: task #138: "Fix GitHub issues #348, #331, #407 and #449 of
@@ -87,15 +87,15 @@ Checked on `dev` (5599635c) and on #137's branch, which this task starts from: a
 ## Plan
 
 - [x] Spec SPEC-182 written and validated
-- [ ] Sidebar focus moves to the row's link when its quick Archive hides (#331)
-- [ ] Automation editor's loading start chip is a skeleton bar with New task's Supertask wording (#407)
-- [ ] Step strip gives way whole chips by priority and never passes its edge (#348)
-- [ ] New sandbox lists, delivery and CI run dialogs load in their final shape (#449)
-- [ ] Task changes, commits and overview load in their final shape (#449)
-- [ ] CI hygiene and GitHub connection cards load in their final shape (#449)
-- [ ] Docs, decision record, changes and every gate green
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Merged into dev on green CI, issues closed
+- [x] Sidebar focus moves to the row's link when its quick Archive hides (#331)
+- [x] Automation editor's loading start chip is a skeleton bar with New task's Supertask wording (#407)
+- [x] Step strip gives way whole chips by priority and never passes its edge (#348)
+- [x] New sandbox lists, delivery and CI run dialogs load in their final shape (#449)
+- [x] Task changes, commits and overview load in their final shape (#449)
+- [x] CI hygiene and GitHub connection cards load in their final shape (#449)
+- [x] Docs, decision record, changes and every gate green
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Pull request merged into dev on green CI (armed with delivery_merge), issues closed
 
 ## Acceptance criteria
 
@@ -171,3 +171,37 @@ Checked on `dev` (5599635c) and on #137's branch, which this task starts from: a
   through `SHAPES.rows` because the repository and template lists both use them. Controls in a
   final layout (buttons, radios, tabs) are drawn as non-focusable spans with the same classes or as
   skeleton tiles of their size, so the shape keeps their room without a tab stop.
+
+## Evidence
+
+Checked on `dev` (5599635c) and #137's head first: all four issues were open (Context).
+
+Test-first, each new case run before its fix:
+
+- `archive.e2e.ts` "the keyboard on a quick Archive that hides moves to its row's link": failed
+  (`expect.toBeFocused failed` on the Working row's link), passes with the `paintRow` fix. The
+  tightened rebuild case (`Archive task #14`, a `.task-link` in Done) passed on both.
+- `automations.e2e.ts`: the hold case failed with `{"text":"Start…","bar":false}` and the Supertask
+  tooltip with the old wording; both pass.
+- `responsive.e2e.ts` "the step strip gives way whole chips…": failed with
+  `{"overlaps":[],"sideways":true}` at a 990 px window (the issue's case), passes with `fitStrip()`.
+  "a narrow strip beside a panel shows no chip even when one fits" (review round 1) failed with
+  `["Then #14"]` shown in a 539 px strip, passes with `.stepstrip .strip-extras`.
+- `loading-shapes.e2e.ts`: the three new cases failed on the missing shapes (`expected 0 to be
+  greater than or equal to 3/4`, no `.ci-hygiene` in the status), pass with them.
+
+Gates:
+
+- `scripts/dev ci` at 96b1aacc (this branch with `origin/dev` merged, bab6ca14): exit 0,
+  `1874 tests run: 1874 passed, 18 skipped`. The commit after it (ac9402e6) changes only
+  `e2e/tests/responsive.e2e.ts`.
+- `cd e2e && npx e2e run` at ac9402e6: exit 0, `Test Files 55 passed | 1 skipped (56)`, `Tests 536
+  passed | 1 skipped (537)`.
+- `scripts/dev security`: not run, exit 2, "Vidoc rejected the key (HTTP 401: Invalid or expired
+  token)", tracked in #470; recorded as unrun per ADR-0104.
+- `spec_check`: valid.
+
+Review round 1 (fresh session, head 86a05410): request changes. Fixed: the 560 px query lost to
+the base rule (Major, test-first above); gate evidence (this section); `fits()` polled as a whole;
+Supertask, the bar before the pull request chip and chips coming back on a content change are now
+tested; a font that finishes loading refits the strip (no e2e, see Decisions); the radio comment.
