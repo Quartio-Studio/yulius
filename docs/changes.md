@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
   playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
   as before.
+- The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
+  #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
+  CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
+  `?section=pipeline` with its filters after it. `/pipeline` links, "In Pipeline" and the
+  Overview's Pipeline card open the tab.
 - A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
   fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
   skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),

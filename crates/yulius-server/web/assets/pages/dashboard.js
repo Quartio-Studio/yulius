@@ -5,15 +5,17 @@
 // breakdowns as bar lists with shares. Unknown values render as "—", never as zero. CSV/JSON
 // export of per-task rows stays one click away. The subscription pool (ROT-013) — capacity left,
 // burn rate, forecast and whether to buy more — has its own card for the whole instance.
+// This is the page's Overview tab; its Pipeline (stages) tab is pages/pipeline.js (SPEC-161).
 
 import { h, svgEl, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
 import { compact, duration, int } from '../format.js';
 import { statusInfo } from '../status.js';
-import { pageFrame, loader } from './common.js';
+import { sectionedPage, loader } from './common.js';
 import { modelLabel } from '../models.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { sparkline } from '../charts.js';
 import { replaceQuietly, href } from '../router.js';
+import { mountPipelineSection, pipelinePath, PIPELINE_SUB } from './pipeline.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -30,8 +32,24 @@ const PIPELINE_MS = 5 * 60_000;
 const isoDay = (date) => date.toISOString().slice(0, 10);
 const parseDay = (day) => new Date(`${day}T00:00:00Z`);
 
-/** Mount the Dashboard page. */
+// The subtitle says what the page is for (#147); the dates of the chosen range sit with the range.
+const OVERVIEW_SUB = 'what the tasks of this sandbox did, and what it took';
+
+/** Mount the Dashboard page: the Overview at `/s/<slug>/dashboard`, `?section=pipeline` for the Pipeline. */
 export function mountDashboardPage(ctx, sandbox, route) {
+  const path = `/s/${encodeURIComponent(sandbox.slug)}/dashboard`;
+  const page = sectionedPage(ctx, sandbox, route, { title: 'Dashboard', path, sections: [
+    { value: '', label: 'Overview', icon: 'chart', sub: OVERVIEW_SUB, mount: mountOverviewSection },
+    { value: 'pipeline', label: 'Pipeline (stages)', icon: 'clock', sub: PIPELINE_SUB, mount: mountPipelineSection },
+  ] });
+  return { ...page, key: `dashboard:${sandbox.id}` };
+}
+
+/**
+ * Mount the Overview tab into `section`, with its range, export and refresh in `actions`; returns
+ * its teardown, which stops its refreshes.
+ */
+function mountOverviewSection(ctx, sandbox, route, section, actions) {
   // The period is kept in the address, so it comes back with the page (SPEC-113 KST-007).
   const asked = Number(route && route.query.get('days'));
   let days = RANGES.some(([value]) => value === asked) ? asked : 30;
@@ -43,10 +61,9 @@ export function mountDashboardPage(ctx, sandbox, route) {
   ], { align: 'end' }) }, icon('download', { size: 14 }), 'Export');
   const range = h('div', { class: 'seg db-seg', role: 'radiogroup', 'aria-label': 'Date range' }, RANGES.map(([value, label]) => h('label', null,
     h('input', { type: 'radio', name: 'dash-range', value: String(value), checked: value === days, onChange: () => { days = value; replaceQuietly(days === 30 ? base : `${base}?days=${days}`); reload(); } }), label)));
-  // The subtitle says what the page is for (#147); the dates of the chosen range sit with the range.
-  const frame = pageFrame({ title: 'Dashboard', sub: 'what the tasks of this sandbox did, and what it took', actions: [rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload())] });
+  setChildren(actions, rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload()));
   const host = h('div', { class: 'db' });
-  frame.body.append(host);
+  section.append(host);
 
   // Inclusive UTC days: "last 7 days" is today and the 6 days before; the previous period is the
   // same number of days just before it.
@@ -93,7 +110,7 @@ export function mountDashboardPage(ctx, sandbox, route) {
   const live = setInterval(() => {
     if (document.visibilityState === 'visible') reload({ quiet: true });
   }, LIVE_MS);
-  return { el: frame.el, key: `dashboard:${sandbox.id}`, destroy: () => clearInterval(live) };
+  return () => clearInterval(live);
 }
 
 /** Known input + output tokens of a `Tokens` group; null when neither was reported. */
@@ -184,7 +201,7 @@ function loadingLayout() {
 /**
  * The pipeline's overview (SPEC-137 STG-404): how often dev and production deploy, the lead time
  * from merge to production (dev when production has none), the change failure rate and how long
- * a CI run takes, linking to the Pipeline page for every stage.
+ * a CI run takes, linking to the Pipeline tab for every stage.
  */
 function pipelineCard(stages, sandbox, days) {
   if (!stages) return null;
@@ -198,7 +215,7 @@ function pipelineCard(stages, sandbox, days) {
   const run = (stages.stages || []).find((r) => r.subject_kind === 'ci_run' && r.kind === 'run' && r.name === 'run');
   const queue = (stages.stages || []).find((r) => r.subject_kind === 'ci_run' && r.kind === 'queue' && r.name === 'queue');
   const perWeek = (e) => (Number.isFinite(e.per_week) ? e.per_week.toFixed(1) : '—');
-  const path = `/s/${encodeURIComponent(sandbox.slug)}/pipeline${days === 30 ? '' : `?days=${days}`}`;
+  const path = `${pipelinePath(sandbox)}${days === 30 ? '' : `&days=${days}`}`;
   return card('Pipeline', 'deployments, lead time and CI, from every stage measured', h('div', { class: 'db-kpis pl-kpis' },
     kpi({ label: 'Deployments a week', value: `${perWeek(prod)} · ${perWeek(dev)}`, sub: 'production · dev' }),
     kpi({ label: 'Lead time', value: lead ? duration(lead[1].lead_time_p50_ms) : '—', sub: lead ? `median from merge to ${lead[0]} · p90 ${duration(lead[1].lead_time_p90_ms)}` : 'no merge deployed yet' }),

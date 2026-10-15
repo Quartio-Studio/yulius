@@ -21,7 +21,7 @@ CD (deployment) is `[cd.dev]` (empty: no dev machine yet) and `[cd.prod]` (promo
 ([ADR-0109](docs/decisions/0109-cd-runs-verified-commits-out-of-the-agents-reach.md)); a merge
 deploys nothing and only a person deploys production
 ([ADR-0110](docs/decisions/0110-only-a-person-deploys-production.md)). Every stage of tasks, CI and CD
-is measured as a span (Pipeline page; [ADR-0112](docs/decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)):
+is measured as a span (the Dashboard's Pipeline tab; [ADR-0112](docs/decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)):
 a CI job or CD script names its stages with `::yulius-stage <name>` lines, as `scripts/dev ci` does.
 
 ## Start here

@@ -20,12 +20,11 @@ import { INSTANCE_ROUTE } from './updates.js';
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
 // The sandbox pages used every day (SPEC-029); CI and CD (SPEC-134) are one page with two tabs
-// (SPEC-151), and the Pipeline's stages (SPEC-137) sit next to it.
+// (SPEC-151), and the Pipeline's stages (SPEC-137) are a tab of the Dashboard (SPEC-161).
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
   ['ci', 'CI/CD', 'check'],
-  ['pipeline', 'Pipeline (stages)', 'clock'],
   ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];

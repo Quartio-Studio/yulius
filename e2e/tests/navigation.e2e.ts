@@ -21,11 +21,12 @@ test('a task opens from the sidebar', async ({ app, browser, screen }) => {
 // Task #113 (SPEC-134): "in CD section add deployment in brackets: 'CD (deployment)'".
 // Task #116 (SPEC-137): the Pipeline's stages sit beside CI and CD.
 // Task #145 (SPEC-151): "make CI/CD one tab with a tab like in secrets team/agent".
+// Task #152 (SPEC-161): "i dont like it here, move it somewhere else, maybe as part of dashboard":
+// the Pipeline (stages) is a tab of the Dashboard.
 const PRIMARY: [string, string, string?][] = [
   ['Tasks', 'tasks'],
   ['Git', 'git'],
   ['CI/CD', 'ci', 'CI/CD'],
-  ['Pipeline (stages)', 'pipeline', 'Pipeline'],
   ['Secrets', 'secrets'],
   ['Dashboard', 'dashboard'],
 ];

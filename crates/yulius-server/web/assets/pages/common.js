@@ -6,7 +6,7 @@
 // something starts with "+"; a key hint appears only on the button whose shortcut exists (New task).
 
 import { h, setChildren, placeholder, loadError, keepFocus, emptyState, icon } from '../dom.js';
-import { href, currentLocation, forgetPlace } from '../router.js';
+import { href, currentLocation, forgetPlace, replaceQuietly } from '../router.js';
 
 /** Page frame: title row with actions, then the content area. Returns {el, body, actions}. */
 export function pageFrame({ title, sub, actions = [] }) {
@@ -18,6 +18,68 @@ export function pageFrame({ title, sub, actions = [] }) {
       h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, title), subEl, actionsEl),
       body));
   return { el, body, actions: actionsEl, sub: subEl };
+}
+
+/**
+ * A page of sections chosen with the Secrets page's tabs (SPEC-151, SPEC-161): CI/CD and the
+ * Dashboard. `sections` are `{ value, label, icon, sub, mount }`; the first one's `value` is '' (the
+ * plain `path`), the others are `?section=<value>`, written quietly on a change. `mount(ctx,
+ * sandbox, route, host, actions)` fills its own part and the header's actions and returns its
+ * teardown; a section shown by a tab change gets no route (it starts fresh). An alias address
+ * (`/cd`, `/pipeline`) is rewritten to `path` with its query. Returns {el, destroy}.
+ */
+export function sectionedPage(ctx, sandbox, route, { title, path, sections }) {
+  const frame = pageFrame({ title });
+  const asked = route.query.get('section');
+  let current = sections.some((o) => o.value && o.value === asked) ? asked : '';
+  if (route.path !== path) replaceQuietly(route.query.toString() ? `${path}?${route.query}` : path);
+  const host = h('div');
+  const tabs = h('div', { class: 'tl-tabs ftabs', role: 'radiogroup', 'aria-label': 'Section' });
+  let teardown = null;
+
+  function renderTabs() {
+    const focused = tabs.contains(document.activeElement);
+    setChildren(tabs, sections.map((o) => h('button', {
+      type: 'button', role: 'radio', 'aria-checked': String(o.value === current), tabindex: o.value === current ? '0' : '-1', class: ['tl-tab', o.value === current && 'active'],
+      onClick: () => {
+        if (current === o.value) return;
+        current = o.value;
+        // The shown section goes first: its run dialog writes its own address as it closes.
+        stop();
+        replaceQuietly(current ? `${path}?section=${current}` : path);
+        renderTabs();
+        show(null);
+      },
+      onKeydown: (event) => {
+        if (!['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        const buttons = [...tabs.children];
+        const step = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1;
+        buttons[(buttons.indexOf(event.currentTarget) + step + buttons.length) % buttons.length].click();
+      },
+    }, h('span', { class: 'tl-tab-icon' }, icon(o.icon, { size: 14 })), o.label)));
+    if (focused) tabs.querySelector('[aria-checked="true"]')?.focus();
+  }
+
+  function stop() {
+    if (teardown) teardown();
+    teardown = null;
+  }
+
+  /** Mounts the current section in a part of its own, so a late answer for the other one lands nowhere. */
+  function show(shownRoute) {
+    const section = sections.find((o) => o.value === current);
+    const part = h('div', { class: 'stack' });
+    setChildren(host, part);
+    frame.sub.textContent = section.sub;
+    teardown = section.mount(ctx, sandbox, shownRoute, part, frame.actions);
+  }
+
+  renderTabs();
+  frame.body.append(tabs, host);
+  // The address's own state (`?run=`, `?days=`, filters) is the section's it names.
+  show(route);
+  return { el: frame.el, destroy: stop };
 }
 
 /** A primary "create" button: "+" and its label (the header pattern above). */
