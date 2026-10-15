@@ -21,9 +21,10 @@ the agent should be able to do that on onboarding.
   ruleset on the sandbox's repository for the production branch: Restrict updates, Restrict
   deletions, Block force pushes, the Repository admin role as the only bypass actor, named
   `yulius-people-only-<branch>`, and no pull-request rule.
-- **It acts as the task's owner, only when they are a repository admin.** Yulius uses the owner's
-  GitHub user token, asks GitHub whether they are an admin first, and refuses otherwise (also
-  without a GitHub identity or sign-in), telling the agent to ask with `needs_you`. Never the App's
+- **Only in the onboarding task, as its owner, only when they are a repository admin.** Any other
+  task (an automation run, a task an agent created) is refused. Yulius uses the owner's GitHub user
+  token, asks GitHub whether they are an admin first, and refuses otherwise (also for a disabled
+  account and without a GitHub identity or sign-in), telling the agent to ask with `needs_you`. Never the App's
   installation token, never the agent's token: the decision stays a repository admin's, as ADR-0114
   wants, and starting onboarding (a person in the browser) is that admin's consent to the
   discipline it sets up.

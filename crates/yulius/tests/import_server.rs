@@ -586,7 +586,7 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
 /// a second call changes nothing, and an owner who is not an admin is sent to `needs_you`.
 #[tokio::test]
 async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestResult {
-    use yulius_app::ports::store::InstanceStore as _;
+    use yulius_app::ports::store::{InstanceStore as _, UserStore as _};
     let w = World::new("org").await?;
     w.h.store.set_installation(Some(1)).await?;
     let (alice_user, alice) = w.user("alice", false).await?;
@@ -626,7 +626,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         task.prompt
     );
 
-    // AC3: a task owned by someone who is not a repository admin is refused; nothing is created.
+    // R2: only the onboarding task may protect production; another task is refused.
     support::seed_task(
         &w.h,
         "t-bob",
@@ -637,17 +637,47 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     )
     .await?;
     support::seed_live_attempt(&w.h, "t-bob", "tok-bob").await?;
-    let refused = support::mcp_tool(&w.h, "tok-bob", "production_protect", json!({})).await?;
-    assert_eq!(refused["isError"], true, "{refused}");
-    let text = support::tool_text(&refused).to_string();
-    assert!(
-        text.contains("not a repository admin") && text.contains("needs_you"),
-        "{text}"
-    );
+    support::seed_live_attempt(&w.h, task.id.as_str(), "tok-prep").await?;
+    let refused_with = |result: &Value, wanted: &str| -> TestResult {
+        assert_eq!(result["isError"], true, "{result}");
+        let text = support::tool_text(result).to_string();
+        assert!(
+            text.contains(wanted) && text.contains("needs_you"),
+            "{text}"
+        );
+        Ok(())
+    };
+    let other = support::mcp_tool(&w.h, "tok-bob", "production_protect", json!({})).await?;
+    refused_with(&other, "onboarding task")?;
+
+    // AC3: an owner who is not a repository admin is refused; nothing is created.
+    w.grant("alice", "shop", "push");
+    let not_admin = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    refused_with(&not_admin, "not a repository admin")?;
+    w.grant("alice", "shop", "admin");
+
+    // A disabled owner is never acted for.
+    w.h.store
+        .update_user_flags(&alice_user.id, Some(Some(w.h.app.now())), None)
+        .await?;
+    let disabled = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    refused_with(&disabled, "disabled")?;
+    w.h.store
+        .update_user_flags(&alice_user.id, Some(None), None)
+        .await?;
+
+    // GitHub's refusal is passed on, not guessed at.
+    w.github
+        .refuse_rulesets
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let plan = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    refused_with(&plan, "Upgrade to GitHub Pro")?;
+    w.github
+        .refuse_rulesets
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     assert!(w.github.rulesets().is_empty(), "{:?}", w.github.rulesets());
 
     // AC1: as the admin who started onboarding, one people-only ruleset, with her token.
-    support::seed_live_attempt(&w.h, task.id.as_str(), "tok-prep").await?;
     let done = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
     let record = support::tool_text(&done);
     assert_eq!(record["protected"], true, "{done}");

@@ -47,9 +47,11 @@ sign-in, GitHub refuses the ruleset).
   pull-request rule (existing repositories keep their own merge rules). Its name is
   `yulius-people-only-<branch>`, distinct from the `yulius-production-<branch>` ruleset new projects
   get.
-- R2. It acts as the task's owner, with their GitHub user token, and only when GitHub says that
+- R2. It works only in the sandbox's onboarding task (origin `onboarding`), and acts as the task's
+  owner, with their GitHub user token, only when their account is enabled and GitHub says that
   person is a repository admin; never with the App's installation token and never with the agent's
-  token. Without a GitHub identity or sign-in, without admin rights, or when GitHub refuses, it is
+  token. In another task, for a disabled owner, without a GitHub identity or sign-in, without admin
+  rights, or when GitHub refuses (its error passed on, not guessed at), it is
   refused with what a person must do (the same setting the onboarding warning names) and the hint to
   ask with `needs_you`.
 - R3. It only adds protection: when the agents' token already cannot write the branch it changes
@@ -77,8 +79,9 @@ sign-in, GitHub refuses the ruleset).
   pull-request rule; the tool answers `protected: true`; the onboarding status warning is gone.
 - AC2. Calling it again changes nothing (no second ruleset) and answers that the branch is already
   protected.
-- AC3. A task whose owner is not a repository admin is refused, nothing is created, and the message
-  names the ruleset and `needs_you`.
+- AC3. The onboarding task is refused when its owner is not a repository admin, when the owner's
+  account is disabled, and when GitHub refuses the ruleset (its error shown); another task of the
+  sandbox is refused; nothing is created and each message names the ruleset and `needs_you`.
 - AC4. The onboarding task's prompt for an unprotected production branch names `production_protect`
   and `needs_you`, and no longer says only a person can apply it.
 
@@ -104,5 +107,9 @@ sign-in, GitHub refuses the ruleset).
   deletions and Block force pushes, and an existing repository's merge policy is its own.
 - A distinct name (`yulius-people-only-<branch>`) so it never collides with a `yulius-production-*`
   ruleset an older Yulius created without the update rule; rulesets layer, so both apply.
-- The tool is served to every task, not only onboarding: it can only tighten, and a person who asks
-  a later task to protect production should not hit the same wall.
+- Only the onboarding task may use it (review round 1): ADR-0129's consent is a person starting
+  onboarding; any other task (an automation run, a task an agent created, a prompt injected through
+  an issue) must not tighten a repository's protection unasked. Served to every task so the
+  refusal can say so; a later request goes through a person or a new onboarding.
+- A disabled owner is never acted for (review round 1), as `owner_github_token` and the merge train
+  already refuse.

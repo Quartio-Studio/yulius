@@ -129,7 +129,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     ),
     (
         "production_protect",
-        "protect the production branch from agents, as the task's admin owner",
+        "onboarding: protect the production branch from agents, as its admin owner",
     ),
     (
         "issue_create",

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::model::SandboxRecord;
+use crate::model::{SandboxRecord, TaskOrigin};
 use crate::onboarding::production_ruleset_fix;
 use crate::ports::github::{RepoAccess, RulesetRequest};
 
@@ -29,12 +29,13 @@ pub fn people_only_ruleset(branch: &str) -> RulesetRequest {
 
 impl App {
     /// `production_protect`: adds [`people_only_ruleset`] to the sandbox's production branch as
-    /// the task's owner, unless the agents' token already cannot write it.
+    /// the onboarding task's owner, unless the agents' token already cannot write it. Only the
+    /// onboarding task: starting onboarding is the person's consent (ADR-0129).
     ///
     /// # Errors
-    /// `Conflict` (naming the setting and `needs_you`) in a playground, when the owner has no
-    /// usable GitHub sign-in or is not a repository admin, or when GitHub refuses the ruleset;
-    /// store failures.
+    /// `Conflict` (naming the setting and `needs_you`) in a playground, outside the onboarding
+    /// task, when the owner is disabled, has no usable GitHub sign-in or is not a repository
+    /// admin, or when GitHub refuses the ruleset; store failures.
     pub(crate) async fn tool_production_protect(&self, ctx: &AgentContext) -> AppResult<Value> {
         let sandbox = self
             .deps
@@ -52,6 +53,11 @@ impl App {
                 "{why} Ask a person with `needs_you`, quoting the setting: {fix}"
             ))
         };
+        if ctx.task.origin != TaskOrigin::Onboarding {
+            return Err(refused(
+                "Only the onboarding task protects the production branch through Yulius.".into(),
+            ));
+        }
         if self.agents_cannot_write(&sandbox, &branch).await {
             return Ok(json!({
                 "protected": true,
@@ -66,6 +72,11 @@ impl App {
             .user(&ctx.task.owner)
             .await?
             .ok_or_else(|| refused("This task's owner no longer exists.".into()))?;
+        if owner.disabled_at.is_some() {
+            return Err(refused(
+                "This task's owner's account is disabled, so Yulius does not act for them.".into(),
+            ));
+        }
         let token = self
             .person_github_token(&owner, "Protecting the production branch")
             .await
@@ -101,7 +112,10 @@ impl App {
             .await
             .map_err(|err| {
                 refused(format!(
-                    "GitHub refused the ruleset ({err}); a private repository on a free plan has no rulesets."
+                    "GitHub refused the ruleset {} ({err}). A ruleset of that name may already \
+                     exist (check https://github.com/{repo}/settings/rules), or the plan may not \
+                     allow rulesets on a private repository.",
+                    ruleset.name
                 ))
             })?;
         let detail = format!("{repo}: ruleset {} on {branch} as {login}", ruleset.name);

@@ -270,7 +270,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "production_protect".into(),
-            description: "Protect this project's production branch from agents (ADR-0114, ADR-0129): Yulius adds a GitHub branch ruleset on it (Restrict updates, Restrict deletions, Block force pushes; only the Repository admin role may bypass) acting as this task's owner, and only when GitHub says that person is a repository admin. It only adds protection and changes nothing when agents already cannot write the branch. Use it when onboarding (or a person) says the production branch is not protected from agents; never change protection from your shell. When it is refused, ask a person with needs_you, quoting the setting it names.".into(),
+            description: "Protect this project's production branch from agents (ADR-0114, ADR-0129): Yulius adds a GitHub branch ruleset on it (Restrict updates, Restrict deletions, Block force pushes; only the Repository admin role may bypass) acting as this task's owner, and only in the onboarding task and when GitHub says that person is a repository admin (and their account is enabled). It only adds protection and changes nothing when agents already cannot write the branch. Use it when your onboarding prompt says the production branch is not protected from agents; never change protection from your shell. When it is refused, ask a person with needs_you, quoting the setting it names.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
