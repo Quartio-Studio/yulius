@@ -1,0 +1,83 @@
+---
+yulius-task: a0bcb221-6c4a-4e7d-9e4d-bd4100dc436f
+status: in-progress
+---
+
+# SPEC-156: Reply in the attention bar opens a reply field
+
+Status: in progress
+Date: 2026-10-15
+Owner: Yulius task #147
+Scope authorization: task #147, "when i click reply, nothing happens. Fix." (screenshot: a
+"Needs you: Add a GitHub ruleset…" bar with its Reply button). Fixes #516.
+
+## Goal
+
+When a person clicks **Reply** in a task's attention bar on a desktop, something visibly happens.
+A reply field opens in the bar with the keyboard in it. The person types an answer and sends it
+(Enter or Send), and the agent gets it as a typed prompt. Escape or Cancel closes the field and
+sends nothing.
+
+## Context
+
+- Symptom: on a desktop, clicking Reply in "Needs you: …" (SPEC-134 CDT-004) or "The agent is
+  waiting for your reply." changes nothing on screen.
+- Root cause: `crates/yulius-server/web/assets/taskview.js` `reply()` only calls
+  `terminal.focus()` (phones focus the quick input). Focus does reach xterm's hidden textarea; an
+  e2e probe on the mock showed `document.activeElement` is `.xterm-helper-textarea` after the
+  click. Claude Code hides the terminal cursor and draws its own, though, so the bar stays as it
+  was and nothing hints where to type. No test clicked Reply: `cd.e2e.ts` only checks the bar's
+  words and its Open link.
+- A person's typed prompt ends the `needs_you` request (`hooks.rs` `hook_prompt_submit`: a typed
+  prompt after recent keystrokes on the terminal socket). Text sent with `terminal.sendKeys` goes
+  over that same socket, as the phone quick input's text does, so it counts as typed.
+- `renderAttention()` rebuilds the bar's children on every task update (`setChildren`). An `input`
+  inside the bar loses the keyboard when it is removed and put back.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| RPL-001 | On a desktop, Reply in the "Needs you" and "waiting for your reply" bars opens a reply field ("Reply to the agent") with Send and Cancel, and the keyboard is in it. | `reply.e2e.ts` |
+| RPL-002 | Enter or Send types the text into the task's terminal and submits it (text, then a separate Enter, as the quick input does); the field closes and empties. Empty text sends nothing. | `reply.e2e.ts` |
+| RPL-003 | Escape or Cancel closes the field and sends nothing; the text typed so far is kept for the next Reply. | `reply.e2e.ts` |
+| RPL-004 | A task update that re-renders the bar while the person types keeps the field, its text, the keyboard and the caret. | `reply.e2e.ts` |
+| RPL-005 | Phones keep their quick input: Reply focuses it, as before. "The agent needs your attention" (a choice in the terminal) keeps focusing the terminal. | unchanged code path (by reading) |
+
+## Plan
+
+- [x] Reproduce the defect and find its root cause
+- [ ] Write the fix spec and the regression test that fails
+- [ ] Fix the cause until the regression test and every gate pass
+- [ ] Independent review in a fresh session, findings fixed test-first
+
+## Acceptance criteria
+
+- Clicking Reply on "Needs you: Add a ruleset" shows a focused "Reply to the agent" field. Typing
+  "Ruleset added" and pressing Enter shows `> Ruleset added` in the task's terminal and closes
+  the field.
+- Escape closes it without anything reaching the session.
+- A task update while typing keeps the text and the keyboard in the field.
+- The page has no axe violations with the field open.
+
+## Test plan
+
+- Regression: `e2e/tests/reply.e2e.ts` fails on the unchanged view (no "Reply to the agent"
+  textbox after the click) and passes with the fix. It waits on conditions: the textbox, the
+  terminal text, and the mock session's input. It never waits on time.
+- Gates: `scripts/dev check`, `scripts/dev lint`, `scripts/dev test`, the e2e suite,
+  `scripts/dev security`.
+
+## Decisions
+
+- **A reply field in the bar, not a visible focus effect.** Options: (a) keep focusing the
+  terminal and add a highlight or hide the bar; (b) open a field in the bar that sends through the
+  terminal. (a) still leaves the person to find Claude Code's prompt line, possibly below a
+  running turn's output. (b) gives the click a visible result on any screen and reuses the quick
+  input's way of typing into the session, so the server needs no change. A person's reply is
+  still a typed prompt, so it still ends `needs_you`. Chosen: (b). This is local to the view and
+  easy to reverse, so it needs no ADR.
+- A one-line `input`, as the quick input: a newline would submit early in Claude Code, and a
+  longer answer can still be typed in the terminal.
+- "The agent needs your attention" keeps focusing the terminal. There the answer is usually a
+  choice in Claude Code's menu (arrow keys), not text.
