@@ -7,7 +7,7 @@ import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
 import { href, placeFor } from './router.js';
-import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask, archiveAll } from './actions.js';
+import { openSandboxDialog, confirmRemoveSandbox, openMoveToGitHubDialog, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
@@ -15,6 +15,12 @@ import { NEW_TASK_KEYS, NEW_TASK_ARIA, HOME_KEYS, HOME_ARIA } from './shortcuts.
 import { createSplitter, layoutPrefs } from './splitter.js';
 import { isPhone } from './theme.js';
 import { INSTANCE_ROUTE } from './updates.js';
+
+/** Whether this instance has its GitHub App (a playground can move to GitHub then, SPEC-176). */
+function githubConnected(ctx) {
+  const me = ctx.store.state.me || {};
+  return !(me.instance && me.instance.github_configured === false);
+}
 
 /** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
@@ -141,6 +147,8 @@ export function createTabRow(ctx) {
         openMenu({ x: event.clientX, y: event.clientY }, [
           { label: 'Open', onSelect: () => ctx.navigate(placeFor(`/s/${encodeURIComponent(sandbox.slug)}`, 'sandbox')) },
           sandbox.repo && sandbox.repo.url ? { label: 'Open on GitHub', onSelect: () => window.open(sandbox.repo.url, '_blank', 'noopener,noreferrer') } : null,
+          // A playground becomes a GitHub sandbox once GitHub is connected (SPEC-176).
+          sandbox.playground && githubConnected(ctx) && allows(sandbox.access, 'admin') ? { label: 'Move to GitHub…', onSelect: () => openMoveToGitHubDialog(ctx, sandbox) } : null,
           { separator: true },
           // Reordering without dragging (WCAG 2.5.7): the menu moves a tab one place.
           { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(-1) },

@@ -211,6 +211,19 @@ the request is kept in `playground_purges`, and its `origin` and sandbox directo
 only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
 once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
 
+A playground moves to GitHub
+([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
+[decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
+repository of the instance owner that its mover could import (`admin` or `maintain` there; the
+superadmin: one the App can access). Detached from its request, while no task of it is live or
+queued and no CI run of it is active, and holding the
+sandbox's merge pass, Yulius pushes every branch and tag of `origin` to it in one atomic push with
+the installation token (the default branch alone first, so GitHub takes it as its default), removes the clone's own transport settings, points its `origin` at it and refreshes its
+`origin/*` refs from the bare `origin` by path (no token through the clone), then writes the GitHub owner,
+name and repository id into the record in one compare-and-set (the commit point; a failure before
+it points the clone back). It then deletes the bare `origin`. From then on every playground test
+(`is_playground`) answers no, so access, credentials, delivery and CI take their GitHub paths.
+
 ```mermaid
 flowchart LR
   B["Browser: folder → tar.gz"] -->|"POST /api/playgrounds"| S["Server: unpack files/ and the history of git/"]
@@ -222,6 +235,8 @@ flowchart LR
   R -->|"dev head"| D["branch/dev run (Yulius CI)"]
   C -->|"passed: Yulius squashes, pushes by path"| O
   P["Purge of a removed playground"] -.->|"once nothing of the sandbox runs: delete"| O
+  O -->|"Move to GitHub: atomic push of every branch and tag"| G[("GitHub: empty repository of the owner")]
+  G -.->|"then origin of sandbox/repo; data/playgrounds/id.git deleted"| R
 ```
 
 ## Parallel tasks at merge
@@ -523,6 +538,15 @@ token the person's environment holds, answered while the person may work in the 
 access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
 proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+
+The Superagent reads the agent vault too: `secrets_list` names its sandbox's agent secrets (never
+a value), and `secret_verify`, the Superagent's only (a matching candidate's hash must not reach
+a task transcript other members read), compares the SHA-256 of a value the
+person holds with the stored value and its variants (a final line break; literal `\n` as line
+breaks, since an agent secret never spans lines), answering only the kind of match and the line
+count. Both run without asking; the proxy, `.env` copies, host requests and the browser stay a
+task's ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
+[decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
 
 ```mermaid
 flowchart LR

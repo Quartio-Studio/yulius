@@ -149,7 +149,7 @@ creating the organisation's repositories. Until then the playground is the one w
   within the slots, and a per-person lock is not worth its state. A removed playground keeps its
   files and counts until a purge exists (#420).
 - **Follow-ups (issues):** #409 CLI onboarding into a playground, #410 moving a playground to
-  GitHub, #411 Yulius CI on a playground's heads, #412 teammates without GitHub, #420 purging a
+  GitHub (done in [SPEC-176](SPEC-176-fix-410-move-a-playground-to-a-github-re.md)), #411 Yulius CI on a playground's heads, #412 teammates without GitHub, #420 purging a
   removed playground's files. Earlier list: `yulius onboard --playground` for a CLI checkout; moving a playground to
   a GitHub repository once GitHub is connected; Yulius CI on a playground's heads; teammates in a
   playground without GitHub.

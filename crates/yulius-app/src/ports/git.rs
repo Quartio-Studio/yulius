@@ -360,6 +360,42 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, source);
         unsupported("copying a repository's history")
     }
+    /// Pushes every branch and tag of the repository `repo` to `url` in one atomic push that
+    /// never forces, with `token`; `first`, when given, goes alone before, so an empty GitHub
+    /// repository takes it as its default branch (a playground moved to GitHub, SPEC-176).
+    async fn push_all_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        first: Option<&str>,
+        token: &Secret,
+    ) -> AppResult<()> {
+        let _ = (repo, url, first, token);
+        unsupported("pushing a repository")
+    }
+    /// The branches and tags of the repository at `url` as it answers now, `(ref name, commit)`
+    /// sorted by name (SPEC-176).
+    async fn remote_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        token: &Secret,
+    ) -> AppResult<Vec<(String, String)>> {
+        let _ = (repo, url, token);
+        unsupported("listing a remote's refs")
+    }
+    /// Removes the clone `repo`'s own transport settings (`http.*`, `url.*`, includes, credential
+    /// helpers, proxy, SSH and alternate-refs commands, submodule recursion), refusing a `.git`
+    /// that is not a directory or a linked configuration file (SPEC-176).
+    async fn scrub_transport_config(&self, repo: &Path) -> AppResult<()> {
+        let _ = repo;
+        unsupported("scrubbing a clone's configuration")
+    }
+    /// Points the clone `repo`'s `origin` at `url` (SPEC-176).
+    async fn set_origin_url(&self, repo: &Path, url: &str) -> AppResult<()> {
+        let _ = (repo, url);
+        unsupported("repointing origin")
+    }
     /// Lands the request's head on its branch of `origin` as one commit: the tree Git's merge of
     /// `base` and `head` gives, with `base` as its only parent, pushed without forcing (SPEC-099:
     /// a playground's merge).

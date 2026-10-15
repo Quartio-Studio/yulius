@@ -47,6 +47,7 @@ mod merge_train;
 mod metrics_recount;
 mod notes;
 mod playground;
+mod playground_move;
 mod pool_supervision;
 mod prepared;
 mod preview;

@@ -33,7 +33,10 @@ watching, steering and unblocking.
   pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099). A local checkout without GitHub, with its Claude Code
   sessions, comes in with `yulius onboard --playground`, and removing a playground can delete its
-  code from the server for good, which frees its place among its maker's 10 (SPEC-171).
+  code from the server for good, which frees its place among its maker's 10 (SPEC-171). Once GitHub
+  is connected, an admin of a playground moves it into an empty repository of the instance owner
+  ("Move to GitHub…" in its sandbox menu): its branches and tags are pushed there, it becomes a
+  GitHub sandbox with the same tasks and history, and its access follows GitHub (SPEC-176).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
   the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
@@ -48,7 +51,10 @@ watching, steering and unblocking.
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). A server taken from
   `.mcp.json` whose key is an agent secret's placeholder needs the egress proxy, which the
-  Superagent does not have yet; one whose value is `${secret:NAME}` works.
+  Superagent does not have yet; one whose value is `${secret:NAME}` works. It reads the agent
+  vault (names, never values): it names the project's agent secrets and tells whether a
+  key the person holds in a file is the one in the vault, from the file's SHA-256, also when the
+  vault holds a multi-line key with literal `\n` (SPEC-178).
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
   task run on every subscription and to the Superagent, their secrets taken from the agent
   secrets. A repository's

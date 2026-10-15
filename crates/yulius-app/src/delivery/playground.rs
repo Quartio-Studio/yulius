@@ -92,6 +92,15 @@ impl App {
         checks: bool,
     ) -> AppResult<PlaygroundMerge> {
         let sandbox = self.dlv_sandbox_of(task).await?;
+        // Read under the pass: a move to GitHub that held it before has made it a GitHub sandbox
+        // and deleted the `origin` this merge would push to (SPEC-176).
+        if !sandbox.is_playground() {
+            return Err(AppError::Conflict(
+                "not merged: this playground has just moved to GitHub; merge again, as a pull \
+                 request"
+                    .into(),
+            ));
+        }
         let profile = delivery_profile(&sandbox);
         let integration = profile.integration_branch.as_str();
         let (Some(branch), Some(worktree)) =

@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-099](../../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md).
+Amended by [0142](0142-a-playground-moves-into-an-empty-github-repository.md): a playground can move
+into a GitHub repository.
 
 ## Context
 

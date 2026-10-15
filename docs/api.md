@@ -77,6 +77,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
+| POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
 | POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
 
 A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
@@ -1446,3 +1447,12 @@ task; other hooks answer as usual.
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
   for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
   redacted.
+- MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
+  `sha256sum`'s line) →
+  `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`
+  on a match only): whether the
+  candidate whose SHA-256 is given is the secret's value, without a final line break, or with its
+  line breaks as the literal `\n` the vault holds; never the value or a hash Yulius computed from
+  it. Production secrets are refused; audited once per vault generation, sandbox, caller, secret
+  and candidate (`vault.agent.verify`). The Superagent (`ck_` token) is served `secrets_list` and
+  `secret_verify`, not the other secret tools; task agents are not served `secret_verify`.

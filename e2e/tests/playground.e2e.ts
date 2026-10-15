@@ -14,6 +14,8 @@ type Mocked = Window & {
     playgroundUploads?: { name: string; names: string[] }[];
     sandboxes: { slug: string; playground?: boolean }[];
     purges?: string[];
+    moves?: { slug: string; name: string }[];
+    moveRefusal?: string;
     purgeWaitsFor?: string[];
   };
 };
@@ -108,8 +110,8 @@ test('a folder is packed with its history and without what stays behind (unit, i
   ]);
 });
 
-/** Makes a playground from the Empty template and opens the menu of its sandbox tab. */
-async function playgroundMenu(browser: Browser, screen: Screen): Promise<void> {
+/** Makes a playground from the Empty template, opens the menu of its sandbox tab and picks `item`. */
+async function playgroundMenu(browser: Browser, screen: Screen, item: RegExp = /^Remove from/): Promise<void> {
   await screen.getByRole('button', 'Start from a template').click();
   const dialog = screen.getByRole('dialog', 'Add sandbox');
   await dialog.getByRole('textbox', 'Name').fill('Lab');
@@ -120,7 +122,7 @@ async function playgroundMenu(browser: Browser, screen: Screen): Promise<void> {
     const box = tabEl.getBoundingClientRect();
     tabEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 10, clientY: box.top + 10 }));
   });
-  await screen.getByRole('menuitem', /^Remove from/).click();
+  await screen.getByRole('menuitem', item).click();
 }
 
 // SPEC-171 PGL-008 (issue #420): removing a playground offers to delete its code for good, and says
@@ -163,4 +165,53 @@ test('removing a playground without the purge keeps its code', async ({ app, bro
   await expect(browser.locator('.toast:has-text("Playground lab removed.")')).toBeVisible();
   const purges = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.purges);
   expect(purges).toBeUndefined();
+});
+
+// SPEC-176 MPG-006 (issue #410): once GitHub is connected, an admin moves a playground into an
+// empty GitHub repository from its sandbox menu; it then reads as a GitHub sandbox.
+test('a playground moves to GitHub from the sandbox menu', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0'));
+  await playgroundMenu(browser, screen, /^Move to GitHub/);
+  const dialog = screen.getByRole('dialog', 'Move lab to GitHub');
+  await expect(dialog).toContainText('empty repository of Quartio-Studio');
+  await expect(dialog).toContainText('Access then follows GitHub');
+  const name = dialog.getByRole('textbox', /^Repository name/);
+  await expect(name).toHaveValue('lab');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // GitHub's refusal is said in the dialog, which stays open.
+  await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.moveRefusal = 'Quartio-Studio/lab is not empty (1 branch or tag on GitHub)'; });
+  await dialog.getByRole('button', 'Move to GitHub').click();
+  await expect(dialog.getByRole('alert')).toHaveText(/is not empty/);
+  await browser.evaluate(() => { delete (window as unknown as Mocked).__yuliusMock.moveRefusal; });
+
+  await name.fill('lab-app');
+  await dialog.getByRole('button', 'Move to GitHub').click();
+  await expect(browser.locator('.toast:has-text("lab moved to Quartio-Studio/lab-app")')).toBeVisible();
+  const state = await browser.evaluate(() => {
+    const mocked = (window as unknown as Mocked).__yuliusMock;
+    return { moves: mocked.moves, playground: mocked.sandboxes.find((s) => s.slug === 'lab')?.playground };
+  });
+  expect(state).toEqual({ moves: [{ slug: 'lab', name: 'lab-app' }], playground: false });
+  await browser.evaluate(() => { location.hash = '#/'; });
+  // Named by its repository now, as the server names a GitHub sandbox; its slug stays.
+  const card = screen.getByRole('article', /^lab-app$/);
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText('Playground · local Git on this server');
+});
+
+test('without GitHub a playground offers no move', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0&github=0'));
+  await screen.getByRole('button', 'Start from a template').click();
+  const dialog = screen.getByRole('dialog', 'Add sandbox');
+  await dialog.getByRole('textbox', 'Name').fill('Lab');
+  await dialog.getByRole('button', 'Start playground').click();
+  await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/lab');
+  await browser.evaluate(() => {
+    const tabEl = [...document.querySelectorAll('.tabrow .tab')].find((el) => el.querySelector('.tab-name')?.textContent === 'lab')!;
+    const box = tabEl.getBoundingClientRect();
+    tabEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 10, clientY: box.top + 10 }));
+  });
+  await expect(screen.getByRole('menuitem', /^Remove from/)).toBeVisible();
+  await expect(browser.locator('[role="menuitem"]:has-text("Move to GitHub")')).toHaveCount(0);
 });

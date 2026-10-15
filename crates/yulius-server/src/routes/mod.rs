@@ -216,6 +216,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/sandboxes/{sid}/purge", post(projects::purge))
         .route(
+            "/api/sandboxes/{sid}/move-to-github",
+            post(projects::move_to_github),
+        )
+        .route(
             "/api/sandboxes/{sid}/onboarding/skip",
             post(projects::skip_onboarding),
         )

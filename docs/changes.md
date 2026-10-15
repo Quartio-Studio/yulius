@@ -13,6 +13,25 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   tail of a long session first). "You are watching @owner's task" sits above it with Request
   control, the sidebar shows the owner's initials on their tasks, and an electro-blue pixel octopus
   with dot eyes and an ε mouth crawls between the top corners. New `GET /api/tasks/{tid}/transcript`.
+- The Superagent reads the agent vault (SPEC-178, ADR-0144, task #165): `secrets_list` names its
+  project's agent secrets (never values) with guidance for a session outside the proxy, and the
+  new `secret_verify {secret, sha256}`, the Superagent's only, tells whether a value the person holds
+  is a secret's value from its SHA-256: exactly, without a final line break, or with its line
+  breaks as the literal `\n` a multi-line key is stored with. Both run without asking; each
+  distinct check is audited (`vault.agent.verify`).
+- The original prompt reads as written (SPEC-180, fixes #565, task #167). An image inside the
+  text was a thumbnail up to 160 px high, so its line grew to the picture's height. It is now the
+  composer's one-line `Image N` placeholder, which opens the image. The "Attached files" list
+  below the text holds every file once, each image's thumbnail carrying its number.
+- A playground moves to GitHub (SPEC-176, ADR-0142, task #132, fixes #410). Once GitHub is
+  connected, an admin of a playground picks "Move to GitHub…" in its sandbox menu and names an empty
+  repository of the instance owner that they could import (`admin` or `maintain` on it; the
+  superadmin: one the App can access). Yulius pushes every branch and tag there in one atomic push,
+  points the sandbox's clone at it, records it (same slug, tasks, sessions and steps) and deletes
+  the server's copy; access then mirrors GitHub. A repository with anything else in it, a live or
+  queued task, or a failed push leaves the playground as it was
+  (`POST /api/sandboxes/{sid}/move-to-github`).
+
 - The session view says when the server cut a diff or a context, and every scroller is reachable
   (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
   `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the
