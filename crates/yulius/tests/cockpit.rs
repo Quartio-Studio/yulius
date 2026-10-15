@@ -1129,6 +1129,25 @@ async fn cockpit_tool(
     Ok((record, body["result"]["isError"].as_bool().unwrap_or(true)))
 }
 
+/// Waits until `task`'s start has ended (it rests: failed, stopped or closed).
+async fn task_rests(
+    f: &Fixture,
+    task: &yulius_domain::ids::TaskId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::TaskStore;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let status = f.h.store.task(task).await?.ok_or("task")?.status;
+        if status.is_resting() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the task did not come to rest: {status:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
 /// its owner; nothing else is served, and the token ends with the Cockpit and its owner's
 /// access.
@@ -1234,7 +1253,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         .ok_or("audit entry")?;
     assert_eq!(entry.actor, "cockpit:alice");
 
-    // Runs it now, then deletes it, and archives and deletes the task (which ended: no
+    // Runs it now, then deletes it, and archives and deletes the task once it ended (no
     // repository here): each audited with the Cockpit (SPEC-066 MGT-010, MGT-011).
     let (ran, is_error) = cockpit_tool(
         &f,
@@ -1253,6 +1272,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     .await?;
     assert!(!is_error, "{deleted}");
     assert!(f.h.store.automation(id).await?.is_none());
+    // Its start fails in the background, after `task_create` answered (#460: under load the
+    // archive came first and was refused while the task was still queued).
+    task_rests(&f, &task.id).await?;
     let (archived, is_error) =
         cockpit_tool(&f, &token, "task_archive", json!({"number": task.number})).await?;
     assert!(!is_error, "{archived}");
