@@ -559,6 +559,7 @@ impl App {
                 sha256: input.sha256.clone(),
                 selection: input.selection,
                 hello: input.hello,
+                seq: input.seq,
             },
         );
         Ok(())
