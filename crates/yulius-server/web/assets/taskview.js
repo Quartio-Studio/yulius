@@ -8,7 +8,6 @@ import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
-import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
@@ -329,13 +328,41 @@ export function mountTaskView(ctx, sandbox, task) {
   // the empty terminal, where a message is typed; the request shows as the agent will get it.
   const queueSlot = h('div', { class: 'queue-slot', hidden: true });
   const requestEl = h('div', { class: 'queue-request', role: 'region', 'aria-label': 'Request', tabindex: 0 });
-  const queueBox = h('textarea', { class: 'input queue-input', rows: 2, placeholder: 'Queue a message for the agent…', 'aria-label': 'Message for the agent', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 65536 });
+  // The message box is the composer's prompt input (SPEC-168): a file pasted or dropped uploads to
+  // the task's own folder and sits at the caret as a placeholder that moves and deletes like one
+  // character; double-click opens it. Its images are numbered after the request's, in upload order.
+  const queueFiles = new Map(); // every file uploaded here: path → { name, type, file }
+  let queueImages = []; // the paths of the images uploaded since the last message was queued
+  let requestImages = 0;
+  const queueBox = createPromptInput({
+    label: 'Message for the agent',
+    placeholder: 'Queue a message for the agent… Paste or drop images where they belong.',
+    keyshortcuts: SUBMIT_ARIA,
+    maxLength: 65536,
+    face: (path) => {
+      const item = queueFiles.get(path);
+      if (!item) return null;
+      if (!IMAGE_PATH.test(path)) return { name: item.name };
+      const n = queueImages.indexOf(path) + 1;
+      return { name: item.name, image: true, label: n ? `Image ${requestImages + n}` : 'Image' };
+    },
+    known: (path) => queueFiles.has(path),
+    onSubmit: () => queueMessage(),
+    onOpen: (path) => openQueuedFile(path),
+  });
+  queueBox.el.classList.add('queue-input');
+  function openQueuedFile(path) {
+    const item = queueFiles.get(path);
+    if (!item) return;
+    const urlOf = (blob) => { const url = URL.createObjectURL(blob); fileUrls.push(url); return url; };
+    openAttachment(item, { image: IMAGE_PATH.test(path) ? urlOf(item.file) : null, url: urlOf });
+  }
   const queueButton = h('button', { type: 'button', class: 'btn btn-primary', title: `Queue (${SUBMIT_KEYS})`, onClick: () => queueMessage() }, 'Queue');
   const queueError = h('div', { class: 'field-error', role: 'alert' });
   const queueNote = h('span', { class: 'muted' });
   // A card kept after the start (below) goes once the person has their text (SPEC-056 WUI-106).
   const queueDismiss = h('button', { type: 'button', class: 'btn', hidden: true, onClick: () => {
-    queueBox.value = '';
+    queueBox.setValue('');
     queueError.textContent = '';
     renderQueue();
     if (!isPhone()) terminal.focus();
@@ -367,6 +394,8 @@ export function mountTaskView(ctx, sandbox, task) {
     const { parts, paths } = parsePrompt(text);
     let images = 0;
     const numbers = paths.map((path) => (IMAGE_PATH.test(path) ? (images += 1) : 0));
+    // The box's images are numbered after these.
+    if (requestImages !== images) { requestImages = images; queueBox.refresh(); }
     setChildren(requestEl, parts.map((part) => {
       if ('text' in part) return part.text;
       const path = paths[part.file];
@@ -376,23 +405,34 @@ export function mountTaskView(ctx, sandbox, task) {
         icon(n ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, n ? `Image ${n}` : name));
     }));
   }
+  const queueCompose = h('div', { class: 'queue-compose' }, queueBox.el, queueButton, queueDismiss);
   setChildren(queueSlot, h('section', { class: 'queue-card', role: 'region', 'aria-label': 'Queued messages' },
     h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'), queueNote),
     requestEl,
-    h('div', { class: 'queue-compose' }, queueBox, queueButton, queueDismiss),
+    queueCompose,
     queueError));
-  attachMarkdownInput(queueBox, { onSubmit: () => queueMessage() });
+  attachPromptDrop(ctx, { box: queueCompose, prompt: queueBox, label: 'Drop to add to the message', upload: (file, options) => taskAttachments(ctx, current.id)(file, options), onAttach: (items, place) => {
+    for (const item of items) {
+      queueFiles.set(item.path, { name: item.name, type: item.file.type, file: item.file });
+      if (IMAGE_PATH.test(item.path) && !queueImages.includes(item.path)) queueImages.push(item.path);
+    }
+    if (place && alive) place.insert(items.map((item) => item.path));
+  } });
   let queueing = false;
   async function queueMessage() {
+    if (queueing || queueBox.readOnly) return;
+    // A file still uploading is not in the text yet: queueing now would leave it out.
+    if (queueBox.el.querySelector('.pi-pending')) { queueError.textContent = 'Wait for the upload to finish.'; return; }
     const text = queueBox.value;
-    if (queueing || !text.trim() || queueBox.readOnly) return;
+    if (!text.trim()) return;
     queueing = true;
     queueButton.disabled = true;
     queueError.textContent = '';
     try {
       const out = await ctx.api.post(`/api/tasks/${enc(current.id)}/queued-messages`, { text });
       if (!alive) return;
-      queueBox.value = '';
+      queueBox.setValue('');
+      queueImages = [];
       if (detail) detail = { ...detail, request: out.request };
       renderQueue();
     } catch (error) {

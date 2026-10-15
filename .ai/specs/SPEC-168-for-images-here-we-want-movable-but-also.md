@@ -59,7 +59,7 @@ like one character, and reaches the agent at its place when the message is queue
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The queue card's request shows its files as clickable Image N placeholders
-- [ ] The queue box takes pasted and dropped images as movable placeholders and queues them
+- [x] The queue box takes pasted and dropped images as movable placeholders and queues them
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

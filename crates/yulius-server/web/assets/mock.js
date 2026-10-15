@@ -2076,9 +2076,11 @@ function storeAttachment(db, sid, folder, query, body) {
   db.attachments.set(folder, names);
   return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
-route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
+route('POST', `/api/tasks/${ID}/attachments`, async ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`), as for the composer's uploads.
+  if (db.holdUpload) await db.holdUpload;
   return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {
