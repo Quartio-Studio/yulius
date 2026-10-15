@@ -57,6 +57,10 @@ pub struct NotePresence {
     /// The browser tab (at most 32 letters and digits), so one person's tabs are told apart.
     #[serde(default)]
     pub client: String,
+    /// Grows with each update the tab sends, so receivers drop one that arrives after a newer
+    /// one (a leave sent as the page goes may overtake it; SPEC-170 TKS-003). 0: not numbered.
+    #[serde(default)]
+    pub seq: u64,
 }
 
 #[cfg(test)]
@@ -75,7 +79,14 @@ mod tests {
     #[test]
     fn presence_refuses_unknown_fields_and_says_hello_only_when_asked() {
         let left = serde_json::from_str::<NotePresence>(r#"{"revision":2,"selection":null}"#);
-        assert!(left.is_ok_and(|left| left.selection.is_none() && !left.hello));
+        assert!(left.is_ok_and(|left| left.selection.is_none() && !left.hello && left.seq == 0));
+        let numbered =
+            serde_json::from_str::<NotePresence>(r#"{"revision":2,"selection":null,"seq":9}"#);
+        assert!(numbered.is_ok_and(|numbered| numbered.seq == 9));
+        assert!(
+            serde_json::from_str::<NotePresence>(r#"{"revision":2,"selection":null,"seq":-1}"#)
+                .is_err()
+        );
         assert!(
             serde_json::from_str::<NotePresence>(r#"{"revision":2,"selection":null,"x":1}"#)
                 .is_err()

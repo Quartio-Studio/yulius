@@ -1,4 +1,4 @@
-import { test, type Browser } from '@e2e-dev/web';
+import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
@@ -10,7 +10,12 @@ failOnPageErrors();
 // dropped folder becomes one and opens; a template makes one from the Add sandbox dialog.
 
 type Mocked = Window & {
-  __yuliusMock: { playgroundUploads?: { name: string; names: string[] }[]; sandboxes: { slug: string; playground?: boolean }[] };
+  __yuliusMock: {
+    playgroundUploads?: { name: string; names: string[] }[];
+    sandboxes: { slug: string; playground?: boolean }[];
+    purges?: string[];
+    purgeWaitsFor?: string[];
+  };
 };
 
 /** Dispatches a drop of loose files (name, text) on the playground drop zone. */
@@ -101,4 +106,61 @@ test('a folder is packed with its history and without what stays behind (unit, i
   expect(names.out).toEqual([
     'files/README.md', `files/${names.long}`, 'git/HEAD', 'git/packed-refs', 'git/objects/ab/cdef', 'git/refs/heads/main', 'files/docs/target.md',
   ]);
+});
+
+/** Makes a playground from the Empty template and opens the menu of its sandbox tab. */
+async function playgroundMenu(browser: Browser, screen: Screen): Promise<void> {
+  await screen.getByRole('button', 'Start from a template').click();
+  const dialog = screen.getByRole('dialog', 'Add sandbox');
+  await dialog.getByRole('textbox', 'Name').fill('Lab');
+  await dialog.getByRole('button', 'Start playground').click();
+  await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/lab');
+  await browser.evaluate(() => {
+    const tabEl = [...document.querySelectorAll('.tabrow .tab')].find((el) => el.querySelector('.tab-name')?.textContent === 'lab')!;
+    const box = tabEl.getBoundingClientRect();
+    tabEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 10, clientY: box.top + 10 }));
+  });
+  await screen.getByRole('menuitem', /^Remove from/).click();
+}
+
+// SPEC-171 PGL-008 (issue #420): removing a playground offers to delete its code for good, and says
+// before it happens that this cannot be undone; left unchecked, the code stays.
+test('removing a playground offers to delete its code for good', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0&github=0'));
+  await playgroundMenu(browser, screen);
+  const dialog = screen.getByRole('dialog', /^Remove lab/);
+  await expect(dialog).toContainText('Its code stays on this server');
+  const purge = dialog.getByRole('checkbox', 'Also delete its code from this server for good');
+  await expect(purge).not.toBeChecked();
+  await expect(dialog.getByRole('alert')).toBeHidden();
+  await purge.click();
+  await expect(dialog.getByRole('alert')).toHaveText(/deleted from this server for good .* This cannot be undone\. Task records and the audit trail stay\./);
+  expect(await axeViolations(browser)).toEqual([]);
+  await dialog.getByRole('textbox', /^Type/).fill('lab');
+  await dialog.getByRole('button', 'Remove playground').click();
+  await expect(browser.locator('.toast:has-text("Playground lab removed and its code deleted.")')).toBeVisible();
+  const purges = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.purges);
+  expect(purges).toEqual(['lab']);
+});
+
+test('a playground removed while it still runs says when its code goes', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0&github=0'));
+  await playgroundMenu(browser, screen);
+  await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.purgeWaitsFor = ['1 agent run']; });
+  const dialog = screen.getByRole('dialog', /^Remove lab/);
+  await dialog.getByRole('checkbox', 'Also delete its code from this server for good').click();
+  await dialog.getByRole('textbox', /^Type/).fill('lab');
+  await dialog.getByRole('button', 'Remove playground').click();
+  await expect(browser.locator('.toast:has-text("Its code is deleted once 1 agent run ended.")')).toBeVisible();
+});
+
+test('removing a playground without the purge keeps its code', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0&github=0'));
+  await playgroundMenu(browser, screen);
+  const dialog = screen.getByRole('dialog', /^Remove lab/);
+  await dialog.getByRole('textbox', /^Type/).fill('lab');
+  await dialog.getByRole('button', 'Remove playground').click();
+  await expect(browser.locator('.toast:has-text("Playground lab removed.")')).toBeVisible();
+  const purges = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.purges);
+  expect(purges).toBeUndefined();
 });

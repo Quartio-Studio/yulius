@@ -719,6 +719,20 @@ onboarding task (adapting the repository to the Yulius standards) waits until so
 ADR-0038). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
 --status` and the sandbox page say what is pending.
 
+A checkout that is not on GitHub (no remote, or another host) goes to a playground instead
+(SPEC-171): `yulius onboard --playground [path] [--name <name>]` sends every local branch and tag,
+the uncommitted work and the chosen sessions to a playground of yours named after the checkout
+directory (or `--name`). The first run makes it, with the uncommitted work as one commit on the
+checked-out branch (a detached `HEAD` is refused); later runs land in it under `import/<login>/`.
+Nothing is pushed anywhere and GitHub is never called; it counts toward your 10 playgrounds.
+
+Removing a playground can delete its code for good (the removal dialog's "Also delete its code
+from this server for good", or `POST /api/sandboxes/{sid}/purge`; the superadmin can purge an
+already removed one through the API). Its `<data>/playgrounds/<id>.git` and
+`<data>/sandboxes/<id>/` are deleted once no agent run, shell, browser, CI run or other process of
+it is left, within a disk upkeep round (5 minutes); task records, the removal's export under
+`<data>/exports/` and the audit (`sandbox.purge_requested`, `sandbox.purged`) stay (ADR-0139).
+
 ### Dropped files
 
 Files users drag onto the editor are written into the repository or a task worktree; files

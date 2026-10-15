@@ -42,6 +42,7 @@ use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, TaskRecord, UserRecord};
+use crate::playground::UploadTarget;
 use crate::ports::store::TaskFieldUpdate;
 use crate::ports::store_ext::ImportJobRecord;
 use crate::projects::{blocking, clone_url, identity};
@@ -81,6 +82,9 @@ pub enum JobState {
     Completed,
     /// Applying failed; completing again retries.
     Failed,
+    /// A new playground's upload replaced by a newer one of its person (SPEC-171); its files are
+    /// gone and it never completes.
+    Superseded,
 }
 
 impl JobState {
@@ -94,6 +98,7 @@ impl JobState {
             Self::Applying => "applying",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Superseded => "superseded",
         }
     }
 
@@ -107,6 +112,7 @@ impl JobState {
             "applying" => Some(Self::Applying),
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
+            "superseded" => Some(Self::Superseded),
             _ => None,
         }
     }
@@ -366,7 +372,6 @@ impl App {
                 bad.session_id
             )));
         }
-        refuse_non_github(req.owner.trim())?;
         let login = self.login_of(&ctx.user.id).await;
         let new_states = || {
             req.sessions
@@ -377,6 +382,32 @@ impl App {
                 })
                 .collect::<Vec<_>>()
         };
+        if req.playground {
+            if !req.owner.trim().is_empty() {
+                return Err(AppError::Invalid(
+                    "a playground upload names no GitHub owner".into(),
+                ));
+            }
+            match self.own_playground(&ctx.user, &req.name).await? {
+                Some(record) => return self.plan_for(ctx, req, record, login).await,
+                None => {
+                    // A new playground is made by the upload, within the person's limit (PGL-002).
+                    let refusal = match self.playground_quota(&ctx.user).await {
+                        Ok(()) => None,
+                        Err(AppError::Conflict(reason)) => Some(reason),
+                        Err(err) => return Err(err),
+                    };
+                    return Ok(OnboardPlan {
+                        login,
+                        sandbox: None,
+                        can_create: refusal.is_none(),
+                        refusal,
+                        sessions: new_states(),
+                    });
+                }
+            }
+        }
+        refuse_non_github(req.owner.trim())?;
         let Some(record) = self
             .deps
             .store
@@ -397,6 +428,27 @@ impl App {
                 refusal,
                 sessions: new_states(),
             });
+        };
+        self.plan_for(ctx, req, record, login).await
+    }
+
+    /// The plan of an upload into `record`, an existing sandbox: the caller's access, which
+    /// offered sessions it needs and its onboarding state.
+    async fn plan_for(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        req: &OnboardPlanRequest,
+        record: SandboxRecord,
+        login: String,
+    ) -> AppResult<OnboardPlan> {
+        let new_states = || {
+            req.sessions
+                .iter()
+                .map(|s| SessionPlan {
+                    session_id: s.session_id.clone(),
+                    state: "new".to_owned(),
+                })
+                .collect::<Vec<_>>()
         };
         let level = self
             .access_level(&ctx.user, &record)
@@ -477,21 +529,33 @@ impl App {
             .validate()
             .map_err(|err| AppError::Invalid(err.to_string()))?;
         let repo = &manifest.repo;
-        let expected = format!("https://github.com/{}/{}", repo.owner, repo.name);
-        let remote = repo.remote_url.trim_end_matches('/');
-        let remote = remote.strip_suffix(".git").unwrap_or(remote);
-        if !remote.eq_ignore_ascii_case(&expected) {
-            return Err(AppError::Invalid(format!(
-                "every Yulius project needs a GitHub repository: the remote must be {expected}"
-            )));
-        }
         if !is_object_id(&repo.head_sha) {
             return Err(AppError::Invalid("head_sha is not a Git object id".into()));
         }
-        let sandbox = self.import_target(ctx, &repo.owner, &repo.name).await?;
         let store = &self.deps.store;
         let canonical = serde_json::to_string(manifest).map_err(AppError::internal)?;
-        let jobs = store.import_jobs(&sandbox.id, JOB_LIST_LIMIT).await?;
+        let sandbox_id = if manifest.playground {
+            match self
+                .playground_upload_target(ctx, manifest, &canonical)
+                .await?
+            {
+                UploadTarget::Into(id) => id,
+                UploadTarget::Resume(job) => {
+                    return Ok(progress_response(&job.id, manifest, &job.received));
+                }
+            }
+        } else {
+            let expected = format!("https://github.com/{}/{}", repo.owner, repo.name);
+            let remote = repo.remote_url.trim_end_matches('/');
+            let remote = remote.strip_suffix(".git").unwrap_or(remote);
+            if !remote.eq_ignore_ascii_case(&expected) {
+                return Err(AppError::Invalid(format!(
+                    "every Yulius project needs a GitHub repository: the remote must be {expected}"
+                )));
+            }
+            self.import_target(ctx, &repo.owner, &repo.name).await?.id
+        };
+        let jobs = store.import_jobs(&sandbox_id, JOB_LIST_LIMIT).await?;
         if let Some(job) = jobs.iter().find(|job| {
             job.user_id == ctx.user.id
                 && job.manifest == canonical
@@ -519,7 +583,7 @@ impl App {
                         .min(candidate.size);
                     if got > best.as_ref().map_or(0, |(_, n)| *n) {
                         best = Some((
-                            self.import_dir(&sandbox.id, &job.id).join(&candidate.name),
+                            self.import_dir(&sandbox_id, &job.id).join(&candidate.name),
                             got,
                         ));
                     }
@@ -532,7 +596,7 @@ impl App {
             });
         }
         let job_id = self.deps.crypto.new_id();
-        let job_dir = self.import_dir(&sandbox.id, &job_id);
+        let job_dir = self.import_dir(&sandbox_id, &job_id);
         let received = blocking(move || stage_job_files(&job_dir, plan)).await?;
         let now = self.now();
         let state = if all_complete(manifest, &received) {
@@ -543,7 +607,7 @@ impl App {
         store
             .insert_import_job(&ImportJobRecord {
                 id: job_id.clone(),
-                sandbox_id: Some(sandbox.id.clone()),
+                sandbox_id: Some(sandbox_id.clone()),
                 user_id: ctx.user.id.clone(),
                 state: state.as_str().to_owned(),
                 manifest: canonical,
@@ -560,9 +624,14 @@ impl App {
                 "import.created",
                 Some(&job_id),
                 Some(&format!(
-                    "{}/{} files={} sessions={}",
+                    "{}/{}{} files={} sessions={}",
                     repo.owner,
                     repo.name,
+                    if manifest.playground {
+                        " (playground)"
+                    } else {
+                        ""
+                    },
                     manifest.files().count(),
                     manifest.sessions.len()
                 )),
@@ -719,6 +788,13 @@ impl App {
         if let Some(applied) = applied_of(&job) {
             return Ok(applied.result);
         }
+        if JobState::parse(&job.state) == Some(JobState::Superseded) {
+            return Err(AppError::Conflict(
+                "this upload was superseded by a newer playground upload of yours; run the \
+                 command again"
+                    .into(),
+            ));
+        }
         let manifest = parse_manifest(&job)?;
         let incomplete = manifest
             .files()
@@ -827,40 +903,66 @@ impl App {
             .clone()
             .ok_or_else(|| AppError::Internal("import job without sandbox".into()))?;
         let store = &self.deps.store;
-        let sandbox = store
-            .sandbox(&sid)
-            .await?
-            .filter(|s| s.removed_at.is_none())
-            .ok_or_else(|| AppError::Conflict("the sandbox of this import was removed".into()))?;
+        let job_dir = self.import_dir(&sid, &job.id);
+        // A new playground from `yulius onboard --playground` is made now, from the upload
+        // (SPEC-171 PGL-003): its branches are its own, its uncommitted work already on its branch.
+        let (sandbox, made) = match store.sandbox(&sid).await? {
+            None if manifest.playground => {
+                let (record, snapshot) = self
+                    .playground_from_cli(&ctx.user, &sid, &job_dir, manifest)
+                    .await?;
+                (record, Some(snapshot))
+            }
+            found => (
+                found.filter(|s| s.removed_at.is_none()).ok_or_else(|| {
+                    AppError::Conflict("the sandbox of this import was removed".into())
+                })?,
+                None,
+            ),
+        };
         self.require(&ctx.user, &sid, Action::Work).await?;
         let login = import_login(&ctx.user);
         let prefix = format!("import/{login}");
         let repo_dir = self.sandbox_repo(&sid);
-        let job_dir = self.import_dir(&sid, &job.id);
-        let token = self.installation_token().await?;
-        self.deps
-            .git
-            .sync_clone(
-                &clone_url(&sandbox.repo_owner, &sandbox.repo_name),
-                &repo_dir,
-                &token,
-            )
-            .await?;
-        let bundle_refs = match &manifest.bundle {
-            Some(bundle) => {
-                self.deps
-                    .git
-                    .import_bundle(&repo_dir, &job_dir.join(&bundle.name), &prefix)
-                    .await?
+        let (bundle_refs, snapshot) = match made {
+            Some(snapshot) => (Vec::new(), snapshot),
+            None => {
+                if sandbox.is_playground() {
+                    // Its `origin` is on this server; GitHub is never called (PLY-002).
+                    self.dlv_refresh_clone(&sandbox).await?;
+                } else {
+                    let token = self.installation_token().await?;
+                    self.deps
+                        .git
+                        .sync_clone(
+                            &clone_url(&sandbox.repo_owner, &sandbox.repo_name),
+                            &repo_dir,
+                            &token,
+                        )
+                        .await?;
+                }
+                let bundle_refs = match &manifest.bundle {
+                    Some(bundle) => match self.applied_bundle(&sandbox, &ctx.user, bundle).await? {
+                        // The same person's same bundle is already here (SPEC-171: a re-run).
+                        Some(refs) => refs,
+                        None => {
+                            self.deps
+                                .git
+                                .import_bundle(&repo_dir, &job_dir.join(&bundle.name), &prefix)
+                                .await?
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                let snapshot = match &manifest.snapshot {
+                    Some(_) => Some(
+                        self.apply_snapshot(&sandbox, job, manifest, &login, &ctx.user)
+                            .await?,
+                    ),
+                    None => None,
+                };
+                (bundle_refs, snapshot)
             }
-            None => Vec::new(),
-        };
-        let snapshot = match &manifest.snapshot {
-            Some(_) => Some(
-                self.apply_snapshot(&sandbox, job, manifest, &login, &ctx.user)
-                    .await?,
-            ),
-            None => None,
         };
         let (mut imported, mut updated, mut unchanged) = (0_u32, 0_u32, 0_u32);
         for session in &manifest.sessions {
@@ -907,6 +1009,50 @@ impl App {
             snapshot,
             tasks: Vec::new(),
         })
+    }
+
+    /// In a playground, the branches an earlier completed job of `user` made from the same
+    /// bundle, while they all still exist: importing it again would change nothing (a playground
+    /// made from it holds its branches as its own, and none are listed). A GitHub sandbox imports
+    /// every bundle, as before (SPEC-171).
+    async fn applied_bundle(
+        &self,
+        sandbox: &SandboxRecord,
+        user: &UserRecord,
+        bundle: &FileRef,
+    ) -> AppResult<Option<Vec<String>>> {
+        if !sandbox.is_playground() {
+            return Ok(None);
+        }
+        let repo = self.sandbox_repo(&sandbox.id);
+        for job in self
+            .deps
+            .store
+            .import_jobs(&sandbox.id, JOB_LIST_LIMIT)
+            .await?
+        {
+            if job.user_id != user.id {
+                continue;
+            }
+            let Some(applied) = applied_of(&job) else {
+                continue;
+            };
+            let same = parse_manifest(&job).is_ok_and(|earlier| {
+                earlier
+                    .bundle
+                    .is_some_and(|b| b.sha256 == bundle.sha256 && b.size == bundle.size)
+            });
+            if same {
+                for branch in &applied.bundle_refs {
+                    let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+                    if !self.deps.git.branch_exists(&repo, short).await? {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(applied.bundle_refs));
+            }
+        }
+        Ok(None)
     }
 
     /// Where an imported session's worktree should start: the snapshot when the session ran on

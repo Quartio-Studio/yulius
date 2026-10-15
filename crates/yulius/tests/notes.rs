@@ -585,7 +585,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
         &h.router,
         Method::PUT,
         "/api/notes/presence",
-        Some(json!({"revision": 3, "selection": {"anchor": 5, "head": 2}, "hello": true, "client": "tab1"})),
+        Some(json!({"revision": 3, "selection": {"anchor": 5, "head": 2}, "hello": true, "client": "tab1", "seq": 7})),
         &alice,
     )
     .await?;
@@ -603,6 +603,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
             revision: 3,
             selection: Some(NoteSelection { anchor: 5, head: 2 }),
             hello: true,
+            seq: 7,
         }
     );
     let note = call(&h.router, Method::GET, "/api/notes", None, &alice).await?;
@@ -638,6 +639,8 @@ async fn presence_is_relayed_to_readers() -> TestResult {
             revision: 0,
             selection: None,
             hello: false,
+            // Without `seq` (an older page): 0, which receivers never drop (SPEC-170 TKS-003).
+            seq: 0,
         }
     );
 
@@ -654,6 +657,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
     assert_eq!(hidden.status, StatusCode::NOT_FOUND);
     for body in [
         json!({"revision": 0, "selection": null, "colour": "red"}),
+        json!({"revision": 0, "selection": null, "seq": -1}),
         json!({"revision": 0, "selection": {"anchor": 1, "head": 2, "x": 1}}),
         json!({"revision": 0, "selection": {"anchor": 0, "head": 1_048_577}}),
         json!({"revision": 0, "selection": null, "client": "a".repeat(33)}),

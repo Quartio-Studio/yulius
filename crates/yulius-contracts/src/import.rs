@@ -107,6 +107,12 @@ pub struct ImportManifest {
     pub sessions: Vec<SessionRef>,
     /// Start of the session window as an RFC 3339 UTC timestamp.
     pub since: String,
+    /// The upload goes to a playground of the caller (`yulius onboard --playground`, SPEC-171):
+    /// `repo` then has an empty owner and remote URL, its `name` is the playground's name, and
+    /// `bundle` holds every local branch and tag. Left out (false) for a GitHub import, whose
+    /// manifest serialises as before.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub playground: bool,
 }
 
 /// The repository being imported. GitHub is the authority (SPEC-001 IMP-002).
@@ -250,6 +256,10 @@ pub struct OnboardPlanRequest {
     /// Offered sessions (at most [`MAX_SESSIONS_PER_IMPORT`]).
     #[serde(default)]
     pub sessions: Vec<SessionFingerprint>,
+    /// A playground of the caller named `name` (empty `owner`), as in
+    /// [`ImportManifest::playground`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub playground: bool,
 }
 
 /// What the CLI would send for one session.
@@ -541,6 +551,11 @@ impl FileRef {
     }
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// `true` when `name` is a safe relative file name: 1–[`MAX_FILE_NAME_BYTES`] bytes of
 /// `/`-separated components, each made of ASCII letters, digits, `.`, `_` and `-`, not starting
 /// with `.` (which rules out `.`, `..` and hidden files), with no empty component, leading or
@@ -630,7 +645,33 @@ mod tests {
                 redactions: 2,
             }],
             since: "2026-09-23T10:00:00.000Z".to_owned(),
+            playground: false,
         }
+    }
+
+    /// SPEC-171 PGL-002: a playground upload says so; a GitHub one serialises as before, and an
+    /// older client's manifest or plan reads as a GitHub one.
+    #[test]
+    fn a_playground_upload_is_flagged_and_a_github_one_unchanged() -> Result<(), serde_json::Error>
+    {
+        let github = serde_json::to_value(manifest())?;
+        assert!(github.get("playground").is_none(), "{github}");
+        let mut playground = manifest();
+        playground.playground = true;
+        let json = serde_json::to_value(&playground)?;
+        assert_eq!(json["playground"], true);
+        assert_eq!(serde_json::from_value::<ImportManifest>(json)?, playground);
+        let old: OnboardPlanRequest =
+            serde_json::from_value(serde_json::json!({"owner": "o", "name": "n"}))?;
+        assert!(!old.playground);
+        let plan = serde_json::to_value(OnboardPlanRequest {
+            owner: String::new(),
+            name: "shop".to_owned(),
+            sessions: Vec::new(),
+            playground: true,
+        })?;
+        assert_eq!(plan["playground"], true);
+        Ok(())
     }
 
     #[test]

@@ -986,6 +986,18 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   resync(db);
   return json(204);
 });
+// Purging a playground (SPEC-171): removes it and deletes its code once nothing of it runs; the
+// mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
+route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'admin');
+  if (!sandbox.playground) fail(409, 'conflict', "only a playground's code can be purged");
+  db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
+  (db.purges = db.purges || []).push(sandbox.slug);
+  resync(db);
+  const waiting = db.purgeWaitsFor || [];
+  return { state: waiting.length ? 'waiting' : 'purged', waiting_for: waiting };
+});
 
 // Live previews (ADR-14, "Open live in a new window"): the mock has no preview proxy, so a
 // live page is a small data: page.
@@ -2671,8 +2683,9 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
 // the server does (its own echo included, which the page leaves out); tests act as a teammate with
 // `notePresence(event)`, refuse updates (`failPresence`) and lose events (`resyncNow()`).
 function relayPresence(db, scope, sandboxId, body) {
-  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello', 'client', 'seq'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
   if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.seq !== undefined && !(Number.isInteger(body.seq) && body.seq >= 0)) fail(422, 'invalid', 'seq is a number from 0');
   // `failPresence`: the server refuses it as too many (429).
   if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
   const selection = body.selection;
@@ -2682,9 +2695,10 @@ function relayPresence(db, scope, sandboxId, body) {
     fail(422, 'invalid', 'revision and selection are required');
   }
   const client = body.client || '';
-  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello), client });
+  const seq = body.seq || 0;
+  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello), client, seq });
   const user = db.me.user;
-  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello) });
+  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello), seq });
   return json(204);
 }
 
@@ -2696,8 +2710,9 @@ route('PUT', '/api/notes/presence', ({ db, body }) => relayPresence(db, 'team', 
 route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
-  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client', 'seq'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
   if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.seq !== undefined && !(Number.isInteger(body.seq) && body.seq >= 0)) fail(422, 'invalid', 'seq is a number from 0');
   if (body.sha256 !== undefined && !/^([0-9a-f]{64})?$/.test(body.sha256)) fail(422, 'invalid', 'sha256 is 64 lowercase hex digits');
   if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
   const path = repoPath(body.path);
@@ -2713,9 +2728,10 @@ route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   if (selection !== null && !repoTree(db, sandbox.id, root).files.has(path)) fail(404, 'not_found', 'not found');
   const client = body.client || '';
   const sha256 = body.sha256 || '';
-  (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client });
+  const seq = body.seq || 0;
+  (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client, seq });
   const user = db.me.user;
-  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello) };
+  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello), seq };
   emit(db, event);
   if (db.presenceChannel) db.presenceChannel.postMessage(event);
   // `holdPresence = true`: answers wait for `releasePresence()` (an update still on its way).
@@ -4598,9 +4614,9 @@ export function createMockTransport(params) {
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
-  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, ...event });
+  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, seq: 0, ...event });
   db.releasePresence = () => { db.holdPresence = false; for (const resolve of (db.presenceHolds || []).splice(0)) resolve(); };
-  db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, ...event });
+  db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, seq: 0, ...event });
   // The other mock windows of this origin are teammates on the same server (SPEC-127).
   db.presenceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('yulius-mock-presence') : null;
   if (db.presenceChannel) db.presenceChannel.onmessage = (message) => emit(db, message.data);
