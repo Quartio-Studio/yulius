@@ -144,5 +144,10 @@ Run on 2026-10-15 in the task's worktree (Linux, Node 24.21, Chromium 153), bran
   Graph, the loading shape, Tab order, j / k, untested empty state, faded node and 390 px axe, a
   started task's old chain still drawn); all fixed test-first in 10ab9152. Long arrows passing
   behind cards in skipped columns are accepted (ADR-0135).
+- Review round 2 (fresh session): APPROVE at 1f75bdd3; its minor (the list-row focus restore and
+  `.` on a card untested) got a test, and two nits were fixed (j / k pick only task links; the
+  switch follows the view while loading). After merging `dev` (#532, #537, #540; SPEC-001's dated
+  list resolved by keeping both entries): `scripts/dev check` exit 0; `task-graph`, `navigation`,
+  `layout`, `loading-shapes`, `loading`, `pipeline`, `phone`, `responsive` e2e: 70/70 passed.
 - Not testable here: the real server's live data (the mock answers like it); a real queue across
   several projects of one instance.
