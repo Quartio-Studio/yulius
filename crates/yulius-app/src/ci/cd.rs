@@ -686,6 +686,32 @@ impl App {
         Ok(sha)
     }
 
+    /// The CI the integration branch defines, read where no job or agent can write (SPEC-142,
+    /// review B1): the integration head GitHub reports, taken from the sandbox clone into the CD
+    /// mirror with every object checked and replacement refs ignored. What CI jobs may use of the
+    /// agent secrets comes from here, never from the sandbox clone they can write.
+    pub(crate) async fn ci_verified_gate(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<yulius_domain::ci::Gate>> {
+        let mirror_lock = mirror_lock(&sandbox.id);
+        let _mirror = mirror_lock.lock().await;
+        let profile = delivery_profile(sandbox);
+        self.dlv_refresh_clone(sandbox).await?;
+        let token = self.dlv_installation_token(sandbox).await?;
+        let head = self
+            .cd_verified_head(sandbox, &profile.integration_branch, &token)
+            .await?;
+        let jobs = self
+            .ci_jobs_at(&self.cd_mirror(&sandbox.id), &head)
+            .await
+            .map_err(AppError::Conflict)?;
+        Ok(yulius_domain::ci::effective_gate(
+            crate::delivery::profile_gate(sandbox).as_deref(),
+            &jobs,
+        ))
+    }
+
     /// `[cd.*]` of the verified commit `sha` in the CD mirror.
     async fn cd_verified_config(&self, sandbox: &SandboxRecord, sha: &str) -> AppResult<CdConfig> {
         self.cd_config_at(&self.cd_mirror(&sandbox.id), sha)

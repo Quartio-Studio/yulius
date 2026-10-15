@@ -55,7 +55,9 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   separated by spaces (`secrets = "VIDOC_API_KEY"`), at most 8, without repeats. An invalid list
   is a configuration error naming the job. Matrix values inherit the definition's list.
 - CSE-002: The secrets a job may use are those that the integration branch's `[[ci.jobs]]` entry
-  of the same name lists, read when the job starts (`App::ci_gate`). A `secrets` list in a pull
+  of the same name lists, read when the job starts from the integration head GitHub reports,
+  taken into the Yulius-only CD mirror (`App::ci_verified_gate`; the sandbox clone, which CI jobs
+  can write, only says whether to look). A `secrets` list in a pull
   request's own `yulius.toml` grants nothing, whether or not its own jobs run. The person's profile
   gate grants nothing.
 - CSE-003: A job with a non-empty grant gets a placeholder `NAME=yulius-secret-NAME` for each
@@ -74,7 +76,7 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   `ci:<run>`), once per job, secret and host.
 - CSE-006: In Yulius CI on a pull request head (`YULIUS_CI_REF=pr/<n>`), `scripts/dev security`
   scans a private clone of the commit on a branch `yulius-ci/pr-<n>`, whose `origin` keeps the
-  real URL but resolves to a local mirror of the integration branch, so the CLI finds the same base
+  real URL but resolves to a local mirror of origin's default branch, so the CLI finds the same base
   as on an agent's branch without a GitHub credential, and the sandbox's shared clone is never
   written.
 - CSE-007: This repository's `yulius.toml` gains a `security` job granted `VIDOC_API_KEY`. It runs
@@ -156,3 +158,14 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
 - Exit 2 does not fail the `security` job (CSE-007): it means only a person can make the scan run
   (#470, a missing host binding), and failing every pull request for it would stop all delivery.
   The job prints the reason, and the docs say the check enforces findings only once the scan runs.
+- Review round 1 (fresh session, request changes on 6324fa8c). B1 (blocker): CI jobs can write
+  the sandbox clone (the sandbox root is mounted read-write), so a `git replace` of the
+  integration branch's `yulius.toml` blob, or a moved `origin/<integration>`, forged the grant.
+  The grant is now read from the integration head GitHub reports in the Yulius-only CD mirror
+  (`App::ci_verified_gate`), and `local_ci::a_grant_forged_in_the_shared_clone_gives_nothing`
+  reproduces the forgery (it failed before the fix: the job got `OTHER_KEY`). M1: tests now pin
+  that a granted production-deploy secret is never usable. m1: the credential is a guard closed
+  on drop. m2: file-system errors while preparing the CI clone exit 2. m3: ADR-0116 names the
+  follow-up (exit 2 fails again once a scan runs), also noted on #466. n1: wording fixed. n2
+  (a `secrets` line before `name` reports job `?`, as `matrix` does) and n3 (one cached read per
+  job start) stay as they are.

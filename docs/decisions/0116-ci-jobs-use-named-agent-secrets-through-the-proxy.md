@@ -21,8 +21,12 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 
 - **The grant is the integration branch's.** A `[[ci.jobs]]` entry may name agent secrets,
   `secrets = "NAME OTHER"` (space-separated, like `[cd.<env>] secrets`).
-  When a job starts, Yulius reads the integration branch's jobs (`origin/<integration>`, the same
-  read that chooses the CI) and gives the job the list of the entry with the same name. A pull
+  When a job starts, Yulius gives it the list of the integration branch's entry with the same
+  name, read where no job can write: the integration head GitHub reports, taken from the sandbox
+  clone into the CD mirror only Yulius writes, every object checked and replacement refs ignored
+  (as ADR-0109 does for deploys). CI jobs can write the sandbox clone (it is inside the sandbox),
+  so what it shows (`origin/<integration>`, which chooses the jobs) only says whether to look; a
+  grant planted there gives nothing. A pull
   request's own `secrets` line grants nothing, even when its own jobs run; the person's profile
   gate grants nothing. A grant reaches pull request code only after a reviewed change of
   `yulius.toml` merged into the integration branch.
@@ -62,6 +66,13 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 - As for agents, the proxy variables are advisory: a job can ignore them and reach the network
   directly, but it then holds only placeholders.
 - Removing a name from the integration branch's `yulius.toml` takes effect for the next job.
+- A granted job costs a fetch and a GitHub call when it starts; when either fails, the job runs
+  without its secrets and its output says why.
+- The sandbox clone stays writable by CI jobs, so a pull request can still change which jobs a
+  later run of the sandbox executes (not what they may use). That is older than this decision and
+  belongs to its own change.
 - This repository's `security` job (`scripts/dev security`, granted `VIDOC_API_KEY`) runs on pull
   request heads only. Until the scan can run (#470: the stored key is rejected), its exit 2 does
-  not fail the job; findings (exit 1) do.
+  not fail the job; findings (exit 1) do. Exit 2 also covers causes a pull request controls (a
+  malformed `.config/vidoc.toml`, a broken clone), so once a scan runs, the follow-up is to make
+  exit 2 fail the job again (noted on #466).

@@ -159,6 +159,19 @@ fn granted(gate: Option<&Gate>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A CI job's proxy credential (SPEC-142 CSE-004): closed when dropped, so it ends on every
+/// path out of the job, a cancelled or panicking one included.
+struct CiProxy<'a> {
+    app: &'a App,
+    token: String,
+}
+
+impl Drop for CiProxy<'_> {
+    fn drop(&mut self) {
+        self.app.ci_egress_close(&self.token);
+    }
+}
+
 /// Binds the files a plan writes outside the sandbox (the CA bundle in the run directory)
 /// read-only into its containment, at the same path, as agent runs do.
 fn bind_run_files(plan: &mut LaunchPlan) {
@@ -647,7 +660,8 @@ impl App {
     /// a placeholder for each granted agent secret of the sandbox (never a production-deploy
     /// one) and, when the egress proxy is wired, the proxy with a fresh credential naming client
     /// `ci:<run>` and the CA bundle in `run_dir`, readable inside the containment. Returns the
-    /// credential, which the caller closes once the job ended; `None` without a grant.
+    /// credential, closed when it is dropped (the job ended, or its task went); `None` without a
+    /// grant.
     async fn ci_job_secrets(
         &self,
         sandbox: &SandboxRecord,
@@ -655,9 +669,26 @@ impl App {
         run_dir: &Path,
         plan: &mut LaunchPlan,
         ring: &mut OutputRing,
-    ) -> Option<String> {
-        let grant = granted(self.ci_gate(sandbox).await.gate.as_ref(), &job.key);
+    ) -> Option<CiProxy<'_>> {
+        // The sandbox clone (which CI jobs can write) only says whether to look; the grant itself
+        // is read from the verified integration head (review B1).
+        if granted(self.ci_gate(sandbox).await.gate.as_ref(), &job.key).is_empty() {
+            return None;
+        }
+        let grant = match self.ci_verified_gate(sandbox).await {
+            Ok(gate) => granted(gate.as_ref(), &job.key),
+            Err(err) => {
+                ring.push_str(&format!(
+                    "[yulius] agent secrets: none; the integration branch's grant could not be verified: {}\n",
+                    err.public_message()
+                ));
+                return None;
+            }
+        };
         if grant.is_empty() {
+            ring.push_str(
+                "[yulius] agent secrets: none; the integration branch grants this job none\n",
+            );
             return None;
         }
         let records = match self.deps.store.vault_agent(Some(&sandbox.id)).await {
@@ -688,20 +719,18 @@ impl App {
                 missing.join(", ")
             ));
         }
-        let token = self.ci_egress_open(&sandbox.id, &run.id, &job.id, &grant);
+        let token = self
+            .ci_egress_open(&sandbox.id, &run.id, &job.id, &grant)
+            .map(|token| CiProxy { app: self, token });
         let proxied = token
-            .as_deref()
-            .is_some_and(|token| self.egress_env("yulius-ci", token, run_dir, plan));
+            .as_ref()
+            .is_some_and(|proxy| self.egress_env("yulius-ci", &proxy.token, run_dir, plan));
         if !proxied {
             note.push_str("; the egress proxy is not available, so no secret reaches a host");
         }
         ring.push_str(&format!("{note}\n"));
         bind_run_files(plan);
-        if !proxied && let Some(token) = &token {
-            self.ci_egress_close(token);
-            return None;
-        }
-        token
+        token.filter(|_| proxied)
     }
 
     /// The job's containment: the sandbox's holder when it is isolated (SPEC-002 ADR-22: the
@@ -809,12 +838,8 @@ impl App {
             .ci_job_secrets(sandbox, (run, job), &run_dir, &mut plan, ring)
             .await;
         let _ = std::fs::remove_dir_all(&run_dir);
-        if let Err(e) = std::fs::create_dir_all(&run_dir) {
-            if let Some(proxy) = &proxy {
-                self.ci_egress_close(proxy);
-            }
-            return Err(format!("creating the run directory failed: {e}"));
-        }
+        std::fs::create_dir_all(&run_dir)
+            .map_err(|e| format!("creating the run directory failed: {e}"))?;
         let token = self.deps.crypto.random_bytes();
         let outcome = self
             .ci_watch(
@@ -829,9 +854,7 @@ impl App {
             )
             .await;
         // The job's process ended (or its host is gone): its proxy credential ends too.
-        if let Some(proxy) = &proxy {
-            self.ci_egress_close(proxy);
-        }
+        drop(proxy);
         let _ = std::fs::remove_dir_all(&run_dir);
         let _ = std::fs::remove_file(&log);
         outcome

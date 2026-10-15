@@ -1359,3 +1359,86 @@ async fn a_contained_granted_job_reads_its_ca_bundle() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-142 CSE-002, review B1: a CI job can write the sandbox's shared clone, so what it plants
+/// there (a `git replace` of the integration branch's `yulius.toml`) must not change any grant:
+/// grants come from the integration head GitHub reports, taken into a mirror only Yulius writes.
+/// A production-deploy secret is never granted.
+#[tokio::test]
+async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
+    let report = "echo \"key=${API_KEY:-none} other=${OTHER_KEY:-none} prod=${PROD_KEY:-none}\"";
+    let honest = format!(
+        "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY PROD_KEY\"\ncommand = '{report}'\n\n\
+         [[ci.jobs]]\nname = \"plain\"\ncommand = '{report}'\n"
+    );
+    let f = fixture_with(false, |_| honest.clone()).await?;
+    let mut ids = std::collections::HashMap::new();
+    for name in ["API_KEY", "OTHER_KEY", "PROD_KEY"] {
+        let created = f
+            .post(
+                "/api/sandboxes/s1/agent-secrets",
+                Some(serde_json::json!({
+                    "name": name,
+                    "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
+                    "injection": "bearer",
+                    "value": format!("{name}-value-0123456789"),
+                })),
+            )
+            .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        ids.insert(name, created.body["id"].as_str().ok_or("id")?.to_owned());
+    }
+    {
+        use yulius_app::ports::vault::VaultStore as _;
+        assert!(
+            f.h.store
+                .vault_set_cd_prod(&ids["PROD_KEY"], false, true)
+                .await?
+        );
+    }
+    f.h.app.enable_egress(None);
+
+    // A job of an earlier run replaced the integration branch's yulius.toml in the shared clone.
+    let shared = f.data.join("sandboxes/s1/repo");
+    let forged = honest
+        .replace(
+            "secrets = \"API_KEY PROD_KEY\"",
+            "secrets = \"API_KEY OTHER_KEY\"",
+        )
+        .replace(
+            "name = \"plain\"\n",
+            "name = \"plain\"\nsecrets = \"OTHER_KEY\"\n",
+        );
+    std::fs::write(f.data.join("forged.toml"), &forged)?;
+    let blob = git(&shared, &["rev-parse", "origin/dev:yulius.toml"])?;
+    let fake = git(
+        &shared,
+        &[
+            "hash-object",
+            "-w",
+            f.data.join("forged.toml").to_str().ok_or("path")?,
+        ],
+    )?;
+    git(&shared, &["replace", &blob, &fake])?;
+    assert!(
+        git(&shared, &["show", "origin/dev:yulius.toml"])?.contains("OTHER_KEY"),
+        "the forgery is what the shared clone shows"
+    );
+
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let granted = output_of(&outputs, "granted")?;
+    assert!(
+        granted.contains("key=yulius-secret-API_KEY other=none prod=none"),
+        "{granted}"
+    );
+    assert!(
+        granted.contains("not in the sandbox's agent secrets: PROD_KEY"),
+        "{granted}"
+    );
+    let plain = output_of(&outputs, "plain")?;
+    assert!(plain.contains("key=none other=none prod=none"), "{plain}");
+    Ok(())
+}

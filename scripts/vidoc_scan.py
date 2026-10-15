@@ -254,6 +254,15 @@ def _git_ok(git, *args, what):
 
 
 def ci_clone(git, scratch, number):
+    """See `_ci_clone`; a file-system error is "not run" (exit 2), like any other preparation
+    failure, never a failed scan."""
+    try:
+        return _ci_clone(git, scratch, number)
+    except OSError as err:
+        raise Usage(f"preparing the CI scan failed: {err}") from err
+
+
+def _ci_clone(git, scratch, number):
     """A private clone of the CI checkout's commit under `scratch`, on branch
     `yulius-ci/pr-<number>`, for the CLI: `git` runs in the checkout. Its origin keeps the real URL
     (Vidoc names the repository after it) and resolves, through a URL rewrite in the clone's own
@@ -510,7 +519,10 @@ def main(root=None, env=None):
         scan_root = root
         number = ci_pull_request(env)
         if number is not None:
-            scratch = Path(tempfile.mkdtemp(prefix="vidoc-ci-"))
+            try:
+                scratch = Path(tempfile.mkdtemp(prefix="vidoc-ci-"))
+            except OSError as err:
+                raise Usage(f"preparing the CI scan failed: {err}") from err
             scan_root = ci_clone(git_in(root), scratch, number)
             print(f"Vidoc: Yulius CI pull request #{number}: scanning its head in a private clone "
                   f"on branch yulius-ci/pr-{number}.", flush=True)

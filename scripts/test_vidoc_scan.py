@@ -434,6 +434,12 @@ class PullRequestCi(unittest.TestCase):
             vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
         self.assertIn("default branch", str(caught.exception))
 
+    def test_a_file_system_error_while_preparing_is_not_run(self):
+        with unittest.mock.patch.object(Path, "write_text", side_effect=OSError("disk full")), \
+                self.assertRaises(Usage) as caught:
+            vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
+        self.assertIn("disk full", str(caught.exception))
+
     def test_main_scans_the_private_clone_and_removes_it(self):
         seen = {}
 

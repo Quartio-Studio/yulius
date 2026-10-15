@@ -1626,14 +1626,21 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
     for body in [
         json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
         json!({"name": "HDR_KEY", "hosts": ["*.hdr.test", "api.stripe.test"], "injection": "header", "header_name": "X-Api-Key", "value": "hdr-value-12345"}),
+        json!({"name": "PROD_KEY", "hosts": ["prod.test"], "injection": "bearer", "value": "prod-value-12345"}),
     ] {
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        if created.body["name"] == "PROD_KEY" {
+            use yulius_app::ports::vault::VaultStore as _;
+            let id = created.body["id"].as_str().ok_or("id")?;
+            assert!(w.h.store.vault_set_cd_prod(id, false, true).await?);
+        }
     }
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let granted = ["STRIPE_KEY".to_owned(), "PROD_KEY".to_owned()];
     let token =
         w.h.app
-            .ci_egress_open(&s1, "run-7", "job-7a", &["STRIPE_KEY".to_owned()])
+            .ci_egress_open(&s1, "run-7", "job-7a", &granted)
             .ok_or("no CI credential")?;
     let app: Arc<dyn EgressPolicy> = w.h.app.clone();
     let ci = app.egress_client(&token).await.ok_or("ci client")?;
@@ -1644,6 +1651,30 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         !app.egress_intercepts(&ci, "eu.hdr.test", 443).await,
         "a host bound only to a secret the job was not granted is a plain tunnel"
     );
+    // A production-deploy secret is never a CI job's, even when its name is granted.
+    assert!(!app.egress_intercepts(&ci, "prod.test", 443).await);
+    let named = app
+        .egress_apply(
+            &ci,
+            request("prod.test", "/", &[("x-yulius-secret", "PROD_KEY")]),
+        )
+        .await;
+    assert!(matches!(named, EgressDecision::Refuse { status: 403, .. }));
+    let prod = app
+        .egress_apply(&ci, request("prod.test", "/?k=yulius-secret-PROD_KEY", &[]))
+        .await;
+    match &prod {
+        EgressDecision::Forward {
+            path_and_query,
+            used,
+            ..
+        } => {
+            assert_eq!(path_and_query, "/?k=yulius-secret-PROD_KEY");
+            assert!(used.is_empty(), "{used:?}");
+        }
+        EgressDecision::Refuse { .. } => return Err("refused".into()),
+    }
+    assert_eq!(header(&prod, "authorization"), None);
 
     // The granted secret is injected and substituted; the other one, bound to the same host,
     // is neither injected nor substituted, and naming it is refused.
