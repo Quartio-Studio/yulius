@@ -47,7 +47,8 @@ in progress in different color. 2/4 and only 1/4 colored seems weird".
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The step summary reports the effort share of the steps in progress
 - [x] The step strip draws the step in progress in the working colour
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Gates green and the review approves the final head
 - [ ] Docs, gates and delivery
 
 ## Acceptance criteria
