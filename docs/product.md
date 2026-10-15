@@ -94,7 +94,8 @@ watching, steering and unblocking.
   subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each.
-- **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
+- **Delivery discipline**: spec when it matters, effort-weighted steps, independent review
+  (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
   promotions) that Yulius checks before every merge.

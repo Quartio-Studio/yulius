@@ -134,7 +134,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     ),
     (
         "issue_create",
-        "log follow-up work, a bug or a flaky test as a ready GitHub issue",
+        "log a pre-existing bug, a flaky test you did not cause or a nit left after 3 rounds as a ready GitHub issue",
     ),
     (
         "ci_status",
@@ -660,8 +660,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
          400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
-         given only the diff range, the spec and skill `om-code-review`); fix findings \
-         test-first; after 3 rounds, decide and record why.\n\
+         given only the diff range, the spec and skill `om-code-review`) marking findings own code \
+         or pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \
+         split or `needs_you`.\n\
          - When the work is ready (spec valid if needed, steps done, all committed), Yulius \
          pushes your branch and opens the pull request at the end of your turn or when you call \
          `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
@@ -670,9 +671,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
-         - File follow-up work, bugs and flaky tests as issues (`issue_create`) instead of \
-         widening this task. Report a bug you confirm (yours or one met on the way) with \
-         `issue_create` unless an open issue tracks it (then reference it); a task told not to \
+         - Report a bug you confirm with `issue_create` unless an open issue tracks it (reference \
+         it); for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
+         outside your change; a task told not to \
          create issues never does, and comments or says it in its summary instead. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
@@ -704,8 +705,9 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          current in your clone. Stay current by merging `origin/{integration}` and rerun the \
          tests after a conflict.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
-         given only the diff range, the spec and skill `om-code-review`); fix findings \
-         test-first.\n\
+         given only the diff range, the spec and skill `om-code-review`), which marks each finding \
+         own code or pre-existing. Fix every own-code finding test-first before the merge, \
+         never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
          - Before delivery, run every project gate yourself. When the work is ready (spec valid \
          if needed, steps done, all committed) and the review approved the exact head, call \
          `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
@@ -714,7 +716,8 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          here as one commit once that passed. While it runs the merge is armed: start `yulius \
          wait` with run_in_background and end your turn. If it refuses, do what it says and call \
          it again.\n\
-         - Put follow-up work in your summary.\n\n",
+         - List in your summary what is outside your change (a pre-existing bug, a flaky test it \
+         did not cause, a nit left after 3 rounds).\n\n",
         branch = code(&input.task.branch, 200),
     )
 }
@@ -820,13 +823,20 @@ fn containers(input: &BriefingInput<'_>) -> String {
         .to_owned()
 }
 
-fn task_header(input: &BriefingInput<'_>) -> String {
+/// The goal quote's length, before a tight budget shrinks it (#555).
+const GOAL_QUOTE_BYTES: usize = 600;
+/// The least a shrunk goal quote keeps.
+const GOAL_QUOTE_MIN_BYTES: usize = 40;
+/// Room kept for the optional parts when the goal quote shrinks, so each keeps its heading.
+const OPTIONAL_HEADROOM_BYTES: usize = 600;
+
+fn task_header(input: &BriefingInput<'_>, goal_bytes: usize) -> String {
     let task = &input.task;
     let goal = if task.goal.trim().is_empty() {
         "> (no goal given; ask the user)\n".to_owned()
     } else {
         // The whole request (and its attached files) is in the task's request file (SPEC-011).
-        quoted(&task.goal, 600)
+        quoted(task.goal.trim(), goal_bytes)
     };
     let workflow = task
         .workflow
@@ -1087,49 +1097,16 @@ fn recent_changes_within(input: &BriefingInput<'_>, rendered: String, grant: usi
 /// The result never exceeds the budget; mandatory parts are never dropped unless the budget
 /// is smaller than the mandatory parts themselves, in which case the whole text is cut and
 /// ends with [`TRUNCATION_MARKER`].
+///
+/// When the mandatory parts and some room for the optional ones exceed the budget (a workflow's
+/// instructions lower it, #555), the goal quote shrinks first, from 600 down to 40 bytes: the
+/// whole request is in the task's prompt or request file.
 #[must_use]
 pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String {
     // Multi-line sources are pre-clipped to the budget so rendering stays bounded.
     let source_cap = budget_bytes.min(DEFAULT_BUDGET_BYTES * 4);
-    let parts = [
-        Part::Mandatory(header(input)),
-        Part::Mandatory(discipline(input)),
-        Part::Mandatory(git_rules(input)),
-        Part::Mandatory(read_first(input)),
-        Part::Mandatory(tools(input.playground)),
-        Part::Mandatory(ports(input)),
-        Part::Mandatory(task_header(input)),
-        Part::Optional {
-            text: task_steps(input),
-            weight: 3,
-        },
-        Part::Mandatory(foundations(input)),
-        Part::Optional {
-            text: product(input, source_cap),
-            weight: 3,
-        },
-        Part::Mandatory(architecture(input)),
-        Part::Mandatory(containers(input)),
-        Part::Optional {
-            text: decisions(input),
-            weight: 2,
-        },
-        Part::Changes {
-            text: recent_changes(input, source_cap),
-            weight: 3,
-        },
-        Part::Optional {
-            text: parallel(input),
-            weight: 3,
-        },
-    ];
-    let mandatory: usize = parts
-        .iter()
-        .map(|part| match part {
-            Part::Mandatory(text) => text.len(),
-            Part::Optional { .. } | Part::Changes { .. } => 0,
-        })
-        .sum();
+    let (parts, _passes) = fitted_parts(input, source_cap, budget_bytes);
+    let mandatory = mandatory_len(&parts);
     let (needs, weights): (Vec<usize>, Vec<usize>) = parts
         .iter()
         .filter_map(|part| match part {
@@ -1166,6 +1143,82 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         }
     }
     out
+}
+
+/// The parts with the goal quote shrunk until they fit `budget_bytes` with room for the optional
+/// ones, and how many renderings that took. The quote starts at the goal's own length, so every
+/// pass shrinks it by the overflow or stops: the loop is bounded.
+fn fitted_parts(
+    input: &BriefingInput<'_>,
+    source_cap: usize,
+    budget_bytes: usize,
+) -> ([Part; 15], usize) {
+    let mut goal_bytes = GOAL_QUOTE_BYTES.min(input.task.goal.trim().len());
+    let mut passes = 0;
+    loop {
+        passes += 1;
+        let parts = briefing_parts(input, source_cap, goal_bytes);
+        let optional: usize = parts
+            .iter()
+            .map(|part| match part {
+                Part::Optional { text, .. } | Part::Changes { text, .. } => text.len(),
+                Part::Mandatory(_) => 0,
+            })
+            .sum();
+        let wanted = mandatory_len(&parts) + optional.min(OPTIONAL_HEADROOM_BYTES);
+        if wanted <= budget_bytes || goal_bytes <= GOAL_QUOTE_MIN_BYTES {
+            return (parts, passes);
+        }
+        goal_bytes = goal_bytes
+            .saturating_sub(wanted - budget_bytes)
+            .max(GOAL_QUOTE_MIN_BYTES);
+    }
+}
+
+fn mandatory_len(parts: &[Part]) -> usize {
+    parts
+        .iter()
+        .map(|part| match part {
+            Part::Mandatory(text) => text.len(),
+            Part::Optional { .. } | Part::Changes { .. } => 0,
+        })
+        .sum()
+}
+
+/// The briefing's parts in order, with the goal quoted in at most `goal_bytes`.
+fn briefing_parts(input: &BriefingInput<'_>, source_cap: usize, goal_bytes: usize) -> [Part; 15] {
+    [
+        Part::Mandatory(header(input)),
+        Part::Mandatory(discipline(input)),
+        Part::Mandatory(git_rules(input)),
+        Part::Mandatory(read_first(input)),
+        Part::Mandatory(tools(input.playground)),
+        Part::Mandatory(ports(input)),
+        Part::Mandatory(task_header(input, goal_bytes)),
+        Part::Optional {
+            text: task_steps(input),
+            weight: 3,
+        },
+        Part::Mandatory(foundations(input)),
+        Part::Optional {
+            text: product(input, source_cap),
+            weight: 3,
+        },
+        Part::Mandatory(architecture(input)),
+        Part::Mandatory(containers(input)),
+        Part::Optional {
+            text: decisions(input),
+            weight: 2,
+        },
+        Part::Changes {
+            text: recent_changes(input, source_cap),
+            weight: 3,
+        },
+        Part::Optional {
+            text: parallel(input),
+            weight: 3,
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -1398,8 +1451,24 @@ mod tests {
             "Report a bug you confirm",
             "unless an open issue tracks it",
             "`ci_status`",
+            "marking findings own code or pre-existing",
+            "answer all.",
+            "never as an issue",
+            "never as an issue; after 3 rounds split or `needs_you`",
+            "for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
+             outside your change",
         ] {
             assert!(text.contains(needle), "missing {needle}");
+        }
+        // SPEC-174 (ADR-0141): a finding in the change's own code is never deferred to an issue.
+        for gone in [
+            "decide and record why",
+            "File follow-up work",
+            "log follow-up work",
+            // The bug a fix task reports is not "outside the change": only the others say why.
+            "met on the way), a flaky test",
+        ] {
+            assert!(!text.contains(gone), "{gone} is gone\n{text}");
         }
     }
 
@@ -1808,6 +1877,14 @@ mod tests {
 
     #[test]
     fn tool_list_is_unique_and_rendered() {
+        // SPEC-174 (ADR-0141): issues are for what lies outside the change.
+        assert!(
+            YULIUS_TOOLS
+                .iter()
+                .any(|(name, summary)| *name == "issue_create"
+                    && summary
+                        .contains("a flaky test you did not cause or a nit left after 3 rounds"))
+        );
         let rendered = tools(false);
         for (index, (name, _)) in YULIUS_TOOLS.iter().enumerate() {
             assert!(
@@ -1855,6 +1932,10 @@ mod tests {
             "`yulius wait`",
             "`ci_status`",
             "`ci_rerun`",
+            "marks each finding own code or pre-existing",
+            "Fix every own-code finding",
+            "split the change or `needs_you`",
+            "List in your summary what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");
         }
@@ -1862,6 +1943,7 @@ mod tests {
             "opens the pull request",
             "`delivery_deploy`",
             "no Yulius CI",
+            "Put follow-up work in your summary",
         ] {
             assert!(!text.contains(absent), "{absent} in {text}");
         }
@@ -1893,6 +1975,98 @@ mod tests {
         let plain = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!plain.contains("## Containers"), "{plain}");
         assert!(!plain.contains("No container engine"), "{plain}");
+        Ok(())
+    }
+
+    /// #555 (SPEC-174): at a budget lowered by 1.7 KB of workflow instructions (a margin over the
+    /// 1,444 bytes `workflows/catalog.rs` caps them at), a 600-byte goal shrinks its quote instead
+    /// of pushing out the mandatory parts after it, and the optional parts keep their headings.
+    #[test]
+    fn a_long_goal_shrinks_before_a_mandatory_part_is_cut() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let budget = DEFAULT_BUDGET_BYTES - 1_700;
+        for isolated in [false, true] {
+            let mut input = base(&profile, &layout)?;
+            input.isolated = isolated;
+            input.project_name = "Quartio-Studio/yulius".to_owned();
+            input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
+            input.task.title = "i got this from a different projectfix".to_owned();
+            input.task.goal = "deployer ".repeat(80);
+            input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
+            input.task.spec_path =
+                ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
+            let text = build_briefing(&input, budget);
+            assert!(text.len() <= budget, "{} bytes", text.len());
+            for heading in MANDATORY_HEADINGS {
+                assert!(
+                    text.contains(heading),
+                    "isolated {isolated}: {heading} cut\n{text}"
+                );
+            }
+            for needle in [
+                "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+                "Spec: `.ai/specs/SPEC-173-",
+                "Goal:\n> deployer deployer",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "isolated {isolated}: {needle} cut\n{text}"
+                );
+            }
+            // Without the Containers section there is room for every optional heading too.
+            for heading in [
+                "## Project summary",
+                "## Decisions",
+                "## Recent changes",
+                "## Parallel tasks",
+            ] {
+                assert!(
+                    isolated || text.contains(heading),
+                    "{heading} dropped\n{text}"
+                );
+            }
+            assert_eq!(
+                text.contains("start them yourself."),
+                isolated,
+                "the Containers section is whole exactly when isolated\n{text}"
+            );
+        }
+        Ok(())
+    }
+
+    /// SPEC-174 review round 4: the goal quote starts at the goal's own length, so a short or
+    /// empty goal under a tight budget settles in a few renderings, not hundreds.
+    #[test]
+    fn a_tight_budget_settles_in_a_few_passes() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        for (goal_len, budget) in [(0, 7_889), (200, 8_056), (200, 7_800), (720, 7_800)] {
+            let mut input = base(&profile, &layout)?;
+            input.task.goal = "deployer ".repeat(goal_len / 9);
+            let (_, passes) = fitted_parts(&input, budget, budget);
+            assert!(passes <= 4, "goal {goal_len} at {budget}: {passes} passes");
+        }
+        Ok(())
+    }
+
+    /// SPEC-174 review round 5: the quote starts at the trimmed goal's length, so whitespace
+    /// around the goal never cuts it.
+    #[test]
+    fn whitespace_around_the_goal_changes_nothing() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let mut input = base(&profile, &layout)?;
+        input.task.goal = "Fix the login bug".to_owned();
+        let trimmed = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        for padded in [
+            format!("{}Fix the login bug", "\n".repeat(100)),
+            format!("Fix the login bug{}", "\n".repeat(100)),
+            format!("{}Fix the login bug{}", " ".repeat(599), "\t".repeat(80)),
+        ] {
+            input.task.goal = padded;
+            assert_eq!(build_briefing(&input, DEFAULT_BUDGET_BYTES), trimmed);
+        }
         Ok(())
     }
 

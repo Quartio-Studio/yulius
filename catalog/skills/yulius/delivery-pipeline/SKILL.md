@@ -27,8 +27,10 @@ Work starts from one concern with acceptance criteria. A GitHub issue is **ready
 - a summary, current and expected behavior, what is out of scope, and a checklist of acceptance
   criteria.
 
-Missing labels are created with the issue, never skipped (in Yulius: `issue_create`). Follow-ups,
-bugs you find and flaky tests become their own issues instead of widening the current task.
+Missing labels are created with the issue, never skipped (in Yulius: `issue_create`). A bug you
+find in code the change did not introduce, and a flaky test the change did not cause, become their
+own issues instead of widening the current task; a finding in the change's own code never does
+(section 4).
 
 Before designing, know the product: read the docs index (AGENTS.md, product summary,
 architecture, decisions, earlier specs, recent changes), the parallel and previous tasks, and
@@ -64,8 +66,21 @@ and the tests separately, runs the gates, and returns a verdict for the exact he
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
-- Re-review after fixes. At most 3 rounds; then decide, record the reasoning in the pull request,
-  and continue.
+- Re-review after fixes, up to 3 rounds.
+
+**Findings in the change's own code are fixed, never deferred.**
+
+1. A finding in code or tests this change added or modified is fixed in this pull request,
+   test-first, and never becomes a follow-up issue. That covers every finding: a test that cannot
+   fail, a weak or missing assertion, a race, a missing regression test. The round limit does not
+   excuse it: when 3 rounds are not enough, keep fixing, split the change, or stop and ask a
+   person (in Yulius: `needs_you`). Never merge with a known defect in your own code.
+2. Only these may become a new issue: a bug in code the change did not introduce (pre-existing,
+   found on the way), a flaky test the change did not cause, and cosmetic nits (naming, wording)
+   left at the round limit. Each says why it is outside the change, with the evidence (for
+   example "present on the integration branch before this change").
+3. The reviewer classifies each finding as own code or pre-existing, and the pull request answers
+   every finding. Deferring an own-code finding makes the verdict request changes.
 
 ## 5. Pull request
 
