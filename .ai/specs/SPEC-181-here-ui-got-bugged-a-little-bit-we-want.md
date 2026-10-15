@@ -1,11 +1,11 @@
 ---
 yulius-task: 85993b4d-d6f9-4150-93a6-4e674015ec20
-status: in-progress
+status: done
 ---
 
 # SPEC-181: the Explorer's buttons stay in the Explorer, and the open file follows the disk live
 
-Status: in progress
+Status: done
 Date: 2026-10-15
 Owner: task #168
 Scope authorization: the person's request (task #168), with a screenshot of the Editor: "here UI
@@ -57,11 +57,12 @@ other people input). Fix and implement if needed".
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Explorer's header stays inside the Explorer at any width
-- [ ] A file read with the sha256 the caller knows answers 204 when unchanged
-- [ ] The file in front reloads by itself when it changes on disk, keeping the cursor and edits
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The Explorer's header stays inside the Explorer at any width
+- [x] A file read with the sha256 the caller knows answers 204 when unchanged
+- [x] The file in front reloads by itself when it changes on disk, keeping the cursor and edits
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Review round 2 approves the exact head
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -107,4 +108,31 @@ other people input). Fix and implement if needed".
 
 ## Evidence
 
-(Filled in when the work is done.)
+- **Reproduced.** The mock Editor with the Explorer at 140 px (the separator's Home) drew the
+  Refresh button over the first tab, as in the screenshot; the new e2e test failed with
+  `{"outside":1,"overTab":1}` before the CSS change and passes after it (AC-181-1, 140 and 120 px).
+- **Red, then green.** Each new test was run against the code before its change and failed for
+  the reason it names:
+  - `files::a_read_with_the_known_sha256_answers_no_content_while_unchanged`: 200 with the body
+    where 204 was expected, then (round 1) 422 where a reader's 403 was expected (AC-181-2).
+  - e2e "the file in front shows what others write on disk…": cursor `{3,3}` instead of `{4,3}`
+    (the old `setValue`) (AC-181-3).
+  - e2e "unsaved edits are kept…": no "Changed on disk" (AC-181-4).
+  - e2e "the Editor looks at the disk only while it is shown": no timer look at all; and, with
+    the `!shown` guard removed, more looks than allowed (AC-181-5).
+  - e2e "no look at the disk starts while the file in front saves…": 2 looks during the save.
+  - e2e "a change of line endings on disk…": the model kept `\n` for a CRLF file.
+- **Review.** Round 1 (fresh session, `om-code-review`) requested changes: a look started from a
+  tab click during a save could put the pre-save text back (fixed: no look while saving); the
+  hidden-Editor test passed without its guard (fixed: the mock counts reads as asked); line
+  endings and a BOM (fixed); `known` checked before access (fixed); docs wording (fixed); the
+  read now uses `tokio::fs`. Round 2 reviewed the head with these fixes.
+- **Gates** on the head merged with `origin/dev` (`41694961`):
+  - `scripts/dev ci`: exit 0, nextest 1875 passed, 18 skipped; fmt, clippy, docs, deny, shear.
+  - `cd e2e && npx e2e run`: 535 passed, 1 skipped (55 files); `tests/editor.e2e.ts` 23/23 three
+    times in a row.
+  - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 401 for the agent key, as
+    since 2026-10-14 (#470); per ADR-0104 this is unrun, not passed. Yulius CI's `security` job
+    scans the pull request head.
+- **Not testable here.** A real agent writing a sandbox while a person watches in a deployed
+  instance; the mock and the Rust test stand in for the disk.
