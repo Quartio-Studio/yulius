@@ -1189,7 +1189,7 @@ impl App {
             &plan,
             &token,
             &log,
-            (ring, &mut stages),
+            (ring, &mut stages, None),
             cancel,
         )
         .await
