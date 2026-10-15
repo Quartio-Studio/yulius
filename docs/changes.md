@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `memory_peak_mb` and `disk_written_mb` with its end (absent when unmeasured, never 0). The
   Pipeline page's stage table shows CPU time and peak memory p50 · p90 beside the durations, and a
   waterfall row its own figures.
+- The CD page's environment cards read right at every width (SPEC-152, task #146, fixes #501):
+  - The deploy button stays top right, with only the title and badge wrapping beside it. Before,
+    it fell onto its own row under the title.
+  - A dev deploy that can't run is a plain button, not a grey primary slab.
+  - A promoting production names what it promotes ("Promotes dev at e37fdd2 into main") instead of
+    "First".
 - Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
   task #126, fixes #406, #431 and #399):
   - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start
