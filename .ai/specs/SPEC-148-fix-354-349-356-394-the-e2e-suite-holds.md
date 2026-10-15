@@ -141,8 +141,8 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 - After the merge into `dev`, #349, #356 and #394 are closed with a comment naming the PR; #354
   is closed too, or left open with a comment saying exactly what is still needed.
 
-Outcome: the two loaded-run criteria were not met in full. At the target load 3 of 670 file runs
-and 1 of 908 full-suite runs failed, each a default 5 s wait that ran out while the page or the
+Outcome: the two loaded-run criteria were not met in full. At the target load 3 of 670 file runs,
+1 of 908 full-suite runs and 1 of 230 runs of the final `editor`/`filedrop` failed, each a default 5 s wait that ran out while the page or the
 runner's own reads were starved (Evidence). No product defect was found behind them, and removing
 them needs a longer budget for first loads, which this task ruled out; #354 stays open for that
 decision.
@@ -270,6 +270,14 @@ same load (the reproduction), and none of them was one of the failures the issue
 #356's quick Archive (1 of 10). Each was a default wait that ran out on a starved first load or
 read, with no product defect found; a longer budget for those waits would remove them, and that
 budget is the decision #354 is left open for (ADR-0122, Consequences).
+
+**The final code under the same load** (head `cac33f8c`: E2L-009 and `dev` with #512 merged,
+which touched `filedrop.e2e.ts`). `editor` and `filedrop` `--repeat-each 10 --workers 4`,
+14:32–15:09, 7–44 loops, load 24–66, probe median 0.205 (0.12–0.30): **229 of 230 passed**;
+`filedrop` 110 of 110. `editor` "two people in one file…" (repeat 6), line 406: this page still
+showed Bob 5 s after he closed his Editor; one of the poll's reads took 4.6 s (trace step 64), so
+it looked at most twice, the first time before Bob's leaving could have arrived. Same kind as the
+four above: 5 of 1808 runs at the target load.
 
 **Review round 2** (fresh session, head `2f257d5a`): APPROVE with five low findings, resolved:
 the 0.20 share is said to be inferred and checked against the reproduction's speed (above); ADR-0122
