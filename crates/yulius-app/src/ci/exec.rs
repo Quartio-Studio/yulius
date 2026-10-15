@@ -31,6 +31,8 @@ use crate::model::SandboxRecord;
 use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunSignal};
 use crate::resources::repository_templates;
+use crate::stages::{NewSpan, OutputStages};
+use yulius_domain::stages::SubjectKind;
 
 /// The fixed wrapper: output to the log, stdin closed, then the configured command.
 const WRAPPER: &str = "exec >>\"$1\" 2>&1 </dev/null; exec /bin/sh -c \"$2\"";
@@ -218,10 +220,27 @@ impl App {
             Ok(Some(sandbox)) if sandbox.removed_at.is_none() => Some(sandbox),
             _ => None,
         };
+        let preparing = self.now();
         let prepared = match &sandbox {
             Some(sandbox) => self.ci_prepare(sandbox, run).await,
             None => Err("the sandbox was removed".to_owned()),
         };
+        self.record_span(NewSpan {
+            sandbox_id: run.sandbox_id.clone(),
+            subject_kind: SubjectKind::CiRun,
+            subject_id: run.id.clone(),
+            key: format!("prepare@{}", preparing.0),
+            parent_key: None,
+            kind: "prepare".to_owned(),
+            name: "commit".to_owned(),
+            environment: None,
+            job: None,
+            started_at: preparing,
+            ended_at: Some(self.now()),
+            outcome: Some(if prepared.is_ok() { "passed" } else { "error" }.to_owned()),
+            detail: None,
+        })
+        .await;
         let mut no_disk = 0usize;
         match (sandbox, prepared) {
             (Some(sandbox), Ok(())) => {
@@ -316,7 +335,10 @@ impl App {
         // A job the sandbox refused over its quota (usage crossed it after the dispatcher's
         // check) and nothing failed: the run waits for disk in the queue (CI-303).
         if cancel.borrow().is_none() && requeue_for_disk(&states, no_disk) {
-            match store.requeue_ci_run(&run.id, NO_DISK_REQUEUE).await {
+            match store
+                .requeue_ci_run(&run.id, NO_DISK_REQUEUE, self.now())
+                .await
+            {
                 Ok(true) => {
                     tracing::info!(run = %run.id, "CI run queued again: the sandbox is over its disk quota");
                     self.ci_disk_backoff(&run.sandbox_id);
@@ -413,6 +435,7 @@ impl App {
         mut cancel: watch::Receiver<Option<String>>,
     ) -> bool {
         let store = &self.deps.store;
+        let waiting = self.now();
         let slots = self.ci_slots();
         let budget = self.capacity().ci_job(job.need, share);
         let held = async {
@@ -441,8 +464,9 @@ impl App {
         let Some(_permit) = permit else {
             return false;
         };
+        let started_at = self.now();
         let started = CiJobUpdate {
-            started_at: Some(self.now()),
+            started_at: Some(started_at),
             ..CiJobUpdate::default()
         };
         if !matches!(
@@ -453,13 +477,48 @@ impl App {
         ) {
             return false;
         }
+        // Its stages (SPEC-137): the wait for a slot and its budget, then what its output names,
+        // under the job's span (the store opened it with the start).
+        let mut stages = OutputStages::ci_job(
+            run.sandbox_id.clone(),
+            &run.id,
+            &format!("job:{}@{}", job.id, started_at.0),
+            &job.key,
+        );
+        self.record_span(NewSpan {
+            sandbox_id: run.sandbox_id.clone(),
+            subject_kind: SubjectKind::CiRun,
+            subject_id: run.id.clone(),
+            key: format!("wait:{}@{}", job.id, waiting.0),
+            parent_key: None,
+            kind: "wait".to_owned(),
+            name: "job slot".to_owned(),
+            environment: None,
+            job: Some(job.key.clone()),
+            started_at: waiting,
+            ended_at: Some(started_at),
+            outcome: Some("started".to_owned()),
+            detail: Some(
+                serde_json::json!({ "cpus": budget.cpus, "memory_mb": budget.memory_mb })
+                    .to_string(),
+            ),
+        })
+        .await;
         let mut ring = OutputRing::new(OUTPUT_BYTES);
         ring.push_str(&format!(
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
             budget.cpus, budget.memory_mb
         ));
         let ended = self
-            .ci_job_process(sandbox, run, job, budget, checkout, &mut ring, &mut cancel)
+            .ci_job_process(
+                sandbox,
+                run,
+                job,
+                budget,
+                checkout,
+                (&mut ring, &mut stages),
+                &mut cancel,
+            )
             .await;
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
@@ -590,7 +649,7 @@ impl App {
         job: &CiJobRecord,
         budget: Budget,
         checkout_name: &str,
-        ring: &mut OutputRing,
+        (ring, stages): (&mut OutputRing, &mut OutputStages),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
         let ci_dir = self.ci_dir(&sandbox.id);
@@ -605,10 +664,25 @@ impl App {
                 .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
         }
         let repo = self.sandbox_repo(&sandbox.id);
-        self.deps
+        let checking_out = self.now();
+        let checked_out = self
+            .deps
             .git
             .ci_checkout(&repo, &checkout, &run.sha, &ci_dir)
-            .await
+            .await;
+        let span = stages.child(
+            "checkout",
+            "prepare",
+            "checkout",
+            (checking_out, self.now()),
+            if checked_out.is_ok() {
+                "passed"
+            } else {
+                "error"
+            },
+        );
+        self.record_span(span).await;
+        checked_out
             .map_err(|err| format!("checking out {} failed: {}", run.sha, err.public_message()))?;
         let log = logs.join(format!("{}.log", job.id));
         let _ = std::fs::remove_file(&log);
@@ -651,7 +725,7 @@ impl App {
                 &plan,
                 &token,
                 &log,
-                ring,
+                (ring, stages),
                 cancel,
             )
             .await;
@@ -672,9 +746,10 @@ impl App {
         plan: &LaunchPlan,
         token: &[u8; 32],
         log: &Path,
-        ring: &mut OutputRing,
+        (ring, stages): (&mut OutputRing, &mut OutputStages),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
+        let (sandbox, subject) = stages.subject();
         let host = &self.deps.session_host;
         host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
@@ -730,6 +805,8 @@ impl App {
                         }
                         _ => {}
                     }
+                    let ops = stages.feed(&tail.take_fresh(), self.now());
+                    self.record_spans(&sandbox, (subject.0, &subject.1), ops).await;
                     ticks += 1;
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
                         match sink {
@@ -747,12 +824,19 @@ impl App {
         };
         // What the job wrote last (bounded: one more read of at most a chunk per pass).
         for _ in 0..8 {
-            match tail.read(ring).await {
+            let read = tail.read(ring).await;
+            let ops = stages.feed(&tail.take_fresh(), self.now());
+            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+                .await;
+            match read {
                 Ok(_) if tail.caught_up() => break,
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
+        let ops = stages.finish(self.now());
+        self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+            .await;
         Ok(ended)
     }
 }
@@ -786,6 +870,9 @@ struct LogTail {
     offset: u64,
     size: u64,
     strip: AnsiStripper,
+    /// What the reads since the last [`LogTail::take_fresh`] added (escape sequences removed),
+    /// for the job's stages; bounded by the reads' chunks.
+    fresh: Vec<u8>,
 }
 
 impl LogTail {
@@ -795,7 +882,13 @@ impl LogTail {
             offset: 0,
             size: 0,
             strip: AnsiStripper::default(),
+            fresh: Vec::new(),
         }
+    }
+
+    /// The output read since the last call.
+    fn take_fresh(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.fresh)
     }
 
     fn caught_up(&self) -> bool {
@@ -834,6 +927,7 @@ impl LogTail {
         let mut clean = Vec::with_capacity(filled);
         self.strip.push(&buf[..filled], &mut clean);
         ring.push(&clean);
+        self.fresh.extend_from_slice(&clean);
         Ok(self.size)
     }
 }

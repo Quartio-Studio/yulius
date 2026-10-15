@@ -566,14 +566,14 @@ impl App {
             Ok(Some(task)) => task,
             _ => {
                 let verdict = Verdict::Keep(deciding.merge.clone());
-                self.finish_armed(&task_id, &deciding, verdict);
+                self.finish_armed(&task_id, &deciding, verdict).await;
                 return Step::Stop(format!("#{} cannot be read", member.pr));
             }
         };
         let (verdict, step) = self
             .train_member(sandbox, train, index, &task, &deciding)
             .await;
-        self.finish_armed(&task_id, &deciding, verdict);
+        self.finish_armed(&task_id, &deciding, verdict).await;
         step
     }
 
@@ -621,6 +621,7 @@ impl App {
         let Ok(token) = self.task_github_token(task, sandbox).await else {
             return keep(armed, format!("#{} has no GitHub token", member.pr));
         };
+        let updating = self.now();
         let (head, moved) = match self
             .deps
             .git
@@ -628,9 +629,15 @@ impl App {
             .await
         {
             Ok(MergeIntegration::UpToDate) => (armed.head.clone(), false),
-            Ok(MergeIntegration::Merged(head)) => (head, true),
+            Ok(MergeIntegration::Merged(head)) => {
+                self.integration_update_span(&task.id, &integration, updating, "merged")
+                    .await;
+                (head, true)
+            }
             // Aborted: the one-by-one flow tells the agent what to resolve.
             Ok(MergeIntegration::Conflict(_)) => {
+                self.integration_update_span(&task.id, &integration, updating, "conflict")
+                    .await;
                 return keep(armed, format!("#{} conflicts after all", member.pr));
             }
             Err(err) => {

@@ -91,7 +91,9 @@ impl App {
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let store = &self.deps.store;
         if args.resolved {
-            let ended = store.set_task_needs_you(&ctx.task.id, None).await?;
+            let ended = store
+                .set_task_needs_you(&ctx.task.id, None, self.now())
+                .await?;
             if ended {
                 self.publish_task(&ctx.task.id).await;
                 self.needs_you_audit(ctx, "task.needs_you.resolved", "resolved by the agent")
@@ -136,7 +138,7 @@ impl App {
         // The request itself puts the task in Needs you (`AttentionFacts`, `taskInfo`), whatever the
         // agent does meanwhile; its activity is left to its turns.
         store
-            .set_task_needs_you(&ctx.task.id, Some(&record))
+            .set_task_needs_you(&ctx.task.id, Some(&record), Timestamp(record.at))
             .await?;
         self.publish_task(&ctx.task.id).await;
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
@@ -166,7 +168,12 @@ impl App {
 
     /// A prompt typed into the task ends its request: a person answered.
     pub(crate) async fn end_needs_you(&self, task: &TaskId) {
-        match self.deps.store.set_task_needs_you(task, None).await {
+        match self
+            .deps
+            .store
+            .set_task_needs_you(task, None, self.now())
+            .await
+        {
             Ok(true) => self.publish_task(task).await,
             Ok(false) => {}
             Err(err) => {

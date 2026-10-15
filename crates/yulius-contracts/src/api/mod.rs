@@ -19,6 +19,7 @@ pub mod secrets;
 pub mod sessions;
 pub mod shells;
 pub mod skills;
+pub mod stages;
 pub mod status;
 pub mod tasks;
 pub mod updates;

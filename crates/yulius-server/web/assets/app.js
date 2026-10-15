@@ -34,6 +34,7 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
+import { mountPipelinePage } from './pages/pipeline.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
@@ -63,6 +64,7 @@ const SANDBOX_PAGES = {
   ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
   cd: (ctx, sandbox, route) => mountCdPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox, route) => mountDashboardPage(ctx, sandbox, route),
+  pipeline: (ctx, sandbox, route) => mountPipelinePage(ctx, sandbox, route),
 };
 
 const ADMIN_PAGES = {

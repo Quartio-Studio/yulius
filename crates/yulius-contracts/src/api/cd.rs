@@ -120,4 +120,8 @@ pub struct CdDeploy {
     /// promotion the integration commit it promotes. Refused (409) when the branch moved since.
     #[serde(default)]
     pub expect: Option<String>,
+    /// Production: how long the person kept the confirmation open, in milliseconds, as the page
+    /// measured it (SPEC-137 STG-302); kept up to an hour, recorded as the run's confirmation wait.
+    #[serde(default)]
+    pub confirm_ms: Option<u64>,
 }

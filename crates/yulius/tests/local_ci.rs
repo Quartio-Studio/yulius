@@ -1024,3 +1024,108 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
     }
     Ok(())
 }
+
+/// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
+const STAGED_TOML: &str = r#"[[ci.jobs]]
+name = "build"
+command = 'echo "::yulius-stage compile"; echo "::yulius-measure cache_hits=2"; sleep 1; echo "::yulius-stage unit"; echo "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured"; echo "test result: ok. 2 passed; 0 failed; 0 ignored"; sleep 1; echo "::yulius-stage-end"; echo done'
+"#;
+
+/// The test clock follows real time while a job runs, so stages have real durations.
+fn clock_follows_real_time(f: &Fixture) -> tokio::task::JoinHandle<()> {
+    let clock = Arc::clone(&f.h.clock);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        loop {
+            tick.tick().await;
+            clock.0.fetch_add(20, Ordering::SeqCst);
+        }
+    })
+}
+
+/// SPEC-137 STG-201..203: a CI run's queue, preparation, its job with its slot wait and
+/// checkout, and the stages and figures the job's output names are spans with real durations,
+/// timed by Yulius as it reads the output.
+#[tokio::test]
+async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
+    use yulius_app::ports::store_ext::SpanStore as _;
+    use yulius_domain::stages::SubjectKind;
+    let f = fixture_with(false, |_| STAGED_TOML.to_owned()).await?;
+    let clock = clock_follows_real_time(&f);
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    clock.abort();
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let id = run["id"].as_str().ok_or("id")?;
+    let spans =
+        f.h.store
+            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CiRun, id, 1_000)
+            .await?;
+    let find = |kind: &str, name: &str| {
+        spans
+            .iter()
+            .find(|s| s.kind == kind && s.name == name)
+            .ok_or_else(|| format!("no {kind} {name} in {spans:?}"))
+    };
+    let job = find("job", "build")?;
+    assert_eq!(
+        (job.job.as_deref(), job.outcome.as_deref()),
+        (Some("build"), Some("passed"))
+    );
+    for (kind, name) in [
+        ("queue", "queue"),
+        ("run", "run"),
+        ("prepare", "commit"),
+        ("wait", "job slot"),
+    ] {
+        let span = find(kind, name)?;
+        assert!(span.ended_at.is_some(), "{span:?}");
+    }
+    let checkout = find("prepare", "checkout")?;
+    assert_eq!(checkout.parent_key.as_deref(), Some(job.key.as_str()));
+    let compile = find("stage", "compile")?;
+    let unit = find("stage", "unit")?;
+    assert_eq!(compile.parent_key.as_deref(), Some(job.key.as_str()));
+    assert_eq!(
+        (compile.outcome.as_deref(), unit.outcome.as_deref()),
+        (Some("passed"), Some("passed"))
+    );
+    assert_eq!(
+        compile.ended_at,
+        Some(unit.started_at),
+        "a stage ends where the next starts"
+    );
+    let (compiled, tested) = (
+        compile.duration_ms().ok_or("compile ended")?,
+        unit.duration_ms().ok_or("unit ended")?,
+    );
+    assert!(
+        compiled >= 500 && tested >= 500,
+        "real durations: {compiled} ms, {tested} ms"
+    );
+    assert!(unit.ended_at <= job.ended_at && compile.started_at >= job.started_at);
+    let figures: Value = serde_json::from_str(compile.detail.as_deref().unwrap_or("{}"))?;
+    assert_eq!(figures["cache_hits"], 2.0);
+    let tests: Value = serde_json::from_str(unit.detail.as_deref().unwrap_or("{}"))?;
+    assert_eq!(
+        (
+            tests["tests_passed"].as_f64(),
+            tests["tests_skipped"].as_f64()
+        ),
+        (Some(5.0), Some(1.0))
+    );
+    assert!(
+        tests.get("tests_failed").is_none(),
+        "zero counts are not written: {tests}"
+    );
+    assert!(spans.iter().all(|s| s.source == "recorded"));
+    Ok(())
+}

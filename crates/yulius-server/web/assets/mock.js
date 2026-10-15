@@ -1685,6 +1685,7 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, ({ db, p, body }) => {
   const env = cd.environments.find((e) => e.name === name);
   if (!env) fail(422, 'invalid', 'the environment is dev or prod');
   need(sandbox, name === 'prod' ? 'admin' : 'write');
+  db.lastCdDeploy = body || {}; // what the page sent (SPEC-137: `confirm_ms` of a production deploy)
   if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
@@ -2772,6 +2773,145 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     truncated: false,
   };
 });
+// ---- Stages (SPEC-137): the Pipeline page, waterfalls and the Dashboard's overview.
+
+// One stage row: subject, kind, name, job, environment, ended, failed, p50 and p90 minutes.
+const STAGE_ROWS = [
+  ['ci_run', 'run', 'run', null, null, 46, 5, 14, 23],
+  ['ci_run', 'queue', 'queue', null, null, 49, 0, 1.5, 9],
+  ['ci_run', 'queue', 'queue · waiting for a lane', null, null, 12, 0, 4, 11],
+  ['ci_run', 'queue', 'queue · waiting for disk', null, null, 3, 0, 7, 12],
+  ['ci_run', 'job', 'quality', null, null, 46, 3, 12, 19],
+  ['ci_run', 'stage', 'lint', 'quality', null, 44, 1, 2.5, 3.5],
+  ['ci_run', 'stage', 'unit', 'quality', null, 43, 2, 6, 9],
+  ['ci_run', 'job', 'e2e', null, null, 46, 2, 9, 13],
+  ['task', 'state', 'queued', null, null, 31, 0, 6, 48],
+  ['task', 'state', 'needs_you', null, null, 18, 0, 22, 190],
+  ['task', 'step', 'step', null, null, 212, 4, 18, 55],
+  ['task', 'delivery', 'pr_open', null, null, 27, 0, 52, 240],
+  ['task', 'wait', 'merge_armed', null, null, 24, 2, 19, 41],
+  ['cd_run', 'run', 'run', null, 'dev', 14, 3, 3.2, 6],
+  ['cd_run', 'deploy', 'deploy', null, 'dev', 14, 2, 2.4, 4.5],
+  ['cd_run', 'verify', 'verify', null, 'dev', 12, 1, 0.4, 0.9],
+  ['cd_run', 'run', 'run', null, 'prod', 4, 0, 5, 7],
+  ['cd_run', 'wait', 'confirmation', null, 'prod', 4, 0, 0.3, 0.8],
+];
+
+function stageRows(query) {
+  const want = (key, value) => !query.get(key) || query.get(key) === value;
+  return STAGE_ROWS
+    .filter(([subject, , , job, env]) => want('subject', subject) && want('environment', env) && want('job', job))
+    .map(([subject, kind, name, job, env, count, failed, p50, p90]) => ({
+      subject_kind: subject, kind, name, job, environment: env, count, failed, running: name === 'run' && subject === 'ci_run' ? 1 : 0,
+      backfilled: subject === 'ci_run' ? 6 : 0, p50_ms: Math.round(p50 * MIN), p90_ms: Math.round(p90 * MIN), max_ms: Math.round(p90 * 1.6 * MIN), total_ms: Math.round(count * p50 * 1.2 * MIN),
+    }))
+    .sort((a, b) => b.total_ms - a.total_ms);
+}
+
+function stageDays(query) {
+  const to = Date.parse(query.get('to') || new Date().toISOString().slice(0, 10));
+  const from = Date.parse(query.get('from') || new Date(to - 29 * DAY).toISOString().slice(0, 10));
+  const days = [];
+  for (let at = from; at <= to; at += DAY) days.push(new Date(at).toISOString().slice(0, 10));
+  return days;
+}
+
+route('GET', `/api/sandboxes/${ID}/stages/summary`, ({ db, p, query }) => {
+  if (!db.sandboxes.some((s) => s.id === p[0])) fail(404, 'not_found', 'not found');
+  const stages = stageRows(query);
+  const [subject, kind, ...rest] = (query.get('trend') || 'ci_run:run:run').split(':');
+  const name = rest.join(':');
+  const row = STAGE_ROWS.find((r) => r[0] === subject && r[1] === kind && r[2] === name) || STAGE_ROWS[0];
+  const days = stageDays(query).map((date) => {
+    const weekday = new Date(date).getUTCDay();
+    if (weekday === 0 || weekday === 6) return { date, count: 0, p50_ms: null, p90_ms: null };
+    const vary = (hashString(date + name) % 9) / 10 + 0.6;
+    return { date, count: 1 + (hashString(date) % 4), p50_ms: Math.round(row[7] * vary * MIN), p90_ms: Math.round(row[8] * vary * MIN) };
+  });
+  const delivery = [
+    { environment: 'dev', deployments: 14, passed: 11, per_week: 2.6, lead_time_p50_ms: 5.5 * HOUR, lead_time_p90_ms: 19 * HOUR, lead_time_count: 23, change_failure_rate: 3 / 14, time_to_restore_p50_ms: 47 * MIN, restores: 3 },
+    { environment: 'prod', deployments: 4, passed: 4, per_week: 0.9, lead_time_p50_ms: 2.1 * DAY, lead_time_p90_ms: 4.5 * DAY, lead_time_count: 23, change_failure_rate: 0, time_to_restore_p50_ms: null, restores: 0 },
+  ];
+  return {
+    from: days[0], to: days[days.length - 1], stages, trend: { subject_kind: subject, kind, name, days }, delivery,
+    options: { jobs: ['e2e', 'quality'], environments: ['dev', 'prod'], kinds: ['delivery', 'deploy', 'job', 'queue', 'run', 'stage', 'state', 'step', 'verify', 'wait'] },
+    reused_runs: 3, truncated: false,
+  };
+});
+
+function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, extra = {}) {
+  const start = Date.now() - startMin * MIN;
+  const ended = tookMin === null ? null : start + tookMin * MIN;
+  return {
+    subject_kind: subjectKind, subject_id: subjectId, key, parent_key: null, kind, name, environment: null, job: null,
+    started_at: new Date(start).toISOString(), ended_at: ended === null ? null : new Date(ended).toISOString(),
+    duration_ms: ended === null ? null : Math.round(tookMin * MIN), outcome: ended === null ? null : 'passed', source: 'recorded', detail: {}, ...extra,
+  };
+}
+
+function mockTimeline(kind, id) {
+  const s = (...args) => stageSpan(kind, id, ...args);
+  if (kind === 'ci_run') {
+    const failed = id === 'ci_s2';
+    return { spans: [
+      s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
+      s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
+      s('prepare@1', 'prepare', 'commit', 45, 0.2),
+      s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality' }),
+      s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
+      s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
+      s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
+      s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+    ], related: [] };
+  }
+  if (kind === 'cd_run') {
+    const e = { environment: 'dev' };
+    return { spans: [
+      s('prepare', 'prepare', 'checks', 92, 0.4, e),
+      s('run', 'run', 'run', 91.6, 3.4, { ...e, outcome: 'failed', detail: { branch: 'quartio', sha: '7d1e0c9b8a7f', requested_by: 'task #12' } }),
+      s('run/deploy', 'deploy', 'deploy', 91.5, 3.2, { ...e, parent_key: 'run', outcome: 'failed' }),
+      s('run/deploy/stage:1', 'stage', 'build', 91.5, 2.1, { ...e, parent_key: 'run/deploy' }),
+      s('run/deploy/stage:2', 'stage', 'upload', 89.4, 1.1, { ...e, parent_key: 'run/deploy', outcome: 'failed' }),
+    ], related: [] };
+  }
+  return { spans: [
+    s('state@1', 'state', 'queued', 300, 12),
+    s('state@2', 'state', 'working', 288, 40),
+    s('step:a', 'step', 'Spec written and validated', 285, 20, { detail: { output_tokens: 18400, input_tokens: 220000, active_ms: 17 * MIN } }),
+    s('state@3', 'state', 'needs_you', 248, 22, { outcome: null }),
+    s('state@4', 'state', 'working', 226, null),
+    s('step:b', 'step', 'Spans stored for tasks, CI and CD', 224, 60),
+    s('delivery@1', 'delivery', 'pr_open', 150, 52, { outcome: 'merged_integration', detail: { pr: 221 } }),
+    s('wait@1', 'wait', 'merge_armed', 120, 22, { outcome: 'merged' }),
+  ], related: [
+    stageSpan('ci_run', 'ci_s3', 'queue@1', 'queue', 'queue', 140, 4),
+    stageSpan('ci_run', 'ci_s3', 'run@1', 'run', 'run', 136, 16, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),
+  ] };
+}
+
+route('GET', `/api/sandboxes/${ID}/stages/timeline`, ({ db, p, query }) => {
+  if (!db.sandboxes.some((s) => s.id === p[0])) fail(404, 'not_found', 'not found');
+  const [kind, ...rest] = (query.get('subject') || '').split(':');
+  const id = rest.join(':');
+  if (!['task', 'ci_run', 'cd_run'].includes(kind) || !id) fail(422, 'invalid', 'subject must be task:<id>, ci_run:<id> or cd_run:<id>');
+  return { subject_kind: kind, subject_id: id, ...mockTimeline(kind, id) };
+});
+
+const SPAN_COLUMNS = ['subject_kind', 'subject_id', 'key', 'parent_key', 'kind', 'name', 'environment', 'job', 'started_at', 'ended_at', 'duration_ms', 'outcome', 'source', 'detail'];
+route('GET', `/api/sandboxes/${ID}/stages/spans`, ({ db, p, query }) => {
+  if (!db.sandboxes.some((s) => s.id === p[0])) fail(404, 'not_found', 'not found');
+  const format = query.get('format') || 'json';
+  if (format !== 'json' && format !== 'csv') fail(422, 'invalid', 'format must be json or csv');
+  const rows = [...mockTimeline('ci_run', 'ci_s2').spans, ...mockTimeline('cd_run', 'cd_s2').spans];
+  if (format === 'json') return rows;
+  const cell = (v) => {
+    const text = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const csv = [SPAN_COLUMNS.join(','), ...rows.map((r) => SPAN_COLUMNS.map((c) => cell(r[c])).join(','))].join('\r\n');
+  return new Response(`${csv}\r\n`, { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="yulius-stages-${query.get('from') || 'start'}-${query.get('to') || 'now'}.csv"` } });
+});
+
 const TASK_ROW_COLUMNS = ['task_id', 'sandbox', 'number', 'title', 'status', 'origin', 'harness', 'harnesses', 'models', 'accounts', 'created_at', 'closed_at', 'attempts', 'wall_ms', 'active_ms', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'unknown_usage_runs', 'switches', 'feedback', 'feedback_correct', 'feedback_incorrect'];
 route('GET', '/api/analytics/tasks', ({ db, query }) => {
   const format = query.get('format') || 'json';

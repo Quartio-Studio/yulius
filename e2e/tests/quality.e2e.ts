@@ -21,6 +21,8 @@ const pages = [
   ['secrets', '/s/studio/secrets', 'Secrets'],
   ['agent secrets', '/s/studio/secrets?section=agents', 'Secrets'],
   ['dashboard', '/s/studio/dashboard', 'Dashboard'],
+  ['pipeline', '/s/studio/pipeline', 'Pipeline'],
+  ['pipeline timeline', '/s/studio/pipeline?open=ci_run:ci_s2', 'Pipeline'],
   ['settings', '/settings', 'Settings'],
 ] as const;
 

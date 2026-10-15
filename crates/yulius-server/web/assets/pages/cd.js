@@ -9,9 +9,11 @@ import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { allows } from '../status.js';
-import { replaceQuietly } from '../router.js';
+import { replaceQuietly, href } from '../router.js';
 import { pageFrame, loader } from './common.js';
 import { BRAND } from '../brand.js';
+import { loadWaterfall } from '../stages.js';
+import { pipelineHref } from './pipeline.js';
 
 const STATE = {
   running: { label: 'Deploying', tone: 'warn', icon: 'refresh' },
@@ -175,6 +177,8 @@ export function mountCdPage(ctx, sandbox, route) {
     if (env.promote) steps.push(`Promote the integration branch${env.promotes_from ? ` at ${shortSha(env.promotes_from)}` : ''} into ${env.branch} (with the project’s promotion method, as you).`);
     if (env.deploy) steps.push(`Run the deploy command at the new ${env.branch} head: ${env.deploy}`);
     if (env.verify) steps.push(`Then verify: ${env.verify}`);
+    // How long the person kept the confirmation open is the run's confirmation wait (SPEC-137).
+    const opened = performance.now();
     const ok = await confirmDialog({
       title: 'Deploy production?',
       message: 'This changes what your users run. It happens now:',
@@ -183,15 +187,16 @@ export function mountCdPage(ctx, sandbox, route) {
       danger: true,
       typeToConfirm: overview.slug,
     });
-    if (ok) await start('prod', overview.slug, env.promote ? env.promotes_from : env.head);
+    if (ok) await start('prod', overview.slug, env.promote ? env.promotes_from : env.head, Math.round(performance.now() - opened));
   }
 
-  async function start(env, confirm, expect) {
+  async function start(env, confirm, expect, confirmMs) {
     try {
       // The commit the person saw: the server refuses if the branch moved since.
       const body = {};
       if (confirm) body.confirm = confirm;
       if (expect) body.expect = expect;
+      if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
       const run = await ctx.api.post(`${base}/cd/${env}/deploy`, body);
       toast(env === 'dev' ? 'Deploying dev.' : 'Deploying production.', { kind: 'ok' });
       reload({ quiet: true });
@@ -219,7 +224,9 @@ export function mountCdPage(ctx, sandbox, route) {
     let poll = null;
     const head = h('div', { class: 'row-wrap' });
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
-    const body = h('div', { class: 'stack' }, head, output);
+    // Its stages (SPEC-137): checks, promotion, deploy, verify and what their output names.
+    const stages = h('div', { class: 'run-stages' });
+    const body = h('div', { class: 'stack' }, head, stages, output);
     const modal = openModal({
       title: 'Deploy', wide: true, body: placeholder('Loading the deploy…', 'loading'),
       actions: [{ label: 'Close' }],
@@ -234,7 +241,10 @@ export function mountCdPage(ctx, sandbox, route) {
         if (first) { setChildren(modal.body, body); first = false; }
         const st = stateOf(run.state);
         setChildren(head, badge(st.label, st.tone), h('strong', null, run.environment === 'dev' ? 'Dev' : 'Production'), h('code', { class: 'muted' }, shortSha(run.commit)),
-          h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by} · started ${relLong(run.started_at)}${run.reason ? ` · ${run.reason}` : ''}`));
+          h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by} · started ${relLong(run.started_at)}${run.reason ? ` · ${run.reason}` : ''}`),
+          h('span', { class: 'spacer' }),
+          h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `cd_run:${id}`)), dataset: { route: pipelineHref(sandbox, `cd_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline'));
+        await loadWaterfall(ctx, sandbox, `cd_run:${id}`, stages, { title: 'Stages of this deploy' });
         const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
         const exit = run.exit_code === null || run.exit_code === undefined ? '' : `\n[exit code ${run.exit_code}]`;
         output.textContent = (run.output || (run.state === 'running' ? 'Waiting for output…' : 'No output.')) + exit;

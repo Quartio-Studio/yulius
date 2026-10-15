@@ -595,7 +595,7 @@ CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at 
                             # ANTHROPIC_*, CLAUDE_*, NODE_*, PYTHON*, *_PROXY, LD_* and similar)
 ```
 
-Jobs get `CI=true`, `HOME` (persistent), `YULIUS_CI_CACHE` (persistent), `YULIUS_CI_RUN`,
+Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent), `YULIUS_CI_CACHE` (persistent), `YULIUS_CI_RUN`,
 `YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX` and no secrets. A job
 starts once its CPUs and memory are free: the CI jobs of all lanes never ask for more than the
 sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of
@@ -683,7 +683,7 @@ restart is recorded as `error` and never run again by itself.
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
 | `POST /api/sandboxes/{sid}/cd/dev/deploy` | write | the running `CdRun` |
-| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>"}` | the running `CdRun` after the promotion |
+| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
 | `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it |
@@ -704,7 +704,8 @@ CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|er
 
 `expect` (optional, any deploy) is the commit the person was shown: the one deployed, or with a
 promotion the integration commit promoted; the deploy refuses (`conflict`) when the branch moved
-since. A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
+since. `confirm_ms` (optional, production) is how long the person kept the confirmation open, as the
+page measured it; up to an hour it is recorded as the run's confirmation wait (SPEC-137). A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
 copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it.
 
 Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
@@ -715,6 +716,59 @@ starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and r
 deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev only; production is
 refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
 `cd_detail` in its state).
+
+## Stages (pipeline measurements)
+
+Every stage of a task, a CI run and a CD run is a span (SPEC-137, ADR-0112), recorded by Yulius as
+it happens: a task's states (`queued`, `chained`, `prepared`, `starting`, `working`, `idle`,
+`needs_you`, `done`, `paused`, `switching`, `stopping`), its `needs_you` requests, steps (with the
+tokens and agent working time its runs recorded meanwhile), runs, pauses, delivery stages,
+armed-merge waits and updates onto the integration branch; a CI run's queue (with why it waited),
+preparation, job-slot waits, jobs, checkouts and the stages its output names; a CD run's
+confirmation, checks, promotion, deploy, verify and the stages their output names. Spans recorded
+before migration 28 from older tables are `backfilled`; a CI result reused from an identical tree
+is `detail.reused` and not counted. Spans are kept 180 days. Nothing writes them through the API.
+
+A CI job or CD script names its stages and figures with lines Yulius reads as it runs; Yulius
+times them by its own clock:
+
+```text
+::yulius-stage build            # a stage starts (the one before ends); 1-48 characters
+::yulius-measure cache_hits=3   # figures of the open stage (or the job): [a-z][a-z0-9_]{0,31}=<number>
+::yulius-stage-end              # the open stage ends (the job's end ends it too)
+```
+
+Test summaries of cargo nextest, cargo test, pytest and Playwright add `tests_passed`,
+`tests_failed`, `tests_skipped` and `tests_flaky` to the open stage. A figure never overwrites what
+Yulius records of the span: `tests_…`, `…_start` and the names Yulius writes itself
+(`RESERVED_FIGURES` in `yulius-domain/src/stages.rs`: `sha`, `reason`, `exit_code`, `cpus`,
+`input_tokens`…) are ignored, as are new names past 64 per span. Figures are written once per span
+each half second the output is read (counts added up, the last value kept).
+
+| Method and path | Access | Result |
+| --- | --- | --- |
+| `GET /api/sandboxes/{sid}/stages/timeline?subject=<task|ci_run|cd_run>:<id>` | read | `TimelineView` |
+| `GET /api/sandboxes/{sid}/stages/summary?from&to&subject&kind&stage&environment&job&trend` | read | `StageSummary` |
+| `GET /api/sandboxes/{sid}/stages/spans?format=json|csv&from&to&subject&kind&stage&environment&job` | read | `[SpanView]` or CSV (`yulius-stages-<from>-<to>.csv`) |
+
+`from`/`to` are UTC days (`YYYY-MM-DD`, default the last 30 days, at most 366); `trend` is
+`<subject>:<kind>:<name>` (default `ci_run:run:run`).
+
+```text
+SpanView = {"subject_kind", "subject_id", "key", "parent_key", "kind", "name", "environment", "job",
+            "started_at", "ended_at"|null, "duration_ms"|null, "outcome"|null,
+            "source": "recorded|backfilled", "detail": {…figures}}
+TimelineView = {"subject_kind", "subject_id", "spans": [SpanView] (the newest 2,000), "related": [SpanView]
+                (a task of this sandbox: its PR's CI runs), "truncated": bool (it has more)}
+StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "kind", "name",
+                "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
+                "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}
+StageRow = {"subject_kind", "kind", "name", "job", "environment", "count", "failed", "running",
+            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms"}
+DeliveryFigures = {"environment", "deployments", "passed", "per_week", "lead_time_p50_ms",
+                   "lead_time_p90_ms", "lead_time_count", "change_failure_rate",
+                   "time_to_restore_p50_ms", "restores"}
+```
 
 ## Skills, workflows, automations, MCP
 
