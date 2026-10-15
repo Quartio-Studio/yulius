@@ -48,13 +48,18 @@ fn redact_line(line: &str) -> String {
 fn redact_word(word: &str) -> String {
     let mut word = redact_userinfo(word);
     for prefix in TOKEN_PREFIXES {
-        while let Some(start) = word.find(prefix) {
+        let mut from = 0;
+        while let Some(found) = word[from..].find(prefix) {
+            let start = from + found;
             let tail = &word[start + prefix.len()..];
             let len = token_len(prefix, tail);
             if len == 0 {
-                break;
+                // A bare prefix: search on after it.
+                from = start + prefix.len();
+                continue;
             }
             word.replace_range(start..start + prefix.len() + len, REDACTED);
+            from = start + REDACTED.len();
         }
     }
     word
@@ -137,6 +142,19 @@ mod tests {
         assert_eq!(
             redact(&format!("remote: {token} failed")),
             "remote: [redacted] failed"
+        );
+    }
+
+    /// Review of SPEC-138, round 2: a bare prefix earlier in the word does not end the search.
+    #[test]
+    fn a_bare_prefix_does_not_hide_a_later_token() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIx.c2lnbmF0dXJl",
+            "hbGciOiJSUzI1NiJ9"
+        );
+        assert_eq!(
+            redact(&format!("ghs_:{token} and ghp_-ghp_{}", "aB3dE".repeat(8))),
+            "ghs_:[redacted] and ghp_-[redacted]"
         );
     }
 
