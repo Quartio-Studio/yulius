@@ -153,6 +153,10 @@ const ICONS = {
 /** Every icon name (the /design page shows them all). */
 export const ICON_NAMES = Object.keys(ICONS);
 
+/** What a tab that can be dragged says under the pointer, next to its `grip` (SPEC-136, SPEC-167):
+ *  the Notes tabs and the sandbox tabs say the same words. */
+export const DRAG_TAB_HINT = 'Click to open, drag to reorder';
+
 /**
  * Filter tabs with counts: pills in a radio group (arrows move, as in Tasks), the stand-in for a
  * filter <select>. `options` are { value, label, icon? }; '' is "All". Tabs with no items hide

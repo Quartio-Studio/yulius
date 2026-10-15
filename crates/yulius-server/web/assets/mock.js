@@ -2953,19 +2953,75 @@ function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, e
   };
 }
 
+// A busy running run (SPEC-165, the screenshot of task #155): eight jobs waited 6 to 9 min for a
+// job slot (9.1 min in, so the 8 min tick would crowd "now"), as `ci::exec` records it (`wait:<job id>@…` beside the job's `job:<job id>@…`), each
+// with its checkout; four are still running, one of them with a failed stage.
+// Jobs are listed in the order they began waiting: prototypes began before gateway, started after.
+const BUSY_JOBS = [
+  ['shared', 6, 0.5], ['engine', 6, null], ['prototypes', 6.5, 0.15], ['package (gateway)', 6.2, null],
+  ['package (broker)', 6.8, 0.7], ['package (deployer)', 7.5, null], ['package (mcp/browser)', 8.2, 0.7], ['package (mcp/email)', 8.6, null],
+];
+
+function busyTimeline(id) {
+  const s = (...args) => stageSpan('ci_run', id, ...args);
+  const spans = [
+    s('queue@1', 'queue', 'queue', 9.1, 0.02, { detail: { reference: 'branch/quartio', reason: null } }),
+    s('run@1', 'run', 'run', 9.08, null, { detail: { reference: 'branch/quartio', sha: '9f3c2a1b7e4d', requested_by: 'yulius' } }),
+    s('prepare@1', 'prepare', 'commit', 9.08, 0.005),
+  ];
+  BUSY_JOBS.forEach(([name, waited, ran], i) => {
+    const asked = 9.05 - i * 0.01;
+    const at = asked - waited;
+    const job = `job:j${i}@1`;
+    spans.push(s(`wait:j${i}@1`, 'wait', 'job slot', asked, waited, { job: name, outcome: 'started', detail: { cpus: 4, memory_mb: 8192 } }));
+    spans.push(s(job, 'job', name, at, ran, { job: name, detail: ran === null ? {} : { cpu_ms: Math.round(ran * 3 * MIN), memory_peak_mb: 900 } }));
+    spans.push(s(`${job}/checkout`, 'prepare', 'checkout', at, 0.01, { parent_key: job, job: name }));
+    if (name === 'engine') spans.push(s(`${job}/stage:1`, 'stage', 'build', at - 0.01, null, { parent_key: job, job: name }));
+    // Still running, but a stage of it already failed.
+    if (name === 'package (deployer)') spans.push(s(`${job}/stage:1`, 'stage', 'lint', at - 0.01, 0.5, { parent_key: job, job: name, outcome: 'failed' }));
+  });
+  return { spans, related: [] };
+}
+
+// A short run (about 2 min, SPEC-165 review): its axis steps by 30 s, "quality" was requeued after
+// its process host was lost (two waits, two job spans), "e2e"'s wait has no job span and
+// "security" was skipped.
+function shortTimeline(id) {
+  const s = (...args) => stageSpan('ci_run', id, ...args);
+  return { spans: [
+    s('queue@1', 'queue', 'queue', 2, 0.05, { detail: { reference: 'pr/221', reason: null } }),
+    s('run@1', 'run', 'run', 1.95, 1.9, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),
+    s('prepare@1', 'prepare', 'commit', 1.95, 0.01),
+    s('wait:j0@1', 'wait', 'job slot', 1.94, 0.1, { job: 'quality', outcome: 'started' }),
+    s('job:j0@1', 'job', 'quality', 1.84, 0.3, { job: 'quality', outcome: 'error', detail: { reason: 'the job’s process host was lost' } }),
+    s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'started' }),
+    // Checked nothing (exit 78, ADR-0133): skipped, not passed.
+    s('wait:j5@1', 'wait', 'job slot', 1.9, 0.05, { job: 'security', outcome: 'started' }),
+    s('job:j5@1', 'job', 'security', 1.85, 0.1, { job: 'security', outcome: 'skipped', detail: { exit_code: 78 } }),
+    s('wait:j0@2', 'wait', 'job slot', 1.54, 0.3, { job: 'quality', outcome: 'started' }),
+    s('job:j0@2', 'job', 'quality', 1.24, 1.1, { job: 'quality' }),
+  ], related: [] };
+}
+
 function mockTimeline(kind, id) {
   const s = (...args) => stageSpan(kind, id, ...args);
+  if (kind === 'ci_run' && id === 'ci_s4') return busyTimeline(id);
+  if (kind === 'ci_run' && id === 'ci_s3') return shortTimeline(id);
   if (kind === 'ci_run') {
     const failed = id === 'ci_s2';
     return { spans: [
       s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
       s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
       s('prepare@1', 'prepare', 'commit', 45, 0.2),
+      // A slot free at once: `ci::exec` still records the (0 ms) wait, which says nothing.
+      s('wait:j1@1', 'wait', 'job slot', 44.8, 0, { job: 'quality', outcome: 'started' }),
+      s('wait:j2@1', 'wait', 'job slot', 44.8, 0, { job: 'test', outcome: 'started' }),
       s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality', detail: { cpu_ms: 31 * MIN, memory_peak_mb: 2048, disk_written_mb: 640 } }),
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
       s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+      s('job:j2@1/stage:1', 'stage', 'integration', 44.6, 13.6, { parent_key: 'job:j2@1', job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 310, tests_failed: 1 } : {} }),
     ], related: [] };
   }
   if (kind === 'cd_run') {
@@ -2987,6 +3043,7 @@ function mockTimeline(kind, id) {
     s('step:b', 'step', 'Spans stored for tasks, CI and CD', 224, 60),
     s('delivery@1', 'delivery', 'pr_open', 150, 52, { outcome: 'merged_integration', detail: { pr: 221 } }),
     s('wait@1', 'wait', 'merge_armed', 120, 22, { outcome: 'merged' }),
+    s('wait@2', 'wait', 'merge_armed', 10, null, { outcome: null }),
   ], related: [
     stageSpan('ci_run', 'ci_s3', 'queue@1', 'queue', 'queue', 140, 4),
     stageSpan('ci_run', 'ci_s3', 'run@1', 'run', 'run', 136, 16, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),
