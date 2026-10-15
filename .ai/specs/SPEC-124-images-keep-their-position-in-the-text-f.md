@@ -207,7 +207,9 @@ Run on this branch (Linux, Chromium 153 headless, Claude Code behaviour through 
   replaced source node's `dragend` never arrived. Fixed: `a placeholder deleted before its upload
   fails leaves no empty undo steps` (fails on `60efc265`'s code, empty steps), and every redraw
   forgets a drag again. A drag that a thumbnail interrupts must be started again; that is
-  accepted, since the alternative risks moving stale text.
+  accepted, since the alternative risks moving stale text. Until SPEC-175 (#478) such a drag
+  dropped back into the prompt was inserted as a copy (its `text/plain`); it is now refused
+  there (a type of the box's own marks it), `a drag from the prompt that a thumbnail interrupted…`.
 - Untested, with the reason: the length cap does not count an IME or Android composition, which a
   page cannot stop. This engine cannot simulate a real composition, and the server's 64 KiB prompt
   limit still bounds the prompt.

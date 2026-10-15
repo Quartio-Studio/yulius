@@ -388,6 +388,55 @@ test('a drag that ended off the prompt, or outlived a redraw, moves no stale ran
   expect((await promptText(browser)).replace(/\n/g, '')).toBe('alpha beta gammaXX');
 });
 
+// #478: a drag from the prompt that a thumbnail's redraw (`prompt.refresh()`) interrupted is
+// refused on drop: no stale range moves, and its text is not dropped back in as a copy.
+test('a drag from the prompt that a thumbnail interrupted is refused on drop, nothing duplicated', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('alpha beta gamma');
+  // The image's thumbnail is made only when the test lets it.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __thumbnail?: () => void };
+    const real = window.createImageBitmap.bind(window);
+    window.createImageBitmap = (() => new Promise((resolve) => { w.__thumbnail = () => resolve(real(new ImageData(4, 4))); })) as typeof window.createImageBitmap;
+  });
+  await pasteImage(browser, 'shot.png');
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  await expect.poll(() => browser.evaluate(() => typeof (window as unknown as { __thumbnail?: unknown }).__thumbnail)).toBe('function');
+  const before = await promptText(browser);
+  // "alpha" is dragged; the thumbnail lands meanwhile and the prompt is drawn again.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __drag: DataTransfer; __source: Text; __thumbnail: () => void };
+    const text = document.querySelector('.composer-prompt')!.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    w.__drag = new DataTransfer();
+    w.__source = text;
+    text.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: w.__drag }));
+    w.__thumbnail();
+  });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __source: Text }).__source.isConnected)).toBe(false);
+  // Dropped back into the prompt, after "gamma".
+  const dropped = await browser.evaluate(() => {
+    const w = window as unknown as { __drag: DataTransfer };
+    const input = document.querySelector('.composer-prompt')!;
+    const text = input.firstChild as Text;
+    const end = document.createRange();
+    end.setStart(text, text.data.length - 1);
+    end.setEnd(text, text.data.length);
+    const box = end.getBoundingClientRect();
+    const at = { clientX: box.right, clientY: box.top + box.height / 2 };
+    input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+    // The page takes the drop (the browser inserts nothing of its own) and makes no change.
+    return !input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+  });
+  expect(dropped, 'the drop is the page’s').toBe(true);
+  expect(await promptText(browser)).toBe(before);
+});
+
 // SPEC-124 review round 4: a placeholder deleted before its upload fails leaves no empty steps.
 test('a placeholder deleted before its upload fails leaves no empty undo steps', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
