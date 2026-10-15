@@ -1100,30 +1100,12 @@ fn recent_changes_within(input: &BriefingInput<'_>, rendered: String, grant: usi
 ///
 /// When the mandatory parts and some room for the optional ones exceed the budget (a workflow's
 /// instructions lower it, #555), the goal quote shrinks first, from 600 down to 40 bytes: the
-/// whole request is in the task's request file.
+/// whole request is in the task's prompt or request file.
 #[must_use]
 pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String {
     // Multi-line sources are pre-clipped to the budget so rendering stays bounded.
     let source_cap = budget_bytes.min(DEFAULT_BUDGET_BYTES * 4);
-    // Each pass shrinks the goal quote by the overflow or stops, so the loop is bounded.
-    let mut goal_bytes = GOAL_QUOTE_BYTES;
-    let parts = loop {
-        let parts = briefing_parts(input, source_cap, goal_bytes);
-        let optional: usize = parts
-            .iter()
-            .map(|part| match part {
-                Part::Optional { text, .. } | Part::Changes { text, .. } => text.len(),
-                Part::Mandatory(_) => 0,
-            })
-            .sum();
-        let wanted = mandatory_len(&parts) + optional.min(OPTIONAL_HEADROOM_BYTES);
-        if wanted <= budget_bytes || goal_bytes == GOAL_QUOTE_MIN_BYTES {
-            break parts;
-        }
-        goal_bytes = goal_bytes
-            .saturating_sub(wanted - budget_bytes)
-            .max(GOAL_QUOTE_MIN_BYTES);
-    };
+    let (parts, _passes) = fitted_parts(input, source_cap, budget_bytes);
     let mandatory = mandatory_len(&parts);
     let (needs, weights): (Vec<usize>, Vec<usize>) = parts
         .iter()
@@ -1161,6 +1143,36 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         }
     }
     out
+}
+
+/// The parts with the goal quote shrunk until they fit `budget_bytes` with room for the optional
+/// ones, and how many renderings that took. The quote starts at the goal's own length, so every
+/// pass shrinks it by the overflow or stops: the loop is bounded.
+fn fitted_parts(
+    input: &BriefingInput<'_>,
+    source_cap: usize,
+    budget_bytes: usize,
+) -> ([Part; 15], usize) {
+    let mut goal_bytes = GOAL_QUOTE_BYTES.min(input.task.goal.trim().len());
+    let mut passes = 0;
+    loop {
+        passes += 1;
+        let parts = briefing_parts(input, source_cap, goal_bytes);
+        let optional: usize = parts
+            .iter()
+            .map(|part| match part {
+                Part::Optional { text, .. } | Part::Changes { text, .. } => text.len(),
+                Part::Mandatory(_) => 0,
+            })
+            .sum();
+        let wanted = mandatory_len(&parts) + optional.min(OPTIONAL_HEADROOM_BYTES);
+        if wanted <= budget_bytes || goal_bytes <= GOAL_QUOTE_MIN_BYTES {
+            return (parts, passes);
+        }
+        goal_bytes = goal_bytes
+            .saturating_sub(wanted - budget_bytes)
+            .max(GOAL_QUOTE_MIN_BYTES);
+    }
 }
 
 fn mandatory_len(parts: &[Part]) -> usize {
@@ -1966,9 +1978,9 @@ mod tests {
         Ok(())
     }
 
-    /// #555 (SPEC-174): at the budget the longest bundled workflow leaves (1.7 KB, checked in
-    /// `workflows/catalog.rs`), a 600-byte goal shrinks its quote instead of pushing out the
-    /// mandatory parts after it, and the optional parts keep their headings.
+    /// #555 (SPEC-174): at a budget lowered by 1.7 KB of workflow instructions (a margin over the
+    /// 1,444 bytes `workflows/catalog.rs` caps them at), a 600-byte goal shrinks its quote instead
+    /// of pushing out the mandatory parts after it, and the optional parts keep their headings.
     #[test]
     fn a_long_goal_shrinks_before_a_mandatory_part_is_cut() -> TestResult {
         let profile = DeliveryProfile::standard();
@@ -2019,6 +2031,21 @@ mod tests {
                 isolated,
                 "the Containers section is whole exactly when isolated\n{text}"
             );
+        }
+        Ok(())
+    }
+
+    /// SPEC-174 review round 4: the goal quote starts at the goal's own length, so a short or
+    /// empty goal under a tight budget settles in a few renderings, not hundreds.
+    #[test]
+    fn a_tight_budget_settles_in_a_few_passes() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        for (goal_len, budget) in [(0, 7_889), (200, 8_056), (200, 7_800), (720, 7_800)] {
+            let mut input = base(&profile, &layout)?;
+            input.task.goal = "deployer ".repeat(goal_len / 9);
+            let (_, passes) = fitted_parts(&input, budget, budget);
+            assert!(passes <= 4, "goal {goal_len} at {budget}: {passes} passes");
         }
         Ok(())
     }

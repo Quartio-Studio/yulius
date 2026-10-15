@@ -18,7 +18,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A long goal no longer pushes mandatory parts out of the briefing (SPEC-174, fixes #555). A Fix
   task's workflow instructions lower the budget, and a 600-byte goal used to cut `## Architecture`
   and every optional part. The goal quote now shrinks first (down to 40 bytes; the whole request is
-  in the request file), and no bundled workflow is larger than 1,444 bytes.
+  in the task's prompt or request file), and no bundled workflow is larger than 1,444 bytes.
 - Tools and the keyboard stay where the person left them, and presence leaves arrive last
   (SPEC-170, ADR-0138, task #135, fixes #489, #439, #463). A sandbox left while its page still
   loads comes back with no tool open, not the other sandbox's; the Shell shown again for another

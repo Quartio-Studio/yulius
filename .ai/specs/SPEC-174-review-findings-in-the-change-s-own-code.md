@@ -110,13 +110,14 @@ lets an agent defer a finding in its own change's code to an issue:
   even 1,683 bytes cut `## Architecture` from Fix tasks with goals over 432 bytes, and the
   Containers section from most isolated ones. Two changes fix it. First, the Fix and Feature
   workflows drop text the briefing already gives every task (searching earlier work, flaky tests,
-  the `gh issue list` example). Fix's "record other problems you notice" folds into the rule, so
-  no bundled workflow exceeds dev's largest (Infra-bootstrap, 1,444 bytes; Fix is now 1,424,
-  Feature 1,292), enforced by `the_shipped_catalog_is_valid`. Second, `build_briefing` shrinks the
-  goal quote (600 bytes, down to 40) when the mandatory parts and 600 bytes for the optional ones
-  exceed the budget, since the whole request is in the task's request file. That closes #555, which
-  was already open on dev, and the new test `a_long_goal_shrinks_before_a_mandatory_part_is_cut`
-  holds it. Trimming the workflows alone was rejected: the next rule edit would hit the same cliff.
+  the `gh issue list` example). Fix's "record other problems you notice" folds into the rule, so no
+  bundled workflow exceeds dev's largest (Infra-bootstrap, 1,444 bytes; Fix is now 1,424, Feature
+  1,292), enforced by `the_shipped_catalog_is_valid`. Second, `build_briefing` shrinks the goal
+  quote (600 bytes, down to 40) when the mandatory parts and 600 bytes for the optional ones exceed
+  the budget, since the whole request is in the task's prompt or request file. That closes #555,
+  which was already open on dev, and the new test
+  `a_long_goal_shrinks_before_a_mandatory_part_is_cut` holds it. Trimming the workflows alone was
+  rejected: the next rule edit would hit the same cliff.
 
 ## Evidence
 
@@ -128,7 +129,12 @@ lets an agent defer a finding in its own change's code to an issue:
 - `scripts/dev ci`: exit 0 at 51a91ca0 (1849 tests passed), at 59888ce1 (1849) and at d6a3f527
   (1852). After round 3's fixes and a merge of dev, the first run failed `cargo doc`: a public doc
   linked a private constant. Fixed in b9d594c4, where `scripts/dev ci` passed (exit 0, 1853 tests
-  passed). The head after it changes only this Evidence.
+  passed).
+- Round 4 (72e55277) approved, listing one minor and three nits, all own code and fixed. The
+  minor: the shrink loop re-rendered up to 561 times for a short or empty goal. It now starts at
+  the goal's own length; `a_tight_budget_settles_in_a_few_passes` failed with 561 passes on the
+  old start and passes now. The nits: Fix line wrapping, the 1.7 KB test comment, "prompt or
+  request file". `scripts/dev ci` was rerun on the final head (below).
 - `a_long_goal_shrinks_before_a_mandatory_part_is_cut` failed before the shrink ("isolated false:
   ## Architecture cut"), passes now; `the_shipped_catalog_is_valid` failed at 1,683 bytes (Fix) once
   the cap became 1,444.
