@@ -133,7 +133,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     ),
     (
         "issue_create",
-        "log a pre-existing bug or flaky test as a ready GitHub issue",
+        "log a pre-existing bug, a flaky test you did not cause or a leftover nit as a ready GitHub issue",
     ),
     (
         "ci_status",
@@ -667,9 +667,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
-         - Report a bug you confirm (one you fix or met on the way), a flaky test you did not cause \
-         or a nit left after 3 rounds with `issue_create`, saying why it is outside your change, \
-         unless an open issue tracks it (then reference it); a task told not to \
+         - Report a bug you confirm (one you fix or met on the way) with `issue_create` unless an \
+         open issue tracks it (then reference it); a flaky test you did not cause or a leftover nit \
+         too, saying why it is outside your change; a task told not to \
          create issues never does, and comments or says it in its summary instead. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
@@ -712,8 +712,8 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          here as one commit once that passed. While it runs the merge is armed: start `yulius \
          wait` with run_in_background and end your turn. If it refuses, do what it says and call \
          it again.\n\
-         - Put only what is outside your change (a pre-existing bug, a flaky test it did not \
-         cause, a nit left after 3 rounds) in your summary.\n\n",
+         - List in your summary what is outside your change (a pre-existing bug, a flaky test it \
+         did not cause, a nit left after 3 rounds).\n\n",
         branch = code(&input.task.branch, 200),
     )
 }
@@ -1395,6 +1395,8 @@ mod tests {
             "decide and record why",
             "File follow-up work",
             "log follow-up work",
+            // The bug a fix task reports is not "outside the change": only the others say why.
+            "met on the way), a flaky test",
         ] {
             assert!(!text.contains(gone), "{gone} is gone\n{text}");
         }
@@ -1788,6 +1790,13 @@ mod tests {
 
     #[test]
     fn tool_list_is_unique_and_rendered() {
+        // SPEC-174 (ADR-0141): issues are for what lies outside the change.
+        assert!(
+            YULIUS_TOOLS
+                .iter()
+                .any(|(name, summary)| *name == "issue_create"
+                    && summary.contains("a flaky test you did not cause or a leftover nit"))
+        );
         let rendered = tools(false);
         for (index, (name, _)) in YULIUS_TOOLS.iter().enumerate() {
             assert!(
@@ -1837,7 +1846,7 @@ mod tests {
             "`ci_rerun`",
             "marks each finding own code or pre-existing",
             "Fix every own-code finding",
-            "only what is outside your change",
+            "List in your summary what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");
         }

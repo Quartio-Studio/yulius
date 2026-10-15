@@ -12,7 +12,7 @@ them review leftovers. Most were legitimate: bugs the reviewer found in older co
 not touch (#348, #502, #406), or nits left after the 3-round limit (#431, #331). Some were
 weaknesses in the task's own new code, pushed to an issue to close the review loop: two checks in a
 new e2e test that could not fail (#524), a finding "recorded rather than fixed to close the review
-loop after five rounds" (#478), leftovers of rounds 4 (#513) and of code the task had just written
+loop after five rounds" (#478), a leftover of round 4 (#513) and of code the task had just written
 (#477, #436). The rules allowed it: the delivery pipeline let follow-ups become issues and ended the
 review with "after 3 rounds, decide and record why", and `om-code-review` let a major through with
 "a recorded decision with its reason and a follow-up issue".
@@ -28,10 +28,15 @@ workflow](../engineering/workflow.md#review-output), the briefing and the `issue
    test-first, and never becomes a follow-up issue, whatever its severity: a test that cannot
    fail, a weak or missing assertion, a race, a missing regression test. The 3-round limit does not
    excuse it: the task keeps fixing, splits the change, or stops and asks a person (`needs_you`).
-   It never merges with a known defect in its own code.
+   It never merges with a known defect in its own code. A review that cannot converge is
+   something only a person can resolve (the scope, or how to split the change), so it is a valid
+   `needs_you` case, not a decision the agent takes alone ([ADR-0111](0111-agents-ask-a-person-with-needs-you.md)):
+   "decide, record why and carry on" never means merging past an own-code finding.
 2. Only these may become a new issue: a bug in code the change did not introduce, a flaky test the
    change did not cause, and cosmetic nits (naming, wording) left at the round limit. Each says why
-   it is outside the change, with the evidence ("present on dev before this change").
+   it is outside the change, with the evidence ("present on dev before this change"). A
+   pre-existing major filed that way does not block the verdict; any blocker, pre-existing or not
+   (a failing gate included), still does.
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request answers
    every finding. Deferring an own-code finding makes the verdict request changes.
 

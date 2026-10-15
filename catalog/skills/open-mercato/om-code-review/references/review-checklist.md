@@ -266,7 +266,7 @@ Flag any of these on sight:
 | Severity | Meaning | Examples |
 |----------|---------|----------|
 | **blocker** | Merging this causes or invites real damage: security holes, data loss or corruption, cross-scope data leaks, silently broken public contracts, failing validation gates | Missing permission check; SQL built by concatenation; dropped column consumers still read; secret in a log line |
-| **major** | A defect or debt that must be resolved before merge | Correctness bug on a realistic path; bug fix without a regression test; unbounded query; check-then-act race; weakened assertions; a test that cannot fail |
+| **major** | A defect or debt that must be resolved before merge when it is in the change's own code; a pre-existing one becomes an issue with the evidence | Correctness bug on a realistic path; bug fix without a regression test; unbounded query; check-then-act race; weakened assertions; a test that cannot fail |
 | **minor** | Should be fixed, but does not block the merge on its own | Convention violation; readability problem; stale comment; missing log context |
 | **nit** | Optional polish; the author decides | Naming taste; comment phrasing; boolean-argument readability |
 
@@ -281,7 +281,7 @@ Mark every finding **own code** (in code or tests the change added or modified) 
 
 ## Verdict Rule
 
-- Any **blocker** → **request changes**. No exceptions, no matter how green the other checks are.
+- Any **blocker**, pre-existing or not (a failing gate included) → **request changes**. No exceptions, no matter how green the other checks are.
 - Any **major** in the change's own code → **request changes**.
 - Any own-code finding deferred to an issue → **request changes**.
-- Only minors and nits → **approve**, and list them in the review; the author still fixes those in its own code.
+- Only minors, nits and pre-existing majors filed as issues with the evidence → **approve**, and list them in the review; the author still fixes those in its own code.

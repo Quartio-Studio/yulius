@@ -939,6 +939,22 @@ mod tests {
                 assert!(!text.contains(gone), "{rel} still says {gone:?}");
             }
         }
+        // The verdict covers a major in older code too, and a pre-existing blocker still blocks.
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+        ] {
+            let text = fs::read_to_string(root.join(rel))?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for stated in [
+                "pre-existing majors filed as issues with the evidence",
+                "pre-existing or not",
+            ] {
+                assert!(text.contains(stated), "{rel} does not say {stated:?}");
+            }
+        }
         Ok(())
     }
 

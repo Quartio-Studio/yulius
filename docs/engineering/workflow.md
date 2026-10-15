@@ -78,5 +78,6 @@ Findings in the change's own code are fixed, never deferred
    dev before this change").
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request
    answers every finding. Deferring an own-code finding makes the verdict request changes.
+
 Do not invent issues for balance. For changes to existing mechanisms, identify the
 old guarantee and test it under the new default configuration.

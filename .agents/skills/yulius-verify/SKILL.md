@@ -36,7 +36,8 @@ Before completion inspect the diff, verify acceptance against actual results,
 and update evidence/state. Review findings are own code or pre-existing
 (`docs/engineering/workflow.md`, Review output): every finding in code or tests the
 change added or modified is fixed and proven test-first in the same PR and never
-becomes a follow-up issue, whatever the round limit; only a
+becomes a follow-up issue, whatever the round limit (keep fixing, split the change or
+ask a person), and the PR answers every finding; only a
 pre-existing bug, a flaky test the change did not cause or a cosmetic nit left at
 the round limit becomes an issue that says why it is outside the change. An
 own-code finding deferred to an issue is unresolved: the review verdict is request

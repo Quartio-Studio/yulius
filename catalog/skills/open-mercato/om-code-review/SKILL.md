@@ -57,12 +57,13 @@ uncommitted changes.
 | Severity | Criteria | Action |
 |---|---|---|
 | blocker | Security hole, data loss or corruption, cross-scope leak, missing permission check, breaking contract without a deprecation path, failing gate | Fix before merge |
-| major | Correctness bug on a realistic path, bug fix without a regression test, weakened assertions, a test that cannot fail, unbounded query on growing data, race on shared state, architecture violation | Fix before merge |
+| major | Correctness bug on a realistic path, bug fix without a regression test, weakened assertions, a test that cannot fail, unbounded query on growing data, race on shared state, architecture violation | Own code: fix before merge. Pre-existing: an issue with the evidence |
 | minor | Convention violation, suboptimal pattern, readability | Should fix; does not block alone |
 | nit | Style, optional polish | Author's call |
 
-The verdict is mechanical: any blocker, any major in the change's own code, or any own-code
-finding the author deferred to an issue means **request changes**; only minors and nits means
+The verdict is mechanical: any blocker (pre-existing or not, a failing gate included), any major
+in the change's own code, or any own-code finding the author deferred to an issue means **request
+changes**; only minors, nits and pre-existing majors filed as issues with the evidence means
 **approve** (list them; the author still fixes those in its own code).
 
 ## Own code or pre-existing
