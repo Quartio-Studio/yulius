@@ -160,6 +160,10 @@ test('a missing page, sandbox, task or workflow has a heading and a way back', a
   await screen.getByRole('link', 'All sandboxes').last().click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
 
+  // SPEC-161 review round 1: a name an object has of itself is no page alias.
+  await app.open(mock('/s/studio/constructor'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Page not found');
+
   await app.open(mock('/s/nosuch/tasks'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandbox not found');
   await expect(screen.getByText(/There is no sandbox “nosuch”/)).toBeVisible();

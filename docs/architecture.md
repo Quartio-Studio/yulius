@@ -947,8 +947,9 @@ the job's reaped process tree (`getrusage` of its children) into `exit.json`; th
 the job's end and the end trigger adds them to its span
 ([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
-outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
-task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
+outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
+the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
+days go with the hourly CI upkeep.
 
 ```mermaid
 flowchart LR
@@ -963,7 +964,7 @@ flowchart LR
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
   S --> API["GET …/stages/timeline, summary, spans"]
-  API --> UI["Pipeline page, run dialogs, task overview, Dashboard"]
+  API --> UI["Dashboard (Overview, Pipeline tab), run dialogs, task overview"]
 ```
 
 ## Notes
