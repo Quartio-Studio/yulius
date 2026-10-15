@@ -258,6 +258,8 @@ struct FakeState {
     manifest_codes: HashSet<String>,
     installations: BTreeMap<u64, (String, OwnerKind)>,
     installation_tokens: HashMap<String, u64>,
+    /// Installation tokens issued with a `permissions` subset: what each may do (ADR-0114).
+    narrowed_tokens: HashMap<String, Value>,
     repos: HashMap<(String, String), FakeRepo>,
     /// App permissions the App does not have (`checks`, `statuses`, `actions`): their
     /// endpoints answer 403 "Resource not accessible by integration" to every token.
@@ -330,6 +332,7 @@ impl FakeGitHub {
             manifest_codes: HashSet::new(),
             installations: BTreeMap::new(),
             installation_tokens: HashMap::new(),
+            narrowed_tokens: HashMap::new(),
             repos: HashMap::new(),
             withheld: HashSet::new(),
             faults: Vec::new(),
@@ -593,6 +596,18 @@ impl FakeGitHub {
             .unwrap_or_default()
     }
 
+    /// Adds a ruleset body as an administrator would (bypass actors included) and returns its id.
+    pub fn add_ruleset(&self, owner: &str, repo: &str, ruleset: Value) -> u64 {
+        let mut state = lock(&self.state);
+        let id = Self::next_id(&mut state);
+        if let Some(repo) = state.repos.get_mut(&key(owner, repo)) {
+            let mut stored = ruleset;
+            stored["id"] = json!(id);
+            repo.rulesets.push(stored);
+        }
+        id
+    }
+
     /// Whether the repository exists.
     #[must_use]
     pub fn has_repo(&self, owner: &str, repo: &str) -> bool {
@@ -737,14 +752,21 @@ enum Identity {
     User(String),
 }
 
+/// The credential of a request's `Authorization` header (`Bearer` or `token`).
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get("authorization").and_then(|v| v.to_str().ok())?;
+    Some(
+        value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("token "))
+            .unwrap_or_default(),
+    )
+}
+
 fn identify(state: &FakeState, headers: &HeaderMap) -> Identity {
-    let Some(value) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+    let Some(token) = bearer(headers) else {
         return Identity::Anonymous;
     };
-    let token = value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("token "))
-        .unwrap_or_default();
     if token.matches('.').count() == 2 {
         let Some(claims) = verify(token, &state.app_key) else {
             return Identity::Invalid;
@@ -975,7 +997,25 @@ async fn handle(
     let identity = identify(state, &headers);
     match (method.as_str(), segs.as_slice()) {
         ("POST", ["app", "installations", id, "access_tokens"]) => {
-            installation_token(state, &identity, id)
+            installation_token(state, &identity, id, &json_body)
+        }
+        ("GET", ["app", "installations", id]) => {
+            if identity != Identity::App {
+                return error(401, "A JSON web token could not be decoded");
+            }
+            match id
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| state.installations.get(&id))
+            {
+                Some((account, _)) => reply(
+                    200,
+                    json!({"id": id.parse::<u64>().unwrap_or_default(),
+                        "account": {"login": account},
+                        "permissions": granted_permissions(state)}),
+                ),
+                None => error(404, "Not Found"),
+            }
         }
         ("GET", ["app", "installations"]) => {
             if identity != Identity::App {
@@ -1064,8 +1104,10 @@ async fn handle(
             create_repo(state, &owner, &json_body, Some(login))
         }
         (_, ["repos", owner, name, tail @ ..]) => {
+            let narrowed = bearer(&headers).and_then(|t| state.narrowed_tokens.get(t).cloned());
             let request = RepoRequest {
                 identity: &identity,
+                narrowed: narrowed.as_ref(),
                 method: &method,
                 tail,
                 query: &query,
@@ -1122,7 +1164,34 @@ fn oauth_token(state: &mut FakeState, body: &[u8]) -> Response {
     )
 }
 
-fn installation_token(state: &mut FakeState, identity: &Identity, id: &str) -> Response {
+/// The App's permissions as its manifest requests them, without the withheld ones.
+fn granted_permissions(state: &FakeState) -> Value {
+    let all = [
+        ("contents", "write"),
+        ("pull_requests", "write"),
+        ("issues", "write"),
+        ("checks", "read"),
+        ("statuses", "write"),
+        ("workflows", "write"),
+        ("administration", "write"),
+        ("metadata", "read"),
+        ("members", "read"),
+        ("actions", "read"),
+    ];
+    Value::Object(
+        all.iter()
+            .filter(|(name, _)| !state.withheld.contains(*name))
+            .map(|(name, access)| ((*name).to_owned(), json!(access)))
+            .collect(),
+    )
+}
+
+fn installation_token(
+    state: &mut FakeState,
+    identity: &Identity,
+    id: &str,
+    body: &Value,
+) -> Response {
     if *identity != Identity::App {
         return error(401, "A JSON web token could not be decoded");
     }
@@ -1134,13 +1203,34 @@ fn installation_token(state: &mut FakeState, identity: &Identity, id: &str) -> R
     }
     let serial = FakeGitHub::next_id(state);
     let token = format!("ghs_{serial:036}");
+    if let Some(asked) = body["permissions"].as_object() {
+        let granted = granted_permissions(state);
+        let covered = asked.iter().all(|(name, access)| {
+            let has = granted[name].as_str();
+            has == Some("write") || (has.is_some() && access == "read")
+        });
+        if !covered {
+            return error(
+                422,
+                "The permissions requested are not granted to this installation.",
+            );
+        }
+    }
     state.installation_tokens.insert(token.clone(), id);
+    let permissions = if body["permissions"].is_object() {
+        state
+            .narrowed_tokens
+            .insert(token.clone(), body["permissions"].clone());
+        body["permissions"].clone()
+    } else {
+        json!({"contents": "write", "pull_requests": "write"})
+    };
     reply(
         201,
         json!({
             "token": token,
             "expires_at": format_rfc3339(now_secs(state) + INSTALLATION_TOKEN_SECS),
-            "permissions": {"contents": "write", "pull_requests": "write"},
+            "permissions": permissions,
         }),
     )
 }
@@ -1200,6 +1290,8 @@ fn create_repo(
 /// A request routed below `/repos/{owner}/{name}`.
 struct RepoRequest<'a> {
     identity: &'a Identity,
+    /// The App permissions of a narrowed installation token.
+    narrowed: Option<&'a Value>,
     method: &'a Method,
     tail: &'a [&'a str],
     query: &'a HashMap<String, String>,
@@ -1224,6 +1316,7 @@ fn repo_route(
 fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest<'_>) -> Response {
     let RepoRequest {
         identity,
+        narrowed,
         method,
         tail,
         query,
@@ -1231,13 +1324,25 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     } = *request;
     let need = match (method.as_str(), tail) {
         ("GET", _) => Need::Read,
-        ("POST", ["rulesets"]) => Need::Admin,
+        ("POST", ["rulesets"]) | ("PUT" | "DELETE", ["rulesets", _]) => Need::Admin,
         _ => Need::Write,
     };
     let permissions = match authorize(state, identity, repo, need) {
         Ok(permissions) => permissions,
         Err((status, message)) => return error(status, message),
     };
+    // A narrowed installation token can only do what its App permissions say (ADR-0114).
+    if let Some(narrowed) = narrowed {
+        let (name, access) = match need {
+            Need::Admin => ("administration", "write"),
+            Need::Write => ("contents", "write"),
+            Need::Read => ("metadata", "read"),
+        };
+        let granted = narrowed[name].as_str().unwrap_or_default();
+        if !(granted == access || granted == "write") {
+            return error(403, "Resource not accessible by integration");
+        }
+    }
     let app_permission = match (method.as_str(), tail) {
         ("GET", ["commits", _, "check-runs"]) => Some("checks"),
         ("GET", ["commits", _, "status" | "statuses"]) | ("POST", ["statuses", _]) => {
@@ -1252,12 +1357,58 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     match (method.as_str(), tail) {
         ("GET", []) => reply(200, repo_json(state, repo, permissions)),
         ("POST", ["rulesets"]) => {
-            repo.rulesets.push(body.clone());
             let id = FakeGitHub::next_id(state);
+            let mut stored = body.clone();
+            stored["id"] = json!(id);
+            repo.rulesets.push(stored);
             reply(
                 201,
                 json!({"id": id, "name": body["name"], "enforcement": body["enforcement"]}),
             )
+        }
+        ("GET", ["rules", "branches", branch @ ..]) => {
+            let branch = branch.join("/");
+            let rules: Vec<Value> = rulesets_on(repo, &branch)
+                .flat_map(|ruleset| {
+                    ruleset["rules"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|rule| {
+                            json!({"type": rule["type"], "ruleset_source_type": "Repository",
+                                "ruleset_source": format!("{}/{}", repo.owner, repo.name),
+                                "ruleset_id": ruleset["id"]})
+                        })
+                })
+                .collect();
+            reply(200, Value::Array(paginate(&rules, query)))
+        }
+        ("GET", ["rulesets", id]) => {
+            let Some(ruleset) = repo
+                .rulesets
+                .iter()
+                .find(|r| r["id"].as_u64() == id.parse().ok())
+            else {
+                return error(404, "Not Found");
+            };
+            let mut shown = ruleset.clone();
+            shown["current_user_can_bypass"] =
+                json!(if may_bypass(ruleset, identity, permissions) {
+                    "always"
+                } else {
+                    "never"
+                });
+            reply(200, shown)
+        }
+        ("DELETE", ["rulesets", id]) => {
+            let before = repo.rulesets.len();
+            repo.rulesets
+                .retain(|r| r["id"].as_u64() != id.parse().ok());
+            if repo.rulesets.len() == before {
+                return error(404, "Not Found");
+            }
+            no_content()
         }
         ("POST", ["pulls"]) => {
             let head = body["head"].as_str().unwrap_or_default().to_owned();
@@ -1386,7 +1537,17 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
             }
             reply(200, pull_json(state, repo, &repo.pulls[index]))
         }
-        ("PUT", ["pulls", number, "merge"]) => merge(state, repo, number, body),
+        ("PUT", ["pulls", number, "merge"]) => {
+            let base = repo
+                .pulls
+                .iter()
+                .find(|p| p.number.to_string() == *number)
+                .map(|p| p.base.clone());
+            if base.is_some_and(|b| ruleset_refuses(repo, identity, permissions, &b, "update")) {
+                return error(405, RULE_VIOLATION);
+            }
+            merge(state, repo, number, body)
+        }
         ("GET", ["commits", sha, "check-runs"]) => {
             let runs: Vec<Value> = repo
                 .check_runs
@@ -1464,16 +1625,19 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
         }
         ("DELETE", ["git", "refs", "heads", branch @ ..]) => {
             let branch = branch.join("/");
+            if ruleset_refuses(repo, identity, permissions, &branch, "deletion") {
+                return error(422, RULE_VIOLATION);
+            }
             if repo.branches.remove(&branch).is_none() {
                 return error(422, "Reference does not exist");
             }
-            Response::builder()
-                .status(StatusCode::NO_CONTENT)
-                .body(axum::body::Body::empty())
-                .unwrap_or_else(|_| error(500, "response"))
+            no_content()
         }
         ("PATCH", ["git", "refs", "heads", branch @ ..]) => {
             let branch = branch.join("/");
+            if ruleset_refuses(repo, identity, permissions, &branch, "update") {
+                return error(422, RULE_VIOLATION);
+            }
             let Some(current) = repo.branches.get(&branch).cloned() else {
                 return error(422, "Reference does not exist");
             };
@@ -1519,6 +1683,78 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
         }
         _ => error(404, "Not Found"),
     }
+}
+
+/// GitHub's refusal of a ref change that a ruleset forbids.
+const RULE_VIOLATION: &str =
+    "Repository rule violations found\n\nCannot update this protected ref.";
+
+/// The repository admin role, as rulesets name it among bypass actors.
+const ADMIN_ROLE_ID: u64 = 5;
+
+/// An empty 204 answer.
+fn no_content() -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(axum::body::Body::empty())
+        .unwrap_or_else(|_| error(500, "response"))
+}
+
+/// The active rulesets of `repo` that target `branch`.
+fn rulesets_on<'a>(repo: &'a FakeRepo, branch: &str) -> impl Iterator<Item = &'a Value> {
+    let full = format!("refs/heads/{branch}");
+    let default = branch == repo.default_branch;
+    repo.rulesets.iter().filter(move |r| {
+        r["enforcement"] == "active"
+            && r["conditions"]["ref_name"]["include"]
+                .as_array()
+                .is_some_and(|include| {
+                    include.iter().any(|i| {
+                        i.as_str() == Some(full.as_str())
+                            || i == "~ALL"
+                            || (default && i == "~DEFAULT_BRANCH")
+                    })
+                })
+    })
+}
+
+/// Whether the caller may bypass `ruleset`: a repository admin through the admin role, the App's
+/// installation through an `Integration` actor (GitHub's semantics, ADR-0114).
+fn may_bypass(
+    ruleset: &Value,
+    identity: &Identity,
+    permissions: Option<GitHubPermissions>,
+) -> bool {
+    ruleset["bypass_actors"].as_array().is_some_and(|actors| {
+        actors.iter().any(|actor| {
+            let id = actor["actor_id"].as_u64();
+            match actor["actor_type"].as_str() {
+                Some("RepositoryRole") => {
+                    id == Some(ADMIN_ROLE_ID) && permissions.is_some_and(|p| p.admin)
+                }
+                Some("Integration") => {
+                    id == Some(FAKE_APP_ID) && matches!(identity, Identity::Installation(_))
+                }
+                _ => false,
+            }
+        })
+    })
+}
+
+/// Whether a rule of type `rule` on `branch` refuses this caller.
+fn ruleset_refuses(
+    repo: &FakeRepo,
+    identity: &Identity,
+    permissions: Option<GitHubPermissions>,
+    branch: &str,
+    rule: &str,
+) -> bool {
+    rulesets_on(repo, branch).any(|ruleset| {
+        ruleset["rules"]
+            .as_array()
+            .is_some_and(|rules| rules.iter().any(|r| r["type"] == rule))
+            && !may_bypass(ruleset, identity, permissions)
+    })
 }
 
 fn merge(state: &mut FakeState, repo: &mut FakeRepo, number: &str, body: &Value) -> Response {

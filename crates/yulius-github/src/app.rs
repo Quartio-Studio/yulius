@@ -11,7 +11,8 @@ use crate::time::parse_rfc3339;
 use crate::types::{InstallationToken, Repo};
 use crate::validate;
 use crate::wire::{
-    WireInstallation, WireInstallationRepos, WireInstallationToken, WireManifestConversion,
+    WireInstallation, WireInstallationPermissions, WireInstallationRepos, WireInstallationToken,
+    WireManifestConversion,
 };
 
 /// Cached installation tokens are reused until this long before they expire.
@@ -24,6 +25,17 @@ pub const AUTH_CALLBACK_PATH: &str = "/api/auth/github/callback";
 pub const MANIFEST_CALLBACK_PATH: &str = "/api/admin/github/manifest/callback";
 /// GitHub's limit on App names.
 const MAX_APP_NAME: usize = 34;
+/// The permissions of an agent's token (ADR-0114): enough to fetch, push task branches, open pull
+/// requests, file issues and read checks; never administration (rulesets, settings, deploy keys)
+/// or workflows.
+pub const AGENT_TOKEN_PERMISSIONS: &[(&str, &str)] = &[
+    ("contents", "write"),
+    ("pull_requests", "write"),
+    ("issues", "write"),
+    ("checks", "read"),
+    ("statuses", "read"),
+    ("metadata", "read"),
+];
 
 impl GitHubClient {
     fn signer(&self) -> Result<&crate::jwt::AppSigner, GitHubError> {
@@ -54,7 +66,7 @@ impl GitHubClient {
         &self,
         installation_id: u64,
     ) -> Result<InstallationToken, GitHubError> {
-        self.installation_token(installation_id, None).await
+        self.installation_token(installation_id, None, false).await
     }
 
     /// An installation access token restricted to the single repository `repository` (name
@@ -70,7 +82,23 @@ impl GitHubClient {
         repository: &str,
     ) -> Result<InstallationToken, GitHubError> {
         validate::repo_name(repository)?;
-        self.installation_token(installation_id, Some(repository))
+        self.installation_token(installation_id, Some(repository), false)
+            .await
+    }
+
+    /// The token of an agent's Git and `gh` (ADR-0114): restricted to the single repository
+    /// `repository` and to [`AGENT_TOKEN_PERMISSIONS`], cached apart from the others. With the
+    /// production ruleset, GitHub refuses it every update of the production branch.
+    ///
+    /// # Errors
+    /// Typed GitHub errors; [`GitHubError::InvalidInput`] for an invalid repository name.
+    pub async fn create_agent_token(
+        &self,
+        installation_id: u64,
+        repository: &str,
+    ) -> Result<InstallationToken, GitHubError> {
+        validate::repo_name(repository)?;
+        self.installation_token(installation_id, Some(repository), true)
             .await
     }
 
@@ -78,19 +106,27 @@ impl GitHubClient {
         &self,
         installation_id: u64,
         repository: Option<&str>,
+        agent: bool,
     ) -> Result<InstallationToken, GitHubError> {
         let now = self.now();
-        let key = (installation_id, repository.map(str::to_ascii_lowercase));
+        let key = (
+            installation_id,
+            repository.map(str::to_ascii_lowercase),
+            agent,
+        );
         if let Some(cached) = self.cached_token(&key, now) {
             return Ok(cached);
         }
         let jwt = self.app_jwt()?;
         let id = installation_id.to_string();
         let url = self.api_url(&["app", "installations", &id, "access_tokens"])?;
-        let body = match repository {
+        let mut body = match repository {
             Some(name) => serde_json::json!({ "repositories": [name] }),
             None => serde_json::json!({}),
         };
+        if agent {
+            body["permissions"] = self.agent_permissions(installation_id, &jwt).await?;
+        }
         let wire: WireInstallationToken =
             self.send_json(Method::POST, url, Some(&jwt), body).await?;
         let expires_at = parse_rfc3339(&wire.expires_at)
@@ -111,9 +147,39 @@ impl GitHubClient {
         Ok(token)
     }
 
+    /// [`AGENT_TOKEN_PERMISSIONS`] as far as the installation grants them: GitHub refuses a token
+    /// request for a permission the installation lacks, and an App created before one was
+    /// requested lacks it (`docs/operations.md`). A write it grants only as read is asked as read.
+    async fn agent_permissions(
+        &self,
+        installation_id: u64,
+        jwt: &Secret,
+    ) -> Result<serde_json::Value, GitHubError> {
+        let id = installation_id.to_string();
+        let url = self.api_url(&["app", "installations", &id])?;
+        let installation: WireInstallationPermissions = self.get_json(url, Some(jwt)).await?;
+        let granted = |name: &str| installation.permissions.get(name).map(String::as_str);
+        let mut asked = serde_json::Map::new();
+        for (name, access) in AGENT_TOKEN_PERMISSIONS {
+            let access = match granted(name) {
+                Some("write") => *access,
+                Some("read") => "read",
+                _ => continue,
+            };
+            asked.insert((*name).to_owned(), access.into());
+        }
+        if asked.get("contents").and_then(serde_json::Value::as_str) != Some("write") {
+            return Err(GitHubError::Forbidden {
+                message: "the GitHub App has no Contents: write permission; agents get no token"
+                    .into(),
+            });
+        }
+        Ok(asked.into())
+    }
+
     fn cached_token(
         &self,
-        key: &(u64, Option<String>),
+        key: &(u64, Option<String>, bool),
         now: yulius_domain::time::Timestamp,
     ) -> Option<InstallationToken> {
         let cache = self.inner.tokens.lock().ok()?;

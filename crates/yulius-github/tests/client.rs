@@ -403,12 +403,14 @@ async fn rulesets_protect_branches() -> TestResult {
         allowed_merge_methods: vec![MergeMethod::Squash],
         block_force_push: true,
         block_deletion: true,
+        restrict_updates: false,
     };
     client
         .create_branch_ruleset(&token, "acme", "app", &spec)
         .await?;
     let rulesets = fake.rulesets("acme", "app");
     assert_eq!(rulesets.len(), 1);
+    assert!(rulesets[0].get("bypass_actors").is_none());
     let ruleset = &rulesets[0];
     assert_eq!(ruleset["enforcement"], "active");
     assert_eq!(
@@ -436,6 +438,110 @@ async fn rulesets_protect_branches() -> TestResult {
             .await,
         Err(GitHubError::Forbidden { .. })
     ));
+
+    // ADR-0114: a production ruleset restricts updates; repository admins alone bypass it.
+    let production = RulesetSpec {
+        name: "yulius: protect main".into(),
+        branch: "main".into(),
+        restrict_updates: true,
+        ..spec
+    };
+    client
+        .create_branch_ruleset(&token, "acme", "app", &production)
+        .await?;
+    let ruleset = &fake.rulesets("acme", "app")[1];
+    let types: Vec<&str> = ruleset["rules"]
+        .as_array()
+        .ok_or("rules")?
+        .iter()
+        .filter_map(|r| r["type"].as_str())
+        .collect();
+    assert_eq!(
+        types,
+        ["pull_request", "non_fast_forward", "deletion", "update"]
+    );
+    assert_eq!(
+        ruleset["bypass_actors"],
+        serde_json::json!([{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}])
+    );
+    Ok(())
+}
+
+/// ADR-0114 (SPEC-141 R4): whether a token could write a branch is read from GitHub's branch rules
+/// and each applying ruleset's `current_user_can_bypass`: guarded only by update and deletion
+/// rules the token can never bypass; a refused read is an error, never "guarded".
+#[tokio::test]
+async fn a_branch_is_guarded_only_by_rules_the_token_cannot_bypass() -> TestResult {
+    let (fake, client) = setup().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    fake.add_repo("acme", "app", true);
+    fake.add_user("boss", None);
+    fake.set_permission("acme", "app", "boss", perms(true, true, true, true, true));
+    let admin = fake.issue_user_token("boss");
+    let agent = client.create_agent_token(installation, "app").await?.token;
+
+    // No ruleset: the agent could write `main`.
+    let open = client.branch_guard(&agent, "acme", "app", "main").await?;
+    assert!(!open.updates_restricted && !open.deletion_restricted);
+    assert!(!open.is_guarded());
+
+    // Yulius's production ruleset: guarded for the agent, not for the admin who may bypass it.
+    let production = RulesetSpec {
+        name: "yulius-production-main".into(),
+        branch: "main".into(),
+        require_pr: true,
+        allowed_merge_methods: vec![MergeMethod::Merge],
+        block_force_push: true,
+        block_deletion: true,
+        restrict_updates: true,
+    };
+    client
+        .create_branch_ruleset(&admin, "acme", "app", &production)
+        .await?;
+    assert!(
+        client
+            .branch_guard(&agent, "acme", "app", "main")
+            .await?
+            .is_guarded()
+    );
+    assert!(
+        !client
+            .branch_guard(&admin, "acme", "app", "main")
+            .await?
+            .is_guarded()
+    );
+    // Another branch stays unguarded.
+    assert!(
+        !client
+            .branch_guard(&agent, "acme", "app", "dev")
+            .await?
+            .is_guarded()
+    );
+
+    // A ruleset the App may bypass guards nothing against the agent.
+    fake.add_ruleset(
+        "acme",
+        "app",
+        serde_json::json!({
+            "name": "app-bypass",
+            "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["refs/heads/release"], "exclude": []}},
+            "rules": [{"type": "update"}, {"type": "deletion"}],
+            "bypass_actors": [{"actor_id": yulius_github::fake::FAKE_APP_ID, "actor_type": "Integration", "bypass_mode": "always"}]
+        }),
+    );
+    let bypassed = client
+        .branch_guard(&agent, "acme", "app", "release")
+        .await?;
+    assert!(!bypassed.is_guarded());
+
+    // A repository GitHub does not show: an error, never guarded.
+    assert!(
+        client
+            .branch_guard(&agent, "acme", "missing", "main")
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -1152,6 +1258,76 @@ async fn repository_tokens_are_restricted_and_cached_per_repository() -> TestRes
         client.create_repository_token(installation, "../x").await,
         Err(GitHubError::InvalidInput { .. })
     ));
+    Ok(())
+}
+
+/// ADR-0114: an agent's token names its repository and only the agent permissions, so it can
+/// never administer the repository or add a workflow; it is cached apart from the others.
+#[tokio::test]
+async fn agent_tokens_are_narrowed_to_the_agent_permissions() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    let client = GitHubClient::new(fake.config())?;
+    let path = format!("/app/installations/{installation}/access_tokens");
+
+    let agent = client.create_agent_token(installation, "app").await?;
+    assert_eq!(agent, client.create_agent_token(installation, "app").await?);
+    let scoped = client.create_repository_token(installation, "app").await?;
+    assert_ne!(agent.token, scoped.token, "separate cache entries");
+    let bodies: Vec<serde_json::Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == path)
+        .map(|r| serde_json::from_str(&r.body))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["repositories"], serde_json::json!(["app"]));
+    assert_eq!(
+        bodies[0]["permissions"],
+        serde_json::json!({
+            "contents": "write",
+            "pull_requests": "write",
+            "issues": "write",
+            "checks": "read",
+            "statuses": "read",
+            "metadata": "read"
+        })
+    );
+    assert!(bodies[1].get("permissions").is_none());
+    Ok(())
+}
+
+/// Review of SPEC-141 (major 1): an App installed without some of the agent permissions (an App
+/// created before Issues or Commit statuses were requested, or with Checks withheld) still gives
+/// agents a token, asking only for what the installation grants; GitHub refuses a request for
+/// more, and never an Administration or Workflows permission is asked.
+#[tokio::test]
+async fn agent_tokens_ask_only_for_what_the_installation_grants() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    fake.withhold_permission("issues");
+    fake.withhold_permission("checks");
+    let client = GitHubClient::new(fake.config())?;
+    let path = format!("/app/installations/{installation}/access_tokens");
+
+    client.create_agent_token(installation, "app").await?;
+    let body: serde_json::Value = serde_json::from_str(
+        &fake
+            .requests()
+            .into_iter()
+            .find(|r| r.path == path)
+            .ok_or("token request")?
+            .body,
+    )?;
+    assert_eq!(
+        body["permissions"],
+        serde_json::json!({
+            "contents": "write",
+            "pull_requests": "write",
+            "statuses": "read",
+            "metadata": "read"
+        })
+    );
     Ok(())
 }
 

@@ -537,6 +537,26 @@ flowchart LR
   AG["agent"] -.->|"refused"| P
 ```
 
+Outside Yulius, GitHub keeps the production branch a person's
+([ADR-0114](decisions/0114-agents-hold-a-token-github-refuses-on-production.md)). The agent's Git
+and `gh` get `App::agent_git_credential`: an installation token restricted to the repository and
+to the agent permissions (`AGENT_TOKEN_PERMISSIONS`, no Administration or Workflows), never a
+person's. The production ruleset (`rulesets_for`: restrict updates and deletions, block force
+pushes, repository admins the only bypass) makes GitHub refuse that token on the branch.
+`App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
+production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
+onboarding reports a branch the agents could write.
+
+```mermaid
+flowchart LR
+  AG["agent's git / gh"] -->|"credential helper"| TOK["narrowed App token"]
+  TOK -->|"push, merge, fast-forward main"| GH{"GitHub ruleset on main"}
+  GH -->|"not a bypass actor"| NO["refused"]
+  PERSON["repository admin (promotion)"] -->|"own token, bypass"| GH
+  GH --> OK["main moves"]
+  ONB["onboarding"] -->|"branch_guard with an agent token"| GH
+```
+
 ## Keys in .env
 
 A project keeps its keys in a `.env` that Git ignores, beside a tracked `.env.example` that names
@@ -613,7 +633,7 @@ flowchart LR
   A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
   A -->|"DELETE: decline"| REQ
   PASS --> OWN[("tasks.owner_id = Bob")]
-  OWN --> TOK["Git, gh, PRs, merges as Bob"]
+  OWN --> TOK["Yulius's pushes, PRs, merges as Bob"]
   OWN --> ID["worktree commit identity: Bob"]
   OWN --> GATE["load_task: only Bob writes"]
 ```
