@@ -101,7 +101,9 @@ watching, steering and unblocking.
   deployment frequency, lead time, change failure rate and time to restore for dev and production,
   any stage's daily p50 and p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON
   export; a CI
-  run, a deploy and a task show their own waterfall, and the Dashboard the overview.
+  run, a deploy and a task show their own waterfall (a time axis, a legend, children folded under
+  their span; a CI run's jobs one row each with their wait for a job slot), and the Dashboard the
+  overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the

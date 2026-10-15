@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A CI run's stages are readable (SPEC-165, ADR-0136, task #155): each job is one row under
+  "Jobs", its wait for a job slot (hatched) running into its run, with "waited 6 min" beside how
+  long it ran and its state as an icon and a word; a job's checkout and stages fold under it (a
+  failed job opens, and what is opened survives the dialog's refresh); every waterfall has a time
+  axis with gridlines, a "now" mark and a legend; on a phone the bar goes under its name.
 - The e2e suite holds under host load, and the Editor waits for all of Monaco (SPEC-148,
   ADR-0122, task #134):
   - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
