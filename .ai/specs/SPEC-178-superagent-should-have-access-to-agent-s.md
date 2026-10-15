@@ -68,10 +68,11 @@ ever reaching the model or the screen.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Superagent lists its sandbox's agent secrets with secrets_list
-- [ ] secret_verify says whether a candidate's SHA-256 matches an agent secret's value
-- [ ] The Superagent runs both vault tools without asking; ADR-0144 and the docs say what it gets
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] The Superagent lists its sandbox's agent secrets with secrets_list
+- [x] secret_verify says whether a candidate's SHA-256 matches an agent secret's value
+- [x] The Superagent runs both vault tools without asking; ADR-0144 and the docs say what it gets
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 2 approves the head with constant-time verify and rotation audits
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
