@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
-- Yulius CI jobs can use agent secrets, and the Vidoc scan runs on every pull request (SPEC-142,
+- Yulius CI jobs can use agent secrets, and every pull request runs a `security` job (SPEC-142,
   ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
   and only the integration branch's entry of the job's name counts: a pull request's own grant
   gives nothing. A granted job gets placeholders, the CA bundle and a proxy credential of its own,

@@ -84,8 +84,8 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  Yulius's own `security` job runs the Vidoc scan on every pull request (its grant follows once
-  the running instance knows `secrets`).
+  every pull request runs Yulius's own `security` job, which scans with Vidoc once it is granted
+  its key (when the running instance knows `secrets`) and the key works (#470).
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names

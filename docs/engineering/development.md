@@ -106,14 +106,17 @@ Yulius CI also runs the gate, as the `security` job of `yulius.toml`, on every p
 [ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)); `dev` and
 `main` heads print that they are not scanned. A `secrets = "VIDOC_API_KEY"` line on the job, read
 from `dev`'s `yulius.toml` only, gives it the agent secret's placeholder and the egress proxy with a
-credential of its own, never the value; the proxy adds the key only toward `api.vidoc.dev`, and
-each use is in the secrets audit as `ci:<run>`. That line is not in `yulius.toml` yet: it waits until the running Yulius instance knows `secrets` (after `dev` is promoted to `main`; an older instance rejects the whole `yulius.toml`), so until then the job has no key and exits 2. A CI checkout is a detached worktree without a
-GitHub credential, so on a pull request the gate scans a private clone of the head on branch
-`yulius-ci/pr-<n>` whose `origin` answers from a local mirror of origin's default branch (`dev`). Findings (exit 1) fail the
-job and so the merge gate. Exit 2 does not fail it: while the stored key is rejected
-([#470](https://github.com/Quartio-Studio/yulius/issues/470)) every pull request would otherwise be
-blocked by something only a person can fix. The job then ends with `[yulius] the security scan did
-not run`, which is not a pass: agents still run the gate themselves and report it as unrun.
+credential of its own, never the value; the proxy adds the key only toward `api.vidoc.dev`, and each
+use is in the secrets audit as `ci:<run>`. That line is not in `yulius.toml` yet: it waits until the
+running Yulius instance knows `secrets` (after `dev` is promoted to `main`; an older instance
+rejects the whole `yulius.toml`), so until then the job has no key and exits 2. A CI checkout is a
+detached worktree without a GitHub credential, so on a pull request the gate scans a private clone
+of the head on branch `yulius-ci/pr-<n>` whose `origin` answers from a local mirror of origin's
+default branch (`dev`). Findings (exit 1) fail the job and so the merge gate. Exit 2 does not fail
+it: while the stored key is rejected ([#470](https://github.com/Quartio-Studio/yulius/issues/470))
+every pull request would otherwise be blocked by something only a person can fix. The job then ends
+with `[yulius] the security scan did not run`, which is not a pass: agents still run the gate
+themselves and report it as unrun.
 
 ## Dead code
 

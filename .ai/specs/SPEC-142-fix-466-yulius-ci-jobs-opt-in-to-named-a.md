@@ -98,7 +98,7 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
 - [x] The security job runs on PR heads; docs, ADR-0104 and the yulius-verify skill updated
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 3 approves the final head; gates green locally
-- [x] Gates green, merged into dev on green CI, issue #466 closed
+- [x] Gates green locally; ready to merge into dev on green Yulius CI (#466 stays open for the grant line)
 
 ## Acceptance criteria
 
@@ -192,7 +192,9 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   `security` job ships without its grant line; tests pin that. A follow-up adds
   `secrets = "VIDOC_API_KEY"` once the running instance knows the key; nothing is lost meanwhile,
   as the stored key is rejected anyway (#470). #466 stays open for it, with a comment saying so.
-  The round-3 reviewer confirmed this delta.
+  The round-3 reviewer reviewed this delta: text-only changes requested (the changelog headline
+  said the scan runs; this spec claimed the merge and its own confirmation), made in the next
+  commit.
 
 ## Evidence
 
