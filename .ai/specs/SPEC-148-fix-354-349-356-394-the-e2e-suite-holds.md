@@ -131,8 +131,9 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 - The #394 regression test fails without the `editorview.js` change (two editors, five "UNKNOWN
   service" errors) and passes with it.
 - `notes.e2e.ts`, `archive.e2e.ts`, `editor.e2e.ts` and `terminal.e2e.ts` each pass 10 consecutive
-  runs next to CPU-bound processes at load average above 50, with `retries: 0` and no sleeps.
-- The full suite passes twice in a row next to CPU-bound processes at load average above 50.
+  runs next to CPU-bound processes that leave one CPU-bound thread about a fifth of a CPU (the
+  starvation under which the unchanged code failed), with `retries: 0` and no sleeps.
+- The full suite passes twice in a row under the same load.
 - No retry, sleep or blanket timeout increase is added; the one longer budget is Monaco's cold
   load, which existed before and is now one named constant.
 - After the merge into `dev`, #354, #349, #356 and #394 are closed with a comment naming the PR.
@@ -142,8 +143,11 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 - `python3 -m unittest discover -s scripts -p 'test_*.py'` (part of `scripts/dev check`).
 - The #394 regression test, run once without the `editorview.js` change and once with it.
 - Reproduction on an untouched copy of `HEAD` (`git archive`), then the same files on this branch:
-  `npx e2e run <files> --repeat-each 10` next to 48 busy loops, load average recorded.
-- The full suite twice in a row next to 48 busy loops.
+  `npx e2e run <files> --repeat-each 10` next to busy loops, load average recorded.
+- The final proof (the files 10 times, then the full suite twice) next to busy loops whose number
+  a controller sets every 20 s so that a 2 s CPU-bound probe gets 0.20 of a CPU (median of the
+  last three probes); the probe's share, the loops and the load average are logged, and each
+  file's seconds per test are compared with the reproduction's.
 - `scripts/dev ci` and `scripts/dev security`.
 
 ## Decisions
@@ -161,6 +165,12 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 - **Monaco's cold load keeps one named budget.** Parsing 3.8 MB of script on a starved CPU is real
   work the server cannot speed up; it is waited for as a condition (`editorShown`), as two files
   already did, with the same 60 s, now in one place.
+
+- **The proof's load is the starvation of one thread, not the load average.** The load average
+  is the host's; a sandbox runs under its own CPU budget, so the same number of busy loops starved
+  the suite twice as much when other tasks were busy (see Evidence: "a run starved beyond the
+  target"). A controller holds a CPU-bound probe at 0.20 of a CPU instead, which is about what the
+  reproduction ran at (tests as slow as there).
 
 ## Evidence
 
@@ -201,3 +211,23 @@ Every run used `CI=true` and the config's `retries: 0`.
   the five "UNKNOWN service" errors; passes with it.
 - `archive.e2e.ts` "the Stopped toggle keeps its state…" with a rebuild that resets the toggle
   (mutation in `renderTasks`, reverted): `toHaveAttribute` failed; passes on the real code.
+
+**A run starved beyond the target** (head `d8896dca`, before the final merge of `dev`). The four
+files `--repeat-each 10 --workers 4` next to 40 busy loops, load 61–84, 10:47–12:04: archive 20
+of 80 failed, terminal 54 of 130, editor 13 of 110, notes about 10 of the 200 or so that ran before it was
+stopped. Not counted as the proof, and not retried as one:
+- the same code passed these files at 48 loops in the morning (archive 80/80, editor 100/100,
+  terminal 129/130); here each test took 2–2.5 times as long (archive 22.6 s a test against
+  8.7 s in the reproduction, terminal 16.8 s against 7.1 s), and a busy loop got 0.11 of a CPU:
+  another sandbox was running its e2e suite at the same time (a second `http.server` with a queue
+  of 5 was listening, and the namespace-wide overflow counter rose from it), and the sandbox's
+  CPU budget, not the load average, decided our share;
+- the failures were the runner's reads starving, not the page: e.g. "a read-only viewer's mouse
+  selects text", rerun alone at that load, failed with `getByText("Read-only (GitHub: read)")`
+  after "2 reads in 5.0 s" while the screen at failure showed that banner;
+- `serve.py`'s queue (1024) held nothing (`ss`: Recv-Q 0); its log had only client resets and
+  broken pipes (pages closing mid-answer), as often as in the morning's passing run;
+- one `editor` run (1 of 10, "a file closed, a folder switched or a page gone…") reported
+  Monaco's worker failing `importScripts` with a NetworkError. Holding the worker script 8 s at
+  the server while the file was closed or the folder switched gave no error, so its cause is not
+  found; it is named in #354's closing comment.
