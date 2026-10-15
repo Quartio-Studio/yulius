@@ -216,10 +216,16 @@ SessionDoc = {"id", "sandbox_id", "kind": "task|imported", "title", "harness": "
 SessionTask = {"id", "number", "title", "status"}
 TranscriptEntry = {"line", "role": "user|assistant|system|summary", "at", "sidechain", "blocks": [
   {"type": "text", "text", "truncated"} | {"type": "thinking", "text", "truncated"} |
-  {"type": "tool_call", "id", "name", "summary", "input", "diff": {"path", "hunks": [{"old", "new"}]} | null} |
+  {"type": "tool_call", "id", "name", "summary", "input", "diff": {"path", "hunks": [{"old", "new"}], "truncated"} | null} |
   {"type": "tool_result", "tool_use_id", "text", "is_error", "truncated"} |
-  {"type": "image", "media_type"} | {"type": "meta", "text"}]}
+  {"type": "image", "media_type"} | {"type": "meta", "text", "truncated"}]}
 ```
+
+Texts are bounded: a message at 32 Ki characters, thinking at 8 Ki, a tool result and a meta text
+at 16 Ki (a `system` line's meta at 32 Ki), each side of a diff hunk at 16 Ki and an edit at 20
+hunks. `truncated: true` says the server cut it; on a diff, that a side was cut or hunks were
+dropped, so its line counts are not the edit's (SPEC-177). `truncated` on diffs and meta blocks is
+additive: a payload without it reads as `false`.
 
 Agents use the same library through the internal MCP: `sessions_search {query, kind?, limit?}`
 (≤ 20 sessions, ≤ 3 passages each, the asking task's own sessions excluded) and `session_read {id |

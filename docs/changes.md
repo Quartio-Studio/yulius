@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The session view says when the server cut a diff or a context, and every scroller is reachable
+  (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
+  `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the
+  change is longer.", and a cut context reads "Context added (at least 16 KiB)" and says it was cut
+  when opened. Code, results, diffs and context are keyboard regions when they scroll as laid out
+  (also on a phone), named after their call, such as `Result of Bash(npm test)`.
 - A held redraw never eats a click or a drag, and one Start onboarding shows one toast (SPEC-175,
   task #136, fixes #477, #478, #436). A plain click on an Editor tab while a strip redraw waited
   activates the tab (the redraw runs after the click; the browser dropped the click before); a
