@@ -1,11 +1,11 @@
 ---
 yulius-task: 5810e4d9-18e2-4525-8fe2-599530807c68
-status: draft
+status: done
 ---
 
 # SPEC-180: The original prompt reads as written: images inside it are one-line placeholders
 
-Status: draft
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #167, issue #565
 Scope authorization: task #167, "UI problem -> fix", with a screenshot of the "Original prompt ·
@@ -49,10 +49,10 @@ composer's tray shows them.
 
 ## Plan
 
-- [ ] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Reproduce the defect and find its root cause
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -100,4 +100,31 @@ composer's tray shows them.
 
 ## Evidence
 
-To be filled in when the work is done.
+Run at 967f62a1 (current with `origin/dev` at 5599635c), 2026-10-15:
+
+| Command | Result |
+| --- | --- |
+| `scripts/dev ci` (repository check, fmt, clippy, nextest, doctests, deny, shear, doc) | exit 0; nextest 1872 passed, 18 skipped |
+| `cd e2e && npx e2e run` (whole suite) | exit 0; 55 files passed, 1 skipped; 528 tests passed, 1 skipped |
+| `npx e2e run tests/original-prompt.e2e.ts tests/inline-images.e2e.ts` | 29 passed (8 + 21) |
+| `scripts/dev security` | **not run**: exit 2, Vidoc rejects the key (HTTP 401, #470). Per ADR-0104 this is unrun, not passed. The diff is client-side only: DOM built with `h()`, blob URLs revoked on close, no new request or server path |
+
+Test-first record:
+- e70dfbf0's new test failed on the unchanged dialog: `Open Image 1, a.png` had count 0, because
+  the image was a thumbnail. 9136f53f made it pass.
+- Review round 1 (fresh session, head 9136f53f) requested changes: OPP-002 was untested, a gone
+  file hid a same-named one from the list, a gone image took no number, a failed read stayed
+  cached, and one check was narrow. 075884c6's tests failed on 9136f53f (`Image 1` where `Image 2`
+  was due; no preview after a failed read), and 13fc587a fixed them.
+- Review round 2 (fresh session, head 13fc587a) requested changes: the double-click and the
+  shared read were not proved, an image named twice was read twice, and a failed tile stayed
+  failed. 29960f4c's tests failed on 13fc587a (a read of index 2; no tile picture after the
+  retry). The held-read test passes on 13fc587a and fails under both of the reviewer's mutations.
+  967f62a1 fixed them.
+
+Seen in the browser (the mock, Chromium): the dialog for a prompt like #166's reads as one
+paragraph with `Image 1`, `Image 2` and `Image 3` placeholders, and three numbered thumbnails sit
+below it.
+
+Not tested here: browsers other than Chromium, and the real server's prompt endpoint (unchanged;
+the mock mirrors its `attachments` and `parts`).
