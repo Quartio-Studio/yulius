@@ -11,19 +11,21 @@ task #163, #550. Builds on [0003](0003-sandbox-isolation.md) (ADR-22) and
 An agent of another project designed a deployer around a local Docker daemon (build images, copy
 them to VMs, keep the previous ones for rollback). Only afterwards did it find that `docker` exists in
 its sandbox but no engine does. ADR-22's containment gives runs Docker's default capability set and a
-seccomp filter without mount APIs or nested user namespaces, which an engine needs. The client and
-daemon binaries are only copies of the host's `/usr` in the system-layer base. The briefing told
-agents nothing about it.
+seccomp filter without mount APIs or nested user namespaces, which an engine needs. Where the host
+has Docker, the system-layer base copies its client and daemon binaries with `/usr`, so the client
+is there and suggests an engine. The briefing told agents nothing about it.
 
 ## Decision
 
 - Isolated sandboxes keep running no container engine, in agent runs, CI jobs and CD runs alike.
-- When the namespace holder is wired, the session briefing has a `## Containers` section that says
-  so and names what works:
-  - an engine on another machine through the installed client (`DOCKER_HOST=ssh://…` or a
+- When the namespace holder is wired, the session briefing has a short `## Containers` section that
+  says so and names what works. It is the last mandatory part, so a tight budget cuts it before the
+  task header or the architecture pointer:
+  - an engine on another machine through a `docker` client (`DOCKER_HOST=ssh://…` or a
     `docker context`), with images built where they run and rollback images kept there or in a
     registry;
-  - `apt` for the services that tests need.
+  - `apt` for the services that tests need, started by the tests or jobs themselves
+    (`policy-rc.d` starts none).
 - A briefing without isolation says nothing about engines.
 
 ## Alternatives
@@ -42,4 +44,5 @@ agents nothing about it.
   agent can reach.
 - Projects whose tests need `docker compose` or testcontainers still cannot run them in Yulius until
   #551. The briefing says so before anyone builds on it.
-- The section costs about 500 bytes of the briefing's mandatory part, in isolated sandboxes only.
+- The section costs about 260 bytes of the briefing's mandatory part, in isolated sandboxes only.
+  With extreme inputs it takes the optional parts' room, as any mandatory part does.

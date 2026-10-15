@@ -55,7 +55,8 @@ setup or a rollback around a Docker daemon it cannot have.
 
 | ID | Requirement |
 | --- | --- |
-| CTR-001 | When the sandbox's runs are isolated (the namespace holder of ADR-22 is wired), the briefing has a `## Containers` section saying there is no container engine in the sandbox, in Yulius CI or in CD runs, although the `docker` client is installed. It names what works: an engine on another machine through the client (`DOCKER_HOST=ssh://…` or a `docker context`), images built where they run, rollback images kept there or in a registry, and `apt` for the services that tests need. A briefing without isolation (legacy or host mode, where an engine may exist) has no such section. |
+| CTR-001 | When the sandbox's runs are isolated (the namespace holder of ADR-22 is wired), the briefing has a `## Containers` section saying there is no container engine in the sandbox, in Yulius CI or in CD runs, even where a `docker` client is installed. It names what works: an engine on another machine through the client (`DOCKER_HOST=ssh://…` or a `docker context`), images built where they run, rollback images kept there or in a registry, and `apt` for the services that tests need (started by the tests themselves). A briefing without isolation (legacy or host mode, where an engine may exist) has no such section. |
+| CTR-002 | The section is the briefing's last mandatory part. Under the budget the hook leaves after the workflow instructions, it never pushes out the task header, the spec path or the architecture pointer that the briefing without it keeps. With extreme inputs every mandatory part stays and the section takes the optional parts' room. |
 
 ## Plan
 
@@ -75,6 +76,12 @@ setup or a rollback around a Docker daemon it cannot have.
 
 - Unit: `briefing::tests::an_isolated_sandboxs_briefing_says_there_is_no_container_engine` (fails
   before the fix: the section is missing).
+- Unit (CTR-002): `the_containers_section_never_displaces_the_task_or_the_architecture` (goals of
+  80–600 bytes at the Fix workflow's budget) and `huge_inputs_respect_the_budget_and_keep_mandatory_parts`
+  (now also isolated). Both failed with the first, 430-byte section placed before the task.
+- Integration: `agent_hooks::an_isolated_sandboxs_briefing_names_the_missing_container_engine`.
+  With an isolation adapter installed the hook's briefing has the section, and without one it does
+  not. It fails when `isolated` is hard-coded to `false`.
 - Existing briefing tests prove the mandatory headings and the default budget still hold.
 - Not testable here: the isolation suite on a real host. This change does not touch containment.
 
@@ -98,5 +105,13 @@ setup or a rollback around a Docker daemon it cannot have.
   After merging `origin/dev` (web-only #548), `python3 scripts/check_repository.py` passed.
 - **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
   expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
+- **Review round 1** (fresh session, request changes): the 430-byte section placed before the task
+  pushed the task header and `## Architecture` out at the Fix workflow's budget. Tests added first
+  (commit after `e5c3802b`, both failing), then:
+  - the section was cut to 257 bytes and moved after the architecture pointer;
+  - the module doc, SPEC-002 §7.6 and the "client installed" wording were fixed;
+  - the hook wiring test was added and shown to fail with the wiring removed.
+  The overflow that exists without this change (a 600-byte goal under a Fix workflow already loses
+  `## Architecture`) is #555.
 - **Not run here:** the host-level isolation suite (`YULIUS_ISOLATION_TEST=1`) cannot run inside a
   sandbox. This change does not touch containment.

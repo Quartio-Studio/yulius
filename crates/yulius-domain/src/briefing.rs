@@ -6,11 +6,12 @@
 //! policy, steps of similar effort, tests, decisions), the delivery pipeline from the delivery
 //! profile, the docs index to read before building, Yulius tools, dev-server ports, the task
 //! with its workflow and steps (with progress and nudges), the project's missing foundations
-//! (infra bootstrap), the project summary, the architecture pointer, the decision index, recent
-//! changes and parallel tasks with their scope claims.
+//! (infra bootstrap), the project summary, the architecture pointer, in an isolated sandbox the
+//! missing container engine (SPEC-173), the decision index, recent changes and parallel tasks with
+//! their scope claims.
 //!
 //! Mandatory parts (role, discipline, git, docs index, tools, ports, task header, foundations,
-//! architecture pointer) are always included; user-controlled strings inside them are
+//! architecture pointer, containers when isolated) are always included; user-controlled strings inside them are
 //! clipped per field so they stay small. The optional parts (steps, project summary, decisions,
 //! recent changes, parallel tasks) share the remaining budget by weight; a part that needs less
 //! donates the rest. Every cut is UTF-8 safe and marked `(truncated)`. Inline fields are
@@ -807,16 +808,15 @@ fn ports(input: &BriefingInput<'_>) -> String {
 }
 
 /// What an isolated sandbox cannot run (SPEC-173 CTR-001): its containment (SPEC-002 ADR-22) leaves
-/// no container engine, although the base copies the host's `docker` client.
+/// no container engine, whatever `docker` client its base copied from the host. The last mandatory
+/// part, so a tight budget cuts it before the task or the architecture pointer (CTR-002).
 fn containers(input: &BriefingInput<'_>) -> String {
     if !input.isolated {
         return String::new();
     }
-    "## Containers\n\nThere is no container engine in this sandbox, in Yulius CI or in CD runs: \
-     the `docker` client is installed, but its containment refuses what a daemon needs. Use an \
-     engine on another machine through the client (`DOCKER_HOST=ssh://user@host` or a `docker \
-     context`): build images where they run, keep rollback images there or in a registry. For \
-     the services tests need (a database, a cache), install them with `apt`.\n\n"
+    "## Containers\n\nNo container engine here, in Yulius CI or CD, whatever `docker` says: use one \
+     on another machine (`DOCKER_HOST=ssh://…`), keeping images and rollback images there or in a \
+     registry. Install test services with `apt` and start them yourself.\n\n"
         .to_owned()
 }
 
@@ -1098,7 +1098,6 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         Part::Mandatory(read_first(input)),
         Part::Mandatory(tools(input.playground)),
         Part::Mandatory(ports(input)),
-        Part::Mandatory(containers(input)),
         Part::Mandatory(task_header(input)),
         Part::Optional {
             text: task_steps(input),
@@ -1110,6 +1109,7 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
             weight: 3,
         },
         Part::Mandatory(architecture(input)),
+        Part::Mandatory(containers(input)),
         Part::Optional {
             text: decisions(input),
             weight: 2,
@@ -1525,11 +1525,26 @@ mod tests {
         input.repo_instructions = vec![long.clone(); 50];
         input.parallel_tasks[0].title = huge.clone();
         input.decision_titles[0] = huge.clone();
-        // SPEC-173: the largest mandatory set, with the isolated sandbox's section.
-        input.isolated = true;
+        // SPEC-173 CTR-002: with the isolated sandbox's section every mandatory part stays; at
+        // these sizes it takes the optional parts' room, as any mandatory part does.
+        let isolated = build_briefing(
+            &BriefingInput {
+                isolated: true,
+                ..input.clone()
+            },
+            DEFAULT_BUDGET_BYTES,
+        );
+        assert!(
+            isolated.len() <= DEFAULT_BUDGET_BYTES,
+            "{} bytes",
+            isolated.len()
+        );
+        for heading in MANDATORY_HEADINGS.into_iter().chain(["## Containers"]) {
+            assert!(isolated.contains(heading), "isolated: missing {heading}");
+        }
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(text.len() <= DEFAULT_BUDGET_BYTES, "{} bytes", text.len());
-        for heading in MANDATORY_HEADINGS.into_iter().chain(["## Containers"]) {
+        for heading in MANDATORY_HEADINGS {
             assert!(text.contains(heading), "missing {heading}");
         }
         for needle in [
@@ -1867,7 +1882,7 @@ mod tests {
         let text = build_briefing(&isolated, DEFAULT_BUDGET_BYTES);
         for present in [
             "## Containers",
-            "no container engine",
+            "No container engine",
             "Yulius CI",
             "`DOCKER_HOST=ssh://",
             "rollback",
@@ -1877,44 +1892,55 @@ mod tests {
         }
         let plain = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!plain.contains("## Containers"), "{plain}");
-        assert!(!plain.contains("no container engine"), "{plain}");
+        assert!(!plain.contains("No container engine"), "{plain}");
         Ok(())
     }
 
     /// SPEC-173 CTR-002 (review of task #163): the hook lowers the budget by the workflow
-    /// instructions (a Fix workflow is about 1.7 KB). An isolated Fix task's briefing with
-    /// realistic fields keeps its task header and every mandatory part, uncut.
+    /// instructions (a Fix workflow is about 1.7 KB). Whatever the goal's length, the isolated
+    /// sandbox's section never pushes out a part the briefing without it keeps, and it is whole
+    /// for a short goal.
     #[test]
-    fn an_isolated_fix_task_keeps_every_mandatory_part_within_the_workflow_budget() -> TestResult {
+    fn the_containers_section_never_displaces_the_task_or_the_architecture() -> TestResult {
         let profile = DeliveryProfile::standard();
         let layout = DocsLayout::default();
-        let mut input = BriefingInput {
-            isolated: true,
-            ..base(&profile, &layout)?
-        };
-        input.project_name = "Quartio-Studio/yulius".to_owned();
-        input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
-        input.task.title = "i got this from a different projectfix".to_owned();
-        input.task.goal = "a deployer that builds images and copies them to VMs ".repeat(12);
-        input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
-        input.task.spec_path =
-            ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
-        input.task.workflow = Some("Fix".to_owned());
-        input.repo_instructions = vec!["AGENTS.md".to_owned(), "CLAUDE.md".to_owned()];
-        let budget = DEFAULT_BUDGET_BYTES - 1_800;
-        let text = build_briefing(&input, budget);
-        assert!(text.len() <= budget, "{} bytes", text.len());
-        for needle in MANDATORY_HEADINGS.into_iter().chain([
-            "## Containers",
-            "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
-            "Spec: .ai/specs/SPEC-173-",
-        ]) {
-            assert!(text.contains(needle), "missing {needle} in {text}");
+        let budget = DEFAULT_BUDGET_BYTES - 1_700;
+        for goal_len in [80, 200, 400, 600] {
+            let mut input = base(&profile, &layout)?;
+            input.project_name = "Quartio-Studio/yulius".to_owned();
+            input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
+            input.task.title = "i got this from a different projectfix".to_owned();
+            input.task.goal = "deployer ".repeat(goal_len / 9);
+            input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
+            input.task.spec_path =
+                ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
+            let plain = build_briefing(&input, budget);
+            let isolated = build_briefing(
+                &BriefingInput {
+                    isolated: true,
+                    ..input.clone()
+                },
+                budget,
+            );
+            assert!(isolated.len() <= budget, "{} bytes", isolated.len());
+            for needle in [
+                "## Your task",
+                "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+                "Spec: .ai/specs/SPEC-173-",
+                "## Architecture",
+            ] {
+                assert!(
+                    !plain.contains(needle) || isolated.contains(needle),
+                    "goal {goal_len}: {needle} lost in {isolated}"
+                );
+            }
+            if goal_len == 80 {
+                assert!(
+                    isolated.contains("start them yourself."),
+                    "goal {goal_len}: section cut in {isolated}"
+                );
+            }
         }
-        assert!(
-            !text.trim_end().ends_with(TRUNCATION_MARKER),
-            "mandatory parts were cut: {text}"
-        );
         Ok(())
     }
 }
