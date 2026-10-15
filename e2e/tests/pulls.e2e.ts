@@ -138,8 +138,12 @@ test('a session that expires removes the stored pull requests', async ({ app, br
   await app.open(mock('/s/studio'));
   await chipsAfterRead(browser);
   expect(await storedPulls(browser)).not.toBeNull();
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { signedIn: boolean } }).__yuliusMock.signedIn = false; });
-  await screen.getByRole('link', /^Git/).first().click();
+  // The session ends; the next request finds it ended. That may be the page's own background read
+  // before any click, so the test asks for a page by its address (a link could be gone by then).
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { signedIn: boolean } }).__yuliusMock.signedIn = false;
+    window.location.hash = '#/s/studio/git';
+  });
   await expect(screen.getByText('You were signed out. Please sign in again.')).toBeVisible();
   expect(await storedPulls(browser)).toBeNull();
 });
