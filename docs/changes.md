@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Editor's file in front follows the disk, and the Explorer's buttons stay in the Explorer
+  (SPEC-181, ADR-0146, task #168). While the Editor is shown, the file in front is looked at every
+  2 s (and at once when the Editor or the page comes back) with `known=<sha256>`; the files API
+  answers 204 while the file is unchanged. What teammates, agents or shells wrote replaces unedited
+  text as one undoable edit of the changed part, so the cursor stays with its text and no toast
+  repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
+  shortens at its narrowest instead of pushing the Refresh button over the first file tab.
+  Co-editing of unsaved text is #566.
 - Review findings in a change's own code are fixed before merge, never deferred to an issue
   (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
   report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and

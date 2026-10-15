@@ -103,8 +103,8 @@ other people input). Fix and implement if needed".
   (no toast every 2 s while an agent works).
 - **No co-editing of unsaved text.** "See other people's input" is met by showing what they save
   and where they are (SPEC-127). Sharing keystrokes before a save would make unsaved text shared
-  (against EDT-003) and need merging of concurrent edits (OT or CRDT). A follow-up issue records
-  it as a possible feature.
+  (against EDT-003) and need merging of concurrent edits (OT or CRDT). Issue #566 records it as a
+  possible feature.
 
 ## Evidence
 
