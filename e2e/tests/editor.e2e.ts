@@ -59,22 +59,80 @@ test('a second file opened while the editor loads waits for all of Monaco: one e
   })).toEqual(['made', 'made']);
 });
 
-// #534 (SPEC-166): a file opened again before its first open showed it (a double-click on its row,
-// here while Monaco loads too) waits for that open: one tab. The file reads are held so both clicks
-// land before either read ends; the next file's read starts after they are answered.
-test('a file clicked twice before its tab shows opens one tab', async ({ app, browser, screen }) => {
+type HeldMock = Window & { __yuliusMock: { held: Promise<void>; release(): void; repoFile(sandbox: string, path: string, text: string, root?: string): void } };
+const releaseReads = (browser: Browser) => browser.evaluate(() => (window as unknown as HeldMock).__yuliusMock.release());
+/** Holds the file reads again (the page was opened with them held, then released). */
+const holdReads = (browser: Browser) => browser.evaluate(() => {
+  const mock = (window as unknown as HeldMock).__yuliusMock;
+  mock.held = new Promise((resolve) => { mock.release = () => resolve(); });
+});
+const tabPaths = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.ed-tab')].map((tab) => (tab as HTMLElement).dataset.path));
+
+// #534 (SPEC-166): a file opened again before its first open showed it (a double-click on its row)
+// waits for that open: one tab, while Monaco loads and after. The file reads are held so both
+// clicks land before either read ends; the next file's read starts after they are answered.
+test('a file clicked twice before its tab shows opens one tab, while the editor loads and after', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/content'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   const tree = screen.getByRole('tree', 'Files');
   await tree.getByRole('treeitem', 'AGENTS.md').dblclick();
-  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await releaseReads(browser);
   await editorShown(browser);
   await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
   await tree.getByRole('treeitem', 'README.md').click();
   await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.ed-tab')].map((tab) => (tab as HTMLElement).dataset.path))).toEqual(['AGENTS.md', 'README.md']);
+  expect(await tabPaths(browser)).toEqual(['AGENTS.md', 'README.md']);
+
+  // Monaco loaded: a double-click is still two opens.
+  await holdReads(browser);
+  for (const folder of [/\bsrc$/, /\bapi$/]) {
+    await tree.getByRole('treeitem', folder).click();
+    await expect(tree.getByRole('treeitem', folder)).toHaveAttribute('aria-expanded', 'true');
+  }
+  await tree.getByRole('treeitem', 'checkout.rs').dblclick();
+  await releaseReads(browser);
+  await expect(screen.getByRole('tab', /^checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
+  for (const folder of [/\bdocs$/, /\bspecs$/]) {
+    await tree.getByRole('treeitem', folder).click();
+    await expect(tree.getByRole('treeitem', folder)).toHaveAttribute('aria-expanded', 'true');
+  }
+  await tree.getByRole('treeitem', '2026-10-10-improve-the-code.md').click();
+  await expect(screen.getByRole('tab', /^2026-10-10-improve-the-code\.md/)).toHaveAttribute('aria-selected', 'true');
+  expect(await tabPaths(browser)).toEqual(['AGENTS.md', 'README.md', 'src/api/checkout.rs', 'docs/specs/2026-10-10-improve-the-code.md']);
   expect(await browser.evaluate(() => document.querySelectorAll('.ed-host .monaco-editor').length)).toBe(1);
+});
+
+// SPEC-166 review: a path being opened in one folder is another file in the next folder. Its open,
+// still on its way when the folder changes, neither shows nor stands in for the new folder's file.
+test('a file opened while the folder switches shows the new folder’s file', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/content'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'AGENTS.md').click();
+  await releaseReads(browser);
+  await editorShown(browser);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
+  const task = await browser.evaluate(() => (document.querySelector('select[aria-label="Folder"] option[value^="task:"]') as HTMLOptionElement).value);
+  await browser.evaluate((root) => (window as unknown as HeldMock).__yuliusMock.repoFile('sb_studio', 'README.md', '# The task worktree\n', root), task);
+
+  await holdReads(browser);
+  await tree.getByRole('treeitem', 'README.md').click();
+  // The Folder select, as the person changes it (no unsaved files: no question asked).
+  await browser.evaluate((root) => {
+    const select = document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement;
+    select.value = root;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, task);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveCount(0);
+  await tree.getByRole('treeitem', 'README.md').click();
+  await releaseReads(browser);
+  await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getValue(): string }[] } } }).monaco.editor.getEditors()[0].getValue())).toBe('# The task worktree\n');
+  // Its own text from the start: not the other folder's, reloaded as if changed on disk.
+  expect(await browser.evaluate(() => document.body.innerText.includes('changed on disk and was reloaded'))).toBe(false);
+  expect(await tabPaths(browser)).toEqual(['README.md']);
 });
 
 // Review of SPEC-148: one creation shared by every opening must not keep a failure: the next
