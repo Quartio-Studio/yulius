@@ -1,11 +1,11 @@
 ---
 yulius-task: 82b37c7c-efa0-48af-bb6d-5ce9021f385d
-status: in-progress
+status: done
 ---
 
 # SPEC-140: task_done, supervision and merge_train tests hold under host load
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #127
 Scope authorization: task #127, part of task #118 ("Fix all open actionable GitHub issues without
@@ -93,7 +93,7 @@ fails the test although its total is far from 120 s.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | STP-001 | A stop or close that comes while the task's run is launching (spawned, Yulius not attached yet) asks the run to shut down once it is attached, so the run ends as stopped or closed at once, not at the escalation. A stop that comes later still finds the run itself; the process host takes a second shutdown request as the first. | `task_done::a_stop_while_the_run_is_launching_ends_it_once_attached` (fails without: the stop waits for a 60 s escalation); `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` ("the stop" 20.1 s → 0.1 s) |
-| STP-002 | An end intent that no run consumed (a stop or close that ended no run: between a switch's two runs, before a failed spawn) is not left for the next run: a launch that no switch drives starts with no intent, and the stop that ends a Stopping task with no live run clears it. A stop asked at the attach also arms the escalation for that run (the stop came before the run existed, so it armed none). | `task_done::a_stop_that_ended_no_run_does_not_end_the_next_one` (fails without: the continued task's resumed run is killed as `cancelled` at its attach) |
+| STP-002 | An end intent that no run consumed (a stop or close that ended no run: between a switch's two runs, before a failed spawn) is not left for the next run: a launch that moves a waiting or resting task with no live run to Starting clears it, and the stop that ends a Stopping task with no live run clears it. A stop asked at the attach also arms the escalation for that run (the stop came before the run existed, so it armed none). | `task_done::a_stop_that_ended_no_run_does_not_end_the_next_one` (fails without: the continued task's resumed run is killed as `cancelled` at its attach) |
 | HKS-001 | A hook event Yulius received is handled to its end even when its client stops waiting and closes the connection: the server runs it in its own task, and the HTTP handler only waits for its answer. The status line is unchanged (it only reads). | `agent_hooks::a_hook_whose_client_hangs_up_is_still_applied` (fails without: the notice is never applied) |
 | TWT-001 | A test that stops a task waits for the stop within the product's own bound: the stop escalation (`stop_escalation_ms` of that app) plus a settle margin for the termination and its record, waiting for every stopped task at once. When the bound passes, the error names each task's status and its runs' states and exit reasons. | `support::wait_stopped`, used by `task_done` and `supervision` |
 | TWT-002 | The merge train tests share one deadline from the start of the test, under nextest's kill bound with room to report what was seen (100 s of the 120 s), instead of a fixed 50 s per phase. | `merge_train::*` |
@@ -106,8 +106,8 @@ fails the test although its total is far from 120 s.
 - [x] Stop waits use the stop's own bound and say what they saw (#353)
 - [x] Merge-train waits share one deadline under nextest's kill bound (#443)
 - [x] Loaded repeat runs of every named test pass
-- [ ] Decision record, architecture and changes log; every gate green
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Decision record, architecture and changes log; every gate green
+- [x] Independent review in a fresh session, findings fixed test-first
 - [x] A stop that ended no run leaves nothing for the next run (review), test-first
 
 ## Acceptance criteria
@@ -232,6 +232,12 @@ clear (the second stop's clears first); the launch clear's own path, a stop with
 a natural exit, is a race this suite cannot make certain. Pre-existing, left for a follow-up (issue
 comment): a stop during a switch's handover drops the switch's sender, and the switch goes on to
 resume the task, which can relaunch a task the person stopped.
+Review round 3 (head 59806593, the branch merged with dev at 7f38acdc, approve): the launch clear is
+correct, the merge is clean. Left for a follow-up (issue comment), pre-existing: one stop between a
+switch's two runs leaves the task Stopping (its launch is refused and neither error path ends a
+Stopping task with no run) until it is stopped again or the server restarts; the new test stops it
+twice for that reason. `scripts/dev ci` at 59806593: exit 0, 1772/1772 tests.
+
 `scripts/dev security`: not run (unrun, not passed), the Vidoc key answers 401 since 2026-10-14
 (#470, ADR-0104).
 
