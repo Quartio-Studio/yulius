@@ -199,6 +199,11 @@ Gates:
   passed | 1 skipped (537)`.
 - `scripts/dev security`: not run, exit 2, "Vidoc rejected the key (HTTP 401: Invalid or expired
   token)", tracked in #470; recorded as unrun per ADR-0104.
+- After review round 2 approved f2279f00, `origin/dev` (68cd7a3d, #563 and #567) was merged at
+  42a7fb22; its only conflict was three rows of `e2e/README.md`, none changed on both sides. At
+  42a7fb22: `scripts/dev ci` exit 0, `1895 tests run: 1895 passed, 18 skipped`; the e2e files this
+  task and dev's merge touch (archive, loading-shapes, responsive, automations, playground,
+  original-prompt, git, ci, loading) exit 0, `Tests 87 passed (87)`.
 - `spec_check`: valid.
 
 Review round 1 (fresh session, head 86a05410): request changes. Fixed: the 560 px query lost to
