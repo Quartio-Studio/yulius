@@ -32,6 +32,32 @@ impl App {
         user: &UserRecord,
         sandbox: &SandboxRecord,
     ) -> AppResult<AccessLevel> {
+        self.access_level_within(user, sandbox, self.config.permission_ttl_ms)
+            .await
+    }
+
+    /// Like [`App::access_level`], but a cached decision younger than the staleness bound is
+    /// used without asking GitHub: for internal calls that must answer within seconds on every
+    /// command, such as the redaction in a Superagent (SPEC-147 SAM-003). A loss of access
+    /// takes effect within the staleness bound, or at once when any other check refreshed it.
+    ///
+    /// # Errors
+    /// As [`App::access_level`].
+    pub(crate) async fn settled_access_level(
+        &self,
+        user: &UserRecord,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<AccessLevel> {
+        self.access_level_within(user, sandbox, self.config.permission_stale_ms)
+            .await
+    }
+
+    async fn access_level_within(
+        &self,
+        user: &UserRecord,
+        sandbox: &SandboxRecord,
+        fresh_ms: i64,
+    ) -> AppResult<AccessLevel> {
         if user.disabled_at.is_some() {
             return Ok(AccessLevel::None);
         }
@@ -53,7 +79,7 @@ impl App {
         let store = &self.deps.store;
         let cached = store.cached_access(&user.id, &sandbox.id).await?;
         if let Some(c) = cached
-            && now.millis_since(c.checked_at) < self.config.permission_ttl_ms
+            && now.millis_since(c.checked_at) < fresh_ms
         {
             return Ok(c.level);
         }

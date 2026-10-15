@@ -456,12 +456,24 @@ other server. The Superagent starts with `--settings` naming every one of them i
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
+The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
+redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
+hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
+server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
+token the person's environment holds, answered while the person may work in the sandbox (by an
+access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
+proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+[decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
+  MS -->|"mcp_attachments: values in the secret environment"| HP
+  SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
   APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
