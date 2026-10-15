@@ -2,8 +2,9 @@
 
 End-to-end tests of the [web UI](../crates/yulius-server/web/README.md), written with
 [e2e by TesterArmy](https://github.com/tester-army/e2e) (Apache-2.0, Playwright underneath).
-The runner serves `crates/yulius-server/web` with Python's static file server and opens it in
-mock mode (`?mock=1`), so no `yulius serve`, account or model is needed. Node is a
+The runner serves `crates/yulius-server/web` with a Python static file server (`serve.py`:
+keep-alive and a deep listen queue, so a loaded machine does not drop a page's requests,
+ADR-0122) and opens it in mock mode (`?mock=1`), so no `yulius serve`, account or model is needed. Node is a
 **test-only** prerequisite: the UI itself stays plain ES modules with no build step and no
 Node at runtime (SPEC-002 ADR-01).
 
@@ -84,9 +85,11 @@ disable`); CI sets it.
 Every test also fails when the page reports an error: an uncaught exception, an unhandled
 rejection or `console.error` (`failOnPageErrors()` in `tests/support.ts`). In those files
 `app.open` and `browser.reload` of a mock page return once the mock is installed, so a test can
-use `window.__yuliusMock` right away. Prefer locators by
-role and accessible name (`screen.getByRole('button', 'Start task')`): they test what assistive
-technology sees, and they survive markup changes.
+use `window.__yuliusMock` right away. A test that calls `window.monaco.editor` waits for
+`editorShown(browser)` first: the Editor's first opening loads Monaco (its own budget,
+`MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). Prefer
+locators by role and accessible name (`screen.getByRole('button', 'Start task')`): they test what
+assistive technology sees, and they survive markup changes.
 
 ## Agent steps
 

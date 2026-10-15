@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, promptText } from './support.ts';
+import { axeViolations, editorShown, failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -87,7 +87,7 @@ test('a text file dropped on the editor opens in a tab', async ({ app, browser, 
   // this test is about and takes however long the machine needs: wait for it as a condition, so
   // the drop below is judged against a ready editor.
   await tree.getByRole('treeitem', 'README.md').click();
-  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as { monaco?: unknown }).monaco)), { timeout: 60000 }).toBe(true);
+  await editorShown(browser);
   await expect(screen.getByRole('tab', 'README.md')).toHaveAttribute('aria-selected', 'true');
   await installDrop(browser);
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-stage', [['hello.md', '# Hello\n', 'text/markdown'], ['logo.png', 'not really a png', 'image/png']]));

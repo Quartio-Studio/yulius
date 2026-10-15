@@ -162,6 +162,29 @@ test('read access shows neither the quick Archive nor Archive all', async ({ app
   await expect(screen.getByRole('button', 'Archive all')).toHaveCount(0);
 });
 
+// #356: the Stopped toggle's state is the sidebar's own (`endedOpen`), never the list's: a rebuild
+// while it is folded and focused (another task changing group) keeps it folded and focused, and
+// Enter still unfolds it.
+test('the Stopped toggle keeps its state and the keyboard when the list is rebuilt between presses', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  const stopped = screen.getByRole('region', 'Stopped').getByRole('button', /Stopped/);
+  await stopped.focus();
+  await browser.keyboard.press('Enter');
+  await expect(stopped).toHaveAttribute('aria-expanded', 'false');
+  const head = '.task-group.group-ended .task-group-head';
+  await browser.evaluate((css) => { (document.querySelector(css) as HTMLElement).dataset.before = 'rebuild'; }, head);
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 14, { background_shells: 0 }));
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Start the preview server/)).toBeVisible();
+  // The list was rebuilt: the toggle is a new element.
+  expect(await browser.evaluate((css) => (document.querySelector(css) as HTMLElement).dataset.before ?? null, head)).toBeNull();
+  await expect(stopped).toHaveAttribute('aria-expanded', 'false');
+  await expect(stopped).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(stopped).toHaveAttribute('aria-expanded', 'true');
+  await expect(stopped).toBeFocused();
+});
+
 test('the keyboard stays on its control when the sidebar list is rebuilt', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   // The task's terminal takes the keyboard when it shows: the keyboard moves on after that.
