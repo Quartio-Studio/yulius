@@ -5,7 +5,6 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
 
 use super::AgentPayload;
 use crate::context::App;
@@ -72,30 +71,46 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn digest(text: &str) -> [u8; 32] {
-    Sha256::digest(text.as_bytes()).into()
+/// The SHA-256 of `pieces` joined by `glue`, then `end`: the hasher reads the stored value in
+/// place, so no copy of it is made, and wipes its state on drop.
+fn digest_of(pieces: &[&str], glue: &str, end: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for (i, piece) in pieces.iter().enumerate() {
+        if i > 0 {
+            hasher.update(glue.as_bytes());
+        }
+        hasher.update(piece.as_bytes());
+    }
+    hasher.update(end.as_bytes());
+    hasher.finalize().into()
 }
 
-/// How the candidate whose SHA-256 is `candidate` compares with `value`.
-fn likeness(value: &str, candidate: &[u8; 32]) -> Likeness {
-    let is = |variant: &str| digest(variant) == *candidate;
-    if is(value) {
-        return Likeness::Exact;
-    }
-    for end in ["\n", "\r\n"] {
-        if is(&Zeroizing::new(format!("{value}{end}"))) {
-            return Likeness::TrailingNewline;
+/// How the candidate whose SHA-256 is `candidate` compares with `value`. Every variant is
+/// hashed and compared with `same` (constant time: the caller chooses the bytes compared), with
+/// no early exit, so the answer's timing says nothing about the stored value's hash.
+fn likeness(value: &str, candidate: &[u8; 32], same: &dyn Fn(&[u8], &[u8]) -> bool) -> Likeness {
+    let whole = [value];
+    let lines: Vec<&str> = value.split("\\n").collect();
+    let variants = [
+        (Likeness::Exact, &whole[..], "", ""),
+        (Likeness::TrailingNewline, &whole[..], "", "\n"),
+        (Likeness::TrailingNewline, &whole[..], "", "\r\n"),
+        (Likeness::EscapedNewlines, &lines[..], "\n", ""),
+        (Likeness::EscapedNewlines, &lines[..], "\n", "\n"),
+        (Likeness::EscapedNewlines, &lines[..], "\r\n", ""),
+        (Likeness::EscapedNewlines, &lines[..], "\r\n", "\r\n"),
+    ];
+    let mut found = Likeness::Different;
+    for (kind, pieces, glue, end) in variants {
+        let matched = same(&digest_of(pieces, glue, end), candidate);
+        // Without a literal `\n` the multi-line forms are the value itself and its trailing
+        // forms, already told apart above.
+        let applies = kind != Likeness::EscapedNewlines || pieces.len() > 1;
+        if matched && applies && found == Likeness::Different {
+            found = kind;
         }
     }
-    if value.contains("\\n") {
-        for line_break in ["\n", "\r\n"] {
-            let lines = Zeroizing::new(value.replace("\\n", line_break));
-            if is(&lines) || is(&Zeroizing::new(format!("{}{line_break}", *lines))) {
-                return Likeness::EscapedNewlines;
-            }
-        }
-    }
-    Likeness::Different
+    found
 }
 
 /// The lines `value` stands for, its literal `\n` read as line breaks.
@@ -138,12 +153,17 @@ impl App {
             return Err(AppError::Forbidden(super::PRODUCTION_SECRET.into()));
         }
         let payload: AgentPayload = self.open_payload(&record)?;
-        let found = likeness(&payload.value, &candidate);
+        let crypto = self.deps.crypto.as_ref();
+        let found = likeness(&payload.value, &candidate, &|a, b| {
+            crypto.constant_time_eq(a, b)
+        });
         let count = lines(&payload.value);
         drop(payload);
+        // Keyed by the vault's generation too: after a rotation the same check is audited again.
         self.vault_audit_once(
             format!(
-                "vault.agent.verify|{}|{}|{}",
+                "vault.agent.verify|{}|{}|{}|{}",
+                self.vault_generation(),
                 caller.actor,
                 record.id,
                 yulius_domain::vault::encode::hex(&candidate, false)
@@ -154,24 +174,37 @@ impl App {
             &format!("{} → {}", record.name, found.as_str()),
         )
         .await;
-        Ok(json!({
+        let mut answer = json!({
             "secret": record.name,
             "match": found.as_str(),
-            "lines": count,
             "meaning": found.meaning(&record.name),
-        }))
+        });
+        // Only a caller who holds the value learns its shape (review round 1).
+        if found != Likeness::Different {
+            answer["lines"] = json!(count);
+        }
+        Ok(answer)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Likeness, digest, likeness, lines, parse_sha256};
+    use super::{Likeness, likeness, lines, parse_sha256};
+    use sha2::{Digest, Sha256};
+
+    fn digest(text: &str) -> [u8; 32] {
+        Sha256::digest(text.as_bytes()).into()
+    }
+
+    fn same(a: &[u8], b: &[u8]) -> bool {
+        a == b
+    }
 
     const STORED: &str = "-----BEGIN K-----\\nbody-4417\\n-----END K-----";
     const PEM: &str = "-----BEGIN K-----\nbody-4417\n-----END K-----";
 
     fn of(candidate: &str) -> Likeness {
-        likeness(STORED, &digest(candidate))
+        likeness(STORED, &digest(candidate), &same)
     }
 
     #[test]
@@ -200,9 +233,9 @@ mod tests {
     #[test]
     fn a_value_without_escapes_has_no_multi_line_form() {
         let value = "sk_synthetic_value_7781";
-        assert_eq!(likeness(value, &digest(value)), Likeness::Exact);
+        assert_eq!(likeness(value, &digest(value), &same), Likeness::Exact);
         assert_eq!(
-            likeness(value, &digest(&format!("{value}\n"))),
+            likeness(value, &digest(&format!("{value}\n")), &same),
             Likeness::TrailingNewline
         );
         assert_eq!(lines(value), 1);

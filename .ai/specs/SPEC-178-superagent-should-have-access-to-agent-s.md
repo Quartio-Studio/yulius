@@ -50,11 +50,13 @@ ever reaching the model or the screen.
   once a difference common in copied keys is set aside (`trailing_newline`: the candidate ends
   with a line break; `escaped_newlines`: the candidate has line breaks, LF or CRLF, where the
   vault's value has literal `\n`, as a multi-line key must be stored since an agent secret never
-  spans lines), or `different`. It also says how many lines the value stands for (its literal
-  `\n` read as line breaks). It never returns a value, a
+  spans lines), or `different`. On a match it also says how many lines the value stands for (its
+  literal `\n` read as line breaks). Every variant is compared in constant time, without an early
+  exit, and no copy of the value is made to hash it. It never returns a value, a
   value's hash or anything else derived from it. An unknown secret, a malformed hash and a
-  production secret (SPEC-134) are refused. Each distinct check is audited once
-  (`vault.agent.verify`, with the task or `cockpit:<login>` as actor) while Yulius runs.
+  production secret (SPEC-134) are refused. Each distinct check is audited once per vault
+  generation (`vault.agent.verify`, with the task or `cockpit:<login>` as actor) while Yulius
+  runs, so a check repeated after a rotation is audited again.
 - VAU-003: Both tools run in the Superagent without asking the person (they change nothing but
   the audit): they join `COCKPIT_READ_ONLY_TOOLS`. The Superagent's MCP instructions name them.
   The other vault tools stay a task's: `secret_request_hosts`, `secret_copy_to_env` and
@@ -82,7 +84,7 @@ ever reaching the model or the screen.
 - With a three-line key stored with literal `\n`, `secret_verify` answers `exact` for the SHA-256
   of the stored value, `trailing_newline` for it with a final line break, `escaped_newlines` for
   the key with real line breaks (LF or CRLF, with or without a final one), and `different`
-  otherwise, with `lines: 3`; it
+  otherwise, with `lines: 3` on a match and no `lines` for `different`; it
   refuses an unknown name, a hash that is not 64 hex digits, and a production secret; the check is
   audited with the caller as actor; no answer holds the value or its SHA-256.
 - A task agent's `secret_verify` answers the same for its own sandbox, and nothing for another
@@ -113,9 +115,16 @@ ever reaching the model or the screen.
   (`check_agent_value`), so a multi-line key is stored with literal `\n`: the variants are the
   value with a final LF or CRLF, and the value with its `\n` as LF or CRLF line breaks, with or
   without a final one. CRLF against LF inside the vault cannot occur and is not a kind.
-- The line count the value stands for is returned: it is what the person asked to confirm and says
-  next to nothing about the value.
+- The line count the value stands for is returned on a match only: it is what the person asked to
+  confirm, and a caller who does not hold the value learns nothing of its shape.
 - `secret_verify` is served to task agents too ("as well" goes both ways): the same check helps an
   agent confirm a key it was given before asking a person to store it.
 - A production secret is refused, as `secret_request_hosts` and `secret_copy_to_env` refuse one:
   production values are kept out of every agent use.
+- Independent review round 1 (REQUEST CHANGES, all own code, all fixed): the digest comparison
+  used `==` on caller-chosen bytes (now `CryptoPort::constant_time_eq` over every variant, no
+  early exit); the audit key ignored rotations (now keyed by the vault generation, test
+  `a_verify_after_a_rotation_is_audited_again`, red before); variant strings left freed copies of
+  the value (now hashed piece by piece in place, and `sha2`'s `zeroize` feature wipes the hasher);
+  `lines` was answered for `different` too (now on a match only, tests updated, red before). The
+  direct use of `sha2` instead of the crypto port stays, as in `imports.rs` and `uploads.rs`.

@@ -2445,7 +2445,11 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         .await?;
         assert!(!is_error, "{kind}: {answer}");
         assert_eq!(answer["match"], kind, "{answer}");
-        assert_eq!(answer["lines"], 3, "{answer}");
+        if kind == "different" {
+            assert!(answer.get("lines").is_none(), "{answer}");
+        } else {
+            assert_eq!(answer["lines"], 3, "{answer}");
+        }
         let raw = answer.to_string();
         assert!(!raw.contains("c3ludGhldGljLWtleS1ib2R5LTQ0MTc="), "{raw}");
         assert!(!raw.contains(&value_sha), "{raw}");

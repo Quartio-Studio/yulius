@@ -33,10 +33,12 @@ multi-line key is stored with literal `\n`.
   to task agents and the Superagent, compares the candidate's hash with the stored value and with
   its variants: the value with a final line break (`trailing_newline`) and the value with its
   literal `\n` as LF or CRLF line breaks, with or without a final one (`escaped_newlines`). It
-  answers the kind of match (or `different`) and the lines the value stands for, never the value
-  or its hash. The caller computes the hash in a shell (`sha256sum key.pem`), so the value
+  answers the kind of match (or `different`) and, on a match, the lines the value stands for, never
+  the value or its hash. The variants are hashed in place (no copy of the value) and all compared
+  in constant time, without an early exit. The caller computes the hash in a shell (`sha256sum key.pem`), so the value
   reaches neither the model nor the screen. Production secrets (SPEC-134) are refused. Each
-  distinct check is audited once (`vault.agent.verify`, actor `task:N` or `cockpit:<login>`).
+  distinct check is audited once per vault generation (`vault.agent.verify`, actor `task:N` or
+  `cockpit:<login>`), so a check repeated after a rotation is audited again.
 - **Both run without asking.** They join `COCKPIT_READ_ONLY_TOOLS`: they change nothing but the
   audit.
 - **The rest stays a task's.** `secret_request_hosts`, `secret_copy_to_env` and

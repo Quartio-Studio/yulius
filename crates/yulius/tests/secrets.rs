@@ -2538,3 +2538,58 @@ async fn agents_verify_a_value_of_their_projects_secrets_by_its_hash() -> TestRe
     );
     Ok(())
 }
+
+/// SPEC-178 VAU-002 (review round 1): a check repeated after the value was rotated is audited
+/// again, so the activity shows the answer that changed.
+#[tokio::test]
+async fn a_verify_after_a_rotation_is_audited_again() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?;
+    let args = json!({"secret": "STRIPE_KEY", "sha256": w.h.app.deps.crypto.sha256_hex(STRIPE.as_bytes())});
+    let verify = || mcp_tool(&w.h, TOKEN_S1, "secret_verify", args.clone());
+    assert_eq!(tool_text(&verify().await?)["match"], "exact");
+    let rotated = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": "rotated-stripe-value-1"})),
+        &w.writer,
+    )
+    .await?;
+    assert!(rotated.status.is_success(), "{}", rotated.body);
+    let after = tool_text(&verify().await?);
+    assert_eq!(after["match"], "different", "{after}");
+    // Lines are told only for a match: a guess learns nothing of the value's shape.
+    assert!(after.get("lines").is_none(), "{after}");
+
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    let details: Vec<&str> = activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .filter_map(|e| e["detail"].as_str())
+        .collect();
+    assert_eq!(
+        details,
+        ["STRIPE_KEY → different", "STRIPE_KEY → exact"],
+        "newest first"
+    );
+    Ok(())
+}

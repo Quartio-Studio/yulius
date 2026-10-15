@@ -361,7 +361,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "secret_verify".into(),
-            description: "Check whether a value someone holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash. Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and the lines the value stands for. Never returns the value. Audited.".into(),
+            description: "Check whether a value someone holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash. Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and on a match the lines the value stands for. Never returns the value. Audited.".into(),
             input_schema: schema(json!({
                 "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
                 "sha256": {"type": "string", "description": "The candidate value's SHA-256, 64 hexadecimal digits"}
