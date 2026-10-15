@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A shell ends only when its host is proven gone; a launch `/goal` is watched again after a restart
+  (SPEC-146, ADR-0120, task #125, fixes #346 and #453). A terminal or the Superagent whose host
+  cannot be terminated stays live with its run directory, listed and closable again, and its
+  viewers are told; the Superagent's usage-limit move then starts no second Superagent on the
+  same conversation. A goal task whose launch `/goal` was not recorded when the server restarted is
+  watched again and flagged if Claude Code never takes it; a goal recorded meanwhile (also while
+  Yulius was down) is never flagged.
+
 - A run that ends while Yulius is down keeps its metrics (SPEC-143, ADR-0117, task #124, fixes
   #385 and #389). A run that ends before a watcher of this process read its transcript to its end
   (reconciliation finds it exited, or a reattach gets its exit at once from a lingering host) is
