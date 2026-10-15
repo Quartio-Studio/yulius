@@ -1,11 +1,11 @@
 ---
 yulius-task: e63b6ca6-282b-4ea9-a514-3af642561f54
-status: in-progress
+status: done
 ---
 
 # SPEC-150: Uploaded files sit in a tray; the text holds small placeholders; images zoom
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: task #144
 Scope authorization: the person's request (task #144), with a screenshot of the new-task composer
@@ -61,8 +61,8 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
 - [x] ADR, architecture, product, earlier specs and the changes log describe the tray and placeholders
 - [x] Review round 1: the tray is part of undo, caret, focus and Preview findings fixed test-first
 - [x] Review round 2: actual size reaches every edge and an undone paste's upload stays out, fixed test-first
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green and the change delivered to dev
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green and the change delivered to dev
 
 ## Design
 
