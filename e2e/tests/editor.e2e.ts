@@ -837,3 +837,32 @@ test('a destroyed presence sends its waiting leave and arms no timer; only lost 
   });
   expect(result.retried).toEqual({ 403: [], 404: [], 409: [], 422: [], 429: [1000], 503: [1000], lost: [1000] });
 });
+
+// SPEC-181 EDT-013: at the Explorer's narrowest the label "Explorer" kept its width, so the header
+// overflowed the Explorer and its Refresh button painted over the first file tab (task #168).
+test('the Explorer header keeps its buttons inside the Explorer at its narrowest widths', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect(screen.getByRole('tab', /^README\.md/)).toBeVisible();
+  const geometry = () => browser.evaluate(() => {
+    const side = document.querySelector('.ed-side')!.getBoundingClientRect();
+    const tab = document.querySelector('.ed-tab')!.getBoundingClientRect();
+    const buttons = [...document.querySelectorAll('.ed-tree-head button')].map((button) => button.getBoundingClientRect());
+    return {
+      width: Math.round(side.width),
+      buttons: buttons.length,
+      outside: buttons.filter((box) => box.left < side.left - 0.5 || box.right > side.right + 0.5).length,
+      overTab: buttons.filter((box) => box.right > tab.left + 0.5).length,
+    };
+  });
+  // The separator's Home: the narrowest the person can drag it (140 px).
+  await screen.getByRole('separator', 'Resize explorer').focus();
+  await browser.keyboard.press('Home');
+  await expect.poll(geometry).toEqual({ width: 140, buttons: 3, outside: 0, overTab: 0 });
+  // The stylesheet's floor (a narrow panel): 120 px.
+  await browser.evaluate(() => (document.querySelector('.ed-root') as HTMLElement).style.setProperty('--ed-side-w', '1px'));
+  await expect.poll(geometry).toEqual({ width: 120, buttons: 3, outside: 0, overTab: 0 });
+});

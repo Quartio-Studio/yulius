@@ -264,7 +264,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   folder.addEventListener('keydown', wrapKeys);
   const status = h('div', { class: 'ed-status' });
   const treeHead = h('div', { class: 'ed-tree-head' },
-    h('span', null, 'Explorer'),
+    h('span', { title: 'Explorer' }, 'Explorer'),
     iconButton('plus', 'New file or folder', (event) => newEntryMenu(event.currentTarget, '')),
     iconButton('refresh', 'Refresh', () => refreshTree()));
   const side = h('div', { class: 'ed-side' }, treeHead, tree);
