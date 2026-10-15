@@ -19,8 +19,10 @@ also how #341 came about.
 
 ## Decision
 
-- `fitStrip()` in `taskview.js` runs after every paint of the strip and of its delivery chip, and on
-  every size change of the row (one `ResizeObserver`, disconnected with the view). It shows every
+- `fitStrip()` in `taskview.js` runs after every paint of the strip and of its delivery chip, on
+  every size change of the row (one `ResizeObserver`) and when a web font finishes loading
+  (`document.fonts` `loadingdone`, which changes the parts' widths but not the row's); both are
+  released with the view. It shows every
   part, then hides parts while the row's content is wider than the row, in this order: the chain
   chips (the last "Then #N" first, "After #N" or "When …" last among them), Auto or Goal,
   Supertask; then, with the state allowed to shrink again (SPEC-073), the progress bar and the pull
@@ -31,7 +33,8 @@ also how #341 came about.
   and the accessibility tree, and `hidden` stays the parts' own (the bar hides with no plan).
   Keyboard focus on a part that goes moves to the strip's label.
 - The container queries stay for what depends on width alone (the step name, the count and the
-  state's words); the 560 px query hides the chips' box itself, so an empty box takes no gap.
+  state's words); the 560 px query hides the chips' box itself (`.stepstrip .strip-extras`, which
+  outranks the later base rule), so an empty box takes no gap.
 
 ## Alternatives
 

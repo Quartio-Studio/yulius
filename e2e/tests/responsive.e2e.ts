@@ -240,28 +240,32 @@ test('the step strip gives way whole chips by priority and never passes its edge
   await app.open(mock('/s/studio/t/13'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#13 /);
   // Auto, "After #12" and two "Then" chips beside the pull request chip, as the server sends them.
-  await browser.evaluate(() => (window as unknown as { __yuliusMock: { touchTask: (s: string, n: number, c: unknown) => void } }).__yuliusMock.touchTask('sb_studio', 13, {
+  await touchTask(browser, 13, {
+    supertask: true,
     auto: { mode: 'jev', workflow: 'jev', workflow_name: 'Feature' },
     afterLink: { task_id: 'tsk_studio_12', number: 12, title: 'Checkout API', status: 'running', blocked: null },
     nextLinks: [
       { task_id: 'tsk_studio_14', number: 14, title: 'Start the preview server', status: 'chained', blocked: null },
       { task_id: 'tsk_studio_11', number: 11, title: '3D model viewer', status: 'chained', blocked: null },
     ],
-  }));
+  });
   await expect(browser.locator('.taskview .strip-pr')).toHaveText(/^PR #520/);
-  await expect.poll(async () => (await stripFit(browser)).chips).toEqual(['Auto → Goal · Feature', 'After #12', 'Then #14', 'Then #11']);
+  await expect.poll(async () => (await stripFit(browser)).chips).toEqual(['Supertask', 'Auto → Goal · Feature', 'After #12', 'Then #14', 'Then #11']);
+  // The fit follows the resize at the next frame: the whole check is polled.
   const fits = async () => {
     await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
-    const fit = await stripFit(browser);
-    expect({ past: fit.past, spilled: fit.spilled, kept: fit.kept, menuOnTop: fit.menuOnTop }).toEqual({ past: [], spilled: [], kept: true, menuOnTop: true });
-    // Whole chips, in priority order: those shown are the first ones (the last give way first).
-    expect(fit.shown).toEqual(fit.chips.slice(0, fit.shown.length));
-    return fit;
+    await expect.poll(async () => {
+      const fit = await stripFit(browser);
+      // Whole chips, in priority order: those shown are the first ones (the last give way first).
+      const prefix = fit.shown.every((chip, i) => fit.chips[i] === chip);
+      return { past: fit.past, spilled: fit.spilled, kept: fit.kept, menuOnTop: fit.menuOnTop, prefix };
+    }).toEqual({ past: [], spilled: [], kept: true, menuOnTop: true, prefix: true });
+    return stripFit(browser);
   };
   // No panel: everything shows on a wide window, and a narrower one only drops chips (the page
   // scrolled sideways at 980-990 px).
   await browser.setViewport({ width: 1920, height: 900 });
-  expect((await fits()).shown).toHaveLength(4);
+  await expect.poll(async () => (await fits()).shown).toHaveLength(5);
   for (const width of [990, 980]) {
     await browser.setViewport({ width, height: 900 });
     await fits();
@@ -284,19 +288,64 @@ test('the step strip gives way whole chips by priority and never passes its edge
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await expect(screen.getByRole('menu')).toBeVisible();
   await browser.keyboard.press('Escape');
+  const mainParts = () => browser.evaluate(() => [...document.querySelectorAll('.taskview .stepstrip-main > *')].filter((el) => el.getClientRects().length > 0).map((el) => [...el.classList][0]));
   for (const width of [960, 920, 880, 840, 800, 770]) {
     await browser.setViewport({ width, height: 900 });
     await fits();
+    // The bar gives way before the pull request chip (a 240 px strip keeps the chip only).
+    if (width === 880) expect(await mainParts()).toEqual(['stepstrip-toggle', 'strip-status', 'strip-delivery', 'btn-icon']);
   }
   // In a strip of 110 px only the label, the state's icon and the menu are left.
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.taskview .stepstrip-main > *')].filter((el) => el.getClientRects().length > 0).map((el) => [...el.classList][0]))).toEqual(['stepstrip-toggle', 'strip-status', 'btn-icon']);
+  expect(await mainParts()).toEqual(['stepstrip-toggle', 'strip-status', 'btn-icon']);
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await expect(screen.getByRole('menu')).toBeVisible();
   await browser.keyboard.press('Escape');
-  // A wider strip brings every chip back.
-  await browser.setViewport({ width: 1920, height: 900 });
-  await screen.getByRole('region', 'Tool panel').getByRole('button', /^Close|^Hide/).click();
-  await expect.poll(async () => (await stripFit(browser)).shown).toHaveLength(4);
+  // A wider strip brings chips back, and so does content that leaves room: without Supertask and
+  // Auto (the task then shows Goal), every chip fits where some gave way.
+  await browser.setViewport({ width: 1880, height: 900 });
+  // A widened strip refits at the next frame: wait for the chips it has room for.
+  await expect.poll(async () => {
+    const { shown, chips } = await fits();
+    return shown.length > 1 && shown.length < chips.length;
+  }).toBe(true);
+  await touchTask(browser, 13, { supertask: false, auto: null });
+  await expect.poll(async () => (await fits()).shown).toEqual(['Goal', 'After #12', 'Then #14', 'Then #11']);
+});
+
+const touchTask = (browser: Browser, number: number, changes: unknown) => browser.evaluate(([n, c]) => (window as unknown as { __yuliusMock: { touchTask: (s: string, n: number, c: unknown) => void } }).__yuliusMock.touchTask('sb_studio', n as number, c), [number, changes]);
+
+// SPEC-073's narrow strip (421-560 px, a laptop window beside a panel) shows no chip even when one
+// would fit, so the label keeps its room (UI-046; the 560 px query lost to the base rule, #348 review).
+test('a narrow strip beside a panel shows no chip even when one fits', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await touchTask(browser, 12, { nextLinks: [{ task_id: 'tsk_studio_14', number: 14, title: 'Start the preview server', status: 'chained', blocked: null }] });
+  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14']);
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  await browser.setViewport({ width: 1440, height: 900 });
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .stepstrip')!.getBoundingClientRect().width)).toBeLessThanOrEqual(560);
+  await expect.poll(async () => (await stripFit(browser)).shown).toEqual([]);
+  // Past 560 px the chip is back.
+  await browser.setViewport({ width: 1560, height: 900 });
+  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14']);
+});
+  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Goal', 'Then #14']);
+  // As a wider face would: the chip's text grows by a little more than the label can give up
+  // (nothing else resizes), then the fonts say they are done.
+  await browser.evaluate(() => {
+    const toggle = document.querySelector('.taskview .stepstrip-toggle')!;
+    const chip = document.querySelector('.taskview .chain-chip')!;
+    const grow = toggle.getBoundingClientRect().width - parseFloat(getComputedStyle(toggle).minWidth) + 24;
+    const style = document.createElement('style');
+    style.textContent = `.taskview .chain-chip { letter-spacing: ${grow / (chip.textContent || '').length}px; }`;
+    document.head.append(style);
+  });
+  await expect.poll(async () => (await stripFit(browser)).past.length).toBeGreaterThan(0);
+  await browser.evaluate(() => document.fonts.dispatchEvent(new Event('loadingdone')));
+  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Goal']);
+  expect((await stripFit(browser)).past).toEqual([]);
 });
 
 test('a task with a short state keeps it whole while the step name gives way', async ({ app, browser, screen }) => {

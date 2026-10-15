@@ -1247,7 +1247,7 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-dot { display: block; flex: none; width: 16px; height: 16px; border-radius: 50%; }
 .tl-chips-loading { display: flex; gap: 8px; }
 .tl-chips-loading[hidden] { display: none; }
-/* A radio in a choice row (SHAPES.rows): the 20 px Chrome's radio takes with its margins. */
+/* A radio in a choice row (SHAPES.rows): about the room Chrome's radio takes with its margins. */
 .skeleton-radio { flex: none; width: 12px; height: 12px; margin: 4px; border-radius: 50%; }
 .skeleton-chip { width: 88px; height: var(--control-lg); border-radius: var(--radius-full); }
 .tl-tabs[aria-busy="true"] .tl-tab { cursor: default; }
@@ -1284,9 +1284,10 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* A narrow centre (a tool panel open beside it): the step name, then the state and count give way,
    so the strip's parts never overlap (UI-046). */
 @container strip (max-width: 560px) {
-  /* `.stepstrip` outranks the base rule that comes later (it kept the bar at 120 px, #348). */
+  /* `.stepstrip` outranks the base rules that come later (they kept the bar at 120 px and the
+     chips' box shown, #348). */
   .stepstrip .step-progress { width: 60px; }
-  .step-current, .strip-extras { display: none; }
+  .step-current, .stepstrip .strip-extras { display: none; }
 }
 @container strip (max-width: 420px) {
   .strip-state, .step-count { display: none; }

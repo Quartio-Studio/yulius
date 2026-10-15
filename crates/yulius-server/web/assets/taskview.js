@@ -122,7 +122,9 @@ export function mountTaskView(ctx, sandbox, task) {
   }
   const stripSize = new ResizeObserver(() => fitStrip());
   stripSize.observe(stripMain);
-  destroyers.push(() => stripSize.disconnect());
+  // A web font that lands later changes the parts' widths, not the row's.
+  document.fonts.addEventListener('loadingdone', fitStrip);
+  destroyers.push(() => { stripSize.disconnect(); document.fonts.removeEventListener('loadingdone', fitStrip); });
   toggleButton.addEventListener('click', () => {
     stripOpen = !stripOpen;
     writeJson(STRIP_KEY, stripOpen);

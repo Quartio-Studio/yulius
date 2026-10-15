@@ -141,6 +141,15 @@ Checked on `dev` (5599635c) and on #137's branch, which this task starts from: a
   the fit: beside the Shell, a 1800 px window drops one "Then", 1700 px two, 1600 px keeps only
   Auto, 1480–1560 px keep no chip (Auto does not fit beside the label's 8 rem floor), and a 110 px
   strip keeps only the label, the state's icon and Task actions.
+- **The strip also refits when a web font finishes loading (review round 1).** A font that swaps
+  in changes the parts' widths but not the row's, so neither a paint nor the `ResizeObserver`
+  would refit a quiet task. `document.fonts` `loadingdone` calls `fitStrip()`. It has no e2e test:
+  the mock announces task updates continually and each repaints and refits the strip, so a test
+  passes with or without the listener (tried in review round 1, with the chip grown just past the
+  label's slack).
+- **The 560 px query reads `.stepstrip .strip-extras` (review round 1).** Written as
+  `.strip-extras` it lost to the later base rule, as the bar's width did, and a chip that fit
+  showed in a 421–560 px strip, taking the label's room.
 - **The narrow strip's bar is 60 px, as SPEC-073 meant.** The 560 px query's `.step-progress {
   width: 60px }` never applied: the base rule comes later in `styles.css` with the same
   specificity, so the bar stayed 120 px in narrow strips. The query now reads
