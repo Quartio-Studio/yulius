@@ -91,10 +91,11 @@ last hourly check, without clicking "Check now".
 - After merging `origin/dev` (`b1c77891`, which brings SPEC-146's Rust changes): `scripts/dev
   check` and `scripts/dev lint` passed, `update.e2e.ts` 14/14. The whole gate on the delivered head
   is Yulius CI's run on the pull request.
-- Full e2e at `dc64390c` (`npx e2e run`, while `scripts/dev test` loaded the machine): 445 passed, 1 skipped,
-  1 failed: `notes.e2e.ts` "the tabs show a grip…" (hover colour poll), not touched here. Run
-  again alone: 35/35 passed. Filed as flaky, #503.
-- Every runnable gate is green; `scripts/dev security`: exit 2, not run (Vidoc answers 401 to the stored key, #470;
-  ADR-0104). Unrun, not passed.
-- Independent review (fresh session) of `e37fdd21..dc64390c`: approved; minors filed as #502,
-  nits fixed.
+- Full e2e at `dc64390c` (`npx e2e run`, while `scripts/dev test` loaded the machine): 445
+  passed, 1 skipped, 1 failed: `notes.e2e.ts` "the tabs show a grip…" (hover colour poll), not
+  touched here. Run again alone: 35/35 passed. Filed as flaky, #503.
+- `scripts/dev security`: exit 2, not run (Vidoc answers 401 to the stored key, #470; ADR-0104).
+  Unrun, not passed.
+- Independent reviews (fresh sessions): `e37fdd21..dc64390c` approved (minors filed as #502, nits
+  fixed); the merge and docs to `0922025a` approved; round 3 on the Evidence wording asked to drop
+  an overclaim ("every runnable gate is green"), done here.
