@@ -97,8 +97,13 @@ impl App {
             "problem": view.problem,
             "github_actions_workflows": view.workflows,
             "pull_request": pr,
+            "playground": sandbox.is_playground(),
             "runs": runs,
-            "note": "Merges that require checks wait for the latest run at the pull request head to pass. Read a run's output with run_id.",
+            "note": if sandbox.is_playground() {
+                "delivery_merge squashes once the run of your head merged into the integration branch passed. Read a run's output with run_id."
+            } else {
+                "Merges that require checks wait for the latest run at the pull request head to pass. Read a run's output with run_id."
+            },
         }))
     }
 

@@ -1548,6 +1548,19 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
             .is_some_and(|r| r.contains("same tree")),
         "the merged dev reuses the task's run: {overview}"
     );
+    // `ci_status` lists the task's own run first, before newer runs of dev (PCI-006).
+    let status = answer(&agent_tool(&h, "tok-t1", "ci_status", json!({})).await?);
+    let first = status
+        .lines()
+        .skip_while(|line| !line.starts_with("Recent runs"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        first.contains("Task #") && first.ends_with("(yours)"),
+        "{status}"
+    );
+    assert!(status.contains("This is a playground"), "{status}");
+    assert!(!status.contains("pull request"), "{status}");
     nothing_on_github(&h)?;
     Ok(())
 }
