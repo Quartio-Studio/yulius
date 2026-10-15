@@ -173,7 +173,7 @@ GitHub from then on.
 
 Run on the branch head after merging `dev` (2026-10-15):
 
-- `scripts/dev ci` on `4bd6f533`: exit 0. Repository contracts passed; nextest `1889 tests run: 1889
+- `scripts/dev ci` on `41634819`: exit 0. Repository contracts passed; nextest `1891 tests run: 1891
   passed, 18 skipped`; clippy with `-D warnings`, rustdoc, doctests, cargo-deny and cargo-shear
   clean.
 - `cd e2e && npx e2e run` on `152d7ec7` (no web asset or e2e file changed since): exit 0, `Test Files 55 passed | 1 skipped`, `Tests 526 passed | 1
