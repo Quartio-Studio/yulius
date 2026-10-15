@@ -210,6 +210,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}",
             axum::routing::delete(projects::remove),
         )
+        .route("/api/sandboxes/{sid}/purge", post(projects::purge))
         .route(
             "/api/sandboxes/{sid}/onboarding/skip",
             post(projects::skip_onboarding),

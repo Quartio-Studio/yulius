@@ -29,8 +29,8 @@ use yulius_domain::redact::RedactionTally;
 
 use crate::device::{DeviceError, DeviceLoginOptions, device_login};
 use crate::git::{
-    BUNDLE_NAME, RepoError, RepoInfo, UnpublishedRef, create_bundle, discover_repo,
-    unpublished_refs,
+    BUNDLE_NAME, RepoError, RepoInfo, UnpublishedRef, create_bundle, create_full_bundle,
+    discover_playground_checkout, discover_repo, unpublished_refs,
 };
 use crate::http::{ApiError, RetryPolicy};
 use crate::process::GitError;
@@ -99,6 +99,11 @@ pub struct ImportOptions {
     pub status_only: bool,
     /// List every redaction label of every session.
     pub show_redactions: bool,
+    /// Upload into a playground of the caller instead of a GitHub repository's sandbox
+    /// (`--playground`, SPEC-171): no remote is needed or read, and every branch is sent.
+    pub playground: bool,
+    /// The playground's name (`--name`); `None`: the checkout directory's name.
+    pub playground_name: Option<String>,
 }
 
 impl ImportOptions {
@@ -115,6 +120,8 @@ impl ImportOptions {
             dry_run: false,
             status_only: false,
             show_redactions: false,
+            playground: false,
+            playground_name: None,
         }
     }
 }
@@ -304,9 +311,13 @@ pub fn run_import(
     let steps = if options.status_only { 2 } else { STEPS };
 
     // 1. Repository.
-    let repo = discover_repo(&options.path)?;
+    let repo = if options.playground {
+        discover_playground_checkout(&options.path, options.playground_name.as_deref())?
+    } else {
+        discover_repo(&options.path)?
+    };
     io.ui().step(1, steps, "Repository")?;
-    show_repository(io.ui(), &repo)?;
+    show_repository(io.ui(), &repo, options.playground)?;
     let staging = tempfile::Builder::new()
         .prefix("yulius-onboard-")
         .tempdir()
@@ -319,9 +330,17 @@ pub fn run_import(
     let mut bundle = None;
     let mut snapshot_file = None;
     if !options.sessions_only && !options.status_only {
-        let refs = unpublished_refs(&repo.root)?;
         let bundle_path = staging.path().join(BUNDLE_NAME);
-        bundle = create_bundle(&repo.root, &refs, &bundle_path)?;
+        // A playground holds nothing yet that a remote would: every branch and tag travels.
+        let refs = if options.playground {
+            let (reference, branches) = create_full_bundle(&repo.root, &bundle_path)?;
+            bundle = Some(reference);
+            branches
+        } else {
+            let refs = unpublished_refs(&repo.root)?;
+            bundle = create_bundle(&repo.root, &refs, &bundle_path)?;
+            refs
+        };
         if let Some(reference) = &bundle {
             budget = take_budget(budget, reference.size)?;
             local_files.push(LocalFile {
@@ -340,7 +359,13 @@ pub fn run_import(
                 label: "uncommitted changes".to_owned(),
             });
         }
-        show_local_changes(io.ui(), &refs, bundle.as_ref(), &snapshot)?;
+        show_local_changes(
+            io.ui(),
+            &refs,
+            bundle.as_ref(),
+            &snapshot,
+            options.playground,
+        )?;
         snapshot_file = snapshot.file;
     } else if options.sessions_only {
         io.ui()
@@ -358,7 +383,9 @@ pub fn run_import(
         owner: repo.owner.clone(),
         name: repo.name.clone(),
         sessions: Vec::new(),
+        playground: options.playground,
     })?;
+    let target = target_name(&repo, options.playground);
     io.ui().fact(
         "Signed in",
         &format!("{} as @{}", host_of(&options.server), plan.login),
@@ -372,7 +399,11 @@ pub fn run_import(
         None if plan.can_create && !options.status_only => {
             io.ui().fact(
                 "Sandbox",
-                &format!("new: {}/{} is added when you upload", repo.owner, repo.name),
+                &if options.playground {
+                    format!("new playground {target}: it is made when you upload")
+                } else {
+                    format!("new: {target} is added when you upload")
+                },
                 Tone::Warn,
             )?;
         }
@@ -386,10 +417,10 @@ pub fn run_import(
         let title = match &plan.sandbox {
             Some(_) if ready => "Ready: tasks can start.".to_owned(),
             Some(_) => "Not ready yet: tasks start once onboarding is done.".to_owned(),
-            None => format!(
-                "{}/{} is not on Yulius yet; run `yulius onboard` to add it.",
-                repo.owner, repo.name
+            None if options.playground => format!(
+                "You have no playground {target} yet; run `yulius onboard --playground` to make it."
             ),
+            None => format!("{target} is not on Yulius yet; run `yulius onboard` to add it."),
         };
         io.ui().done(&title, ready)?;
         return Ok(OnboardOutcome {
@@ -444,6 +475,7 @@ pub fn run_import(
                     size: s.reference.files[0].size,
                 })
                 .collect(),
+            playground: options.playground,
         })?;
         let states: BTreeMap<&str, &str> = plan
             .sessions
@@ -484,6 +516,7 @@ pub fn run_import(
         snapshot: snapshot_file.clone(),
         sessions: to_send.iter().map(|s| s.reference.clone()).collect(),
         since: format_rfc3339(UNIX_EPOCH),
+        playground: options.playground,
     };
     manifest.validate()?;
     let outcome = |plan: OnboardPlan, result| OnboardOutcome {
@@ -500,7 +533,7 @@ pub fn run_import(
             "nothing new: everything is already on Yulius",
             Tone::Good,
         )?;
-        let title = format!("{}/{} is up to date on Yulius", repo.owner, repo.name);
+        let title = format!("{target} is up to date on Yulius");
         io.ui().done(&title, true)?;
         if let Some(sandbox) = &plan.sandbox {
             show_links(io.ui(), &sandbox.url, &sandbox.sessions_url)?;
@@ -531,7 +564,11 @@ pub fn run_import(
         if plan.sandbox.is_some() {
             "Preparing the upload"
         } else {
-            "Adding the repository to Yulius"
+            if options.playground {
+                "Preparing the new playground"
+            } else {
+                "Adding the repository to Yulius"
+            }
         },
         0,
         Unit::Items,
@@ -542,7 +579,11 @@ pub fn run_import(
             io.ui().progress_finish(if plan.sandbox.is_some() {
                 "Upload prepared"
             } else {
-                "Repository added"
+                if options.playground {
+                    "Upload prepared"
+                } else {
+                    "Repository added"
+                }
             })?;
             job
         }
@@ -623,7 +664,7 @@ pub fn run_import(
         }
     };
     io.ui().progress_finish("Applied")?;
-    show_summary(io.ui(), &repo, &result, &plan.login, &redactions.tally)?;
+    show_summary(io.ui(), &target, &result, &plan.login, &redactions.tally)?;
     Ok(outcome(plan, Some(result)))
 }
 
@@ -636,6 +677,8 @@ fn take_budget(budget: u64, size: u64) -> Result<u64, ImportError> {
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
+    } else if ["ch", "sh", "s", "x"].iter().any(|end| noun.ends_with(end)) {
+        format!("{count} {noun}es")
     } else {
         format!("{count} {noun}s")
     }
@@ -664,14 +707,34 @@ fn describe_upload(sessions: usize, bundle: bool, snapshot: bool) -> String {
     }
 }
 
-fn show_repository(ui: &mut dyn Ui, repo: &RepoInfo) -> io::Result<()> {
+/// How the target is named: `owner/name` on GitHub, the playground's name otherwise.
+fn target_name(repo: &RepoInfo, playground: bool) -> String {
+    if playground {
+        repo.name.clone()
+    } else {
+        format!("{}/{}", repo.owner, repo.name)
+    }
+}
+
+fn show_repository(ui: &mut dyn Ui, repo: &RepoInfo, playground: bool) -> io::Result<()> {
     let branch = repo.head_branch.as_deref().unwrap_or("detached HEAD");
     let short_sha: String = repo.head_sha.chars().take(10).collect();
-    ui.fact(
-        "GitHub",
-        &format!("{}/{}", repo.owner, repo.name),
-        Tone::Plain,
-    )?;
+    if playground {
+        ui.fact(
+            "Playground",
+            &format!(
+                "{} (local Git on the Yulius server, nothing pushed)",
+                repo.name
+            ),
+            Tone::Plain,
+        )?;
+    } else {
+        ui.fact(
+            "GitHub",
+            &format!("{}/{}", repo.owner, repo.name),
+            Tone::Plain,
+        )?;
+    }
     ui.fact("Checkout", &format!("{branch} @ {short_sha}"), Tone::Dim)
 }
 
@@ -680,12 +743,17 @@ fn show_local_changes(
     refs: &[UnpublishedRef],
     bundle: Option<&FileRef>,
     snapshot: &Snapshot,
+    playground: bool,
 ) -> io::Result<()> {
     match bundle {
         Some(bundle) => {
             let names: Vec<&str> = refs.iter().map(|r| r.branch.as_str()).collect();
             ui.fact(
-                "Unpublished",
+                if playground {
+                    "Branches"
+                } else {
+                    "Unpublished"
+                },
                 &format!(
                     "{}: {} ({})",
                     plural(refs.len(), "branch"),
@@ -758,12 +826,12 @@ fn show_links(ui: &mut dyn Ui, sandbox: &str, sessions: &str) -> io::Result<()> 
 
 fn show_summary(
     ui: &mut dyn Ui,
-    repo: &RepoInfo,
+    what: &str,
     result: &ImportResult,
     login: &str,
     redactions: &RedactionTally,
 ) -> io::Result<()> {
-    ui.done(&format!("{}/{} is on Yulius", repo.owner, repo.name), true)?;
+    ui.done(&format!("{what} is on Yulius"), true)?;
     ui.fact(
         "Sessions",
         &format!(

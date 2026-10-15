@@ -793,20 +793,42 @@ export function openSandboxDialog(ctx, mode = 'import') {
   switchMode();
 }
 
-/** Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). */
+/**
+ * Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). A playground's code
+ * lives only on this server: the dialog offers to delete it for good, and says so before (SPEC-171).
+ */
 export async function confirmRemoveSandbox(ctx, sandbox) {
+  const purge = sandbox.playground ? h('input', { type: 'checkbox', id: 'purge-code' }) : null;
+  const warning = h('p', { class: 'purge-warning', role: 'alert', hidden: true },
+    'Its repository, every branch and all its files are deleted from this server for good once its processes have ended. This cannot be undone. Task records and the audit trail stay.');
+  if (purge) purge.addEventListener('change', () => { warning.hidden = !purge.checked; });
   const ok = await confirmDialog({
     title: `Remove ${sandbox.name} from ${BRAND.name}?`,
-    message: `Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from ${BRAND.name} for everyone.`,
+    message: sandbox.playground
+      ? `Live and queued tasks are stopped and the playground disappears from ${BRAND.name} for everyone. Its code stays on this server and still counts toward your playgrounds unless you delete it.`
+      : `Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from ${BRAND.name} for everyone.`,
+    details: purge
+      ? h('div', { class: 'stack' },
+        h('label', { class: 'check', for: 'purge-code' }, purge, h('span', null, 'Also delete its code from this server for good')),
+        warning)
+      : null,
     typeToConfirm: sandbox.name,
-    confirmLabel: 'Remove sandbox',
+    confirmLabel: sandbox.playground ? 'Remove playground' : 'Remove sandbox',
     danger: true,
   });
   if (!ok) return;
   try {
-    await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}`);
-    ctx.store.removeSandbox(sandbox.id);
-    toast(`Sandbox ${sandbox.name} removed.`, { kind: 'ok' });
+    if (purge && purge.checked) {
+      const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/purge`, {});
+      ctx.store.removeSandbox(sandbox.id);
+      toast(result.state === 'purged'
+        ? `Playground ${sandbox.name} removed and its code deleted.`
+        : `Playground ${sandbox.name} removed. Its code is deleted once ${(result.waiting_for || []).join(', ') || 'its processes'} ended.`, { kind: 'ok' });
+    } else {
+      await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}`);
+      ctx.store.removeSandbox(sandbox.id);
+      toast(`${sandbox.playground ? 'Playground' : 'Sandbox'} ${sandbox.name} removed.`, { kind: 'ok' });
+    }
     const current = ctx.currentSandbox();
     if (!current || current.id === sandbox.id) ctx.navigate('/');
   } catch (error) {

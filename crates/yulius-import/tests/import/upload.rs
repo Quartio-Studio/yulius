@@ -51,6 +51,7 @@ fn prepare(len: usize) -> TestResult<Prepared> {
         snapshot: None,
         sessions: Vec::new(),
         since: "2026-09-21T14:13:20.000Z".to_owned(),
+        playground: false,
     };
     Ok(Prepared {
         _dir: dir,

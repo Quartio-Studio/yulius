@@ -171,3 +171,14 @@ pub struct Template {
     /// Description.
     pub description: String,
 }
+
+/// `POST /api/sandboxes/{sid}/purge` response (SPEC-171): where the purge of a removed
+/// playground's code stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeState {
+    /// `purged` (its code is deleted) or `waiting` (requested; deleted once nothing of its sandbox
+    /// runs).
+    pub state: String,
+    /// What still runs while `waiting`, such as `1 agent run` or `2 shells`.
+    pub waiting_for: Vec<String>,
+}

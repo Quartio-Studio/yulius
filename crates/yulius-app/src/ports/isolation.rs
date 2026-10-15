@@ -106,6 +106,13 @@ pub trait SandboxIsolation: Send + Sync {
         Vec::new()
     }
 
+    /// Processes running in `sandbox`'s namespaces besides its holder: 0 without a live holder,
+    /// and where nothing isolates sandboxes (a removed playground's purge waits for them,
+    /// SPEC-171).
+    async fn processes(&self, _sandbox: &SandboxId) -> usize {
+        0
+    }
+
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 
