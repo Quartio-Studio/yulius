@@ -533,7 +533,8 @@ CD runs a project's deploy and verify scripts like CI runs its checks
 ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
 tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
 `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
-protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
+protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
+changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
