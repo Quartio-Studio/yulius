@@ -48,5 +48,6 @@ files API.
 - A person with a file in front costs the server one read and hash of that file every 2 s (at
   most 2 MiB); nothing crosses the wire while it is unchanged.
 - Writes show within about 2 s; teammates' saves too, through the same look.
-- A reload is undoable: undoing it makes the text modified again, and its save asks as any
-  conflicting save does.
+- A reload is undoable, as in VS Code: undoing it makes the text modified again, and since the tab
+  already knows the disk's version, its save writes the older text over the newer one without a
+  conflict dialog. Undoing past a reload is the person's choice; nothing marks it today.

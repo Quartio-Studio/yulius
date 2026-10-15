@@ -131,11 +131,14 @@ other people input). Fix and implement if needed".
   way and a look could start (fixed: awaited; e2e "no look … while an Overwrite after a conflict
   saves" failed with 1 look during the save, then passed); a file's line ending is now its
   majority's, as when Monaco opens it. A BOM is only left out of the comparison: a save drops it,
-  as before this change. The final round reviews the head with these fixes.
-- **Gates** on the head merged with `origin/dev` (`41694961`):
-  - `scripts/dev ci`: exit 0, nextest 1875 passed, 18 skipped; fmt, clippy, docs, deny, shear.
-  - `cd e2e && npx e2e run`: 535 passed, 1 skipped (55 files); `tests/editor.e2e.ts` 23/23 three
-    times in a row, then 24/24 with the round 2 fix.
+  as before this change. Round 3 approved `174a6e37` (the branch merged with `origin/dev`) with no
+  blocker; its minor (ADR-0146 said a save after undoing a reload asks as a conflict does; it does
+  not, the tab knows the disk's version) is corrected, and the pre-existing "Reload from disk"
+  edge it noted (a deleted file, or one back at the tab's version) is #571.
+- **Gates** on the head merged with `origin/dev` (`174a6e37`; only docs changed after it):
+  - `scripts/dev ci`: exit 0, nextest 1896 passed, 18 skipped; fmt, clippy, docs, deny, shear.
+  - `cd e2e && npx e2e run`: 542 passed, 1 skipped (55 files); `tests/editor.e2e.ts` 23/23 three
+    times in a row before the round 2 fix, 24/24 after it.
   - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 401 for the agent key, as
     since 2026-10-14 (#470); per ADR-0104 this is unrun, not passed. Yulius CI's `security` job
     scans the pull request head.
