@@ -1,11 +1,11 @@
 ---
 yulius-task: 7218092d-42bf-424c-b806-04c7ebb88046
-status: in-progress
+status: done
 ---
 
 # SPEC-151: CI and CD are one CI/CD page with two tabs, like Secrets' Team and Agent
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #145
 Scope authorization: task #145, "make CI/CD one tab with a tab like in secrets team/agent".
@@ -51,11 +51,12 @@ page showed before, with its header action. Every address that worked keeps work
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] One CI/CD sidebar entry opens a page with CI (tests) and CD (deployment) tabs
-- [ ] Old /cd links and run deep links open the right tab, proven by e2e
-- [ ] ADR, product, architecture and UI docs describe the CI/CD page
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] One CI/CD sidebar entry opens a page with CI (tests) and CD (deployment) tabs
+- [x] Old /cd links and run deep links open the right tab, proven by e2e
+- [x] ADR, product, architecture and UI docs describe the CI/CD page
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+- [x] Review round 2 approves the final head
 
 ## Acceptance criteria
 
@@ -75,6 +76,9 @@ page showed before, with its header action. Every address that worked keeps work
   tab test (click, arrow key, reload, address, header action, axe) and opens `/cd` and
   `/cd?run=` as the old links; the existing CD tests expect the CI/CD heading and the canonical
   run address. Every other test that names the CI or CD headings follows.
+- Review round 1: `cd.e2e.ts` "a tab left behind draws nothing when its answers come late" holds
+  the CD overview (`hold=`) and a production deploy (`__yuliusMock.holdCdDeploy`), switches to CI,
+  then releases them; `tests/cd.rs` asserts the agents' CD text names `/ci?section=cd`.
 - `scripts/dev check`, `scripts/dev lint`, `scripts/dev test`, `scripts/dev security`, the e2e suite.
 
 ## Decisions
@@ -88,6 +92,34 @@ page showed before, with its header action. Every address that worked keeps work
   to the CI/CD page with `section=cd` and the page writes the canonical address.
 - **Pipeline (stages) stays its own entry**: the request names CI and CD only, and the Pipeline
   spans tasks too (SPEC-137).
+- **A link to `/cd` while the CD tab is shown keeps that address** (review round 1, nit): both
+  addresses are the same view, so the page is not mounted again and does not rewrite it; the tab
+  shown is right and a reload canonicalises it. Not worth an `update` hook in `app.js`.
 - **Sections are mounted as parts of one page**: `ci.js` and `cd.js` export a section mount that
   takes the body and the header's actions and returns its teardown, like Secrets' `mountTeam` and
   `mountAgents`; the page module owns the tab strip.
+
+## Evidence
+
+Run on head ab82e7e1 (after merging `origin/dev` 070abcdd), 2026-10-15:
+
+| Command | Result |
+| --- | --- |
+| `npx e2e run tests/cd.e2e.ts tests/ci.e2e.ts tests/navigation.e2e.ts` before the change | 6 failed as expected: heading "CI"/"CD", no Section radiogroup, two sidebar entries, `/cd` not canonical |
+| same files plus `pipeline`, `places`, `secrets` after the change | 55 passed |
+| `cd.e2e.ts` "a tab left behind…" before the review fix | failed: the torn-down CD section's "Deploy" dialog covered the CI tab; passes after it (8/8 in the file) |
+| `cargo nextest … test(/^cd::agents_deploy_dev/)` | pass (asserts `/ci?section=cd.`) |
+| `scripts/dev check` | pass |
+| `scripts/dev lint` | pass |
+| `scripts/dev test` | pass: 1789 passed, 16 skipped |
+| `scripts/dev deps` | pass: cargo-deny and cargo-shear found no issues |
+| `python3 scripts/check_repository.py` | pass |
+| `cd e2e && npx e2e run` (host load ~75–78) | 444 passed, 1 skipped, 5 failed by timeout in files this change does not touch (editor presence, ownership ×1, start-change, supertask, terminal); rerun alone, 29 of 31 passed, and `ownership.e2e.ts` then passed 4/4 at load ~62 on this branch and on `origin/dev`. Filed as #506 (terminal: #394) |
+| `scripts/dev security` | not run (exit 2): Vidoc answers HTTP 401 "Invalid or expired token" for `VIDOC_API_KEY` (#470, ADR-0104) |
+
+Independent review round 1 (fresh session, `om-code-review`, head 769049a6): approved with three
+minors and five nits. Fixed: a deploy answered after the person left the CD tab opened its dialog
+over CI and wrote `?section=cd&run=` there (regression test first); the late-answer coverage of
+CCD-003; ADR-0025 and the decision index mark the amendment; the agents' CD text names the
+canonical address; the index order; the architecture line wrap; this spec's status. Accepted: the
+`/cd` link nit (Decisions).
