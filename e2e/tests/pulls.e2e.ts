@@ -29,10 +29,18 @@ function storePulls(browser: Browser, rows: unknown): Promise<void> {
   }, rows);
 }
 
-/** The sidebar's chips once the Git overview answered, as their texts ("#41"). */
+/**
+ * The sidebar's chips once the Git overview answered and they are drawn, as their texts ("PR #41…").
+ * Rows skip rendering until they are drawn (`content-visibility: auto`): a chip in a row inserted
+ * since the last frame has its box but no rendered text yet, which a loaded host stretches (#438).
+ */
 async function chipsAfterRead(browser: Browser): Promise<string[]> {
-  await expect(chips(browser).first()).toBeVisible();
-  return chips(browser).allTextContents();
+  let seen: string[] = [];
+  await expect.poll(async () => {
+    seen = await chips(browser).allTextContents();
+    return seen.length > 0 && seen.every((text) => text !== '');
+  }).toBe(true);
+  return seen;
 }
 
 test('after a reload the sidebar shows the pull requests at once, before the Git overview answers', async ({ app, browser }) => {
