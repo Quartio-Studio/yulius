@@ -353,8 +353,14 @@ fn validate(request: &LaunchRequest) -> Result<(), LaunchError> {
         check(valid_effort(effort), "effort")?;
     }
     check(valid_url(&request.yulius_url), "yulius_url")?;
+    validate_mcp_servers(&request.mcp_servers)
+}
+
+/// Checks MCP server definitions: valid names, unique and never `yulius`, and a command, URL and
+/// variable names that can be passed safely.
+fn validate_mcp_servers(servers: &[McpServerSpec]) -> Result<(), LaunchError> {
     let mut names = vec![YULIUS_MCP_NAME];
-    for server in &request.mcp_servers {
+    for server in servers {
         check(valid_server_name(&server.name), "mcp server name")?;
         if names.contains(&server.name.as_str()) {
             return Err(LaunchError::DuplicateMcpServer(server.name.clone()));
@@ -405,8 +411,50 @@ fn hook_command(
     harness: &str,
     event: &str,
 ) -> Result<String, LaunchError> {
-    let exe = utf8(&request.yulius_exe, "yulius_exe")?;
+    hook_line(&request.yulius_exe, harness, event)
+}
+
+fn hook_line(exe: &Path, harness: &str, event: &str) -> Result<String, LaunchError> {
+    let exe = utf8(exe, "yulius_exe")?;
     Ok(format!("{} hook {harness} {event}", shell_quote(exe)))
+}
+
+/// The `PostToolUse` redaction hook of agent secrets (SPEC-002 ADR-20): every tool result passes
+/// `yulius hook claude PostToolUse`, which replaces one holding a value with its redacted copy.
+fn redaction_hook(exe: &Path) -> Result<Value, LaunchError> {
+    Ok(json!([{ "matcher": "*", "hooks": [{
+        "type": "command",
+        "command": hook_line(exe, "claude", "PostToolUse")?,
+        "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+    }] }]))
+}
+
+/// A server's entry in Claude Code's MCP configuration: secret values only as `${VAR}`
+/// references to the environment.
+fn mcp_entry(server: &McpServerSpec) -> Value {
+    match &server.transport {
+        McpTransport::Stdio {
+            command,
+            args,
+            env_vars,
+        } => {
+            let env: Map<String, Value> = env_vars
+                .iter()
+                .map(|(name, var)| (name.clone(), Value::String(format!("${{{var}}}"))))
+                .collect();
+            json!({ "type": "stdio", "command": command, "args": args, "env": env })
+        }
+        McpTransport::Http { url, bearer_env } => {
+            let mut entry = json!({ "type": "http", "url": url });
+            if let (Some(name), Some(object)) = (bearer_env, entry.as_object_mut()) {
+                object.insert(
+                    "headers".into(),
+                    json!({ "Authorization": format!("Bearer ${{{name}}}") }),
+                );
+            }
+            entry
+        }
+    }
 }
 
 /// Appends the prompt as the final argv element, preceded by `--` when it starts with `-` so
@@ -450,11 +498,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     // a result holding one is replaced by its redacted copy before the model reads it.
     hooks.insert(
         "PostToolUse".to_owned(),
-        json!([{ "matcher": "*", "hooks": [{
-            "type": "command",
-            "command": hook_command(request, "claude", "PostToolUse")?,
-            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
-        }] }]),
+        redaction_hook(&request.yulius_exe)?,
     );
     // A Bash command that waits on or kills itself (`pgrep -f`/`pkill -f` matching its own
     // `bash -c` line) is refused before it runs (complaint 1, F 2026-10-12).
@@ -489,30 +533,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         }),
     );
     for server in &request.mcp_servers {
-        let entry = match &server.transport {
-            McpTransport::Stdio {
-                command,
-                args,
-                env_vars,
-            } => {
-                let env: Map<String, Value> = env_vars
-                    .iter()
-                    .map(|(name, var)| (name.clone(), Value::String(format!("${{{var}}}"))))
-                    .collect();
-                json!({ "type": "stdio", "command": command, "args": args, "env": env })
-            }
-            McpTransport::Http { url, bearer_env } => {
-                let mut entry = json!({ "type": "http", "url": url });
-                if let (Some(name), Some(object)) = (bearer_env, entry.as_object_mut()) {
-                    object.insert(
-                        "headers".into(),
-                        json!({ "Authorization": format!("Bearer ${{{name}}}") }),
-                    );
-                }
-                entry
-            }
-        };
-        servers.insert(server.name.clone(), entry);
+        servers.insert(server.name.clone(), mcp_entry(server));
     }
     let mcp = json!({ "mcpServers": servers });
 
@@ -615,6 +636,12 @@ pub struct CockpitRequest {
     /// Every server name in the repository's `.mcp.json`. Yulius attaches them itself, so Claude
     /// Code rejects them (`disabledMcpjsonServers`) instead of asking (SPEC-095 PMC-004).
     pub project_mcp_servers: Vec<String>,
+    /// The sandbox's MCP servers, as a task run of the sandbox gets them (SPEC-147 SAM-001): the
+    /// caller supplies their values in the secret environment.
+    pub mcp_servers: Vec<McpServerSpec>,
+    /// The `yulius` executable of the `PostToolUse` redaction hook (SPEC-147 SAM-002); `None` for
+    /// no hook.
+    pub redaction_exe: Option<PathBuf>,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -638,16 +665,19 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 6] = [
     "session_read",
 ];
 
-/// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius>
-/// --allowedTools <read-only tools>] [--settings <rejected .mcp.json servers>] --model <default>
-/// --effort <default>` (SPEC-023 DEF-004) with the subscription's token (and the Cockpit's Yulius
-/// bearer) in the secret environment and none of a task's settings, hooks, briefing or approval
-/// bypass (SPEC-021 CKP-002, SPEC-037 MGT-004). The MCP config is inline JSON naming
-/// `${YULIUS_COCKPIT_TOKEN}`, not its value; it is not strict, so the person's own MCP servers
-/// keep working. The only setting is `disabledMcpjsonServers` (SPEC-095 PMC-004).
+/// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius and the
+/// sandbox's servers>] [--allowedTools <read-only tools>] [--settings <redaction hook, rejected
+/// .mcp.json servers>] --model <default> --effort <default>` (SPEC-023 DEF-004) with the
+/// subscription's token (and the Cockpit's Yulius bearer) in the secret environment and none of a
+/// task's lifecycle hooks, status line, briefing or approval bypass (SPEC-021 CKP-002, SPEC-037
+/// MGT-004 as amended by SPEC-147, ADR-0121). The MCP config is inline JSON naming
+/// `${YULIUS_COCKPIT_TOKEN}` and the servers' `${VAR}` references, never a value; it is not
+/// strict, so the person's own MCP servers keep working. The settings are the `PostToolUse`
+/// redaction hook and `disabledMcpjsonServers` (SPEC-095 PMC-004).
 ///
 /// # Errors
-/// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id, credential, URL or token.
+/// [`LaunchError`] for a non-UTF-8 config dir or executable, an unsafe session id, credential,
+/// URL or token, or an MCP server a task run could not have.
 pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError> {
     let Credential::ClaudeOauthToken(token) = &request.credential;
     check(
@@ -659,7 +689,10 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
         check(valid_session_id(id), "session_id")?;
         argv.extend(["--resume".into(), id.clone()]);
     }
+    validate_mcp_servers(&request.mcp_servers)?;
     let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())];
+    let mut servers = Map::new();
+    let mut allowed = None;
     if let Some(yulius) = &request.yulius {
         check(valid_url(&yulius.url), "yulius url")?;
         let bearer = yulius.token.expose();
@@ -667,29 +700,52 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
             !bearer.is_empty() && bearer.chars().all(|c| c.is_ascii_graphic()),
             "yulius token",
         )?;
-        let config = json!({ "mcpServers": { YULIUS_MCP_NAME: {
-            "headers": { "Authorization": format!("Bearer ${{{COCKPIT_TOKEN_ENV}}}") },
-            "type": "http",
-            "url": format!("{}/mcp", yulius.url.trim_end_matches('/')),
-        } } });
-        let allowed = COCKPIT_READ_ONLY_TOOLS
-            .iter()
-            .map(|tool| format!("mcp__{YULIUS_MCP_NAME}__{tool}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        argv.extend([
-            "--mcp-config".into(),
-            config.to_string(),
-            "--allowedTools".into(),
-            allowed,
-        ]);
+        servers.insert(
+            YULIUS_MCP_NAME.to_owned(),
+            json!({
+                "headers": { "Authorization": format!("Bearer ${{{COCKPIT_TOKEN_ENV}}}") },
+                "type": "http",
+                "url": format!("{}/mcp", yulius.url.trim_end_matches('/')),
+            }),
+        );
+        allowed = Some(
+            COCKPIT_READ_ONLY_TOOLS
+                .iter()
+                .map(|tool| format!("mcp__{YULIUS_MCP_NAME}__{tool}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.clone()));
+    }
+    // The sandbox's servers, as a task run gets them (SPEC-147 SAM-001).
+    for server in &request.mcp_servers {
+        servers.insert(server.name.clone(), mcp_entry(server));
+    }
+    if !servers.is_empty() {
+        let config = json!({ "mcpServers": servers });
+        argv.extend(["--mcp-config".into(), config.to_string()]);
+    }
+    if let Some(allowed) = allowed {
+        argv.extend(["--allowedTools".into(), allowed]);
+    }
+    let mut settings = Map::new();
+    // The task runs' redaction of agent secrets, the Cockpit's only hook (SPEC-147 SAM-002).
+    if let Some(exe) = &request.redaction_exe {
+        settings.insert(
+            "hooks".into(),
+            json!({ "PostToolUse": redaction_hook(exe)? }),
+        );
     }
     // Claude Code asks about every `.mcp.json` server it has neither approved nor rejected, and
     // an explicit `enableAllProjectMcpServers: false` still asks (measured on 2.1.292, SPEC-095).
     if !request.project_mcp_servers.is_empty() {
-        let settings = json!({ "disabledMcpjsonServers": request.project_mcp_servers });
-        argv.extend(["--settings".into(), settings.to_string()]);
+        settings.insert(
+            "disabledMcpjsonServers".into(),
+            json!(request.project_mcp_servers),
+        );
+    }
+    if !settings.is_empty() {
+        argv.extend(["--settings".into(), Value::Object(settings).to_string()]);
     }
     // The person's own session still starts on Yulius's default model and effort (SPEC-023).
     argv.extend([

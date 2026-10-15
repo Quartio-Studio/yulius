@@ -765,7 +765,8 @@ rotate every team and agent secret at its source.
 
 Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
 SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
-`GET /internal/version` on the internal listener) and checks `main` every hour. Superadmins get a
+`GET /internal/version` on the internal listener) and checks `main` every hour and whenever a
+superadmin opens **Settings → Instance** (SPEC-149). Superadmins get a
 notification and a banner, "Update available: …", and **Settings → Instance** lists the new
 commits. Nothing updates by itself: a superadmin chooses **Update now** and confirms. Then:
 
@@ -867,7 +868,7 @@ Settings → Instance says which credential read `main` and why a check failed.
 | --- | --- | --- |
 | `--update-token-file` / `YULIUS_UPDATE_TOKEN_FILE` | unset | Owner-only file with a token that may read Quartio-Studio/yulius, used when the App cannot. |
 | `--update-state-dir` / `YULIUS_UPDATE_STATE` | `/var/lib/yulius-update` | The helper's state directory; "Update now" is offered when it exists. |
-| `--update-check-minutes` / `YULIUS_UPDATE_CHECK_MINUTES` | 60 | Minutes between checks of `main` (0: only "Check now"). |
+| `--update-check-minutes` / `YULIUS_UPDATE_CHECK_MINUTES` | 60 | Minutes between checks of `main` (0: only on opening Instance and "Check now"). |
 
 **Logs and recovery.** `journalctl -u yulius-update` shows each step. A failed rollback (the
 helper says "restore by hand") leaves the previous binary and database in

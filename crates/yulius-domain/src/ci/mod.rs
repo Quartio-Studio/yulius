@@ -9,6 +9,7 @@
 //! are stale.
 
 pub mod actions;
+pub mod failures;
 
 use crate::delivery::ChecksState;
 use crate::resources::Need;
