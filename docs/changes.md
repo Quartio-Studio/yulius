@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
+  #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
+  CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
+  `?section=pipeline` with its filters after it. `/pipeline` links, "In Pipeline" and the
+  Overview's Pipeline card open the tab.
 - The onboarding agent protects the production branch itself (SPEC-157, ADR-0129, task #148).
   When onboarding finds `main` writable by agents, the preparation agent calls the new
   `production_protect` tool: Yulius adds the ruleset `yulius-people-only-<branch>` (Restrict

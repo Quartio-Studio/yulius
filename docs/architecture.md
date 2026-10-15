@@ -899,8 +899,8 @@ time the application wrote; the rest by Yulius as it happens (`yulius-app/src/st
 run's preparation, job-slot waits and checkouts, a CD run's checks, promotion and confirmation, a
 task's armed-merge waits and updates onto the integration branch, and the stages job or deploy
 output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). Nothing
-outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
-task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
+outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
+the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180 days go with the hourly CI upkeep.
 
 ```mermaid
 flowchart LR
@@ -914,7 +914,7 @@ flowchart LR
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
   S --> API["GET …/stages/timeline, summary, spans"]
-  API --> UI["Pipeline page, run dialogs, task overview, Dashboard"]
+  API --> UI["Dashboard (Overview, Pipeline tab), run dialogs, task overview"]
 ```
 
 ## Notes
