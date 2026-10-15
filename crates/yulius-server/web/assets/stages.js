@@ -8,7 +8,7 @@
 //   their end and in a legend, with a crosshair and a table.
 
 import { h, svgEl, setChildren, icon } from './dom.js';
-import { duration, int } from './format.js';
+import { bytes, duration, int } from './format.js';
 
 const STATE_NAMES = {
   queued: 'Queued', chained: 'Waiting for another task', prepared: 'Prepared, waiting to start',
@@ -64,7 +64,31 @@ export function subjectLabel(kind) {
   return SUBJECT_NAMES[kind] || kind;
 }
 
-/** Figures worth a line in a tooltip or a table cell: tests, tokens, exit code, reason. */
+/** CPU time: tenths of a second below 10 s ("0.4 s"), then as a duration. */
+export function cpuTime(ms) {
+  if (!Number.isFinite(ms)) return '—';
+  return ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : duration(ms);
+}
+
+/** Memory or disk from MiB ("640 MiB", "2.0 GiB"). */
+export function mebibytes(mb) {
+  return Number.isFinite(mb) ? bytes(mb * 1048576) : '—';
+}
+
+/**
+ * What a CI job or a CD run used (SPEC-154), as its process host measured it: "CPU 31 min · peak
+ * 2.0 GiB · wrote 640 MiB". Empty when nothing was measured: unknown is never shown as zero.
+ */
+export function useText(detail) {
+  const d = detail || {};
+  return [
+    Number.isFinite(d.cpu_ms) ? `CPU ${cpuTime(d.cpu_ms)}` : null,
+    Number.isFinite(d.memory_peak_mb) ? `peak ${mebibytes(d.memory_peak_mb)}` : null,
+    Number.isFinite(d.disk_written_mb) ? `wrote ${mebibytes(d.disk_written_mb)}` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+/** Figures worth a line in a tooltip or a table cell: tests, tokens, resource use, exit code, reason. */
 export function figureText(span) {
   const d = span.detail || {};
   const parts = [];
@@ -73,6 +97,8 @@ export function figureText(span) {
   if (Number.isFinite(d.output_tokens) || Number.isFinite(d.input_tokens)) parts.push(`${int((d.input_tokens || 0) + (d.output_tokens || 0))} tokens`);
   if (Number.isFinite(d.active_ms) && d.active_ms > 0) parts.push(`agent work ${duration(d.active_ms)}`);
   if (Number.isFinite(d.cache_hits)) parts.push(`${int(d.cache_hits)} cache hits`);
+  const used = useText(d);
+  if (used) parts.push(used);
   if (d.reused === true) parts.push('reused result, not run');
   if (d.exit_code !== undefined && d.exit_code !== null && d.exit_code !== 0) parts.push(`exit ${d.exit_code}`);
   if (typeof d.reason === 'string' && d.reason) parts.push(d.reason);
