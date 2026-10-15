@@ -13,7 +13,7 @@ import { pageFrame, loader } from './common.js';
 import { modelLabel } from '../models.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { sparkline } from '../charts.js';
-import { replaceQuietly } from '../router.js';
+import { replaceQuietly, href } from '../router.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -66,13 +66,15 @@ export function mountDashboardPage(ctx, sandbox, route) {
     const current = period();
     rangeLabel.textContent = `${SHORT_DATE.format(parseDay(current.from))} – ${SHORT_DATE.format(parseDay(current.to))}`;
     // The previous period only adds the changes; the page still works without it.
-    const [now, before, capacity] = await Promise.all([
+    const [now, before, capacity, stages] = await Promise.all([
       ctx.api.get(`/api/analytics/summary?${query(current)}`),
       ctx.api.get(`/api/analytics/summary?${query(period(1))}`).catch(() => null),
       ctx.api.get('/api/capacity').catch(() => null),
+      // The pipeline's overview (SPEC-137); the page works without it.
+      ctx.api.get(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages/summary?from=${current.from}&to=${current.to}`).catch(() => null),
     ]);
-    return { now: now || {}, before, days, capacity };
-  }, ({ now, before, days: n, capacity }) => renderSummary(now, before, n, capacity), { shape: loadingLayout });
+    return { now: now || {}, before, days, capacity, stages };
+  }, ({ now, before, days: n, capacity, stages }) => [renderSummary(now, before, n, capacity), pipelineCard(stages, sandbox, n)], { shape: loadingLayout });
   // Live while open (#31): tokens and runs of tasks in progress change; refresh in place while
   // the tab is visible.
   const live = setInterval(() => {
@@ -164,6 +166,32 @@ function loadingLayout() {
       h('div', { class: 'db-kpi-sub' }, bar(70)), i === 3 ? h('div', { class: 'db-kpi-note' }, bar(50)) : null))),
     h('div', { class: 'card db-card' }, titles(), h('div', { class: 'skeleton-field' })),
     h('div', { class: 'db-row' }, chartCard(), chartCard()));
+}
+
+/**
+ * The pipeline's overview (SPEC-137 STG-404): how often dev and production deploy, the lead time
+ * from merge to production (dev when production has none), the change failure rate and how long
+ * a CI run takes, linking to the Pipeline page for every stage.
+ */
+function pipelineCard(stages, sandbox, days) {
+  if (!stages) return null;
+  const envs = Array.isArray(stages.delivery) ? stages.delivery : [];
+  const env = (name) => envs.find((e) => e.environment === name) || {};
+  const prod = env('prod');
+  const dev = env('dev');
+  const lead = Number.isFinite(prod.lead_time_p50_ms) ? ['production', prod] : Number.isFinite(dev.lead_time_p50_ms) ? ['dev', dev] : null;
+  const finished = (prod.deployments || 0) + (dev.deployments || 0);
+  const failed = finished - (prod.passed || 0) - (dev.passed || 0);
+  const run = (stages.stages || []).find((r) => r.subject_kind === 'ci_run' && r.kind === 'run' && r.name === 'run');
+  const queue = (stages.stages || []).find((r) => r.subject_kind === 'ci_run' && r.kind === 'queue' && r.name === 'queue');
+  const perWeek = (e) => (Number.isFinite(e.per_week) ? e.per_week.toFixed(1) : '—');
+  const path = `/s/${encodeURIComponent(sandbox.slug)}/pipeline${days === 30 ? '' : `?days=${days}`}`;
+  return card('Pipeline', 'deployments, lead time and CI, from every stage measured', h('div', { class: 'db-kpis pl-kpis' },
+    kpi({ label: 'Deployments a week', value: `${perWeek(prod)} · ${perWeek(dev)}`, sub: 'production · dev' }),
+    kpi({ label: 'Lead time', value: lead ? duration(lead[1].lead_time_p50_ms) : '—', sub: lead ? `median from merge to ${lead[0]} · p90 ${duration(lead[1].lead_time_p90_ms)}` : 'no merge deployed yet' }),
+    kpi({ label: 'Change failure rate', value: finished ? `${Math.round((failed / finished) * 100)}%` : '—', sub: finished ? `${int(failed)} of ${int(finished)} deployments failed` : 'no deployments' }),
+    kpi({ label: 'CI run', value: duration(run ? run.p50_ms : null), sub: run ? `median · p90 ${duration(run.p90_ms)}${queue ? ` · queue ${duration(queue.p50_ms)}` : ''}` : 'no CI run ended' })),
+  { tools: h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path } }, icon('clock', { size: 14 }), 'Open Pipeline') });
 }
 
 /** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */

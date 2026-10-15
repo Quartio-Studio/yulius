@@ -7,7 +7,7 @@ const quietListeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
-const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'cd', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
+const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'cd', 'pipeline', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
 const ADMIN_PAGES = new Set(['users', 'accounts', 'github', 'instance']);
 
 // Where each sandbox and each sandbox page was left (SPEC-113 KST-001): a link marked

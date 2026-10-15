@@ -19,12 +19,14 @@ import { INSTANCE_ROUTE } from './updates.js';
 /** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
-// The sandbox pages used every day (SPEC-029); CD (SPEC-134) sits next to CI.
+// The sandbox pages used every day (SPEC-029); CD (SPEC-134) sits next to CI, and the Pipeline's
+// stages (SPEC-137) next to both.
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
   ['ci', 'CI (tests)', 'check'],
   ['cd', 'CD (deployment)', 'upload'],
+  ['pipeline', 'Pipeline (stages)', 'clock'],
   ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];

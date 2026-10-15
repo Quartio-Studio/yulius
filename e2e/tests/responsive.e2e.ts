@@ -72,6 +72,8 @@ const pages = [
   ['MCP', '/s/studio/mcp', 'MCP'],
   ['secrets', '/s/studio/secrets', 'Secrets'],
   ['dashboard', '/s/studio/dashboard', 'Dashboard'],
+  ['pipeline', '/s/studio/pipeline', 'Pipeline'],
+  ['pipeline timeline', '/s/studio/pipeline?open=ci_run:ci_s2', 'Pipeline'],
   ['settings', '/settings', 'Settings'],
 ] as const;
 

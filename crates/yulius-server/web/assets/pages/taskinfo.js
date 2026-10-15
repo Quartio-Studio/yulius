@@ -12,6 +12,8 @@ import { taskInfo, activityLine, isLive } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
 import { modelLabel } from '../models.js';
+import { loadWaterfall } from '../stages.js';
+import { pipelineHref } from './pipeline.js';
 
 const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task' };
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
@@ -38,6 +40,13 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   const reads = new AbortController();
 
   const meta = h('div', { class: 'gt-meta' });
+  // Its stages (SPEC-137): states, steps, runs, pauses, delivery and its pull request's CI runs.
+  const stagesHost = h('div', null, h('div', { class: 'skeleton-field' }));
+  const stagesPath = pipelineHref(sandbox, `task:${task.id}`);
+  const stagesCard = h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-stages' },
+    h('div', { class: 'row-wrap' }, h('h2', { class: 'card-title', id: 'ti-stages' }, icon('clock', { size: 14 }), 'Stages'), h('span', { class: 'spacer' }),
+      h('a', { class: 'btn btn-sm', href: href(stagesPath), dataset: { route: stagesPath } }, 'In Pipeline')),
+    stagesHost);
   const body = h('div', { class: 'ti-body' }, placeholder('Loading the task…', 'loading'));
   const titleEl = h('h1', { class: 'page-title gt-title' });
   const head = h('header', { class: 'gt-head' },
@@ -139,6 +148,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
         h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-plan' }, h('h2', { class: 'card-title', id: 'ti-plan' }, icon('tasks', { size: 14 }), 'Plan'), steps()),
         h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-details' }, h('h2', { class: 'card-title', id: 'ti-details' }, icon('target', { size: 14 }), 'Details'),
           h('dl', { class: 'kv ti-kv' }, rows.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])))),
+      stagesCard,
       h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-sessions' }, h('h2', { class: 'card-title', id: 'ti-sessions' }, icon('terminal', { size: 14 }), 'Sessions'), sessions()),
       switches.length ? h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-switches' }, h('h2', { class: 'card-title', id: 'ti-switches' }, icon('refresh', { size: 14 }), 'Subscription switches'),
         h('ul', { class: 'list-plain small' }, switches.map((sw) => h('li', null, `${relLong(sw.at)}: ${sw.from} → ${sw.to}`, sw.reason ? h('span', { class: 'muted' }, ` (${sw.reason})`) : null)))) : null);
@@ -151,6 +161,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       if (!alive) return;
       detail = fresh;
       current = { ...current, ...fresh };
+      loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
       if (!alive || error.code === 'aborted') return;
       detailError = error;
