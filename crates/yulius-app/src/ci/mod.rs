@@ -771,6 +771,8 @@ impl App {
         let Some(source) = source else {
             return Ok(false);
         };
+        // Its jobs keep the verdict they had there: a skipped one stays skipped (SPEC-162).
+        let tested = self.deps.store.ci_jobs(&source.id, false).await?;
         let now = self.now();
         let note = format!(
             "not run again: {} has the same tree as {} ({}), which passed",
@@ -798,22 +800,27 @@ impl App {
             .jobs
             .iter()
             .enumerate()
-            .map(|(index, job)| CiJobRecord {
-                id: self.deps.crypto.new_id(),
-                run_id: run.id.clone(),
-                ordinal: u32::try_from(index).unwrap_or(u32::MAX),
-                name: job.name.clone(),
-                key: job.key.clone(),
-                command: job.command.clone(),
-                matrix: job.matrix.clone(),
-                state: RunState::Passed,
-                reason: Some(note.clone()),
-                exit_code: Some(0),
-                output: format!("{note}.\n"),
-                failures: None,
-                started_at: Some(now),
-                ended_at: Some(now),
-                need: job.need,
+            .map(|(index, job)| {
+                let (state, exit_code) = dom::copied_job_verdict(
+                    tested.iter().find(|t| t.key == job.key).map(|t| t.state),
+                );
+                CiJobRecord {
+                    id: self.deps.crypto.new_id(),
+                    run_id: run.id.clone(),
+                    ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                    name: job.name.clone(),
+                    key: job.key.clone(),
+                    command: job.command.clone(),
+                    matrix: job.matrix.clone(),
+                    state,
+                    reason: Some(note.clone()),
+                    exit_code: Some(exit_code),
+                    output: format!("{note}.\n"),
+                    failures: None,
+                    started_at: Some(now),
+                    ended_at: Some(now),
+                    need: job.need,
+                }
             })
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;

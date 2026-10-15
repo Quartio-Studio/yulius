@@ -75,8 +75,9 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 - The sandbox clone stays writable by CI jobs, so a pull request can still change which jobs a
   later run of the sandbox executes (not what they may use). That is older than this decision and
   belongs to its own change.
-- (Amended by [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the grant is in
-  `yulius.toml` since the promotion of #517, and exit 2 ends the job skipped, not passed.)
+- (Amended by [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the running
+  instance knows `secrets` since the promotion of #517, so `yulius.toml` grants the key; exit 2
+  ends the job skipped, not passed.)
   This repository's `security` job (`scripts/dev security`) runs on pull request heads only. Its
   grant, `secrets = "VIDOC_API_KEY"`, waits until the running Yulius instance knows `secrets` (after
   `dev` is promoted to `main`; an older instance rejects the whole `yulius.toml`): Yulius's own

@@ -24,11 +24,14 @@ asked: "If Vidoc API key is not set, default behaviour should be 'skipped' so us
   `"${YULIUS_CI_SKIP_CODE:-0}"` to say it checked nothing, so the same command passes on an instance
   that does not know skipped yet, instead of failing every pull request there.
 - **A run is never skipped.** A run whose jobs passed or were skipped is passed and passes the
-  merge gate; failed, error and cancelled still win. Its commit status counts the skipped jobs
+  merge gate; failed, error and cancelled still win. A result copied to another head (a merge with
+  the same tree, a merge train's verdict for its pull requests) keeps each job skipped where it was
+  skipped. Its commit status counts the skipped jobs
   (`Passed: 3 jobs, 1 skipped in 9 min 4 s`), the CI page shows a Skipped badge and counts them in
   the run's line, and `ci_status` shows a skipped job's output, which says why.
 - **The `security` job** maps exit 2 (every "could not run" cause, not only a missing key) to the
-  skip code with `[yulius] security scan skipped: …`, and names `secrets = "VIDOC_API_KEY"`: the
+  skip code with `[yulius] security scan skipped: …`, ends skipped on heads it does not scan (the
+  integration and production branches, merge trains), and names `secrets = "VIDOC_API_KEY"`: the
   running instance knows `secrets` since `dev` was promoted to `main` with SPEC-142 (#517).
 
 ## Alternatives
@@ -50,6 +53,11 @@ asked: "If Vidoc API key is not set, default behaviour should be 'skipped' so us
 
 - Every project's CI jobs can skip themselves the same way; a job that checks nothing reads
   Skipped, not Passed.
+- 78 is also a real failure code of some tools (`EX_CONFIG` in sysexits-style programs, curl's
+  "remote file not found"): a job whose last command fails that way now reads Skipped and blocks no
+  merge. Drone accepted the same trade-off; a project whose job can end that way ends its command
+  with an explicit exit (`|| exit 1`). The skip is visible on the job, in the run's line and in its
+  commit status, never silent.
 - Until a person promotes `dev` to `main`, the running instance gives no `YULIUS_CI_SKIP_CODE`: the
   `security` job then exits 0 and reads Passed, with `security scan skipped` in its output.
 - A skipped job blocks no merge, including when a pull request itself causes the exit 2 (a

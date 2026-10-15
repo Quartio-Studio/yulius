@@ -563,6 +563,16 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
     out
 }
 
+/// The state and exit code of a job copied from a passed run (a tree reused, a merge train's
+/// verdict): a job that was skipped there stays skipped (SPEC-162), every other one passed.
+#[must_use]
+pub fn copied_job_verdict(source: Option<RunState>) -> (RunState, i32) {
+    match source {
+        Some(RunState::Skipped) => (RunState::Skipped, SKIP_EXIT_CODE),
+        _ => (RunState::Passed, 0),
+    }
+}
+
 fn has_verdict(state: RunState) -> bool {
     matches!(state, RunState::Passed | RunState::Failed | RunState::Error)
 }
@@ -669,11 +679,18 @@ pub fn commit_status(state: RunState, summary: RunSummary<'_>) -> CommitStatus {
         ),
         RunState::Running => (
             CommitState::Pending,
-            format!(
-                "Running on Yulius: {} of {} passed",
-                summary.passed,
-                jobs_word(summary.jobs)
-            ),
+            match summary.skipped {
+                0 => format!(
+                    "Running on Yulius: {} of {} passed",
+                    summary.passed,
+                    jobs_word(summary.jobs)
+                ),
+                n => format!(
+                    "Running on Yulius: {} of {} passed, {n} skipped",
+                    summary.passed,
+                    jobs_word(summary.jobs)
+                ),
+            },
         ),
         RunState::Passed | RunState::Skipped => (
             CommitState::Success,
@@ -1049,6 +1066,15 @@ mod tests {
         assert_eq!(aggregate(&[S::Skipped, S::Cancelled]), S::Cancelled);
     }
 
+    /// SPEC-162: a copied verdict never turns a skipped job into a passed one.
+    #[test]
+    fn a_copied_verdict_keeps_skipped_jobs_skipped() {
+        use RunState as S;
+        assert_eq!(copied_job_verdict(Some(S::Skipped)), (S::Skipped, 78));
+        assert_eq!(copied_job_verdict(Some(S::Passed)), (S::Passed, 0));
+        assert_eq!(copied_job_verdict(None), (S::Passed, 0));
+    }
+
     #[test]
     fn refs_round_trip() {
         for reference in [
@@ -1180,6 +1206,19 @@ mod tests {
         );
         assert_eq!(running.state, CommitState::Pending);
         assert_eq!(running.description, "Running on Yulius: 0 of 1 job passed");
+        let running = commit_status(
+            RunState::Running,
+            RunSummary {
+                jobs: 3,
+                passed: 1,
+                skipped: 1,
+                ..RunSummary::default()
+            },
+        );
+        assert_eq!(
+            running.description,
+            "Running on Yulius: 1 of 3 jobs passed, 1 skipped"
+        );
         // SPEC-059 CI-301: a run waiting for disk stays pending and says why.
         let waiting = commit_status(
             RunState::Queued,

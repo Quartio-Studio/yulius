@@ -498,8 +498,8 @@ fn ci_status(value: &Value) -> Option<String> {
 }
 
 /// `ci_status` with `run_id`: the run, each job's state and, for the jobs that failed, errored or
-/// were skipped (or the job asked for by `job` whatever its state), its failing tests' output kept from all of
-/// its output, then the end of its output.
+/// were skipped (or the job asked for by `job` whatever its state), its failing tests' output
+/// kept from all of its output, then the end of its output.
 fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
     let jobs = value.get("jobs")?.as_array()?;
     let reason = text(value, "reason");

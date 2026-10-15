@@ -516,12 +516,13 @@ class SecurityJob(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("security scan skipped", output)
 
-    def test_other_heads_are_not_scanned(self):
+    def test_other_heads_are_not_scanned_and_read_skipped(self):
         for ref in ("branch/dev", "branch/main", "train/3+4"):
-            with self.subTest(ref=ref):
-                exit_code, output, ran = self.run_job(ref, 1)
-                self.assertEqual((exit_code, ran), (0, ""))
-                self.assertIn("pull request", output)
+            for skip_code, expected in (("78", 78), (None, 0)):
+                with self.subTest(ref=ref, skip_code=skip_code):
+                    exit_code, output, ran = self.run_job(ref, 1, skip_code=skip_code)
+                    self.assertEqual((exit_code, ran), (expected, ""))
+                    self.assertIn("pull request", output)
 
 
 class Gate(unittest.TestCase):

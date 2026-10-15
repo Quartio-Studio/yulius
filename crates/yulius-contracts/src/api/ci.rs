@@ -37,7 +37,8 @@ pub struct CiJob {
     /// Matrix value.
     #[serde(default)]
     pub matrix: Option<String>,
-    /// `queued`, `running`, `passed`, `failed`, `error` or `cancelled`.
+    /// `queued`, `running`, `passed`, `failed`, `error`, `cancelled` or `skipped` (it exited with
+    /// `$YULIUS_CI_SKIP_CODE`: it checked nothing and blocks no merge; SPEC-162).
     pub state: String,
     /// Why it errored or was cancelled.
     #[serde(default)]
@@ -73,7 +74,8 @@ pub struct CiRun {
     pub pr_number: Option<u64>,
     /// Commit tested.
     pub sha: String,
-    /// `queued`, `running`, `passed`, `failed`, `error` or `cancelled` (from its jobs).
+    /// `queued`, `running`, `passed`, `failed`, `error` or `cancelled` (from its jobs; a run of
+    /// passed and skipped jobs is `passed`, a run is never `skipped`).
     pub state: String,
     /// Where its configuration came from (`profile`, `yulius_toml` or `pull_request`).
     pub source: String,
