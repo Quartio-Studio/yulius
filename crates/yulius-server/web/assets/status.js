@@ -165,6 +165,13 @@ export function statusInfo(task) {
     if (task.start_at) return { glyph: '◷', icon: 'clock', tone: 'queued', label: `Scheduled · ${whenLabel(task.start_at)}`, group: 'working' };
     return { glyph: '◇', icon: 'st-prepared', tone: 'queued', label: 'Prepared', group: 'working' };
   }
+  // A task that never ran is not Closed (SPEC-153 OLC-006). The onboarding task of a `pending`
+  // sandbox waits for a person's Start onboarding, as a prepared task waits for Start now (in line
+  // with the queued tasks); any other will not start by itself and sits with the stopped ones.
+  if (status === 'closed' && task.not_started) {
+    if (task.awaits_start_onboarding) return { glyph: '◇', icon: 'st-prepared', tone: 'queued', label: 'Waits for Start onboarding', group: 'working', notStarted: true };
+    return { glyph: '◇', icon: 'st-prepared', tone: 'stopped', label: 'Not started', group: 'ended', notStarted: true };
+  }
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };

@@ -72,7 +72,7 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 - [x] A refused new task creates no onboarding task
 - [x] A live Done onboarding task's archive is tested; the close 409 reads stop the task first
 - [x] The task summary says a task never ran or waits for Start onboarding
-- [ ] The web UI shows Not started and Waits for Start onboarding outside Closed
+- [x] The web UI shows Not started and Waits for Start onboarding outside Closed
 - [ ] Docs, ADR and changes
 - [ ] Independent review and fixes
 - [ ] Gates green, evidence and delivery

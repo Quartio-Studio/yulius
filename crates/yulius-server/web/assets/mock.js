@@ -357,6 +357,9 @@ function summary(task) {
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
+    // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
+    not_started: task.status === 'closed' && task.neverRan === true,
+    awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
   };
 }
 
@@ -879,6 +882,8 @@ function preparationTask(db, sandbox) {
     archived: false, account_label: null,
     stepsList: kind.steps.map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
     model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
+    // Created resting: it has not run, and its sandbox waits for Start onboarding (SPEC-153).
+    neverRan: true, awaitsStart: true,
   };
   db.tasks.push(task);
   recount(db);
@@ -899,6 +904,9 @@ route('POST', `/api/sandboxes/${ID}/onboarding/skip`, ({ db, p }) => {
   need(sandbox, 'admin');
   if (!['pending', 'preparing'].includes(sandbox.onboarding)) fail(409, 'conflict', 'nothing awaits preparation');
   sandbox.onboarding = 'skipped';
+  // Its onboarding task, if it never ran, no longer waits for Start onboarding (SPEC-153).
+  const preparation = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (preparation) preparation.awaitsStart = false;
   releaseWaiting(db, sandbox);
   resync(db);
   return sandbox;
@@ -923,6 +931,7 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   // then is the sandbox `preparing`. A test can hold the start in between
   // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
   const task = preparationTask(db, sandbox);
+  Object.assign(task, { neverRan: false, awaitsStart: false });
   touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
   if (db.holdApprove) await db.holdApprove;
   // …and make the run's start fail then (`__yuliusMock.failApprove = true`), as `start_run` can.
@@ -4395,9 +4404,17 @@ export function createMockTransport(params) {
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {
     const sandbox = db.sandboxes.find((s) => s.slug === slug);
-    touch(db, preparationTask(db, sandbox), { status: 'starting', branch: 'yulius/prepare-repository' });
+    const task = Object.assign(preparationTask(db, sandbox), { neverRan: false, awaitsStart: false });
+    touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
     sandbox.onboarding = 'preparing';
     resync(db);
+  };
+  // A request from outside this page (the API, an agent's tool, an automation), as another client
+  // sends it; the page hears of it as of any change the server makes (`request('POST', path, body)`).
+  db.request = async (method, path, body = null) => {
+    const response = await handleFetch(db, path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'X-Yulius-CSRF': db.me.csrf_token } });
+    resync(db);
+    return response.status;
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
