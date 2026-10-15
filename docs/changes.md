@@ -11,6 +11,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   dropped; the write now reaches the clipboard of the viewer who just used the terminal, and when
   the browser refuses it (Safari, plain HTTP) ⌘C / Ctrl+Shift+C copies it. Queries are never
   answered.
+- The onboarding agent protects the production branch itself (SPEC-157, ADR-0129, task #148).
+  When onboarding finds `main` writable by agents, the preparation agent calls the new
+  `production_protect` tool: Yulius adds the ruleset `yulius-people-only-<branch>` (Restrict
+  updates, Restrict deletions, Block force pushes, only repository admins bypass) as the person who
+  owns the task, when GitHub says they are a repository admin. The agent asks a person with
+  `needs_you` only when that is refused; its own token still cannot change protection.
 - Automations can prepare their tasks (SPEC-155, ADR-0128, task #142, fixes #416). The automation
   editor's start chip, the automations API (`prepared`, beside `supertask`, `after_task_id` and
   `start_rule`) and the `automation_create` / `automation_update` tools offer "When I decide": each

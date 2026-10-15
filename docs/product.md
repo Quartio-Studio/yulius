@@ -110,7 +110,8 @@ watching, steering and unblocking.
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
   keeps the production branch out of reach of the agents' own token, which is never a person's
-  (onboarding says when that ruleset is missing). Agents build and improve CD through pull requests but
+  (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
+  as the person who started onboarding when they are a repository admin). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
   down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself
