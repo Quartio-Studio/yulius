@@ -1574,6 +1574,7 @@ Schema version 1 (tables; columns abbreviated):
 | `skills` | id, scope (instance/sandbox/repo), name, source, enabled, digest |
 | `mcp_servers` | id, scope, sandbox_id, name, transport, command/url, args (json), env (enc json), headers (enc json), enabled |
 | `metrics` | attempt_id, input_tokens, output_tokens, cache_read, cache_write, model, turns, tool_calls, active_ms (nullable = unknown) |
+| `metrics_recounts` | attempt_id (PK), task_id, outcome (recomputed/no_transcript/no_lines/live/gone; NULL = queued), before (json: the figures when queued, NULL = no row), after (json), done_at: runs recorded before SPEC-087, recounted once from their transcripts (SPEC-091, schema version 23) |
 | `feedback` | task_id, user_id, verdict, comment, at |
 | `import_jobs` | id, sandbox_id, user_id, state, manifest (json), received (json), created_at |
 | `audit_log` | id, at, actor, action, target, detail |

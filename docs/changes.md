@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A run that ends while Yulius is down keeps its metrics (SPEC-143, ADR-0117, task #124, fixes
+  #385 and #389). The next start's reconciliation counts such a run from its transcript window
+  (SPEC-091's recount), lines written while Yulius was down included, instead of saving the empty
+  snapshot of a run nobody watched, which replaced its tokens, turns and active time with NULLs;
+  when the count finds nothing the row stays. `App::recover` starts the metrics recount only after
+  a reconciliation that succeeded, now proven by a test; SPEC-002 lists `metrics_recounts`.
+
 - `yulius wait` and `delivery_merge` report the current push state, not a stale note (SPEC-139,
   ADR-0113, task #123, fixes #366 and #448). A head GitHub's branch already has counts as pushed
   even when `git push` reported a failure, and clears the earlier note; `yulius wait` drops a
