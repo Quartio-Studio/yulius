@@ -31,8 +31,11 @@ sends nothing.
 - A person's typed prompt ends the `needs_you` request (`hooks.rs` `hook_prompt_submit`: a typed
   prompt after recent keystrokes on the terminal socket). Text sent with `terminal.sendKeys` goes
   over that same socket, as the phone quick input's text does, so it counts as typed.
-- `renderAttention()` rebuilds the bar's children on every task update (`setChildren`). An `input`
-  inside the bar loses the keyboard when it is removed and put back.
+- `renderAttention()` rebuilds the bar's children on every task update. An `input` inside the bar
+  loses the keyboard, an IME composition and a screen reader's place when it is removed and put
+  back.
+- `needs_you` stays set while the agent goes on (`status.js` `taskInfo`), including while Claude
+  Code shows a permission menu (`activity: needs_attention`).
 
 ## Requirements
 
@@ -41,14 +44,15 @@ sends nothing.
 | RPL-001 | On a desktop, Reply in the "Needs you" and "waiting for your reply" bars opens a reply field ("Reply to the agent") with Send and Cancel, and the keyboard is in it. | `reply.e2e.ts` |
 | RPL-002 | Enter or Send types the text into the task's terminal and submits it (text, then a separate Enter, as the quick input does); the field closes and empties. Empty text sends nothing. | `reply.e2e.ts` |
 | RPL-003 | Escape or Cancel closes the field and sends nothing; the text typed so far is kept for the next Reply. | `reply.e2e.ts` |
-| RPL-004 | A task update that re-renders the bar while the person types keeps the field, its text, the keyboard and the caret. | `reply.e2e.ts` |
-| RPL-005 | Phones keep their quick input: Reply focuses it, as before. "The agent needs your attention" (a choice in the terminal) keeps focusing the terminal. | unchanged code path (by reading) |
+| RPL-004 | A task update that re-renders the bar while the person types keeps the field, its text, the keyboard and the caret: the field is never taken out of the bar. A field that closes while someone types hands the keyboard to the terminal. | `reply.e2e.ts` |
+| RPL-005 | Phones keep their quick input: Reply focuses it and no field opens. | `reply.e2e.ts` "Reply on a phone…" |
+| RPL-006 | While the agent asks something in the terminal (`needs_attention`, alone or under a Needs you request), Reply focuses the terminal and no field opens, so no typed text picks a menu option unseen. | `reply.e2e.ts` "…while the agent asks in the terminal…" |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -80,4 +84,14 @@ sends nothing.
 - A one-line `input`, as the quick input: a newline would submit early in Claude Code, and a
   longer answer can still be typed in the terminal.
 - "The agent needs your attention" keeps focusing the terminal. There the answer is usually a
-  choice in Claude Code's menu (arrow keys), not text.
+  choice in Claude Code's menu (arrow keys), not text. The same holds under a Needs you request
+  (RPL-006).
+- Review round 1 (fresh session, `17050ad9`, request changes) fixed test-first:
+  - major: the field could answer a permission menu the person could not see (RPL-006);
+  - the field is now kept in the bar (hidden when closed) rather than restored after each rebuild,
+    for IME compositions and screen readers;
+  - Safari's IME Enter (`keyCode 229`) is ignored, as elsewhere in the UI;
+  - a field closing under typing hands the keyboard to the terminal;
+  - the phone path and "empty Send types nothing" are tested.
+  Not done: clearing a kept draft when a new `needs_you` arrives. The person sees the draft and
+  can change it before sending.
