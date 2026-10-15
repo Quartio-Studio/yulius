@@ -113,12 +113,12 @@ mod tests {
                 .contains("Once the defect is confirmed, report it")
                 && w.instructions.contains("never does")
         }));
-        // The session hook takes a workflow's instructions out of the briefing's budget; the
-        // briefing's tests assume at most 1.7 KB (SPEC-173 CTR-002), so a longer workflow would
-        // cut the briefing's mandatory parts (SPEC-174).
+        // The session hook takes a workflow's instructions out of the briefing's budget, so a
+        // longer workflow leaves less for the briefing (#555). None grows past the largest before
+        // SPEC-174 (Infra-bootstrap, 1,444 bytes); the briefing's tests assume 1.7 KB.
         for w in defaults() {
             let block = format!("\n\n## Workflow instructions\n\n{}\n", w.instructions);
-            assert!(block.len() <= 1_700, "{} is {} bytes", w.id, block.len());
+            assert!(block.len() <= 1_444, "{} is {} bytes", w.id, block.len());
         }
         Ok(())
     }

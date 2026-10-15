@@ -672,8 +672,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
          - Report a bug you confirm with `issue_create` unless an open issue tracks it (reference \
-         it); one met on the way, an unrelated flaky test or a leftover nit says why it is outside \
-         your change; a task told not to \
+         it); for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
+         outside your change; a task told not to \
          create issues never does, and comments or says it in its summary instead. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
@@ -823,13 +823,20 @@ fn containers(input: &BriefingInput<'_>) -> String {
         .to_owned()
 }
 
-fn task_header(input: &BriefingInput<'_>) -> String {
+/// The goal quote's length, before a tight budget shrinks it (#555).
+const GOAL_QUOTE_BYTES: usize = 600;
+/// The least a shrunk goal quote keeps.
+const GOAL_QUOTE_MIN_BYTES: usize = 40;
+/// Room kept for the optional parts when the goal quote shrinks, so each keeps its heading.
+const OPTIONAL_HEADROOM_BYTES: usize = 600;
+
+fn task_header(input: &BriefingInput<'_>, goal_bytes: usize) -> String {
     let task = &input.task;
     let goal = if task.goal.trim().is_empty() {
         "> (no goal given; ask the user)\n".to_owned()
     } else {
         // The whole request (and its attached files) is in the task's request file (SPEC-011).
-        quoted(&task.goal, 600)
+        quoted(&task.goal, goal_bytes)
     };
     let workflow = task
         .workflow
@@ -1090,49 +1097,34 @@ fn recent_changes_within(input: &BriefingInput<'_>, rendered: String, grant: usi
 /// The result never exceeds the budget; mandatory parts are never dropped unless the budget
 /// is smaller than the mandatory parts themselves, in which case the whole text is cut and
 /// ends with [`TRUNCATION_MARKER`].
+///
+/// When the mandatory parts and some room for the optional ones exceed the budget (a workflow's
+/// instructions lower it, #555), the goal quote shrinks first, down to
+/// [`GOAL_QUOTE_MIN_BYTES`]: the whole request is in the task's request file.
 #[must_use]
 pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String {
     // Multi-line sources are pre-clipped to the budget so rendering stays bounded.
     let source_cap = budget_bytes.min(DEFAULT_BUDGET_BYTES * 4);
-    let parts = [
-        Part::Mandatory(header(input)),
-        Part::Mandatory(discipline(input)),
-        Part::Mandatory(git_rules(input)),
-        Part::Mandatory(read_first(input)),
-        Part::Mandatory(tools(input.playground)),
-        Part::Mandatory(ports(input)),
-        Part::Mandatory(task_header(input)),
-        Part::Optional {
-            text: task_steps(input),
-            weight: 3,
-        },
-        Part::Mandatory(foundations(input)),
-        Part::Optional {
-            text: product(input, source_cap),
-            weight: 3,
-        },
-        Part::Mandatory(architecture(input)),
-        Part::Mandatory(containers(input)),
-        Part::Optional {
-            text: decisions(input),
-            weight: 2,
-        },
-        Part::Changes {
-            text: recent_changes(input, source_cap),
-            weight: 3,
-        },
-        Part::Optional {
-            text: parallel(input),
-            weight: 3,
-        },
-    ];
-    let mandatory: usize = parts
-        .iter()
-        .map(|part| match part {
-            Part::Mandatory(text) => text.len(),
-            Part::Optional { .. } | Part::Changes { .. } => 0,
-        })
-        .sum();
+    // Each pass shrinks the goal quote by the overflow or stops, so the loop is bounded.
+    let mut goal_bytes = GOAL_QUOTE_BYTES;
+    let parts = loop {
+        let parts = briefing_parts(input, source_cap, goal_bytes);
+        let optional: usize = parts
+            .iter()
+            .map(|part| match part {
+                Part::Optional { text, .. } | Part::Changes { text, .. } => text.len(),
+                Part::Mandatory(_) => 0,
+            })
+            .sum();
+        let wanted = mandatory_len(&parts) + optional.min(OPTIONAL_HEADROOM_BYTES);
+        if wanted <= budget_bytes || goal_bytes == GOAL_QUOTE_MIN_BYTES {
+            break parts;
+        }
+        goal_bytes = goal_bytes
+            .saturating_sub(wanted - budget_bytes)
+            .max(GOAL_QUOTE_MIN_BYTES);
+    };
+    let mandatory = mandatory_len(&parts);
     let (needs, weights): (Vec<usize>, Vec<usize>) = parts
         .iter()
         .filter_map(|part| match part {
@@ -1169,6 +1161,52 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         }
     }
     out
+}
+
+fn mandatory_len(parts: &[Part]) -> usize {
+    parts
+        .iter()
+        .map(|part| match part {
+            Part::Mandatory(text) => text.len(),
+            Part::Optional { .. } | Part::Changes { .. } => 0,
+        })
+        .sum()
+}
+
+/// The briefing's parts in order, with the goal quoted in at most `goal_bytes`.
+fn briefing_parts(input: &BriefingInput<'_>, source_cap: usize, goal_bytes: usize) -> [Part; 15] {
+    [
+        Part::Mandatory(header(input)),
+        Part::Mandatory(discipline(input)),
+        Part::Mandatory(git_rules(input)),
+        Part::Mandatory(read_first(input)),
+        Part::Mandatory(tools(input.playground)),
+        Part::Mandatory(ports(input)),
+        Part::Mandatory(task_header(input, goal_bytes)),
+        Part::Optional {
+            text: task_steps(input),
+            weight: 3,
+        },
+        Part::Mandatory(foundations(input)),
+        Part::Optional {
+            text: product(input, source_cap),
+            weight: 3,
+        },
+        Part::Mandatory(architecture(input)),
+        Part::Mandatory(containers(input)),
+        Part::Optional {
+            text: decisions(input),
+            weight: 2,
+        },
+        Part::Changes {
+            text: recent_changes(input, source_cap),
+            weight: 3,
+        },
+        Part::Optional {
+            text: parallel(input),
+            weight: 3,
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -1405,8 +1443,8 @@ mod tests {
             "answer all.",
             "never as an issue",
             "never as an issue; after 3 rounds split or `needs_you`",
-            "one met on the way, an unrelated flaky test or a leftover nit says why it is outside \
-             your change",
+            "for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
+             outside your change",
         ] {
             assert!(text.contains(needle), "missing {needle}");
         }
@@ -1925,6 +1963,63 @@ mod tests {
         let plain = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!plain.contains("## Containers"), "{plain}");
         assert!(!plain.contains("No container engine"), "{plain}");
+        Ok(())
+    }
+
+    /// #555 (SPEC-174): at the budget the longest bundled workflow leaves (1.7 KB, checked in
+    /// `workflows/catalog.rs`), a 600-byte goal shrinks its quote instead of pushing out the
+    /// mandatory parts after it, and the optional parts keep their headings.
+    #[test]
+    fn a_long_goal_shrinks_before_a_mandatory_part_is_cut() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let budget = DEFAULT_BUDGET_BYTES - 1_700;
+        for isolated in [false, true] {
+            let mut input = base(&profile, &layout)?;
+            input.isolated = isolated;
+            input.project_name = "Quartio-Studio/yulius".to_owned();
+            input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
+            input.task.title = "i got this from a different projectfix".to_owned();
+            input.task.goal = "deployer ".repeat(80);
+            input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
+            input.task.spec_path =
+                ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
+            let text = build_briefing(&input, budget);
+            assert!(text.len() <= budget, "{} bytes", text.len());
+            for heading in MANDATORY_HEADINGS {
+                assert!(
+                    text.contains(heading),
+                    "isolated {isolated}: {heading} cut\n{text}"
+                );
+            }
+            for needle in [
+                "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+                "Spec: `.ai/specs/SPEC-173-",
+                "Goal:\n> deployer deployer",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "isolated {isolated}: {needle} cut\n{text}"
+                );
+            }
+            // Without the Containers section there is room for every optional heading too.
+            for heading in [
+                "## Project summary",
+                "## Decisions",
+                "## Recent changes",
+                "## Parallel tasks",
+            ] {
+                assert!(
+                    isolated || text.contains(heading),
+                    "{heading} dropped\n{text}"
+                );
+            }
+            assert_eq!(
+                text.contains("start them yourself."),
+                isolated,
+                "the Containers section is whole exactly when isolated\n{text}"
+            );
+        }
         Ok(())
     }
 

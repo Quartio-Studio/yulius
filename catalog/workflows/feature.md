@@ -18,9 +18,7 @@ order: 10
 
 Follow `delivery-pipeline` end to end; nobody accepts the result for you.
 
-- Before designing, read the docs index, search earlier specs, `tasks_list` and `sessions_search`
-  for the area, and extend what exists. One feature, one concern: split independent capabilities
-  into chained tasks.
+- One feature, one concern: split independent capabilities into chained tasks.
 - Write the spec with `om-spec-writing` (`om-brainstorm` first when the request is vague, and
   `om-ux-shape` for user-facing flows). Its Plan replaces these steps: keep the first step and the
   last two, and put 3-10 slices of similar effort between them, each named by what it delivers and
@@ -30,7 +28,7 @@ Follow `delivery-pipeline` end to end; nobody accepts the result for you.
 - Review: a fresh reviewer with no shared context runs `om-code-review` on the diff and the spec; it
   marks findings own code or pre-existing; the PR answers each. Own code is fixed test-first
   whatever the round limit, never as a follow-up issue (that is request changes); only pre-existing
-  bugs, flaky tests the change did not cause and leftover nits become issues, saying why they are
-  outside the change.
+  bugs, flaky tests the change did not cause and nits left at the round limit become issues, saying
+  why they are outside the change.
 - Finish with `om-check-and-commit` and `verification-before-completion`, then deliver: merge on
   green, deploy and verify, promote, verify production, clean up (`git-hygiene`).

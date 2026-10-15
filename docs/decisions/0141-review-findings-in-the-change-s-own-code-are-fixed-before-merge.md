@@ -62,3 +62,6 @@ text.
 - Issues filed by agents are only pre-existing bugs, unrelated flaky tests and leftover nits, each
   with the evidence that it is outside the change.
 - Existing issues (#524, #478, #513, #477, #436) stay as they are.
+- The rule's text competes for the briefing's 9,500 bytes (the workflow instructions are taken
+  out of it): the workflows state it tersely, none exceeds 1,444 bytes, and a long goal's quote
+  shrinks before a mandatory part is cut (#555, SPEC-002 §7.6).

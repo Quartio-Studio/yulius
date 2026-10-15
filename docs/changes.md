@@ -15,6 +15,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   not cause and nits left at the round limit become issues, saying why; the reviewer marks each
   finding own code or pre-existing, and deferring an own-code one is "request changes". A unit
   test keeps every location stating the rule.
+- A long goal no longer pushes mandatory parts out of the briefing (SPEC-174, fixes #555). A Fix
+  task's workflow instructions lower the budget, and a 600-byte goal used to cut `## Architecture`
+  and every optional part. The goal quote now shrinks first (down to 40 bytes; the whole request is
+  in the request file), and no bundled workflow is larger than 1,444 bytes.
 - An isolated sandbox's agent is told there is no container engine (SPEC-173, ADR-0140, task #163,
   fixes #550). An agent of another project had designed a deployer around a local Docker daemon
   before finding that `docker` exists but no daemon does: the sandbox's containment refuses what one

@@ -919,15 +919,24 @@ mod tests {
                 .to_lowercase();
             for stated in [
                 "own code",
-                "follow-up issue",
                 "round limit",
                 "pre-existing",
+                "flaky test",
                 "the change did not cause",
                 "outside the change",
                 "request changes",
             ] {
                 assert!(text.contains(stated), "{rel} does not say {stated:?}");
             }
+            assert!(
+                [
+                    "never becomes a follow-up issue",
+                    "never as a follow-up issue"
+                ]
+                .iter()
+                .any(|never| text.contains(never)),
+                "{rel} does not say an own-code finding never becomes a follow-up issue"
+            );
             for gone in [
                 "follow-up issue accepts",
                 "reason and follow-up issue",
