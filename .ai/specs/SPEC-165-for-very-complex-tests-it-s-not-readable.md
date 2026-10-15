@@ -46,18 +46,20 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   job ("engine", "package (gateway)") under a "Jobs" heading. Its duration column says how long it
   ran and, beneath, how long it waited ("waited 6 min"). Hover and the row's title say both. A
   wait whose job span is not there is still drawn on its own row, named "Waiting for a job slot".
+  A wait under a second (a slot free at once, which `ci::exec` still records) shows nothing: no
+  hatched part, no "waited", no Waited column.
 - STR-002. Jobs are listed in the order they began waiting (or started), and the run's own spans
   (queue, run, fetching the commit) come first, under a "Run" heading.
 - STR-003. Each job row says how it ended in words and an icon, not colour alone: running, passed,
-  failed, cancelled, error.
+  skipped, failed, cancelled, error.
 - STR-004. A span's children (a job's checkout and the stages its output named) are folded under
   it behind a disclosure button that says how many there are ("4 stages"). A failed or errored
-  span opens by default so its failing stage shows. What a person opened or closed stays across the
+  span, or one with a failure under it, opens by default so its failing stage shows. What a person opened or closed stays across the
   dialog's refresh of a running run, and so does the Table toggle.
 - STR-005. Every waterfall has a time axis above its bars: tick labels from the subject's start
   ("0", "2 min", "4 min", …) with faint gridlines, and for a running subject a "now" mark.
 - STR-006. Every waterfall has a legend for the bar looks it uses: waiting (hatched), ran, still
-  running, failed.
+  running, skipped (outlined), failed.
 - STR-007. The Table view follows the same grouping: a "Waited" column for jobs, the "Job " prefix
   dropped under the Jobs heading, children indented; it keeps every span (folding is for the plot).
 - STR-008. CD and task waterfalls keep their content; they gain the axis, the legend and folding
@@ -82,6 +84,8 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   requeued after its process host was lost shows each attempt with its own wait, a wait with no
   job span keeps its own "Waiting for a job slot" row, and a skipped job (ADR-0133) has the
   "skipped" mark and an outlined bar the legend names "Skipped".
+- AC1b (STR-001): `ci_s2`'s jobs got a slot at once (0 ms waits): no "waited" text, hatched
+  lead or Waited column.
 - AC2 (STR-004): in `ci_s4`, "engine"'s Checkout is hidden until its disclosure is opened; after
   the running dialog's refresh it is still open and the focused fold button still has focus. A
   running job whose stage failed ("package (deployer)") and the failed "test (2/2)" in `ci_s2` are
@@ -89,7 +93,8 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
 - AC3 (STR-005, STR-006): every waterfall (CI, CD, task) shows axis ticks that start at "0", each
   label exact and different (`ci_s3`: "0, 30 s, 1 min, 1 min 30 s"); a running run shows "now";
   the legend names every bar look in use, folded or not, and hides with the plot in Table view; a
-  wait still running (task #12's armed merge) keeps the hatch "Waiting" stands for.
+  wait still running (task #12's armed merge) keeps the hatch "Waiting" stands for; in `ci_s4`
+  (9.1 min in) the axis stops at "6 min" so no label touches "now", also at 390 px.
 - AC4 (STR-007, STR-008): the Table has a Waited column with "6 min" for "engine"; the CD and task
   waterfalls still show what SPEC-137's test checks; no WCAG violation (axe) with the plot showing
   and a fold open; no horizontal scroll at 390 px on the CI dialog and the task page.
@@ -117,6 +122,10 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
 - **Skipped is its own look.** A job that checked nothing (exit 78, ADR-0133, merged from `dev`
   during review) ran but proved nothing, so it is neither "Ran" nor "Failed": an outlined bar, the
   `forward` mark the CI page's Skipped badge uses, and "Skipped" in the legend.
+- **A fourth, scoped review.** The workflow allows three rounds. Round 3 approved, but its first
+  minor ("waited 0 s" on every job, since every job records a wait) undid part of this task's goal,
+  so it was fixed rather than filed. `delivery_merge` needs approval of the exact head, so a fresh
+  reviewer confirmed only the delta after e2528293 (the fix and the merge of `dev`).
 - **Open on any failure within.** A running job whose stage already failed opens too, and the
   legend is computed from every span, so folding never hides a failure or an unexplained colour.
 - **Jobs still waiting with no span stay out.** A job waiting for a slot has no span until it gets
@@ -151,5 +160,9 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   - Round 2 at 539a84e2: REQUEST CHANGES. It confirmed every round-1 fix. It asked to merge
     dev and give the new skipped state a mark (major), and found a running wait losing its hatch
     and a tick that could crowd "now" (minors). All were fixed after the merge.
+  - Round 3 at e2528293: APPROVE, no blocker or major. Its minors were fixed test-first after it:
+    "waited 0 s" on every job of a normal run, and no test for the "now" spacing (with the cutoff
+    set back to 92 % the axis and overlap checks fail). So were its nits: the skipped mark in the
+    CI page's warn tone, the busy mock's reference, and STR-003/006 naming skipped.
 - **Follow-ups:** #536 (a job still waiting for a slot has no span yet), #538 (the flaky Rust
   test above).

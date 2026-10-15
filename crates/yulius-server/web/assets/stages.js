@@ -212,7 +212,10 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   const at = (ms) => ((ms - start) / total) * 100;
   const tip = h('div', { class: 'chart-tip st-tip', hidden: true });
   const groups = [...grouped(spans, null), ...(related.length ? grouped(related, 'CI runs of its pull request') : [])];
-  const anyWait = groups.some((g) => g.tree.waits.size > 0);
+  // A slot free at once still leaves a (0 ms) wait span; only a wait of a second or more is shown.
+  const waitShown = (wait) => Boolean(wait && wait.ended_at && time(wait.ended_at) - time(wait.started_at) >= 500);
+  const waitOf = (group, span) => { const wait = group.tree.waits.get(span.key); return waitShown(wait) ? wait : null; };
+  const anyWait = groups.some((g) => [...g.tree.waits.values()].some(waitShown));
   // The bar looks in use, folded or not, for the legend.
   const used = {
     wait: anyWait || all.some((s) => WAIT_KINDS.has(s.kind)),
@@ -279,7 +282,7 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
       const kids = (group.tree.children.get(span.key) || []).length;
       const open = kids > 0 && (view.open.has(span.key) ? view.open.get(span.key) : failedWithin(group, span));
       rows.push(rowOf(span, depth, {
-        inJobs: Boolean(group.jobs), wait: group.tree.waits.get(span.key), kids, open,
+        inJobs: Boolean(group.jobs), wait: waitOf(group, span), kids, open,
         toggle: () => { view.open.set(span.key, !open); draw(); [...list.children].find((r) => r.dataset.key === span.key)?.querySelector('.st-fold')?.focus(); },
       }));
       rows[rows.length - 1].dataset.key = span.key;
@@ -296,8 +299,7 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   // The table: every span, folded or not, in the same groups.
   const tableRows = [];
   const tableRow = (group, span, depth) => {
-    const wait = group.tree.waits.get(span.key);
-    const d = describe(span, Boolean(group.jobs), wait);
+    const d = describe(span, Boolean(group.jobs), waitOf(group, span));
     tableRows.push(h('tr', null,
       h('td', null, h('span', { style: { paddingLeft: `${depth * 14}px` } }, d.label)),
       h('td', null, new Date(d.from).toLocaleTimeString()),

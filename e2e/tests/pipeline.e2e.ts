@@ -145,8 +145,13 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
   await expect(qualityRow).toHaveAttribute('title', /CPU 31 min · peak 2\.0 GiB · wrote 640 MiB/);
   await qualityRow.hover();
   await expect(browser.locator('.st-tip')).toContainText('CPU 31 min · peak 2.0 GiB · wrote 640 MiB');
+  // Its jobs got a slot at once (0 ms waits): nothing says "waited", no Waited column.
+  await expect(browser.locator('.st-waited')).toHaveCount(0);
+  await expect(browser.locator('.st-row.st-job:has-text("quality") .st-bar-wait')).toHaveCount(0);
+  expect(await browser.locator('.st-row.st-job:has-text("quality")').getAttribute('title')).not.toContain('waited');
   await run.getByRole('button', 'Table').click();
   await expect(run.getByRole('table')).toContainText('test (2/2)');
+  await expect(run.getByRole('columnheader', 'Waited')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
 
   // The same run on the Dashboard's Pipeline tab.
@@ -257,7 +262,8 @@ test('every waterfall has a time axis from 0 and a legend of its bars', async ({
   const legend = () => browser.evaluate(() => [...document.querySelectorAll('.st-waterfall .st-bars-legend li')].map((t) => t.textContent));
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
-  expect(await axis()).toEqual(['0', '2 min', '4 min', '6 min', '8 min', 'now']);
+  // 9.1 min in: the 8 min tick (88 %) would crowd "now", so the axis stops at 6 min.
+  expect(await axis()).toEqual(['0', '2 min', '4 min', '6 min', 'now']);
   expect(await legend()).toEqual(['Waiting', 'Ran', 'Still running', 'Failed']);
 
   await app.open(mock('/s/studio/ci?run=ci_s2'));
@@ -308,6 +314,11 @@ test('a short run’s axis names each tick once; a requeued job keeps each wait,
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
   expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(await browser.evaluate(() => { const w = document.querySelector('.st-waterfall'); return w ? w.scrollWidth <= w.clientWidth : false; })).toBe(true);
+  // No two axis labels touch, "now" included.
+  expect(await browser.evaluate(() => {
+    const boxes = [...document.querySelectorAll('.st-waterfall .st-tick')].map((t) => t.getBoundingClientRect());
+    return boxes.every((b, i) => i === 0 || boxes[i - 1].right + 4 <= b.left);
+  })).toBe(true);
 });
 
 test('a running job whose stage failed opens, and the legend names every bar look, folded or not', async ({ app, browser, screen }) => {

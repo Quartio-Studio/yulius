@@ -2913,23 +2913,23 @@ function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, e
 }
 
 // A busy running run (SPEC-165, the screenshot of task #155): eight jobs waited 6 to 9 min for a
-// job slot, as `ci::exec` records it (`wait:<job id>@…` beside the job's `job:<job id>@…`), each
+// job slot (9.1 min in, so the 8 min tick would crowd "now"), as `ci::exec` records it (`wait:<job id>@…` beside the job's `job:<job id>@…`), each
 // with its checkout; four are still running, one of them with a failed stage.
 // Jobs are listed in the order they began waiting: prototypes began before gateway, started after.
 const BUSY_JOBS = [
   ['shared', 6, 0.5], ['engine', 6, null], ['prototypes', 6.5, 0.15], ['package (gateway)', 6.2, null],
-  ['package (broker)', 6.8, 0.7], ['package (deployer)', 7.8, null], ['package (mcp/browser)', 8.9, 0.7], ['package (mcp/email)', 9.2, null],
+  ['package (broker)', 6.8, 0.7], ['package (deployer)', 7.5, null], ['package (mcp/browser)', 8.2, 0.7], ['package (mcp/email)', 8.6, null],
 ];
 
 function busyTimeline(id) {
   const s = (...args) => stageSpan('ci_run', id, ...args);
   const spans = [
-    s('queue@1', 'queue', 'queue', 10, 0.02, { detail: { reference: 'pr/486', reason: null } }),
-    s('run@1', 'run', 'run', 9.98, null, { detail: { reference: 'pr/486', sha: '7c43db6a01e2', requested_by: 'yulius' } }),
-    s('prepare@1', 'prepare', 'commit', 9.98, 0.005),
+    s('queue@1', 'queue', 'queue', 9.1, 0.02, { detail: { reference: 'branch/quartio', reason: null } }),
+    s('run@1', 'run', 'run', 9.08, null, { detail: { reference: 'branch/quartio', sha: '9f3c2a1b7e4d', requested_by: 'yulius' } }),
+    s('prepare@1', 'prepare', 'commit', 9.08, 0.005),
   ];
   BUSY_JOBS.forEach(([name, waited, ran], i) => {
-    const asked = 9.95 - i * 0.01;
+    const asked = 9.05 - i * 0.01;
     const at = asked - waited;
     const job = `job:j${i}@1`;
     spans.push(s(`wait:j${i}@1`, 'wait', 'job slot', asked, waited, { job: name, outcome: 'started', detail: { cpus: 4, memory_mb: 8192 } }));
@@ -2972,6 +2972,9 @@ function mockTimeline(kind, id) {
       s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
       s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
       s('prepare@1', 'prepare', 'commit', 45, 0.2),
+      // A slot free at once: `ci::exec` still records the (0 ms) wait, which says nothing.
+      s('wait:j1@1', 'wait', 'job slot', 44.8, 0, { job: 'quality', outcome: 'started' }),
+      s('wait:j2@1', 'wait', 'job slot', 44.8, 0, { job: 'test', outcome: 'started' }),
       s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality', detail: { cpu_ms: 31 * MIN, memory_peak_mb: 2048, disk_written_mb: 640 } }),
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),

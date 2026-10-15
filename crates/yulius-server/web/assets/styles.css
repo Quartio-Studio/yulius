@@ -2612,7 +2612,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .st-mark-passed { color: var(--ok); }
 .st-mark-running { color: var(--accent); }
 .st-mark-failed, .st-mark-error { color: var(--danger-fg); }
-.st-mark-skipped { color: var(--muted); }
+.st-mark-skipped { color: var(--warn-fg); }
 .st-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-count { flex: none; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
 /* Each track carries the axis's gridlines, one every tick (SPEC-165 STR-005). */

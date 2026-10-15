@@ -18,7 +18,8 @@ the store's trigger opens the job as `job:<job id>@<ms>`.
 
 - The page pairs a `job slot` wait with the job span carrying the same job id (the last wait that
   began before the job started) and draws both on the job's row: a hatched part, then the run. The
-  duration column says how long it ran and how long it waited; the table has a Waited column.
+  duration column says how long it ran and how long it waited; the table has a Waited column. A
+  wait under a second (a slot free at once, which is still recorded) shows nothing.
 - A CI run's waterfall has two groups: "Run" (its own spans) and "Jobs" (job spans, named by the
   job, in the order they began waiting, each with its state as an icon and a word).
 - A skipped job (ADR-0133) is drawn outlined, neither ran nor failed, with "Skipped" in the
