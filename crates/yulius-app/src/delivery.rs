@@ -2063,6 +2063,18 @@ impl App {
         if observed.dirty {
             return Err(AppError::Conflict(DIRTY_WORKTREE.into()));
         }
+        if let (Some(branch), Some(worktree)) =
+            (task.branch.as_deref(), task.worktree_path.as_deref())
+        {
+            self.dlv_push_head(
+                &task.id,
+                Path::new(worktree),
+                branch,
+                observed.worktree_head.as_deref().unwrap_or_default(),
+                &token,
+            )
+            .await?;
+        }
         self.dlv_open_pull(
             &sandbox,
             &task,
@@ -2083,11 +2095,11 @@ impl App {
         self.delivery_view(&task, Some(&ctx.user)).await
     }
 
-    /// Pushes the task branch and opens its pull request into the integration branch, both with
-    /// `token` (its account pushes and authors the pull request: the person who delivers, or for
-    /// Yulius the task's owner, F 2026-10-11); records `pr_open`, audits it as `actor` and
-    /// publishes the task. The caller has checked the domain rules and the worktree
-    /// (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
+    /// Opens the task's pull request into the integration branch with `token` (its account
+    /// pushes and authors the pull request: the person who delivers, or for Yulius the task's
+    /// owner, F 2026-10-11); records `pr_open`, audits it as `actor` and publishes the task. The
+    /// caller has checked the domain rules and the worktree and pushed the branch with
+    /// [`App::dlv_push_head`] (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
     #[allow(clippy::too_many_arguments)]
     async fn dlv_open_pull(
         &self,
@@ -2106,15 +2118,6 @@ impl App {
                 "the task has no branch or worktree yet; start it first".into(),
             ));
         };
-        self.dlv_push_head(
-            sandbox,
-            &task.id,
-            Path::new(&worktree),
-            &branch,
-            observed.worktree_head.as_deref().unwrap_or_default(),
-            token,
-        )
-        .await?;
         let (policy, _) = self.dlv_branch_policy(sandbox, profile).await;
         let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(title) => title.to_owned(),
@@ -2364,15 +2367,14 @@ impl App {
     }
 
     /// Pushes the task's `branch`, at `head`, with `token` (SPEC-139 PSH-001): every push of a
-    /// task's head goes through here. A push Git reports failed while GitHub's branch is at
+    /// task's head goes through here. A push Git reports failed while the remote's branch is at
     /// `head` is done (GitHub's `remote rejected … (failed)` after the ref moved, or the head
-    /// pushed some other way, #366); a push that is done clears the task's note.
+    /// pushed some other way, #366); a push that is done clears the task's note about `head`.
     ///
     /// # Errors
-    /// The push's own error when GitHub's branch is not at `head` (or cannot be read).
+    /// The push's own error when the remote's branch is not at `head` (or cannot be read).
     pub(crate) async fn dlv_push_head(
         &self,
-        sandbox: &SandboxRecord,
         task_id: &TaskId,
         worktree: &Path,
         branch: &str,
@@ -2380,18 +2382,24 @@ impl App {
         token: &Secret,
     ) -> AppResult<()> {
         if let Err(err) = self.deps.git.push(worktree, branch, branch, token).await
-            && !self.dlv_branch_at(sandbox, branch, head, token).await
+            && !self.dlv_branch_at(worktree, branch, head, token).await
         {
             return Err(err);
         }
-        self.clear_push_problem(task_id);
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock()
+            && problem.as_ref().is_some_and(|note| note.head == head)
+        {
+            *problem = None;
+        }
         Ok(())
     }
 
-    /// Whether GitHub's `branch` is at commit `head`; `false` when it cannot be read.
+    /// Whether the remote's `branch` is at commit `head`, as the remote answers now (not a
+    /// remote-tracking ref, which a push from elsewhere never moves); `false` when it cannot be
+    /// read.
     async fn dlv_branch_at(
         &self,
-        sandbox: &SandboxRecord,
+        worktree: &Path,
         branch: &str,
         head: &str,
         token: &Secret,
@@ -2399,17 +2407,37 @@ impl App {
         !head.is_empty()
             && self
                 .deps
-                .github
-                .branch_sha(token, &sandbox.repo_owner, &sandbox.repo_name, branch)
+                .git
+                .remote_branch_head(worktree, branch, token)
                 .await
                 .ok()
                 .flatten()
                 .is_some_and(|sha| sha.eq_ignore_ascii_case(head))
     }
 
-    /// Drops the note that a push of `head` failed once GitHub's branch is at `head`, so
+    /// Records that `head` was pushed but its pull request could not be opened, for `yulius
+    /// wait`, and returns that note: not a push failure, so the branch at the head does not make
+    /// it stale (SPEC-139 PSH-002).
+    fn set_open_problem(&self, task_id: &TaskId, head: &str, err: &AppError) -> String {
+        let short = head.get(..9).unwrap_or(head);
+        let text = format!(
+            "Yulius pushed {short} but could not open its pull request: {} It tries again at the \
+             end of your next turn; `delivery_status` shows the branch state.",
+            err.public_message()
+        );
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
+            *problem = Some(PushNote {
+                head: head.to_owned(),
+                text: text.clone(),
+                failed_push: false,
+            });
+        }
+        text
+    }
+
+    /// Drops the note that a push of `head` failed once the remote's branch is at `head`, so
     /// `yulius wait` waits for the checks and the armed merge instead of ending on it (SPEC-139
-    /// PSH-002, #366). One GitHub read, only while such a note exists; GitHub unreachable, the
+    /// PSH-002, #366). One read of the remote, only while such a note exists; unreadable, the
     /// note stands.
     pub(crate) async fn forget_push_problem_if_pushed(&self, task: &TaskRecord, head: &str) {
         let noted = self
@@ -2423,7 +2451,9 @@ impl App {
                     && !head.is_empty()
                     && (note.head.starts_with(head) || head.starts_with(note.head.as_str()))
             });
-        let (Some(note), Some(branch)) = (noted, task.branch.as_deref()) else {
+        let (Some(note), Some(branch), Some(worktree)) =
+            (noted, task.branch.as_deref(), task.worktree_path.as_deref())
+        else {
             return;
         };
         let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
@@ -2433,7 +2463,7 @@ impl App {
             return;
         };
         if self
-            .dlv_branch_at(&sandbox, branch, &note.head, &token)
+            .dlv_branch_at(Path::new(worktree), branch, &note.head, &token)
             .await
             && let Ok(mut problem) = self.runtime(&task.id).push_problem.lock()
             && problem.as_ref() == Some(&note)
@@ -2536,14 +2566,7 @@ impl App {
                 return Ok(AutoDelivery::Unchanged);
             }
             let pushed = self
-                .dlv_push_head(
-                    &sandbox,
-                    task_id,
-                    Path::new(&worktree),
-                    &branch,
-                    &head,
-                    &token,
-                )
+                .dlv_push_head(task_id, Path::new(&worktree), &branch, &head, &token)
                 .await;
             if let Err(error) = pushed {
                 self.release_auto_head(task_id);
@@ -2571,6 +2594,7 @@ impl App {
         if ahead == 0 || !self.claim_auto_head(task_id, &head)? {
             return Ok(AutoDelivery::Unchanged);
         }
+        // Whether the failure was the push: only that note is about pushing (SPEC-139 PSH-002).
         let opened = match dlv::apply(
             &observed.record.stage,
             &DeliveryAction::OpenPr,
@@ -2578,13 +2602,19 @@ impl App {
             &profile,
             &observed.facts(),
         ) {
-            Ok(_) => {
-                self.dlv_open_pull(
-                    &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
-                )
+            Ok(_) => match self
+                .dlv_push_head(task_id, Path::new(&worktree), &branch, &head, &token)
                 .await
-            }
-            Err(err) => Err(refusal(&err)),
+            {
+                Ok(()) => self
+                    .dlv_open_pull(
+                        &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
+                    )
+                    .await
+                    .map_err(|err| (err, false)),
+                Err(err) => Err((err, true)),
+            },
+            Err(err) => Err((refusal(&err), false)),
         };
         match opened {
             Ok(number) => {
@@ -2594,9 +2624,13 @@ impl App {
                     profile.integration_branch
                 )))
             }
-            Err(error) => {
+            Err((error, push_failed)) => {
                 self.release_auto_head(task_id);
-                let note = self.set_push_problem(task_id, &head, &branch, None, &error);
+                let note = if push_failed {
+                    self.set_push_problem(task_id, &head, &branch, None, &error)
+                } else {
+                    self.set_open_problem(task_id, &head, &error)
+                };
                 Err(AutoDeliveryError {
                     error,
                     note: Some(note),

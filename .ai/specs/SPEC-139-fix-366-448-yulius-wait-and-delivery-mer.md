@@ -36,15 +36,17 @@ wrote, never with an older one.
   (`try_auto_open_pr`); on any error it answers with the stored note when its head is the current
   one, so that a refused push gets its remedy. A note written by an earlier call ("step X is
   in_progress") answers a later, unrelated failure.
-- The GitHub port already reads a branch's head (`branch_sha`); the fake GitHub of the tests reads
-  it from the real bare repository.
+- The GitHub port's `branch_sha` is not implemented by the production adapter (it always fails;
+  only the test fake answers, from its bare repository), so it cannot be the truth here (review
+  round 1, blocker). The remote answers `git ls-remote` over the same transport and token as the
+  push itself.
 
 ## Requirements
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| PSH-001 | Every push Yulius makes of a task's head (end of turn, `delivery_merge`, Deliver…, the armed-merge upkeep, merge trains) goes through one helper. When `git push` fails but GitHub says the branch is at that head, the push counts as done. A push that is done clears the task's push note. | `delivery::a_push_github_already_has_counts_as_done` |
-| PSH-002 | `yulius wait` does not end on a push note for its head when GitHub's branch is at that head: the note is cleared and the wait goes on to the checks and the armed merge. The check costs one GitHub read per wait request, and only while such a note exists; when GitHub cannot be read the note stands. | `delivery::a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head` |
+| PSH-001 | Every push Yulius makes of a task's head (end of turn, `delivery_merge`, Deliver…, the armed-merge upkeep, merge trains) goes through one helper. When `git push` fails but the remote says (`git ls-remote`) the branch is at that head, the push counts as done. A push that is done clears the task's note about that head. | `delivery::a_push_github_already_has_counts_as_done`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `git_ops::remote_branch_head_reads_the_remote_itself` |
+| PSH-002 | `yulius wait` does not end on a failed-push note for its head when the remote's branch is at that head: the note is cleared and the wait goes on to the checks and the armed merge. The check costs one read of the remote per wait request, and only while such a note exists; when the remote cannot be read the note stands. A note that is no push failure (not delivered, the pull request could not be opened after its push) stays. | `delivery::a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note` |
 | PSH-003 | `delivery_merge` answers a failed delivery with the note that same delivery wrote (a refused push's remedy), otherwise with the failure itself, never with an older note about the same head. | `delivery::a_merge_call_answers_its_own_failure_not_an_older_note`, `delivery::a_merge_call_opens_the_pull_request_a_goal_task_still_lacks` |
 
 ## Plan
@@ -57,8 +59,10 @@ wrote, never with an older one.
 
 ## Acceptance criteria
 
-- A push whose `git push` fails while GitHub's branch is at the head records no note and clears an
-  earlier one; the end of the turn says it delivered.
+- A push whose `git push` fails while the remote's branch is at the head records no note and
+  clears an earlier one; the end of the turn opens the pull request.
+- A pull request that fails to open after its push landed leaves a note saying so, and the wait
+  ends on it even though the branch is at the head.
 - After Yulius's push failed once and the agent pushed the head itself, `yulius wait` at that head
   reports no push problem and waits for the checks; the note is gone for later waits too.
 - After `delivery_merge` was refused for an open step and the step is resolved, a call that fails
@@ -71,14 +75,21 @@ wrote, never with an older one.
 Integration tests in `crates/yulius/tests/delivery.rs` over the HTTP and internal APIs, with the
 test-local Git port given injectable failures: a push that fails without reaching the remote, a
 push that reaches it and still reports failure (GitHub's `remote rejected … (failed)` after the ref
-moved), and a failing `ahead_behind`. Each test fails on `dev` before the fix. The existing
+moved), a remote that cannot be read, and a failing `ahead_behind`; the fake GitHub can fail to
+open a pull request. `remote_branch_head` is tested in `crates/yulius-git/tests/git_ops.rs`
+against a real bare remote. Each test fails on `dev` before the fix. The existing
 DLV-201/204 and DMG-001 tests stay green. Full gate: `scripts/dev ci`.
 
 ## Decisions
 
-- [ADR-0113](../../docs/decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md): GitHub's
-  branch, not the exit code of the last `git push`, says whether a head is pushed; the delivery
-  failure carries the note its own call wrote.
+- [ADR-0113](../../docs/decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md): the
+  branch on GitHub, read with `git ls-remote`, not the exit code of the last `git push`, says
+  whether a head is pushed; the delivery failure carries the note its own call wrote.
+- `git ls-remote` rather than the GitHub API: the production adapter has no `branch_sha`, and
+  implementing it would change CD and promotion, which call it too, in this fix (one concern per
+  pull request). Reported in the summary instead.
+- The push moves out of `dlv_open_pull` into its callers, so a failure to open the pull request
+  after a push that landed is told apart from a push failure (review round 1).
 - Reconcile in the wait endpoint, not in the CLI: the CLI has no GitHub token, and the server
   already owns the note. Once per wait request, not per poll: a note that appears during a wait
   comes from a push that has just checked GitHub itself.

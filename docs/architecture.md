@@ -208,8 +208,8 @@ uncommitted work) is refused with the reason, and a push GitHub refuses answers 
 (merge the pushed head, never force): only a note that same call wrote replaces its error. A head
 is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
 (end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) goes through one helper
-that asks GitHub when Git reports a failure, and the wait drops a failed-push note once the branch
-is at its head ([SPEC-139](../.ai/specs/SPEC-139-fix-366-448-yulius-wait-and-delivery-mer.md),
+that asks the remote (`git ls-remote`) when Git reports a failure, and the wait drops a failed-push
+note once the branch is at its head ([SPEC-139](../.ai/specs/SPEC-139-fix-366-448-yulius-wait-and-delivery-mer.md),
 [decision 0113](decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md)). A goal task whose evaluator keeps every turn going therefore still gets its pull request
 ([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 

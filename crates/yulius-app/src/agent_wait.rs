@@ -663,7 +663,7 @@ impl App {
             }
             Ok(MergeIntegration::Merged(head)) => {
                 match self
-                    .dlv_push_head(sandbox, &task.id, worktree, branch, &head, &token)
+                    .dlv_push_head(&task.id, worktree, branch, &head, &token)
                     .await
                 {
                     Ok(()) => {

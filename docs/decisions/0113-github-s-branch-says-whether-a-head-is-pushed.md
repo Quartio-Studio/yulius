@@ -18,11 +18,15 @@ note matched the head.
 ## Decision
 
 - **A head is pushed when GitHub's branch is at it.** One helper makes every push of a task's head.
-  When `git push` fails it reads the branch's head from GitHub (`branch_sha`), and a branch at the
-  head counts as pushed. A push that is done clears the note.
-- **The wait reconciles a push note once per request.** When the note is about the wait's head, the
-  wait endpoint asks GitHub where the branch is; at the head, the note is cleared and the wait goes
-  on. GitHub unreachable: the note stands, as before.
+  When `git push` fails it asks the remote with `git ls-remote` (same transport and token as the
+  push), and a branch at the head counts as pushed. A push that is done clears the note about that
+  head.
+- **The wait reconciles a failed-push note once per request.** When the note is about the wait's
+  head, the wait endpoint asks the remote where the branch is; at the head, the note is cleared and
+  the wait goes on. Remote unreadable: the note stands, as before. Notes that are no push failure
+  (not delivered; the pull request did not open after its push) are never cleared this way.
+- **The push is told apart from what follows it.** The end of a turn pushes, then opens the pull
+  request; a failure to open it after the push landed is its own note, not a push failure.
 - **A delivery failure carries its own note.** `try_auto_open_pr` fails with the error and, for a
   push, the note it wrote. `delivery_merge` answers with that note or with the error, never with a
   note it finds in the slot.
@@ -31,7 +35,10 @@ note matched the head.
 
 - **Trust the worktree's `origin/<branch>` ref**: free, and right for an agent's own `git push`
   from the worktree, but blind to a push from elsewhere and to a push GitHub took while it reported
-  a failure. Rejected as the truth; GitHub's answer costs one call and only while a note exists.
+  a failure. Rejected as the truth; the remote's answer costs one call and only while a note exists.
+- **GitHub's REST API (`branch_sha`)**: the port has it, but the production adapter does not
+  implement it (only the test fake does), and CD and promotion call it too; implementing it is
+  a change of its own.
 - **Clear the note before each delivery and use it only if set again**: fixes #448 too, but loses a
   still-true note when the call fails before rewriting it. Rejected for a typed failure.
 - **Check the remote in the CLI**: it has no GitHub token, and the note lives in the server.

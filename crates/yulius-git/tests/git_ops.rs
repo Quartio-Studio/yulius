@@ -458,6 +458,36 @@ fn commit_all_and_push_with_explicit_refspecs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-139: the remote's own answer for a branch, which a push that reported a failure may
+/// have moved, and none for a branch it does not have.
+#[test]
+fn remote_branch_head_reads_the_remote_itself() -> TestResult {
+    let fx = Fixture::new()?;
+    let remote = fx.path("remote.git");
+    let work = fx.path("work");
+    fx.git.init(&remote, "main", true)?;
+    fx.git.init(&work, "main", false)?;
+    fs::write(work.join("a.txt"), "a\n")?;
+    let sha = fx
+        .git
+        .commit_all(&work, "chore: a", &author())?
+        .ok_or("expected a commit")?;
+    fx.git.remote_add(&work, "origin", path_str(&remote)?)?;
+    assert_eq!(fx.git.remote_branch_head(&work, "origin", "main")?, None);
+    fx.git
+        .push(&work, "origin", "refs/heads/main:refs/heads/feat/1-x")?;
+    assert_eq!(
+        fx.git.remote_branch_head(&work, "origin", "feat/1-x")?,
+        Some(sha)
+    );
+    assert_eq!(fx.git.remote_branch_head(&work, "origin", "feat/1")?, None);
+    assert!(matches!(
+        fx.git.remote_branch_head(&work, "origin", "-x"),
+        Err(GitError::InvalidBranchName { .. })
+    ));
+    Ok(())
+}
+
 #[test]
 fn status_reports_hostile_file_names_verbatim() -> TestResult {
     let fx = Fixture::new()?;

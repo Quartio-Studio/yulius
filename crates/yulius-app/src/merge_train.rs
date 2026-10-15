@@ -663,7 +663,7 @@ impl App {
                 return keep(armed.clone(), reason);
             }
             match self
-                .dlv_push_head(sandbox, &task.id, worktree, branch, &head, &token)
+                .dlv_push_head(&task.id, worktree, branch, &head, &token)
                 .await
             {
                 Ok(()) => {
@@ -696,7 +696,7 @@ impl App {
         };
         if moved {
             if let Err(err) = self
-                .dlv_push_head(sandbox, &task.id, worktree, branch, &head, &token)
+                .dlv_push_head(&task.id, worktree, branch, &head, &token)
                 .await
             {
                 self.set_push_problem(&task.id, &head, branch, None, &err);

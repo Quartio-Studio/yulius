@@ -89,6 +89,8 @@ struct RealGit {
     push_failure: std::sync::Mutex<Option<PushFailure>>,
     /// When set, `ahead_behind` fails with this message (SPEC-139 PSH-003).
     ahead_behind_error: std::sync::Mutex<Option<String>>,
+    /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
+    remote_unreadable: std::sync::atomic::AtomicBool,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -105,6 +107,11 @@ impl RealGit {
         if let Ok(mut slot) = self.push_failure.lock() {
             *slot = failure;
         }
+    }
+
+    fn remote_unreadable(&self, unreadable: bool) {
+        self.remote_unreadable
+            .store(unreadable, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn fail_ahead_behind(&self, message: Option<&str>) {
@@ -408,6 +415,28 @@ impl GitPort for RealGit {
             None => Ok(()),
         }
     }
+    async fn remote_branch_head(
+        &self,
+        repo: &Path,
+        branch: &str,
+        _token: &Secret,
+    ) -> AppResult<Option<String>> {
+        if self
+            .remote_unreadable
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(AppError::Upstream(
+                "git ls-remote: could not read from remote".into(),
+            ));
+        }
+        let listed = self
+            .run(
+                repo,
+                &["ls-remote", "origin", &format!("refs/heads/{branch}")],
+            )
+            .await?;
+        Ok(listed.split_whitespace().next().map(str::to_owned))
+    }
     async fn import_bundle(&self, _: &Path, _: &Path, _: &str) -> AppResult<Vec<String>> {
         Err(AppError::Upstream("not used".into()))
     }
@@ -606,6 +635,7 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
         pushes: std::sync::Mutex::default(),
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
+        remote_unreadable: std::sync::atomic::AtomicBool::default(),
     });
     let h = harness_with_git(real_git.clone())?;
     h.github.set_remote(Arc::new(BareRemote {
@@ -3954,6 +3984,11 @@ async fn a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head(
 
     // The agent's own `git push` from the worktree; no turn ends since.
     git(&t.wt, &["push", "--quiet", "origin", "feat/1-landing"])?;
+    // While the remote cannot be read, the note stands.
+    f.git.remote_unreadable(true);
+    let state = t.wait_at(&head).await?;
+    assert!(state["push_problem"].is_string(), "{state}");
+    f.git.remote_unreadable(false);
     let state = t.wait_at(&head).await?;
     assert_eq!(state["push_problem"], Value::Null, "{state}");
     assert_eq!(settled(&state, None)?, None, "it waits for the checks");
@@ -3969,6 +4004,49 @@ async fn a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head(
         ],
     )?;
     assert_eq!(t.wait_at(&head).await?["push_problem"], Value::Null);
+    Ok(())
+}
+
+/// SPEC-139 PSH-001/002: at the end of a turn, a push that lands while Git reports a failure
+/// opens the pull request. When the pull request then fails to open, the note says so and is no
+/// push failure: GitHub's branch at the head does not make the wait skip it (#34).
+#[tokio::test]
+async fn a_pull_request_that_fails_to_open_after_its_push_keeps_its_note() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let task = TaskId::parse("t1")?;
+    f.git.fail_pushes(Some(PushFailure::AfterLanding));
+    if let Ok(mut error) = f.h.github.create_pull_error.lock() {
+        *error = Some("Validation Failed".to_owned());
+    }
+
+    f.h.app.auto_open_pr(&task).await;
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "landed");
+    let state = wait_state(&f, &agent, &head).await?;
+    let note = state["push_problem"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("could not open its pull request") && note.contains("Validation Failed"),
+        "{state}"
+    );
+    assert!(settled(&state, None)?.is_some(), "the wait ends on it");
+
+    // GitHub opens it at the next end of turn; the push still "fails": delivered, no note.
+    if let Ok(mut error) = f.h.github.create_pull_error.lock() {
+        *error = None;
+    }
+    f.h.app.auto_open_pr(&task).await;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+    assert_eq!(
+        wait_state(&f, &agent, &head).await?["push_problem"],
+        Value::Null
+    );
     Ok(())
 }
 

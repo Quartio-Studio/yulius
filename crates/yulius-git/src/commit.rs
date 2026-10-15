@@ -177,6 +177,32 @@ impl Git {
         Ok(())
     }
 
+    /// The commit `branch` points at on `remote`, as the remote answers now (`git ls-remote`),
+    /// not as a remote-tracking ref last saw it; `None` when the remote has no such branch.
+    ///
+    /// # Errors
+    /// Invalid names, or the remote cannot be read.
+    pub fn remote_branch_head(
+        &self,
+        repo: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<Option<String>, GitError> {
+        validate_remote(remote)?;
+        validate_branch_name(branch)?;
+        let wanted = format!("refs/heads/{branch}");
+        let listed = self.run_ok(
+            Invocation::new(self, "ls-remote", Some(repo))
+                .args(["ls-remote", "--heads", "--", remote])
+                .arg(&wanted)
+                .timeout(self.network_timeout),
+        )?;
+        Ok(listed.stdout_trimmed().lines().find_map(|line| {
+            let (sha, name) = line.split_once('\t')?;
+            (name == wanted).then(|| sha.to_owned())
+        }))
+    }
+
     /// Merges `rev` (an `origin/<branch>` remote-tracking ref, freshly fetched by the caller) into
     /// the worktree's branch with the worktree's own identity, so the repository's merge drivers
     /// (`merge=union` in `.gitattributes`) apply, which a host's server-side update does not. A
