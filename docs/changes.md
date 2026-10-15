@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The onboarding agent protects the production branch itself (SPEC-157, ADR-0129, task #148).
+  When onboarding finds `main` writable by agents, the preparation agent calls the new
+  `production_protect` tool: Yulius adds the ruleset `yulius-people-only-<branch>` (Restrict
+  updates, Restrict deletions, Block force pushes, only repository admins bypass) as the person who
+  owns the task, when GitHub says they are a repository admin. The agent asks a person with
+  `needs_you` only when that is refused; its own token still cannot change protection.
 - Uploading files and positioning them are two steps again in the new-task composer (SPEC-150,
   ADR-0124, task #144). Pasted or dropped files show in a tray above the prompt, numbered; a click
   opens an image large, fitted to the window or at its actual size. In the text each file is a
