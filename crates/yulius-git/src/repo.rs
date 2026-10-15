@@ -116,9 +116,25 @@ impl Git {
 
     /// Pushes every branch and tag of `repo` to `url` under the same names in one atomic push
     /// that never forces: the remote takes all of them or none (a playground moved to GitHub,
-    /// SPEC-176). The network timeout applies.
-    pub fn push_all_refs(&self, repo: &Path, url: &str) -> Result<(), GitError> {
+    /// SPEC-176). With `first`, that branch goes alone before (non-forcing too): GitHub makes the
+    /// first branch pushed into an empty repository its default branch. The network timeout
+    /// applies to each push.
+    pub fn push_all_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        first: Option<&str>,
+    ) -> Result<(), GitError> {
         validate_remote_url(url)?;
+        if let Some(branch) = first {
+            validate_branch_name(branch)?;
+            let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+            self.run_ok(
+                Invocation::new(self, "push", Some(repo))
+                    .args(["push", "--quiet", "--", url, &refspec])
+                    .timeout(self.network_timeout),
+            )?;
+        }
         self.run_ok(
             Invocation::new(self, "push", Some(repo))
                 .args(["push", "--quiet", "--atomic", "--", url])

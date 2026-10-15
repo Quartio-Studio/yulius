@@ -361,9 +361,16 @@ pub trait GitPort: Send + Sync {
         unsupported("copying a repository's history")
     }
     /// Pushes every branch and tag of the repository `repo` to `url` in one atomic push that
-    /// never forces, with `token` (a playground moved to GitHub, SPEC-176).
-    async fn push_all_refs(&self, repo: &Path, url: &str, token: &Secret) -> AppResult<()> {
-        let _ = (repo, url, token);
+    /// never forces, with `token`; `first`, when given, goes alone before, so an empty GitHub
+    /// repository takes it as its default branch (a playground moved to GitHub, SPEC-176).
+    async fn push_all_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        first: Option<&str>,
+        token: &Secret,
+    ) -> AppResult<()> {
+        let _ = (repo, url, first, token);
         unsupported("pushing a repository")
     }
     /// The branches and tags of the repository at `url` as it answers now, `(ref name, commit)`

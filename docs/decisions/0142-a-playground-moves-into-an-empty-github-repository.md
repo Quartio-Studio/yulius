@@ -29,7 +29,7 @@ the App creates in an organisation gives nobody but the organisation's owners a 
    commits or behind them: a move that failed after its push is retried, and the non-forcing push
    fast-forwards what merged since.
 3. **The move runs in this order:** an atomic, non-forcing push of every branch and tag of the
-   bare `origin`, with the installation token. Then the clone's `origin` is repointed to the
+   bare `origin`, with the installation token (after the default branch, decision 5). Then the clone's `origin` is repointed to the
    repository and fetched. Then a compare-and-set on the sandbox record writes the owner, name and
    repository id, and holds only while it is still a playground. That write is the commit point:
    when it fails, the clone's `origin` is pointed back. Only after it is the bare `origin`
@@ -37,8 +37,11 @@ the App creates in an organisation gives nobody but the organisation's owners a 
 4. **Live or queued tasks and active CI runs hold it** (409), checked before the push and again
    before the record update, and it holds the sandbox's armed-merge pass. It runs detached from
    its request, as a shell start does (ADR-0053), so a client that goes away never leaves it half
-   done. Stopped and
-   finished tasks stay and continue as GitHub tasks: their briefing is built per attempt.
+   done. Stopped and finished tasks stay and continue as GitHub tasks: their briefing is built per
+   attempt.
+5. **The playground's default branch is pushed alone first**, before the atomic push of the rest:
+   GitHub makes the first branch pushed into an empty repository its default, so GitHub's default
+   matches the sandbox's.
 
 ## Alternatives
 

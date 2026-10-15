@@ -50,7 +50,8 @@ impl App {
         name: &str,
     ) -> AppResult<Sandbox> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &id, Action::Administer).await?;
+        let (record, _) = self.require(&ctx.user, &id, Action::Administer).await?;
+        refuse_github_sandbox(&record)?;
         let (owner, _) = self.instance_owner().await.map_err(|err| match err {
             AppError::Conflict(_) => AppError::Conflict(
                 "connect this instance to GitHub first (Administration → GitHub): a playground \
@@ -59,30 +60,7 @@ impl App {
             ),
             other => other,
         })?;
-        // Merges of this playground hold the same pass: none lands on `origin` during the move.
-        let pass = self.armed_pass(&id);
-        let _pass = pass.lock().await;
-        // Read under the pass: a move or merge that held it before may have changed it.
-        let record = self
-            .deps
-            .store
-            .sandbox(&id)
-            .await?
-            .filter(|s| s.removed_at.is_none())
-            .ok_or(AppError::NotFound)?;
-        if !record.is_playground() {
-            return Err(AppError::Conflict(format!(
-                "{}/{} is already a GitHub repository's sandbox; only a playground moves to GitHub",
-                record.repo_owner, record.repo_name
-            )));
-        }
-        self.refuse_busy(&id).await?;
-        if let Some(existing) = self.deps.store.sandbox_by_repo(&owner, name).await? {
-            return Err(AppError::Conflict(format!(
-                "{owner}/{name} is already the sandbox /s/{}",
-                existing.slug
-            )));
-        }
+        self.refuse_linked(&owner, name).await?;
         let repo = self.import_permission(&ctx.user, &owner, name).await?;
         let owner = if repo.owner.is_empty() {
             owner
@@ -96,9 +74,31 @@ impl App {
         };
         let url = clone_url(&owner, &name);
         let token = self.installation_token().await?;
+        // Merges of this playground hold the same pass: none lands on `origin` during the move.
+        // Taken only now, so GitHub's answers above never hold up the sandbox's merges.
+        let pass = self.armed_pass(&id);
+        let _pass = pass.lock().await;
+        // Read under the pass: a move or merge that held it before may have changed it.
+        let record = self
+            .deps
+            .store
+            .sandbox(&id)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::NotFound)?;
+        refuse_github_sandbox(&record)?;
+        self.refuse_busy(&id).await?;
+        // GitHub's name for the repository, which may differ from the one typed (a renamed
+        // repository): never push into another sandbox's repository.
+        self.refuse_linked(&owner, &name).await?;
         let origin = self.playground_origin(&id);
-        self.push_playground(&origin, &url, &token, &owner, &name)
-            .await?;
+        let target = Target {
+            url: &url,
+            owner: &owner,
+            name: &name,
+            default_branch: &record.default_branch,
+        };
+        self.push_playground(&origin, &target, &token).await?;
         self.repoint_clone(&record, &url, &token).await?;
         // Again before the commit point: a task may have started during the push.
         if let Err(err) = self.refuse_busy(&id).await {
@@ -209,11 +209,15 @@ impl App {
     async fn push_playground(
         &self,
         origin: &Path,
-        url: &str,
+        target: &Target<'_>,
         token: &Secret,
-        owner: &str,
-        name: &str,
     ) -> AppResult<()> {
+        let &Target {
+            url,
+            owner,
+            name,
+            default_branch,
+        } = target;
         let git = &self.deps.git;
         let ours = git
             .remote_refs(origin, &origin.to_string_lossy(), &no_token())
@@ -221,6 +225,16 @@ impl App {
         let theirs = git.remote_refs(origin, url, token).await?;
         if theirs == ours {
             return Ok(());
+        }
+        if theirs.is_empty() {
+            // The playground's default branch first: GitHub makes the first branch pushed into
+            // an empty repository its default.
+            let wanted = format!("refs/heads/{default_branch}");
+            let first = ours
+                .iter()
+                .any(|(name, _)| *name == wanted)
+                .then_some(default_branch);
+            return git.push_all_refs(origin, url, first, token).await;
         }
         // An earlier move that failed after its push left GitHub with the playground's refs as
         // they were; merges since only moved them forward, and the push fast-forwards them.
@@ -240,13 +254,24 @@ impl App {
             }
         }
         if behind {
-            return git.push_all_refs(origin, url, token).await;
+            return git.push_all_refs(origin, url, None, token).await;
         }
         Err(AppError::Conflict(format!(
             "{owner}/{name} is not empty ({} on GitHub); a playground moves only into an empty \
              repository: create a new one without a README, license or .gitignore",
             plural_refs(theirs.len())
         )))
+    }
+
+    /// Refuses a repository that a sandbox already holds.
+    async fn refuse_linked(&self, owner: &str, name: &str) -> AppResult<()> {
+        match self.deps.store.sandbox_by_repo(owner, name).await? {
+            Some(existing) => Err(AppError::Conflict(format!(
+                "{owner}/{name} is already the sandbox /s/{}",
+                existing.slug
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// Points the clone's `origin` at `url` and fetches it; on failure points it back.
@@ -279,6 +304,26 @@ impl App {
             tracing::warn!(sandbox = %record.id, error = %err, "could not point the playground's clone back at its origin");
         }
     }
+}
+
+/// The GitHub repository a playground moves into.
+struct Target<'a> {
+    url: &'a str,
+    owner: &'a str,
+    name: &'a str,
+    /// The playground's default branch, pushed first so GitHub takes it as its default.
+    default_branch: &'a str,
+}
+
+/// Refuses a sandbox that is no playground (any more).
+fn refuse_github_sandbox(record: &SandboxRecord) -> AppResult<()> {
+    if record.is_playground() {
+        return Ok(());
+    }
+    Err(AppError::Conflict(format!(
+        "{}/{} is already a GitHub repository's sandbox; only a playground moves to GitHub",
+        record.repo_owner, record.repo_name
+    )))
 }
 
 fn plural_refs(count: usize) -> String {

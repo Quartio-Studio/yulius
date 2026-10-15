@@ -124,6 +124,17 @@ GitHub from then on.
   `restore_origin` with the fetch failure, which is tested. Finished CI runs of the playground stay;
   after the move, publishing their status to GitHub may record a "not published" note for a commit
   that only existed on the server, which changes no gate.
+- **Review round 2 (fresh session, approved with minors), fixed:** the repository is checked
+  against other sandboxes again under GitHub's own name for it (a renamed repository), before any
+  push; the merge pass is taken only after GitHub's permission and token answers; the delivery loop
+  skips a sandbox whose pass is held instead of waiting minutes on a move; the playground's default
+  branch is pushed alone first, so GitHub makes it the repository's default (the local test remote
+  cannot show GitHub's choice, so only the push is tested); the happy-path test checks the audit
+  row, steps and session; the mock names a moved sandbox by its repository, as the server does.
+  The second busy check's rollback has no test: staging a task start during the push needs a hook
+  on the receiving repository, and the server's Git runs with `core.hooksPath=/dev/null`, which
+  reaches a local remote's `receive-pack` too. It shares `restore_origin` with the tested fetch
+  failure.
 - **Live or queued tasks hold the move.** Their agents were started with a playground's briefing,
   tools and Git credentials, and a running playground merge or armed CI merge would land on the
   bare `origin` after the push. Requiring them to be stopped first (they continue after the move

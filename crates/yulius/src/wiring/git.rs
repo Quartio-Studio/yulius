@@ -175,13 +175,20 @@ impl GitPort for GitAdapter {
         blocking(move || git.copy_refs(&repo, &source)).await
     }
 
-    async fn push_all_refs(&self, repo: &Path, url: &str, token: &Secret) -> AppResult<()> {
+    async fn push_all_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        first: Option<&str>,
+        token: &Secret,
+    ) -> AppResult<()> {
+        let first = first.map(str::to_owned);
         let (git, repo, url) = (
             self.git_with_token(token),
             repo.to_path_buf(),
             url.to_owned(),
         );
-        blocking(move || git.push_all_refs(&repo, &url)).await
+        blocking(move || git.push_all_refs(&repo, &url, first.as_deref())).await
     }
 
     async fn remote_refs(

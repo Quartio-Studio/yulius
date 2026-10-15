@@ -194,7 +194,9 @@ test('a playground moves to GitHub from the sandbox menu', async ({ app, browser
   });
   expect(state).toEqual({ moves: [{ slug: 'lab', name: 'lab-app' }], playground: false });
   await browser.evaluate(() => { location.hash = '#/'; });
-  const card = screen.getByRole('article', /^lab$/);
+  // Named by its repository now, as the server names a GitHub sandbox; its slug stays.
+  const card = screen.getByRole('article', /^lab-app$/);
+  await expect(card).toBeVisible();
   await expect(card).not.toContainText('Playground · local Git on this server');
 });
 

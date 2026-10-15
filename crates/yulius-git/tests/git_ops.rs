@@ -1435,7 +1435,8 @@ fn every_branch_and_tag_is_pushed_at_once_and_read_back() -> TestResult {
     fx.git.init(&target, "main", true)?;
     assert!(fx.git.remote_refs(&origin, path_str(&target)?)?.is_empty());
 
-    fx.git.push_all_refs(&origin, path_str(&target)?)?;
+    fx.git
+        .push_all_refs(&origin, path_str(&target)?, Some("dev"))?;
     let want = vec![
         ("refs/heads/dev".to_owned(), main.clone()),
         ("refs/heads/main".to_owned(), main.clone()),
@@ -1475,7 +1476,17 @@ fn a_push_of_every_ref_is_all_or_nothing() -> TestResult {
     fx.git
         .push(&repo, "origin", "refs/heads/main:refs/heads/dev")?;
 
-    assert!(fx.git.push_all_refs(&origin, path_str(&target)?).is_err());
+    assert!(
+        fx.git
+            .push_all_refs(&origin, path_str(&target)?, None)
+            .is_err()
+    );
+    assert!(
+        fx.git
+            .push_all_refs(&origin, path_str(&target)?, Some("-x"))
+            .is_err(),
+        "the first branch is a branch name"
+    );
     assert_eq!(
         fx.git.remote_refs(&repo, path_str(&target)?)?,
         before,

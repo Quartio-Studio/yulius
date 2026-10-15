@@ -1011,6 +1011,8 @@ route('POST', `/api/sandboxes/${ID}/move-to-github`, ({ db, p, body }) => {
   if (db.moveRefusal) fail(409, 'conflict', db.moveRefusal);
   const owner = db.me.instance.owner_login;
   sandbox.playground = false;
+  // The view names a GitHub sandbox by its repository; its slug stays.
+  sandbox.name = name;
   sandbox.repo = { owner, name, url: `https://github.com/${owner}/${name}` };
   (db.moves = db.moves || []).push({ slug: sandbox.slug, name });
   resync(db);

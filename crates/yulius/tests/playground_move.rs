@@ -15,11 +15,14 @@ use support::repos::git;
 use support::{Creds, Harness, HarnessOptions, TestResult, call, harness_with};
 use yulius::wiring::git::GitAdapter;
 use yulius_app::ci::CiRunRecord;
+use yulius_app::model::{AttemptRecord, LaunchKind, StepRecord};
 use yulius_app::ports::github::GhRepo;
-use yulius_app::ports::store::{SandboxStore, TaskStore};
+use yulius_app::ports::store::{CoordinationStore, SandboxStore, TaskStore};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::harness::Harness as Agent;
+use yulius_domain::ids::{AttemptId, SandboxId, StepId, TaskId};
+use yulius_domain::task::AttemptState;
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
@@ -152,6 +155,42 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
     let sid = sandbox["id"].as_str().ok_or("id")?.to_owned();
     let task =
         support::seed_task(&w.h, "t-kept", &sid, "u-alice", TaskStatus::Closed, None).await?;
+    let now = w.h.app.now();
+    let step = StepRecord {
+        id: StepId::parse("st-1")?,
+        task_id: task.id.clone(),
+        ordinal: 1,
+        title: "An idea".into(),
+        status: "done".into(),
+        note: None,
+        updated_by: Some("system".into()),
+        updated_at: Some(now),
+        effort: 1,
+    };
+    w.h.store
+        .replace_steps(&task.id, &[step], "system", now)
+        .await?;
+    w.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("at-kept")?,
+            task_id: task.id.clone(),
+            seq: 1,
+            harness: Agent::ClaudeCode,
+            account_id: None,
+            provider_session_id: Some("session-1".into()),
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Exited,
+            run_dir: "/nonexistent/run".into(),
+            token_hash: "x".into(),
+            host_token: w.h.app.deps.crypto.seal(&[1u8; 32])?,
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: now,
+            ended_at: Some(now),
+            exit_code: Some(0),
+            exit_reason: None,
+        })
+        .await?;
     let before = refs(&origin)?;
     assert_eq!(
         before.len(),
@@ -192,6 +231,33 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
             .ok_or("task gone")?;
     assert_eq!(kept.sandbox_id, task.sandbox_id);
     assert_eq!(kept.number, task.number);
+    let steps = w.h.store.steps(&task.id).await?;
+    assert_eq!(steps.len(), 1, "its steps stay");
+    let attempts = w.h.store.attempts(&task.id).await?;
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|a| a.provider_session_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("session-1")],
+        "its session stays"
+    );
+    let audit = {
+        use yulius_app::ports::store_ext::AutomationStore;
+        w.h.store.automation_audit(&sid, 100).await?
+    };
+    let entry = audit
+        .iter()
+        .find(|e| e.action == "sandbox.moved_to_github")
+        .ok_or("no audit row for the move")?;
+    assert!(
+        entry
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains(&format!("{OWNER}/alices-lab"))),
+        "{:?}",
+        entry.detail
+    );
 
     // It is a GitHub sandbox now: moving it again is refused.
     let again = w.move_it(&w.alice, &sandbox, "alices-lab").await?;

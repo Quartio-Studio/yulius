@@ -78,6 +78,12 @@ impl App {
                 // Armed merges whose checks passed while no CI run ended here (a restart).
                 if let Ok(sandboxes) = app.deps.store.sandboxes().await {
                     for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+                        // A sandbox whose pass is held (a merge or a move to GitHub, which can
+                        // push for minutes) is merged by whoever holds it, or on the next round:
+                        // the other sandboxes never wait for it.
+                        if app.armed_pass(&sandbox.id).try_lock().is_err() {
+                            continue;
+                        }
                         app.merge_armed(&sandbox.id).await;
                     }
                 }
