@@ -307,6 +307,11 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, ancestor, descendant);
         unsupported("comparing commits")
     }
+    /// The parents of commit `rev`, in order.
+    async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
+        let _ = (repo, rev);
+        unsupported("reading a commit's parents")
+    }
     /// The best common ancestor of two revisions, if any.
     async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
         let _ = (repo, a, b);

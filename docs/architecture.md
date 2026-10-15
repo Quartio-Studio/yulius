@@ -177,8 +177,14 @@ The record marks it with an empty repository owner. The browser packs a chosen f
 working tree, `git/` the history part of `.git`); the server takes only `HEAD`, `packed-refs`,
 `shallow`, `objects/` and `refs/` of it, copies the branches and tags into the new `origin` with the
 hardened Git, and commits the working files on top. `delivery_merge` squashes a task branch onto
-the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing). CI
-sync, hygiene, the automatic pull request and reconciliation skip playgrounds.
+the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing) on green
+Yulius CI ([SPEC-163](../.ai/specs/SPEC-163-fix-411-yulius-ci-runs-the-gate-on-a-pla.md),
+[decision 0134](decisions/0134-a-playground-s-ci-tests-the-head-merged-into-its-integration-branch.md)):
+the CI sync tests the integration head without GitHub, and `delivery_merge` first builds the task
+head merged into the integration branch in Yulius's clone (the merge train's builder, a merge
+commit) and tests it as `task/<n>`; while that run goes the merge is armed, and it lands once the
+run passed. Nothing is published to GitHub. Hygiene, the automatic pull request and reconciliation
+skip playgrounds.
 
 ```mermaid
 flowchart LR
@@ -186,7 +192,9 @@ flowchart LR
   S -->|"init --bare, copy refs, commit the files"| O[("data/playgrounds/id.git (outside the sandbox)")]
   O -->|"clone; fetch by path"| R["sandbox/repo"]
   R -->|"worktree from origin/dev"| T["Task worktree (agent, contained)"]
-  T -->|"delivery_merge: Yulius squashes, pushes by path"| O
+  T -->|"delivery_merge: head merged into dev, built in the clone"| C["task/n run (Yulius CI)"]
+  R -->|"dev head"| D["branch/dev run (Yulius CI)"]
+  C -->|"passed: Yulius squashes, pushes by path"| O
 ```
 
 ## Parallel tasks at merge
@@ -947,8 +955,9 @@ the job's reaped process tree (`getrusage` of its children) into `exit.json`; th
 the job's end and the end trigger adds them to its span
 ([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
-outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
-task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
+outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
+the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
+days go with the hourly CI upkeep.
 
 ```mermaid
 flowchart LR
@@ -963,7 +972,7 @@ flowchart LR
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
   S --> API["GET …/stages/timeline, summary, spans"]
-  API --> UI["Pipeline page, run dialogs, task overview, Dashboard"]
+  API --> UI["Dashboard (Overview, Pipeline tab), run dialogs, task overview"]
 ```
 
 ## Notes

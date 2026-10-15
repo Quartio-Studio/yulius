@@ -30,7 +30,7 @@ watching, steering and unblocking.
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
   and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
-  pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
+  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
@@ -53,7 +53,7 @@ watching, steering and unblocking.
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Secrets, Dashboard — with Overview and Pipeline (stages) tabs —; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -100,11 +100,11 @@ watching, steering and unblocking.
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
   (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
-  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Pipeline page shows
-  deployment frequency, lead time, change failure rate and time to restore for dev and production,
-  any stage's daily p50 and p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON
-  export; a CI
-  run, a deploy and a task show their own waterfall, and the Dashboard the overview.
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Dashboard's Pipeline
+  (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
+  time, change failure rate and time to restore for dev and production, any stage's daily p50 and
+  p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy
+  and a task show their own waterfall, and the Dashboard's Overview tab the overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
