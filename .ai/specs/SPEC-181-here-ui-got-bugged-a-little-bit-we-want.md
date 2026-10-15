@@ -61,7 +61,7 @@ other people input). Fix and implement if needed".
 - [x] A file read with the sha256 the caller knows answers 204 when unchanged
 - [x] The file in front reloads by itself when it changes on disk, keeping the cursor and edits
 - [x] Independent review in a fresh session, findings fixed test-first
-- [x] Review round 2 approves the exact head
+- [x] The final review approves the exact head
 - [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -126,11 +126,16 @@ other people input). Fix and implement if needed".
   tab click during a save could put the pre-save text back (fixed: no look while saving); the
   hidden-Editor test passed without its guard (fixed: the mock counts reads as asked); line
   endings and a BOM (fixed); `known` checked before access (fixed); docs wording (fixed); the
-  read now uses `tokio::fs`. Round 2 reviewed the head with these fixes.
+  read now uses `tokio::fs`. Round 2 confirmed those fixes and requested one more: an Overwrite
+  after a conflict saved without being awaited, so `saving` was cleared while its write was on its
+  way and a look could start (fixed: awaited; e2e "no look … while an Overwrite after a conflict
+  saves" failed with 1 look during the save, then passed); a file's line ending is now its
+  majority's, as when Monaco opens it. A BOM is only left out of the comparison: a save drops it,
+  as before this change. The final round reviews the head with these fixes.
 - **Gates** on the head merged with `origin/dev` (`41694961`):
   - `scripts/dev ci`: exit 0, nextest 1875 passed, 18 skipped; fmt, clippy, docs, deny, shear.
   - `cd e2e && npx e2e run`: 535 passed, 1 skipped (55 files); `tests/editor.e2e.ts` 23/23 three
-    times in a row.
+    times in a row, then 24/24 with the round 2 fix.
   - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 401 for the agent key, as
     since 2026-10-14 (#470); per ADR-0104 this is unrun, not passed. Yulius CI's `security` job
     scans the pull request head.

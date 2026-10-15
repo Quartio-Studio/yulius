@@ -733,8 +733,10 @@ export function createEditorView(ctx, sandbox, getTask) {
   function replaceText(tab, text) {
     const model = tab.model;
     const next = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-    const crlf = next.includes('\r\n');
-    const eol = crlf || next.includes('\n') ? (crlf ? '\r\n' : '\n') : model.getEOL();
+    // The line ending most of the lines have, as when Monaco opens a file; none: the model's.
+    const lines = (next.match(/\n/g) || []).length;
+    const crlf = (next.match(/\r\n/g) || []).length;
+    const eol = lines ? (crlf > lines - crlf ? '\r\n' : '\n') : model.getEOL();
     tab.ignoreChange = true;
     try {
       model.pushStackElement();
@@ -829,7 +831,8 @@ export function createEditorView(ctx, sandbox, getTask) {
           ],
         }).result;
         tab.saving = false;
-        if (choice === 'overwrite') return save(tab, true);
+        // Awaited: until the overwrite is written, the file is saving and no look starts.
+        if (choice === 'overwrite') return await save(tab, true);
         if (choice === 'reload') { tab.dirty = false; await refreshFromDisk(tab, { reload: true }); }
       } else {
         errorToast(error, `Couldn’t save ${tab.path}`);

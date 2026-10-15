@@ -1022,3 +1022,27 @@ test('a change of line endings on disk reaches the editor, and a BOM file keeps 
   await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('zero\none\ntwo\n');
   expect(await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getPosition())).toEqual({ lineNumber: 3, column: 2 });
 });
+
+// Review round 2 of SPEC-181: an Overwrite after a conflict saved with `saving` already cleared, so
+// a look could start while its write was on its way and put the other text back as saved.
+test('no look at the disk starts while an Overwrite after a conflict saves', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await writeDisk(browser, 'theirs\n');
+  await browser.keyboard.press('Control+s');
+  const dialog = screen.getByRole('dialog', /changed on disk/);
+  await expect(dialog.getByRole('button', 'Overwrite')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as LiveWindow & { __releaseSave(): void };
+    const m = w.__yuliusMock;
+    m.holdSave = new Promise((resolve) => { w.__releaseSave = () => { m.holdSave = null; resolve(); }; });
+  });
+  await dialog.getByRole('button', 'Overwrite').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { savesOnTheirWay?: number } }).__yuliusMock.savesOnTheirWay ?? 0)).toBe(1);
+  await screen.getByRole('tab', /^notes\.txt/).click();
+  await browser.evaluate(() => (window as unknown as LiveWindow & { __releaseSave(): void }).__releaseSave());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
+  const during = await browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt' && read.whileSaving).length);
+  expect(during).toBe(0);
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+});
