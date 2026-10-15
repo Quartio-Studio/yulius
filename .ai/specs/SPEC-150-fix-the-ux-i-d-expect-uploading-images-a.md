@@ -55,10 +55,10 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Uploaded files show in a tray above the text, where a click zooms an image and × removes the file
-- [ ] Images sit in the text as one-line numbered placeholders, placed from the tray by drag or the keyboard
-- [ ] The zoom dialog shows an image fitted or at its own size
-- [ ] ADR, architecture, product, earlier specs and the changes log describe the tray and placeholders
+- [x] Uploaded files show in a tray above the text, where a click zooms an image and × removes the file
+- [x] Images sit in the text as one-line numbered placeholders, placed from the tray by drag or the keyboard
+- [x] The zoom dialog shows an image fitted or at its own size
+- [x] ADR, architecture, product, earlier specs and the changes log describe the tray and placeholders
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green and the change delivered to dev
 
