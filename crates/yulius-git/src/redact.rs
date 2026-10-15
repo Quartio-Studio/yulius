@@ -2,7 +2,9 @@
 
 use yulius_domain::redact::{INSTALLATION_TOKEN_PREFIX, stateless_installation_token_len};
 
-const TOKEN_PREFIXES: &[&str] = &["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
+/// `ghs_` first: a stateless installation token is removed whole before another prefix found
+/// inside its base64url payload or signature could cut it.
+const TOKEN_PREFIXES: &[&str] = &["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
 const REDACTED: &str = "[redacted]";
 
 /// Removes credential-shaped substrings from `text`: URL user information
@@ -119,6 +121,22 @@ mod tests {
         assert_eq!(
             redact(&text),
             "fatal: unable to access 'https://[redacted]@github.com/o/r.git/'\nremote: [redacted]."
+        );
+    }
+
+    /// Review of SPEC-138: a payload that happens to hold another prefix (`ghu_`) is not cut
+    /// there, leaving the rest of the token.
+    #[test]
+    fn a_stateless_token_holding_another_prefix_is_removed_whole() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIxghu_AB-{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "PAYLOADSECRET".repeat(3),
+            "SIGNATURESECRET_-ghp_x".repeat(3)
+        );
+        assert_eq!(
+            redact(&format!("remote: {token} failed")),
+            "remote: [redacted] failed"
         );
     }
 

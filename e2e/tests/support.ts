@@ -39,8 +39,11 @@ export async function instrument(browser: Browser): Promise<void> {
  * does not wait for the app's dynamic import of mock.js, which a busy machine delays.
  */
 function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
-  const ready = () => expect.poll(() => browser.evaluate(() => !new URLSearchParams(location.search).has('mock')
-    || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock))).toBe(true);
+  // The app's own test for mock mode (app.js): `?mock=1`.
+  const ready = () => expect.poll(() => browser.evaluate(() => new URLSearchParams(location.search).get('mock') !== '1'
+    || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock)), {
+    message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
+  }).toBe(true);
   const open = app.open.bind(app);
   const reload = browser.reload.bind(browser);
   Object.assign(app, { open: async (path?: string) => { await open(path); await ready(); } });

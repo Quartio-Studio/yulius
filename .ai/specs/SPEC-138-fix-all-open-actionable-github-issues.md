@@ -142,8 +142,12 @@ already fixed, fix them test-first, and close each issue once its fix is on `dev
   for example the full stop after a token at the end of a sentence.
 - **The stateless shape is strict:** `ghs_`, one or more digits, `_`, then a header that starts
   with `eyJ`, followed by up to two more dot-separated base64url segments. A looser rule would
-  catch `ghs_` identifiers in prose. Each segment is bounded by the existing run limit, so a long
-  input costs linear time.
+  catch `ghs_` identifiers in prose. Each segment is read up to the existing run limit (1024
+  characters, about twice a whole real token), so a long input costs linear time.
+- **`ghs_` comes first in the Git and GitHub redactors' prefix lists** (review round 1). They find
+  a prefix anywhere in a word, so `ghu_` inside a token's base64url payload (about one token in
+  10,000) used to cut it there before the `ghs_` pass, leaving the rest in clear text. The
+  transcript redactor matches only at word starts, so it never had this problem.
 - **#430 is fixed in the test, not by reordering the product.** The product's order (flag, notice,
   audit) is deliberate: a person sees the flag first. The test asserts the audit, so it waits for
   the audit.

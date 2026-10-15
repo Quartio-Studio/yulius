@@ -86,7 +86,9 @@ pub enum GitHubError {
     InvalidKey,
 }
 
-const TOKEN_PREFIXES: &[&str] = &["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
+/// `ghs_` first: a stateless installation token is removed whole before another prefix found
+/// inside its base64url payload or signature could cut it.
+const TOKEN_PREFIXES: &[&str] = &["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
 const MAX_MESSAGE: usize = 300;
 const REDACTED: &str = "[redacted]";
 
@@ -186,6 +188,22 @@ mod tests {
         );
         let clean = scrub(&format!("Bad credentials for {token} (installation)"), &[]);
         assert_eq!(clean, "Bad credentials for [redacted] (installation)");
+    }
+
+    /// Review of SPEC-138: a payload that happens to hold another prefix (`ghu_`) is not cut
+    /// there, leaving the rest of the token.
+    #[test]
+    fn scrubs_a_stateless_token_holding_another_prefix_whole() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIxghu_AB-{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "PAYLOADSECRET".repeat(3),
+            "SIGNATURESECRET_-gho_x".repeat(3)
+        );
+        assert_eq!(
+            scrub(&format!("Bad credentials for {token} (installation)"), &[]),
+            "Bad credentials for [redacted] (installation)"
+        );
     }
 
     #[test]
