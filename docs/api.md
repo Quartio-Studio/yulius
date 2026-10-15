@@ -624,9 +624,10 @@ CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "comma
               "status_access": "for administrators: commit statuses cannot be published …" | null,
               "actions_workflows": ["ci.yml"]}   // GitHub Actions still on the integration branch
 CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_number": 12|null,
-         "sha", "state": "queued|running|passed|failed|error|cancelled",
+         "sha", "state": "queued|running|passed|failed|error|cancelled" (never skipped: skipped jobs count as passed),
          "source": "profile|yulius_toml|pull_request",
-         "jobs": [{"id", "name", "command", "matrix", "state", "reason", "exit_code",
+         "jobs": [{"id", "name", "command", "matrix",
+                   "state": "queued|running|passed|failed|error|cancelled|skipped", "reason", "exit_code",
                    "duration_ms", "output" (run detail only: last 512 KiB, escapes removed)}],
          "reason": "superseded by 0d7e5f3|…" | null, "queued_at", "started_at", "ended_at",
          "duration_ms", "requested_by": "yulius|<login>|task:<n>",

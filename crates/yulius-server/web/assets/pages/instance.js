@@ -13,7 +13,7 @@ import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.j
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
 const STEPS = [
   ['building', 'Build', 'The new version is built on this server while tasks keep working.'],
-  ['pausing', 'Pause tasks', 'Each task pauses at its next step. The agents don’t notice.'],
+  ['pausing', 'Pause tasks', 'Tasks pause at once, mid-step. The agents don’t notice.'],
   ['restarting', 'Restart', 'Installs and starts the new version, after a database backup.'],
   ['resuming', 'Resume', 'Tasks continue one by one.'],
 ];
@@ -52,7 +52,8 @@ function stepper(run) {
           ? h('div', { class: 'muted xs' }, 'Still in a turn: ', t.waiting.map((w, n) => h('span', null, n ? ', ' : '',
             h('a', { href: `/s/${encodeURIComponent(w.sandbox)}/t/${w.number}`, dataset: { route: `/s/${encodeURIComponent(w.sandbox)}/t/${w.number}` } }, `#${w.number} ${w.title}`))))
           : null,
-        t.deadline ? h('div', { class: 'muted xs' }, `If a task is still in a turn at ${dateTime(t.deadline)}, the update is cancelled and nothing changes.`) : null);
+        // Only a task that could not be frozen waits for its turn to end (SPEC-160 OPS-011).
+        t.deadline && t.waiting.length ? h('div', { class: 'muted xs' }, `If a task is still in a turn at ${dateTime(t.deadline)}, the update is cancelled and nothing changes.`) : null);
     }
     return h('li', { class: ['update-step', `update-step-${status}`], 'aria-current': status === 'current' ? 'step' : null },
       h('span', { class: 'update-step-mark', 'aria-hidden': 'true' }, status === 'done' ? icon('check', { size: 12 }) : status === 'current' ? h('span', { class: 'spinner' }) : String(i + 1)),
