@@ -171,7 +171,8 @@ impl App {
         }
         // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
         self.forget_merge_outcome(&ctx.task);
-        // A playground merges at once: no pull request, no checks to wait for (SPEC-099).
+        // A playground has no pull request (SPEC-099): it squashes here on green, and arms while
+        // Yulius CI tests the head merged into the integration branch (SPEC-163).
         if let Some(sandbox) = self
             .deps
             .store
@@ -182,17 +183,48 @@ impl App {
             let task = self
                 .load_task(&auth, &task_id, yulius_domain::permission::Action::Work)
                 .await?;
-            let view = self
-                .playground_merge(&auth.user, &task, Some(&head))
-                .await?;
-            self.agent_audit(
-                ctx,
-                "delivery.agent.merge",
-                &format!("{}#{}", sandbox.slug, ctx.task.number),
-                &format!("playground: squashed at head {head} reviewed independently"),
-            )
-            .await;
-            return Ok(json!({"merged": true, "delivery": view}));
+            let pass = self.armed_pass(&sandbox.id);
+            let _pass = pass.lock().await;
+            let target = format!("{}#{}", sandbox.slug, ctx.task.number);
+            return match self
+                .playground_merge(&auth.user, &task, Some(&head), true)
+                .await?
+            {
+                crate::delivery::playground::PlaygroundMerge::Merged(view) => {
+                    self.clear_armed(&ctx.task);
+                    self.agent_audit(
+                        ctx,
+                        "delivery.agent.merge",
+                        &target,
+                        &format!("playground: squashed at head {head} reviewed independently"),
+                    )
+                    .await;
+                    Ok(json!({"merged": true, "delivery": view}))
+                }
+                crate::delivery::playground::PlaygroundMerge::Testing(state, note) => {
+                    self.arm_merge(&ctx.task, &head, &summary);
+                    self.agent_audit(
+                        ctx,
+                        "delivery.agent.merge_armed",
+                        &target,
+                        &format!(
+                            "playground: armed at head {head} (checks {}); reviewed independently",
+                            state.as_str()
+                        ),
+                    )
+                    .await;
+                    Ok(json!({
+                        "merged": false,
+                        "armed": true,
+                        "checks": state.as_str(),
+                        "next": format!(
+                            "{note}. Yulius squashes this exact head as soon as that run passes. \
+                             Start `yulius wait` with run_in_background and end your turn: it says \
+                             how the merge ended; do not call delivery_merge again for this head."
+                        ),
+                    }))
+                }
+            };
         }
         // Deliver the head first, as the end of a clean turn would: a goal task's evaluator may
         // keep every turn going, and without its pull request the merge would wait for nothing
