@@ -485,6 +485,8 @@ impl App {
         // Yulius attaches the repository's `.mcp.json` servers; Claude Code rejects them here
         // instead of asking the person (SPEC-095 PMC-001, PMC-004).
         let project_mcp_servers = self.import_project_mcp(record).await;
+        // The sandbox's MCP servers as a task run gets them, the file's included (SPEC-147).
+        let mcp = self.mcp_attachments(record).await?;
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder.clone(),
             config_dir: space.home.join(".claude"),
@@ -497,6 +499,7 @@ impl App {
                 crate::model::Secret(runtime.cockpit_token(self.deps.crypto.as_ref())),
             )),
             project_mcp_servers,
+            mcp,
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));
@@ -511,6 +514,12 @@ impl App {
         let mut env = self.shell_env(record, &space, &self.shell_program(), &folder);
         env.retain(|(key, _)| !plan.env.iter().any(|(k, _)| k == key));
         env.append(&mut plan.env);
+        // Its Bash commands, hooks and stdio MCP servers run through the agent-secret redaction,
+        // which loads its fingerprints with the person's workspace token (SPEC-147 SAM-002).
+        if let Some(prefix) = self.scrub_shell_prefix() {
+            env.retain(|(key, _)| *key != prefix.0);
+            env.push(prefix);
+        }
         plan.env = env;
         plan.containment = space.containment.clone();
         let reader = self.spawn_shell(runtime, &plan).await;

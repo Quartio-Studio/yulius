@@ -159,6 +159,8 @@ pub struct ShellRuntime {
     run_dir: PathBuf,
     token: [u8; 32],
     hub: Hub,
+    /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
+    scrub: crate::vault::TerminalScrub,
     writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
@@ -787,6 +789,7 @@ impl App {
             run_dir: shell_dir_root(&self.config.data_dir).join(id),
             token: self.deps.crypto.random_bytes(),
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+            scrub: crate::vault::TerminalScrub::default(),
             writer: tokio::sync::Mutex::new(None),
             ended: AtomicBool::new(false),
             closing: AtomicBool::new(false),
@@ -857,6 +860,17 @@ impl App {
         self.attach_shell(runtime).await
     }
 
+    /// A whole screen of the shell as viewers see it: a Cockpit's redacted of agent secrets
+    /// (SPEC-147 SAM-004), a terminal's as it is.
+    async fn shell_screen(&self, runtime: &ShellRuntime, bytes: &[u8]) -> Vec<u8> {
+        if runtime.kind == ShellKind::Cockpit {
+            self.terminal_snapshot(&runtime.scrub, &runtime.sandbox, bytes)
+                .await
+        } else {
+            bytes.to_vec()
+        }
+    }
+
     /// Connects to the shell's host and loads its screen into the hub.
     async fn attach_shell(&self, runtime: &ShellRuntime) -> AppResult<Box<dyn RunReader>> {
         let attached = self
@@ -865,12 +879,12 @@ impl App {
             .attach(&runtime.run_dir, &runtime.token)
             .await?;
         let welcome = attached.welcome;
-        runtime.hub.reset(
-            welcome.seq,
-            welcome.snapshot.as_deref().unwrap_or_default(),
-            welcome.cols,
-            welcome.rows,
-        );
+        let screen = self
+            .shell_screen(runtime, welcome.snapshot.as_deref().unwrap_or_default())
+            .await;
+        runtime
+            .hub
+            .reset(welcome.seq, &screen, welcome.cols, welcome.rows);
         *runtime.writer.lock().await = Some(attached.writer);
         Ok(attached.reader)
     }
@@ -896,10 +910,24 @@ impl App {
         let mut reattaches = 0;
         let exit = loop {
             match reader.next().await {
+                Ok(Some(RunEvent::Output { seq, bytes })) if runtime.kind == ShellKind::Cockpit => {
+                    let shell = Arc::clone(&runtime);
+                    self.scrub_output(
+                        &runtime.scrub,
+                        &runtime.sandbox,
+                        seq,
+                        &bytes,
+                        move |seq, out| {
+                            shell.hub.output(seq, out);
+                        },
+                    )
+                    .await;
+                }
                 Ok(Some(RunEvent::Output { seq, bytes })) => runtime.hub.output(seq, &bytes),
                 Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
                     let (cols, rows) = runtime.hub.size();
-                    runtime.hub.reset(seq, &bytes, cols, rows);
+                    let screen = self.shell_screen(&runtime, &bytes).await;
+                    runtime.hub.reset(seq, &screen, cols, rows);
                 }
                 Ok(Some(RunEvent::Exit(exit))) => break Some(exit),
                 Ok(None) | Err(_) => {
@@ -1338,6 +1366,7 @@ impl App {
             run_dir: run_dir.to_path_buf(),
             token,
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+            scrub: crate::vault::TerminalScrub::default(),
             writer: tokio::sync::Mutex::new(None),
             ended: AtomicBool::new(false),
             closing: AtomicBool::new(false),

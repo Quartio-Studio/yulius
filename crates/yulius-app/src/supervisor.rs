@@ -2452,9 +2452,10 @@ impl App {
                 // run has ended; any other (switching, starting) was not closed.
                 Err(AppError::Conflict(_)) => {
                     let status = self.deps.store.task(task_id).await?.map(|t| t.status);
+                    // Archive and delete both close this way: the message names neither.
                     if status.is_some_and(|s| !s.is_resting() && s != TaskStatus::Stopping) {
                         return Err(AppError::Conflict(
-                            "stop the task before deleting it".into(),
+                            "the task is changing state; stop the task first".into(),
                         ));
                     }
                 }

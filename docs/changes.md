@@ -12,6 +12,38 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `memory_peak_mb` and `disk_written_mb` with its end (absent when unmeasured, never 0). The
   Pipeline page's stage table shows CPU time and peak memory p50 · p90 beside the durations, and a
   waterfall row its own figures.
+- Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
+  task #126, fixes #406, #431 and #399):
+  - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start
+    onboarding running while an admin skips leaves the sandbox `skipped`. The mock nit was already
+    done by #405.
+  - **#431:** a test archives a live, Done onboarding task in a `preparing` sandbox and gets it
+    closed, archived and the sandbox `ready`. The close's "changing state" 409 now reads "stop the
+    task first" for archive and delete, and `archive_task` documents its 409s. SPEC-002's long
+    line is reflowed.
+  - **#399:** the task summary says `not_started` and `awaits_start_onboarding`. The UI reads the
+    onboarding task of a `pending` sandbox "Waits for Start onboarding", and a task that never ran
+    "Not started". Neither is in the Closed group, tab or count.
+- Uploading files and positioning them are two steps again in the new-task composer (SPEC-150,
+  ADR-0124, task #144). Pasted or dropped files show in a tray above the prompt, numbered; a click
+  opens an image large, fitted to the window or at its actual size. In the text each file is a
+  one-line placeholder (`Image 1`) at the caret, moved by drag, by cut and paste or by dragging its
+  tray thumbnail into the text. × in the tray removes a file; a file without a placeholder is sent
+  after the text.
+- CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
+  entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
+  Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
+- The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
+  task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
+  to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
+  secret environment. Its Bash commands, hooks and stdio servers run through `yulius --scrub-exec`
+  and its tool results pass the `PostToolUse` redaction hook, its only hook, as in task runs: an
+  agent secret prints as `[secret:NAME]`. Both load their fingerprints with the person's workspace
+  token, which the scrub endpoints now accept while the person may work in the sandbox, and its
+  screen is redacted on the server as a task's terminal is. Literal values typed into a server's
+  form are not agent secrets and stay unredacted, as in task runs; servers imported from
+  `.mcp.json` with agent-secret placeholders need the egress proxy, which the Superagent does not
+  have yet.
 - A failed CI test's output stays readable (SPEC-145, ADR-0119, task #128; fixes #460, part of #485).
   While a job runs, Yulius keeps each failing test's block (nextest's `FAIL` line with its stdout and
   stderr, or libtest's), at most 8 KiB each and 32 KiB per job, and `ci_status` with `run_id` shows

@@ -1545,7 +1545,7 @@ impl App {
             }
         }
         text.push_str(&format!(
-            "You may deploy dev (cd_deploy); production is deployed by a person on {}/s/{}/cd.",
+            "You may deploy dev (cd_deploy); production is deployed by a person on {}/s/{}/ci?section=cd.",
             self.config.public_url, sandbox.slug
         ));
         Ok(serde_json::json!({"text": text, "cd": overview}))

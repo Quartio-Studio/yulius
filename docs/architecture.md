@@ -230,8 +230,11 @@ sequenceDiagram
 A task's agent is a native Claude Code session, and its first message is in before a person can
 type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
 [decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
-attached on the new-task composer are uploaded to the sandbox's drafts folder, and each sits in
-the prompt's text where it was pasted or dropped: the prompt is stored with it there as the
+attached on the new-task composer are uploaded to the sandbox's drafts folder and show in the
+composer's tray, and each sits in the prompt's text as a placeholder where it was pasted, dropped
+or placed from the tray ([SPEC-150](../.ai/specs/SPEC-150-fix-the-ux-i-d-expect-uploading-images-a.md),
+[decision 0124](decisions/0124-uploaded-files-sit-in-a-tray-the-text-holds-placeholders.md)); a
+file without one follows the text. The prompt is stored with it there as the
 mention `@'<path>'` (an older prompt has its files after the text, a line `@path` each), and
 `Request::parse` keeps that order everywhere the prompt goes
 ([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
@@ -320,6 +323,12 @@ returns to `pending` and Start onboarding creates a new one. `refresh_onboarding
 repairs, and the server makes them once for every sandbox at start, which heals sandboxes stuck
 before the fix ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
 [decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)).
+Every state change below is a compare-and-set from the state it was decided on, so a Start
+onboarding or a refresh running while an admin skips never writes over the skip (attaching a new
+onboarding task writes `pending` under the lock a skip takes, so it needs no condition). Until it runs,
+the onboarding task reads "Waits for Start onboarding" (or "Not started" after a skip), not Closed
+([SPEC-153](../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
+[decision 0126](decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -456,12 +465,24 @@ other server. The Superagent starts with `--settings` naming every one of them i
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
+The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
+redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
+hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
+server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
+token the person's environment holds, answered while the person may work in the sandbox (by an
+access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
+proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+[decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
+  MS -->|"mcp_attachments: values in the secret environment"| HP
+  SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
   APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
@@ -530,9 +551,11 @@ flowchart LR
 
 CD runs a project's deploy and verify scripts like CI runs its checks
 ([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
-ADR-0110, ADR-0111). `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the
-heads of the protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree
-never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
+ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
+tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
+`yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
+protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
+changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's

@@ -646,8 +646,10 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     let shown = text["text"].as_str().unwrap_or_default();
     assert!(shown.contains("dev ([cd.dev] from dev): ready"), "{shown}");
     assert!(shown.contains("secrets: DEV_TOKEN not allowed"), "{shown}");
+    // The CI/CD page's CD tab, its canonical address (SPEC-151).
     assert!(
-        shown.contains("production is deployed by a person"),
+        shown.contains("production is deployed by a person on ")
+            && shown.ends_with("/ci?section=cd."),
         "{shown}"
     );
 

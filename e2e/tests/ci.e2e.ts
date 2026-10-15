@@ -10,7 +10,10 @@ failOnPageErrors();
 
 test('the CI page shows the jobs in force and opens a failed run at the failing job', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('CI');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('CI/CD');
+  // SPEC-151: CI is the first tab of the CI/CD page, the one its plain address opens.
+  await expect(screen.getByRole('radio', 'CI (tests)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'false');
   await expect(screen.getByRole('heading', '3 jobs from yulius.toml on the integration branch')).toBeVisible();
   await expect(screen.getByText('cargo clippy --all-targets -- -D warnings')).toBeVisible();
   await expect(screen.getByText(/superseded by 0d7e5f3/)).toBeVisible();

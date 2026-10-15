@@ -1,4 +1,4 @@
-// CD (deployment) page (SPEC-134, ADR-0109/0110): the project's dev and production environments as
+// CD tab of the CI/CD page (SPEC-134, SPEC-151, ADR-0109/0110): the project's dev and production environments as
 // yulius.toml defines them on their protected branches ([cd.dev] from the integration branch,
 // [cd.prod] from what production deploys), what each runs, the secrets it needs, what is
 // deployed, and the runs with their output. Dev deploys after a confirmation (people with write
@@ -10,7 +10,7 @@ import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, to
 import { relLong, dateTime } from '../format.js';
 import { allows } from '../status.js';
 import { replaceQuietly, href } from '../router.js';
-import { pageFrame, loader } from './common.js';
+import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
@@ -52,14 +52,21 @@ How we deploy (fill in what you know):
 - dev:
 - production: `;
 
-/** Mount the CD page. */
-export function mountCdPage(ctx, sandbox, route) {
+/** What the CI/CD page's sub-heading says on the CD tab. */
+export const CD_SUB = `deploys run on this ${BRAND.name} machine, from protected branches`;
+
+/**
+ * Mount the CD tab into `section`, with its header action in `actions`; returns its teardown, which
+ * stops its refreshes and closes its run dialog. Its addresses are the CI/CD page's `?section=cd`.
+ */
+export function mountCdSection(ctx, sandbox, route, section, actions) {
   const write = allows(sandbox.access, 'write');
   const base = `/api/sandboxes/${enc(sandbox.id)}`;
+  const page = `/s/${encodeURIComponent(sandbox.slug)}/ci?section=cd`;
   const setupButton = h('button', { type: 'button', class: 'btn', disabled: !write, title: write ? 'Start a task that sets up or changes CD' : 'Requires write access', onClick: () => setUp() }, icon('spark', { size: 16 }), 'Set up CD with an agent');
-  const frame = pageFrame({ title: 'CD', sub: `deploys run on this ${BRAND.name} machine, from protected branches`, actions: [setupButton] });
+  setChildren(actions, setupButton);
   const host = h('div');
-  frame.body.append(host);
+  section.append(host);
   let timer = null;
   let destroyed = false;
   let openRun = null;
@@ -198,6 +205,8 @@ export function mountCdPage(ctx, sandbox, route) {
       if (expect) body.expect = expect;
       if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
       const run = await ctx.api.post(`${base}/cd/${env}/deploy`, body);
+      // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens there.
+      if (destroyed) return;
       toast(env === 'dev' ? 'Deploying dev.' : 'Deploying production.', { kind: 'ok' });
       reload({ quiet: true });
       showRun(run.run_id);
@@ -220,6 +229,7 @@ export function mountCdPage(ctx, sandbox, route) {
 
   /** A run's output in a dialog, refreshed while it runs. */
   function showRun(id) {
+    if (destroyed) return;
     if (openRun) openRun.close();
     let poll = null;
     const head = h('div', { class: 'row-wrap' });
@@ -230,10 +240,10 @@ export function mountCdPage(ctx, sandbox, route) {
     const modal = openModal({
       title: 'Deploy', wide: true, body: placeholder('Loading the deploy…', 'loading'),
       actions: [{ label: 'Close' }],
-      onClose: () => { clearTimeout(poll); openRun = null; if (!destroyed) replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/cd`); },
+      onClose: () => { clearTimeout(poll); openRun = null; if (!destroyed) replaceQuietly(page); },
     });
     openRun = modal;
-    replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/cd?run=${encodeURIComponent(id)}`);
+    replaceQuietly(`${page}&run=${encodeURIComponent(id)}`);
     let first = true;
     const load = async () => {
       try {
@@ -280,9 +290,5 @@ export function mountCdPage(ctx, sandbox, route) {
   const deepRun = route && route.query && route.query.get('run');
   if (deepRun) showRun(deepRun);
 
-  return {
-    el: frame.el,
-    key: `cd:${sandbox.id}`,
-    destroy: () => { destroyed = true; clearTimeout(timer); if (openRun) openRun.close(); },
-  };
+  return () => { destroyed = true; clearTimeout(timer); if (openRun) openRun.close(); };
 }
