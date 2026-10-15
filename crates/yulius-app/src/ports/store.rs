@@ -204,6 +204,9 @@ pub trait SandboxStore: Send + Sync {
         state: &str,
         task: Option<&TaskId>,
     ) -> AppResult<()>;
+    /// Moves the onboarding state from `from` to `to` only while it is still `from`; `false`
+    /// (nothing written) when it changed meanwhile (SPEC-153 OLC-001).
+    async fn transition_onboarding(&self, id: &SandboxId, from: &str, to: &str) -> AppResult<bool>;
     /// Marks removed.
     async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
     /// Renames the slug of a removed sandbox of `owner/name` holding `slug` to
@@ -356,6 +359,8 @@ pub trait TaskStore: Send + Sync {
     async fn attempt_by_token(&self, token_hash: &str) -> AppResult<Option<AttemptRecord>>;
     /// Attempts of a task in order.
     async fn attempts(&self, task: &TaskId) -> AppResult<Vec<AttemptRecord>>;
+    /// Whether the task ever had an attempt (cheaper than [`Self::attempts`]).
+    async fn has_attempts(&self, task: &TaskId) -> AppResult<bool>;
     /// The spawning/live attempt of a task.
     async fn live_attempt(&self, task: &TaskId) -> AppResult<Option<AttemptRecord>>;
     /// All spawning/live attempts.

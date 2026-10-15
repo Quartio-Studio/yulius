@@ -42,10 +42,13 @@ const CLOSED_PREVIEW = 5;
 const GROUP_PAGE = 50;
 const COLLAPSED_KEY = 'yulius.tasksCollapsed';
 
-/** Which list group a task is in: the sidebar's groups, with Closed apart from Stopped. */
+/**
+ * Which list group a task is in: the sidebar's groups, with Closed apart from Stopped. A task that
+ * never ran is not Closed (SPEC-153): it ended without running, with the stopped ones.
+ */
 function groupOf(task, info) {
   if (info.group !== 'ended') return info.group;
-  return task.status === 'closed' ? 'closed' : 'stopped';
+  return task.status === 'closed' && !info.notStarted ? 'closed' : 'stopped';
 }
 
 /** The second line: what is happening or what to do, in words (status.js activityLine). */

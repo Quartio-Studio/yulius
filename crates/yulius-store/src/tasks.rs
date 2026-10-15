@@ -697,6 +697,19 @@ impl TaskStore for SqliteStore {
             .next())
     }
 
+    async fn has_attempts(&self, task: &TaskId) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM attempts WHERE task_id = ?1)",
+                params![task],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn attempts(&self, task: &TaskId) -> AppResult<Vec<AttemptRecord>> {
         self.attempts_query(
             format!("SELECT {ATTEMPT_COLS} FROM attempts WHERE task_id = ?1 ORDER BY seq"),
