@@ -630,6 +630,52 @@ async fn contained_jobs_see_only_their_sandbox() -> TestResult {
     Ok(())
 }
 
+/// SPEC-145 (#460, #485): a failing test's output stays readable however much the job prints
+/// after it. The job prints a nextest failure, then 600 KB (more than the 512 KiB of output it
+/// keeps) and fails: its failing tests' output is kept with it and shown by `ci_status`; a
+/// passing job keeps none.
+#[tokio::test]
+async fn a_failed_jobs_failing_tests_stay_readable_after_long_output() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "suite"
+command = 'printf "        FAIL [   0.547s] (290/1670) yulius::main cockpit::manages\n  stderr ───\n    thread panicked at tests/cockpit.rs:1258:5:\n    the kept assertion message\n\n"; yes "        PASS [   0.010s] (1/1670) yulius::main filler::line padding padding padding" | head -n 8000; exit 1'
+[[ci.jobs]]
+name = "ok"
+command = 'echo "        PASS [   0.010s] (1/1) a b"'
+"#
+        .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let id = overview["runs"][0]["id"].as_str().ok_or("id")?.to_owned();
+    let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let suite = jobs.iter().find(|j| j["name"] == "suite").ok_or("suite")?;
+    assert_eq!(suite["state"], "failed", "{detail}");
+    let output = suite["output"].as_str().unwrap_or_default();
+    assert!(
+        !output.contains("the kept assertion message"),
+        "the end of the output no longer holds it"
+    );
+    let failures = suite["failures"].as_str().unwrap_or_default();
+    assert!(
+        failures.starts_with("FAIL [   0.547s] (290/1670) yulius::main cockpit::manages\n"),
+        "{failures}"
+    );
+    assert!(
+        failures.contains("the kept assertion message"),
+        "{failures}"
+    );
+    assert!(!failures.contains("filler::"), "{failures}");
+    let ok = jobs.iter().find(|j| j["name"] == "ok").ok_or("ok")?;
+    assert_eq!(ok["state"], "passed", "{detail}");
+    assert!(ok["failures"].is_null(), "{ok}");
+    Ok(())
+}
+
 /// A squash merge of an up-to-date pull request has exactly the tree its run tested: the
 /// integration branch reuses that result instead of running everything again (F 2026-10-12:
 /// every merge cost a second run in the sandbox's one CI lane).

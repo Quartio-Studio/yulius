@@ -494,8 +494,9 @@ fn ci_status(value: &Value) -> Option<String> {
     Some(out)
 }
 
-/// `ci_status` with `run_id`: the run, each job's state and the end of the output of the jobs that
-/// failed or errored, or of the job asked for by `job` whatever its state.
+/// `ci_status` with `run_id`: the run, each job's state and, for the jobs that failed or errored
+/// (or the job asked for by `job` whatever its state), its failing tests' output kept from all of
+/// its output, then the end of its output.
 fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
     let jobs = value.get("jobs")?.as_array()?;
     let reason = text(value, "reason");
@@ -528,6 +529,17 @@ fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
                     &mut out,
                     &format!("  $ {}", text(job, "command").unwrap_or("")),
                 );
+                // Its failing tests, wherever they were in its output (SPEC-145).
+                if let Some(failures) = text(job, "failures").filter(|f| !f.trim().is_empty()) {
+                    push_line(
+                        &mut out,
+                        &format!(
+                            "  Failing tests of {} (kept from all of its output):",
+                            job_name(job)
+                        ),
+                    );
+                    push_line(&mut out, failures.trim_end());
+                }
                 push_line(
                     &mut out,
                     &format!("  Output of {} (its end):", job_name(job)),
@@ -935,6 +947,7 @@ mod tests {
             exit_code: exit,
             duration_ms: Some(390_638),
             output: Some(output.into()),
+            failures: None,
         }
     }
 
@@ -1000,6 +1013,47 @@ mod tests {
             text.contains("This run has no job named \"lint\"; its jobs: quality, e2e."),
             "{text}"
         );
+        Ok(())
+    }
+
+    /// SPEC-145: a failed job's failing tests, kept from its whole output, come before the end
+    /// of its output, which no longer holds them.
+    #[test]
+    fn a_failed_job_shows_its_failing_tests_before_the_end_of_its_output() -> TestResult {
+        let mut quality = job(
+            "quality",
+            "failed",
+            Some(1),
+            None,
+            "…PASS [   0.1s] (1670/1670) b\nerror: test run failed",
+        );
+        quality.failures = Some(
+            "FAIL [   2.159s] (290/1670) yulius::main local_ci::waits\n  stderr ───\n    \
+             assertion `left == right` failed: the message\n\n"
+                .into(),
+        );
+        let value = serde_json::to_value(run("r1", "PR #370", "failed", vec![quality]))?;
+        let text = render("ci_status", &json!({"run_id": "r1"}), &value);
+        let failing = text
+            .find("  Failing tests of quality (kept from all of its output):\nFAIL [   2.159s]")
+            .ok_or_else(|| format!("no failing tests: {text}"))?;
+        assert!(
+            text.contains("assertion `left == right` failed: the message"),
+            "{text}"
+        );
+        let end = text.find("Output of quality (its end):").ok_or("no end")?;
+        assert!(failing < end, "{text}");
+        assert!(text.ends_with("error: test run failed"), "{text}");
+
+        // A job without kept failures shows its end as before.
+        let value = serde_json::to_value(run(
+            "r2",
+            "PR #370",
+            "failed",
+            vec![job("lint", "failed", Some(1), None, "lint error")],
+        ))?;
+        let text = render("ci_status", &json!({"run_id": "r2"}), &value);
+        assert!(!text.contains("Failing tests"), "{text}");
         Ok(())
     }
 

@@ -54,7 +54,8 @@ impl App {
     }
 
     /// `ci_status`: the CI in force, recent runs (this task's pull request first) or, with
-    /// `run_id`, one run with the tail of each job's output.
+    /// `run_id`, one run with the tail of each job's output and its failing tests' output
+    /// (SPEC-145).
     ///
     /// # Errors
     /// Unknown runs, store failures.

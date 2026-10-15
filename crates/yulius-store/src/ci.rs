@@ -64,6 +64,11 @@ fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecor
         } else {
             String::new()
         },
+        failures: if with_output {
+            row.get("failures")?
+        } else {
+            None
+        },
         started_at: row.get::<_, Option<i64>>("started_at")?.map(Timestamp),
         ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
         need: Need {
@@ -182,7 +187,7 @@ impl CiStore for SqliteStore {
         let run = run.to_owned();
         self.call(move |c| {
             let cols = if with_output {
-                format!("{JOB_COLS}, output")
+                format!("{JOB_COLS}, output, failures")
             } else {
                 JOB_COLS.to_owned()
             };
@@ -291,9 +296,10 @@ impl CiStore for SqliteStore {
             let sql = format!(
                 "UPDATE ci_jobs SET state = ?1, reason = COALESCE(?2, reason), \
                  exit_code = COALESCE(?3, exit_code), output = COALESCE(?4, output), \
-                 started_at = COALESCE(?5, started_at), ended_at = COALESCE(?6, ended_at) \
+                 started_at = COALESCE(?5, started_at), ended_at = COALESCE(?6, ended_at), \
+                 failures = COALESCE(?8, failures) \
                  WHERE id = ?7 AND state IN ({})",
-                placeholders(8, from.len())
+                placeholders(9, from.len())
             );
             let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to.as_str().to_owned()),
@@ -303,6 +309,7 @@ impl CiStore for SqliteStore {
                 Box::new(update.started_at.map(|t| t.0)),
                 Box::new(update.ended_at.map(|t| t.0)),
                 Box::new(id),
+                Box::new(update.failures),
             ];
             args.extend(
                 from.into_iter()
@@ -343,7 +350,7 @@ impl CiStore for SqliteStore {
             if changed == 1 {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
-                     reason = NULL, exit_code = NULL, output = ?2 WHERE run_id = ?1",
+                     reason = NULL, exit_code = NULL, output = ?2, failures = NULL WHERE run_id = ?1",
                     [&id, &note],
                 )
                 .map_err(db)?;
@@ -463,6 +470,7 @@ mod tests {
             reason: None,
             exit_code: None,
             output: String::new(),
+            failures: None,
             started_at: None,
             ended_at: None,
             need: Need::default(),
@@ -510,6 +518,7 @@ mod tests {
         let done = CiJobUpdate {
             exit_code: Some(0),
             output: Some("ok\n".into()),
+            failures: Some("FAIL [ 0.5s] a b\n  stderr ───\n    the message\n".into()),
             ended_at: Some(Timestamp(9)),
             ..CiJobUpdate::default()
         };
@@ -522,6 +531,15 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].state, RunState::Passed);
         assert_eq!(jobs[0].output, "ok\n");
+        // SPEC-145: its failing tests' output, read with the output only.
+        assert!(
+            jobs[0]
+                .failures
+                .as_deref()
+                .is_some_and(|f| f.contains("the message"))
+        );
+        assert_eq!(jobs[1].failures, None);
+        assert_eq!(store.ci_jobs("r1", false).await?[0].failures, None);
         assert_eq!(jobs[0].exit_code, Some(0));
         assert_eq!(jobs[0].need, Need::default());
         assert_eq!(jobs[1].need.cpus, Some(6));
@@ -578,7 +596,9 @@ mod tests {
                 .ci_jobs("r1", true)
                 .await?
                 .iter()
-                .all(|j| j.state == RunState::Queued && j.output.contains("restart"))
+                .all(|j| j.state == RunState::Queued
+                    && j.output.contains("restart")
+                    && j.failures.is_none())
         );
         Ok(())
     }
