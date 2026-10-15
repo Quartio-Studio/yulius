@@ -1,11 +1,11 @@
 ---
 yulius-task: 19ed6b36-b342-4870-8933-99af8f2ed570
-status: in-progress
+status: done
 ---
 
 # SPEC-172: A folded subscription shows its 5-hour and weekly usage at a glance
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #162
 Scope authorization: task #162: "[screenshot of the Subscriptions list: one bar and one percent
@@ -53,10 +53,10 @@ percent used of each.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A folded subscription shows its 5-hour and weekly usage side by side
-- [ ] Both usage figures stay readable at phone width
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A folded subscription shows its 5-hour and weekly usage side by side
+- [x] Both usage figures stay readable at phone width
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -95,3 +95,23 @@ percent used of each.
   such as "Limit reached" left "Claude #5" 55 of 68 px in the 406 px Status panel and 31 px at
   360 px. Its icon carries the tone; its words stay for screen readers and on hover.
 - No ADR: this is a presentation detail of ROT-009 with no lasting architectural choice.
+
+## Evidence
+
+- Test-first: the two SPEC-172 e2e tests failed on the unchanged code (`expected [] to equal
+  [["5 h","5-hour window",true],["Week","This week",true]]`: no glance lines) and pass with it.
+  The name-room checks added in review round 1 failed with the badge rule disabled ("Claude #5
+  shows 55 of 68 px" in the desktop Status panel, "31 of 68 px" at 360 px) and pass with it.
+- `npx e2e run tests/subscriptions.e2e.ts`: 8 passed.
+- `npx e2e run` (full suite, final files): 54 files passed, 1 skipped; 489 tests passed, 1 skipped.
+- `python3 scripts/bootstrap.py --install-rustup && scripts/dev ci`: exit 0, nextest 1847 passed,
+  18 skipped (no Rust changed after it). `python3 scripts/check_repository.py` on the final files:
+  passed (UI design tokens included).
+- `scripts/dev security`: **unrun**, exit 2: Vidoc answered HTTP 401 "Invalid or expired token"
+  (the known key problem, #470; ADR-0104: exit 2 is unrun, not passed).
+- Screenshots of the mock (Dashboard at 1280 and 360 px, Status panel at 1280 and 360 px) checked
+  by eye: two aligned lines per folded row, bars dropped at 360 px.
+- Independent review (fresh session, `om-code-review`): round 1 approved ad811d2e with three minors
+  (names squeezed beside a state badge, a SPEC-001 clause in the wrong list, desktop Status panel
+  bars untested), all fixed test-first in a0a88482; round 2 approved a0a88482.
+- Found on the way, not in scope: the Status panel's section summary is clipped at 360 px (#549).
