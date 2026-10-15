@@ -47,6 +47,9 @@ pub const MAX_DECISION_FILES: usize = 1_000;
 const MAX_PROMPT_PROBLEMS: usize = 40;
 /// Problems listed in the onboarding status.
 const MAX_STATUS_PROBLEMS: usize = 5;
+/// Reads a skip makes at most: each lost write means the state moved forward meanwhile
+/// (pending, preparing, ready), so this bounds it with room to spare.
+const SKIP_READS: usize = 4;
 /// Title of the preparation meta-task.
 pub const ONBOARDING_TITLE: &str = "Prepare this repository for Yulius";
 
@@ -442,7 +445,7 @@ fn planned(report: &ProjectReport) -> (&'static str, Vec<String>) {
 }
 
 /// The ruleset a repository admin adds so only people move the production branch (ADR-0114).
-fn production_ruleset_fix(repo: &str, branch: &str) -> String {
+pub(crate) fn production_ruleset_fix(repo: &str, branch: &str) -> String {
     format!(
         "A repository admin must add a branch ruleset on GitHub (https://github.com/{repo}/settings/rules): \
          target `{branch}`, enforcement Active, rules Restrict updates, Restrict deletions and Block \
@@ -514,9 +517,11 @@ impl App {
         };
         if let Some(warning) = self.production_branch_warning(sandbox).await {
             prompt.push_str(&format!(
-                "\n\n{warning} Only a person can apply it: ask one with `needs_you`, quoting that \
-                 setting, and carry on with the rest; never change the repository's protection \
-                 yourself."
+                "\n\n{warning} Protect it with the `production_protect` tool: Yulius adds that \
+                 ruleset as the person who owns this task when GitHub says they are a repository \
+                 admin (SPEC-157). Only if the tool refuses, ask a person with `needs_you`, quoting \
+                 that setting, and carry on with the rest; never change the repository's protection \
+                 from your shell."
             ));
         }
         let task = self
@@ -560,16 +565,24 @@ impl App {
             .ok_or(AppError::NotFound)
     }
 
+    /// Moves `sandbox` from the onboarding state it was read with to `next`, audited and
+    /// published. Nothing is written when its state changed since that read (SPEC-153 OLC-001):
+    /// a skip is never undone by a start or a refresh that decided on the state before it.
+    /// Returns whether it was written.
     async fn set_onboarding_state(
         &self,
         sandbox: &SandboxRecord,
         next: OnboardingState,
         actor: &str,
-    ) -> AppResult<()> {
-        self.deps
+    ) -> AppResult<bool> {
+        let written = self
+            .deps
             .store
-            .set_onboarding(&sandbox.id, next.as_str(), None)
+            .transition_onboarding(&sandbox.id, &sandbox.onboarding_state, next.as_str())
             .await?;
+        if !written {
+            return Ok(false);
+        }
         self.deps
             .store
             .audit(
@@ -585,7 +598,18 @@ impl App {
             )
             .await?;
         self.publish_resync(Some(sandbox.id.clone()));
-        Ok(())
+        Ok(true)
+    }
+
+    /// The sandbox's onboarding state as stored now.
+    async fn onboarding_state_of(&self, sandbox: &SandboxId) -> AppResult<String> {
+        let record = self
+            .deps
+            .store
+            .sandbox(sandbox)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        Ok(record.onboarding_state)
     }
 
     /// Re-evaluates a `pending`/`preparing` sandbox and returns its (possibly new) onboarding
@@ -632,8 +656,12 @@ impl App {
             {
                 return Ok(record.onboarding_state);
             }
-            self.set_onboarding_state(&record, OnboardingState::Pending, "system")
-                .await?;
+            if !self
+                .set_onboarding_state(&record, OnboardingState::Pending, "system")
+                .await?
+            {
+                return self.onboarding_state_of(sandbox).await;
+            }
             return Ok(OnboardingState::Pending.as_str().to_owned());
         };
         if task.archived_at.is_some() {
@@ -650,7 +678,7 @@ impl App {
             self.publish_task(&task.id).await;
         }
         let resting = task.status.is_resting();
-        let started = !resting || !store.attempts(&task.id).await?.is_empty();
+        let started = !resting || store.has_attempts(&task.id).await?;
         if !started {
             return Ok(record.onboarding_state);
         }
@@ -681,8 +709,9 @@ impl App {
                 next = OnboardingState::Ready;
             }
         }
-        if next != state {
-            self.set_onboarding_state(&record, next, "system").await?;
+        // Written only over the state read above: a skip landing meanwhile is kept.
+        if next != state && !self.set_onboarding_state(&record, next, "system").await? {
+            return self.onboarding_state_of(sandbox).await;
         }
         Ok(next.as_str().to_owned())
     }
@@ -771,21 +800,51 @@ impl App {
         let actor = self.login_of(&ctx.user.id).await;
         // Under the creation lock, so an onboarding task created meanwhile never writes `pending`
         // back over the skip (SPEC-097); released before the waiting tasks start.
+        // A start or a refresh (which do not take the lock) can move the state on between the
+        // read and the write; the skip is then made from the state it finds. Under the lock the
+        // state only moves forward (pending, preparing, ready), so a few reads are enough.
         let skipped = {
             let _serial = self.onboarding_task_lock.lock().await;
-            let record = self
-                .deps
-                .store
-                .sandbox(&id)
-                .await?
-                .ok_or(AppError::NotFound)?;
-            let blocks = OnboardingState::parse(&record.onboarding_state)
-                .is_some_and(OnboardingState::blocks_tasks);
-            if blocks {
-                self.set_onboarding_state(&record, OnboardingState::Skipped, &actor)
-                    .await?;
+            let mut skipped = None;
+            for _ in 0..SKIP_READS {
+                let record = self
+                    .deps
+                    .store
+                    .sandbox(&id)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+                let blocks = OnboardingState::parse(&record.onboarding_state)
+                    .is_some_and(OnboardingState::blocks_tasks);
+                if !blocks {
+                    break;
+                }
+                if self
+                    .set_onboarding_state(&record, OnboardingState::Skipped, &actor)
+                    .await?
+                {
+                    skipped = record.onboarding_task_id;
+                    break;
+                }
             }
-            blocks.then_some(record.onboarding_task_id).flatten()
+            if skipped.is_none() {
+                let record = self
+                    .deps
+                    .store
+                    .sandbox(&id)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+                if OnboardingState::parse(&record.onboarding_state)
+                    .is_some_and(OnboardingState::blocks_tasks)
+                {
+                    // Defensive and untested: not reached while the state only moves forward under
+                    // the lock (pending, preparing, ready). Never a silent non-skip.
+                    tracing::warn!(sandbox = %id, state = record.onboarding_state, "skip kept losing to onboarding writes");
+                    return Err(AppError::Conflict(
+                        "onboarding is changing state; try again".into(),
+                    ));
+                }
+            }
+            skipped
         };
         if let Some(task) = &skipped {
             self.advance_chains(task).await;
@@ -898,9 +957,26 @@ impl App {
             self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
                 .await?;
         }
-        let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
-        self.set_onboarding_state(&record, OnboardingState::Preparing, actor)
-            .await?;
+        // Only from the `pending` read before the start: an admin's skip landing while the task
+        // started stays (#406). A refresh that saw the task start may have written `preparing`
+        // (or `ready`) already, as `system`: the person who started it is audited all the same.
+        if !self
+            .set_onboarding_state(&record, OnboardingState::Preparing, actor)
+            .await?
+        {
+            let now = self.onboarding_state_of(sandbox).await?;
+            if OnboardingState::parse(&now) != Some(OnboardingState::Skipped) {
+                store
+                    .audit(
+                        self.now(),
+                        actor,
+                        "sandbox.onboarding.start",
+                        Some(sandbox.as_str()),
+                        Some(&format!("Start onboarding (already {now})")),
+                    )
+                    .await?;
+            }
+        }
         Ok(true)
     }
 

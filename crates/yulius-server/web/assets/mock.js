@@ -325,8 +325,12 @@ function stepsSummary(task) {
   const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
   const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
   const total = list.reduce((sum, s) => sum + effort(s), 0);
-  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
-  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
+  const finishedEffort = finished.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finishedEffort * 100) / total) : 0;
+  // The share in progress ends at the cumulative floor, as the server computes it (SPEC-159).
+  const activeEffort = list.filter((s) => s.status === 'in_progress').reduce((sum, s) => sum + effort(s), 0);
+  const active_percent = total ? Math.min(100, Math.floor(((finishedEffort + activeEffort) * 100) / total)) - percent : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
 }
 
 function summary(task) {
@@ -359,6 +363,9 @@ function summary(task) {
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
+    // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
+    not_started: task.status === 'closed' && task.neverRan === true,
+    awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
   };
 }
 
@@ -605,6 +612,8 @@ function workingSince(task) {
 function touch(db, task, changes = {}) {
   const [status, activity] = [task.status, task.activity];
   Object.assign(task, changes, { updated_at: new Date().toISOString() });
+  // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
+  if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
   if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
   task.working_since = workingSince(task);
   recount(db);
@@ -881,6 +890,8 @@ function preparationTask(db, sandbox) {
     archived: false, account_label: null,
     stepsList: kind.steps.map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
     model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
+    // Created resting: it has not run, and its sandbox waits for Start onboarding (SPEC-153).
+    neverRan: true, awaitsStart: true,
   };
   db.tasks.push(task);
   recount(db);
@@ -901,6 +912,9 @@ route('POST', `/api/sandboxes/${ID}/onboarding/skip`, ({ db, p }) => {
   need(sandbox, 'admin');
   if (!['pending', 'preparing'].includes(sandbox.onboarding)) fail(409, 'conflict', 'nothing awaits preparation');
   sandbox.onboarding = 'skipped';
+  // Its onboarding task, if it never ran, no longer waits for Start onboarding (SPEC-153).
+  const preparation = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (preparation) preparation.awaitsStart = false;
   releaseWaiting(db, sandbox);
   resync(db);
   return sandbox;
@@ -1523,18 +1537,19 @@ function ciOutput(job, ok) {
   return `${lines.join('\n')}\n`;
 }
 
-function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, reason = null, by = 'yulius' } = {}) {
+function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, skipJob = null, reason = null, by = 'yulius' } = {}) {
   const queued = Date.now() - minutesAgo * 60000;
   const started = queued + 4000;
   const ended = state === 'running' || state === 'queued' ? null : started + 3 * 60000 + 12000;
   const jobs = CI_JOBS.map((job, i) => {
     const failed = failJob === job.name;
-    const jobState = state === 'passed' ? 'passed' : state === 'failed' ? (failed ? 'failed' : 'passed') : state === 'running' ? (i === 0 ? 'passed' : 'running') : state;
+    const jobState = skipJob === job.name ? 'skipped' : state === 'passed' ? 'passed' : state === 'failed' ? (failed ? 'failed' : 'passed') : state === 'running' ? (i === 0 ? 'passed' : 'running') : state;
     return {
       id: `${id}_j${i}`, name: job.name, command: job.command, matrix: job.matrix, state: jobState, reason: null,
-      exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : null,
-      duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : null,
-      output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n` : ciOutput(job, !failed),
+      exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : jobState === 'skipped' ? 78 : null,
+      duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : jobState === 'skipped' ? 2000 : null,
+      output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n`
+        : jobState === 'skipped' ? `$ ${job.command}\nSecurity scan not run: No Vidoc API key.\n` : ciOutput(job, !failed),
     };
   });
   const pr = reference.startsWith('pr/') ? Number(reference.slice(3)) : null;
@@ -1553,7 +1568,8 @@ function seedCi() {
       gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
       runs: [
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
-        ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22),
+        // SPEC-162: a passed run whose "test (2/2)" exited with the skip code.
+        ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22, { skipJob: 'test (2/2)' }),
         ciRun('ci_s2', 'pr/218', '0d7e5f3a1c2b', 'failed', 47, { failJob: 'test (2/2)' }),
         ciRun('ci_s1', 'pr/218', 'a1b2c3d4e5f6', 'cancelled', 63, { reason: 'superseded by 0d7e5f3' }),
       ],
@@ -2140,10 +2156,11 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
-/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014). */
+/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014, SPEC-155). */
 function automationStart(db, sandbox, body) {
   const after = body.after_task_id || null;
   const rule = (body.start_rule || '').trim() || null;
+  if (body.prepared && (body.supertask || after || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   if (body.supertask && (after || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
   if (after && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
   const task = after ? db.tasks.find((t) => t.id === after && t.sandbox_id === sandbox) : null;
@@ -2158,7 +2175,7 @@ function automationStart(db, sandbox, body) {
     }
     canonical = words;
   }
-  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
+  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical, prepared: Boolean(body.prepared) };
 }
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
@@ -2174,8 +2191,8 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
-  const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null);
-  const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null } : automationStart(db, a.sandbox, body);
+  const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
+  const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
   Object.assign(a, body, start, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
@@ -2187,11 +2204,11 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   need(sandboxOf(db, a.sandbox), 'write');
-  const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
-  const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule);
+  const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) };
+  const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule && Boolean(body.prepared) === stored.prepared);
   const start = same ? stored : automationStart(db, a.sandbox, body);
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
-  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
+  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained' || previous.status === 'prepared')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
     : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: automationTask(db, a, start).id, error: null };
   a.last_run = run;
@@ -2207,14 +2224,14 @@ function automationTask(db, a, start) {
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
   const task = {
-    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
     archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
   };
   db.tasks.push(task);
   if (before) chainAfter(task, before, rule);
-  else task.heldBy = mockHeldBy(db, task);
+  else if (!start.prepared) task.heldBy = mockHeldBy(db, task);
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });
   return task;
@@ -2819,22 +2836,23 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
 });
 // ---- Stages (SPEC-137): the Pipeline page, waterfalls and the Dashboard's overview.
 
-// One stage row: subject, kind, name, job, environment, ended, failed, p50 and p90 minutes.
+// One stage row: subject, kind, name, job, environment, ended, failed, p50 and p90 minutes, and for
+// CI jobs and CD runs what they used (SPEC-154): CPU p50/p90 minutes and peak memory p50/p90 MiB.
 const STAGE_ROWS = [
   ['ci_run', 'run', 'run', null, null, 46, 5, 14, 23],
   ['ci_run', 'queue', 'queue', null, null, 49, 0, 1.5, 9],
   ['ci_run', 'queue', 'queue · waiting for a lane', null, null, 12, 0, 4, 11],
   ['ci_run', 'queue', 'queue · waiting for disk', null, null, 3, 0, 7, 12],
-  ['ci_run', 'job', 'quality', null, null, 46, 3, 12, 19],
+  ['ci_run', 'job', 'quality', null, null, 46, 3, 12, 19, [31, 52, 2048, 3584]],
   ['ci_run', 'stage', 'lint', 'quality', null, 44, 1, 2.5, 3.5],
   ['ci_run', 'stage', 'unit', 'quality', null, 43, 2, 6, 9],
-  ['ci_run', 'job', 'e2e', null, null, 46, 2, 9, 13],
+  ['ci_run', 'job', 'e2e', null, null, 46, 2, 9, 13, [14, 20, 1536, 2304]],
   ['task', 'state', 'queued', null, null, 31, 0, 6, 48],
   ['task', 'state', 'needs_you', null, null, 18, 0, 22, 190],
   ['task', 'step', 'step', null, null, 212, 4, 18, 55],
   ['task', 'delivery', 'pr_open', null, null, 27, 0, 52, 240],
   ['task', 'wait', 'merge_armed', null, null, 24, 2, 19, 41],
-  ['cd_run', 'run', 'run', null, 'dev', 14, 3, 3.2, 6],
+  ['cd_run', 'run', 'run', null, 'dev', 14, 3, 3.2, 6, [2.5, 4, 512, 900]],
   ['cd_run', 'deploy', 'deploy', null, 'dev', 14, 2, 2.4, 4.5],
   ['cd_run', 'verify', 'verify', null, 'dev', 12, 1, 0.4, 0.9],
   ['cd_run', 'run', 'run', null, 'prod', 4, 0, 5, 7],
@@ -2845,9 +2863,10 @@ function stageRows(query) {
   const want = (key, value) => !query.get(key) || query.get(key) === value;
   return STAGE_ROWS
     .filter(([subject, , , job, env]) => want('subject', subject) && want('environment', env) && want('job', job))
-    .map(([subject, kind, name, job, env, count, failed, p50, p90]) => ({
+    .map(([subject, kind, name, job, env, count, failed, p50, p90, used]) => ({
       subject_kind: subject, kind, name, job, environment: env, count, failed, running: name === 'run' && subject === 'ci_run' ? 1 : 0,
       backfilled: subject === 'ci_run' ? 6 : 0, p50_ms: Math.round(p50 * MIN), p90_ms: Math.round(p90 * MIN), max_ms: Math.round(p90 * 1.6 * MIN), total_ms: Math.round(count * p50 * 1.2 * MIN),
+      ...(used ? { cpu_p50_ms: Math.round(used[0] * MIN), cpu_p90_ms: Math.round(used[1] * MIN), memory_peak_p50_mb: used[2], memory_peak_p90_mb: used[3] } : {}),
     }))
     .sort((a, b) => b.total_ms - a.total_ms);
 }
@@ -2901,7 +2920,7 @@ function mockTimeline(kind, id) {
       s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
       s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
       s('prepare@1', 'prepare', 'commit', 45, 0.2),
-      s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality' }),
+      s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality', detail: { cpu_ms: 31 * MIN, memory_peak_mb: 2048, disk_written_mb: 640 } }),
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
@@ -3055,7 +3074,7 @@ function runUpdate(db, id) {
   }
   later(() => {
     if (!live()) return;
-    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks at their next step: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
+    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
   }, UPDATE_STEP_MS + 100);
   later(() => {
     if (!live()) return;
@@ -3771,11 +3790,29 @@ class TermSession {
     this.broadcast(this.snapshot());
   }
 
+  /**
+   * A primary release at another column of the press's row ends a drag: like Claude Code 2.1.292,
+   * the program copies the text it selected with OSC 52 (task #149).
+   */
+  release(col, row) {
+    const press = this.pressed;
+    this.pressed = null;
+    const bottom = this.regionBottom();
+    if (!press || press[1] !== row || press[0] === col || row < 1 || row > bottom) return;
+    const line = this.lines[this.lines.length - this.scroll - bottom + row - 1];
+    if (!line) return;
+    const text = line.replace(/\x1b\[[0-9;]*m/g, '').slice(Math.min(press[0], col) - 1, Math.max(press[0], col)).trim();
+    const bytes = new TextEncoder().encode(text);
+    this.broadcast(`\x1b]52;c;${btoa(String.fromCharCode(...bytes))}\x07`);
+  }
+
   onInput(data) {
     // Mouse reports (the viewer's wheel and clicks) are not typed text: a wheel turn scrolls, a
-    // primary press clicks, its release does nothing.
-    const typed = data.replace(/\x1b\[<(\d+);\d+;(\d+)([Mm])/g, (_, button, row, kind) => {
-      if (Number(button) === 0) { if (kind === 'M') this.click(Number(row)); } else this.wheel(Number(button));
+    // primary press clicks, its release after a drag copies the dragged text.
+    const typed = data.replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, button, col, row, kind) => {
+      if (Number(button) !== 0) this.wheel(Number(button));
+      else if (kind === 'M') { this.pressed = [Number(col), Number(row)]; this.click(Number(row)); }
+      else this.release(Number(col), Number(row));
       return '';
     });
     for (const ch of typed.replace(/\x1b\[[AB]/g, '')) {
@@ -4366,6 +4403,8 @@ function openSocket(db, path) {
  * Ambient activity so live updates are visible: one bounded timer for the whole mock. The browser
  * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
  * late"): keep its delay well under 15 s and its reason, or change that test with it.
+ * `browserask=0` leaves it out: its toast stays while pointed at and can cover the tool panel's
+ * top, which tests that point there would hit on a slow machine (#349).
  */
 function startAmbient(db) {
   if (db.ambient) return;
@@ -4373,7 +4412,7 @@ function startAmbient(db) {
   let tick = 0;
   setTimeout(() => {
     // Like the server, events reach only viewers of the sandbox (none without GitHub).
-    if (!db.sandboxes.some((s) => s.id === 'sb_studio')) return;
+    if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
   }, 5000);
   setInterval(() => {
@@ -4405,6 +4444,13 @@ export function createMockTransport(params) {
     touch(db, preparationTask(db, sandbox), { status: 'starting', branch: 'yulius/prepare-repository' });
     sandbox.onboarding = 'preparing';
     resync(db);
+  };
+  // A request from outside this page (the API, an agent's tool, an automation), as another client
+  // sends it; the page hears of it as of any change the server makes (`request('POST', path, body)`).
+  db.request = async (method, path, body = null) => {
+    const response = await handleFetch(db, path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'X-Yulius-CSRF': db.me.csrf_token } });
+    resync(db);
+    return response.status;
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
@@ -4470,6 +4516,8 @@ export function createMockTransport(params) {
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';
+  // `browserask=0`: no sign-in request from the sandbox browser 5 s after the start (startAmbient).
+  db.noBrowserAsk = params.get('browserask') === '0';
   notesOf(db);
   return {
     kind: 'mock',

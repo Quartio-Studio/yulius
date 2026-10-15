@@ -5,8 +5,9 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 failOnPageErrors();
 
 // F 2026-10-10 (#138): Yulius is the projects' only CI. The mock's studio sandbox has three jobs
-// (lint and a two-way test matrix) and four runs: dev running, PR #221 passed, PR #218 failed in
-// "test (2/2)", and an older PR #218 head cancelled when superseded (assets/mock.js, seedCi).
+// (lint and a two-way test matrix) and four runs: dev running, PR #221 passed (its "test (2/2)"
+// skipped), PR #218 failed in "test (2/2)", and an older PR #218 head cancelled when superseded
+// (assets/mock.js, seedCi).
 
 test('the CI page shows the jobs in force and opens a failed run at the failing job', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci'));
@@ -42,6 +43,19 @@ test('a run opens from the link of its commit status', async ({ app, screen }) =
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('PR #221')).toBeVisible();
   await expect(dialog.getByRole('tab', /lint/)).toHaveAttribute('aria-selected', 'true');
+});
+
+// SPEC-162 SKP-003: PR #221 passed with "test (2/2)" skipped (it exited with the skip code): the
+// run says so, and the job is Skipped, not Passed.
+test('a skipped job reads Skipped, not Passed', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await expect(screen.getByText('3 jobs · 2 passed · 1 skipped')).toBeVisible();
+  await screen.getByRole('button', 'Open the run of PR #221 at 4be81c0').click();
+  const dialog = screen.getByRole('dialog', 'CI run');
+  await expect(browser.locator('.ci-tab:has-text("test (2/2)") .ci-skipped [aria-label="Skipped"]')).toBeVisible();
+  await dialog.getByRole('tab', /test \(2\/2\)/).click();
+  await expect(browser.locator('.run-output')).toHaveText(/scan not run[\s\S]*\[exit code 78\]/);
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 test('repository hygiene removes only what is safe', async ({ app, screen }) => {

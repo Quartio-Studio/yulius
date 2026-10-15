@@ -401,7 +401,8 @@ async fn closing_a_switching_task_for_deletion_is_refused_at_once() -> TestResul
     let Err(yulius_app::error::AppError::Conflict(why)) = closed else {
         return Err(format!("expected a conflict, got {closed:?}").into());
     };
-    assert_eq!(why, "stop the task before deleting it");
+    // The same close serves an archive (SPEC-153 OLC-004): the message names no action.
+    assert_eq!(why, "the task is changing state; stop the task first");
     Ok(())
 }
 

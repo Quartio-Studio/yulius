@@ -156,6 +156,8 @@ pub struct RunExit {
     pub signal: Option<i32>,
     /// The process could not be spawned.
     pub spawn_failed: bool,
+    /// What its process tree used, when its host measured it (SPEC-154).
+    pub usage: Option<yulius_domain::stages::ResourceUse>,
 }
 
 impl RunExit {
@@ -261,6 +263,34 @@ pub trait SessionHost: Send + Sync {
         self.background_shells(child_pid)
             .map(|shells| BackgroundProbe { shells, waits: 0 })
     }
+    /// Freezes the run's agent and everything it started, never its host, so that nothing in it
+    /// can tell (SPEC-160 OPS-010). Blocking and bounded; idempotent. A host that cannot freeze
+    /// this run says [`RunFreeze::Unsupported`] and the run is paused at its turn boundary.
+    fn freeze(&self, _run_dir: &Path) -> RunFreeze {
+        RunFreeze::Unsupported
+    }
+    /// Whether [`Self::freeze`] could freeze the run, without freezing anything (OPS-011).
+    fn can_freeze(&self, _run_dir: &Path) -> bool {
+        false
+    }
+    /// Thaws a run [`Self::freeze`] froze; nothing for a run that is not frozen (OPS-013).
+    fn thaw(&self, _run_dir: &Path) {}
+    /// Thaws every run this host left frozen, also those of a server that stopped before it
+    /// thawed them; returns how many (OPS-013).
+    fn thaw_all(&self) -> usize {
+        0
+    }
+}
+
+/// What freezing a run did (SPEC-160 OPS-010/011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunFreeze {
+    /// The kernel reports the run frozen.
+    Frozen,
+    /// Asked; the kernel has not confirmed it yet.
+    Freezing,
+    /// This run cannot be frozen.
+    Unsupported,
 }
 
 /// What one probe of an agent's process tree found (SPEC-085 STT-002).

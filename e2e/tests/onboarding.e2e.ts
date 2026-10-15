@@ -12,6 +12,7 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   startOnboarding(slug: string): void;
   finishOnboarding(slug: string): void;
   touchTask(sandboxId: string, number: number, changes: Record<string, unknown>): void;
+  request(method: string, path: string, body?: unknown): Promise<number>;
   sandboxes: { id: string; slug: string }[];
 } };
 
@@ -294,4 +295,37 @@ test('a preparing sandbox without its onboarding task tells an administrator the
   const gate = screen.getByRole('region', 'Onboarding product');
   await expect(gate).toContainText('The onboarding task is missing');
   await expect(gate).toContainText('POST /api/sandboxes/sb_product/onboarding/skip');
+});
+
+// SPEC-153 OLC-006 (#399): a task that never ran is not Closed. A task created elsewhere (the API,
+// an agent's tool, an automation) in a `pending` sandbox waits after the onboarding task, created
+// then and resting: it reads "Waits for Start onboarding" under Working, and after an admin's Skip
+// "Not started" with the stopped tasks. The Closed tab counts neither.
+test('the onboarding task a new task waits for reads Waits for Start onboarding, not Closed', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  const request = (method: string, path: string, body?: unknown) => browser.evaluate(async ([m, p, b]) => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    const id = db.sandboxes.find((s) => s.slug === 'website')!.id;
+    return db.request(m as string, (p as string).replace('{sid}', id), b);
+  }, [method, path, body ?? null]);
+  expect(await request('POST', '/api/sandboxes/{sid}/tasks', { prompt: 'add a cart', harness: 'claude' })).toBe(201);
+  await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+  const row = browser.locator('#main .tl-row:has-text("Prepare this repository for Yulius")');
+  await expect(row).toContainText('Waits for Start onboarding');
+  // Its time says how long it has waited, not when it was "closed".
+  await expect(browser.locator('#main .tl-row:has-text("Prepare this repository for Yulius") .tl-time')).toHaveText(/^waiting /);
+  await expect(browser.locator('#main .tl-group.group-working .tl-row:has-text("Prepare this repository for Yulius")')).toHaveCount(1);
+  await expect(browser.locator('#main .tl-row:has-text("add a cart")')).toContainText('Starts by itself when #1 is done');
+  const closedCount = browser.locator('#main .tl-tab:has-text("Closed") .tl-tab-count');
+  await expect(closedCount).toHaveText('0');
+  await expect(browser.locator('#main .tl-row:has-text("Closed")')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  expect(await request('POST', '/api/sandboxes/{sid}/onboarding/skip')).toBe(200);
+  await expect(row).toContainText('Not started');
+  await expect(browser.locator('#main .tl-row:has-text("Prepare this repository for Yulius") .tl-time')).toHaveText(/^created /);
+  await expect(browser.locator('#main .tl-group.group-stopped .tl-row:has-text("Prepare this repository for Yulius")')).toHaveCount(1);
+  await expect(closedCount).toHaveText('0');
+  await expect(row).not.toContainText('Closed');
+  expect(await axeViolations(browser)).toEqual([]);
 });

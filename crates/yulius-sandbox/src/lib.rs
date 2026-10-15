@@ -9,7 +9,7 @@
 //! | [`base`] | `yulius sandbox-base build`/`chown` |
 //! | [`enter`] | the ptyhost of a contained run, and `yulius sandbox-exec` |
 //! | [`relay`], [`procnet`] | both sides of the network boundary |
-//! | [`cgroup`], [`usage`], [`subid`], [`userns`], [`seccomp`] | building blocks |
+//! | [`cgroup`], [`freeze`], [`usage`], [`subid`], [`userns`], [`seccomp`] | building blocks |
 //!
 //! Namespaces, mounts and `setns` are Linux-only; elsewhere the functions that need them
 //! return errors and the server keeps the previous containment.
@@ -17,6 +17,7 @@
 pub mod base;
 pub mod cgroup;
 pub mod enter;
+pub mod freeze;
 pub mod holder;
 pub mod manager;
 pub mod procnet;

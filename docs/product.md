@@ -91,14 +91,17 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  every pull request runs Yulius's own `security` job, which scans with Vidoc once it is granted
-  its key (when the running instance knows `secrets`) and the key works (#470).
+  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans with
+  Vidoc once the key works (#470). A job that checked nothing exits with `$YULIUS_CI_SKIP_CODE` and
+  reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
-  (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify. The
-  Pipeline page shows deployment frequency, lead time, change failure rate and time to restore for
-  dev and production, any stage's daily p50 and p90 and the stage table with CSV/JSON export; a CI
+  (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Pipeline page shows
+  deployment frequency, lead time, change failure rate and time to restore for dev and production,
+  any stage's daily p50 and p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON
+  export; a CI
   run, a deploy and a task show their own waterfall, and the Dashboard the overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
@@ -110,7 +113,8 @@ watching, steering and unblocking.
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
   keeps the production branch out of reach of the agents' own token, which is never a person's
-  (onboarding says when that ruleset is missing). Agents build and improve CD through pull requests but
+  (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
+  as the person who started onboarding when they are a repository admin). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
   down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself
@@ -123,7 +127,8 @@ watching, steering and unblocking.
   core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
-  another task or when a rule is true, picked with New task's start chip beside Run now and Save;
+  another task or when a rule is true, or wait prepared until the person presses Start now ("When
+  I decide"), picked with New task's start chip beside Run now and Save;
   Run now starts its task the way the chip shows.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
@@ -154,6 +159,8 @@ watching, steering and unblocking.
   there, and a person allows that once per secret (SPEC-129).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
+  Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
+  restart; the agents don't notice (SPEC-160).
 
 ## Principles
 

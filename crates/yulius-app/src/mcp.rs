@@ -204,7 +204,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "ci_status".into(),
-            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with, for each job that failed or errored, its failing tests' output (assertion messages, stdout and stderr, kept from all of its output) and the end of its output; with run_id and job, that job's output whatever its state. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with, for each job that failed or errored, its failing tests' output (assertion messages, stdout and stderr, kept from all of its output) and the end of its output, and for each skipped job (it checked nothing; it blocks no merge) the end of its output, which says why; with run_id and job, that job's output whatever its state. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
             input_schema: schema(json!({
                 "run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"},
                 "job": {"type": "string", "description": "With run_id: the name of the job whose output to show"}
@@ -269,6 +269,11 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             }), &[]),
         },
         ToolDescriptor {
+            name: "production_protect".into(),
+            description: "Protect this project's production branch from agents (ADR-0114, ADR-0129): Yulius adds a GitHub branch ruleset on it (Restrict updates, Restrict deletions, Block force pushes; only the Repository admin role may bypass) acting as this task's owner, and only in the onboarding task and when GitHub says that person is a repository admin (and their account is enabled). It only adds protection and changes nothing when agents already cannot write the branch. Use it when your onboarding prompt says the production branch is not protected from agents; never change protection from your shell. When it is refused, ask a person with needs_you, quoting the setting it names.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
             name: "issue_create".into(),
             description: "Open a GitHub issue for follow-up work, a bug or a flaky test you found, instead of widening this task. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
             input_schema: schema(json!({
@@ -279,7 +284,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_create".into(),
-            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". Created tasks start like New task: now (the default), after_task, start_rule or as a supertask. The automation appears on the project's Automations page.".into(),
+            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". Created tasks start like New task: now (the default), after_task, start_rule, as a supertask, or prepared (waiting until the person presses Start now). The automation appears on the project's Automations page.".into(),
             input_schema: schema(json!({
                 "name": {"type": "string", "description": "Short name; also the title of created tasks"},
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
@@ -290,7 +295,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "enabled": {"type": "boolean", "description": "Default true"},
                 "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done (once it has ended: the rule \"#N done\")"},
                 "start_rule": {"type": "string", "description": "Created tasks start when this rule over the project's tasks is true, e.g. \"#12 done and #13 merged\" (not with after_task)"},
-                "supertask": {"type": "boolean", "description": "Created tasks run alone in the project as supertasks (not with after_task or start_rule); only when the person asks"}
+                "supertask": {"type": "boolean", "description": "Created tasks run alone in the project as supertasks (not with after_task or start_rule); only when the person asks"},
+                "prepared": {"type": "boolean", "description": "\"When I decide\": each created task waits, prepared, until the person presses Start now (not with after_task, start_rule or supertask); a run is skipped while the previous one still waits"}
             }), &["name", "cron", "prompt"]),
         },
         ToolDescriptor {
@@ -317,7 +323,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_update".into(),
-            description: "Change an automation of this project: enable/disable it, or change its cron schedule, UTC offset, prompt, name or how its tasks start (giving any of after_task, start_rule or supertask replaces the start choice; supertask false alone: start now).".into(),
+            description: "Change an automation of this project: enable/disable it, or change its cron schedule, UTC offset, prompt, name or how its tasks start (giving any of after_task, start_rule, supertask or prepared replaces the start choice; supertask false alone: start now).".into(),
             input_schema: schema(json!({
                 "automation_id": {"type": "string"},
                 "enabled": {"type": "boolean"},
@@ -327,7 +333,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "name": {"type": "string"},
                 "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done"},
                 "start_rule": {"type": "string", "description": "Created tasks start when this rule is true, e.g. \"#12 done\""},
-                "supertask": {"type": "boolean", "description": "Created tasks run alone in the project"}
+                "supertask": {"type": "boolean", "description": "Created tasks run alone in the project"},
+                "prepared": {"type": "boolean", "description": "Created tasks wait, prepared, until the person presses Start now (\"When I decide\")"}
             }), &["automation_id"]),
         },
         ToolDescriptor {
@@ -533,6 +540,7 @@ impl App {
             "cd_status" => self.tool_cd_status(ctx, &args).await,
             "cd_deploy" => self.tool_cd_deploy(ctx, &args).await,
             "needs_you" => self.tool_needs_you(ctx, &args).await,
+            "production_protect" => self.tool_production_protect(ctx).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
             "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
             "browser_open" => self.tool_browser_open(ctx, &args).await,

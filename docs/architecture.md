@@ -65,6 +65,20 @@ flowchart TD
   SBX --> CIG["ci/ weight 400: CI jobs"]
 ```
 
+The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent runs it, and the
+`ci/` leaf in CI. Its static server (`e2e/serve.py`) keeps connections alive and queues 1024 of
+them, so a page's burst of module requests waits for a busy server instead of having its SYNs
+dropped; the runner's workers stay bounded by the CPU budget
+([SPEC-148](../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
+[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)).
+
+```mermaid
+flowchart LR
+  R["e2e runner (workers ≤ CPU budget / 2)"] --> B["Chromium page (mock mode)"]
+  B -->|"HTTP/1.1 keep-alive, ~200 files"| S["serve.py: listen queue 1024"]
+  S --> W["crates/yulius-server/web"]
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -323,6 +337,12 @@ returns to `pending` and Start onboarding creates a new one. `refresh_onboarding
 repairs, and the server makes them once for every sandbox at start, which heals sandboxes stuck
 before the fix ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
 [decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)).
+Every state change below is a compare-and-set from the state it was decided on, so a Start
+onboarding or a refresh running while an admin skips never writes over the skip (attaching a new
+onboarding task writes `pending` under the lock a skip takes, so it needs no condition). Until it runs,
+the onboarding task reads "Waits for Start onboarding" (or "Not started" after a skip), not Closed
+([SPEC-153](../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
+[decision 0126](decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -594,7 +614,11 @@ person's. The production ruleset (`rulesets_for`: restrict updates and deletions
 pushes, repository admins the only bypass) makes GitHub refuse that token on the branch.
 `App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
 production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
-onboarding reports a branch the agents could write.
+onboarding reports a branch the agents could write. The preparation agent then calls
+`production_protect` ([ADR-0129](decisions/0129-onboarding-agents-protect-production-as-the-onboarding-person.md)):
+`App::tool_production_protect` adds `people_only_ruleset` (the same rules, no pull-request rule)
+with the task owner's own token after `repo_access` says they are a repository admin, and only
+when the branch is not already guarded; the agent's token never gains Administration.
 
 ```mermaid
 flowchart LR
@@ -604,6 +628,7 @@ flowchart LR
   PERSON["repository admin (promotion)"] -->|"own token, bypass"| GH
   GH --> OK["main moves"]
   ONB["onboarding"] -->|"branch_guard with an agent token"| GH
+  ONB -->|"production_protect: owner's admin token adds the ruleset"| GH
 ```
 
 ## Keys in .env
@@ -665,6 +690,11 @@ sequenceDiagram
   Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
+Output can carry a program's copy: Claude Code copies the selection it draws with an OSC 52 write.
+The browser terminal (`terminal-core.js`) writes it to the clipboard only for a viewer who can write
+and just pressed a key or the mouse there, and never answers a clipboard query
+([decision 0130](decisions/0130-a-program-s-copy-reaches-the-clipboard-of-the-viewer-who-used-it.md)).
+
 ## Task ownership
 
 A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
@@ -717,7 +747,10 @@ finished. The editor shows the choice as New task's start chip in its action bar
 sends the choice the chip shows for that run only
 ([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
 [decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
-run uses the stored choice.
+run uses the stored choice. "When I decide" creates the task through `create_task_held` as a
+prepared task without a time, which waits for Start now and keeps the next runs skipped while it
+waits ([SPEC-155](../.ai/specs/SPEC-155-fix-416-automations-can-create-prepared.md),
+[decision 0128](decisions/0128-an-automation-can-prepare-its-tasks.md)).
 
 ```mermaid
 flowchart LR
@@ -727,6 +760,7 @@ flowchart LR
   START -->|"After #N, not ended"| CH["chained after #N"]
   START -->|"After #N, ended"| RD["chained on rule #N done"]
   START -->|"Rule"| RL["chained on the rule"]
+  START -->|"When I decide"| PR["prepared until Start now (SPEC-105)"]
 ```
 
 ## Web UI state
@@ -759,7 +793,9 @@ Tasks and Git back links) go back there, and a link to where the person already 
 path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
 Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
 the background keeps its files' text without Monaco models. Sign-out and an expired session forget
-the places.
+the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
+run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
+and an editor made earlier lacks them (decision 0122).
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
@@ -874,6 +910,28 @@ that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
+## CI job states
+
+A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`):
+0 is passed, the skip code `yulius_domain::ci::SKIP_EXIT_CODE` (78, given to every job as
+`YULIUS_CI_SKIP_CODE`) is skipped, any other exit or a signal is failed; a timeout, the output
+limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` makes the run's
+state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
+rule; the commit status counts the skipped jobs
+([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
+[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)).
+
+```mermaid
+flowchart LR
+  EXIT["job's process ends"] -->|"exit 0"| P["passed"]
+  EXIT -->|"exit $YULIUS_CI_SKIP_CODE (78)"| S["skipped: checked nothing"]
+  EXIT -->|"other exit or a signal"| F["failed"]
+  EXIT -->|"timeout, output limit, lost host"| E["error"]
+  P --> RUN["run: passed when every job passed or was skipped"]
+  S --> RUN
+  F --> RF["run: failed (blocks the merge)"]
+```
+
 ## Stages
 
 Every stage of a task, a CI run and a CD run is one row of `spans`
@@ -883,7 +941,12 @@ follow a state are written by SQLite triggers in the same transaction as the sta
 time the application wrote; the rest by Yulius as it happens (`yulius-app/src/stages.rs`): a CI
 run's preparation, job-slot waits and checkouts, a CD run's checks, promotion and confirmation, a
 task's armed-merge waits and updates onto the integration branch, and the stages job or deploy
-output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). Nothing
+output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). A CI
+job's or CD run's CPU time, peak memory and bytes written come from its process host, which measures
+the job's reaped process tree (`getrusage` of its children) into `exit.json`; they are stored with
+the job's end and the end trigger adds them to its span
+([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
+[decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
 task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
 
@@ -895,6 +958,7 @@ flowchart LR
   end
   T -->|"triggers, same transaction"| S[("spans")]
   C -->|"triggers, same transaction"| S
+  HOST["ptyhost: reaps the job, exit.json usage"] -->|"cpu_ms, memory_peak_mb, disk_written_mb with the job's end"| C
   LOG["job / deploy log (read every 0.5 s)"] -->|"::yulius-stage, test summaries"| SC["OutputScanner + OutputStages"]
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
@@ -973,6 +1037,32 @@ sequenceDiagram
         A->>S: GET notes
         A-->>A: same text: adopt; else Keep mine / Use theirs
     end
+```
+
+## Updates
+
+An update from `main` (SPEC-002 ADR-18) builds while tasks work, then freezes every task at once
+(SPEC-160, ADR-0131): the server asks the process host to move each run's agent tree into its own
+cgroup `…/sandboxes/<sandbox>/agents/run-<attempt>` and freeze it (`yulius_sandbox::freeze`), so the
+agent stops mid-turn with nothing to notice while its ptyhost keeps serving. The root helper
+restarts the service; the new server releases and thaws the tasks one by one. A run that cannot be
+frozen (no delegated cgroup) pauses at its turn boundary through the hook hold instead.
+
+```mermaid
+sequenceDiagram
+  participant S as Server (updates.rs)
+  participant H as Process host (freeze)
+  participant K as Kernel cgroup v2
+  participant R as Root helper
+  S->>R: build request (tasks keep working)
+  R-->>S: built
+  S->>H: freeze(run) for every live task
+  H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
+  K-->>H: cgroup.events frozen 1
+  S->>R: install request (two passes all frozen)
+  R->>S: stop, back up, install, start, health check
+  S->>H: thaw(run) one by one after releasing each task
+  H->>K: cgroup.freeze=0
 ```
 
 ## Agent primitives

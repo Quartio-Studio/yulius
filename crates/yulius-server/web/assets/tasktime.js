@@ -68,6 +68,12 @@ export function taskTime(task, info, now = Date.now()) {
     : { text: `${word} ${ago(now - since)}`, title: `${lead} ${exact(since)}${tail}`, since });
   const status = task.status;
   const idle = status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
+  // Never ran (SPEC-153): it was not closed; it waits for Start onboarding, or was only created.
+  if (info.notStarted) {
+    return task.awaits_start_onboarding
+      ? lasting('waiting', state, 'Waiting for Start onboarding since')
+      : past('created', created, 'Created');
+  }
   switch (info.group) {
     case 'needs':
       return lasting('waiting', state, 'Waiting for you since');

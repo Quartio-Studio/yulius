@@ -9,17 +9,19 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::session::{
-    AttachedRun, Containment, LaunchPlan, PlannedFile, RunEvent, RunExit, RunInspection, RunReader,
-    RunSignal, RunWelcome, RunWriter, SessionHost, SpawnedRun,
+    AttachedRun, Containment, LaunchPlan, PlannedFile, RunEvent, RunExit, RunFreeze, RunInspection,
+    RunReader, RunSignal, RunWelcome, RunWriter, SessionHost, SpawnedRun,
 };
 use yulius_contracts::ptyhost::{
     self as wire, BubblewrapSpec, ClientFrame, ExitReason, ExitRecord, HostFrame, LaunchSpec,
     SignalKind,
 };
+use yulius_domain::stages::ResourceUse;
 use yulius_ptyhost::{
     DEFAULT_SPAWN_TIMEOUT, PtyClient, PtyReader, PtyWriter, RunDirState, SpawnedHost,
     inspect_run_dir, spawn_host, terminate_recorded, token_sha256_hex,
 };
+use yulius_sandbox::{cgroup, freeze};
 
 /// The ptyhost wire form of an app-level containment plan (shared with the editor adapter).
 #[must_use]
@@ -126,11 +128,15 @@ fn write_planned(file: &PlannedFile) -> std::io::Result<()> {
     std::fs::rename(&tmp, &file.path)
 }
 
-fn exit_of(record: &ExitRecord) -> RunExit {
+/// The run's end, with what it used as its host recorded in `run_dir`'s `exit.json` (written
+/// before the `Exit` frame is sent; SPEC-154 USE-001).
+fn exit_of(record: &ExitRecord, run_dir: &Path) -> RunExit {
     RunExit {
         code: record.code,
         signal: record.signal,
         spawn_failed: record.reason == ExitReason::SpawnFailed,
+        usage: yulius_ptyhost::exit_usage(run_dir)
+            .map(|used| ResourceUse::measured(used.cpu_ms, used.max_rss_bytes, used.written_bytes)),
     }
 }
 
@@ -201,7 +207,7 @@ impl SessionHost for PtySessionHost {
                 rows: welcome.rows,
                 snapshot: snapshot.map(|s| s.bytes),
             },
-            reader: Box::new(Reader(reader)),
+            reader: Box::new(Reader(reader, run_dir.to_path_buf())),
             writer: Box::new(Writer(writer)),
         })
     }
@@ -209,7 +215,7 @@ impl SessionHost for PtySessionHost {
     fn inspect(&self, run_dir: &Path) -> RunInspection {
         match inspect_run_dir(run_dir) {
             RunDirState::Missing => RunInspection::Missing,
-            RunDirState::Exited(exit) => RunInspection::Exited(exit_of(&exit)),
+            RunDirState::Exited(exit) => RunInspection::Exited(exit_of(&exit, run_dir)),
             RunDirState::Recorded {
                 host_alive,
                 child_alive,
@@ -250,9 +256,69 @@ impl SessionHost for PtySessionHost {
             _ => Ok(()),
         }
     }
+
+    fn freeze(&self, run_dir: &Path) -> RunFreeze {
+        let Some((tree, child, name)) = freeze_target(run_dir) else {
+            return RunFreeze::Unsupported;
+        };
+        match freeze::freeze(&tree, &freeze::Procfs, child, &name) {
+            Ok(frozen) if frozen.settled => RunFreeze::Frozen,
+            Ok(_) => RunFreeze::Freezing,
+            Err(error) => {
+                tracing::debug!(run = %name, %error, "the run pauses at its turn boundary");
+                // A group frozen before a later write failed must not stay frozen.
+                let _ = freeze::thaw(&tree, &freeze::Procfs, child, &name);
+                RunFreeze::Unsupported
+            }
+        }
+    }
+
+    fn can_freeze(&self, run_dir: &Path) -> bool {
+        freeze_target(run_dir).is_some_and(|(tree, child, name)| {
+            freeze::check(&tree, &freeze::Procfs, child, &name).is_ok()
+        })
+    }
+
+    fn thaw(&self, run_dir: &Path) {
+        if let Some((tree, child, name)) = freeze_target(run_dir)
+            && let Err(error) = freeze::thaw(&tree, &freeze::Procfs, child, &name)
+        {
+            tracing::warn!(run = %name, %error, "cannot thaw the run");
+        }
+    }
+
+    fn thaw_all(&self) -> usize {
+        freeze_tree().map_or(0, |tree| freeze::thaw_all(&tree.unit))
+    }
 }
 
-struct Reader(PtyReader);
+/// The cgroup tree this server may freeze runs in: its delegated unit (SPEC-160).
+fn freeze_tree() -> Option<freeze::Tree> {
+    let own = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let own = cgroup::own_path(&own)?;
+    let root = Path::new(cgroup::CGROUP_ROOT);
+    let unit = cgroup::detect(root, &own).ok()?;
+    Some(freeze::Tree {
+        root: root.to_path_buf(),
+        unit,
+    })
+}
+
+/// The tree, the live child and the name of a run: the run directory's name (its attempt).
+fn freeze_target(run_dir: &Path) -> Option<(freeze::Tree, u32, String)> {
+    let RunDirState::Recorded {
+        status,
+        child_alive: true,
+        ..
+    } = inspect_run_dir(run_dir)
+    else {
+        return None;
+    };
+    let name = run_dir.file_name()?.to_str()?.to_owned();
+    Some((freeze_tree()?, status.child_pid, name))
+}
+
+struct Reader(PtyReader, PathBuf);
 
 #[async_trait]
 impl RunReader for Reader {
@@ -274,7 +340,9 @@ impl RunReader for Reader {
                         bytes: s.bytes,
                     }));
                 }
-                Some(HostFrame::Exit(exit)) => return Ok(Some(RunEvent::Exit(exit_of(&exit)))),
+                Some(HostFrame::Exit(exit)) => {
+                    return Ok(Some(RunEvent::Exit(exit_of(&exit, &self.1))));
+                }
                 Some(HostFrame::Error { code, message }) => {
                     if code == wire::error_code::REPLACED {
                         return Ok(None);

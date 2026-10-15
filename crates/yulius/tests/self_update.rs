@@ -15,12 +15,13 @@ use std::sync::atomic::Ordering;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::updates::{FakeHelper, FakeSource, MID, NEW, OLD, services};
+use support::updates::{FakeHelper, FakeSource, FreezingHost, MID, NEW, OLD, services};
 use support::{
     Creds, Harness, TestResult, admit_and_sign_in, call, configure_github_app, harness,
-    seed_live_attempt, seed_sandbox, seed_task, setup_superadmin_creds,
+    harness_with_host, seed_live_attempt_at, seed_sandbox, seed_task, setup_superadmin_creds,
 };
 use yulius_app::context::App;
+use yulius_app::ports::session::RunFreeze;
 use yulius_app::ports::store::{TaskStore, UserStore as _};
 use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_app::ports::updates::SourceError;
@@ -31,6 +32,8 @@ use yulius_domain::task::{Activity, TaskStatus};
 
 const WORKING: &str = "update-token-working-0123456789abcdef";
 const IDLE: &str = "update-token-idle-0123456789abcdefgh";
+const RUN_WORKING: &str = "/nonexistent/runs/a-t-working";
+const RUN_IDLE: &str = "/nonexistent/runs/a-t-idle";
 
 struct Instance {
     h: Harness,
@@ -41,7 +44,17 @@ struct Instance {
 }
 
 async fn instance() -> Result<Instance, Box<dyn std::error::Error>> {
-    let h = harness()?;
+    instance_on(harness()?).await
+}
+
+/// An instance whose process host freezes runs (SPEC-160).
+async fn freezing_instance() -> Result<(Instance, Arc<FreezingHost>), Box<dyn std::error::Error>> {
+    let host = FreezingHost::new();
+    let i = instance_on(harness_with_host(host.clone())?).await?;
+    Ok((i, host))
+}
+
+async fn instance_on(h: Harness) -> Result<Instance, Box<dyn std::error::Error>> {
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     let member = admit_and_sign_in(&h, &admin, "alice", 11, true).await?;
@@ -125,8 +138,8 @@ async fn two_tasks(i: &Instance) -> Result<(TaskId, TaskId), Box<dyn std::error:
         None,
     )
     .await?;
-    seed_live_attempt(&i.h, "t-working", WORKING).await?;
-    seed_live_attempt(&i.h, "t-idle", IDLE).await?;
+    seed_live_attempt_at(&i.h, "t-working", WORKING, RUN_WORKING).await?;
+    seed_live_attempt_at(&i.h, "t-idle", IDLE, RUN_IDLE).await?;
     let now = i.h.app.now();
     i.h.store
         .set_activity(&working.id, Some(Activity::Working), now)
@@ -554,6 +567,301 @@ async fn pausing_is_bounded_and_updates_can_be_cancelled() -> TestResult {
             .as_str()
             .unwrap_or_default()
             .contains("did not respond")
+    );
+    Ok(())
+}
+
+/// AC-OPS-12 (SPEC-160): with a host that freezes, both tasks — one mid-turn — are frozen on the
+/// first round after the build, no hook is held, and the install follows on the next round.
+#[tokio::test]
+async fn every_task_freezes_at_once_and_the_install_follows() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, idle) = two_tasks(&i).await?;
+    built(&i).await?;
+    assert!(
+        host.frozen().is_empty(),
+        "nothing is frozen while it builds"
+    );
+    let _ = i.h.app.update_round().await;
+    let mut frozen = host.frozen();
+    frozen.sort();
+    assert_eq!(frozen, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "pausing");
+    assert_eq!(view["run"]["tasks"]["paused"], 2);
+    assert_eq!(view["run"]["tasks"]["total"], 2);
+    assert_eq!(view["run"]["tasks"]["waiting"], json!([]));
+    assert_eq!(
+        view["run"]["message"],
+        "Every task is paused. Restarting next."
+    );
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(
+        install.action,
+        HelperAction::Install,
+        "no turn was waited for"
+    );
+    // Nothing reached the tasks: their states are untouched and nothing was thawed.
+    for task in [&working, &idle] {
+        assert_eq!(
+            i.h.store.task(task).await?.ok_or("task")?.status,
+            TaskStatus::Running
+        );
+    }
+    assert!(host.thawed().is_empty());
+    Ok(())
+}
+
+/// AC-OPS-11/12: a run the host cannot freeze still pauses at its turn boundary, and nothing is
+/// frozen while it works (the others would sit frozen for up to the 30-minute bound); once it is
+/// held, the others freeze and the install follows.
+#[tokio::test]
+async fn a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Unsupported);
+    built(&i).await?;
+    for _ in 0..3 {
+        let _ = i.h.app.update_round().await;
+    }
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "pausing");
+    assert_eq!(
+        view["run"]["tasks"]["paused"], 1,
+        "the idle task is at its boundary"
+    );
+    assert_eq!(view["run"]["tasks"]["waiting"][0]["id"], working.as_str());
+    assert_eq!(view["run"]["message"], "Pausing tasks: 1 of 2 paused.");
+    assert_eq!(i.helper.last().map(|r| r.action), Some(HelperAction::Build));
+    assert!(host.frozen().is_empty(), "nothing frozen while it works");
+    assert!(host.thawed().is_empty(), "not even for a moment");
+
+    // Its turn ends and is held: the others freeze at once, then the install.
+    let (code, _, _) = hook(&i.h.internal, WORKING, "Stop").await?;
+    assert_eq!(code, 202);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen(), vec![RUN_IDLE.to_owned()]);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().map(|r| r.action),
+        Some(HelperAction::Install)
+    );
+    Ok(())
+}
+
+/// AC-OPS-11: a run the kernel never confirms frozen is thawed after five passes and paused at
+/// its turn boundary instead, and the others are thawed while it works.
+#[tokio::test]
+async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Freezing);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2);
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(
+        view["run"]["tasks"]["paused"], 1,
+        "not confirmed: not paused"
+    );
+    assert_eq!(
+        view["run"]["tasks"]["waiting"],
+        json!([]),
+        "being frozen is not still in a turn"
+    );
+    for _ in 0..4 {
+        let _ = i.h.app.update_round().await;
+    }
+    let mut thawed = host.thawed();
+    thawed.sort();
+    assert_eq!(thawed, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
+    assert!(host.frozen().is_empty());
+    assert_eq!(i.helper.last().map(|r| r.action), Some(HelperAction::Build));
+
+    assert_eq!(hook(&i.h.internal, WORKING, "Stop").await?.0, 202);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        host.frozen(),
+        vec![RUN_IDLE.to_owned()],
+        "refused runs are not asked again"
+    );
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().map(|r| r.action),
+        Some(HelperAction::Install)
+    );
+    Ok(())
+}
+
+/// AC-OPS-13 (review): a cancel that lands while a freeze pass runs never leaves a run frozen.
+#[tokio::test]
+async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    built(&i).await?;
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    *host.entered.lock().map_err(|_| "lock")? = Some(entered_tx);
+    *host.gate.lock().map_err(|_| "lock")? = Some(gate);
+    let app = i.h.app.clone();
+    let round = tokio::spawn(async move { app.update_round().await });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(std::time::Duration::from_secs(30)))
+        .await??;
+    // The first freeze is under way: the person cancels.
+    let ctx = support_ctx(&i).await?;
+    let app = i.h.app.clone();
+    let mut cancel = tokio::spawn(async move { app.cancel_update(&ctx).await.map(|_| ()) });
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let view = get(&i, &i.admin).await?;
+            if view["run"]["state"] == "cancelled" {
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    // Without serialization the cancel's thaw would finish here, before the freeze is recorded.
+    let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut cancel).await;
+    release.send(()).map_err(|_| "release")?;
+    round.await?;
+    match early {
+        Ok(done) => done??,
+        Err(_) => cancel.await??,
+    }
+    // Thawed by the cancel itself, before any later round's backstop.
+    assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
+    Ok(())
+}
+
+/// AC-OPS-13: after the restart the runs thaw one by one as their tasks are released, and the
+/// rest is swept; a server that starts with no update thaws what a crash left frozen, one that
+/// starts while the update installs keeps the runs frozen.
+#[tokio::test]
+async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(install.action, HelperAction::Install);
+    i.helper
+        .report(&install, HelperState::Running, "stopping", None);
+
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(NEW, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    assert_eq!(host.sweeps.load(Ordering::SeqCst), 0, "still installing");
+    assert_eq!(host.frozen().len(), 2);
+    let _ = restarted.update_round().await;
+    assert!(host.thawed().is_empty(), "frozen until the helper reports");
+    assert!(
+        restarted.held_for_update(&working),
+        "paused across the restart"
+    );
+
+    i.helper
+        .report(&install, HelperState::Done, "succeeded", None);
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    let mut thawed = host.thawed();
+    thawed.sort();
+    assert_eq!(thawed, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
+    assert!(host.frozen().is_empty());
+    assert!(host.sweeps.load(Ordering::SeqCst) >= 1, "the rest is swept");
+    assert!(!restarted.held_for_update(&working), "released");
+    let view = restarted.update_view(&support_ctx(&i).await?).await?;
+    assert_eq!(view.run.ok_or("run")?.state, "succeeded");
+
+    // A later start with no update open sweeps what a crash would have left frozen.
+    let sweeps = host.sweeps.load(Ordering::SeqCst);
+    let again = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    again.set_updates(services(NEW, &i.source, &i.helper));
+    again.restore_update_hold().await;
+    assert_eq!(host.sweeps.load(Ordering::SeqCst), sweeps + 1);
+    Ok(())
+}
+
+/// AC-OPS-13: a cancel while pausing thaws every frozen run at once; so does a rolled-back
+/// install.
+#[tokio::test]
+async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    // One run is not confirmed frozen yet, so the update stays pausing.
+    host.answer(RUN_WORKING, RunFreeze::Freezing);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2);
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(host.frozen().is_empty(), "thawed at once");
+    let mut thawed = host.thawed();
+    thawed.sort();
+    assert_eq!(thawed, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
+
+    // A rolled-back install resumes and thaws too.
+    host.answer(RUN_WORKING, RunFreeze::Frozen);
+    advance(&i.h, 31_000);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(install.action, HelperAction::Install);
+    assert_eq!(host.frozen().len(), 2);
+    i.helper.report(
+        &install,
+        HelperState::RolledBack,
+        "rolled_back",
+        Some("The new server did not become healthy within 120 s."),
+    );
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(OLD, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let thawed_before = host.thawed().len();
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    assert!(host.frozen().is_empty());
+    let mut thawed = host.thawed().split_off(thawed_before);
+    thawed.sort();
+    assert_eq!(
+        thawed,
+        vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()],
+        "each run thawed by the resume itself"
+    );
+    let view = restarted.update_view(&support_ctx(&i).await?).await?;
+    assert_eq!(view.run.ok_or("run")?.state, "rolled_back");
+    Ok(())
+}
+
+/// Review round 2: "Continue without waiting" freezes every run that can be frozen, even while a
+/// run that cannot be frozen is still in its turn; a server restarted mid-drain sweeps the runs
+/// its predecessor froze while such a run works.
+#[tokio::test]
+async fn continuing_without_waiting_still_freezes_what_it_can() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Unsupported);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    assert!(host.frozen().is_empty());
+
+    // A server restarted mid-drain does not know what its predecessor froze: it sweeps.
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(OLD, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let sweeps = host.sweeps.load(Ordering::SeqCst);
+    let _ = restarted.update_round().await;
+    assert!(host.sweeps.load(Ordering::SeqCst) > sweeps);
+
+    restarted.proceed_update(&support_ctx(&i).await?).await?;
+    let _ = restarted.update_round().await;
+    assert_eq!(host.frozen(), vec![RUN_IDLE.to_owned()]);
+    assert_eq!(
+        i.helper.last().map(|r| r.action),
+        Some(HelperAction::Install)
     );
     Ok(())
 }

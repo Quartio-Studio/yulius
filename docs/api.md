@@ -267,7 +267,7 @@ TaskSummary = {
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
-  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
+  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14},
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
@@ -297,6 +297,9 @@ task paused, not an error.
 `steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
 default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
+`steps.active_percent` is the share of the steps **in progress** (SPEC-159), so that `percent +
+active_percent` is the finished and in-progress share rounded down; the task strip draws it as a
+second segment in the working colour. Older servers omit it (read 0).
 
 `updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
 the last change of the task's **status or activity** (setting the same value again does not move
@@ -621,9 +624,10 @@ CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "comma
               "status_access": "for administrators: commit statuses cannot be published …" | null,
               "actions_workflows": ["ci.yml"]}   // GitHub Actions still on the integration branch
 CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_number": 12|null,
-         "sha", "state": "queued|running|passed|failed|error|cancelled",
+         "sha", "state": "queued|running|passed|failed|error|cancelled" (never skipped: skipped jobs count as passed),
          "source": "profile|yulius_toml|pull_request",
-         "jobs": [{"id", "name", "command", "matrix", "state", "reason", "exit_code",
+         "jobs": [{"id", "name", "command", "matrix",
+                   "state": "queued|running|passed|failed|error|cancelled|skipped", "reason", "exit_code",
                    "duration_ms", "output" (run detail only: last 512 KiB, escapes removed)}],
          "reason": "superseded by 0d7e5f3|…" | null, "queued_at", "started_at", "ended_at",
          "duration_ms", "requested_by": "yulius|<login>|task:<n>",
@@ -745,6 +749,16 @@ Yulius records of the span: `tests_…`, `…_start` and the names Yulius writes
 `input_tokens`…) are ignored, as are new names past 64 per span. Figures are written once per span
 each half second the output is read (counts added up, the last value kept).
 
+A CI job's `job` span and a CD run's `run` span also carry what its processes used (SPEC-154,
+ADR-0127), measured by the process host when it reaped them and written with the job's end:
+`cpu_ms` (user + system CPU time of the job's processes that ended and were reaped within it),
+`memory_peak_mb` (the largest peak resident memory of one of them, in MiB, at least the host's own
+few MiB a fork starts with) and `disk_written_mb` (what they wrote to storage, rounded to the
+nearest MiB, on Linux hosts that account for it). Background processes still running when the job
+ends are killed and not counted. A job Yulius killed (cancelled, timed out, too much output), one
+that never started, one whose host was lost, or an older host's: the figures are absent, never `0`.
+The three names are reserved.
+
 | Method and path | Access | Result |
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/stages/timeline?subject=<task|ci_run|cd_run>:<id>` | read | `TimelineView` |
@@ -764,7 +778,8 @@ StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "k
                 "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
                 "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}
 StageRow = {"subject_kind", "kind", "name", "job", "environment", "count", "failed", "running",
-            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms"}
+            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms", "cpu_p50_ms"?, "cpu_p90_ms"?,
+            "memory_peak_p50_mb"?, "memory_peak_p90_mb"?}   # ? only when an ended span measured it
 DeliveryFigures = {"environment", "deployments", "passed", "per_week", "lead_time_p50_ms",
                    "lead_time_p90_ms", "lead_time_count", "change_failure_rate",
                    "time_to_restore_p50_ms", "restores"}
@@ -802,9 +817,10 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
             "builtin":false,"when_to_use":""}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
               "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
-              "after_task_number":12|null,"start_rule":"#12 done|null","created_via":"ui|agent",
+              "after_task_number":12|null,"start_rule":"#12 done|null","prepared":false,
+              "created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
-RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null"}
+RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null","prepared":false}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
                       "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
@@ -827,13 +843,15 @@ kept as the instance workflow "Feature (custom)". The file format is SPEC-002 §
 catalog format". Automation `cron` is a five-field
 expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
 automations exist per sandbox. A run whose automation's previous task is still active (also
-waiting `chained` or `queued`) is recorded as `skipped_previous_active`. `supertask`,
-`after_task_id` and `start_rule` say how each created task starts, as in `CreateTask` (SPEC-078):
-none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
+waiting `chained`, `queued` or `prepared`) is recorded as `skipped_previous_active`. `supertask`,
+`after_task_id`, `start_rule` and `prepared` say how each created task starts, as in `CreateTask`
+(SPEC-078; `prepared`, "When I decide": each task waits `prepared` until Start now, with no start
+time, SPEC-155): none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
 task of the sandbox and the rule names only its task numbers (422 otherwise; the rule is stored
 canonically). A PUT replaces them like the other fields; the stored choice sent back unchanged is
 kept without that check (its task may have been deleted since). A run after a task that has ended waits
-for the rule `#N done` instead; a run whose task to run after was deleted is `failed`.
+for the rule `#N done` instead; a run whose task to run after was deleted, or that would prepare a
+33rd prepared task of the sandbox, is `failed`.
 `after_task_number` is read-only. The ready-made automations are one file each in
 `catalog/automations/` of the running release; `automation_id` is the sandbox's automation with
 the same name (case-insensitive), which counts as the template's: a template is never linked or

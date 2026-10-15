@@ -407,6 +407,11 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(task_plan.body["steps"], plan.body["steps"]);
     let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(unchanged.onboarding_state, "pending");
+    // SPEC-153 OLC-005 (#399): it never ran, so it is not Closed: it waits for Start onboarding.
+    let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
+    assert_eq!(summary["status"], "closed", "{summary:?}");
+    assert_eq!(summary["not_started"], true, "{summary:?}");
+    assert_eq!(summary["awaits_start_onboarding"], true, "{summary:?}");
 
     // Nor can a CLI token continue the resting onboarding task itself.
     let prep = unchanged
@@ -451,6 +456,70 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
         Some(&prep),
         "Start onboarding starts the task the new task waits after"
     );
+    let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
+    assert_eq!(summary["not_started"], false, "it started: {summary:?}");
+    assert_eq!(summary["awaits_start_onboarding"], false, "{summary:?}");
+    Ok(())
+}
+
+/// The onboarding task's summary in its sandbox's task list.
+async fn onboarding_summary(w: &World, creds: &Creds, sandbox: &SandboxId) -> Result<Value, Error> {
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sandbox}/tasks"),
+        None,
+        creds,
+    )
+    .await?;
+    Ok(listed
+        .body
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .find(|task| task["origin"] == "onboarding")
+        .ok_or("no onboarding task")?
+        .clone())
+}
+
+/// SPEC-153 OLC-005 (#399): skipped before it ran, the onboarding task waits for nothing but has
+/// still not started: it reads as such, not as waiting for Start onboarding.
+#[tokio::test]
+async fn a_skipped_onboarding_task_reads_not_started() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{}/tasks", sandbox.id),
+        Some(json!({"prompt": "add a cart", "harness": "claude"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    let skip = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{}/onboarding/skip", sandbox.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(skip.status, StatusCode::OK, "{:?}", skip.body);
+    let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
+    assert_eq!(summary["not_started"], true, "{summary:?}");
+    assert_eq!(summary["awaits_start_onboarding"], false, "{summary:?}");
     Ok(())
 }
 
@@ -509,6 +578,131 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
         task.prompt
     );
     assert!(task.prompt.contains("needs_you"), "{}", task.prompt);
+    Ok(())
+}
+
+/// SPEC-157: the onboarding agent protects an unprotected production branch itself, through
+/// `production_protect`, as the person who started onboarding when they are a repository admin;
+/// a second call changes nothing. Another task, an owner who is not an admin and a disabled owner
+/// are refused and sent to `needs_you`, and GitHub's own refusal is passed on.
+#[tokio::test]
+async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestResult {
+    use yulius_app::ports::store::{InstanceStore as _, UserStore as _};
+    let w = World::new("org").await?;
+    w.h.store.set_installation(Some(1)).await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let (_bob, _) = w.user("bob", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    w.grant("bob", "shop", "push");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let browser = w.browser(&alice_user).await?;
+    let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
+    let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    let task =
+        w.h.store
+            .tasks(&sandbox.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("onboarding task")?;
+    // AC4: the agent is asked to protect it itself, and a person only when that is refused.
+    assert!(
+        task.prompt.contains("`production_protect`") && task.prompt.contains("needs_you"),
+        "{}",
+        task.prompt
+    );
+    assert!(
+        !task.prompt.contains("Only a person can apply it"),
+        "{}",
+        task.prompt
+    );
+
+    // R2: only the onboarding task may protect production; another task is refused.
+    support::seed_task(
+        &w.h,
+        "t-bob",
+        sandbox.id.as_str(),
+        "u-bob",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&w.h, "t-bob", "tok-bob").await?;
+    support::seed_live_attempt(&w.h, task.id.as_str(), "tok-prep").await?;
+    let refused_with = |result: &Value, wanted: &str| -> TestResult {
+        assert_eq!(result["isError"], true, "{result}");
+        let text = support::tool_text(result).to_string();
+        assert!(
+            text.contains(wanted) && text.contains("needs_you"),
+            "{text}"
+        );
+        Ok(())
+    };
+    let other = support::mcp_tool(&w.h, "tok-bob", "production_protect", json!({})).await?;
+    refused_with(&other, "onboarding task")?;
+
+    // AC3: an owner who is not a repository admin is refused; nothing is created.
+    w.grant("alice", "shop", "push");
+    let not_admin = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    refused_with(&not_admin, "not a repository admin")?;
+    w.grant("alice", "shop", "admin");
+
+    // A disabled owner is never acted for.
+    w.h.store
+        .update_user_flags(&alice_user.id, Some(Some(w.h.app.now())), None)
+        .await?;
+    let disabled = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    refused_with(&disabled, "disabled")?;
+    w.h.store
+        .update_user_flags(&alice_user.id, Some(None), None)
+        .await?;
+
+    // GitHub's refusal is passed on, not guessed at.
+    w.github
+        .refuse_rulesets
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let plan = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    refused_with(&plan, "Upgrade to GitHub Pro")?;
+    w.github
+        .refuse_rulesets
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(w.github.rulesets().is_empty(), "{:?}", w.github.rulesets());
+
+    // AC1: as the admin who started onboarding, one people-only ruleset, with her token.
+    let done = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    let record = support::tool_text(&done);
+    assert_eq!(record["protected"], true, "{done}");
+    assert_eq!(record["added"], "yulius-people-only-main", "{done}");
+    let rulesets = w.github.rulesets();
+    assert_eq!(rulesets.len(), 1, "{rulesets:?}");
+    let (repo, request, token) = &rulesets[0];
+    assert_eq!(repo, &format!("{OWNER}/shop"));
+    assert_eq!(token, "token-alice", "acts as the person, never the App");
+    assert_eq!(request.branch, "main");
+    assert!(
+        request.restrict_updates && !request.require_pr,
+        "{request:?}"
+    );
+    let stored = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    let status = w.h.app.onboarding_status(&stored).await?;
+    assert!(status.warnings.is_empty(), "{status:?}");
+
+    // AC2: once protected, calling again adds nothing.
+    let again = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    let record = support::tool_text(&again);
+    assert_eq!(record["protected"], true, "{again}");
+    assert_eq!(record["added"], Value::Null, "{again}");
+    assert_eq!(w.github.rulesets().len(), 1);
     Ok(())
 }
 
@@ -1057,6 +1251,46 @@ async fn assert_imported_resume(
     let removed_or_other = w.h.store.sandbox(sandbox).await?.ok_or("sandbox")?;
     let prep = removed_or_other.onboarding_task_id.ok_or("prep task")?;
     assert_eq!(app.prepare_imported_resume(&prep).await?, None);
+    Ok(())
+}
+
+/// SPEC-153 OLC-002: a new task refused for its prompt creates no onboarding task in a `pending`
+/// sandbox (the onboarding task is created only for a task that waits after it).
+#[tokio::test]
+async fn a_refused_new_task_creates_no_onboarding_task() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    assert_eq!(sandbox.onboarding_state, "pending");
+    let tasks = format!("/api/sandboxes/{}/tasks", sandbox.id);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        &tasks,
+        Some(json!({"prompt": "   ", "harness": "claude"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        refused.body
+    );
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    assert_eq!(listed.body, json!([]), "the refused request created a task");
+    let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    assert_eq!(unchanged.onboarding_task_id, None);
     Ok(())
 }
 

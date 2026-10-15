@@ -121,6 +121,11 @@ pub(super) enum Sink<'a> {
     CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
 }
 
+/// What a watched process used, when its host measured it (SPEC-154). Unknown for a job Yulius
+/// killed (cancelled, timed out, over its output): the group kill sends its processes to init,
+/// out of the host's reaping chain, so what the host measured would read as almost nothing.
+pub(super) type Used = Option<yulius_domain::stages::ResourceUse>;
+
 /// How a job's process ended.
 pub(super) enum Ended {
     Exit(RunExit),
@@ -556,7 +561,7 @@ impl App {
         ));
         // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the end.
         let mut failures = FailureScanner::default();
-        let ended = self
+        let (ended, usage) = match self
             .ci_job_process(
                 sandbox,
                 run,
@@ -566,7 +571,11 @@ impl App {
                 (&mut ring, &mut stages, &mut failures),
                 &mut cancel,
             )
-            .await;
+            .await
+        {
+            Ok((ended, usage)) => (Ok(ended), usage),
+            Err(reason) => (Err(reason), None),
+        };
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
@@ -575,6 +584,12 @@ impl App {
                 Some("the job could not be started".to_owned()),
             ),
             Ok(Ended::Exit(exit)) if exit.is_clean() => (RunState::Passed, Some(0), None),
+            // The job said it checked nothing (SPEC-162 SKP-001): skipped, not passed or failed.
+            Ok(Ended::Exit(exit))
+                if exit.code == Some(dom::SKIP_EXIT_CODE) && exit.signal.is_none() =>
+            {
+                (RunState::Skipped, exit.code, None)
+            }
             Ok(Ended::Exit(exit)) => {
                 let code = exit.code.or_else(|| exit.signal.map(|signal| 128 + signal));
                 (RunState::Failed, code, None)
@@ -612,6 +627,7 @@ impl App {
             failures: failures.finish(),
             started_at: None,
             ended_at: Some(self.now()),
+            usage,
         };
         if let Err(err) = store
             .transition_ci_job(&job.id, &[RunState::Running], state, &end)
@@ -647,6 +663,10 @@ impl App {
             ("YULIUS_CI_JOB".to_owned(), job.name.clone()),
             ("YULIUS_CI_SHA".to_owned(), run.sha.clone()),
             ("YULIUS_CI_REF".to_owned(), run.reference.key()),
+            (
+                "YULIUS_CI_SKIP_CODE".to_owned(),
+                dom::SKIP_EXIT_CODE.to_string(),
+            ),
             (
                 "YULIUS_CI_CACHE".to_owned(),
                 cache.to_string_lossy().into_owned(),
@@ -783,7 +803,7 @@ impl App {
         checkout_name: &str,
         (ring, stages, failures): (&mut OutputRing, &mut OutputStages, &mut FailureScanner),
         cancel: &mut watch::Receiver<Option<String>>,
-    ) -> Result<Ended, String> {
+    ) -> Result<(Ended, Used), String> {
         let ci_dir = self.ci_dir(&sandbox.id);
         let checkout = ci_dir.join("jobs").join(checkout_name);
         let (home, cache, logs) = (
@@ -825,7 +845,7 @@ impl App {
         let (join, _lease) = match self.isolation_join(sandbox).await {
             Ok(joined) => joined.unzip(),
             Err(AppError::Conflict(reason)) if self.ci_over_quota(sandbox).await => {
-                return Ok(Ended::NoDisk(reason));
+                return Ok((Ended::NoDisk(reason), None));
             }
             Err(err) => return Err(err.public_message()),
         };
@@ -873,7 +893,7 @@ impl App {
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
     /// it to its end: its log into `ring`, `sink` and `failures` (a CI job's), cancellation, the
-    /// CI job timeout and the output limit.
+    /// CI job timeout and the output limit. Returns how it ended and what it used.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
     pub(super) async fn ci_watch(
         &self,
@@ -889,7 +909,7 @@ impl App {
             Option<&mut FailureScanner>,
         ),
         cancel: &mut watch::Receiver<Option<String>>,
-    ) -> Result<Ended, String> {
+    ) -> Result<(Ended, Used), String> {
         let (sandbox, subject) = stages.subject();
         let host = &self.deps.session_host;
         host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
@@ -912,13 +932,20 @@ impl App {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut ticks = 0u32;
         let mut stop: Option<Ended> = None;
+        let mut usage: Used = None;
         let ended = loop {
             tokio::select! {
                 event = reader.next() => match event {
-                    Ok(Some(RunEvent::Exit(exit))) => break stop.unwrap_or(Ended::Exit(exit)),
+                    Ok(Some(RunEvent::Exit(exit))) => {
+                        usage = exit.usage.filter(|_| stop.is_none());
+                        break stop.unwrap_or(Ended::Exit(exit));
+                    }
                     Ok(Some(_)) => {}
                     Ok(None) | Err(_) => break match host.inspect(run_dir) {
-                        RunInspection::Exited(exit) => stop.unwrap_or(Ended::Exit(exit)),
+                        RunInspection::Exited(exit) => {
+                            usage = exit.usage.filter(|_| stop.is_none());
+                            stop.unwrap_or(Ended::Exit(exit))
+                        }
                         _ => {
                             let _ = host.terminate(run_dir);
                             stop.unwrap_or(Ended::Lost)
@@ -986,7 +1013,7 @@ impl App {
         let ops = stages.finish(self.now());
         self.record_spans(&sandbox, (subject.0, &subject.1), ops)
             .await;
-        Ok(ended)
+        Ok((ended, usage))
     }
 }
 

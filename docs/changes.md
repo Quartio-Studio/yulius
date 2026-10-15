@@ -6,6 +6,84 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
+  fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
+  skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),
+  on the CI page and in `ci_status`. The `security` job now ends skipped when the Vidoc scan cannot
+  run (no key, a rejected one), and is granted `VIDOC_API_KEY` through the egress proxy (#466).
+  Until `dev` is promoted to `main`, the running instance gives no skip code and the job still
+  passes, with `security scan skipped` in its output.
+- An update pauses every task at once (SPEC-160, ADR-0131, task #151). When the new version is
+  built, each task's agent is frozen mid-turn with the cgroup v2 freezer: its output stops, nothing
+  is told to it, and it goes on from the same instruction when its task is thawed after the
+  restart (one by one; at once on a cancel). Updates no longer wait for long turns or get cancelled
+  after 30 minutes. A run that cannot be frozen (no delegated cgroup) still pauses at its turn
+  boundary. A provider response streaming at the restart is cut and retried by Claude Code.
+- Reply in a task's attention bar does something visible (SPEC-156, task #147, #516). On
+  "Needs you" and "The agent is waiting for your reply" it opens a reply field in the bar; Enter or
+  Send types the answer into the session as the person's prompt, which also ends a `needs_you`
+  request, and Escape or Cancel closes it. Before, Reply only focused the terminal, which showed
+  nothing because Claude Code draws its own cursor. While the agent shows a menu in the terminal,
+  Reply still goes to the terminal, so typed text never picks a menu option unseen. Phones keep
+  their quick input.
+- The task strip's progress bar shows the step in progress (SPEC-159, task #150): after the
+  finished share comes the open step's share in the working colour, so "Step 2/4" no longer sits
+  beside a bar that looks a quarter done. The API's step summary carries `active_percent`.
+- The e2e suite holds under host load, and the Editor waits for all of Monaco (SPEC-148,
+  ADR-0122, task #134):
+  - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
+    of them. `python3 -m http.server` queued 5 and closed every connection, so on a loaded machine
+    the kernel dropped a page's module requests and the browser waited 1–3 s to try again.
+    Starved to a fifth of a CPU per thread, about 1 run in 360 still fails a 5 s wait; #354
+    stays open for that.
+  - **#394:** a file opened while Monaco loaded made a second editor from the half-loaded
+    `window.monaco`, which lacked five services ("depends on UNKNOWN service ICodeLensCache").
+    The editor now waits for all of `editor.main`, and tests touch Monaco's API only once the
+    Editor shows (`editorShown`). An editor whose setup failed is disposed, so the next file
+    makes one instead of a second.
+  - **#356, #349:** the Editor's first opening is waited for with Monaco's cold-load budget, and the
+    kept-notes test reads the text after a load that can succeed instead of waiting out the backoff.
+- CI jobs and CD runs record what they used (SPEC-154, ADR-0127, task #129; fixes #488): the
+  process host measures a job's reaped process tree (CPU time, the largest process's peak memory,
+  bytes written on Linux) into `exit.json`, and the job's or run's span gets `cpu_ms`,
+  `memory_peak_mb` and `disk_written_mb` with its end (absent when unmeasured, never 0). The
+  Pipeline page's stage table shows CPU time and peak memory p50 · p90 beside the durations, and a
+  waterfall row its own figures.
+- Text selected in Claude Code's full-screen view is copied again (SPEC-158, ADR-0130, task #149,
+  fixes #519). Claude Code copies its own plain-drag selection with OSC 52, which the web terminal
+  dropped; the write now reaches the clipboard of the viewer who just used the terminal, and when
+  the browser refuses it (Safari, plain HTTP) ⌘C / Ctrl+Shift+C copies it. Queries are never
+  answered.
+- The onboarding agent protects the production branch itself (SPEC-157, ADR-0129, task #148).
+  When onboarding finds `main` writable by agents, the preparation agent calls the new
+  `production_protect` tool: Yulius adds the ruleset `yulius-people-only-<branch>` (Restrict
+  updates, Restrict deletions, Block force pushes, only repository admins bypass) as the person who
+  owns the task, when GitHub says they are a repository admin. The agent asks a person with
+  `needs_you` only when that is refused; its own token still cannot change protection.
+- Automations can prepare their tasks (SPEC-155, ADR-0128, task #142, fixes #416). The automation
+  editor's start chip, the automations API (`prepared`, beside `supertask`, `after_task_id` and
+  `start_rule`) and the `automation_create` / `automation_update` tools offer "When I decide": each
+  run, and Run now, creates the task `prepared`, and it waits for Start now. The chip, the sentence
+  and the list row name it; a run while the previous prepared task still waits is
+  `skipped_previous_active`. Stored in migration 0031 (schema version 30).
+- The CD page's environment cards read right at every width (SPEC-152, task #146, fixes #501):
+  - The deploy button stays top right, with only the title and badge wrapping beside it. Before,
+    it fell onto its own row under the title.
+  - A dev deploy that can't run is a plain button, not a grey primary slab.
+  - A promoting production names what it promotes ("Promotes dev at e37fdd2 into main") instead of
+    "First".
+- Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
+  task #126, fixes #406, #431 and #399):
+  - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start
+    onboarding running while an admin skips leaves the sandbox `skipped`. The mock nit was already
+    done by #405.
+  - **#431:** a test archives a live, Done onboarding task in a `preparing` sandbox and gets it
+    closed, archived and the sandbox `ready`. The close's "changing state" 409 now reads "stop the
+    task first" for archive and delete, and `archive_task` documents its 409s. SPEC-002's long
+    line is reflowed.
+  - **#399:** the task summary says `not_started` and `awaits_start_onboarding`. The UI reads the
+    onboarding task of a `pending` sandbox "Waits for Start onboarding", and a task that never ran
+    "Not started". Neither is in the Closed group, tab or count.
 - Uploading files and positioning them are two steps again in the new-task composer (SPEC-150,
   ADR-0124, task #144). Pasted or dropped files show in a tray above the prompt, numbered; a click
   opens an image large, fitted to the window or at its actual size. In the text each file is a
