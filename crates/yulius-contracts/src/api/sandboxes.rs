@@ -172,6 +172,14 @@ pub struct Template {
     pub description: String,
 }
 
+/// `POST /api/sandboxes/{sid}/move-to-github` request (SPEC-176): the name of an empty repository
+/// of the instance owner that the playground moves into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveToGitHub {
+    /// Repository name (the owner is the instance owner).
+    pub name: String,
+}
+
 /// `POST /api/sandboxes/{sid}/purge` response (SPEC-171): where the purge of a removed
 /// playground's code stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

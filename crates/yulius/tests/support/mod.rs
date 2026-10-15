@@ -50,6 +50,8 @@ pub struct FakeGitHub {
     pub hang_permissions: std::sync::atomic::AtomicBool,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// Repositories the App installation can access (default: none).
+    pub installation_repos: Mutex<Vec<GhRepo>>,
     /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
     /// other branch is writable by them.
     pub guarded_branches: Mutex<Vec<String>>,
@@ -191,7 +193,11 @@ impl GitHubPort for FakeGitHub {
         Ok(Secret("agent-inst".into()))
     }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
-        Ok(Vec::new())
+        Ok(self
+            .installation_repos
+            .lock()
+            .map_err(AppError::internal)?
+            .clone())
     }
     async fn create_repo(
         &self,
