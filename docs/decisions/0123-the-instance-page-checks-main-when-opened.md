@@ -16,7 +16,7 @@ right after a merge to `main` wants to know whether it is on offer, and was told
 
 - Opening the instance page as superadmin sends the same check as "Check now"
   (`POST /api/admin/update/check`). The server reuses a check younger than 30 s, so reopening the
-  page or several tabs cost at most one GitHub compare per 30 s.
+  page costs no new GitHub compare within 30 s.
 - That automatic check is quiet when its request fails: the page keeps the last result and raises
   no toast, as nobody asked. A GitHub read that fails is still said, as the view's error banner.
   "Check now" keeps saying a failed request.
@@ -33,5 +33,7 @@ right after a merge to `main` wants to know whether it is on offer, and was told
 
 ## Consequences
 
-- One GitHub compare per instance page visit (at most one per 30 s).
+- One GitHub compare per instance page visit, reused for 30 s. Checks sent at the same moment (two
+  tabs, or during the hourly check) may each compare once, as two "Check now" clicks already
+  could (#502).
 - With `YULIUS_UPDATE_CHECK_MINUTES=0` the page still checks when opened.

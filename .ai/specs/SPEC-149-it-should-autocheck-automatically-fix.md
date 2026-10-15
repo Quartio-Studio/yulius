@@ -29,8 +29,9 @@ last hourly check, without clicking "Check now".
   what opening the page does, so the page's "checks main every hour. Check now to look at once"
   was the only behavior.
 - **Server side is right.** `check_updates_now` is superadmin-only and reuses a check younger
-  than 30 s (`MANUAL_CHECK_GAP_MS`), so an automatic check per page open costs at most one
-  GitHub compare per 30 s, whatever the number of tabs or reopenings.
+  than 30 s (`MANUAL_CHECK_GAP_MS`), so reopening the page costs no new GitHub compare within
+  30 s. Checks sent at the same moment (two tabs, or the hourly check running) may each compare
+  once: freshness is read before the check lock (#502).
 - **Not an autoupdate.** OPS-006 ("nothing updates by itself") is untouched: only the check runs
   by itself; installing still takes the superadmin's confirmation.
 
@@ -40,14 +41,15 @@ last hourly check, without clicking "Check now".
 | --- | --- | --- |
 | IAC-001 | Opening the instance page as superadmin checks `main` at once (the same request as "Check now"), and the page shows that check's result and time. | `update.e2e.ts` "opening the instance page checks main without a click" |
 | IAC-002 | An automatic check that fails raises no error toast: the page keeps the last result. "Check now" still says a failed check. | `update.e2e.ts` "an automatic check that fails keeps the last result and raises no error" |
-| IAC-003 | Others than the superadmin send no check (the page shows them only its placeholder). | unchanged early return in `mountInstancePage`; `update.e2e.ts` "members see no offer and no instance page" |
+| IAC-003 | Others than the superadmin send no check (the page shows them only its placeholder). | the early return of `mountInstancePage` comes before the check (by reading); the server refuses them (`self_update.rs` `a_newer_main_is_offered_to_superadmins_only`) |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green on the branch merged with dev
 
 ## Acceptance criteria
 
@@ -72,3 +74,9 @@ last hourly check, without clicking "Check now".
   every few minutes whether anyone looks or not, and still show a stale time.
 - The automatic check is quiet on failure: the result of a failed GitHub read is already in the
   view (its error banner); only a failed request (network, 5xx) is dropped, as nothing was asked.
+- Review round 1 (fresh session, approved `dc64390c`) found two minor races that already existed
+  before this change and that neither the mock nor the fakes can reproduce deterministically:
+  overlapping checks each compare (freshness read before the lock), and an older `/api/update`
+  read landing last. They are filed as #502 with deterministic tests as acceptance criteria,
+  rather than fixed here without a failing test; the docs no longer claim "one compare per 30 s
+  whatever the tabs". The nits (wrapping, AC-OPS-6, IAC-003's evidence) are fixed.
