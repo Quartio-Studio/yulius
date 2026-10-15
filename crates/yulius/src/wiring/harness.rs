@@ -187,6 +187,8 @@ impl HarnessPort for HarnessAdapter {
                 token: HSecret::new(token.expose().to_owned()),
             }),
             project_mcp_servers: l.project_mcp_servers.clone(),
+            mcp_servers: Vec::new(),
+            redaction_exe: None,
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
