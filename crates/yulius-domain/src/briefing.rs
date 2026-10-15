@@ -1099,8 +1099,8 @@ fn recent_changes_within(input: &BriefingInput<'_>, rendered: String, grant: usi
 /// ends with [`TRUNCATION_MARKER`].
 ///
 /// When the mandatory parts and some room for the optional ones exceed the budget (a workflow's
-/// instructions lower it, #555), the goal quote shrinks first, down to
-/// [`GOAL_QUOTE_MIN_BYTES`]: the whole request is in the task's request file.
+/// instructions lower it, #555), the goal quote shrinks first, from 600 down to 40 bytes: the
+/// whole request is in the task's request file.
 #[must_use]
 pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String {
     // Multi-line sources are pre-clipped to the budget so rendering stays bounded.
