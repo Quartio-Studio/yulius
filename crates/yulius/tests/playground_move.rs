@@ -292,3 +292,152 @@ async fn a_move_needs_github_connected() -> TestResult {
     assert_eq!(moved.status, StatusCode::CONFLICT, "{:?}", moved.body);
     Ok(())
 }
+
+/// What a failed or refused move must leave: the record a playground's, the clone's `origin` its
+/// bare repository, and that repository's branches and tags as they were.
+async fn assert_as_it_was(
+    w: &World,
+    sandbox: &Value,
+    origin: &Path,
+    refs_before: &[String],
+) -> TestResult {
+    assert!(w.record(sandbox).await?.is_playground());
+    assert_eq!(refs(origin)?, refs_before);
+    assert_eq!(
+        git(&w.clone_of(sandbox)?, &["remote", "get-url", "origin"])?.trim(),
+        origin.to_string_lossy()
+    );
+    Ok(())
+}
+
+/// MPG-002, MPG-005: a repository with anything of its own is refused before any push.
+#[tokio::test]
+async fn a_repository_that_is_not_empty_is_refused() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    // GitHub's "Add a README": one commit of its own on `main`.
+    let readme = w.github.join("readme");
+    git(
+        &w.github,
+        &["init", "--quiet", "--initial-branch=main", "readme"],
+    )?;
+    std::fs::write(readme.join("README.md"), "# alices-lab\n")?;
+    git(&readme, &["add", "README.md"])?;
+    git(&readme, &["commit", "--quiet", "-m", "Initial commit"])?;
+    git(
+        &readme,
+        &["push", "--quiet", &github.to_string_lossy(), "main"],
+    )?;
+    let theirs = refs(&github)?;
+
+    let refused = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert!(
+        refused.body.to_string().contains("not empty"),
+        "{:?}",
+        refused.body
+    );
+    assert_eq!(refs(&github)?, theirs, "nothing was pushed");
+    assert_as_it_was(&w, &sandbox, &origin, &before).await
+}
+
+/// MPG-005, MPG-002: a push GitHub refuses changes nothing; once it goes through, the move
+/// completes, and a repository holding exactly the playground's refs (a move that failed after
+/// its push) is taken as it is.
+#[tokio::test]
+async fn a_failed_push_leaves_the_playground_as_it_was() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    // The receiving side refuses any pack (as GitHub refuses a push over its limits).
+    git(&github, &["config", "receive.maxInputSize", "1"])?;
+
+    let failed = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert!(
+        failed.status.is_server_error() || failed.status == StatusCode::BAD_GATEWAY,
+        "{:?} {:?}",
+        failed.status,
+        failed.body
+    );
+    assert!(refs(&github)?.is_empty(), "an atomic push leaves nothing");
+    assert_as_it_was(&w, &sandbox, &origin, &before).await?;
+    Ok(())
+}
+
+/// MPG-002: a move whose push completed but which failed after it is retried: the repository holds
+/// exactly the playground's branches and tags, so nothing more is pushed and the move completes.
+#[tokio::test]
+async fn a_move_retried_after_its_push_completes() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    git(
+        &origin,
+        &[
+            "push",
+            "--quiet",
+            &github.to_string_lossy(),
+            "refs/heads/*:refs/heads/*",
+            "refs/tags/*:refs/tags/*",
+        ],
+    )?;
+
+    let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
+    assert_eq!(refs(&github)?, before);
+    assert!(!w.record(&sandbox).await?.is_playground());
+    Ok(())
+}
+
+/// MPG-005: a live or queued task holds the move; one prepared for later does not count.
+#[tokio::test]
+async fn a_live_task_holds_the_move() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let sid = sandbox["id"].as_str().ok_or("id")?.to_owned();
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    let running = support::seed_task(
+        &w.h,
+        "t-running",
+        &sid,
+        "u-alice",
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    let prepared =
+        support::seed_task(&w.h, "t-later", &sid, "u-alice", TaskStatus::Prepared, None).await?;
+
+    let held = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(held.status, StatusCode::CONFLICT, "{:?}", held.body);
+    let text = held.body.to_string();
+    assert!(text.contains(&format!("#{}", running.number)), "{text}");
+    assert!(!text.contains(&format!("#{}", prepared.number)), "{text}");
+    assert!(refs(&github)?.is_empty(), "nothing was pushed");
+    assert_as_it_was(&w, &sandbox, &origin, &before).await
+}

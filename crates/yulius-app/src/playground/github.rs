@@ -11,6 +11,7 @@ use std::sync::Arc;
 use yulius_contracts::api::sandboxes::Sandbox;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
+use yulius_domain::task::TaskStatus;
 
 use super::no_token;
 use crate::auth::AuthContext;
@@ -124,7 +125,8 @@ impl App {
     }
 
     /// Refuses the move while a task of the sandbox is live or queued (MPG-005): its agent was
-    /// started with a playground's briefing, tools and credentials.
+    /// started, or is about to start, with a playground's briefing, tools and credentials. A
+    /// chained or prepared task starts later, as a GitHub task.
     async fn refuse_live_tasks(&self, id: &SandboxId) -> AppResult<()> {
         let mut live: Vec<u32> = self
             .deps
@@ -133,7 +135,13 @@ impl App {
             .await?
             .into_iter()
             .chain(self.deps.store.tasks(id, true).await?)
-            .filter(|task| !task.status.is_resting())
+            .filter(|task| {
+                task.status.is_live()
+                    || matches!(
+                        task.status,
+                        TaskStatus::Queued | TaskStatus::WaitingCapacity
+                    )
+            })
             .map(|task| task.number)
             .collect();
         if live.is_empty() {
