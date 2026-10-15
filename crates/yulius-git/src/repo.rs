@@ -167,9 +167,10 @@ impl Git {
     }
 
     /// Removes from `repo`'s own configuration (`.git/config` and `.git/config.worktree`) every
-    /// setting that steers transport or loads more configuration: `http.*`, `url.*`,
-    /// `include*`, `credential.*`, SSH and proxy commands and `origin`'s proxy and push or pack
-    /// overrides. Yulius's Git then carries a token in a clone whose configuration a sandbox
+    /// setting that steers transport, runs a command during a fetch or loads more configuration:
+    /// `http.*`, `url.*`, `include*`, `credential.*`, SSH, proxy and alternate-refs commands,
+    /// submodule recursion and `origin`'s proxy and push or pack overrides. A `.git` that is not
+    /// a directory, or a configuration file that is a link, is refused before any write. Yulius's Git then carries a token in a clone whose configuration a sandbox
     /// could write without handing it elsewhere (SPEC-176). Every other setting stays. A
     /// configuration file that is a link is refused: Git would write to the file it points at.
     pub fn scrub_transport_config(&self, repo: &Path) -> Result<(), GitError> {
@@ -184,17 +185,28 @@ impl Git {
             "core.gitproxy",
             "core.askpass",
             "core.alternaterefscommand",
+            "fetch.recursesubmodules",
+            "submodule.",
             "remote.origin.proxy",
             "remote.origin.pushurl",
             "remote.origin.uploadpack",
             "remote.origin.receivepack",
         ];
-        let worktree_config = repo.join(".git").join("config.worktree");
-        for file in [repo.join(".git").join("config"), worktree_config.clone()] {
+        // Yulius makes every clone with a real `.git` directory; a pointer file or a link would
+        // send the scrub to configuration elsewhere while Git still reads another.
+        let git_dir = repo.join(".git");
+        if !std::fs::symlink_metadata(&git_dir).is_ok_and(|meta| meta.file_type().is_dir()) {
+            return Err(GitError::InvalidInput {
+                what: "repository",
+                reason: "its .git is not a directory".to_owned(),
+            });
+        }
+        let worktree_config = git_dir.join("config.worktree");
+        for file in [git_dir.join("config"), worktree_config.clone()] {
             if std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.file_type().is_symlink()) {
                 return Err(GitError::InvalidInput {
                     what: "repository configuration",
-                    reason: format!("{} is a link", file.display()),
+                    reason: "a configuration file is a link".to_owned(),
                 });
             }
         }

@@ -99,7 +99,7 @@ impl App {
             default_branch: &record.default_branch,
         };
         self.push_playground(&origin, &target, &token).await?;
-        self.repoint_clone(&record, &url, &token).await?;
+        self.repoint_clone(&record, &url).await?;
         // Again before the commit point: a task may have started during the push.
         if let Err(err) = self.refuse_busy(&id).await {
             self.restore_origin(&record).await;
@@ -282,23 +282,22 @@ impl App {
         }
     }
 
-    /// Points the clone's `origin` at `url`, its own transport settings removed first, and fetches
-    /// it; on failure points it back.
-    async fn repoint_clone(
-        &self,
-        record: &SandboxRecord,
-        url: &str,
-        token: &Secret,
-    ) -> AppResult<()> {
+    /// Points the clone's `origin` at `url`, its own transport settings removed first, and brings
+    /// its `origin/*` refs up to date; on failure points it back.
+    async fn repoint_clone(&self, record: &SandboxRecord, url: &str) -> AppResult<()> {
         let clone = self.sandbox_repo(&record.id);
         let git = &self.deps.git;
-        // The clone's configuration is the playground's agents' to write, and the fetch below
-        // carries the installation token: no proxy, rewrite, include or alternate-refs command of
-        // theirs may steer it. Other ways the clone's files run code in the server's Git are
-        // #54 part B (ADR-0114).
+        // The clone's configuration is the playground's agents' to write. No token goes through
+        // it here: GitHub now holds exactly the playground's `origin`, so the refs are fetched
+        // from that by its path (ADR-0081). The scrub removes what they may have planted to steer
+        // the later token-bearing fetches of the GitHub sandbox; the rest of what the server's Git
+        // reads in a clone is #54 part B (ADR-0114).
         git.scrub_transport_config(&clone).await?;
         git.set_origin_url(&clone, url).await?;
-        if let Err(err) = git.sync_clone(url, &clone, token).await {
+        if let Err(err) = git
+            .fetch_branches_from(&clone, &self.playground_origin(&record.id))
+            .await
+        {
             self.restore_origin(record).await;
             return Err(err);
         }

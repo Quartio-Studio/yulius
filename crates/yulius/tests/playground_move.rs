@@ -703,9 +703,9 @@ async fn a_move_ends_when_its_client_goes_away() -> TestResult {
     Ok(())
 }
 
-/// MPG-003 (final review): the clone's configuration is the playground's agents' to write, and the
-/// move fetches GitHub through it with the installation token; a rewrite planted there never
-/// steers that fetch, and it is gone after the move.
+/// MPG-003 (reviews of the delivered head): the clone's configuration is the playground's agents'
+/// to write, and the GitHub sandbox's later fetches carry the installation token through it; a
+/// rewrite planted there never steers the move, and it is gone after it.
 #[tokio::test]
 async fn a_planted_transport_setting_never_steers_the_move() -> TestResult {
     let w = world().await?;

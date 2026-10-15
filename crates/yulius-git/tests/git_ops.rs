@@ -1513,6 +1513,8 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
         ("remote.origin.proxy", "http://127.0.0.1:9"),
         ("remote.origin.pushurl", "/tmp/evil.git"),
         ("core.alternateRefsCommand", "evil"),
+        ("fetch.recurseSubmodules", "true"),
+        ("submodule.evil.url", "/tmp/evil.git"),
         ("user.name", "Kept Name"),
     ];
     // The same key twice, apart.
@@ -1532,7 +1534,7 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
     fx.git.scrub_transport_config(&repo)?;
     let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
     let left: Vec<&str> = left.lines().collect();
-    for (key, _) in &planted[..10] {
+    for (key, _) in &planted[..12] {
         assert!(
             !left.iter().any(|k| k.eq_ignore_ascii_case(key)),
             "{key} is left: {left:?}"
@@ -1591,5 +1593,39 @@ fn a_linked_clone_configuration_is_refused_untouched() -> TestResult {
         "[http]\n\tproxy = http://127.0.0.1:9\n",
         "the file the link points at is untouched"
     );
+    Ok(())
+}
+
+/// SPEC-176 (review of the delivered head): a clone whose `.git` is a pointer file, or whose
+/// `.git/config` is a link, is refused before anything is written.
+#[test]
+fn a_redirected_clone_git_directory_is_refused() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let elsewhere = fx.path("elsewhere.git");
+    fs::rename(repo.join(".git"), &elsewhere)?;
+    fs::write(
+        repo.join(".git"),
+        format!("gitdir: {}\n", elsewhere.display()),
+    )?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(
+        fx.raw(&repo, &["config", "--local", "http.proxy"])?,
+        "http://127.0.0.1:9",
+        "nothing was written"
+    );
+
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let outside = fx.path("outside.cfg");
+    fs::rename(repo.join(".git/config"), &outside)?;
+    std::os::unix::fs::symlink(&outside, repo.join(".git/config"))?;
+    let before = fs::read_to_string(&outside)?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(fs::read_to_string(&outside)?, before);
     Ok(())
 }

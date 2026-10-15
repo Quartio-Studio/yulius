@@ -66,9 +66,10 @@ the App creates in an organisation gives nobody but the organisation's owners a 
   installation is limited to selected repositories). The dialog says so.
 - After the move, its maker sees the sandbox only through their GitHub permission on the
   repository. That is why the mover needs `admin` or `maintain`.
-- The move fetches GitHub with the installation token in a clone whose configuration the
-  playground's agents could write; it removes that clone's own transport settings first. Later
-  fetches of every GitHub sandbox still read their clone's configuration (#54 part B, ADR-0114).
+- The clone's configuration is the playground's agents' to write. The move passes no token through
+  it (it refreshes the clone from the bare `origin` by path, which GitHub then matches) and removes
+  the clone's own transport settings, so they do not steer the GitHub sandbox's later
+  token-bearing fetches. Those fetches still read the rest of the clone (#54 part B, ADR-0114).
 - No ruleset is created. As for an import, `production_protect` or onboarding adds them.
 - The integration tests drive the real Git adapter against local bare repositories through a test
   seam that rewrites `https://github.com/` (`GitAdapter::with_github_base`), off in production.

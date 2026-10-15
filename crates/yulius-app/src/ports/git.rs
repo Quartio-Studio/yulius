@@ -385,7 +385,8 @@ pub trait GitPort: Send + Sync {
         unsupported("listing a remote's refs")
     }
     /// Removes the clone `repo`'s own transport settings (`http.*`, `url.*`, includes, credential
-    /// helpers, proxy and SSH commands) before a token travels through it (SPEC-176).
+    /// helpers, proxy, SSH and alternate-refs commands, submodule recursion), refusing a `.git`
+    /// that is not a directory or a linked configuration file (SPEC-176).
     async fn scrub_transport_config(&self, repo: &Path) -> AppResult<()> {
         let _ = repo;
         unsupported("scrubbing a clone's configuration")
