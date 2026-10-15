@@ -55,11 +55,11 @@ automation can then write the day's task for the person to send when they are re
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] An automation stores the prepared choice through the API, validated like New task
-- [ ] Each run and Run now create the automation's task prepared, and a waiting one skips the next run
-- [ ] Agents set the prepared choice with the automation tools
-- [ ] The automation editor, list row and sentence offer and name When I decide
-- [ ] Docs, ADR and the changes log describe it
+- [x] An automation stores the prepared choice through the API, validated like New task
+- [x] Each run and Run now create the automation's task prepared, and a waiting one skips the next run
+- [x] Agents set the prepared choice with the automation tools
+- [x] The automation editor, list row and sentence offer and name When I decide
+- [x] Docs, ADR and the changes log describe it
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, evidence recorded
 

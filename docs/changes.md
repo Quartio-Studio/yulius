@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Automations can prepare their tasks (SPEC-155, ADR-0128, task #142, fixes #416). The automation
+  editor's start chip, the automations API (`prepared`, beside `supertask`, `after_task_id` and
+  `start_rule`) and the `automation_create` / `automation_update` tools offer "When I decide": each
+  run, and Run now, creates the task `prepared`, and it waits for Start now. The chip, the sentence
+  and the list row name it; a run while the previous prepared task still waits is
+  `skipped_previous_active`. Stored in migration 0031.
 - The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
   task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
   to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
