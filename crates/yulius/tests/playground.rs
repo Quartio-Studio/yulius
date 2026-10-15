@@ -1861,3 +1861,291 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     Ok(())
 }
+
+// ------------------------------------------------- `yulius onboard --playground` (SPEC-171)
+
+/// The router served on a loopback port as `yulius serve` serves it, for the real CLI client.
+async fn serve(h: &Harness) -> BoxResult<(yulius_import::Url, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let addr = listener.local_addr()?;
+    let service = yulius_server::public_router(h.app.clone())
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, service).await;
+    });
+    Ok((yulius_import::Url::parse(&format!("http://{addr}"))?, task))
+}
+
+/// The terminal of the real CLI in a test: no person answers, the bearer token is given.
+struct CliIo {
+    ui: yulius_import::PlainUi<std::io::Cursor<Vec<u8>>, Vec<u8>>,
+    token: String,
+    claude: PathBuf,
+}
+
+impl yulius_import::ImportIo for CliIo {
+    fn ui(&mut self) -> &mut dyn yulius_import::Ui {
+        &mut self.ui
+    }
+    fn interactive(&self) -> bool {
+        false
+    }
+    fn token(
+        &mut self,
+        _server: &yulius_import::Url,
+    ) -> Result<yulius_import::Secret, yulius_import::ImportError> {
+        Ok(yulius_import::Secret::new(&self.token))
+    }
+    fn session_sources(&self) -> yulius_import::SessionSources {
+        yulius_import::SessionSources {
+            claude_dir: Some(self.claude.clone()),
+        }
+    }
+    fn now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+}
+
+/// Runs `yulius onboard --playground --yes --sessions all [--name]` (the real client) on
+/// `checkout` against `server`; returns the outcome (or its error) and what it printed.
+async fn onboard_cli(
+    server: &yulius_import::Url,
+    token: &str,
+    checkout: &Path,
+    claude: &Path,
+    name: Option<&str>,
+) -> BoxResult<(Result<yulius_import::OnboardOutcome, String>, String)> {
+    let options = yulius_import::ImportOptions {
+        sessions: Some(yulius_import::SessionChoice::All),
+        assume_yes: true,
+        playground: true,
+        playground_name: name.map(str::to_owned),
+        ..yulius_import::ImportOptions::new(checkout.to_path_buf(), server.clone())
+    };
+    let mut io = CliIo {
+        ui: yulius_import::PlainUi::new(std::io::Cursor::new(Vec::new()), Vec::new()),
+        token: token.to_owned(),
+        claude: claude.to_path_buf(),
+    };
+    let outcome = tokio::task::spawn_blocking(move || {
+        let outcome = yulius_import::run_import(&options, &mut io).map_err(|err| err.to_string());
+        (
+            outcome,
+            String::from_utf8_lossy(io.ui.output()).into_owned(),
+        )
+    })
+    .await?;
+    Ok(outcome)
+}
+
+/// A laptop checkout named `shop` whose only remote is a local bare repository (not GitHub),
+/// with `main` pushed there, a local `feature` branch and tag `v1`, uncommitted work (an edit,
+/// a new file, a deletion) and one Claude Code session opened in it. Returns the checkout, the
+/// remote and the Claude configuration directory.
+fn laptop(dir: &Path) -> BoxResult<(PathBuf, PathBuf, PathBuf)> {
+    let remote = dir.join("elsewhere.git");
+    let checkout = dir.join("laptop").join("shop");
+    std::fs::create_dir_all(&remote)?;
+    std::fs::create_dir_all(&checkout)?;
+    git(&remote, &["init", "--quiet", "--bare", "-b", "main"])?;
+    git(&checkout, &["init", "--quiet", "-b", "main"])?;
+    std::fs::write(checkout.join("README.md"), "# shop\n")?;
+    std::fs::write(checkout.join("gone.txt"), "deleted later\n")?;
+    git(&checkout, &["add", "-A"])?;
+    git(&checkout, &["commit", "--quiet", "-m", "initial"])?;
+    git(
+        &checkout,
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    )?;
+    git(&checkout, &["push", "--quiet", "origin", "main"])?;
+    git(&checkout, &["checkout", "--quiet", "-b", "feature"])?;
+    std::fs::write(checkout.join("feature.txt"), "feature\n")?;
+    git(&checkout, &["add", "feature.txt"])?;
+    git(&checkout, &["commit", "--quiet", "-m", "feature work"])?;
+    git(&checkout, &["tag", "v1"])?;
+    git(&checkout, &["checkout", "--quiet", "main"])?;
+    std::fs::write(checkout.join("README.md"), "# shop, edited on the laptop\n")?;
+    std::fs::write(checkout.join("new.txt"), "not committed\n")?;
+    std::fs::remove_file(checkout.join("gone.txt"))?;
+    let claude = dir.join("claude");
+    let cwd = std::fs::canonicalize(&checkout)?;
+    let slug: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let session = claude.join("projects").join(slug);
+    std::fs::create_dir_all(&session)?;
+    let line = |kind: &str, at: &str, content: Value| {
+        json!({"type": kind, "cwd": cwd.to_string_lossy(), "sessionId": "5a1e0000-cli",
+               "timestamp": at, "gitBranch": "main", "version": "2.1.292",
+               "message": {"role": kind, "content": content}})
+        .to_string()
+    };
+    std::fs::write(
+        session.join("5a1e0000-cli.jsonl"),
+        format!(
+            "{}\n{}\n",
+            line(
+                "user",
+                "2026-10-14T10:00:00.000Z",
+                json!("Add a basket to the shop")
+            ),
+            line(
+                "assistant",
+                "2026-10-14T10:05:00.000Z",
+                json!([{"type": "text", "text": "ok"}])
+            )
+        ),
+    )?;
+    Ok((checkout, remote, claude))
+}
+
+/// Every ref of a repository with its commit, sorted.
+fn refs(repo: &Path) -> BoxResult<String> {
+    Ok(git(
+        repo,
+        &["for-each-ref", "--format=%(refname) %(objectname)"],
+    )?)
+}
+
+/// The playgrounds a person made, as the store keeps them (not removed).
+async fn playgrounds_named(
+    h: &Harness,
+    name: &str,
+) -> BoxResult<Vec<yulius_app::model::SandboxRecord>> {
+    use yulius_app::ports::store::SandboxStore;
+    Ok(h.store
+        .sandboxes()
+        .await?
+        .into_iter()
+        .filter(|s| s.is_playground() && s.repo_name.starts_with(name))
+        .collect())
+}
+
+/// SPEC-171 PGL-001, PGL-003, PGL-004: the real `yulius onboard --playground` on a checkout whose
+/// only remote is not GitHub makes a playground with every branch and tag, the uncommitted work as
+/// one commit on the checked-out branch, `dev`, and the session on its Sessions page. Nothing is
+/// pushed to the checkout's remote, and GitHub is never written to while its permission lookups
+/// fail (a GitHub path would have failed the upload).
+#[tokio::test]
+async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let bearer = support::superadmin_bearer(&h).await?;
+    let token = bearer.bearer.clone().ok_or("token")?;
+    let (server, _serving) = serve(&h).await?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, remote, claude) = laptop(tmp.path())?;
+    let remote_before = refs(&remote)?;
+    let laptop_main = git(&checkout, &["rev-parse", "main"])?.trim().to_owned();
+    let laptop_feature = git(&checkout, &["rev-parse", "feature"])?.trim().to_owned();
+
+    let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
+    let outcome = outcome.map_err(|err| format!("{err}\n{output}"))?;
+    let result = outcome.result.ok_or("applied")?;
+    assert_eq!(result.sessions_imported, 1, "{output}");
+    assert_eq!(result.onboarding, "not_needed");
+    assert!(output.contains("✓ shop is on Yulius"), "{output}");
+
+    let made = playgrounds_named(&h, "shop").await?;
+    assert_eq!(made.len(), 1, "{made:?}");
+    let sandbox = json!({"id": made[0].id.as_str()});
+    let origin = origin_of(&h, &sandbox);
+    assert_eq!(branches(&origin)?, ["dev", "feature", "main"]);
+    assert_eq!(
+        git(&origin, &["rev-parse", "feature"])?.trim(),
+        laptop_feature
+    );
+    assert_eq!(git(&origin, &["rev-parse", "v1"])?.trim(), laptop_feature);
+    // The uncommitted work is one commit on `main`, on top of the laptop's `main`.
+    assert_eq!(git(&origin, &["rev-parse", "main~1"])?.trim(), laptop_main);
+    assert_eq!(
+        file_at(&origin, "main", "README.md")?,
+        "# shop, edited on the laptop\n"
+    );
+    assert_eq!(file_at(&origin, "main", "new.txt")?, "not committed\n");
+    assert!(git(&origin, &["cat-file", "-e", "main:gone.txt"]).is_err());
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?,
+        git(&origin, &["rev-parse", "main"])?
+    );
+    // Its sandbox has the clone, and its Sessions page the session.
+    assert!(sandbox_dir(&h, &sandbox).join("repo").join(".git").exists());
+    let sessions = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}/sessions", made[0].id),
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(sessions.status, StatusCode::OK, "{:?}", sessions.body);
+    let listed = sessions.body["sessions"].to_string();
+    assert!(listed.contains("Add a basket to the shop"), "{listed}");
+
+    // Nothing was pushed anywhere, and GitHub was never written to.
+    assert_eq!(refs(&remote)?, remote_before);
+    no_github_writes(&h)?;
+
+    // The same checkout again lands in the same playground and makes no other.
+    let (again, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
+    let again = again.map_err(|err| format!("{err}\n{output}"))?;
+    assert_eq!(again.sessions_sent, 0, "{output}");
+    assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// SPEC-171 PGL-002: without the playground flag an empty owner is still refused, and a new
+/// playground from the CLI needs the checkout's branches.
+#[tokio::test]
+async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
+    let (h, owner) = world().await?;
+    let manifest = |playground: bool| {
+        json!({"manifest": {
+            "version": 1,
+            "repo": {"remote_url": "", "owner": "", "name": "shop",
+                     "head_branch": "main", "head_sha": "0123456789abcdef0123456789abcdef01234567"},
+            "bundle": null, "snapshot": null, "sessions": [], "since": "2026-09-23T00:00:00.000Z",
+            "playground": playground
+        }})
+    };
+    for playground in [false, true] {
+        let refused = call(
+            &h.router,
+            Method::POST,
+            "/api/import",
+            Some(manifest(playground)),
+            &owner,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{playground}: {:?}",
+            refused.body
+        );
+    }
+    let plan = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(json!({"owner": "", "name": "shop", "sessions": [], "playground": true})),
+        &owner,
+    )
+    .await?;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["can_create"], true);
+    assert!(plan.body["sandbox"].is_null());
+    Ok(())
+}

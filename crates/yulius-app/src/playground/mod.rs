@@ -19,6 +19,9 @@ use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug_base};
 
 mod folder;
+mod onboard;
+
+pub(crate) use onboard::UploadTarget;
 
 pub use folder::{FolderUpload, MAX_FOLDER_UPLOAD_BYTES};
 

@@ -219,6 +219,13 @@ pub trait ImportStore: Send + Sync {
         sandbox: &yulius_domain::ids::SandboxId,
         limit: u32,
     ) -> crate::error::AppResult<Vec<ImportJobRecord>>;
+    /// The most recent jobs a person created, newest first, at most `limit` (a new playground's
+    /// upload is resumed by its person before its sandbox exists, SPEC-171).
+    async fn user_import_jobs(
+        &self,
+        user: &yulius_domain::ids::UserId,
+        limit: u32,
+    ) -> crate::error::AppResult<Vec<ImportJobRecord>>;
     /// Compare-and-set of one file's received length: sets `received` only while the stored
     /// value equals `expected`; `Ok(false)` otherwise (lost race).
     async fn advance_import_file(

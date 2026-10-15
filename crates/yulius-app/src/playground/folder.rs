@@ -332,13 +332,28 @@ impl App {
             ));
         }
         git.push(&work, &branch, &branch, &no_token()).await?;
+        let profile = self.seed_profile(&work, &branch).await?;
+        self.clone_playground(id, &origin).await?;
+        Ok(profile)
+    }
+
+    /// The delivery profile of a playground seeded in the clone `work` on `branch` (already
+    /// pushed to `origin`): from its `yulius.toml` without environments or automatic promotion
+    /// (PLY-005), production `branch` unless the file says otherwise; the production and
+    /// integration branches are pushed from `branch` when missing.
+    pub(super) async fn seed_profile(
+        &self,
+        work: &Path,
+        branch: &str,
+    ) -> AppResult<DeliveryProfile> {
+        let git = &self.deps.git;
         let toml = {
             let path = work.join("yulius.toml");
             blocking(move || Ok(read_small(&path, MAX_YULIUS_TOML_BYTES))).await?
         };
         let mut profile = import_profile("", "", toml.as_deref());
         if toml.is_none_or(|text| !text.contains("[delivery]")) {
-            profile.production_branch.clone_from(&branch);
+            profile.production_branch = branch.to_owned();
         }
         // A folder whose own branch is the integration branch promotes to `main`.
         if profile.production_branch == profile.integration_branch {
@@ -349,11 +364,10 @@ impl App {
         profile.environments.clear();
         profile.auto_promote = false;
         for target in [&profile.production_branch, &profile.integration_branch] {
-            if *target != branch && !git.branch_exists(&work, target).await? {
-                git.push(&work, &branch, target, &no_token()).await?;
+            if *target != branch && !git.branch_exists(work, target).await? {
+                git.push(work, branch, target, &no_token()).await?;
             }
         }
-        self.clone_playground(id, &origin).await?;
         Ok(profile)
     }
 }
