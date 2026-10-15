@@ -21,7 +21,7 @@ use yulius_domain::vault::{
 
 use super::AgentPayload;
 use crate::context::App;
-use crate::coordination::AgentContext;
+use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::ports::egress::{
@@ -488,30 +488,49 @@ impl App {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// `secrets_list`: names, descriptions and bindings of the agent secrets this task may use,
-    /// and how to use them; never a value.
-    pub(crate) async fn tool_secrets_list(&self, ctx: &AgentContext) -> AppResult<Value> {
-        let records = self
-            .deps
-            .store
-            .vault_agent(Some(&ctx.task.sandbox_id))
-            .await?;
+    /// `secrets_list`: names, descriptions and bindings of the agent secrets the caller's project
+    /// may use, and how a task's agent or the Superagent (no proxy, SPEC-178 VAU-001) uses them;
+    /// never a value.
+    pub(crate) async fn tool_secrets_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
+        let records = self.deps.store.vault_agent(Some(&caller.sandbox)).await?;
+        let superagent = caller.task.is_none();
         let secrets: Vec<Value> = records
             .iter()
             .map(|r| {
-                json!({
+                let mut secret = json!({
                     "name": r.name,
                     "description": r.description,
                     "scope": if r.sandbox_id.is_some() { "this project" } else { "every project" },
                     "hosts": r.hosts,
                     "requested_hosts": r.requested_hosts,
-                    "adds": injection_of(r).describe(),
-                    "placeholder": format!("{PLACEHOLDER_PREFIX}{}", r.name),
                     "fields": r.fields,
                     "env_files": r.env_files.as_str(),
-                })
+                });
+                // What the proxy adds and the placeholder it replaces: of no use outside it.
+                if !superagent {
+                    secret["adds"] = json!(injection_of(r).describe());
+                    secret["placeholder"] = json!(format!("{PLACEHOLDER_PREFIX}{}", r.name));
+                }
+                secret
             })
             .collect();
+        if superagent {
+            let sandbox = self
+                .deps
+                .store
+                .sandbox(&caller.sandbox)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            return Ok(json!({
+                "secrets": secrets,
+                "how_to_use": [
+                    "These are the project's agent secrets: tasks' agents use them without seeing them, through Yulius' proxy (on the bound hosts), the project browser and the git-ignored .env. This session is not behind the proxy and holds no placeholders: work that uses a secret belongs in a task.",
+                    "To check that a value someone holds (a file, a key they pasted into a file) is the one in the vault, compute its SHA-256 in a shell without printing the value (for example sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and call secret_verify with the secret's name and that hash. It says whether it matches exactly, only without a final line break, or with its line breaks written as literal \\n (an agent secret never spans lines, so a multi-line key is stored that way), and on a match how many lines the value stands for.",
+                    format!("A person adds, rotates and reveals agent secrets (with their two-factor code) and allows the hosts agents ask for on the Secrets page: {}", self.agent_secrets_link(&sandbox.slug)),
+                    "You never receive values: anything that would show one (command output, files, tool results) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself."
+                ],
+            }));
+        }
         Ok(json!({
             "secrets": secrets,
             "how_to_use": [
