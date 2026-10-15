@@ -454,11 +454,7 @@ fn real_claude_tui_reaches_the_prompt_inside_ptyhost() -> TestResult {
             !screen.contains("Choose the text style"),
             "onboarding shown"
         );
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -534,11 +530,7 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
         ] {
             assert!(screen.contains(&line), "{line}: {screen}");
         }
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -591,11 +583,7 @@ fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
             launch.contains("prompt: Some(\"/goal Ship the widget with tests | Done = "),
             "{launch}"
         );
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -705,13 +693,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             started[0].account_id, second.account_id,
             "a new task does not start on the limited account"
         );
-        for live in [&id, &next] {
-            app.stop_task_now(live).await?;
-            wait_for("the stop", Duration::from_secs(30), || async {
-                task(&app, live).await.is_ok_and(|t| !t.status.is_live())
-            })
-            .await?;
-        }
+        support::stop_tasks(&app, &[&id, &next]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -831,11 +813,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
                 attempt.seq
             );
         }
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -940,11 +918,7 @@ fn a_switch_that_cannot_start_leaves_the_running_session_alone() -> TestResult {
                 .is_ok_and(|a| a.len() == 2 && a.last().is_some_and(|a| !a.state.is_terminal()))
         })
         .await?;
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1062,11 +1036,7 @@ fn task_worktrees_guard_protected_branches_and_status_changes_reach_the_ui() -> 
             String::from_utf8_lossy(&allowed.stderr)
         );
 
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         let stopped = task(&app, &id).await?.status.as_str().to_owned();
         let deadline = Instant::now() + Duration::from_secs(2);
         while !seen.contains(&stopped) && Instant::now() < deadline {
@@ -1123,11 +1093,7 @@ fn live_runs_report_metrics_before_they_end() -> TestResult {
             attempts.iter().all(|a| !a.state.is_terminal()),
             "the run has not ended"
         );
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         let finals = app.deps.store.task_metrics(&id).await?;
         assert_eq!(finals.len(), 1, "one row per run: live saves are upserts");
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -1169,11 +1135,7 @@ fn without_capacity_the_task_waits() -> TestResult {
         assert_eq!(waiting.status, "waiting_capacity");
         let resumes_at = waiting.resumes_at.ok_or("no resume time while waiting")?;
         assert!(resumes_at.ends_with('Z'), "RFC 3339 in UTC: {resumes_at}");
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1204,11 +1166,7 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
         })
         .await?;
         assert_eq!(task(&app, &second).await?.status, TaskStatus::Running);
-        app.stop_task_now(&second).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &second).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&second]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1252,15 +1210,7 @@ fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
             TaskStatus::Running,
             "the Done task keeps its session"
         );
-        for id in [&first, &second] {
-            app.stop_task_now(id).await?;
-        }
-        for id in [&first, &second] {
-            wait_for("the stop", Duration::from_secs(30), || async {
-                task(&app, id).await.is_ok_and(|t| !t.status.is_live())
-            })
-            .await?;
-        }
+        support::stop_tasks(&app, &[&first, &second]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1428,13 +1378,7 @@ fn a_normal_exit_closes_the_task() -> TestResult {
         .await?;
         let attempts = app.deps.store.attempts(&sender).await?;
         assert_eq!(attempts.last().and_then(|a| a.exit_code), Some(0));
-        app.stop_task_now(&recipient).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &recipient)
-                .await
-                .is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&recipient]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1539,11 +1483,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
                 .is_ok_and(|t| t.status == TaskStatus::Running)
         })
         .await?;
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1638,11 +1578,7 @@ fn a_session_change_inside_claude_is_adopted_into_the_task_lineage() -> TestResu
             1,
             "same attempt, no respawn"
         );
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1742,11 +1678,7 @@ fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestRe
             }
             ok?;
         }
-        app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
-        })
-        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1784,11 +1716,7 @@ async fn add_project(app: &App, data: &Path) -> Result<SandboxId, Box<dyn std::e
 }
 
 async fn stop_and_wait(app: &Arc<App>, id: &TaskId) -> TestResult {
-    app.stop_task_now(id).await?;
-    wait_for("the stop", Duration::from_secs(30), || async {
-        task(app, id).await.is_ok_and(|t| !t.status.is_live())
-    })
-    .await
+    support::stop_tasks(app, &[id]).await
 }
 
 /// AC-SUP-2 (SPEC-071 SUP-002, SUP-003, SUP-005): with real runs, a supertask waits for the

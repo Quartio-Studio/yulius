@@ -82,6 +82,10 @@ pub struct TaskRuntime {
     run: tokio::sync::Mutex<Option<ActiveRun>>,
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
+    /// The run whose transcript `usage` has read to its end at least once: only then is the
+    /// snapshot that run's figures (SPEC-143 RDM-001). A run that ends before (it ended while
+    /// Yulius was down, or right after a reattach) is counted from its transcript instead.
+    usage_read: Mutex<Option<AttemptId>>,
     watcher_alive: Arc<AtomicBool>,
     /// The latest transcript watcher started: an older one ends even when the next run starts
     /// before it saw its own run end (it would read the new run's lines as its own).
@@ -226,6 +230,7 @@ impl TaskRuntime {
             run: tokio::sync::Mutex::new(None),
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
+            usage_read: Mutex::new(None),
             watcher_alive: Arc::new(AtomicBool::new(false)),
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
@@ -968,6 +973,14 @@ impl App {
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
             };
+            // A waiting or resting task with no run left: an intent of a stop or close that ended
+            // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
+            // ends keeps it for that run's end.
+            if store.live_attempt(&task.id).await?.is_none()
+                && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
+            {
+                *intent = None;
+            }
             if !store
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?
@@ -1893,6 +1906,18 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        // A stop or close that came while the run was launching found no run to ask: it asks now,
+        // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
+        // comes later finds the run itself; the host takes a second request as the first.
+        let ending = runtime
+            .intent
+            .lock()
+            .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close)));
+        if ending {
+            // The stop may have come before this run existed, so it armed no escalation for it.
+            self.arm_escalation(task_id, Some(attempt.id.clone()));
+            request_shutdown(&runtime).await;
+        }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
         // it): the screen shows that viewer's size from the start, never the spawn size first,
         // and the PTY follows (TSK-006, F 2026-10-10).
@@ -2141,7 +2166,17 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        self.save_metrics(task_id, attempt_id, &runtime).await;
+        // The snapshot is the run's once its watcher read the run's transcript to its end;
+        // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
+        let read = runtime
+            .usage_read
+            .lock()
+            .is_ok_and(|read| read.as_ref() == Some(attempt_id));
+        if read {
+            self.save_metrics(task_id, attempt_id, &runtime).await;
+        } else {
+            self.save_counted_metrics(attempt_id).await;
+        }
         {
             let mut run = runtime.run.lock().await;
             if run.as_ref().is_some_and(|r| &r.attempt_id == attempt_id) {
@@ -2517,6 +2552,10 @@ impl App {
                         )
                         .await?
                 {
+                    // An earlier stop's intent that no run consumed goes with it (STP-002).
+                    if let Ok(mut intent) = self.runtime(task_id).intent.lock() {
+                        *intent = None;
+                    }
                     self.end_pause(task_id, "cancelled").await;
                     self.publish_task(task_id).await;
                     self.advance_chains(task_id).await;
@@ -3030,6 +3069,8 @@ impl App {
                 continue;
             }
             match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
+                // It ended while Yulius was down: no watcher of this process read it, so its
+                // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
@@ -3118,6 +3159,10 @@ impl App {
         runtime.watcher_alive.store(true, Ordering::SeqCst);
         runtime.hooks_seen.store(false, Ordering::SeqCst);
         runtime.at_limit.store(false, Ordering::SeqCst);
+        // Unmarked before it is emptied: a run is never taken as read with an empty snapshot.
+        if let Ok(mut read) = runtime.usage_read.lock() {
+            *read = None;
+        }
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
         }
@@ -3264,6 +3309,11 @@ impl App {
             let runtime = self.runtime(&task_id);
             if let Ok(mut u) = runtime.usage.lock() {
                 *u = usage.clone();
+            }
+            if w.caught_up()
+                && let Ok(mut read) = runtime.usage_read.lock()
+            {
+                *read = Some(attempt.id.clone());
             }
             let turn_ended = observations
                 .iter()

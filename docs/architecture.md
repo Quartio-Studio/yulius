@@ -804,14 +804,25 @@ again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-trans
 recorded before that rule are counted again once: migration 23 queues every run recorded so far,
 and after start, once reconciliation has ended the lost runs, a background job counts each ended
 run's window of its transcript and records the outcome with the figures it replaced
-([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)):
+([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)); no recount starts
+after a failed reconciliation (`App::recover`). A run that ends before a watcher of this process
+read its transcript to its end (its agent exited while Yulius was down: reconciliation finds the
+exit, or a reattach gets it at once) is counted the same way when it is ended; its row changes only
+when the count finds figures
+([ADR-0117](decisions/0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md)):
 
 ```mermaid
 flowchart LR
     mig["migration 23:
 queue every run so far"] --> queue[("metrics_recounts")]
-    start["start: reconcile"] --> job["recount_old_metrics
+    start["start: reconcile"] -->|"succeeded"| job["recount_old_metrics
 (background)"]
+    ended["run ended before its watcher
+read its transcript to the end
+(exited while Yulius was down)"] --> rcount["harness.recount
+of its window"]
+    rcount -->|"figures found"| rput[("metrics replaced")]
+    rcount -->|"nothing / failed"| rkeep[("metrics kept")]
     queue --> job
     job -->|"ended run, transcript exists"| count["harness.recount
 (spawn_blocking): its window
@@ -944,7 +955,13 @@ flowchart LR
 ## Runtime
 
 - Each task run is owned by a detached `ptyhost`; the server reattaches after restart.
-- Agents reach Yulius only through the internal loopback listener with per-run tokens.
+- Agents reach Yulius only through the internal loopback listener with per-run tokens. A hook runs
+  in its own task: the hook client fails open after 5 s and closes its connection, which drops the
+  HTTP handler, and the hook is still applied to its end
+  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)).
+- A stop or close asks the attached run to shut down; one that comes while the run is launching
+  (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
+  escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
   are in SPEC-002 section 6; runtime contracts in section 7 and
