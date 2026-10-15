@@ -2149,3 +2149,125 @@ async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
     assert!(plan.body["sandbox"].is_null());
     Ok(())
 }
+
+/// SPEC-171 PGL-002, PGL-004: into the person's existing playground of that name the CLI upload
+/// lands as an import does (branches under `import/<login>/`, the uncommitted work on a snapshot
+/// branch, in the sandbox clone): the playground's own branches are untouched, no other is made.
+#[tokio::test]
+async fn onboard_cli_uploads_into_an_existing_playground() -> TestResult {
+    let (h, owner) = world().await?;
+    let bearer = support::superadmin_bearer(&h).await?;
+    let token = bearer.bearer.clone().ok_or("token")?;
+    let (server, _serving) = serve(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let origin = origin_of(&h, &made.body);
+    let before = refs(&origin)?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, claude) = laptop(tmp.path())?;
+    let feature = git(&checkout, &["rev-parse", "feature"])?.trim().to_owned();
+
+    let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, Some("Shop")).await?;
+    let outcome = outcome.map_err(|err| format!("{err}\n{output}"))?;
+    let result = outcome.result.ok_or("applied")?;
+    assert_eq!(result.sandbox_id, made.body["id"].as_str().ok_or("id")?);
+    assert_eq!(result.sessions_imported, 1, "{output}");
+    assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
+    assert_eq!(
+        refs(&origin)?,
+        before,
+        "the playground's own branches are untouched"
+    );
+    let clone = sandbox_dir(&h, &made.body).join("repo");
+    let imported = branches(&clone)?;
+    assert!(
+        imported.iter().any(|b| b == "import/user/feature"),
+        "{imported:?}"
+    );
+    assert!(
+        imported.iter().any(|b| b == "import/user/main"),
+        "{imported:?}"
+    );
+    let snapshot = imported
+        .iter()
+        .find(|b| b.starts_with("import/user/snapshot-"))
+        .ok_or("snapshot branch")?;
+    assert_eq!(
+        git(&clone, &["rev-parse", "import/user/feature"])?.trim(),
+        feature
+    );
+    assert_eq!(file_at(&clone, snapshot, "new.txt")?, "not committed\n");
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// SPEC-171 PGL-002: a CLI upload makes a playground only within the person's limit of 10; their
+/// existing playground of that name still receives it.
+#[tokio::test]
+async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    for n in 0..10 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    }
+    let user = h
+        .store
+        .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+        .await?
+        .ok_or("alice")?;
+    let bearer = Creds {
+        bearer: Some(
+            h.app
+                .issue_api_token(&user, "tests")
+                .await?
+                .expose()
+                .to_owned(),
+        ),
+        ..Creds::default()
+    };
+    let plan = |name: &str| json!({"owner": "", "name": name, "sessions": [], "playground": true});
+    let refused = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(plan("shop")),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::OK, "{:?}", refused.body);
+    assert_eq!(refused.body["can_create"], false);
+    assert!(
+        refused.body["refusal"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("10 playgrounds")
+    );
+    let existing = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(plan("lab 3")),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(existing.status, StatusCode::OK, "{:?}", existing.body);
+    assert_eq!(
+        existing.body["sandbox"]["slug"], "lab-3",
+        "{:?}",
+        existing.body
+    );
+    assert!(existing.body["refusal"].is_null());
+
+    let (server, _serving) = serve(&h).await?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, claude) = laptop(tmp.path())?;
+    let token = bearer.bearer.clone().ok_or("token")?;
+    let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
+    let err = outcome.err().ok_or("an eleventh playground was made")?;
+    assert!(err.contains("10 playgrounds"), "{err}\n{output}");
+    assert!(playgrounds_named(&h, "shop").await?.is_empty());
+    Ok(())
+}
