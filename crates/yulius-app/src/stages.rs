@@ -96,6 +96,13 @@ impl SpanRecord {
         matches!(self.outcome.as_deref(), Some("failed" | "error"))
     }
 
+    /// The CPU time (ms) and peak memory (MiB) Yulius measured it using, when it did (SPEC-154).
+    fn used(&self) -> (Option<i64>, Option<i64>) {
+        let detail = self.detail_value();
+        let figure = |name: &str| detail.get(name).and_then(Value::as_i64);
+        (figure("cpu_ms"), figure("memory_peak_mb"))
+    }
+
     /// The span as the API shows it.
     #[must_use]
     pub fn view(&self) -> SpanView {
@@ -866,7 +873,8 @@ pub fn summarize(
     trend: Option<&str>,
     truncated: bool,
 ) -> StageSummary {
-    let mut rows: BTreeMap<RowKey, (Vec<i64>, StageRow)> = BTreeMap::new();
+    // Per row: its durations, CPU times and memory peaks, and the row.
+    let mut rows: BTreeMap<RowKey, ([Vec<i64>; 3], StageRow)> = BTreeMap::new();
     let mut options = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut reused_runs = 0u64;
     let wanted: Option<(String, String, String)> = trend.and_then(|text| {
@@ -893,12 +901,13 @@ pub fn summarize(
             }
             continue;
         }
+        let (cpu, memory) = span.used();
         for key in row_keys(span) {
             let is_trend = (key.0.as_str(), key.1.as_str(), key.2.as_str())
                 == (wanted.0.as_str(), wanted.1.as_str(), wanted.2.as_str());
-            let (durations, row) = rows.entry(key.clone()).or_insert_with(|| {
+            let ([durations, cpus, memories], row) = rows.entry(key.clone()).or_insert_with(|| {
                 (
-                    Vec::new(),
+                    [Vec::new(), Vec::new(), Vec::new()],
                     StageRow {
                         subject_kind: key.0.clone(),
                         kind: key.1.clone(),
@@ -913,12 +922,18 @@ pub fn summarize(
                         p90_ms: None,
                         max_ms: None,
                         total_ms: 0,
+                        cpu_p50_ms: None,
+                        cpu_p90_ms: None,
+                        memory_peak_p50_mb: None,
+                        memory_peak_p90_mb: None,
                     },
                 )
             });
             match (span.duration_ms(), span.ended_at) {
                 (Some(ms), Some(end)) => {
                     durations.push(ms);
+                    cpus.extend(cpu);
+                    memories.extend(memory);
                     row.count += 1;
                     row.total_ms = row.total_ms.saturating_add(ms);
                     row.failed += u64::from(span.failed());
@@ -936,11 +951,17 @@ pub fn summarize(
     }
     let mut stages: Vec<StageRow> = rows
         .into_values()
-        .map(|(mut durations, mut row)| {
-            durations.sort_unstable();
+        .map(|([mut durations, mut cpus, mut memories], mut row)| {
+            for values in [&mut durations, &mut cpus, &mut memories] {
+                values.sort_unstable();
+            }
             row.p50_ms = percentile(&durations, 50);
             row.p90_ms = percentile(&durations, 90);
             row.max_ms = durations.last().copied();
+            row.cpu_p50_ms = percentile(&cpus, 50);
+            row.cpu_p90_ms = percentile(&cpus, 90);
+            row.memory_peak_p50_mb = percentile(&memories, 50);
+            row.memory_peak_p90_mb = percentile(&memories, 90);
             row
         })
         .collect();
@@ -1310,6 +1331,61 @@ mod tests {
         assert_eq!(summary.trend.days[1].count, 0);
         assert_eq!(summary.delivery.len(), 2);
         assert_eq!(summary.delivery[0].change_failure_rate, None);
+    }
+
+    /// SPEC-154 USE-005: a row's CPU time and peak memory percentiles come from its spans that
+    /// have them; a row none of whose spans has them leaves them out.
+    #[test]
+    fn the_summary_has_percentiles_of_cpu_time_and_peak_memory() {
+        let mut spans: Vec<SpanRecord> = (1..=10)
+            .map(|i| {
+                let mut job = span("job", "test (1/2)", i, Some(i + 1000), Some("passed"));
+                job.job = Some("test".into());
+                job.key = format!("job:{i}");
+                job.detail = Some(
+                    serde_json::json!({ "cpu_ms": i * 1000, "memory_peak_mb": i * 100 })
+                        .to_string(),
+                );
+                job
+            })
+            .collect();
+        // A job whose use is unknown counts for its duration only; one still running not at all.
+        let mut unknown = span("job", "test (2/2)", 20, Some(30), Some("error"));
+        unknown.job = Some("test".into());
+        spans.push(unknown);
+        let mut running = span("job", "test (1/2)", 40, None, None);
+        running.job = Some("test".into());
+        running.detail = Some(r#"{"cpu_ms":999999,"memory_peak_mb":99999}"#.into());
+        spans.push(running);
+        spans.push(span("queue", "queue", 0, Some(10), Some("passed")));
+        let summary = summarize(&spans, &[], &[], (0, 0), None, false);
+        let row = |kind: &str| {
+            summary
+                .stages
+                .iter()
+                .find(|r| r.kind == kind)
+                .cloned()
+                .unwrap_or_else(|| unreachable!())
+        };
+        let job = row("job");
+        assert_eq!((job.count, job.running), (11, 1));
+        assert_eq!(
+            (
+                job.cpu_p50_ms,
+                job.cpu_p90_ms,
+                job.memory_peak_p50_mb,
+                job.memory_peak_p90_mb
+            ),
+            (Some(5_000), Some(9_000), Some(500), Some(900))
+        );
+        let queue = row("queue");
+        assert_eq!(
+            (queue.cpu_p50_ms, queue.memory_peak_p90_mb),
+            (None, None),
+            "no figure, no percentile"
+        );
+        let json = serde_json::to_value(&queue).unwrap_or_default();
+        assert!(json.get("cpu_p50_ms").is_none(), "{json}");
     }
 
     #[test]

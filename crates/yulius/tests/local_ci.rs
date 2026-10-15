@@ -1285,6 +1285,101 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
     Ok(())
 }
 
+const BUSY_TOML: &str = r#"[[ci.jobs]]
+name = "busy"
+command = 'i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done; echo "::yulius-measure cpu_ms=1 memory_peak_mb=1 cache_hits=3"; echo done'
+"#;
+
+/// SPEC-154 USE-001..004 (#488): a CI job run through the process host records the CPU time and
+/// peak memory its process tree used on its `job` span, as Yulius measured them when the host
+/// reaped it; the job's own `::yulius-measure` cannot set them.
+#[tokio::test]
+async fn a_job_records_the_cpu_and_memory_it_used() -> TestResult {
+    use yulius_app::ports::store_ext::SpanStore as _;
+    use yulius_domain::stages::SubjectKind;
+    let f = fixture_with(false, |_| BUSY_TOML.to_owned()).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let spans =
+        f.h.store
+            .subject_spans(
+                &SandboxId::parse("s1")?,
+                SubjectKind::CiRun,
+                run["id"].as_str().ok_or("id")?,
+                1_000,
+            )
+            .await?;
+    let job = spans
+        .iter()
+        .find(|s| s.kind == "job" && s.name == "busy")
+        .ok_or_else(|| format!("no job span in {spans:?}"))?;
+    let figures: Value = serde_json::from_str(job.detail.as_deref().unwrap_or("{}"))?;
+    let cpu = figures["cpu_ms"]
+        .as_i64()
+        .ok_or(format!("no cpu_ms: {figures}"))?;
+    let memory = figures["memory_peak_mb"]
+        .as_i64()
+        .ok_or(format!("no memory_peak_mb: {figures}"))?;
+    // The busy loop takes far more than a millisecond of CPU; the job's own "1" is refused.
+    assert!(cpu >= 50, "CPU time of the busy loop: {figures}");
+    assert!(memory >= 1, "a shell's peak memory: {figures}");
+    assert_eq!(figures["cache_hits"], 3.0, "{figures}");
+    Ok(())
+}
+
+const RUNAWAY_TOML: &str = r#"[[ci.jobs]]
+name = "runaway"
+command = '/bin/sh -c "while :; do :; done"'
+"#;
+
+/// SPEC-154 USE-002, review round 1: a job Yulius kills (here at its timeout) loses the processes
+/// its host cannot reap (they go to init with the group kill), so what it measured would read as
+/// almost nothing: its use stays unknown, never a near-zero figure.
+#[tokio::test]
+async fn a_killed_job_leaves_its_use_unknown() -> TestResult {
+    use yulius_app::ports::store_ext::SpanStore as _;
+    use yulius_domain::stages::SubjectKind;
+    let f = fixture_with(false, |_| RUNAWAY_TOML.to_owned()).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "error", "timed out: {run}");
+    let spans =
+        f.h.store
+            .subject_spans(
+                &SandboxId::parse("s1")?,
+                SubjectKind::CiRun,
+                run["id"].as_str().ok_or("id")?,
+                1_000,
+            )
+            .await?;
+    let job = spans
+        .iter()
+        .find(|s| s.kind == "job" && s.name == "runaway")
+        .ok_or_else(|| format!("no job span in {spans:?}"))?;
+    let figures: Value = serde_json::from_str(job.detail.as_deref().unwrap_or("{}"))?;
+    for figure in ["cpu_ms", "memory_peak_mb", "disk_written_mb"] {
+        assert!(figures.get(figure).is_none(), "unknown {figure}: {figures}");
+    }
+    Ok(())
+}
+
 /// The output of each job of the run of commit `sha`, by job name.
 async fn job_outputs(f: &Fixture, sha: &str) -> BoxResult<Vec<(String, String)>> {
     let overview = f.get("/api/sandboxes/s1/ci").await?;

@@ -325,8 +325,12 @@ function stepsSummary(task) {
   const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
   const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
   const total = list.reduce((sum, s) => sum + effort(s), 0);
-  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
-  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
+  const finishedEffort = finished.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finishedEffort * 100) / total) : 0;
+  // The share in progress ends at the cumulative floor, as the server computes it (SPEC-159).
+  const activeEffort = list.filter((s) => s.status === 'in_progress').reduce((sum, s) => sum + effort(s), 0);
+  const active_percent = total ? Math.min(100, Math.floor(((finishedEffort + activeEffort) * 100) / total)) - percent : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
 }
 
 function summary(task) {
@@ -2832,22 +2836,23 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
 });
 // ---- Stages (SPEC-137): the Pipeline page, waterfalls and the Dashboard's overview.
 
-// One stage row: subject, kind, name, job, environment, ended, failed, p50 and p90 minutes.
+// One stage row: subject, kind, name, job, environment, ended, failed, p50 and p90 minutes, and for
+// CI jobs and CD runs what they used (SPEC-154): CPU p50/p90 minutes and peak memory p50/p90 MiB.
 const STAGE_ROWS = [
   ['ci_run', 'run', 'run', null, null, 46, 5, 14, 23],
   ['ci_run', 'queue', 'queue', null, null, 49, 0, 1.5, 9],
   ['ci_run', 'queue', 'queue · waiting for a lane', null, null, 12, 0, 4, 11],
   ['ci_run', 'queue', 'queue · waiting for disk', null, null, 3, 0, 7, 12],
-  ['ci_run', 'job', 'quality', null, null, 46, 3, 12, 19],
+  ['ci_run', 'job', 'quality', null, null, 46, 3, 12, 19, [31, 52, 2048, 3584]],
   ['ci_run', 'stage', 'lint', 'quality', null, 44, 1, 2.5, 3.5],
   ['ci_run', 'stage', 'unit', 'quality', null, 43, 2, 6, 9],
-  ['ci_run', 'job', 'e2e', null, null, 46, 2, 9, 13],
+  ['ci_run', 'job', 'e2e', null, null, 46, 2, 9, 13, [14, 20, 1536, 2304]],
   ['task', 'state', 'queued', null, null, 31, 0, 6, 48],
   ['task', 'state', 'needs_you', null, null, 18, 0, 22, 190],
   ['task', 'step', 'step', null, null, 212, 4, 18, 55],
   ['task', 'delivery', 'pr_open', null, null, 27, 0, 52, 240],
   ['task', 'wait', 'merge_armed', null, null, 24, 2, 19, 41],
-  ['cd_run', 'run', 'run', null, 'dev', 14, 3, 3.2, 6],
+  ['cd_run', 'run', 'run', null, 'dev', 14, 3, 3.2, 6, [2.5, 4, 512, 900]],
   ['cd_run', 'deploy', 'deploy', null, 'dev', 14, 2, 2.4, 4.5],
   ['cd_run', 'verify', 'verify', null, 'dev', 12, 1, 0.4, 0.9],
   ['cd_run', 'run', 'run', null, 'prod', 4, 0, 5, 7],
@@ -2858,9 +2863,10 @@ function stageRows(query) {
   const want = (key, value) => !query.get(key) || query.get(key) === value;
   return STAGE_ROWS
     .filter(([subject, , , job, env]) => want('subject', subject) && want('environment', env) && want('job', job))
-    .map(([subject, kind, name, job, env, count, failed, p50, p90]) => ({
+    .map(([subject, kind, name, job, env, count, failed, p50, p90, used]) => ({
       subject_kind: subject, kind, name, job, environment: env, count, failed, running: name === 'run' && subject === 'ci_run' ? 1 : 0,
       backfilled: subject === 'ci_run' ? 6 : 0, p50_ms: Math.round(p50 * MIN), p90_ms: Math.round(p90 * MIN), max_ms: Math.round(p90 * 1.6 * MIN), total_ms: Math.round(count * p50 * 1.2 * MIN),
+      ...(used ? { cpu_p50_ms: Math.round(used[0] * MIN), cpu_p90_ms: Math.round(used[1] * MIN), memory_peak_p50_mb: used[2], memory_peak_p90_mb: used[3] } : {}),
     }))
     .sort((a, b) => b.total_ms - a.total_ms);
 }
@@ -2914,7 +2920,7 @@ function mockTimeline(kind, id) {
       s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
       s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
       s('prepare@1', 'prepare', 'commit', 45, 0.2),
-      s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality' }),
+      s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality', detail: { cpu_ms: 31 * MIN, memory_peak_mb: 2048, disk_written_mb: 640 } }),
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
@@ -4397,6 +4403,8 @@ function openSocket(db, path) {
  * Ambient activity so live updates are visible: one bounded timer for the whole mock. The browser
  * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
  * late"): keep its delay well under 15 s and its reason, or change that test with it.
+ * `browserask=0` leaves it out: its toast stays while pointed at and can cover the tool panel's
+ * top, which tests that point there would hit on a slow machine (#349).
  */
 function startAmbient(db) {
   if (db.ambient) return;
@@ -4404,7 +4412,7 @@ function startAmbient(db) {
   let tick = 0;
   setTimeout(() => {
     // Like the server, events reach only viewers of the sandbox (none without GitHub).
-    if (!db.sandboxes.some((s) => s.id === 'sb_studio')) return;
+    if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
   }, 5000);
   setInterval(() => {
@@ -4508,6 +4516,8 @@ export function createMockTransport(params) {
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';
+  // `browserask=0`: no sign-in request from the sandbox browser 5 s after the start (startAmbient).
+  db.noBrowserAsk = params.get('browserask') === '0';
   notesOf(db);
   return {
     kind: 'mock',

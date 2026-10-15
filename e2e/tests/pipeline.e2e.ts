@@ -29,6 +29,16 @@ test('the Pipeline page shows delivery figures, a stage trend with p50 and p90, 
   const stages = screen.getByRole('region', 'Stages');
   await expect(stages).toContainText('3 reused CI results not counted');
   await expect(stages).toContainText('backfilled');
+  // #488 (SPEC-154): a job's CPU time and peak memory, p50 · p90, beside its duration; a stage
+  // that measured none shows a dash, never 0.
+  await expect(stages.getByRole('columnheader', 'CPU time p50 · p90')).toBeVisible();
+  await expect(stages.getByRole('columnheader', 'Peak memory p50 · p90')).toBeVisible();
+  const quality = '.pl-table tbody tr:has-text("CI · Job quality")';
+  await expect(browser.locator(`${quality} td.pl-cpu`)).toHaveText('31 min · 52 min');
+  await expect(browser.locator(`${quality} td.pl-memory`)).toHaveText('2.0 GiB · 3.5 GiB');
+  const queue = '.pl-table tbody tr:has-text("CI · Queue: waiting for a lane")';
+  await expect(browser.locator(`${queue} td.pl-cpu`)).toHaveText('—');
+  await expect(browser.locator(`${queue} td.pl-memory`)).toHaveText('—');
   expect(await axeViolations(browser)).toEqual([]);
 
   // A stage of the table becomes the trend, and the choice stays in the address.
@@ -70,6 +80,11 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
   });
   expect(nameWidth).toBeGreaterThan(60);
   await expect(browser.locator('.st-row:has-text("unit")')).toHaveAttribute('title', /1,234 passed, 2 flaky, 3 skipped/);
+  // #488: a job's own CPU time, peak memory and bytes written, on hover and in its title.
+  const qualityRow = browser.locator('.st-row:has-text("Job quality")');
+  await expect(qualityRow).toHaveAttribute('title', /CPU 31 min · peak 2\.0 GiB · wrote 640 MiB/);
+  await qualityRow.hover();
+  await expect(browser.locator('.st-tip')).toContainText('CPU 31 min · peak 2.0 GiB · wrote 640 MiB');
   await run.getByRole('button', 'Table').click();
   await expect(run.getByRole('table')).toContainText('Job test (2/2)');
   expect(await axeViolations(browser)).toEqual([]);

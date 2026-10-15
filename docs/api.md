@@ -267,7 +267,7 @@ TaskSummary = {
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
-  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
+  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14},
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
@@ -297,6 +297,9 @@ task paused, not an error.
 `steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
 default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
+`steps.active_percent` is the share of the steps **in progress** (SPEC-159), so that `percent +
+active_percent` is the finished and in-progress share rounded down; the task strip draws it as a
+second segment in the working colour. Older servers omit it (read 0).
 
 `updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
 the last change of the task's **status or activity** (setting the same value again does not move
@@ -746,6 +749,16 @@ Yulius records of the span: `tests_…`, `…_start` and the names Yulius writes
 `input_tokens`…) are ignored, as are new names past 64 per span. Figures are written once per span
 each half second the output is read (counts added up, the last value kept).
 
+A CI job's `job` span and a CD run's `run` span also carry what its processes used (SPEC-154,
+ADR-0127), measured by the process host when it reaped them and written with the job's end:
+`cpu_ms` (user + system CPU time of the job's processes that ended and were reaped within it),
+`memory_peak_mb` (the largest peak resident memory of one of them, in MiB, at least the host's own
+few MiB a fork starts with) and `disk_written_mb` (what they wrote to storage, rounded to the
+nearest MiB, on Linux hosts that account for it). Background processes still running when the job
+ends are killed and not counted. A job Yulius killed (cancelled, timed out, too much output), one
+that never started, one whose host was lost, or an older host's: the figures are absent, never `0`.
+The three names are reserved.
+
 | Method and path | Access | Result |
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/stages/timeline?subject=<task|ci_run|cd_run>:<id>` | read | `TimelineView` |
@@ -765,7 +778,8 @@ StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "k
                 "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
                 "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}
 StageRow = {"subject_kind", "kind", "name", "job", "environment", "count", "failed", "running",
-            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms"}
+            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms", "cpu_p50_ms"?, "cpu_p90_ms"?,
+            "memory_peak_p50_mb"?, "memory_peak_p90_mb"?}   # ? only when an ended span measured it
 DeliveryFigures = {"environment", "deployments", "passed", "per_week", "lead_time_p50_ms",
                    "lead_time_p90_ms", "lead_time_count", "change_failure_rate",
                    "time_to_restore_p50_ms", "restores"}

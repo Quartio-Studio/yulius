@@ -207,6 +207,8 @@ pub struct CiJobUpdate {
     pub started_at: Option<Timestamp>,
     /// End.
     pub ended_at: Option<Timestamp>,
+    /// What it used, with its end when its process host measured it (SPEC-154).
+    pub usage: Option<yulius_domain::stages::ResourceUse>,
 }
 
 /// The CI configuration of a sandbox as last read.
