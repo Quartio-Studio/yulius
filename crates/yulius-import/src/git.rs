@@ -82,6 +82,12 @@ pub enum RepoError {
     /// `HEAD` has no commit yet.
     #[error("the repository has no commits yet; commit and push to GitHub first")]
     NoCommits,
+    /// `HEAD` is on no branch (a playground upload lands the uncommitted work on its branch).
+    #[error(
+        "HEAD is detached; check out the branch the playground should start from \
+         (`git switch <branch>`), then run the command again"
+    )]
+    DetachedHead,
     /// A Git invocation failed.
     #[error(transparent)]
     Git(#[from] GitError),
@@ -203,6 +209,60 @@ fn redact_credentials(url: &str) -> String {
 /// [`RepoError::NotGitRepository`], [`RepoError::NoRemote`], [`RepoError::NotGitHub`],
 /// [`RepoError::NoCommits`] or a Git failure.
 pub fn discover_repo(path: &Path) -> Result<RepoInfo, RepoError> {
+    let root = checkout_root(path)?;
+    let remote = find_github_remote(&root)?;
+    let head_sha = head_commit(&root)?;
+    let head_branch = head_branch(&root)?;
+    let worktrees = other_worktrees(&root)?;
+    Ok(RepoInfo {
+        root,
+        remote_url: remote.https_url(),
+        owner: remote.owner,
+        name: remote.name,
+        head_branch,
+        head_sha,
+        worktrees,
+    })
+}
+
+/// Locates the checkout containing `path` for `yulius onboard --playground` (SPEC-171): its
+/// remotes are neither needed nor read, so the descriptor has an empty owner and remote URL, and
+/// its name is `name` or else the checkout directory's name. `HEAD` must be on a branch, where
+/// the uncommitted work lands.
+///
+/// # Errors
+/// [`RepoError::NotGitRepository`], [`RepoError::NoCommits`], [`RepoError::DetachedHead`] or a
+/// Git failure.
+pub fn discover_playground_checkout(
+    path: &Path,
+    name: Option<&str>,
+) -> Result<RepoInfo, RepoError> {
+    let root = checkout_root(path)?;
+    let head_sha = head_commit(&root)?;
+    let head_branch = head_branch(&root)?.ok_or(RepoError::DetachedHead)?;
+    let worktrees = other_worktrees(&root)?;
+    let name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            root.file_name()
+                .map(|dir| dir.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "project".to_owned());
+    Ok(RepoInfo {
+        root,
+        remote_url: String::new(),
+        owner: String::new(),
+        name,
+        head_branch: Some(head_branch),
+        head_sha,
+        worktrees,
+    })
+}
+
+/// The top-level directory of the checkout containing `path` (canonical when resolvable).
+fn checkout_root(path: &Path) -> Result<PathBuf, RepoError> {
     if !path.is_dir() {
         return Err(RepoError::NotGitRepository(path.to_path_buf()));
     }
@@ -221,24 +281,16 @@ pub fn discover_repo(path: &Path) -> Result<RepoInfo, RepoError> {
     if toplevel.as_os_str().is_empty() {
         return Err(RepoError::NotGitRepository(path.to_path_buf()));
     }
-    let root = canonical(&toplevel);
-    let remote = find_github_remote(&root)?;
-    let head_sha = head_commit(&root)?;
-    let head_branch = head_branch(&root)?;
-    let worktrees = list_worktrees(&root)?
+    Ok(canonical(&toplevel))
+}
+
+/// The repository's other checkouts (main and linked worktrees, `root` excluded).
+fn other_worktrees(root: &Path) -> Result<Vec<PathBuf>, GitError> {
+    Ok(list_worktrees(root)?
         .into_iter()
         .map(|worktree| canonical(&worktree))
-        .filter(|worktree| *worktree != root)
-        .collect();
-    Ok(RepoInfo {
-        root,
-        remote_url: remote.https_url(),
-        owner: remote.owner,
-        name: remote.name,
-        head_branch,
-        head_sha,
-        worktrees,
-    })
+        .filter(|worktree| worktree != root)
+        .collect())
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -516,6 +568,65 @@ pub fn create_bundle(
             command: "bundle".to_owned(),
             source,
         })
+}
+
+/// Writes a `git bundle` of every local branch and tag to `out` (`yulius onboard --playground`,
+/// SPEC-171): a playground has no remote that holds anything, so nothing is left out. Packing is
+/// single-threaded, as in [`create_bundle`], so an unchanged repository gives the same digest.
+/// Returns the bundle and the branches it holds.
+///
+/// # Errors
+/// A Git failure, or an I/O error hashing the bundle.
+pub fn create_full_bundle(
+    repo: &Path,
+    out: &Path,
+) -> Result<(FileRef, Vec<UnpublishedRef>), GitError> {
+    let branches = local_branches(repo)?;
+    let args: Vec<&OsStr> = vec![
+        OsStr::new("-c"),
+        OsStr::new("pack.threads=1"),
+        OsStr::new("bundle"),
+        OsStr::new("create"),
+        out.as_os_str(),
+        OsStr::new("--branches"),
+        OsStr::new("--tags"),
+    ];
+    git(repo, &args, SMALL_OUTPUT, BUNDLE_TIMEOUT)?;
+    let reference = file_ref(out, BUNDLE_NAME).map_err(|source| GitError::ReadOutput {
+        command: "bundle".to_owned(),
+        source,
+    })?;
+    Ok((reference, branches))
+}
+
+/// Every local branch with the commit it points at, sorted by name (non-UTF-8 names ignored).
+fn local_branches(repo: &Path) -> Result<Vec<UnpublishedRef>, GitError> {
+    let output = git(
+        repo,
+        &[
+            OsStr::new("for-each-ref"),
+            OsStr::new("--format=%(refname)%00%(objectname)"),
+            OsStr::new("refs/heads/"),
+        ],
+        LIST_OUTPUT,
+        QUERY_TIMEOUT,
+    )?;
+    let mut branches: Vec<UnpublishedRef> = output
+        .stdout
+        .split(|b| *b == b'\n')
+        .filter_map(|line| {
+            let split = line.iter().position(|b| *b == 0)?;
+            let refname = std::str::from_utf8(&line[..split]).ok()?;
+            let sha = std::str::from_utf8(&line[split + 1..]).ok()?;
+            let branch = refname.strip_prefix("refs/heads/")?;
+            is_object_id(sha).then(|| UnpublishedRef {
+                branch: branch.to_owned(),
+                sha: sha.to_owned(),
+            })
+        })
+        .collect();
+    branches.sort_by(|a, b| a.branch.cmp(&b.branch));
+    Ok(branches)
 }
 
 #[cfg(test)]

@@ -616,3 +616,80 @@ fn non_github_repositories_are_refused_before_authentication() -> TestResult {
     assert_eq!(server.with(|state| state.manifests.len())?, 0);
     Ok(())
 }
+
+/// SPEC-171 PGL-001, PGL-002: `--playground` on a checkout without any remote: the plan and the
+/// manifest say playground with an empty owner, the bundle holds every branch, the uncommitted
+/// work and the sessions are sent, and the output names the playground, not GitHub.
+#[test]
+fn a_checkout_without_github_goes_to_a_playground() -> TestResult {
+    let scenario = scenario()?;
+    git(&scenario.fixture.repo, &["remote", "remove", "origin"])?;
+    let server = FakeServer::start()?;
+    server.with(|state| state.sandbox_exists = false)?;
+    let mut io = TestIo::unattended(scenario.sources.clone());
+    let options = ImportOptions {
+        playground: true,
+        playground_name: Some("shop".to_owned()),
+        ..options(&scenario, &server, Some(SessionChoice::All))
+    };
+
+    let outcome = run_import(&options, &mut io)?;
+
+    assert!(outcome.result.is_some());
+    assert_eq!(outcome.sessions_sent, 2);
+    let output = io.output();
+    for expected in [
+        "Playground   shop (local Git on the Yulius server, nothing pushed)",
+        "Branches     2 branches: feature, main",
+        "new playground shop: it is made when you upload",
+        "✓ shop is on Yulius",
+    ] {
+        assert!(
+            output.contains(expected),
+            "missing {expected:?} in:\n{output}"
+        );
+    }
+    assert!(!output.contains("GitHub"), "{output}");
+    let (plans, manifest) =
+        server.with(|state| (state.plan_requests.clone(), state.manifests[0].clone()))?;
+    assert!(
+        plans
+            .iter()
+            .all(|plan| plan.playground && plan.owner.is_empty() && plan.name == "shop")
+    );
+    assert!(manifest.playground);
+    assert_eq!(manifest.repo.owner, "");
+    assert_eq!(manifest.repo.remote_url, "");
+    assert_eq!(manifest.repo.name, "shop");
+    assert_eq!(manifest.repo.head_branch.as_deref(), Some("main"));
+    assert!(manifest.snapshot.is_some());
+    let bundle = manifest.bundle.clone().ok_or("bundle")?;
+    let bytes = server
+        .with(|state| state.content.get(&bundle.sha256).cloned())?
+        .ok_or("stored")?;
+    let path = scenario.fixture.temp.path().join("received.bundle");
+    fs::write(&path, bytes)?;
+    let heads = git(
+        &scenario.fixture.repo,
+        &["bundle", "list-heads", &path.to_string_lossy()],
+    )?;
+    assert!(
+        heads.contains("refs/heads/main") && heads.contains("refs/heads/feature"),
+        "{heads}"
+    );
+
+    // Without --playground the same checkout is refused: it has no GitHub remote.
+    let refused = run_import(
+        &options_default(&scenario, &server),
+        &mut TestIo::unattended(scenario.sources.clone()),
+    );
+    assert!(
+        matches!(refused, Err(ImportError::Repo(RepoError::NoRemote))),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+fn options_default(scenario: &Scenario, server: &FakeServer) -> ImportOptions {
+    options(scenario, server, Some(SessionChoice::None))
+}
