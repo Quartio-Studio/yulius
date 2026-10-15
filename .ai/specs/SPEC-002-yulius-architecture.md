@@ -1946,7 +1946,8 @@ the task spec plus the project-docs problems; `project_context` returns the brie
 
 The hook binary reads the CLI's JSON from stdin (≤ 1 MiB), forwards it to `/hooks/<event>` with the
 task token (timeout 5 s) and prints the response. Failure to reach Yulius is fail-open (exit 0, no
-output) and is recorded. Responses:
+output) and is recorded. A hook the server received is handled to its end even when the client
+stopped waiting and closed the connection (SPEC-140 HKS-001, ADR-0115). Responses:
 
 - `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
 - `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns
@@ -2307,9 +2308,9 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Install and health check | health 120 s; install 15 min | rollback; `failed` |
 | Update resume stagger / hold retry | 2 s / `Retry-After: 3` | — |
 | Update backups kept | 3 | oldest removed |
-| Stop escalation | 5 s + 5 s + 10 s (`stop_escalation_ms`); shutdown request 2 s | host terminated, then `lost`; a host that cannot be terminated keeps the run live + notice (SPEC-065) |
+| Stop escalation | 5 s + 5 s + 10 s (`stop_escalation_ms`); shutdown request 2 s | host terminated, then `lost`; a host that cannot be terminated keeps the run live + notice (SPEC-065); a stop during a launch asks the run once it is attached (SPEC-140 STP-001) |
 | Switch total | 120 s | `stopped(switch_timeout)` |
-| Hook call | 5 s | fail-open |
+| Hook call | 5 s | fail-open; the server still applies a hook it received (ADR-0115) |
 | Hook hold (Stop, `UserPromptSubmit`) | `Retry-After` 10 s (client: 1–60 s), 2 s after a failure, 8 days in total (CLI `timeout` 8 days + 1 h) | fail-open; a reported limit then pauses as `limit` |
 | Resume of paused tasks | oldest first, 20 s apart; loop at least every 5 min | — |
 | Held prompt carried to another subscription | 100 KiB | longer prompts are not held (they run; a reported limit pauses them) |

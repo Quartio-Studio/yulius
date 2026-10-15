@@ -31,6 +31,8 @@ pub const MAX_JOBS: usize = 32;
 pub const MAX_JOB_NAME_BYTES: usize = 32;
 /// Longest matrix value.
 pub const MAX_MATRIX_VALUE_BYTES: usize = 64;
+/// Most agent secrets one job may name (SPEC-142).
+pub const MAX_JOB_SECRETS: usize = 8;
 /// Name of the single job a gate command defines.
 pub const GATE_JOB: &str = "gate";
 
@@ -115,6 +117,9 @@ pub struct JobDef {
     pub matrix: Vec<String>,
     /// The CPUs and memory each of its jobs declares (`cpus`, `memory_gb`; SPEC-082 RES-002).
     pub need: Need,
+    /// Agent secrets its jobs may use through the egress proxy (`secrets`, SPEC-142). Only the
+    /// integration branch's list counts: Yulius reads it when a job starts, by job name.
+    pub secrets: Vec<String>,
 }
 
 /// One job of a run, after matrix expansion.
@@ -130,6 +135,8 @@ pub struct Job {
     pub matrix: Option<String>,
     /// What it declares it needs (SPEC-082 RES-002).
     pub need: Need,
+    /// The agent secrets its definition names (SPEC-142).
+    pub secrets: Vec<String>,
 }
 
 /// An invalid CI job configuration.
@@ -156,6 +163,11 @@ pub enum CiConfigError {
         "CI job '{0}': matrix values are separated by spaces, use letters, digits and . _ : / = + -, at most 64 bytes each and 16 values"
     )]
     InvalidMatrix(String),
+    /// A `secrets` list with an invalid or repeated name, or too many names.
+    #[error(
+        "CI job '{0}': secrets are agent secret names separated by spaces (A-Z, 0-9, _), each once, at most 8"
+    )]
+    InvalidSecrets(String),
     /// More definitions or expanded jobs than allowed.
     #[error("CI may define at most 16 jobs and expand to at most 32")]
     TooManyJobs,
@@ -195,6 +207,26 @@ pub fn parse_matrix(job: &str, text: &str) -> Result<Vec<String>, CiConfigError>
     }
 }
 
+/// Splits a job's `secrets` string (`"VIDOC_API_KEY OTHER"`) into agent secret names.
+///
+/// # Errors
+/// [`CiConfigError::InvalidSecrets`] naming `job`: an empty list, an invalid or repeated name, or
+/// more than [`MAX_JOB_SECRETS`].
+pub fn parse_secrets(job: &str, text: &str) -> Result<Vec<String>, CiConfigError> {
+    let names: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    let valid = !names.is_empty()
+        && names.len() <= MAX_JOB_SECRETS
+        && names
+            .iter()
+            .enumerate()
+            .all(|(i, name)| crate::cd::valid_secret_name(name) && !names[..i].contains(name));
+    if valid {
+        Ok(names)
+    } else {
+        Err(CiConfigError::InvalidSecrets(job.to_owned()))
+    }
+}
+
 /// Validates job definitions and expands their matrices, in order.
 ///
 /// # Errors
@@ -223,6 +255,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                 command,
                 matrix: None,
                 need: def.need,
+                secrets: def.secrets.clone(),
             });
         } else {
             for value in &def.matrix {
@@ -232,6 +265,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                     command: command.clone(),
                     matrix: Some(value.clone()),
                     need: def.need,
+                    secrets: def.secrets.clone(),
                 });
             }
         }
@@ -268,6 +302,7 @@ fn single_job(command: &str) -> Result<Job, GateError> {
         command: validate_gate(command)?,
         matrix: None,
         need: Need::default(),
+        secrets: Vec::new(),
     })
 }
 
@@ -930,6 +965,7 @@ mod tests {
                 parse_matrix(name, matrix).unwrap_or_default()
             },
             need: Need::default(),
+            secrets: Vec::new(),
         };
         let jobs = expand_jobs(&[
             def("lint", "cargo clippy", ""),
@@ -960,6 +996,7 @@ mod tests {
             command: "x".into(),
             matrix: many,
             need: Need::default(),
+            secrets: Vec::new(),
         };
         let mut defs = vec![
             wide.clone(),

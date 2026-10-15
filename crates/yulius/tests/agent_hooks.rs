@@ -902,3 +902,71 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     assert_eq!(task.spec_path.as_deref(), Some("docs/specs/renamed.md"));
     Ok(())
 }
+
+/// SPEC-140 HKS-001 (#404): the hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
+/// (fail-open), closing its connection, and hyper then drops the request's handler. A hook Yulius
+/// received is still applied to its end, whatever becomes of its handler. Here a notice that asks a
+/// person: a layer starts its handler and never drives it further (as a dropped handler), and the
+/// client hangs up. Before, the hook's work was the handler's, so on a loaded host a Stop that took
+/// longer than the client's wait never made its task Done. (That hyper drops the handler when the
+/// client hangs up was shown with the layer resuming it after a while: SPEC-140 Evidence.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hook_whose_client_hangs_up_is_still_applied() -> TestResult {
+    use tokio::io::AsyncWriteExt;
+    let f = fixture().await?;
+    f.h.app
+        .deps
+        .store
+        .set_activity(&f.task, Some(Activity::Working), Timestamp(10))
+        .await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (started_tx, mut started) = tokio::sync::watch::channel(false);
+    let held = axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let started_tx = started_tx.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                let bytes = axum::body::to_bytes(body, 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                let request =
+                    axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+                let mut handling = std::pin::pin!(next.run(request));
+                // The handler starts, and the server takes it no further.
+                if let std::task::Poll::Ready(response) = futures::poll!(handling.as_mut()) {
+                    return response;
+                }
+                started_tx.send_replace(true);
+                std::future::pending::<()>().await;
+                handling.await
+            }
+        },
+    );
+    let internal =
+        f.h.internal
+            .clone()
+            .layer(held)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    tokio::spawn(async move { axum::serve(listener, internal).await });
+    let body = json!({"message": "Claude needs you", "notification_type": "permission_prompt"})
+        .to_string();
+    let request = format!(
+        "POST /hooks/claude/Notification HTTP/1.1\r\nHost: {addr}\r\n\
+         Authorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = tokio::net::TcpStream::connect(addr).await?;
+    client.write_all(request.as_bytes()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), started.wait_for(|s| *s)).await??;
+    drop(client);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while activity(&f).await? != Some(Activity::NeedsAttention) {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("the notice was not applied: {:?}", activity(&f).await?).into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
