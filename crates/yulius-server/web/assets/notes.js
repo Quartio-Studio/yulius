@@ -124,10 +124,10 @@ export function createNotesView(ctx, sandbox) {
       const tab = h('button', {
         type: 'button', class: ['term-tab', selected && 'active'], role: 'tab', id: `notes-tab-${pad.key}`,
         'aria-selected': String(selected), 'aria-controls': `notes-pane-${pad.key}`, tabindex: selected ? '0' : '-1',
-        'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key }, title: DRAG_TAB_HINT,
-        onClick: () => { if (drag.clickConsumed()) return; select(pad, { focusTab: true }); },
         // The grip before the name shows the tab drags (SPEC-136); the keys are announced once,
         // through `aria-keyshortcuts`, not again in the title.
+        'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key }, title: DRAG_TAB_HINT,
+        onClick: () => { if (drag.clickConsumed()) return; select(pad, { focusTab: true }); },
       }, h('span', { class: 'notes-tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })), pad.label);
       tab.addEventListener('keydown', (event) => {
         const index = pads.indexOf(pad);

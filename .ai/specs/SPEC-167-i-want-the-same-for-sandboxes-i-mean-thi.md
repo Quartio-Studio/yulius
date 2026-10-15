@@ -63,8 +63,9 @@ the pointer, so a person finds the reordering without being told.
 - `layout.js` puts `h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size:
   12 }))` before `.tab-name` in each sandbox tab and sets its title to
   `` `${repo} · ${access} access\n${DRAG_TAB_HINT}` ``.
-- CSS: `.tab-grip` is an inline flex box in `--text-faint`, `cursor: grab`, `margin-left: -4px`
-  (the tab keeps its 12 px padding, so the grip sits 8 px from the edge as on the Notes tabs);
+- CSS: `.tab-grip` is an inline flex box in `--text-faint`, `cursor: grab`, `margin: 0 -2px 0 -4px`
+  (the tab keeps its 12 px padding and 6 px gap, so the grip sits 8 px from the edge and 4 px from
+  the name, as on the Notes tabs);
   `.tab:hover .tab-grip, .tab.active .tab-grip` lift it to `currentColor`;
   `@media not (any-pointer: fine) { .tab-grip { display: none; } }`.
 
@@ -72,7 +73,8 @@ the pointer, so a person finds the reordering without being told.
 
 - e2e `navigation.e2e.ts` "the sandbox tabs show a grip and say they can be clicked or dragged"
   (fails before): every sandbox tab holds one visible `aria-hidden` grip `svg` as its first child,
-  `.tab-name` text is unchanged, the link's accessible name is unchanged; the title ends with the
+  `.tab-name` text is unchanged, the link's accessible name is unchanged, 4 px between the grip and
+  the name; the title ends with the
   hint on its own line after the repository and access; "All sandboxes" has no grip; the grip's
   cursor is `grab`; it is fainter than its tab at rest and takes the tab's colour on the current
   tab and when hovered; a `not (any-pointer: fine)` rule hides it; axe finds nothing.
@@ -95,3 +97,11 @@ the pointer, so a person finds the reordering without being told.
 - Hidden without a fine pointer, as on the Notes tabs, for one rule across both strips; phones show
   a `<select>` instead of the row anyway.
 - No ADR: an existing pattern applied to one more strip, recorded here.
+- Review round 1 (fresh session, approve `85450872`, two minors, four nits). Fixed test-first: the
+  grip sits 4 px from the name as on the Notes tabs (it was 6), the Notes comment moved above the
+  title it explains, the product summary says the grip shows with a mouse or pen, the e2e says its
+  drag is synthetic. Kept, with reasons: the title's hint is also heard by screen readers and on a
+  touch-only tablet, where the tab cannot be dragged; this is SPEC-136's accepted precedent, the
+  person asked for "the same", and the context menu (which a long press opens) moves the tab there.
+  Each sandbox tab is about 12 px wider, so a long name is cut a little sooner under the 220 px
+  maximum and many sandboxes scroll a little sooner; the cue is what was asked for.

@@ -151,13 +151,15 @@ test('the sandbox tabs show a grip and say they can be clicked or dragged', asyn
   const tabs = await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].map((tab) => {
     const grip = tab.querySelector<HTMLElement>('.tab-grip');
     const box = grip?.getBoundingClientRect();
+    const name = tab.querySelector('.tab-name')?.getBoundingClientRect();
     return {
       name: tab.querySelector('.tab-name')?.textContent ?? null,
       title: tab.classList.contains('tab-home') ? tab.title.replace(/ \(.*\)$/, '') : tab.title,
-      grip: grip ? { hidden: grip.getAttribute('aria-hidden'), first: tab.firstElementChild === grip, svg: !!grip.querySelector('svg'), text: grip.textContent, cursor: getComputedStyle(grip).cursor, shown: !!box && box.width > 0 && box.height > 0 } : null,
+      grip: grip ? { hidden: grip.getAttribute('aria-hidden'), first: tab.firstElementChild === grip, svg: !!grip.querySelector('svg'), text: grip.textContent, cursor: getComputedStyle(grip).cursor, shown: !!box && box.width > 0 && box.height > 0, gap: box && name ? Math.round(name.left - box.right) : null } : null,
     };
   }));
-  const grip = { hidden: 'true', first: true, svg: true, text: '', cursor: 'grab', shown: true };
+  // 4 px between the grip and the name, as on the Notes tabs.
+  const grip = { hidden: 'true', first: true, svg: true, text: '', cursor: 'grab', shown: true, gap: 4 };
   const hint = 'Click to open, drag to reorder';
   expect(tabs).toEqual([
     { name: null, title: 'All sandboxes', grip: null },
@@ -184,7 +186,8 @@ test('the sandbox tabs show a grip and say they can be clicked or dragged', asyn
   await browser.mouse.move(product.x + product.width / 2, product.y + product.height / 2);
   await expect.poll(async () => { const now = await gripColour('product'); return now.grip === now.tab; }).toBe(true);
 
-  // Dragging a tab by its grip onto another still reorders the row.
+  // Dragging a tab by its grip onto another still reorders the row (synthetic drag events: they
+  // prove a drag from the grip reaches the tab's listeners).
   await browser.evaluate(() => {
     const tab = (n: string) => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === n)!;
     const data = new DataTransfer();
