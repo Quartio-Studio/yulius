@@ -578,9 +578,17 @@ export function createEditorView(ctx, sandbox, getTask) {
     return true;
   }
 
-  async function openFile(path) {
+  // Paths being opened: a second open of one (a double-click on its row) waits for the first, so a
+  // file never gets two tabs (#534). A failed open is gone from here, so the next one tries again.
+  const opening = new Map();
+  function openFile(path) {
     const existing = tabs.find((t) => t.path === path);
-    if (existing) { activate(existing); return; }
+    if (existing) { activate(existing); return Promise.resolve(); }
+    if (!opening.has(path)) opening.set(path, loadFile(path).finally(() => opening.delete(path)));
+    return opening.get(path);
+  }
+
+  async function loadFile(path) {
     if (!(await ensureEditor())) return;
     let file;
     try {
