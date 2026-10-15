@@ -616,8 +616,12 @@ export function transcriptEntries({ target = null } = {}) {
       when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
   }
 
-  /** Names an entry's scrolling blocks uniquely and watches whether they scroll. */
+  /**
+   * Names an entry's scrolling blocks uniquely and watches whether they scroll; notes how its folds
+   * were printed, so a reprint keeps only what the reader changed.
+   */
   function register(li) {
+    for (const fold of li.querySelectorAll('details')) if (!fold.dataset.printedOpen) fold.dataset.printedOpen = String(fold.open);
     for (const box of li.querySelectorAll('[data-region]')) {
       const base = box.dataset.region;
       const line = li.dataset.line;
@@ -687,12 +691,19 @@ export function transcriptEntries({ target = null } = {}) {
 
   /**
    * An entry printed again keeps what the reader did with it: the folds they opened or closed
-   * (in order) and where the keyboard was, marked for the new entry (`data-keep-focus`).
+   * (in order; the others open as the new print has them, an edit's diff with its result) and
+   * where the keyboard was, marked for the new entry (`data-keep-focus`).
    */
   function keepState(old, fresh) {
     const before = old.querySelectorAll('details');
     const after = fresh.querySelectorAll('details');
-    if (before.length === after.length) before.forEach((fold, index) => { after[index].open = fold.open; });
+    if (before.length === after.length) {
+      before.forEach((fold, index) => {
+        // The new print's own state stays the baseline, so a reader's choice outlives reprints.
+        after[index].dataset.printedOpen = String(after[index].open);
+        if (String(fold.open) !== fold.dataset.printedOpen) after[index].open = fold.open;
+      });
+    }
     const active = document.activeElement;
     if (!active || !old.contains(active)) return;
     const path = [];

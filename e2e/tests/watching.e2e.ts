@@ -391,6 +391,25 @@ test('results of several calls on one line each land in their call, and an opene
   expect(result).toEqual({ entries: 1, a: true, b: true, openAfterFirst: true, openAfterSecond: true });
 });
 
+test('an edit whose result comes in a later read opens on its diff, as one printed with it (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { transcriptEntries } = await import(url);
+    const list = transcriptEntries();
+    document.body.append(list.el);
+    const diff = { path: 'src/a.ts', hunks: [{ old: 'a()', new: 'b()' }], truncated: false };
+    list.append([{ line: 0, role: 'assistant', at: null, sidechain: false, blocks: [{ type: 'tool_call', id: 'e', name: 'Edit', summary: 'src/a.ts', input: '{}', diff }] }]);
+    const before = (list.el.querySelector('details.ss-tool') as HTMLDetailsElement).open;
+    list.append([{ line: 1, role: 'user', at: null, sidechain: false, blocks: [{ type: 'tool_result', tool_use_id: 'e', text: 'updated', is_error: false, truncated: false }] }]);
+    const after = (list.el.querySelector('details.ss-tool') as HTMLDetailsElement).open;
+    list.destroy();
+    list.el.remove();
+    return { before, after };
+  });
+  expect(result).toEqual({ before: false, after: true });
+});
+
 test('"New messages" keeps the keyboard in the transcript, and a late result alone shows no button', async ({ app, browser, screen }) => {
   await watchStudio12(app, browser);
   await append(browser, Array.from({ length: 30 }, (_, i) => ({ role: 'assistant', text: `Filler ${i + 1}.` })));
