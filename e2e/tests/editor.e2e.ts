@@ -871,6 +871,7 @@ test('the Explorer header keeps its buttons inside the Explorer at its narrowest
 // came to the front, so an agent's or a teammate's writes never showed while the person watched.
 type LiveModel = {
   getValue(): string;
+  getEOL(): string;
   getOffsetAt(position: { lineNumber: number; column: number }): number;
 };
 type LiveEditor = {
@@ -882,7 +883,11 @@ type LiveEditor = {
 };
 type LiveWindow = Window & {
   monaco: { editor: { getEditors(): LiveEditor[] } };
-  __yuliusMock: { repoFile(sandbox: string, path: string, text: string): void; fileReads?: { path: string; known: string | null }[] };
+  __yuliusMock: {
+    repoFile(sandbox: string, path: string, text: string): void;
+    fileReads?: { path: string; known: string | null; whileSaving: boolean }[];
+    holdSave: Promise<void> | null;
+  };
 };
 const ON_DISK = 'alpha\nbeta\ngamma\n';
 const writeDisk = (browser: Browser, text: string) => browser.evaluate((t) => (window as unknown as LiveWindow).__yuliusMock.repoFile('sb_studio', 'notes.txt', t), text);
@@ -939,15 +944,16 @@ test('unsaved edits are kept when the disk moves on, and saving asks to overwrit
 test('the Editor looks at the disk only while it is shown', async ({ app, browser, screen }) => {
   // The look's timer is held here, so each look happens when the test says.
   await app.open(mock('/s/studio/t/12'));
-  await browser.evaluate((ms) => {
+  await browser.evaluate(async () => {
+    const { LOOK_MS } = await import('/assets/editorview.js');
     const w = window as unknown as Window & { __looks: (() => void)[] };
     w.__looks = [];
     const real = window.setInterval.bind(window);
     window.setInterval = ((fn: () => void, delay?: number, ...rest: unknown[]) => {
-      if (delay === ms) { w.__looks.push(fn); return 0; }
+      if (delay === LOOK_MS) { w.__looks.push(fn); return 0; }
       return real(fn, delay, ...rest);
     }) as typeof window.setInterval;
-  }, 2000);
+  });
   await writeDisk(browser, ON_DISK);
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
@@ -958,9 +964,9 @@ test('the Editor looks at the disk only while it is shown', async ({ app, browse
   const look = () => browser.evaluate(() => (window as unknown as { __looks: (() => void)[] }).__looks.forEach((fn) => fn()));
   expect(await browser.evaluate(() => (window as unknown as { __looks: unknown[] }).__looks.length)).toBe(1);
 
+  // Shown: the timer looks (it skips while the activation's look is still on its way).
   const shown = await reads();
-  await look();
-  await expect.poll(reads).toBe(shown + 1);
+  await expect.poll(async () => { await look(); return reads(); }).toBeGreaterThan(shown);
 
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   const hidden = await reads();
@@ -969,7 +975,50 @@ test('the Editor looks at the disk only while it is shown', async ({ app, browse
   await look();
   expect(await reads()).toBe(hidden);
 
-  // Back in front, it looks at once, before the timer's next look.
+  // Back in front, it looks at once, before the timer's next look: that one look, no other.
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Editor').click();
   await expect.poll(() => editorText(browser)).toBe('while hidden\n');
+  expect(await reads()).toBe(hidden + 1);
+});
+
+// Review of SPEC-181: a look started while the file saves (its tab clicked) could be answered with
+// the text from before the save after the save ended, and put that text back as if saved.
+test('no look at the disk starts while the file in front saves, whichever way it is asked for', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await browser.evaluate(() => {
+    const w = window as unknown as LiveWindow & { __releaseSave(): void };
+    const m = w.__yuliusMock;
+    m.holdSave = new Promise((resolve) => { w.__releaseSave = () => { m.holdSave = null; resolve(); }; });
+  });
+  await browser.keyboard.press('Control+s');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saving');
+  await screen.getByRole('tab', /^notes\.txt/).click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'notes.txt').click();
+  await browser.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await browser.evaluate(() => (window as unknown as LiveWindow & { __releaseSave(): void }).__releaseSave());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
+  const during = await browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt' && read.whileSaving).length);
+  expect(during).toBe(0);
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+});
+
+// Review of SPEC-181: Monaco gives inserted text the model's line ending, so a file that went from
+// LF to CRLF on disk kept LF in the editor, and its next save rewrote every line ending.
+test('a change of line endings on disk reaches the editor, and a BOM file keeps its cursor', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  const eol = () => browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getModel()?.getEOL());
+  expect(await eol()).toBe('\n');
+  await writeDisk(browser, 'alpha\r\nbeta\r\ngamma\r\n');
+  await expect.poll(eol, { timeout: LOOKS_MS }).toBe('\r\n');
+  expect(await editorText(browser)).toBe('alpha\r\nbeta\r\ngamma\r\n');
+
+  // Monaco keeps a BOM out of its text: a line added above moves the cursor down, nothing more.
+  await writeDisk(browser, '\uFEFFone\ntwo\n');
+  await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('one\ntwo\n');
+  expect(await eol()).toBe('\n');
+  await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].setPosition({ lineNumber: 2, column: 2 }));
+  await writeDisk(browser, '\uFEFFzero\none\ntwo\n');
+  await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('zero\none\ntwo\n');
+  expect(await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getPosition())).toEqual({ lineNumber: 3, column: 2 });
 });

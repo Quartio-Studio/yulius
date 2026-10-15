@@ -688,6 +688,8 @@ export function createEditorView(ctx, sandbox, getTask) {
    * `reload`: the person chose "Reload from disk", so the whole file is asked for.
    */
   async function refreshFromDisk(tab, { reload = false } = {}) {
+    // A look answered with the text from before a save would put that text back as saved.
+    if (tab.saving) return;
     const look = (tab.look || 0) + 1;
     tab.look = look;
     tab.looking = true;
@@ -723,25 +725,35 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (tab === active) renderStatus();
   }
 
-  /** `tab`'s model takes `text` as one edit of the part that differs, its own undo step. */
+  /**
+   * `tab`'s model takes `text` as one edit of the part that differs, its own undo step. Monaco gives
+   * inserted text the model's line ending and keeps a BOM out of the text: a file whose line ending
+   * changed changes the model's too, and a BOM is not text to compare.
+   */
   function replaceText(tab, text) {
     const model = tab.model;
-    const edit = textEdit(model.getValue(), text);
-    if (edit.start === edit.endA && edit.start === edit.endB) return;
-    const from = model.getPositionAt(edit.start);
-    const to = model.getPositionAt(edit.endA);
+    const next = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+    const crlf = next.includes('\r\n');
+    const eol = crlf || next.includes('\n') ? (crlf ? '\r\n' : '\n') : model.getEOL();
     tab.ignoreChange = true;
     try {
       model.pushStackElement();
-      model.pushEditOperations(null, [{ range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: text.slice(edit.start, edit.endB) }], () => null);
+      if (eol !== model.getEOL()) model.pushEOL(eol === '\r\n' ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      const edit = textEdit(model.getValue(), next);
+      if (edit.start !== edit.endA || edit.start !== edit.endB) {
+        const from = model.getPositionAt(edit.start);
+        const to = model.getPositionAt(edit.endA);
+        model.pushEditOperations(null, [{ range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: next.slice(edit.start, edit.endB) }], () => null);
+      }
       model.pushStackElement();
     } finally {
       tab.ignoreChange = false;
     }
   }
 
-  // The file in front follows the disk while the person can see it: one look at a time, none while
-  // it saves. Other tabs look when they come to the front (activate).
+  // The file in front follows the disk while the person can see it: the timer waits for its last
+  // look, the newest look wins, and none starts while the file saves. Other tabs look when they
+  // come to the front (activate).
   const looker = setInterval(() => {
     if (!shown || suspended || document.visibilityState === 'hidden') return;
     if (active && active.model && !active.looking && !active.saving) refreshFromDisk(active);

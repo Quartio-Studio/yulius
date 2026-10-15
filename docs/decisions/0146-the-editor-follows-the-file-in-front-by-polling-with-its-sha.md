@@ -19,13 +19,16 @@ files API.
 
 - While the Editor is shown, the page is visible and its sandbox is in front, the browser looks at
   the **file in front** every 2 s (`LOOK_MS`), and at once when the Editor or the page comes back.
-  One look at a time; none while the file saves; a save or a later look makes an earlier answer
-  moot. Other tabs look when they come to the front, as before.
+  The timer waits for its last look; none starts while the file saves; the newest look wins (a save
+  or a later look makes an earlier answer moot). Other tabs look when they come to the front, as
+  before.
 - A look sends `known=<sha256>` (`GET …/files/content`); the server still reads and hashes the
   file and answers **204** with no body when it is unchanged, so a look costs a few bytes.
 - A newer version replaces unedited text as **one edit of the part that changed**
-  (`pushEditOperations`, its own undo step): the cursor and the teammates' marks follow their
-  text, the undo history survives, and no toast repeats while an agent works.
+  (`pushEditOperations`, its own undo step; a changed line ending is applied with `pushEOL`, a BOM
+  is not compared): the cursor follows its text, the undo history survives, and no toast repeats
+  while an agent works. A teammate still on the older version is hidden until their Editor has
+  the same one (within about 2 s while they have not edited it), as for any other `sha256`.
 - Edited text is never replaced: the status bar says "Changed on disk", and saving goes through
   the existing choice (Overwrite or Reload from disk).
 

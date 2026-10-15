@@ -52,7 +52,7 @@ other people input). Fix and implement if needed".
 | --- | --- |
 | EDT-013 | The Explorer's header keeps its buttons (New, Upload, Refresh) inside the Explorer at every width it can take (its 120 px floor included): the label "Explorer" shortens with an ellipsis and the buttons keep their size. Nothing of the header paints over the tab strip. |
 | EDT-014 | `GET /api/sandboxes/{sid}/files/content` takes an optional `known` (64 lowercase hex digits, the `sha256` the caller has): when the file's bytes on disk still have that `sha256`, it answers `204 No Content` with no body; otherwise as before. A malformed `known` is refused (422). Access and path rules are those of a read. |
-| EDT-015 | While the Editor is shown, its page is visible and the sandbox is in front, the file in front is looked at every 2 s with `known` (one look at a time; none while it is saving). A newer version on disk replaces the text when the person has not edited it: as one edit of the part that changed (the cursor and the scroll stay where they were relative to the text around them), undoable, with no toast; the teammates' marks follow it. When the person has unsaved edits, their text is kept and the status bar says "Changed on disk", so a save goes through the existing choice (Overwrite or Reload). A file that cannot be read (deleted, binary now) keeps the editor's text. Other tabs are checked when they come to the front, as before. |
+| EDT-015 | While the Editor is shown, its page is visible and the sandbox is in front, the file in front is looked at every 2 s with `known` (the timer waits for its last look, the newest look wins, and none starts while it is saving), and at once when the Editor or the page comes back. A newer version on disk replaces the text when the person has not edited it: as one edit of the part that changed (the cursor and the scroll stay where they were relative to the text around them), undoable, with no toast; a changed line ending (LF, CRLF) is taken too, and a BOM is not compared as text. A teammate still at the older version is hidden until both have the same saved text (EDT-010). When the person has unsaved edits, their text is kept and the status bar says "Changed on disk", so a save goes through the existing choice (Overwrite or Reload). A file that cannot be read (deleted, binary now) keeps the editor's text. Other tabs are checked when they come to the front, as before. |
 
 ## Plan
 
@@ -98,8 +98,7 @@ other people input). Fix and implement if needed".
   costs a read and a hash on the server, a few bytes on the wire.
 - **2 s.** Fast enough to watch an agent work, slow enough that ten people in front of 2 MiB files
   cost the server about 10 MiB/s of hashing at worst. Background tabs keep the check on activation.
-- **One minimal, undoable edit** instead of `setValue`: the cursor and teammates' marks stay with
-  the text, the undo history survives, and a reload that arrives while the person reads is quiet
+- **One minimal, undoable edit** instead of `setValue`: the cursor stays with its text, the undo history survives, and a reload that arrives while the person reads is quiet
   (no toast every 2 s while an agent works).
 - **No co-editing of unsaved text.** "See other people's input" is met by showing what they save
   and where they are (SPEC-127). Sharing keystrokes before a save would make unsaved text shared
