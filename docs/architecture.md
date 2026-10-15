@@ -79,6 +79,17 @@ flowchart LR
   S --> W["crates/yulius-server/web"]
 ```
 
+## Containers
+
+An isolated sandbox runs no container engine. Its runs (agents, CI jobs, CD) have Docker's default
+capability set and a seccomp filter without mount APIs or nested user namespaces, which a daemon
+needs; a `docker` client is there only when the base copied one from the host's `/usr`. The
+briefing says so in a `## Containers` section, its last mandatory part, and points agents to an
+engine on another machine (`DOCKER_HOST=ssh://…`) and to `apt` for test services
+([SPEC-173](../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md),
+[decision 0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)); an
+engine per sandbox is #551.
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -1029,19 +1040,23 @@ measured on a hidden mirror) and shows the teammates who have it open
 ([SPEC-112](../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md),
 [decision 0091](decisions/0091-notepad-presence-is-relayed-not-stored.md)): a browser sends its
 selection in the saved text's offsets, `App::note_presence` relays it as `note.presence` to the
-notepad's readers (20 a second per person and notepad at most) and stores nothing.
+notepad's readers (20 a second per person and notepad at most) and stores nothing. Each update
+carries `seq`, growing per browser tab, and a receiver drops one older than the newest it heard
+from that tab, so a leave sent as the page goes (with `keepalive`, not waiting for the update on
+its way) is never undone by a late update ([decision 0138](decisions/0138-presence-updates-carry-a-per-tab-sequence-number.md)).
 
 ```mermaid
 sequenceDiagram
     participant A as Alice's notepad
     participant S as Server (App::note_presence)
     participant B as Bob's notepad
-    A->>S: PUT notes/presence {revision, selection, hello, client} (≤ 1 per 100 ms, every 15 s)
+    A->>S: PUT notes/presence {revision, selection, hello, client, seq} (≤ 1 per 100 ms, every 15 s)
     S-->>B: note.presence (team: everyone; sandbox: its viewers)
     B->>S: PUT notes/presence (answers a hello)
     S-->>A: note.presence
     Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
-    A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
+    A->>S: PUT notes/presence {selection: null, seq} (hidden, another tab, page gone)
+    Note over B: an update with a lower seq from that tab, arriving later, is dropped
 ```
 
 The Editor shows the same presence for files

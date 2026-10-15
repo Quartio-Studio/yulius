@@ -14,6 +14,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   can delete its code for good ("Also delete its code from this server for good" in the dialog,
   `POST /api/sandboxes/{sid}/purge`): its `origin` and sandbox directory go once nothing of its
   sandbox runs, its place among its maker's 10 is freed, and task records and the audit stay.
+- Tools and the keyboard stay where the person left them, and presence leaves arrive last
+  (SPEC-170, ADR-0138, task #135, fixes #489, #439, #463). A sandbox left while its page still
+  loads comes back with no tool open, not the other sandbox's; the Shell shown again for another
+  task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
+  notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
+  sent as a teammate's tab hid no longer leaves their caret drawn.
+- An isolated sandbox's agent is told there is no container engine (SPEC-173, ADR-0140, task #163,
+  fixes #550). An agent of another project had designed a deployer around a local Docker daemon
+  before finding that `docker` exists but no daemon does: the sandbox's containment refuses what one
+  needs. The briefing now has a `## Containers` section: no engine here, in Yulius CI or in CD; use
+  an engine on another machine (`DOCKER_HOST=ssh://…`), keep rollback images there or in a
+  registry, and install test services with `apt`. An engine per sandbox is #551.
 - A folded subscription shows both its 5-hour and its weekly usage, without opening it (SPEC-172,
   task #162). The Status panel's and the Dashboard's rows showed only the 5-hour bar; each now has
   two lines, "5 h" and "Week", with a bar and the percent used. Where the list is narrower than

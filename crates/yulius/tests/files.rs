@@ -290,7 +290,7 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
         &h.router,
         Method::PUT,
         "/api/sandboxes/s1/files/presence",
-        Some(json!({"path": "./src/main.rs", "sha256": SHA, "selection": {"anchor": 3, "head": 7}, "hello": true, "client": "tab1"})),
+        Some(json!({"path": "./src/main.rs", "sha256": SHA, "selection": {"anchor": 3, "head": 7}, "hello": true, "client": "tab1", "seq": 4})),
         &alice,
     )
     .await?;
@@ -317,6 +317,7 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
             sha256: SHA.into(),
             selection: Some(NoteSelection { anchor: 3, head: 7 }),
             hello: true,
+            seq: 4,
         }
     );
 

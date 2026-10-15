@@ -128,6 +128,10 @@ pub struct FilePresence {
     /// The browser tab (at most 32 letters and digits), so one person's tabs are told apart.
     #[serde(default)]
     pub client: String,
+    /// Grows with each update the tab sends, so receivers drop one that arrives after a newer
+    /// one (a leave sent as the page goes may overtake it; SPEC-170 TKS-003). 0: not numbered.
+    #[serde(default)]
+    pub seq: u64,
 }
 
 #[cfg(test)]
@@ -137,9 +141,10 @@ mod tests {
     #[test]
     fn file_presence_refuses_unknown_fields_and_needs_a_path() {
         let left = serde_json::from_str::<FilePresence>(r#"{"path":"a.rs","selection":null}"#);
-        assert!(
-            left.is_ok_and(|left| left.root.is_none() && left.sha256.is_empty() && !left.hello)
-        );
+        assert!(left.is_ok_and(|left| left.root.is_none()
+            && left.sha256.is_empty()
+            && !left.hello
+            && left.seq == 0));
         assert!(serde_json::from_str::<FilePresence>(r#"{"selection":null}"#).is_err());
         assert!(
             serde_json::from_str::<FilePresence>(r#"{"path":"a","selection":null,"revision":1}"#)
