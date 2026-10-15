@@ -158,33 +158,53 @@ fn bounded(text: &str, max: usize) -> String {
     cut(text, max).0
 }
 
+/// The edit an edit tool made; `truncated` when a side was cut or hunks were dropped.
 fn diff_of(name: &str, input: &Value) -> Option<TranscriptDiff> {
     let path = str_field(input, "file_path")?.to_owned();
-    let hunk = |old: &str, new: &str| DiffHunk {
-        old: bounded(old, MAX_HUNK_CHARS),
-        new: bounded(new, MAX_HUNK_CHARS),
+    let mut truncated = false;
+    let mut hunk = |old: &str, new: &str| {
+        let (old, old_cut) = cut(old, MAX_HUNK_CHARS);
+        let (new, new_cut) = cut(new, MAX_HUNK_CHARS);
+        truncated |= old_cut || new_cut;
+        DiffHunk { old, new }
     };
-    let hunks = match name {
+    let hunks: Vec<DiffHunk> = match name {
         "Edit" => vec![hunk(
             str_field(input, "old_string").unwrap_or(""),
             str_field(input, "new_string").unwrap_or(""),
         )],
         "Write" => vec![hunk("", str_field(input, "content").unwrap_or(""))],
-        "MultiEdit" => input
-            .get("edits")
-            .and_then(Value::as_array)?
-            .iter()
-            .take(MAX_HUNKS)
-            .map(|edit| {
-                hunk(
-                    str_field(edit, "old_string").unwrap_or(""),
-                    str_field(edit, "new_string").unwrap_or(""),
-                )
-            })
-            .collect(),
+        "MultiEdit" => {
+            let edits = input.get("edits").and_then(Value::as_array)?;
+            let hunks = edits
+                .iter()
+                .take(MAX_HUNKS)
+                .map(|edit| {
+                    hunk(
+                        str_field(edit, "old_string").unwrap_or(""),
+                        str_field(edit, "new_string").unwrap_or(""),
+                    )
+                })
+                .collect();
+            truncated |= edits.len() > MAX_HUNKS;
+            hunks
+        }
         _ => return None,
     };
-    Some(TranscriptDiff { path, hunks })
+    Some(TranscriptDiff {
+        path,
+        hunks,
+        truncated,
+    })
+}
+
+/// A meta block (harness bookkeeping) cut at `max`.
+fn meta_block(text: &str, max: usize) -> TranscriptBlock {
+    let (text, truncated) = cut(text, max);
+    TranscriptBlock::Meta {
+        text: clean(&text, false),
+        truncated,
+    }
 }
 
 fn result_text(content: Option<&Value>) -> String {
@@ -224,18 +244,16 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
     let mut blocks = Vec::new();
     let role = match kind {
         "summary" => {
-            let text = str_field(record, "summary")?;
+            let (text, truncated) = cut(str_field(record, "summary")?, MAX_TEXT_CHARS);
             blocks.push(TranscriptBlock::Text {
-                text: clean(&bounded(text, MAX_TEXT_CHARS), false),
-                truncated: false,
+                text: clean(&text, false),
+                truncated,
             });
             "summary"
         }
         "system" => {
             let text = str_field(record, "content")?;
-            blocks.push(TranscriptBlock::Meta {
-                text: clean(&bounded(text, MAX_TEXT_CHARS), false),
-            });
+            blocks.push(meta_block(text, MAX_TEXT_CHARS));
             "system"
         }
         "user" | "assistant" => {
@@ -269,9 +287,7 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
 
 fn text_block(text: &str, meta: bool) -> TranscriptBlock {
     if meta || is_meta_text(text) {
-        return TranscriptBlock::Meta {
-            text: clean(&bounded(text, MAX_RESULT_CHARS), false),
-        };
+        return meta_block(text, MAX_RESULT_CHARS);
     }
     let (text, truncated) = cut(text, MAX_TEXT_CHARS);
     TranscriptBlock::Text {
@@ -453,7 +469,7 @@ fn page_chars(entry: &TranscriptEntry) -> usize {
         .map(|block| match block {
             TranscriptBlock::Text { text, .. }
             | TranscriptBlock::Thinking { text, .. }
-            | TranscriptBlock::Meta { text }
+            | TranscriptBlock::Meta { text, .. }
             | TranscriptBlock::ToolResult { text, .. } => text.len(),
             TranscriptBlock::ToolCall { input, diff, .. } => {
                 input.len()
@@ -641,6 +657,9 @@ pub fn render_text(entries: &[TranscriptEntry], max_chars: usize) -> (String, Op
                                 block_text.push_str(&format!("  + {new}\n"));
                             }
                         }
+                        if diff.truncated {
+                            block_text.push_str("  …(cut: the change is longer)\n");
+                        }
                     }
                 }
                 TranscriptBlock::ToolResult { text, is_error, .. } => {
@@ -810,6 +829,135 @@ mod tests {
         let (short, next) = render_text(&page.entries, 120);
         assert!(short.len() < 400);
         assert!(next.is_some());
+        Ok(())
+    }
+
+    fn diff_in(line: &Value) -> Result<TranscriptDiff, Box<dyn std::error::Error>> {
+        let entry = entry_of(0, line, &mut EnvCalls::default()).ok_or("no entry")?;
+        match entry.blocks.into_iter().next() {
+            Some(TranscriptBlock::ToolCall {
+                diff: Some(diff), ..
+            }) => Ok(diff),
+            other => Err(format!("not an edit: {other:?}").into()),
+        }
+    }
+
+    fn call(name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": name, "input": input},
+        ]}})
+    }
+
+    // #350: a diff the server cut says so, so the page claims no count.
+    #[test]
+    fn a_diff_cut_at_its_bounds_is_marked_truncated() -> TestResult {
+        let small = diff_in(&call(
+            "Edit",
+            json!({"file_path": "a.rs", "old_string": "a", "new_string": "b"}),
+        ))?;
+        assert!(!small.truncated, "a small edit is whole");
+        let at_bound = diff_in(&call(
+            "Write",
+            json!({"file_path": "a.rs", "content": "x".repeat(MAX_HUNK_CHARS)}),
+        ))?;
+        assert!(!at_bound.truncated, "a side at the bound is whole");
+        let long = diff_in(&call(
+            "Write",
+            json!({"file_path": "a.rs", "content": "x".repeat(MAX_HUNK_CHARS + 1)}),
+        ))?;
+        assert!(long.truncated, "a side over the bound is cut");
+        assert_eq!(long.hunks[0].new.chars().count(), MAX_HUNK_CHARS);
+        let old_side = diff_in(&call(
+            "Edit",
+            json!({"file_path": "a.rs", "old_string": "y".repeat(MAX_HUNK_CHARS + 1), "new_string": ""}),
+        ))?;
+        assert!(old_side.truncated, "the removed side counts too");
+        let edits = |n: usize| {
+            (0..n)
+                .map(|i| json!({"old_string": format!("a{i}"), "new_string": format!("b{i}")}))
+                .collect::<Vec<_>>()
+        };
+        let all = diff_in(&call(
+            "MultiEdit",
+            json!({"file_path": "a.rs", "edits": edits(MAX_HUNKS)}),
+        ))?;
+        assert!(!all.truncated, "{MAX_HUNKS} hunks are all kept");
+        let dropped = diff_in(&call(
+            "MultiEdit",
+            json!({"file_path": "a.rs", "edits": edits(MAX_HUNKS + 1)}),
+        ))?;
+        assert!(dropped.truncated, "hunks past {MAX_HUNKS} are dropped");
+        assert_eq!(dropped.hunks.len(), MAX_HUNKS);
+        // Agents reading the session are told too; the field is additive on the wire.
+        let entry = entry_of(
+            0,
+            &call(
+                "Write",
+                json!({"file_path": "a.rs", "content": "x".repeat(MAX_HUNK_CHARS + 1)}),
+            ),
+            &mut EnvCalls::default(),
+        )
+        .ok_or("no entry")?;
+        let (text, _) = render_text(&[entry], 100_000);
+        assert!(
+            text.ends_with("  …(cut: the change is longer)\n\n"),
+            "{text}"
+        );
+        let old: TranscriptDiff = serde_json::from_value(json!({"path": "a.rs", "hunks": []}))?;
+        assert!(!old.truncated, "a diff without the field is whole");
+        Ok(())
+    }
+
+    // #380: a meta text the server cut says so, like text and tool results.
+    #[test]
+    fn a_meta_text_cut_at_its_bound_is_marked_truncated() -> TestResult {
+        let meta = |line: &Value| -> Result<(String, bool), Box<dyn std::error::Error>> {
+            let entry = entry_of(0, line, &mut EnvCalls::default()).ok_or("no entry")?;
+            match entry.blocks.into_iter().next() {
+                Some(TranscriptBlock::Meta { text, truncated }) => Ok((text, truncated)),
+                other => Err(format!("not meta: {other:?}").into()),
+            }
+        };
+        let user = |text: String| json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": text}});
+        let system = |text: String| json!({"type": "system", "content": text});
+        assert_eq!(meta(&user("short".into()))?, ("short".to_owned(), false));
+        let (text, cut_off) = meta(&user("s".repeat(MAX_RESULT_CHARS)))?;
+        assert!(
+            !cut_off && text.len() == MAX_RESULT_CHARS,
+            "at the bound it is whole"
+        );
+        let (text, cut_off) = meta(&user("s".repeat(MAX_RESULT_CHARS + 1)))?;
+        assert!(
+            cut_off && text.len() == MAX_RESULT_CHARS,
+            "over the bound it is cut"
+        );
+        let (_, cut_off) = meta(&system("s".repeat(MAX_TEXT_CHARS)))?;
+        assert!(!cut_off, "a system line at its bound is whole");
+        let (text, cut_off) = meta(&system("s".repeat(MAX_TEXT_CHARS + 1)))?;
+        assert!(
+            cut_off && text.len() == MAX_TEXT_CHARS,
+            "a system line over it is cut"
+        );
+        // A summary line is cut at the message bound and says so too (review round 2).
+        let summary = |text: String| -> Result<bool, Box<dyn std::error::Error>> {
+            let line = json!({"type": "summary", "summary": text});
+            match entry_of(0, &line, &mut EnvCalls::default())
+                .and_then(|entry| entry.blocks.into_iter().next())
+            {
+                Some(TranscriptBlock::Text { truncated, .. }) => Ok(truncated),
+                other => Err(format!("not text: {other:?}").into()),
+            }
+        };
+        assert!(!summary("s".repeat(MAX_TEXT_CHARS))?);
+        assert!(summary("s".repeat(MAX_TEXT_CHARS + 1))?);
+        let old: TranscriptBlock = serde_json::from_value(json!({"type": "meta", "text": "x"}))?;
+        assert_eq!(
+            old,
+            TranscriptBlock::Meta {
+                text: "x".into(),
+                truncated: false
+            }
+        );
         Ok(())
     }
 
