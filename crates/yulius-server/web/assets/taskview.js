@@ -165,7 +165,8 @@ export function mountTaskView(ctx, sandbox, task) {
   // ---- attention bar (UX-03): what the agent needs from the user, with the way to do it. It
   // floats over the top of the terminal: coming and going with every turn, it must not resize
   // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
-  const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
+  // It takes the keyboard (tabindex -1) only from a reply field closed under someone typing.
+  const attention = h('div', { class: 'attention-bar', role: 'status', tabindex: -1, hidden: true });
   // Where the user answers the agent: its terminal (the quick input on phones).
   const focusReply = () => (isPhone() ? quickInput.focus() : terminal.focus());
   // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
@@ -286,7 +287,7 @@ export function mountTaskView(ctx, sandbox, task) {
     // No text answer asked any more: the field closes (its words wait for the next Reply).
     if (!textAnswer) replying = false;
     attention.classList.toggle('replying', replying);
-    const typing = document.activeElement === replyInput;
+    const typing = replyForm.contains(document.activeElement);
     // Everything but the reply field is rebuilt; the field stays last.
     for (const child of [...attention.childNodes]) if (child !== replyForm) child.remove();
     attention.insertBefore(append(document.createDocumentFragment(), control && content
@@ -294,8 +295,9 @@ export function mountTaskView(ctx, sandbox, task) {
       : control || content), replyForm.parentNode === attention ? replyForm : null);
     if (replyForm.parentNode !== attention) attention.append(replyForm);
     replyForm.hidden = !replying;
-    // A field closed under someone typing hands the keyboard to the terminal, not to the page.
-    if (typing && !replying) terminal.focus();
+    // A field closed under someone typing (or Escape) leaves the keyboard on the bar, which does
+    // nothing with keys: never the terminal, where a permission menu may have opened.
+    if (typing && !replying) attention.focus({ preventScroll: true });
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));

@@ -122,7 +122,8 @@ test('a reply field that closes while typing keeps the keys out of the terminal'
   await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('attention-bar') ?? false)).toBe(true);
   await browser.keyboard.type('lo 2');
   expect(await typedIntoTask(browser)).toBe('');
-  await expect(field).toHaveValue('Hal');
+  // The words wait, hidden, for the next Reply.
+  expect(await browser.evaluate(() => document.querySelector<HTMLInputElement>('.attention-reply input')?.value ?? null)).toBe('Hal');
 });
 
 test('Reply on a phone focuses the quick input; no field opens', async ({ app, browser, screen }) => {
