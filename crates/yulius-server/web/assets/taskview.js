@@ -575,6 +575,9 @@ const AUTO = 'auto';
 // mounted again meanwhile (the person left and came back) still shows it loading (SPEC-111).
 const onboardingStarts = new Set();
 const onboardingStartsChanged = new EventTarget();
+// The sandboxes whose onboarding task a page is opening and announcing ("Onboarding started:
+// opened #N."): a start then has no toast of its own, whichever composer it was pressed in (#436).
+const onboardingAnnounced = new Set();
 // Auto is the default for the mode and the workflow (TSK-015): Jev decides when the task is created.
 const MODES = [
   { id: AUTO, name: 'Auto mode', icon: 'zap', description: 'Jev decides: a goal for work to build, change or fix; a prompt for questions and research.' },
@@ -814,7 +817,7 @@ export function mountComposer(ctx, sandbox) {
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
   // While the sandbox awaits onboarding, a centred message takes the card's place (SPEC-096).
   const gate = h('section', { class: 'onboarding-gate', hidden: true, 'aria-labelledby': `onboarding-gate-${sandbox.id}` });
-  // Says what changed when someone else starts onboarding or it lands (the gate's text is rebuilt).
+  // Says that onboarding finished and the task box is ready (the gate's text is rebuilt silently).
   // A live region without the status role: the page's own status messages stay the only ones.
   const gateNews = h('span', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
   const card = h('div', { class: 'composer-card' },
@@ -1027,7 +1030,6 @@ export function mountComposer(ctx, sandbox) {
 
   let gateKey = '';
   let opening = false;
-  let sentToTask = false; // this view sent the page to the onboarding task
   // The gate offered Start onboarding in this view: opening the task then is news to say.
   let offered = false;
   function renderBanner() {
@@ -1061,7 +1063,7 @@ export function mountComposer(ctx, sandbox) {
       const hadFocus = gate.contains(document.activeElement);
       setChildren(gate, preparing ? onboardingGate(sb, prep) : null);
       if (hadFocus && preparing) focusGate();
-      // A start from this page has its own toast: the status speaks for someone else's.
+      // Onboarding finished: said in words (a start has its toast, an opened task speaks itself).
       if (before && before !== (preparing ? sb.onboarding : null)) {
         gateNews.textContent = preparing ? '' : 'Onboarding finished: the task box is ready.';
       }
@@ -1095,12 +1097,14 @@ export function mountComposer(ctx, sandbox) {
   function openOnboarding(sb, prep) {
     if (opening) return;
     opening = true;
+    // Said by this page: a start running meanwhile (pressed here or in a composer since left) says
+    // nothing of its own.
+    if (offered) onboardingAnnounced.add(sb.id);
     setTimeout(() => {
-      if (destroyed || !el.isConnected) { opening = false; return; }
+      if (destroyed || !el.isConnected) { opening = false; if (offered) onboardingAnnounced.delete(sb.id); return; }
       // Started here or elsewhere while this page offered it: a toast outlives the page it leaves.
       if (offered) toast(`Onboarding started: opened #${prep.number}.`, { kind: 'ok' });
       ctx.navigate(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`, { replace: true });
-      sentToTask = true;
       // A view kept after the navigation (none is today) may open it again.
       if (!destroyed) opening = false;
     }, 0);
@@ -1179,18 +1183,20 @@ export function mountComposer(ctx, sandbox) {
     if (onboardingStarts.has(sandbox.id)) return;
     const changed = () => onboardingStartsChanged.dispatchEvent(new Event('change'));
     onboardingStarts.add(sandbox.id);
+    onboardingAnnounced.delete(sandbox.id);
     changed();
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
-      // Opening the task says so itself; otherwise (the task could not be read, or the person went
-      // elsewhere meanwhile) this does.
-      if (!opening && !sentToTask) toast('Onboarding started.', { kind: 'ok' });
+      // A page opening the task (this one, or the one mounted again since) says so itself;
+      // otherwise (the task could not be read, or no page offered it) this does.
+      if (!onboardingAnnounced.has(sandbox.id)) toast('Onboarding started.', { kind: 'ok' });
     } catch (error) {
       errorToast(error, 'Couldn’t start onboarding');
     } finally {
       onboardingStarts.delete(sandbox.id);
+      onboardingAnnounced.delete(sandbox.id);
       changed();
     }
     // Back as it was (a failure), or a task that could not be read: the keyboard goes back to the

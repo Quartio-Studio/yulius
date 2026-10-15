@@ -237,6 +237,9 @@ test('leaving and coming back while Start onboarding runs still shows it loading
   await expect(screen.getByRole('button', 'Start onboarding')).toHaveCount(0);
   await browser.evaluate(() => (window as unknown as Mocked).__release!());
   await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+  // One start, one toast: the page that opened the task says so, the composer left says nothing
+  // (#436). Both would be there by now: the left one's comes before the navigation.
+  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.toast .toast-msg')].map((el) => el.textContent).filter((text) => text?.startsWith('Onboarding')))).toEqual(['Onboarding started: opened #1.']);
 });
 
 test('New task on a sandbox being onboarded stays on its onboarding task', async ({ app, browser, screen }) => {
