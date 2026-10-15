@@ -146,10 +146,9 @@ impl App {
         // The record as written; read back when the store answers, else as the move wrote it.
         let moved = match self.deps.store.sandbox(&id).await {
             Ok(Some(moved)) => moved,
-            read => {
-                if let Err(err) = read {
-                    tracing::warn!(sandbox = %id, error = %err, "could not read a moved playground back");
-                }
+            Ok(None) => return Err(AppError::NotFound),
+            Err(err) => {
+                tracing::warn!(sandbox = %id, error = %err, "could not read a moved playground back");
                 SandboxRecord {
                     repo_owner: owner.clone(),
                     repo_name: name.clone(),
@@ -294,7 +293,9 @@ impl App {
         let clone = self.sandbox_repo(&record.id);
         let git = &self.deps.git;
         // The clone's configuration is the playground's agents' to write, and the fetch below
-        // carries the installation token: no proxy, rewrite or include of theirs may steer it.
+        // carries the installation token: no proxy, rewrite, include or alternate-refs command of
+        // theirs may steer it. Other ways the clone's files run code in the server's Git are
+        // #54 part B (ADR-0114).
         git.scrub_transport_config(&clone).await?;
         git.set_origin_url(&clone, url).await?;
         if let Err(err) = git.sync_clone(url, &clone, token).await {

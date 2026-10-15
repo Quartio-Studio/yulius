@@ -170,7 +170,8 @@ impl Git {
     /// setting that steers transport or loads more configuration: `http.*`, `url.*`,
     /// `include*`, `credential.*`, SSH and proxy commands and `origin`'s proxy and push or pack
     /// overrides. Yulius's Git then carries a token in a clone whose configuration a sandbox
-    /// could write without handing it elsewhere (SPEC-176). Every other setting stays.
+    /// could write without handing it elsewhere (SPEC-176). Every other setting stays. A
+    /// configuration file that is a link is refused: Git would write to the file it points at.
     pub fn scrub_transport_config(&self, repo: &Path) -> Result<(), GitError> {
         const PREFIXES: &[&str] = &[
             "http.",
@@ -182,12 +183,21 @@ impl Git {
             "core.sshcommand",
             "core.gitproxy",
             "core.askpass",
+            "core.alternaterefscommand",
             "remote.origin.proxy",
             "remote.origin.pushurl",
             "remote.origin.uploadpack",
             "remote.origin.receivepack",
         ];
         let worktree_config = repo.join(".git").join("config.worktree");
+        for file in [repo.join(".git").join("config"), worktree_config.clone()] {
+            if std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                return Err(GitError::InvalidInput {
+                    what: "repository configuration",
+                    reason: format!("{} is a link", file.display()),
+                });
+            }
+        }
         let mut scopes = vec![vec!["--local".to_owned()]];
         if worktree_config.is_file() {
             scopes.push(vec![

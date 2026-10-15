@@ -1512,6 +1512,7 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
         ("credential.helper", "evil"),
         ("remote.origin.proxy", "http://127.0.0.1:9"),
         ("remote.origin.pushurl", "/tmp/evil.git"),
+        ("core.alternateRefsCommand", "evil"),
         ("user.name", "Kept Name"),
     ];
     // The same key twice, apart.
@@ -1531,7 +1532,7 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
     fx.git.scrub_transport_config(&repo)?;
     let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
     let left: Vec<&str> = left.lines().collect();
-    for (key, _) in &planted[..9] {
+    for (key, _) in &planted[..10] {
         assert!(
             !left.iter().any(|k| k.eq_ignore_ascii_case(key)),
             "{key} is left: {left:?}"
@@ -1539,5 +1540,56 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
     }
     assert!(left.contains(&"user.name"), "{left:?}");
     assert!(left.contains(&"remote.origin.url"), "{left:?}");
+    Ok(())
+}
+
+/// SPEC-176 (review of the delivered head): the per-worktree configuration Git reads once
+/// `extensions.worktreeConfig` is on is scrubbed too.
+#[test]
+fn transport_settings_of_a_clone_s_worktree_config_are_scrubbed() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "extensions.worktreeConfig", "true"],
+    )?;
+    fx.raw(
+        &repo,
+        &["config", "--worktree", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    fx.raw(
+        &repo,
+        &[
+            "config",
+            "--worktree",
+            "url./tmp/evil/.insteadOf",
+            "https://github.com/",
+        ],
+    )?;
+    fx.raw(
+        &repo,
+        &["config", "--worktree", "user.email", "kept@example.invalid"],
+    )?;
+    fx.git.scrub_transport_config(&repo)?;
+    let left = fx.raw(&repo, &["config", "--worktree", "--list", "--name-only"])?;
+    assert_eq!(left, "user.email", "{left}");
+    Ok(())
+}
+
+/// SPEC-176 (review of the delivered head): a configuration file that is a link is refused, never
+/// written through: Git would write to the file it points at.
+#[test]
+fn a_linked_clone_configuration_is_refused_untouched() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let outside = fx.path("outside.cfg");
+    fs::write(&outside, "[http]\n\tproxy = http://127.0.0.1:9\n")?;
+    std::os::unix::fs::symlink(&outside, repo.join(".git/config.worktree"))?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(
+        fs::read_to_string(&outside)?,
+        "[http]\n\tproxy = http://127.0.0.1:9\n",
+        "the file the link points at is untouched"
+    );
     Ok(())
 }
