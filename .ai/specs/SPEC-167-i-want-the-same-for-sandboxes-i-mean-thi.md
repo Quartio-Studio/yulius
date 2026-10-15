@@ -1,11 +1,11 @@
 ---
 yulius-task: 45f9e5a0-5e52-4ebc-8e8e-6e3a699aa597
-status: in-progress
+status: done
 ---
 
 # SPEC-167: the sandbox tabs show that they can be dragged
 
-Status: draft
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #157
 Scope authorization: user request: "i want the same for sandboxes - i mean this icon "you can
@@ -53,8 +53,8 @@ the pointer, so a person finds the reordering without being told.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Sandbox tabs show a drag grip and a click-or-drag hint
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Design
 
@@ -105,3 +105,23 @@ the pointer, so a person finds the reordering without being told.
   person asked for "the same", and the context menu (which a long press opens) moves the tab there.
   Each sandbox tab is about 12 px wider, so a long name is cut a little sooner under the 220 px
   maximum and many sandboxes scroll a little sooner; the cue is what was asked for.
+
+## Evidence
+
+Run on the branch merged with `origin/dev` (2026-10-15):
+
+- The new e2e "the sandbox tabs show a grip and say they can be clicked or dragged" failed before
+  the change (no grip, the title without the hint) and again before the round-1 fix (6 px from
+  the name, not 4), then passed.
+- `cd e2e && npx e2e run tests/navigation.e2e.ts tests/notes.e2e.ts`: 44 of 44 passed (the Notes
+  grip test still passes with the shared `DRAG_TAB_HINT`); the reviewer also ran both files.
+- `cd e2e && npx e2e run --workers 2`: 54 files passed, 1 skipped; 484 tests passed, 1 skipped.
+- `scripts/dev ci` (fmt, clippy, nextest, doctests, cargo-deny, cargo-shear, rustdoc, repository
+  check): exit 0, 1839 tests passed, 18 skipped; advisories, bans, licenses and sources ok.
+- `scripts/dev security`: exit 2, not run. Vidoc answers HTTP 401 (Invalid or expired token)
+  with the bound `VIDOC_API_KEY`; tracked in #470 (ADR-0104). It is not a pass.
+- Seen in the Yulius browser (mock, dark theme, 1280 × 800): the six-dot grip before studio,
+  product and sandbox-3, none on All sandboxes, faint on the tabs at rest and in the text colour
+  on the current one.
+- Not covered: a real touch-only device (the media rule is checked as CSS), browsers other than
+  Chromium, a real mouse drag in the e2e (synthetic drag events from the grip).
