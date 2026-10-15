@@ -747,10 +747,13 @@ each half second the output is read (counts added up, the last value kept).
 
 A CI job's `job` span and a CD run's `run` span also carry what its processes used (SPEC-154,
 ADR-0127), measured by the process host when it reaped them and written with the job's end:
-`cpu_ms` (user + system CPU time of every process of the job), `memory_peak_mb` (the largest peak
-resident memory of one of its processes, in MiB) and `disk_written_mb` (what its processes wrote to
-storage, in MiB, on Linux hosts that account for it). A value Yulius did not measure (the job never
-started, its host was lost, an older host) is absent, never `0`; the three names are reserved.
+`cpu_ms` (user + system CPU time of the job's processes that ended and were reaped within it),
+`memory_peak_mb` (the largest peak resident memory of one of them, in MiB, at least the host's own
+few MiB a fork starts with) and `disk_written_mb` (what they wrote to storage, rounded to the
+nearest MiB, on Linux hosts that account for it). Background processes still running when the job
+ends are killed and not counted. A job Yulius killed (cancelled, timed out, too much output), one
+that never started, one whose host was lost, or an older host's: the figures are absent, never `0`.
+The three names are reserved.
 
 | Method and path | Access | Result |
 | --- | --- | --- |

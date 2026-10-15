@@ -84,7 +84,8 @@ export function useText(detail) {
   return [
     Number.isFinite(d.cpu_ms) ? `CPU ${cpuTime(d.cpu_ms)}` : null,
     Number.isFinite(d.memory_peak_mb) ? `peak ${mebibytes(d.memory_peak_mb)}` : null,
-    Number.isFinite(d.disk_written_mb) ? `wrote ${mebibytes(d.disk_written_mb)}` : null,
+    // Rounded to the nearest MiB: 0 is under half a MiB, not nothing.
+    Number.isFinite(d.disk_written_mb) ? `wrote ${d.disk_written_mb === 0 ? 'under 1 MiB' : mebibytes(d.disk_written_mb)}` : null,
   ].filter(Boolean).join(' · ');
 }
 

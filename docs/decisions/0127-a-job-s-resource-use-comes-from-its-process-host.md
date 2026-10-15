@@ -33,8 +33,11 @@ left of its group and session, and reaps it.
   different versions still understand each other; an older host's file reads as unknown.
 - **Stored with the end, added by the end trigger**: `ci_jobs` and `cd_runs` get `cpu_ms`,
   `memory_peak_mb` and `disk_written_mb` (migration 30), and the end triggers patch them into the
-  `job` / `run` span with `json_patch`, which leaves a `NULL` out: unknown stays absent. A job that
-  Yulius killed (cancelled, timed out, too much output) keeps what its host measured.
+  `job` / `run` span with `json_patch`, which leaves a `NULL` out: unknown stays absent.
+- **A job Yulius killed has no figures**: cancelling, a timeout or too much output kills the job's
+  whole group and session at once, so its processes are reaped by init, outside the host's chain,
+  and the host would measure almost nothing (an 8-second busy loop read as 3 ms; review round 1).
+  Its use is unknown rather than a near-zero figure that would pull the percentiles down.
 - **Reserved names**: a job's `::yulius-measure` cannot set the three figures.
 - **Shown as p50/p90**: each stage row of the summary has the p50 and p90 of CPU time and peak
   memory of its spans that measured them; the Pipeline page's stage table shows them beside the
@@ -57,6 +60,11 @@ left of its group and session, and reaps it.
   Linux with task I/O accounting.
 - Peak memory is the largest single process's peak, not the sum of the processes running at once:
   a parallel build's total is higher. The docs and the Pipeline page say so.
-- A process that leaves the job's reaping chain (a daemon reparented outside the containment) is
-  not counted; without containment, an orphan reparented to the host's init is not either.
+- A process that leaves the job's reaping chain is not counted: a background process still running
+  when the job ends (the host kills what is left of the group and session), a daemon reparented
+  outside the containment, every process of a killed job (whose figures are therefore unknown).
+- The peak memory has a floor of a few MiB: Linux counts the forked host's memory before the exec
+  in the child's peak. On macOS the host's own `sysctl` and `ps` helpers count as the job's.
+- A child subreaper host that reaps the orphans of a killed job before reading its use could give
+  killed jobs figures too; not done, as a killed job's figures matter less than its reason.
 - A per-job cgroup can still replace or complement this later behind the same figures.

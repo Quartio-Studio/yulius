@@ -121,8 +121,9 @@ pub(super) enum Sink<'a> {
     CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
 }
 
-/// What a watched process used, when its host measured it (SPEC-154): also for a job that was
-/// killed (cancelled, timed out, over its output), whose host still reaped and measured it.
+/// What a watched process used, when its host measured it (SPEC-154). Unknown for a job Yulius
+/// killed (cancelled, timed out, over its output): the group kill sends its processes to init,
+/// out of the host's reaping chain, so what the host measured would read as almost nothing.
 pub(super) type Used = Option<yulius_domain::stages::ResourceUse>;
 
 /// How a job's process ended.
@@ -926,13 +927,13 @@ impl App {
             tokio::select! {
                 event = reader.next() => match event {
                     Ok(Some(RunEvent::Exit(exit))) => {
-                        usage = exit.usage;
+                        usage = exit.usage.filter(|_| stop.is_none());
                         break stop.unwrap_or(Ended::Exit(exit));
                     }
                     Ok(Some(_)) => {}
                     Ok(None) | Err(_) => break match host.inspect(run_dir) {
                         RunInspection::Exited(exit) => {
-                            usage = exit.usage;
+                            usage = exit.usage.filter(|_| stop.is_none());
                             stop.unwrap_or(Ended::Exit(exit))
                         }
                         _ => {

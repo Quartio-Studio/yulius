@@ -72,7 +72,8 @@ pub(crate) fn wait_gone(pids: &[Pid], timeout: Duration) -> Option<Pid> {
 
 /// What the reaped children of this process used (SPEC-154 USE-001). A host runs one child, and
 /// the kernel adds each reaped process's use (and its reaped descendants') to its parent, so
-/// after the reap this is the child's whole tree. `None` when the reading fails.
+/// after the reap this is the child's whole tree. `None` when the reading fails or nothing was
+/// reaped (no peak memory).
 pub(crate) fn children_usage() -> Option<ProcessUsage> {
     let usage = getrusage(UsageWho::RUSAGE_CHILDREN).ok()?;
     let ms = |time: TimeVal| {
@@ -82,6 +83,9 @@ pub(crate) fn children_usage() -> Option<ProcessUsage> {
             .saturating_add(u64::try_from(time.tv_usec()).unwrap_or(0) / 1000)
     };
     let max_rss = u64::try_from(usage.max_rss()).unwrap_or(0);
+    if max_rss == 0 {
+        return None;
+    }
     // Linux and the BSDs count kilobytes, macOS bytes.
     let max_rss_bytes = if cfg!(target_vendor = "apple") {
         max_rss
