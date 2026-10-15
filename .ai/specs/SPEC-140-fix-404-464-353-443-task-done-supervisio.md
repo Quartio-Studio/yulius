@@ -223,5 +223,17 @@ escalation; ADR-0115 lists the late effects of a hook finished after its client 
 test's wording says what it shows and its start wait is bounded; the join error is logged.
 `scripts/dev ci` at 5bcdd606: exit 0, 1762/1762 tests.
 
+Review round 2 (head 21549750, approve): `scripts/dev ci` exit 0, 1763/1763. Minors taken: the
+launch clears an intent only where it moves a waiting or resting task with no live run to Starting
+(it cleared before the status check, so a launch refused for a Stopping task dropped that stop's
+intent, and a Continue while a stopped run still ended dropped its); the switch wait in the new test
+is bounded. Not separately tested: the launch-time clear alone. The new test passes with either
+clear (the second stop's clears first); the launch clear's own path, a stop within milliseconds of
+a natural exit, is a race this suite cannot make certain. Pre-existing, left for a follow-up (issue
+comment): a stop during a switch's handover drops the switch's sender, and the switch goes on to
+resume the task, which can relaunch a task the person stopped.
+`scripts/dev security`: not run (unrun, not passed), the Vidoc key answers 401 since 2026-10-14
+(#470, ADR-0104).
+
 Also run: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^supervision::/) |
 test(/^task_done::/))'` 51/51; `test(/^merge_train::/)` 7/7; `test(/^agent_hooks::/)` 15/15.

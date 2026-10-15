@@ -1812,7 +1812,7 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
         .await?;
         app.stop_task_now(&id).await?;
         host.release();
-        let refused = switch.await?;
+        let refused = tokio::time::timeout(Duration::from_secs(60), switch).await??;
         assert!(refused.is_err(), "{refused:?}");
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Stopping);
         app.stop_task_now(&id).await?;

@@ -956,14 +956,6 @@ impl App {
             .sandbox(&task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        // An intent left by a stop or close that ended no run is not for this one (SPEC-140
-        // STP-002): a stop of a live task makes it Stopping, so only a switch's launch can carry an
-        // intent meant for its new run (a stop while it switched, asked at the attach).
-        if task.status != TaskStatus::Switching
-            && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
-        {
-            *intent = None;
-        }
         // Status → Starting (unless a switch drives this launch).
         if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
             let next = match task.status {
@@ -976,6 +968,14 @@ impl App {
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
             };
+            // A waiting or resting task with no run left: an intent of a stop or close that ended
+            // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
+            // ends keeps it for that run's end.
+            if store.live_attempt(&task.id).await?.is_none()
+                && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
+            {
+                *intent = None;
+            }
             if !store
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?
