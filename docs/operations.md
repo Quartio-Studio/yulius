@@ -552,7 +552,10 @@ force pushes**, and in the bypass list only the **Repository admin** role, never
 GitHub then refuses the agents' token every push, merge, fast-forward or deletion of that branch,
 `--no-verify` and `gh` included, while an admin's promotion goes through. Projects Yulius creates
 get it; for an imported repository onboarding (`yulius onboard`, the preparation task) says when it
-is missing, and the preparation agent asks a person for it. A promotion needs a repository admin
+is missing, and the preparation agent adds it with the `production_protect` tool: Yulius creates
+`yulius-people-only-<branch>` with those three rules as the task's owner, only when GitHub says that
+person is a repository admin (ADR-0129). Otherwise (not an admin, no GitHub sign-in, a free plan's
+private repository) the agent asks a person for it with `needs_you`. A promotion needs a repository admin
 once the ruleset exists.
 
 The manifest flow requests these repository permissions:
