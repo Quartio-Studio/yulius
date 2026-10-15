@@ -1451,7 +1451,11 @@ span.composer-attachment-open { cursor: default; }
    upload's progress shows above the box, not over the words being typed. */
 .composer-box .drop-overlay { align-items: flex-end; background: transparent; }
 .composer-box .upload-status-float { top: auto; bottom: calc(100% + 8px); }
-.attachment-modal .modal-body { display: flex; justify-content: center; }
+.attachment-modal .modal-body { display: flex; justify-content: center; overflow: auto; }
+.attachment-zoom { flex: none; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+.attachment-zoom:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 2px; }
+.attachment-zoom[aria-pressed="true"] { max-width: none; margin: auto; cursor: zoom-out; }
+.attachment-zoom[aria-pressed="true"] .attachment-preview { max-width: none; max-height: none; }
 /* The prompt a task started with (SPEC-043): the text as written, then its attached files. */
 .prompt-text { max-height: 60vh; overflow: auto; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2, var(--surface)); }
 .prompt-text .md-blocks { min-height: 0; padding-bottom: 0; cursor: auto; }

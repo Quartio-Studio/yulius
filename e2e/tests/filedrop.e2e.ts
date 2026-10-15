@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock, promptText } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -272,4 +272,43 @@ test('leaving the new-task composer revokes the URL of a file opened in a tab', 
   await screen.getByRole('link', /Checkout API/).first().click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/#12/);
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __revoked: string[] }).__revoked)).toContain(opened);
+});
+
+// SPEC-150 (task #144): "i still want to zoom the image". The dialog fits a large image to the
+// window, and "Actual size" shows it at its own size, scrollable, then fits it again.
+test('an image opened from the tray fits the window and zooms to its actual size', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  // A real 3000 × 400 PNG, as a wide screenshot pasted from the clipboard.
+  await browser.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 3000;
+    canvas.height = 400;
+    const g = canvas.getContext('2d')!;
+    g.fillStyle = '#3a6';
+    g.fillRect(0, 0, 3000, 400);
+    const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
+    const data = new DataTransfer();
+    data.items.add(new File([blob], 'wide.png', { type: 'image/png' }));
+    document.querySelector('.composer-prompt')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await screen.getByRole('button', 'Open wide.png').click();
+  await expect(screen.getByRole('dialog', 'wide.png').getByRole('img', 'wide.png')).toBeVisible();
+  const size = () => browser.evaluate(() => {
+    const img = document.querySelector('dialog.modal img') as HTMLImageElement;
+    const body = document.querySelector('dialog.modal .modal-body')!;
+    return { width: Math.round(img.getBoundingClientRect().width), natural: img.naturalWidth, scrolls: body.scrollWidth > body.clientWidth };
+  });
+  await expect.poll(async () => (await size()).natural).toBe(3000);
+  const fitted = await size();
+  expect(fitted.width).toBeLessThan(3000);
+  expect(fitted.scrolls).toBe(false);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await screen.getByRole('button', 'Actual size').click();
+  await expect(browser.locator('dialog.modal button[aria-pressed="true"]')).toHaveCount(1);
+  await expect.poll(size).toEqual({ width: 3000, natural: 3000, scrolls: true });
+  // The keyboard way back: the same toggle.
+  await screen.getByRole('button', 'Actual size').press('Enter');
+  await expect.poll(size).toEqual(fitted);
 });
