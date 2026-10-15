@@ -158,6 +158,8 @@ watching, steering and unblocking.
   there, and a person allows that once per secret (SPEC-129).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
+  Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
+  restart; the agents don't notice (SPEC-160).
 
 ## Principles
 

@@ -4,7 +4,8 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-// Instance updates and the Jev key (SPEC-001 OPS-006..OPS-009, ADM-001, ADM-002; SPEC-002 ADR-18).
+// Instance updates and the Jev key (SPEC-001 OPS-006..OPS-009, ADM-001, ADM-002; SPEC-002 ADR-18;
+// SPEC-160 OPS-014).
 // The mock walks an update through its phases in about six seconds (mock.js UPDATE_STEP_MS).
 
 test('an update on offer is announced to the superadmin and runs to the end', async ({ app, browser, screen }) => {
@@ -20,11 +21,16 @@ test('an update on offer is announced to the superadmin and runs to the end', as
   await screen.getByRole('button', 'Update now…').click();
   const dialog = screen.getByRole('dialog', /to 9c1e7d3\?$/);
   await expect(dialog.getByText(/The agents don’t notice/)).toBeVisible();
+  // Tasks are frozen at once, mid-turn, not at their next step (SPEC-160 OPS-014).
+  await expect(dialog.getByText(/Tasks then pause at once, mid-step/)).toBeVisible();
   await dialog.getByRole('button', 'Update to 9c1e7d3').click();
   await expect(dialog).toBeHidden();
 
   // The steps show while it runs, then the outcome; the banner offers a reload of the new code.
   await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Pause tasks/);
+  await expect(screen.getByText('Tasks pause at once, mid-step. The agents don’t notice.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Pausing tasks: 2 of 3 paused\./);
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/next step/);
   await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 15000 }).toMatch(/Updated to 9c1e7d3/);
   // The instance page says it all; elsewhere the banner offers a reload of the new code.
   await browser.evaluate(() => { window.location.hash = '#/'; });

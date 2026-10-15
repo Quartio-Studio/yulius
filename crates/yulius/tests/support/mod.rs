@@ -1515,6 +1515,16 @@ pub async fn seed_live_attempt(
     task: &str,
     token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    seed_live_attempt_at(h, task, token, "/nonexistent/run").await
+}
+
+/// [`seed_live_attempt`] with its own run directory.
+pub async fn seed_live_attempt_at(
+    h: &Harness,
+    task: &str,
+    token: &str,
+    run_dir: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     use yulius_app::ports::store::TaskStore;
     use yulius_domain::ids::{AttemptId, TaskId};
     h.store
@@ -1527,7 +1537,7 @@ pub async fn seed_live_attempt(
             provider_session_id: None,
             launch_kind: yulius_app::model::LaunchKind::New,
             state: yulius_domain::task::AttemptState::Live,
-            run_dir: "/nonexistent/run".into(),
+            run_dir: run_dir.into(),
             token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),
             host_token: h.app.deps.crypto.seal(&[1u8; 32])?,
             ptyhost_pid: None,
