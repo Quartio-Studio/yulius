@@ -615,8 +615,9 @@ impl App {
     }
 
     /// The person a workspace token belongs to, and its sandbox, while they are enabled and may
-    /// work there (SPEC-147 SAM-003: the redaction in their Superagent). Otherwise the token is
-    /// refused as invalid.
+    /// work there (SPEC-147 SAM-003: the redaction in their Superagent), by a decision within
+    /// the staleness bound ([`App::settled_access_level`]): every command asks. Otherwise the
+    /// token is refused as invalid.
     ///
     /// # Errors
     /// `Unauthenticated` for unknown tokens, disabled people and lost access; store failures.
@@ -629,10 +630,21 @@ impl App {
             .await?
             .filter(|u| u.disabled_at.is_none())
             .ok_or(AppError::Unauthenticated)?;
-        match self.require(&user, &sandbox_id, Action::Work).await {
-            Ok(_) => Ok((user, sandbox_id)),
-            Err(AppError::Forbidden(_) | AppError::NotFound) => Err(AppError::Unauthenticated),
-            Err(err) => Err(err),
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&sandbox_id)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::Unauthenticated)?;
+        if self
+            .settled_access_level(&user, &sandbox)
+            .await?
+            .allows(Action::Work)
+        {
+            Ok((user, sandbox_id))
+        } else {
+            Err(AppError::Unauthenticated)
         }
     }
 

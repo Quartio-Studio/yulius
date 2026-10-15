@@ -1405,7 +1405,8 @@ async fn scrub(
 /// SPEC-147 SAM-001/002/004 (#395, ADR-0121): the Superagent gets the sandbox's MCP servers as a
 /// task run does, next to `yulius`, their values only in its secret environment, and the task
 /// runs' redaction: a value a Bash command prints through its wrapper, or a tool result holds,
-/// comes back as `[secret:NAME]`; without its fingerprints a command does not run.
+/// comes back as `[secret:NAME]`, as does one its screen shows; without its fingerprints a command
+/// does not run.
 #[tokio::test]
 async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted() -> TestResult {
     let f = fixture().await?;
@@ -1498,6 +1499,14 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
     read_until(&mut socket, &mut screen, "hook-done\r\n").await?;
     let answer = format!("\"updatedToolOutput\":{{\"text\":\"key {SECRET_LABEL}\"}}");
     assert!(screen.contains(&answer), "{screen}");
+    // What reaches the screen past the in-session layers (an MCP error Claude Code shows as it
+    // came, a hook that let a result through) is redacted as a task's terminal is (VLT-007).
+    socket
+        .send(Message::text(typed(
+            "echo \"raw=<$YULIUS_MCP_APIFY_APIFY_TOKEN>\"\r".into(),
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, &format!("raw=<{SECRET_LABEL}>")).await?;
     // Without its fingerprints (Yulius unreachable) a command does not run.
     socket
         .send(Message::text(typed(
@@ -1563,16 +1572,65 @@ async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() 
             .status,
         StatusCode::UNAUTHORIZED
     );
-    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    // Every Superagent command and tool result asks, within the client's 2 s: a decision on the
+    // person's access within the staleness bound answers without asking GitHub again, even
+    // while GitHub hangs (#395 review).
     f.h.clock
         .0
         .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    f.h.github.hang_permissions.store(true, Ordering::SeqCst);
+    let quick = tokio::time::timeout(
+        Duration::from_secs(2),
+        scrub(&f, &workspace, "fingerprints", json!({})),
+    )
+    .await
+    .map_err(|_| "the fingerprints waited on GitHub")??;
+    assert_eq!(quick.status, StatusCode::OK);
+    f.h.github.hang_permissions.store(false, Ordering::SeqCst);
+    // Past the staleness bound GitHub decides again: a person who lost write access reads and
+    // reports nothing.
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_stale_ms, Ordering::SeqCst);
     assert_eq!(
         scrub(&f, &workspace, "fingerprints", json!({}))
             .await?
             .status,
         StatusCode::UNAUTHORIZED,
         "a person who lost write access reads nothing"
+    );
+    let report = json!({"channel": "tool", "names": ["APIFY_KEY"]});
+    assert_eq!(
+        scrub(&f, &workspace, "report", report).await?.status,
+        StatusCode::UNAUTHORIZED
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-147 SAM-003: a disabled person's workspace token reads no fingerprints.
+#[tokio::test]
+async fn a_disabled_persons_workspace_token_reads_no_fingerprints() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let workspace = printed(&screen, "workspace")?;
+    f.h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(f.h.app.now())), None)
+        .await?;
+    assert_eq!(
+        scrub(&f, &workspace, "fingerprints", json!({}))
+            .await?
+            .status,
+        StatusCode::UNAUTHORIZED
     );
     f.h.app.end_all_shells().await;
     Ok(())
