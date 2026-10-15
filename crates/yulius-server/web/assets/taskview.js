@@ -103,7 +103,8 @@ export function mountTaskView(ctx, sandbox, task) {
    * The strip never passes its edge (#348): parts give way whole, lowest priority first. The chain
    * chips (the last first), Auto or Goal, then Supertask go while the state keeps its words; then
    * the state's words shrink (SPEC-073), then the bar and the pull request chip go. The label, the
-   * state's icon and Task actions stay. Runs after every paint of the strip and when it resizes.
+   * state's icon and Task actions stay. Runs after every paint of the strip, when it resizes and
+   * when a web font finishes loading.
    */
   function fitStrip() {
     for (const el of stripMain.querySelectorAll('.strip-gone')) el.classList.remove('strip-gone');
