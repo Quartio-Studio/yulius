@@ -64,6 +64,9 @@ watching, steering and unblocking.
   A **supertask** (the composer's start menu, for broad work such as security hardening) waits
   for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
+  The Tasks page's **Graph** (also from the sidebar's Working group) shows that structure at a
+  glance: the queue in the order tasks get a free session, the chains, start rules and supertask
+  holds as arrows between tasks, the prepared tasks and those on their own (SPEC-164).
   A task can also be **prepared**: written now and started later, when the person presses Start
   now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
   holds no session, can be rescheduled or cancelled, and sits with the queued tasks.
@@ -102,7 +105,9 @@ watching, steering and unblocking.
   (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
   time, change failure rate and time to restore for dev and production, any stage's daily p50 and
   p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy
-  and a task show their own waterfall, and the Dashboard's Overview tab the overview.
+  and a task show their own waterfall (a time axis, a legend, children folded under their span; a
+  CI run's jobs one row each with their wait for a job slot), and the Dashboard's Overview tab the
+  overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the

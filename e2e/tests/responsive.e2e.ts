@@ -177,6 +177,12 @@ test('a task with a long state keeps its step count clear of the progress bar', 
   await expect.poll(async () => (await stripRoom(browser)).countInside).toBe(true);
 });
 
+// The strip's chips whose text spills out of their pill: a chip squeezed below its text broke
+// "PR #520" onto two lines over its fixed height, which the overlap check cannot see (#542).
+const spilledChips = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.taskview .stepstrip-main :is(.chip, .tl-pr-chip)')]
+  .filter((el) => el.getClientRects().length > 0 && (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1))
+  .map((el) => (el.textContent || '').trim()));
+
 // Beside a tool panel on a laptop-sized window the strip is 421-560 px: the bar, the state and the
 // pull request chip left the label less than its count, even with a short "Done · PR #520".
 test('a task beside a tool panel keeps room for its step count in a narrow strip', async ({ app, browser, screen }) => {
@@ -190,10 +196,13 @@ test('a task beside a tool panel keeps room for its step count in a narrow strip
     await app.open(mock(`/s/studio/t/${task}`));
     await expect(screen.getByRole('heading', { level: 1 })).toHaveText(new RegExp(`^#${task} `));
     await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+    // #13 has its pull request in the strip: the chip that broke onto two lines (#542).
+    if (task === 13) await expect(browser.locator('.taskview .strip-pr')).toHaveText(/^PR #520/);
     for (let width = 1300; width <= 1440; width += 20) {
       await browser.setViewport({ width, height: 900 });
       await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
       await expect.poll(async () => (await stripRoom(browser)).countInside).toBe(true);
+      expect(await spilledChips(browser)).toEqual([]);
       const strip = await browser.evaluate(() => document.querySelector('.taskview .stepstrip')!.getBoundingClientRect().width);
       if (strip > 420 && strip <= 500) narrow.add(width);
     }

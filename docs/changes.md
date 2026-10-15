@@ -11,6 +11,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   two lines, "5 h" and "Week", with a bar and the percent used. Where the list is narrower than
   360 px (the Status panel on a phone), the lines keep their percents and drop the bars; in the
   Status panel a row's state ("Limit reached") shows as its icon, so the name keeps its room.
+- A CI run's stages are readable (SPEC-165, ADR-0136, task #155): each job is one row under
+  "Jobs", its wait for a job slot (hatched) running into its run, with "waited 6 min" beside how
+  long it ran and its state as an icon and a word; a job's checkout and stages fold under it (a
+  failed job opens, and what is opened survives the dialog's refresh); every waterfall has a time
+  axis with gridlines, a "now" mark and a legend; on a phone the bar goes under its name.
+- The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
+  crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
+  the narrow-strip e2e test now checks that no strip chip's text overflows its box.
+- The Tasks page shows how tasks hang together (SPEC-164, ADR-0135, task #154). A List / Graph
+  switch (`?view=graph`, also the sidebar Working group's "Show as a graph") opens Starts next (the
+  queued tasks in the order they get a free session: supertasks first, then the longest queued),
+  Chains and rules (chains, start rules and supertask holds drawn left to right, one arrow per link,
+  each card a link to the task), Prepared and On their own. Built in the browser from the task
+  summaries; no API change.
 - The Editor never opens a file twice, and a moved image placeholder is never shown as selected
   text (SPEC-166, task #156). The task's screenshots, two editors stacked in one host, were #394,
   fixed by #523 before this task. Reproducing them showed the Editor still broke another way:
