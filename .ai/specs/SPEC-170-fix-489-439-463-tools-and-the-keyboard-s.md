@@ -1,11 +1,11 @@
 ---
 yulius-task: 6fb5a4c8-565f-476f-85a8-d6dc9d381a19
-status: in-progress
+status: done
 ---
 
 # SPEC-170: Tools and the keyboard stay where the person left them; presence leaves arrive last
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #135, issues #489, #439, #463 (part of task #118, SPEC-138)
 Scope authorization: task #135: "Fix GitHub issues #489, #439 and #463 of Quartio-Studio/yulius
@@ -60,12 +60,12 @@ Three defects of the tools panel and the presence loop it hosts are gone:
 ## Plan
 
 - [x] Spec, scope and issue checks
-- [ ] A sandbox left while loading comes back without a tool (#489)
-- [ ] The Shell shown for a new page keeps the keyboard on the page (#439)
-- [ ] Presence updates carry a per-tab seq on the server (#463)
-- [ ] Receivers drop older presence updates from a tab (#463)
-- [ ] Docs, ADR and changes updated
-- [ ] Gates green and independent review passed
+- [x] A sandbox left while loading comes back without a tool (#489)
+- [x] The Shell shown for a new page keeps the keyboard on the page (#439)
+- [x] Presence updates carry a per-tab seq on the server (#463)
+- [x] Receivers drop older presence updates from a tab (#463)
+- [x] Docs, ADR and changes updated
+- [x] Gates green and independent review passed
 
 ## Acceptance criteria
 
@@ -75,6 +75,9 @@ Three defects of the tools panel and the presence loop it hosts are gone:
 - `terminals.e2e.ts`: with the Shell open beside task #12, opening task #11 from the sidebar leaves
   the keyboard outside the Shell's terminal; closing and reopening the Shell from the rail puts it
   in. Fails without TKS-002.
+- `terminals.e2e.ts`: with the Shell open in studio, product's Git page (product not visited yet)
+  builds product's Shell, which loads its terminal without taking the keyboard. Fails without the
+  first-load part of TKS-002 (review round 1).
 - `notes.e2e.ts`: a teammate's update with a lower `seq` delivered after their `null` draws
   nobody; an update without `seq` is still drawn; the page's own updates carry growing `seq`.
   Fails without TKS-003.
@@ -101,3 +104,33 @@ Three defects of the tools panel and the presence loop it hosts are gone:
   Receivers ordering by `seq` is the issue's alternative and costs one integer. Timestamps were
   rejected (clocks of one tab are monotonic but `Date.now()` is not). See
   [ADR-0138](../../docs/decisions/0138-presence-updates-carry-a-per-tab-sequence-number.md).
+
+## Evidence
+
+- **Red before each fix** (the new test run against the unfixed code):
+  - `places.e2e.ts` "a sandbox left while its page loads …": `toBeHidden` failed, the Superagent
+    panel was visible in studio.
+  - `terminals.e2e.ts` "the Shell shown again for another task …": the keyboard was in the Shell's
+    terminal (`expected true to be false`).
+  - `terminals.e2e.ts` "the Shell of a sandbox first visited …" (review round 1): the same, with
+    `focus: shown` restored in `load`. On the composer page it passed without the fix (the prompt
+    keeps the keyboard, `typingElsewhere`), so the test uses product's Git page.
+  - `notes.e2e.ts` "a teammate's update arriving after their leave …": first no `seq` was sent;
+    with only the sender numbered, alice stayed drawn (`expected ["alice","bob"] to equal ["bob"]`).
+  - Rust: `notes::presence_is_relayed_to_readers` and `files::presence_is_relayed_to_writers_only`
+    did not compile without `seq` on the events.
+- **Green after:** `places.e2e.ts` 21/21, `terminals.e2e.ts` 7/7, `queued-messages`, `rail`,
+  `notes` and `editor` e2e files passed. The full e2e suite passed: 489 passed, 1 skipped
+  (`npx e2e run`, 25 min). `cargo nextest` for the presence tests 6/6, `yulius-contracts` 46/46.
+- **Gate:** `scripts/dev ci` exit 0: 1847 tests passed, 18 skipped, plus doc and lint stages. A
+  first run, made while the e2e suite loaded the machine, failed one test outside this change,
+  `yulius-git` `ci_checkouts_created_at_once_all_succeed` (`git worktree list` read a registration
+  a concurrent `worktree add` was still writing: "failed to read .git/worktrees/j1.2/commondir").
+  It passed 15 of 15 reruns under load. This task may not create issues, so it is reported in the
+  task summary rather than fixed here.
+- **Security:** `scripts/dev security` exited 2, "Vidoc rejected the key (HTTP 401)" (#470). It is
+  unrun, not passed (ADR-0104). The CI `security` job reports it as skipped.
+- **Review:** an independent review in a fresh session approved 558b0518 with no blocker or major
+  findings. Round 1 addressed its three minor findings: the first-load test, this Evidence section
+  and merging `dev`. Its nits were left as they are: one shared `focusWanted` flag (no caller
+  shows twice in one tick), "Try again" after a failed load, and the by-design TKS-001 choice.
