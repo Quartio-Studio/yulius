@@ -44,10 +44,12 @@ test('the step in progress shows on the bar in the working colour', async ({ app
       hidden: (active as HTMLElement).hidden,
       colour: getComputedStyle(active).backgroundColor === ok,
       distinct: getComputedStyle(active).backgroundColor !== getComputedStyle(done).backgroundColor,
+      // The two segments meet square: no rounded notch where the finished fill ends.
+      join: parseFloat(getComputedStyle(done).borderTopRightRadius) === 0 && parseFloat(getComputedStyle(active).borderTopLeftRadius) === 0,
     };
   });
   // 22 % finished, then the open step's 3 of 9 effort units (33 %) right after it.
-  expect(bar).toEqual({ done: 22, active: 33, after: true, hidden: false, colour: true, distinct: true });
+  expect(bar).toEqual({ done: 22, active: 33, after: true, hidden: false, colour: true, distinct: true, join: true });
 });
 
 test('a plan with no step in progress shows no in-progress segment', async ({ app, browser, screen }) => {
