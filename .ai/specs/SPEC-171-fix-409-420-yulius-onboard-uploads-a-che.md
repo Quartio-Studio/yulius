@@ -1,11 +1,11 @@
 ---
 yulius-task: dd2d5a9f-be01-4be9-afcb-732278d5adf4
-status: in-progress
+status: done
 ---
 
 # SPEC-171: a playground's lifecycle at its ends — `yulius onboard --playground` and purging a removed playground's code
 
-Status: in progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #131 (part of task #118, SPEC-138 lane B)
 Scope authorization: issues [#409](https://github.com/Quartio-Studio/yulius/issues/409) and
@@ -64,14 +64,14 @@ ends: coming in from a local checkout, and going away.
 ## Plan
 
 - [x] Spec and ADR-0139 written and validated
-- [ ] The CLI captures a checkout without GitHub for a playground (contracts, discovery, bundle of every branch)
-- [ ] A CLI upload makes a new playground with every branch, the uncommitted work and the sessions
-- [ ] A CLI upload lands in the caller's existing playground, and the real CLI runs against the real server
-- [ ] A removed playground's purge request is stored and waits until no process of the sandbox runs
-- [ ] The purge API and the removal dialog offer to delete a playground's code for good
-- [ ] Docs, changes log and architecture updated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, evidence recorded
+- [x] The CLI captures a checkout without GitHub for a playground (contracts, discovery, bundle of every branch)
+- [x] A CLI upload makes a new playground with every branch, the uncommitted work and the sessions
+- [x] A CLI upload lands in the caller's existing playground, and the real CLI runs against the real server
+- [x] A removed playground's purge request is stored and waits until no process of the sandbox runs
+- [x] The purge API and the removal dialog offer to delete a playground's code for good
+- [x] Docs, changes log and architecture updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, evidence recorded
 
 ## Acceptance criteria
 
@@ -156,4 +156,37 @@ ends: coming in from a local checkout, and going away.
 
 ## Evidence
 
-To be recorded.
+Run on the branch after merging `dev` (2026-10-15):
+
+- `scripts/dev ci` at 052f5f0c (the code of the delivered head): exit 0. Repository contracts
+  passed; nextest `1864 tests run: 1864 passed, 18 skipped`; clippy with `-D warnings`, rustdoc,
+  doctests, cargo-deny and cargo-shear clean. A run before it failed once in
+  `test_vidoc_scan.RealRunner` (`ProcessLookupError` reading `/proc/<pid>/stat` of a child reaped
+  mid-read, an existing race of the test helper); fixed with a deterministic test
+  (`AliveHelper`), not retried.
+- `cd e2e && npx e2e run`: `Test Files 55 passed | 1 skipped`, `Tests 500 passed | 1 skipped` (the
+  skipped one needs a model key) at ead85633; after the later `dev` merge, `playground.e2e.ts` and
+  `places.e2e.ts`: 27 passed (the review fixes changed no web file). The three new playground
+  tests failed before the dialog change.
+- New tests failing without the change and passing with it (shown by disabling the change):
+  `playground::onboard_cli_uploads_a_checkout_into_a_new_playground` and
+  `a_cli_playground_needs_the_flag_and_a_bundle` (server plan/job without the playground branch),
+  `a_purge_waits_while_a_process_of_the_sandbox_runs` (without the agent-run wait),
+  `a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later` (502, missing bundle,
+  before the round 1 fix), `a_new_playground_upload_supersedes_an_unfinished_one`,
+  `a_purge_waits_for_a_ci_run_and_is_done_once` (audited twice before), the re-run assertion of
+  no `import/` branch; `yulius-import` `a_checkout_without_github_goes_to_a_playground`,
+  `playground_discovery_needs_no_remote`, `a_playground_bundle_holds_every_branch_and_tag`;
+  `yulius-contracts` `a_playground_upload_is_flagged_and_a_github_one_unchanged`.
+- The real CLI (`run_import`) runs against the real router served on a loopback port with a
+  bearer token, on a checkout whose only remote is a local bare repository: that remote's refs
+  are unchanged afterwards, and the fake GitHub records no write while its permission lookups
+  fail.
+- `scripts/dev security`: **unrun** (exit 2: Vidoc answers HTTP 401 for the agent secret, as
+  since 2026-10-14, #470); per ADR-0104 that is not a pass.
+- Independent review in fresh sessions: round 1 requested changes (one major, six minor, five
+  nits), all fixed test-first or decided above; round 2 approved 9e051eea with two minors and three
+  nits, of which the code ones were fixed or decided (Decisions).
+- Not tested here: a real `yulius onboard --playground` from another machine over TLS, a purge on
+  a host with namespace isolation (the namespace process count and files owned by mapped ids), and
+  the shell and browser waits (see Decisions).
