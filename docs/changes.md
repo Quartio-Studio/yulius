@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
+  - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
+    skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
+    had its box but no text.
+  - **#444:** the store plans its pull request reads on a clock the transport may give. The mock's
+    `pullclock=manual` clock moves only by `advanceClock`, so "announcements within the gap make
+    one read" counts reads without depending on the host's speed (ADR-0118).
+  - **#415:** a new case proves that a failed later Git overview read keeps the chips the page read.
+    The mock counts GETs it failed on purpose (`failedReads`).
+  - **#469:** was already fixed by #490 and is closed.
 - Yulius CI jobs can use agent secrets, and every pull request runs a `security` job (SPEC-142,
   ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
   and only the integration branch's entry of the job's name counts: a pull request's own grant
