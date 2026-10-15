@@ -251,7 +251,9 @@ mention `@'<path>'` (an older prompt has its files after the text, a line `@path
 ([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
 [decision 0101](decisions/0101-attached-files-keep-their-place-in-the-prompt.md)). A goal task (the
 default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
-typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
+typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. Until it
+is confirmed the run directory holds `launch-goal-pending`, so a restarted server watches it again
+([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md)). The
 condition names the request file in the sandbox home, which keeps the whole request, and the
 attached files, which the agent opens with its Read tool (a `/goal` carries no image
 block); the request file writes each file inside the text where it sits (`[file N: <path>]`). A
@@ -440,7 +442,11 @@ it started is recorded on that subscription as a task's is. The Cockpit then sta
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
 process ends with the exit status `switched`, and the panel follows it to the new one. Without
-capacity, it stays and its viewers get a notice.
+capacity, it stays and its viewers get a notice. A shell, the Cockpit included, is recorded as
+ended only once it exited or its host was terminated: when its host cannot be ended it stays live
+and its viewers are told, and the move starts no second Cockpit on the same conversation
+([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md),
+[decision 0120](decisions/0120-a-shell-ends-only-when-its-host-is-proven-gone.md)).
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -468,7 +474,7 @@ variable name, which may hold an agent secret's placeholder.
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
-  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
+  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
   APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
