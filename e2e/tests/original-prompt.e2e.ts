@@ -120,3 +120,47 @@ test('a file inside the prompt shows in place, files after the text below it', a
   await text.getByRole('button', { name: 'Open inline.png' }).click();
   await expect(screen.getByRole('dialog', 'inline.png').getByRole('img', 'inline.png')).toBeVisible();
 });
+
+// Task #167 (SPEC-180, #565): an image inside the prompt is a one-line `Image N` placeholder, as in
+// the composer (SPEC-150), not a thumbnail that makes its line 160 px high; the pictures are in the
+// list below the text, numbered.
+test('an image inside the prompt is a one-line Image N placeholder, its picture in the list', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, {
+    prompt: `First @'${drafts}/a.png' then @'${drafts}/notes.txt' and @'${drafts}/a.png' again,\nsecond @'${drafts}/b.png' line.\n\n@${drafts}/after.png`,
+  });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  const text = browser.locator('.prompt-modal .prompt-text');
+  await expect(text.getByRole('button', { name: 'Open Image 1, a.png' })).toHaveCount(2);
+  await expect(text.getByRole('button', { name: 'Open Image 2, b.png' })).toBeVisible();
+  await expect(text.getByRole('button', { name: 'Download notes.txt' })).toBeVisible();
+  // Labels, not pictures: the text holds no image, and reads as written.
+  await expect(text.getByRole('img')).toHaveCount(0);
+  await expect(text).toHaveText(/First\s*Image 1\s*then\s*notes\.txt\s*and\s*Image 1\s*again,\s*second\s*Image 2\s*line\./);
+  // One line high: the placeholder is no taller than two lines of the text around it.
+  const sizes = await browser.evaluate(() => {
+    const atom = document.querySelector('.prompt-modal .prompt-text [aria-label="Open Image 2, b.png"]')!;
+    return { atom: atom.getBoundingClientRect().height, line: parseFloat(getComputedStyle(atom.parentElement!).lineHeight) || 24 };
+  });
+  expect(sizes.atom).toBeLessThan(2 * sizes.line);
+
+  // The list holds every file once, in order, an image's thumbnail with its number.
+  const files = dialog.getByRole('list', 'Attached files');
+  await expect(files.getByRole('listitem')).toHaveCount(4);
+  await expect(files).toHaveText(/1\s*a\.png\s*notes\.txt\s*2\s*b\.png\s*3\s*after\.png/);
+  await expect(files.getByRole('img', 'a.png')).toBeVisible();
+  await expect(files.getByRole('button', 'Open Image 3, after.png')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A placeholder opens its image full size.
+  await text.getByRole('button', { name: 'Open Image 2, b.png' }).click();
+  const preview = screen.getByRole('dialog', 'b.png');
+  await expect(preview.getByRole('img', 'b.png')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+});
