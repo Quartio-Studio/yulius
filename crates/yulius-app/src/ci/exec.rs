@@ -584,6 +584,12 @@ impl App {
                 Some("the job could not be started".to_owned()),
             ),
             Ok(Ended::Exit(exit)) if exit.is_clean() => (RunState::Passed, Some(0), None),
+            // The job said it checked nothing (SPEC-162 SKP-001): skipped, not passed or failed.
+            Ok(Ended::Exit(exit))
+                if exit.code == Some(dom::SKIP_EXIT_CODE) && exit.signal.is_none() =>
+            {
+                (RunState::Skipped, exit.code, None)
+            }
             Ok(Ended::Exit(exit)) => {
                 let code = exit.code.or_else(|| exit.signal.map(|signal| 128 + signal));
                 (RunState::Failed, code, None)
@@ -657,6 +663,10 @@ impl App {
             ("YULIUS_CI_JOB".to_owned(), job.name.clone()),
             ("YULIUS_CI_SHA".to_owned(), run.sha.clone()),
             ("YULIUS_CI_REF".to_owned(), run.reference.key()),
+            (
+                "YULIUS_CI_SKIP_CODE".to_owned(),
+                dom::SKIP_EXIT_CODE.to_string(),
+            ),
             (
                 "YULIUS_CI_CACHE".to_owned(),
                 cache.to_string_lossy().into_owned(),

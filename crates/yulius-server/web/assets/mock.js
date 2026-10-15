@@ -1537,18 +1537,19 @@ function ciOutput(job, ok) {
   return `${lines.join('\n')}\n`;
 }
 
-function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, reason = null, by = 'yulius' } = {}) {
+function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, skipJob = null, reason = null, by = 'yulius' } = {}) {
   const queued = Date.now() - minutesAgo * 60000;
   const started = queued + 4000;
   const ended = state === 'running' || state === 'queued' ? null : started + 3 * 60000 + 12000;
   const jobs = CI_JOBS.map((job, i) => {
     const failed = failJob === job.name;
-    const jobState = state === 'passed' ? 'passed' : state === 'failed' ? (failed ? 'failed' : 'passed') : state === 'running' ? (i === 0 ? 'passed' : 'running') : state;
+    const jobState = skipJob === job.name ? 'skipped' : state === 'passed' ? 'passed' : state === 'failed' ? (failed ? 'failed' : 'passed') : state === 'running' ? (i === 0 ? 'passed' : 'running') : state;
     return {
       id: `${id}_j${i}`, name: job.name, command: job.command, matrix: job.matrix, state: jobState, reason: null,
-      exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : null,
-      duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : null,
-      output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n` : ciOutput(job, !failed),
+      exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : jobState === 'skipped' ? 78 : null,
+      duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : jobState === 'skipped' ? 2000 : null,
+      output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n`
+        : jobState === 'skipped' ? `$ ${job.command}\nSecurity scan not run: No Vidoc API key.\n` : ciOutput(job, !failed),
     };
   });
   const pr = reference.startsWith('pr/') ? Number(reference.slice(3)) : null;
@@ -1567,7 +1568,8 @@ function seedCi() {
       gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
       runs: [
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
-        ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22),
+        // SPEC-162: a passed run whose "test (2/2)" exited with the skip code.
+        ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22, { skipJob: 'test (2/2)' }),
         ciRun('ci_s2', 'pr/218', '0d7e5f3a1c2b', 'failed', 47, { failJob: 'test (2/2)' }),
         ciRun('ci_s1', 'pr/218', 'a1b2c3d4e5f6', 'cancelled', 63, { reason: 'superseded by 0d7e5f3' }),
       ],

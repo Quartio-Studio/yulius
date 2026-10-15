@@ -11,6 +11,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
   `?section=pipeline` with its filters after it. `/pipeline` links, "In Pipeline" and the
   Overview's Pipeline card open the tab.
+- A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
+  fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
+  skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),
+  on the CI page and in `ci_status`. The `security` job now ends skipped when the Vidoc scan cannot
+  run (no key, a rejected one), and is granted `VIDOC_API_KEY` through the egress proxy (#466).
+  Until `dev` is promoted to `main`, the running instance gives no skip code and the job still
+  passes, with `security scan skipped` in its output.
 - An update pauses every task at once (SPEC-160, ADR-0131, task #151). When the new version is
   built, each task's agent is frozen mid-turn with the cgroup v2 freezer: its output stops, nothing
   is told to it, and it goes on from the same instruction when its task is thawed after the
