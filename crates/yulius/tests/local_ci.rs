@@ -1201,3 +1201,350 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
     assert!(spans.iter().all(|s| s.source == "recorded"));
     Ok(())
 }
+
+/// The output of each job of the run of commit `sha`, by job name.
+async fn job_outputs(f: &Fixture, sha: &str) -> BoxResult<Vec<(String, String)>> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let runs = overview["runs"].as_array().ok_or("runs")?;
+    let run = runs
+        .iter()
+        .find(|r| r["sha"] == sha)
+        .ok_or_else(|| format!("no run of {sha}: {overview}"))?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    Ok(detail["jobs"]
+        .as_array()
+        .ok_or("jobs")?
+        .iter()
+        .map(|j| {
+            (
+                j["name"].as_str().unwrap_or_default().to_owned(),
+                j["output"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect())
+}
+
+fn output_of<'a>(outputs: &'a [(String, String)], name: &str) -> BoxResult<&'a str> {
+    outputs
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, o)| o.as_str())
+        .ok_or_else(|| format!("no job {name}: {outputs:?}").into())
+}
+
+/// SPEC-142 CSE-002..004: a job the integration branch grants `API_KEY` gets its placeholder, a
+/// proxy credential of its own (a `ci:<run>` client while it runs, nothing after) and the CA
+/// bundle; a job without a grant gets none of these; a pull request that grants secrets in its own
+/// `yulius.toml` gets nothing more than the integration branch granted.
+#[tokio::test]
+async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestResult {
+    let report = |extra: &str| {
+        format!(
+            "echo \"{extra}key=${{API_KEY:-none}} other=${{OTHER_KEY:-none}} \
+             proxy=${{HTTPS_PROXY:+set}} ca=${{SSL_CERT_FILE:-none}}\"; \
+             if [ -n \"$SSL_CERT_FILE\" ] && [ -r \"$SSL_CERT_FILE\" ]; then echo ca-readable; fi"
+        )
+    };
+    let granted = report("");
+    let plain = report("");
+    let f = fixture_with(false, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY\"\ncommand = '{granted}; \
+             printf %s \"$HTTPS_PROXY\" > \"{dir}/proxy-$YULIUS_CI_RUN\"; \
+             while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done'\n\n\
+             [[ci.jobs]]\nname = \"plain\"\ncommand = '{plain}'\n",
+            dir = data.display()
+        )
+    })
+    .await?;
+    for name in ["API_KEY", "OTHER_KEY"] {
+        let created = f
+            .post(
+                "/api/sandboxes/s1/agent-secrets",
+                Some(serde_json::json!({
+                    "name": name,
+                    "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
+                    "injection": "bearer",
+                    "value": format!("{name}-value-0123456789"),
+                })),
+            )
+            .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+
+    // While the granted job runs, its credential names a CI client of its run.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let (run, url) = loop {
+        f.h.app.ci_dispatch().await;
+        let written = std::fs::read_dir(&f.data)?
+            .filter_map(Result::ok)
+            .find_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let run = name.strip_prefix("proxy-")?.to_owned();
+                let url = std::fs::read_to_string(e.path()).ok()?;
+                (!url.is_empty()).then_some((run, url))
+            });
+        if let Some(found) = written {
+            break found;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the granted job never wrote its proxy".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let token = url
+        .strip_prefix("http://yulius-ci:")
+        .and_then(|rest| rest.split_once('@'))
+        .map(|(token, authority)| {
+            assert_eq!(authority, "127.0.0.1:1");
+            token.to_owned()
+        })
+        .ok_or_else(|| format!("unexpected proxy {url}"))?;
+    let policy: Arc<dyn yulius_app::ports::egress::EgressPolicy> = f.h.app.clone();
+    let client = policy
+        .egress_client(&token)
+        .await
+        .ok_or("the job's credential names no client")?;
+    assert_eq!(client.actor(), format!("ci:{run}"));
+    assert!(policy.egress_intercepts(&client, "api-key.test", 443).await);
+    assert!(
+        !policy
+            .egress_intercepts(&client, "other-key.test", 443)
+            .await
+    );
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    assert!(
+        policy.egress_client(&token).await.is_none(),
+        "the credential ends with the job"
+    );
+
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let granted = output_of(&outputs, "granted")?;
+    assert!(
+        granted.contains("key=yulius-secret-API_KEY other=none proxy=set ca=/"),
+        "{granted}"
+    );
+    assert!(granted.contains("ca-readable"), "{granted}");
+    assert!(
+        granted.contains("[yulius] agent secrets: API_KEY"),
+        "{granted}"
+    );
+    assert!(!granted.contains("API_KEY-value"), "{granted}");
+    let plain_out = output_of(&outputs, "plain")?;
+    assert!(
+        plain_out.contains("key=none other=none proxy= ca=none"),
+        "{plain_out}"
+    );
+    assert!(!plain_out.contains("ca-readable"), "{plain_out}");
+
+    // The pull request grants secrets in its own yulius.toml: its own jobs run, with the
+    // integration branch's grants only.
+    let own = format!(
+        "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{granted}'\n\n\
+         [[ci.jobs]]\nname = \"plain\"\nsecrets = \"API_KEY\"\ncommand = '{plain}'\n\n\
+         [[ci.jobs]]\nname = \"sneaky\"\nsecrets = \"OTHER_KEY\"\ncommand = '{sneaky}'\n",
+        granted = report("own "),
+        plain = report("own "),
+        sneaky = report("own "),
+    );
+    let own_sha = f.push_feature("yulius.toml", Some(&own))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &own_sha).await?;
+    let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["granted", "plain", "sneaky"], "its own jobs ran");
+    assert!(
+        output_of(&outputs, "granted")?
+            .contains("own key=yulius-secret-API_KEY other=none proxy=set"),
+        "{outputs:?}"
+    );
+    for name in ["plain", "sneaky"] {
+        assert!(
+            output_of(&outputs, name)?.contains("own key=none other=none proxy= ca=none"),
+            "{outputs:?}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
+/// directory, outside the sandbox).
+#[tokio::test]
+async fn a_contained_granted_job_reads_its_ca_bundle() -> TestResult {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED a_contained_granted_job_reads_its_ca_bundle: bubblewrap cannot run here"
+        );
+        return Ok(());
+    }
+    let f = fixture_with(true, |_| {
+        "[[ci.jobs]]\nname = \"scan\"\nsecrets = \"API_KEY\"\ncommand = 'grep -c \"BEGIN CERTIFICATE\" \"$SSL_CERT_FILE\" && echo \"key=$API_KEY\"'\n".to_owned()
+    })
+    .await?;
+    let created = f
+        .post(
+            "/api/sandboxes/s1/agent-secrets",
+            Some(serde_json::json!({
+                "name": "API_KEY", "hosts": ["api.test"], "injection": "bearer",
+                "value": "api-key-value-0123456789",
+            })),
+        )
+        .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let scan = output_of(&outputs, "scan")?;
+    assert!(scan.contains("key=yulius-secret-API_KEY"), "{scan}");
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &pr_sha).await,
+        GateResult::Run(Some(RunState::Passed)),
+        "{scan}"
+    );
+    Ok(())
+}
+
+/// SPEC-142 CSE-002, review B1: a CI job can write the sandbox's shared clone, so what it plants
+/// there (a `git replace` of the integration branch's `yulius.toml`) must not change any grant:
+/// grants come from the integration head GitHub reports, taken into a mirror only Yulius writes.
+/// A production-deploy secret is never granted.
+#[tokio::test]
+async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
+    let report = "echo \"key=${API_KEY:-none} other=${OTHER_KEY:-none} prod=${PROD_KEY:-none}\"";
+    let honest = format!(
+        "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY PROD_KEY\"\ncommand = '{report}'\n\n\
+         [[ci.jobs]]\nname = \"plain\"\ncommand = '{report}'\n"
+    );
+    let f = fixture_with(false, |_| honest.clone()).await?;
+    let mut ids = std::collections::HashMap::new();
+    for name in ["API_KEY", "OTHER_KEY", "PROD_KEY"] {
+        let created = f
+            .post(
+                "/api/sandboxes/s1/agent-secrets",
+                Some(serde_json::json!({
+                    "name": name,
+                    "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
+                    "injection": "bearer",
+                    "value": format!("{name}-value-0123456789"),
+                })),
+            )
+            .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        ids.insert(name, created.body["id"].as_str().ok_or("id")?.to_owned());
+    }
+    {
+        use yulius_app::ports::vault::VaultStore as _;
+        assert!(
+            f.h.store
+                .vault_set_cd_prod(&ids["PROD_KEY"], false, true)
+                .await?
+        );
+    }
+    f.h.app.enable_egress(None);
+
+    // A job of an earlier run replaced the integration branch's yulius.toml in the shared clone.
+    let shared = f.data.join("sandboxes/s1/repo");
+    let forged = honest
+        .replace(
+            "secrets = \"API_KEY PROD_KEY\"",
+            "secrets = \"API_KEY OTHER_KEY\"",
+        )
+        .replace(
+            "name = \"plain\"\n",
+            "name = \"plain\"\nsecrets = \"OTHER_KEY\"\n",
+        );
+    std::fs::write(f.data.join("forged.toml"), &forged)?;
+    let blob = git(&shared, &["rev-parse", "origin/dev:yulius.toml"])?;
+    let fake = git(
+        &shared,
+        &[
+            "hash-object",
+            "-w",
+            f.data.join("forged.toml").to_str().ok_or("path")?,
+        ],
+    )?;
+    git(&shared, &["replace", &blob, &fake])?;
+    assert!(
+        git(&shared, &["show", "origin/dev:yulius.toml"])?.contains("OTHER_KEY"),
+        "the forgery is what the shared clone shows"
+    );
+
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let granted = output_of(&outputs, "granted")?;
+    assert!(
+        granted.contains("key=yulius-secret-API_KEY other=none prod=none"),
+        "{granted}"
+    );
+    assert!(
+        granted.contains("production-deploy secrets are never given to CI: PROD_KEY"),
+        "{granted}"
+    );
+    let plain = output_of(&outputs, "plain")?;
+    assert!(plain.contains("key=none other=none prod=none"), "{plain}");
+    Ok(())
+}
+
+/// SPEC-142, review round 2: a fetch of the shared clone that fails (a concurrent fetch holding a
+/// ref lock, a network blip) does not withhold a grant the clone can already verify.
+#[tokio::test]
+async fn a_grant_verifies_without_a_fresh_fetch_when_the_clone_has_the_head() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"scan\"\nsecrets = \"API_KEY\"\ncommand = 'echo \"key=${API_KEY:-none}\"'\n"
+            .to_owned()
+    })
+    .await?;
+    let created = f
+        .post(
+            "/api/sandboxes/s1/agent-secrets",
+            Some(serde_json::json!({
+                "name": "API_KEY", "hosts": ["api.test"], "injection": "bearer",
+                "value": "api-key-value-0123456789",
+            })),
+        )
+        .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    f.h.app.enable_egress(None);
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // From now on every fetch of the shared clone fails.
+    git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["remote", "set-url", "origin", "/nonexistent/origin.git"],
+    )?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let scan = output_of(&outputs, "scan")?;
+    assert!(scan.contains("key=yulius-secret-API_KEY"), "{scan}");
+    Ok(())
+}

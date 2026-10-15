@@ -15,6 +15,36 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` advanced the clock once,
     and a disk check that ended after the jump dated the next check a minute later. It now lets
     time pass until the runs start.
+- `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
+  - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
+    skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
+    had its box but no text.
+  - **#444:** the store plans its pull request reads on a clock the transport may give. The mock's
+    `pullclock=manual` clock moves only by `advanceClock`, so "announcements within the gap make
+    one read" counts reads without depending on the host's speed (ADR-0118).
+  - **#415:** a new case proves that a failed later Git overview read keeps the chips the page read.
+    The mock counts GETs it failed on purpose (`failedReads`).
+  - **#469:** was already fixed by #490 and is closed.
+- Yulius CI jobs can use agent secrets, and every pull request runs a `security` job (SPEC-142,
+  ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
+  and only the integration branch's entry of the job's name counts: a pull request's own grant
+  gives nothing. A granted job gets placeholders, the CA bundle and a proxy credential of its own,
+  never a value; the proxy client it names, `ci:<run>`, uses only those secrets toward their bound
+  hosts, and every use is in the secrets audit; the grant is verified at the integration head
+  GitHub reports, so nothing a job writes can forge it. This repository's new `security` job runs
+  `scripts/dev security` on pull request heads, in a private clone that reaches its base without a
+  GitHub credential. Findings fail it; "did not run" (exit 2) does not, while the stored key is
+  rejected (#470) and until the job's grant line is added, once the running instance knows
+  `secrets` (an older one rejects the whole `yulius.toml`).
+
+- A run that ends while Yulius is down keeps its metrics (SPEC-143, ADR-0117, task #124, fixes
+  #385 and #389). A run that ends before a watcher of this process read its transcript to its end
+  (reconciliation finds it exited, or a reattach gets its exit at once from a lingering host) is
+  counted from its transcript window (SPEC-091's recount), lines written while Yulius was down
+  included, instead of saving an empty snapshot, which replaced its tokens, turns and active time
+  with NULLs; when the count finds nothing the row stays. `App::recover` starts the metrics recount only after
+  a reconciliation that succeeded, now proven by a test; SPEC-002 lists `metrics_recounts`.
+
 - task_done, supervision and merge_train tests hold under host load (SPEC-140, ADR-0115, task #127;
   fixes #404, #464, #353, #443). Two product races fixed: a hook whose client gave up after its 5 s
   is still applied to its end (a slow Stop used to be cut off before setting Done), and a stop that

@@ -6,10 +6,12 @@
 //! the configured shell text is never spliced into Yulius's script. The log is read while the
 //! job runs (complete from the first byte, unlike a terminal attached after the start) and its
 //! tail stored. The environment has no secret: no task token, provider credential or GitHub
-//! token. `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared by its lanes (up to
-//! [`super::CiSettings::lanes`] runs at once, so a job's installs there must tolerate a concurrent
-//! run), and each job keeps a persistent checkout per lane ([`checkout_name`]), so caches
-//! (dependency downloads, build outputs) survive between runs.
+//! token. A job the integration branch's `[[ci.jobs]]` entry grants agent secrets gets their
+//! placeholders and the egress proxy with a credential of its own, never a value (SPEC-142,
+//! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared
+//! by its lanes (up to [`super::CiSettings::lanes`] runs at once, so a job's installs there must
+//! tolerate a concurrent run), and each job keeps a persistent checkout per lane
+//! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,8 +20,9 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use yulius_domain::ci::failures::FailureScanner;
-use yulius_domain::ci::{self as dom, RunState};
+use yulius_domain::ci::{self as dom, Gate, GateSource, RunState};
 use yulius_domain::resources::{Budget, budget_env};
+use yulius_domain::vault::{SecretName, placeholder};
 
 use super::{
     CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, KILL_GRACE, MAX_LOG_FILE_BYTES,
@@ -145,6 +148,47 @@ const NO_DISK_REASON: &str = "waiting for disk space: a job was refused over the
 /// What a job refused over the disk quota leaves in its output when its run is queued again.
 const NO_DISK_REQUEUE: &str =
     "[yulius] queued again: the sandbox was over its disk quota when this run started\n";
+
+/// The agent secrets a job of definition `key` may use (SPEC-142 CSE-002): what the integration
+/// branch's entry of that name grants. Only the integration branch's `[[ci.jobs]]` grant; a
+/// profile gate grants nothing, and neither does a pull request's own configuration (it never
+/// reaches `gate`, which [`App::ci_gate`] reads from the integration branch).
+fn granted(gate: Option<&Gate>, key: &str) -> Vec<String> {
+    gate.filter(|gate| gate.source == GateSource::ProjectConfig)
+        .and_then(|gate| gate.jobs.iter().find(|job| job.key == key))
+        .map(|job| job.secrets.clone())
+        .unwrap_or_default()
+}
+
+/// A CI job's proxy credential (SPEC-142 CSE-004): closed when dropped, so it ends on every
+/// path out of the job, a cancelled or panicking one included.
+struct CiProxy<'a> {
+    app: &'a App,
+    token: String,
+}
+
+impl Drop for CiProxy<'_> {
+    fn drop(&mut self) {
+        self.app.ci_egress_close(&self.token);
+    }
+}
+
+/// Binds the files a plan writes outside the sandbox (the CA bundle in the run directory)
+/// read-only into its containment, at the same path, as agent runs do.
+fn bind_run_files(plan: &mut LaunchPlan) {
+    if let Containment::Bubblewrap {
+        readonly,
+        sandbox_root,
+        ..
+    } = &mut plan.containment
+    {
+        for file in &plan.files {
+            if !file.path.starts_with(&*sandbox_root) && !readonly.contains(&file.path) {
+                readonly.push(file.path.clone());
+            }
+        }
+    }
+}
 
 /// The directory of a job's persistent checkout: the definition's name, plus the matrix value's
 /// position for matrix jobs (siblings run in parallel and need their own), plus the lane past
@@ -616,6 +660,90 @@ impl App {
         env
     }
 
+    /// Gives a job the agent secrets the integration branch grants it (SPEC-142 CSE-002..004):
+    /// a placeholder for each granted agent secret of the sandbox (never a production-deploy
+    /// one) and, when the egress proxy is wired, the proxy with a fresh credential naming client
+    /// `ci:<run>` and the CA bundle in `run_dir`, readable inside the containment. Returns the
+    /// credential, closed when it is dropped (the job ended, or its task went); `None` without a
+    /// grant.
+    async fn ci_job_secrets(
+        &self,
+        sandbox: &SandboxRecord,
+        (run, job): (&CiRunRecord, &CiJobRecord),
+        run_dir: &Path,
+        plan: &mut LaunchPlan,
+        ring: &mut OutputRing,
+    ) -> Option<CiProxy<'_>> {
+        // The sandbox clone (which CI jobs can write) only says whether to look; the grant itself
+        // is read from the verified integration head (review B1).
+        if granted(self.ci_gate(sandbox).await.gate.as_ref(), &job.key).is_empty() {
+            return None;
+        }
+        let grant = match self.ci_verified_gate(sandbox).await {
+            Ok(gate) => granted(gate.as_ref(), &job.key),
+            Err(err) => {
+                ring.push_str(&format!(
+                    "[yulius] agent secrets: none; the integration branch's grant could not be verified: {}\n",
+                    err.public_message()
+                ));
+                return None;
+            }
+        };
+        if grant.is_empty() {
+            ring.push_str(
+                "[yulius] agent secrets: none; the integration branch grants this job none\n",
+            );
+            return None;
+        }
+        let records = match self.deps.store.vault_agent(Some(&sandbox.id)).await {
+            Ok(records) => records,
+            Err(err) => {
+                tracing::warn!(job = %job.id, error = %err, "agent secrets could not be read for a CI job");
+                Vec::new()
+            }
+        };
+        let (mut given, mut missing, mut production) = (Vec::new(), Vec::new(), Vec::new());
+        for name in &grant {
+            let record = records.iter().find(|r| &r.name == name);
+            match (record, SecretName::parse(name)) {
+                (Some(record), _) if record.cd_prod => production.push(name.as_str()),
+                (Some(_), Ok(parsed)) => {
+                    plan.env.push((name.clone(), placeholder(&parsed)));
+                    given.push(name.as_str());
+                }
+                _ => missing.push(name.as_str()),
+            }
+        }
+        let mut note = format!("[yulius] agent secrets: {}", given.join(", "));
+        if given.is_empty() {
+            note = "[yulius] agent secrets: none".to_owned();
+        }
+        if !missing.is_empty() {
+            note.push_str(&format!(
+                " (not in the sandbox's agent secrets: {})",
+                missing.join(", ")
+            ));
+        }
+        if !production.is_empty() {
+            note.push_str(&format!(
+                " (production-deploy secrets are never given to CI: {})",
+                production.join(", ")
+            ));
+        }
+        let token = self
+            .ci_egress_open(&sandbox.id, &run.id, &job.id, &grant)
+            .map(|token| CiProxy { app: self, token });
+        let proxied = token
+            .as_ref()
+            .is_some_and(|proxy| self.egress_env("yulius-ci", &proxy.token, run_dir, plan));
+        if !proxied {
+            note.push_str("; the egress proxy is not available, so no secret reaches a host");
+        }
+        ring.push_str(&format!("{note}\n"));
+        bind_run_files(plan);
+        token.filter(|_| proxied)
+    }
+
     /// The job's containment: the sandbox's holder when it is isolated (SPEC-002 ADR-22: the
     /// job sees the packages the sandbox installed and its private network), else the previous
     /// containment.
@@ -701,7 +829,7 @@ impl App {
             }
             Err(err) => return Err(err.public_message()),
         };
-        let plan = LaunchPlan {
+        let mut plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),
                 "-c".into(),
@@ -717,6 +845,9 @@ impl App {
             containment: self.ci_containment(sandbox, &home, join),
         };
         let run_dir = self.ci_run_dir(&job.id);
+        let proxy = self
+            .ci_job_secrets(sandbox, (run, job), &run_dir, &mut plan, ring)
+            .await;
         let _ = std::fs::remove_dir_all(&run_dir);
         std::fs::create_dir_all(&run_dir)
             .map_err(|e| format!("creating the run directory failed: {e}"))?;
@@ -733,6 +864,8 @@ impl App {
                 cancel,
             )
             .await;
+        // The job's process ended (or its host is gone): its proxy credential ends too.
+        drop(proxy);
         let _ = std::fs::remove_dir_all(&run_dir);
         let _ = std::fs::remove_file(&log);
         outcome
@@ -1014,6 +1147,80 @@ mod tests {
             ..join
         };
         assert_eq!(ci_join(bare.clone()), bare);
+    }
+
+    /// SPEC-142 CSE-002: only the integration branch's `[[ci.jobs]]` entry of the same name
+    /// grants secrets; the profile's gate and a pull request's own jobs grant nothing.
+    #[test]
+    fn only_the_integration_branch_jobs_grant_secrets() {
+        let job = |key: &str, secrets: &[&str]| dom::Job {
+            name: key.into(),
+            key: key.into(),
+            command: "x".into(),
+            matrix: None,
+            need: yulius_domain::resources::Need::default(),
+            secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let gate = |source| Gate {
+            jobs: vec![job("scan", &["VIDOC_API_KEY"]), job("lint", &[])],
+            source,
+        };
+        let project = gate(GateSource::ProjectConfig);
+        assert_eq!(granted(Some(&project), "scan"), ["VIDOC_API_KEY"]);
+        assert!(granted(Some(&project), "lint").is_empty());
+        assert!(granted(Some(&project), "other").is_empty());
+        assert!(granted(Some(&gate(GateSource::Profile)), "scan").is_empty());
+        assert!(granted(Some(&gate(GateSource::PullRequest)), "scan").is_empty());
+        assert!(granted(None, "scan").is_empty());
+    }
+
+    /// SPEC-142 CSE-003: the run's files outside the sandbox (the CA bundle) are readable
+    /// inside the containment; the sandbox's own are already there.
+    #[test]
+    fn run_files_outside_the_sandbox_are_bound_read_only() {
+        use crate::ports::session::PlannedFile;
+        let file = |path: &str| PlannedFile {
+            path: path.into(),
+            contents: Vec::new(),
+            mode: 0o600,
+        };
+        let mut plan = LaunchPlan {
+            argv: Vec::new(),
+            cwd: "/data/sandboxes/s1/ci/jobs/scan".into(),
+            env: Vec::new(),
+            secret_env: Vec::new(),
+            files: vec![
+                file("/data/runs/ci-j1/egress-ca.pem"),
+                file("/data/sandboxes/s1/x"),
+            ],
+            containment: Containment::Bubblewrap {
+                sandbox_root: "/data/sandboxes/s1".into(),
+                home: "/data/sandboxes/s1/ci/home".into(),
+                writable: Vec::new(),
+                readonly: vec!["/usr".into()],
+                binds: Vec::new(),
+                identity: None,
+                join: None,
+            },
+        };
+        bind_run_files(&mut plan);
+        bind_run_files(&mut plan);
+        let Containment::Bubblewrap { readonly, .. } = &plan.containment else {
+            panic!("contained");
+        };
+        assert_eq!(
+            readonly,
+            &[
+                PathBuf::from("/usr"),
+                PathBuf::from("/data/runs/ci-j1/egress-ca.pem")
+            ]
+        );
+        let mut open = LaunchPlan {
+            containment: Containment::None,
+            ..plan
+        };
+        bind_run_files(&mut open);
+        assert_eq!(open.containment, Containment::None);
     }
 
     #[test]

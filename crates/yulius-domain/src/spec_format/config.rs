@@ -34,6 +34,8 @@
 //! matrix = "1/2 2/2"                     # one job per value, in $YULIUS_CI_MATRIX
 //! cpus = 4                               # its CPU and memory budget (SPEC-082); without them
 //! memory_gb = 8                          # the run's jobs share the sandbox equally
+//! secrets = "VIDOC_API_KEY"              # agent secrets it uses through the egress proxy
+//!                                        # (SPEC-142; the integration branch's list counts)
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -65,7 +67,7 @@ use crate::delivery::{
 };
 
 use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
-use crate::ci::{CiConfigError, JobDef, parse_matrix, project_jobs};
+use crate::ci::{CiConfigError, JobDef, parse_matrix, parse_secrets, project_jobs};
 use crate::resources::{
     EnvTemplate, EnvTemplateError, MAX_DECLARED_CPUS, MAX_DECLARED_MEMORY_GB, MAX_ENV_ENTRIES,
     Need, check_env_template,
@@ -254,7 +256,7 @@ const DISK_KEYS: &str = "caches";
 const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
-const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb";
+const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
 const CD_DEV_KEYS: &str = "deploy, verify, secrets, about";
 const CD_PROD_KEYS: &str = "deploy, verify, secrets, about, promote";
 const CD_SECRETS: &str = "at most 16 space-separated agent-secret names like DEV_SSH_KEY";
@@ -687,7 +689,7 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
-    let mut need = Need::default();
+    let (mut need, mut secrets) = (Need::default(), Vec::new());
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -704,6 +706,11 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
             "memory_gb" => {
                 need.memory_mb = Some(number_value(entry, MAX_DECLARED_MEMORY_GB)? * 1024);
             }
+            "secrets" => {
+                let job = name.as_deref().unwrap_or("?");
+                secrets = parse_secrets(job, string_value(entry)?)
+                    .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
+            }
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
@@ -713,6 +720,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
             .ok_or_else(|| err(table.line, ConfigProblem::MissingKey("command")))?,
         matrix,
         need,
+        secrets,
     })
 }
 
@@ -1152,6 +1160,9 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         if let Some(memory_mb) = job.need.memory_mb {
             out.push_str(&format!("memory_gb = {}\n", memory_mb / 1024));
         }
+        if !job.secrets.is_empty() {
+            out.push_str(&format!("secrets = {}\n", quote(&job.secrets.join(" "))));
+        }
     }
     let profile = &config.delivery;
     let base = DeliveryProfile::for_preset(profile.preset);
@@ -1262,6 +1273,17 @@ mod tests {
         assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
         let prod = cd.prod.as_ref().ok_or("prod")?;
         assert!(prod.promote && prod.deploy.is_none());
+        Ok(())
+    }
+
+    /// SPEC-142 CSE-007: Yulius's own CI has its `security` job, and grants no secret until the
+    /// running instance knows `secrets` (an older one rejects the whole file).
+    #[test]
+    fn the_repositorys_own_ci_has_a_security_job_and_no_grant_yet() -> TestResult {
+        let config = parse_yulius_toml(include_str!("../../../../yulius.toml"))?;
+        let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        assert!(jobs.iter().any(|j| j.name == "security"), "{jobs:?}");
+        assert!(jobs.iter().all(|j| j.secrets.is_empty()), "{jobs:?}");
         Ok(())
     }
 
@@ -1545,6 +1567,7 @@ mod tests {
                         command: "cargo clippy -- -D warnings".to_owned(),
                         matrix: Vec::new(),
                         need: Need::default(),
+                        secrets: Vec::new(),
                     },
                     JobDef {
                         name: "test".to_owned(),
@@ -1554,6 +1577,7 @@ mod tests {
                             cpus: Some(6),
                             memory_mb: Some(12 * 1024),
                         },
+                        secrets: vec!["VIDOC_API_KEY".to_owned()],
                     },
                 ],
                 ..ProjectConfig::default()
@@ -1607,6 +1631,52 @@ mod tests {
             problem("[[ci.jobs]]\nname = \"X\"\ncommand = \"y\"\n"),
             Some((1, ConfigProblem::Ci(CiConfigError::InvalidJobName(_))))
         ));
+        Ok(())
+    }
+
+    /// SPEC-142 CSE-001: a job names the agent secrets it may use, like `[cd.<env>] secrets`;
+    /// its matrix jobs inherit them, and a bad list names the job.
+    #[test]
+    fn ci_jobs_name_their_agent_secrets() -> TestResult {
+        let config = parse_yulius_toml(
+            "[[ci.jobs]]\nname = \"scan\"\ncommand = \"make scan\"\nsecrets = \"VIDOC_API_KEY  OTHER\"\n\
+             matrix = \"a b\"\n\n[[ci.jobs]]\nname = \"lint\"\ncommand = \"make lint\"\n",
+        )?;
+        assert_eq!(config.ci[0].secrets, ["VIDOC_API_KEY", "OTHER"]);
+        assert!(config.ci[1].secrets.is_empty());
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        assert_eq!(
+            jobs[1].secrets,
+            ["VIDOC_API_KEY", "OTHER"],
+            "matrix jobs inherit"
+        );
+        assert!(jobs[2].secrets.is_empty());
+        assert!(
+            render_yulius_toml(&config).contains("secrets = \"VIDOC_API_KEY OTHER\"\n"),
+            "{}",
+            render_yulius_toml(&config)
+        );
+        let many: Vec<String> = (0..=crate::ci::MAX_JOB_SECRETS)
+            .map(|i| format!("S{i}"))
+            .collect();
+        for bad in [
+            "\"lower\"".to_owned(),
+            "\"A A\"".to_owned(),
+            "\"  \"".to_owned(),
+            "\"A $(B)\"".to_owned(),
+            "true".to_owned(),
+            format!("\"{}\"", many.join(" ")),
+        ] {
+            let text = format!("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nsecrets = {bad}\n");
+            assert!(
+                matches!(
+                    problem(&text),
+                    Some((4, ConfigProblem::Ci(CiConfigError::InvalidSecrets(ref job)))) if job == "x"
+                ) || (bad == "true" && problem(&text).is_some_and(|(line, _)| line == 4)),
+                "{bad}: {:?}",
+                problem(&text)
+            );
+        }
         Ok(())
     }
 

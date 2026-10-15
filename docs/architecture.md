@@ -494,6 +494,32 @@ sequenceDiagram
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
+## Agent secrets in CI jobs
+
+A CI job runs a pull request's code, so it gets an agent secret only the way an agent does, and
+only when the integration branch grants it
+([SPEC-142](../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md), ADR-0116). When a
+job starts, `App::ci_job_secrets` (`crates/yulius-app/src/ci/exec.rs`) looks up the `secrets` of
+the integration branch's `[[ci.jobs]]` entry of the same name in the integration head GitHub
+reports, taken into the CD mirror only Yulius writes (`App::ci_verified_gate`): CI jobs can write the
+sandbox clone, so its copy only says whether to look. A pull request's own `yulius.toml` is never
+asked. A granted job gets the placeholders, the CA bundle and a proxy
+credential of its own, held in memory until its process ended. The proxy's `EgressClient` is then a
+CI caller, `ci:<run>`, that may use only the granted secrets toward their bound hosts; each use is
+audited under that actor.
+
+```mermaid
+flowchart LR
+  GH["GitHub: integration head"] -->|"exact commit, objects checked"| MIR["CD mirror (Yulius only)"]
+  MIR -->|"yulius.toml, e.g. security: secrets = VIDOC_API_KEY; grant by job name"| EXEC["CI job start (ci_job_secrets)"]
+  CLONE["sandbox clone (CI jobs can write it)"] -.->|"only whether to look"| EXEC
+  PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
+  EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]
+  JOB -->|"request with yulius-secret-VIDOC_API_KEY"| X["Egress proxy: client ci:run"]
+  X -->|"value only toward bound hosts"| V["api.vidoc.dev"]
+  X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
+```
+
 ## CD (deployment)
 
 CD runs a project's deploy and verify scripts like CI runs its checks
@@ -688,13 +714,16 @@ column widths, model and effort), the notification history, the new-task compose
 ([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
-that read fails; SPEC-104). The overview is read every minute while the tab is in view, and at once
+that read fails, while a later failed read keeps the chips an earlier read on the page showed;
+SPEC-104). The overview is read every minute while the tab is in view, and at once
 when the server announces a change of the sandbox's pull requests (`pulls.updated`: a delivery
 stage moved, a Yulius CI run was queued, started or ended), at least 3 s after the start of the
 last read, or when a hidden tab that missed one is shown again. Reads of a sandbox never overlap,
 also across views that stop and start watching it; an announcement during a read brings one more
 read after it. A pull request Yulius recorded as merged reads merged even while GitHub still lists
-it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
+it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)). These reads are
+planned on a clock the transport may give: the real one, or in mock mode with `pullclock=manual` a
+clock only a test's `advanceClock` moves ([decision 0118](decisions/0118-the-mock-drives-the-pull-request-read-clock.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
@@ -726,6 +755,7 @@ flowchart LR
   SO["Sign-out"] -->|"forget"| LS
   G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
   EV["pulls.updated (stage moved, CI run changed)"] -->|"read again"| G
+  CL["read clock (real; mock: pullclock=manual)"] -->|"gap, 15 s, every minute"| P
   P -->|"write"| LP[("localStorage yulius.pulls.*")]
   LP -->|"after a reload, until the read answers"| P
   SO -->|"forget"| LP
@@ -778,14 +808,25 @@ again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-trans
 recorded before that rule are counted again once: migration 23 queues every run recorded so far,
 and after start, once reconciliation has ended the lost runs, a background job counts each ended
 run's window of its transcript and records the outcome with the figures it replaced
-([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)):
+([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)); no recount starts
+after a failed reconciliation (`App::recover`). A run that ends before a watcher of this process
+read its transcript to its end (its agent exited while Yulius was down: reconciliation finds the
+exit, or a reattach gets it at once) is counted the same way when it is ended; its row changes only
+when the count finds figures
+([ADR-0117](decisions/0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md)):
 
 ```mermaid
 flowchart LR
     mig["migration 23:
 queue every run so far"] --> queue[("metrics_recounts")]
-    start["start: reconcile"] --> job["recount_old_metrics
+    start["start: reconcile"] -->|"succeeded"| job["recount_old_metrics
 (background)"]
+    ended["run ended before its watcher
+read its transcript to the end
+(exited while Yulius was down)"] --> rcount["harness.recount
+of its window"]
+    rcount -->|"figures found"| rput[("metrics replaced")]
+    rcount -->|"nothing / failed"| rkeep[("metrics kept")]
     queue --> job
     job -->|"ended run, transcript exists"| count["harness.recount
 (spawn_blocking): its window

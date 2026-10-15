@@ -359,6 +359,163 @@ class Repository(unittest.TestCase):
         self.assertIn(("merge-base", "HEAD", "origin/dev"), git.calls)
 
 
+class PullRequestCi(unittest.TestCase):
+    """SPEC-142 CSE-006: in Yulius CI on a pull request head, the scan runs in a private clone of
+    the commit whose origin answers like GitHub, without a credential or a write to the shared
+    clone."""
+
+    git_env = Switch.git_env
+    URL = "https://github.example/acme/app.git"
+
+    def git(self, cwd, *args):
+        result = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                cwd=cwd, env=self.git_env, check=True, capture_output=True,
+                                text=True)
+        return result.stdout.strip()
+
+    def setUp(self):
+        top = Path(tempfile.mkdtemp(prefix="vidoc-ci-"))
+        self.addCleanup(shutil.rmtree, top)
+        patcher = unittest.mock.patch.dict(os.environ, self.git_env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        origin, work, self.shared = top / "origin.git", top / "work", top / "repo"
+        self.git(top, "init", "-q", "--bare", "-b", "dev", str(origin))
+        self.git(top, "clone", "-q", str(origin), str(work))
+        (work / "README.md").write_text("app\n")
+        self.git(work, "add", "-A")
+        self.git(work, "commit", "-qm", "init")
+        self.git(work, "push", "-q", "origin", "HEAD:dev", "HEAD:main")
+        self.git(work, "checkout", "-qb", "feat/one")
+        (work / "feature.py").write_text("print(1)\n")
+        self.git(work, "add", "-A")
+        self.git(work, "commit", "-qm", "feature")
+        self.git(work, "push", "-q", "origin", "feat/one")
+        self.dev = self.git(work, "rev-parse", "dev")
+        self.head = self.git(work, "rev-parse", "HEAD")
+        # The sandbox's shared clone (origin's real URL, unreachable here) and the job's detached
+        # checkout, a worktree of it, as Yulius CI prepares them.
+        self.git(top, "clone", "-q", str(origin), str(self.shared))
+        self.git(self.shared, "remote", "set-url", "origin", self.URL)
+        self.checkout = top / "ci" / "jobs" / "security"
+        self.git(self.shared, "worktree", "add", "-q", "--detach", str(self.checkout), self.head)
+        self.scratch = top / "scratch"
+        self.scratch.mkdir()
+
+    def refs(self):
+        return self.git(self.shared, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    def test_only_a_pull_request_head_in_yulius_ci_is_one(self):
+        self.assertEqual(vidoc_scan.ci_pull_request({"YULIUS_CI": "1", "YULIUS_CI_REF": "pr/12"}), 12)
+        for env in ({"YULIUS_CI": "1", "YULIUS_CI_REF": "branch/dev"},
+                    {"YULIUS_CI": "1", "YULIUS_CI_REF": "train/1+2"},
+                    {"YULIUS_CI": "1", "YULIUS_CI_REF": "pr/0"},
+                    {"YULIUS_CI": "1", "YULIUS_CI_REF": "pr/1x"},
+                    {"YULIUS_CI_REF": "pr/12"}, {}):
+            with self.subTest(env=env):
+                self.assertIsNone(vidoc_scan.ci_pull_request(env))
+
+    def test_the_private_clone_scans_the_commit_on_a_branch_against_the_default_branch(self):
+        before = self.refs()
+        clone = vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
+        git = vidoc_scan.git_in(clone)
+        self.assertEqual(git("config", "--get", "remote.origin.url")[1].strip(), self.URL)
+        self.assertEqual(git("rev-parse", "HEAD")[1].strip(), self.head)
+        env = vidoc_scan.cli_env({"PATH": os.environ.get("PATH", "")}, TOKEN, "https://v", "/l")
+        branch, base, changed = vidoc_scan.check_repository(git, env)
+        self.assertEqual((branch, base, changed), ("yulius-ci/pr-7", "origin/dev", ["feature.py"]))
+        self.assertEqual(git("merge-base", "HEAD", "origin/dev")[1].strip(), self.dev)
+        self.assertEqual(self.refs(), before, "the shared clone is never written")
+        self.assertNotIn("yulius-ci", self.git(self.shared, "branch", "--list"))
+
+    def test_without_origin_s_default_branch_it_is_not_run(self):
+        self.git(self.shared, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+        with self.assertRaises(Usage) as caught:
+            vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
+        self.assertIn("default branch", str(caught.exception))
+
+    def test_a_file_system_error_while_preparing_is_not_run(self):
+        with unittest.mock.patch.object(Path, "write_text", side_effect=OSError("disk full")), \
+                self.assertRaises(Usage) as caught:
+            vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
+        self.assertIn("disk full", str(caught.exception))
+
+    def test_main_scans_the_private_clone_and_removes_it(self):
+        seen = {}
+
+        def gate(env, git, api, cli, log, out):
+            seen["branch"] = git("symbolic-ref", "--short", "HEAD")[1].strip()
+            seen["root"] = git("rev-parse", "--show-toplevel")[1].strip()
+            return 0
+
+        env = {"PATH": os.environ.get("PATH", ""), "VIDOC_API_KEY": TOKEN, "YULIUS_CI": "1",
+               "YULIUS_CI_REF": "pr/7"}
+        root = self.checkout
+        (root / "tools" / "vidoc").mkdir(parents=True)
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
+        with unittest.mock.patch.object(vidoc_scan, "gate", gate), \
+                unittest.mock.patch.object(vidoc_scan, "require_node", lambda *a: None), \
+                unittest.mock.patch.object(vidoc_scan, "needs_install", lambda tool: False), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(vidoc_scan.main(root=root, env=env), 0)
+        self.assertEqual(seen["branch"], "yulius-ci/pr-7")
+        self.assertNotEqual(Path(seen["root"]).resolve(), root.resolve())
+        self.assertFalse(Path(seen["root"]).exists(), "the private clone is removed")
+        self.assertIn("pull request #7", out.getvalue())
+
+
+class SecurityJob(unittest.TestCase):
+    """SPEC-142 CSE-007: the `security` CI job is granted VIDOC_API_KEY and runs the gate on pull
+    request heads only; findings fail it, and until a scan can run (#470) exit 2 does not."""
+
+    def job(self):
+        import tomllib
+        config = tomllib.loads((Path(__file__).resolve().parent.parent / "yulius.toml").read_text())
+        jobs = [job for job in config["ci"]["jobs"] if job["name"] == "security"]
+        self.assertEqual(len(jobs), 1, "one security job")
+        return jobs[0]
+
+    def run_job(self, ref, code):
+        root = Path(tempfile.mkdtemp(prefix="vidoc-job-"))
+        self.addCleanup(shutil.rmtree, root)
+        (root / "scripts").mkdir()
+        (root / "scripts" / "bootstrap.py").write_text("import sys\nsys.exit(0)\n")
+        dev = root / "scripts" / "dev"
+        dev.write_text(f"#!/bin/sh\necho \"dev $*\" >> ran\nexit {code}\n")
+        dev.chmod(0o755)
+        result = subprocess.run(["/bin/sh", "-c", self.job()["command"]], cwd=root,
+                                env={"PATH": os.environ.get("PATH", ""), "YULIUS_CI": "1",
+                                     "YULIUS_CI_REF": ref},
+                                capture_output=True, text=True, timeout=60)
+        ran = (root / "ran").read_text() if (root / "ran").exists() else ""
+        return result.returncode, result.stdout + result.stderr, ran
+
+    def test_it_waits_for_its_grant_until_the_running_instance_knows_the_key(self):
+        # An instance older than SPEC-142 rejects `secrets` and with it the whole yulius.toml.
+        self.assertNotIn("secrets", self.job())
+
+    def test_a_pull_request_head_passes_or_fails_with_the_scan(self):
+        for code, expected in ((0, 0), (1, 1)):
+            with self.subTest(code=code):
+                exit_code, _, ran = self.run_job("pr/3", code)
+                self.assertEqual(exit_code, expected)
+                self.assertEqual(ran, "dev security\n")
+
+    def test_a_scan_that_cannot_run_does_not_fail_the_job_but_says_so(self):
+        exit_code, output, ran = self.run_job("pr/3", 2)
+        self.assertEqual((exit_code, ran), (0, "dev security\n"))
+        self.assertIn("did not run", output)
+        self.assertIn("#470", output)
+
+    def test_other_heads_are_not_scanned(self):
+        for ref in ("branch/dev", "branch/main", "train/3+4"):
+            with self.subTest(ref=ref):
+                exit_code, output, ran = self.run_job(ref, 1)
+                self.assertEqual((exit_code, ran), (0, ""))
+                self.assertIn("pull request", output)
+
+
 class Gate(unittest.TestCase):
     def test_clean_scan_passes_and_names_it(self):
         api, cli = api_for(), FakeCli()
