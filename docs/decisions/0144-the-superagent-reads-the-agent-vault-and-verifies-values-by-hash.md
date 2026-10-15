@@ -25,8 +25,9 @@ multi-line key is stored with literal `\n`.
 
 ## Decision
 
-- **The Superagent lists the vault.** `secrets_list` joins its tools: the same records a task of
-  its sandbox gets (names, descriptions, hosts, requested hosts, fields), never a value, with its
+- **The Superagent lists the vault.** `secrets_list` joins its tools: the records a task of
+  its sandbox gets (names, descriptions, hosts, requested hosts, fields), never a value, without
+  the proxy's placeholder and injection, which it cannot use, and with its
   own guidance: no placeholders in its session, values checked with `secret_verify`, secrets
   managed on the Secrets page (its link), and work that uses a secret belongs in a task.
 - **Values are verified by their SHA-256.** A new tool, `secret_verify {secret, sha256}`, served

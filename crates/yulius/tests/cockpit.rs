@@ -2566,8 +2566,8 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         &f.alice,
     )
     .await?;
-    // A seventh entry, newer than the one the unrotated "different" candidate wrote: the
-    // exact candidate's own check, audited again under the new generation.
+    // The exact candidate's check, audited again under the new generation: a seventh entry. Only
+    // the count proves it, since the unrotated "different" candidate wrote the same detail before.
     let verifies: Vec<&Value> = rotated_activity
         .body
         .as_array()

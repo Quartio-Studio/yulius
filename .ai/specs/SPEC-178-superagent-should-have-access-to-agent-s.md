@@ -1,11 +1,11 @@
 ---
 yulius-task: 330f7aba-3e9d-4301-8d68-02be3cb652a3
-status: in-progress
+status: done
 ---
 
 # SPEC-178: The Superagent reads the agent vault: names, and whether a value matches
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #165
 Scope authorization: task #165: "superagent should have access to agent's vault as well", with a
@@ -78,8 +78,8 @@ ever reaching the model or the screen.
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 2 findings fixed test-first: secret_verify is the Superagent's only
 - [x] Review round 3 findings fixed test-first: the rotation re-audit is proven
-- [ ] Review round 4 confirms the round-3 fixes on the head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review round 4 confirms the round-3 fixes on the head
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -161,3 +161,29 @@ ever reaching the model or the screen.
 - Review rounds: the rule allows three; a fourth, focused on the round-3 fixes (tests, two small
   code changes, wording), confirms the exact head before delivery, because the merge needs an
   approved head. Decided here rather than merging on a self-check.
+- Independent review round 4 (APPROVE at `82072bf2`, all six round-3 fixes confirmed, the merge
+  of `origin/dev` clean): two own-code nits fixed in the next commit (the rotation test's comment
+  says the count is the proof; ADR-0144 says the Superagent's records leave out the placeholder
+  and injection); the same reviewer confirmed the final head.
+
+## Evidence
+
+- Red before green, each with the change absent: `cockpit::the_superagent_lists_its_sandboxs_agent_secrets_without_values`
+  ("unknown tool: secrets_list"; later with `placeholder` still listed),
+  `cockpit::a_cockpit_manages_the_project_for_its_owner` (tool list without the vault tools),
+  `cockpit::the_superagent_verifies_a_multi_line_value_by_its_hash` ("unknown tool: secret_verify";
+  then `sha256sum`'s line refused; the rotation re-audit failing with 6 entries when the generation
+  was dropped from the audit key), `secrets::agents_are_not_served_secret_verify` (agents were
+  served it), the harness test `a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`
+  (`--allowedTools` without the two tools), and the unit tests in `vault/verify.rs` (line count
+  with a final escape, audit key, `sha256sum` line).
+- `cargo nextest` on `cockpit::`, `secrets::`, `secrets_env::` and `manage_tools::`: 75 passed;
+  `yulius-app` `verify` and `mcp::` unit tests: 11 passed; `yulius-harness`: 115 passed.
+- `scripts/dev ci` (repository contracts, check, lint, nextest, doctests, deps) on the merged head
+  `82072bf2`: exit 0, 1884 tests passed, 18 skipped. Earlier heads: `ec0c404f` 1879, `fb3381ef`
+  1880, `c436eb12` 1882, all passed. The last commit changes a test comment and documents only.
+- `scripts/dev security`: not run (exit 2): Vidoc answers HTTP 401 for the stored key (#470,
+  ADR-0104); unrun, not passed.
+- Not tested here: a real Claude Code Superagent calling the tools (the integration tests drive
+  the MCP endpoint with the Superagent's own `ck_` token and the fake `claude`); the constant-time
+  comparison is by inspection (`CryptoPort::constant_time_eq`, `subtle`).
