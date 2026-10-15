@@ -19,6 +19,27 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
   notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
   sent as a teammate's tab hid no longer leaves their caret drawn.
+- An isolated sandbox's agent is told there is no container engine (SPEC-173, ADR-0140, task #163,
+  fixes #550). An agent of another project had designed a deployer around a local Docker daemon
+  before finding that `docker` exists but no daemon does: the sandbox's containment refuses what one
+  needs. The briefing now has a `## Containers` section: no engine here, in Yulius CI or in CD; use
+  an engine on another machine (`DOCKER_HOST=ssh://…`), keep rollback images there or in a
+  registry, and install test services with `apt`. An engine per sandbox is #551.
+- A folded subscription shows both its 5-hour and its weekly usage, without opening it (SPEC-172,
+  task #162). The Status panel's and the Dashboard's rows showed only the 5-hour bar; each now has
+  two lines, "5 h" and "Week", with a bar and the percent used. Where the list is narrower than
+  360 px (the Status panel on a phone), the lines keep their percents and drop the bars; in the
+  Status panel a row's state ("Limit reached") shows as its icon, so the name keeps its room.
+- The sandbox tabs show that they drag (SPEC-167, task #157). Each sandbox tab in the top row has
+  the six-dot grip the Notes tabs have (SPEC-136) before its name, and its tooltip adds "Click to
+  open, drag to reorder" under the repository and access. The grip is faint until the tab is
+  hovered or current and is hidden on devices without a mouse or pen; "All sandboxes" has none,
+  since it does not move. Both strips take the hint from one constant.
+- A CI run's stages are readable (SPEC-165, ADR-0136, task #155): each job is one row under
+  "Jobs", its wait for a job slot (hatched) running into its run, with "waited 6 min" beside how
+  long it ran and its state as an icon and a word; a job's checkout and stages fold under it (a
+  failed job opens, and what is opened survives the dialog's refresh); every waterfall has a time
+  axis with gridlines, a "now" mark and a legend; on a phone the bar goes under its name.
 - The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
   crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
   the narrow-strip e2e test now checks that no strip chip's text overflows its box.

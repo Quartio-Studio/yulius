@@ -53,6 +53,9 @@ watching, steering and unblocking.
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.
+- **Sandbox tabs**: the top row starts with All sandboxes, then a tab per sandbox in the order
+  the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
+  says it can be clicked or dragged; its menu moves it too.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Secrets, Dashboard — with Overview and Pipeline (stages) tabs —; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
@@ -105,7 +108,9 @@ watching, steering and unblocking.
   (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
   time, change failure rate and time to restore for dev and production, any stage's daily p50 and
   p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy
-  and a task show their own waterfall, and the Dashboard's Overview tab the overview.
+  and a task show their own waterfall (a time axis, a legend, children folded under their span; a
+  CI run's jobs one row each with their wait for a job slot), and the Dashboard's Overview tab the
+  overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
