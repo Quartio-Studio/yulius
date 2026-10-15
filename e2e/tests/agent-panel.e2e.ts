@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady, openSuperagent } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -230,8 +230,6 @@ type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCoc
 
 test('a Superagent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  // The mock backend loads after the page (a dynamic import): wait for it before holding its answer.
-  await mockReady(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
