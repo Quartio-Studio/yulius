@@ -117,6 +117,7 @@ Show (STG-4xx):
 - [x] Docs, ADR and changes updated
 - [ ] Independent review approves the exact head
 - [x] Review round 1: backfill and triggers indexed, figures coalesced and reserved, timelines bounded and scoped, the confirmation sent
+- [x] Review round 2: a span's figure names bounded, timelines truncated exactly, test counts only from runners
 - [ ] Every gate green and the merge into dev armed on Yulius CI
 
 ## Acceptance criteria
@@ -185,3 +186,8 @@ Show (STG-4xx):
   consequences). Clearing a `needs_you` request now dates it in `tasks.updated_at` (the last change
   of anything, as for every other change). Output Yulius skips when a job writes faster than it is
   read (more than 2 MiB behind) can lose a stage line; the stage then ends at the next one.
+- **Review round 2**: a job printing ever new figure names could still grow one span's figures
+  without bound (now at most 64 names a span, later new names ignored; a test with 12,000 names);
+  `truncated` was set at exactly 2,000 spans (one more is read); `tests_…` can no longer be set by
+  `::yulius-measure`, so a set and a runner's count never interleave; a failed Dashboard read of the
+  summary is not kept; docs list the reserved names and the timeline's bound.

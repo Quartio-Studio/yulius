@@ -69,7 +69,8 @@ export function mountDashboardPage(ctx, sandbox, route) {
     const key = `${p.from}:${p.to}`;
     if (pipeline.key === key && Date.now() - pipeline.at < PIPELINE_MS) return pipeline.data;
     const data = await ctx.api.get(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages/summary?from=${p.from}&to=${p.to}`).catch(() => null);
-    pipeline = { key, at: Date.now(), data };
+    // A failed read is tried again on the next refresh, not kept for 5 minutes.
+    if (data) pipeline = { key, at: Date.now(), data };
     return data;
   }
 

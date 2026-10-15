@@ -27,8 +27,8 @@ CREATE INDEX spans_kind ON spans(sandbox_id, subject_kind, kind, started_at);
 -- What the triggers and the backfill look up (review H1, L10).
 CREATE INDEX IF NOT EXISTS step_events_step ON step_events(step_id, id);
 CREATE INDEX IF NOT EXISTS metrics_task ON metrics(task_id);
--- A key that follows a state carries the span's own sequence (`state#<n>`), so changes in the same
--- millisecond each keep theirs.
+-- A key that follows a state carries a sequence number (`state#<n>`, one past the highest span id),
+-- so changes in the same millisecond each keep theirs; the `NOT EXISTS` guards stay as a defence.
 
 -- ---- Tasks: the state track. Each change of status or activity ends the open state span and
 -- opens the next; an ending status (closed, stopped, failed) only ends it.

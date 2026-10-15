@@ -11,7 +11,7 @@ use yulius_app::error::AppResult;
 use yulius_app::ports::store_ext::SpanStore;
 use yulius_app::stages::{NewSpan, SpanFilter, SpanRecord};
 use yulius_domain::ids::SandboxId;
-use yulius_domain::stages::{SubjectKind, figure_name};
+use yulius_domain::stages::{SubjectKind, stored_figure_name};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
@@ -128,7 +128,7 @@ impl SpanStore for SqliteStore {
         // Only figure names reach a JSON path (they are checked again here).
         let figures: Vec<(String, f64)> = figures
             .iter()
-            .filter(|(name, value)| figure_name(name) && value.is_finite())
+            .filter(|(name, value)| stored_figure_name(name) && value.is_finite())
             .cloned()
             .collect();
         self.call(move |c| {

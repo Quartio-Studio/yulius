@@ -182,7 +182,7 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages' } = {})
   const plot = h('div', { class: 'st-plot' }, list, tip);
   return h('section', { class: 'st-waterfall', 'aria-label': title },
     h('div', { class: 'st-head' }, h('h3', { class: 'st-title' }, title), h('span', { class: 'muted small' }, `${duration(total)} in all`), h('span', { class: 'spacer' }), toggle),
-    timeline.truncated ? h('p', { class: 'muted small' }, 'Only the newest stages are shown; the export has every one.') : null,
+    timeline.truncated ? h('p', { class: 'muted small' }, 'Only the newest 2,000 stages are shown.') : null,
     plot, table);
 }
 

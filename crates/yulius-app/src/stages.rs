@@ -9,7 +9,7 @@
 //! It also serves the spans: one subject's timeline, the stages' percentiles, trends and delivery
 //! figures over a range, and the export.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::{Map, Value};
 use yulius_contracts::api::stages::{
@@ -20,8 +20,8 @@ use yulius_domain::ci::CiRef;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::stages::{
-    Deployment, MAX_OUTPUT_STAGES, OutputEvent, OutputScanner, SubjectKind, delivery_figures,
-    percentile,
+    Deployment, MAX_FIGURES_PER_SPAN, MAX_OUTPUT_STAGES, OutputEvent, OutputScanner, SubjectKind,
+    delivery_figures, percentile,
 };
 use yulius_domain::time::Timestamp;
 
@@ -211,6 +211,8 @@ pub struct OutputStages {
     phase: Option<String>,
     stage: Option<String>,
     count: usize,
+    /// The figure names each span took, at most [`MAX_FIGURES_PER_SPAN`] (review round 2).
+    figure_names: HashMap<String, HashSet<String>>,
 }
 
 impl OutputStages {
@@ -228,6 +230,7 @@ impl OutputStages {
             phase: None,
             stage: None,
             count: 0,
+            figure_names: HashMap::new(),
         }
     }
 
@@ -245,6 +248,7 @@ impl OutputStages {
             phase: None,
             stage: None,
             count: 0,
+            figure_names: HashMap::new(),
         }
     }
 
@@ -333,36 +337,56 @@ impl OutputStages {
         }
     }
 
+    /// Adds figures of the span `key` to this read's writes: a name the span already took or one
+    /// within [`MAX_FIGURES_PER_SPAN`]; counts are added up, set values replaced.
+    fn merge_figures(
+        &mut self,
+        pending: &mut Vec<SpanOp>,
+        key: String,
+        values: Vec<(String, f64)>,
+        add: bool,
+    ) {
+        let names = self.figure_names.entry(key.clone()).or_default();
+        let accepted: Vec<(String, f64)> = values
+            .into_iter()
+            .filter(|(name, _)| {
+                names.contains(name)
+                    || (names.len() < MAX_FIGURES_PER_SPAN && names.insert(name.clone()))
+            })
+            .collect();
+        if accepted.is_empty() {
+            return;
+        }
+        let found = pending.iter_mut().find_map(|op| match op {
+            SpanOp::Figures {
+                key: k,
+                figures,
+                add: a,
+            } if *k == key && *a == add => Some(figures),
+            _ => None,
+        });
+        let Some(current) = found else {
+            pending.push(SpanOp::Figures {
+                key,
+                figures: accepted,
+                add,
+            });
+            return;
+        };
+        for (name, value) in accepted {
+            match current.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, v)) if add => *v += value,
+                Some((_, v)) => *v = value,
+                None => current.push((name, value)),
+            }
+        }
+    }
+
     fn apply(&mut self, events: Vec<OutputEvent>, now: Timestamp) -> Vec<SpanOp> {
         let mut ops = Vec::new();
         // Figures are written once per span and read (review H2): counts added up, set values the
         // last one, after the spans they belong to were started.
         let mut figures: Vec<SpanOp> = Vec::new();
-        let mut merge = |key: String, values: Vec<(String, f64)>, add: bool| {
-            let found = figures.iter_mut().find_map(|op| match op {
-                SpanOp::Figures {
-                    key: k,
-                    figures: f,
-                    add: a,
-                } if *k == key && *a == add => Some(f),
-                _ => None,
-            });
-            let Some(current) = found else {
-                figures.push(SpanOp::Figures {
-                    key,
-                    figures: values,
-                    add,
-                });
-                return;
-            };
-            for (name, value) in values {
-                match current.iter_mut().find(|(n, _)| *n == name) {
-                    Some((_, v)) if add => *v += value,
-                    Some((_, v)) => *v = value,
-                    None => current.push((name, value)),
-                }
-            }
-        };
         for event in events {
             match event {
                 OutputEvent::Stage(name) => {
@@ -378,14 +402,16 @@ impl OutputStages {
                     self.stage = Some(key);
                 }
                 OutputEvent::StageEnd => self.end_stage(now, &mut ops),
-                OutputEvent::Measures(values) => merge(
+                OutputEvent::Measures(values) => self.merge_figures(
+                    &mut figures,
                     self.stage
                         .clone()
                         .unwrap_or_else(|| self.parent().to_owned()),
                     values,
                     false,
                 ),
-                OutputEvent::Tests(counts) => merge(
+                OutputEvent::Tests(counts) => self.merge_figures(
+                    &mut figures,
                     self.stage
                         .clone()
                         .unwrap_or_else(|| self.parent().to_owned()),
@@ -544,9 +570,11 @@ impl App {
         let spans = self
             .deps
             .store
-            .subject_spans(&sandbox, kind, id, MAX_TIMELINE_SPANS)
+            .subject_spans(&sandbox, kind, id, MAX_TIMELINE_SPANS + 1)
             .await?;
-        let truncated = u32::try_from(spans.len()).unwrap_or(u32::MAX) >= MAX_TIMELINE_SPANS;
+        // One more than shown says whether there were more (review round 2).
+        let truncated = spans.len() > MAX_TIMELINE_SPANS as usize;
+        let spans = &spans[spans.len().saturating_sub(MAX_TIMELINE_SPANS as usize)..];
         let mut related = Vec::new();
         // Only a task of this sandbox has its pull request's CI runs here (review L9).
         if kind == SubjectKind::Task
@@ -1151,6 +1179,35 @@ mod tests {
                     add: false
                 },
             ]
+        );
+    }
+
+    /// Review round 2, High-1: a span takes at most [`MAX_FIGURES_PER_SPAN`] figure names over
+    /// all of its output, however many new names a job prints.
+    #[test]
+    fn a_span_s_figure_names_are_bounded() {
+        let mut stages = OutputStages::ci_job(sid(), "r1", "job:j1@5", "quality");
+        let mut names = std::collections::BTreeSet::new();
+        for read in 0..3 {
+            let text: String = (0..4_000)
+                .map(|i| format!("::yulius-measure n{read}x{i}=1\n"))
+                .collect();
+            for op in stages.feed(text.as_bytes(), Timestamp(read)) {
+                if let SpanOp::Figures { figures, .. } = op {
+                    names.extend(figures.into_iter().map(|(name, _)| name));
+                }
+            }
+        }
+        assert_eq!(names.len(), MAX_FIGURES_PER_SPAN);
+        // Names it already has are still updated.
+        let ops = stages.feed(b"::yulius-measure n0x0=5 brand_new=1\n", Timestamp(9));
+        assert_eq!(
+            ops,
+            vec![SpanOp::Figures {
+                key: "job:j1@5".into(),
+                figures: vec![("n0x0".into(), 5.0)],
+                add: false
+            }]
         );
     }
 

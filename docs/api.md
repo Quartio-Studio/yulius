@@ -739,7 +739,11 @@ times them by its own clock:
 ```
 
 Test summaries of cargo nextest, cargo test, pytest and Playwright add `tests_passed`,
-`tests_failed`, `tests_skipped` and `tests_flaky` to the open stage.
+`tests_failed`, `tests_skipped` and `tests_flaky` to the open stage. A figure never overwrites what
+Yulius records of the span: `tests_…`, `…_start` and the names Yulius writes itself
+(`RESERVED_FIGURES` in `yulius-domain/src/stages.rs`: `sha`, `reason`, `exit_code`, `cpus`,
+`input_tokens`…) are ignored, as are new names past 64 per span. Figures are written once per span
+each half second the output is read (counts added up, the last value kept).
 
 | Method and path | Access | Result |
 | --- | --- | --- |
@@ -754,7 +758,8 @@ Test summaries of cargo nextest, cargo test, pytest and Playwright add `tests_pa
 SpanView = {"subject_kind", "subject_id", "key", "parent_key", "kind", "name", "environment", "job",
             "started_at", "ended_at"|null, "duration_ms"|null, "outcome"|null,
             "source": "recorded|backfilled", "detail": {…figures}}
-TimelineView = {"subject_kind", "subject_id", "spans": [SpanView], "related": [SpanView] (a task: its PR's CI runs)}
+TimelineView = {"subject_kind", "subject_id", "spans": [SpanView] (the newest 2,000), "related": [SpanView]
+                (a task of this sandbox: its PR's CI runs), "truncated": bool (it has more)}
 StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "kind", "name",
                 "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
                 "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}

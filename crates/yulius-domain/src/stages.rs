@@ -15,6 +15,8 @@ use std::fmt;
 pub const MAX_OUTPUT_STAGES: usize = 400;
 /// Figures one `::yulius-measure` line may set.
 pub const MAX_MEASURES: usize = 16;
+/// Figure names one span takes from its output; later new names are ignored.
+pub const MAX_FIGURES_PER_SPAN: usize = 64;
 /// Longest stage name, in characters.
 pub const MAX_STAGE_NAME: usize = 48;
 /// Longest output line looked at, in bytes; a longer line is skipped whole.
@@ -271,9 +273,17 @@ pub const RESERVED_FIGURES: [&str; 29] = [
 ];
 
 /// A figure's name a job may set: a lower-case letter, then up to 31 lower-case letters, digits or
-/// `_`, and none of [`RESERVED_FIGURES`] (nor a `…_start` total of a step).
+/// `_`, and none of [`RESERVED_FIGURES`] (nor a `…_start` total of a step, nor a `tests_…` count,
+/// which only a test runner's summary adds).
 #[must_use]
 pub fn figure_name(key: &str) -> bool {
+    stored_figure_name(key) && !key.starts_with("tests_")
+}
+
+/// A figure's name the store writes from output: well formed and none of [`RESERVED_FIGURES`]
+/// (nor a `…_start` total); `tests_…` counts included.
+#[must_use]
+pub fn stored_figure_name(key: &str) -> bool {
     let mut chars = key.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && key.len() <= 32
@@ -537,6 +547,10 @@ mod tests {
             !figure_name("requested_by")
                 && !figure_name("active_ms_start")
                 && figure_name("cache_hits")
+        );
+        assert!(
+            !figure_name("tests_passed"),
+            "only a runner's summary counts tests"
         );
     }
 

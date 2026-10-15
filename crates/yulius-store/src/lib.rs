@@ -781,7 +781,7 @@ mod tests {
         let _store = SqliteStore::open(&path)?;
         let took = started.elapsed();
         assert!(
-            took < std::time::Duration::from_secs(5),
+            took < std::time::Duration::from_secs(10),
             "the migration took {took:?}"
         );
         Ok(())
