@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The CD page's environment cards read right at every width (SPEC-152, task #146, fixes #501):
+  - The deploy button stays top right, with only the title and badge wrapping beside it. Before,
+    it fell onto its own row under the title.
+  - A dev deploy that can't run is a plain button, not a grey primary slab.
+  - A promoting production names what it promotes ("Promotes dev at e37fdd2 into main") instead of
+    "First".
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame

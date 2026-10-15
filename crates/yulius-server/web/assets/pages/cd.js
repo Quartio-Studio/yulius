@@ -110,7 +110,12 @@ export function mountCdPage(ctx, sandbox, route) {
       rows.push(h('p', { class: 'muted' }, `Add [cd.${env.name}] to yulius.toml on ${env.branch}. An empty table says “nothing to deploy yet”.`));
     }
     const facts = [];
-    if (env.promote) facts.push(['First', `promotes the integration branch into ${env.branch}`]);
+    if (env.promote) {
+      // What a deploy promotes (SPEC-152): the integration branch is the dev environment's branch.
+      const integration = (overview.environments || []).find((e) => e.name === 'dev');
+      facts.push(['Promotes', [integration ? h('code', null, integration.branch) : 'the integration branch',
+        env.promotes_from ? h('span', { class: 'muted' }, ` at ${shortSha(env.promotes_from)}`) : null, ` into ${env.branch}`]]);
+    }
     if (env.deploy) facts.push(['Deploy', h('code', null, env.deploy)]);
     if (env.verify) facts.push(['Verify', h('code', null, env.verify)]);
     facts.push(['From', [h('code', null, env.branch), env.head ? h('span', { class: 'muted' }, ` at ${shortSha(env.head)}`) : null]]);
@@ -137,10 +142,12 @@ export function mountCdPage(ctx, sandbox, route) {
     const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
     const why = !allowed ? (prod ? 'Only an administrator deploys production' : 'Requires write access')
       : !ready ? 'Nothing to deploy yet' : running ? 'A deploy is running' : null;
-    const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : deployDev(env)) },
+    // Dev's deploy is the card's main action only when it can run; production's colour is a warning.
+    const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : deployDev(env)) },
       icon('upload', { size: 16 }), prod ? 'Deploy production…' : 'Deploy dev');
     return h('section', { class: 'card card-pad stack-sm cd-env', 'aria-label': `${title(env)} environment` },
-      h('div', { class: 'row-wrap' }, h('h2', { class: 'card-title' }, title(env)), badge(st.label, st.tone), h('span', { class: 'spacer' }), deploy),
+      // The title and its badge wrap beside the button, which stays top right (SPEC-152).
+      h('div', { class: 'cd-env-head' }, h('div', { class: 'row-wrap cd-env-name' }, h('h2', { class: 'card-title' }, title(env)), badge(st.label, st.tone)), deploy),
       rows,
       prod ? h('p', { class: 'small muted' }, 'Production is always deployed by a person. Agents never promote or deploy it; they ask with “Needs you”.') : null);
   }
