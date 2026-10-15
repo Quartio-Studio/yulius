@@ -56,6 +56,7 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
 - [x] The stage summary gives the p50 and p90 of CPU time and peak memory
 - [x] The Pipeline page and the waterfall show the use
 - [x] Docs, ADR and changes updated
+- [x] Review round 1 fixed: a killed job's use is unknown, docs say what is counted
 - [ ] Independent review approves the exact head
 - [ ] Every gate green and the merge into dev armed on Yulius CI
 
