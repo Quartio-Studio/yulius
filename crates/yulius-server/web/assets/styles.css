@@ -2347,6 +2347,7 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-empty[hidden] { display: none; }
 .ed-status { display: flex; gap: 12px; align-items: center; height: 22px; padding: 0 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); border-top: 1px solid var(--border); background: var(--surface); flex: none; overflow: hidden; white-space: nowrap; }
 .ed-status > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.ed-status > .ed-disk-changed { color: var(--warn-fg); }
 /* Dropped files (EDT-006, UI-048): the drop overlay says where files go (or why they cannot),
    the explorer marks the folder under the pointer, and a batch shows its progress and errors —
    at the foot of the explorer, or floating over a terminal. */
