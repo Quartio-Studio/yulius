@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md);
 task #140, issue #466. Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md):
-Yulius CI runs the Vidoc scan on pull request heads.
+Yulius CI runs the Vidoc scan on pull request heads. Amended by
+[ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the `security` job is granted its key
+and ends skipped when the scan cannot run.
 
 ## Context
 
@@ -73,7 +75,9 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 - The sandbox clone stays writable by CI jobs, so a pull request can still change which jobs a
   later run of the sandbox executes (not what they may use). That is older than this decision and
   belongs to its own change.
-- This repository's `security` job (`scripts/dev security`) runs on pull request heads only. Its
+- (Amended by [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the grant is in
+  `yulius.toml` since the promotion of #517, and exit 2 ends the job skipped, not passed.)
+  This repository's `security` job (`scripts/dev security`) runs on pull request heads only. Its
   grant, `secrets = "VIDOC_API_KEY"`, waits until the running Yulius instance knows `secrets` (after
   `dev` is promoted to `main`; an older instance rejects the whole `yulius.toml`): Yulius's own
   `dev` runs ahead of the instance that reads it. A project's instance already knows the key when it

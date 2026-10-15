@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
+  fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
+  skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),
+  on the CI page and in `ci_status`. The `security` job now ends skipped when the Vidoc scan cannot
+  run (no key, a rejected one), and is granted `VIDOC_API_KEY` through the egress proxy (#466).
+  Until `dev` is promoted to `main`, the running instance gives no skip code and the job still
+  passes, with `security scan skipped` in its output.
 - Text selected in Claude Code's full-screen view is copied again (SPEC-158, ADR-0130, task #149,
   fixes #519). Claude Code copies its own plain-drag selection with OSC 52, which the web terminal
   dropped; the write now reaches the clipboard of the viewer who just used the terminal, and when

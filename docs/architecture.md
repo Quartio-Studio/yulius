@@ -894,6 +894,28 @@ that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
+## CI job states
+
+A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`):
+0 is passed, the skip code `yulius_domain::ci::SKIP_EXIT_CODE` (78, given to every job as
+`YULIUS_CI_SKIP_CODE`) is skipped, any other exit or a signal is failed; a timeout, the output
+limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` makes the run's
+state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
+rule; the commit status counts the skipped jobs
+([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
+[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)).
+
+```mermaid
+flowchart LR
+  EXIT["job's process ends"] -->|"exit 0"| P["passed"]
+  EXIT -->|"exit $YULIUS_CI_SKIP_CODE (78)"| S["skipped: checked nothing"]
+  EXIT -->|"other exit or a signal"| F["failed"]
+  EXIT -->|"timeout, output limit, lost host"| E["error"]
+  P --> RUN["run: passed when every job passed or was skipped"]
+  S --> RUN
+  F --> RF["run: failed (blocks the merge)"]
+```
+
 ## Stages
 
 Every stage of a task, a CI run and a CD run is one row of `spans`
