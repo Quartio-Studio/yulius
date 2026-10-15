@@ -421,6 +421,8 @@ pub struct Progress {
     pub total: usize,
     /// Effort of the finished steps.
     pub done_effort: u32,
+    /// Effort of the steps in progress.
+    pub active_effort: u32,
     /// Effort of all steps.
     pub total_effort: u32,
 }
@@ -434,13 +436,28 @@ impl Progress {
         }
         u8::try_from(self.done_effort.saturating_mul(100) / self.total_effort).unwrap_or(100)
     }
+
+    /// Share of the effort in progress, so that `percent() + active_percent()` is the finished
+    /// and in-progress share rounded down: the progress bar's second segment ends exactly there
+    /// and never passes 100 (#150).
+    #[must_use]
+    pub fn active_percent(&self) -> u8 {
+        if self.total_effort == 0 {
+            return 0;
+        }
+        let through =
+            (self.done_effort + self.active_effort).saturating_mul(100) / self.total_effort;
+        u8::try_from(through.min(100))
+            .unwrap_or(100)
+            .saturating_sub(self.percent())
+    }
 }
 
 fn effort_of(step: &StepState) -> u32 {
     u32::from(step.effort.clamp(1, MAX_EFFORT))
 }
 
-/// Effort-weighted progress; skipped steps count as finished (STP-005).
+/// Effort-weighted progress; skipped steps count as finished (STP-005), steps in progress apart.
 #[must_use]
 pub fn progress(steps: &[StepState]) -> Progress {
     let mut out = Progress::default();
@@ -450,6 +467,8 @@ pub fn progress(steps: &[StepState]) -> Progress {
         if step.status.is_resolved() {
             out.done += 1;
             out.done_effort += effort_of(step);
+        } else if step.status == StepStatus::InProgress {
+            out.active_effort += effort_of(step);
         }
     }
     out
@@ -1035,6 +1054,47 @@ mod tests {
         assert_eq!(progress(&[]).percent(), 0);
         assert_eq!(current(&steps), Some(9));
         assert_eq!(current(&[state("A", StepStatus::Done)]), None);
+    }
+
+    #[test]
+    fn active_percent_is_the_share_of_steps_in_progress() {
+        // #150: "Step 2/4" with one step done shows 25 % done and 25 % in progress.
+        let steps = [
+            state("A", StepStatus::Done),
+            state("B", StepStatus::InProgress),
+            state("C", StepStatus::Pending),
+            state("D", StepStatus::Blocked),
+        ];
+        let p = progress(&steps);
+        assert_eq!(
+            (p.active_effort, p.percent(), p.active_percent()),
+            (1, 25, 25)
+        );
+        // Nothing in progress, or no plan: no in-progress share.
+        assert_eq!(progress(&steps[2..]).active_percent(), 0);
+        assert_eq!(progress(&[]).active_percent(), 0);
+    }
+
+    #[test]
+    fn active_percent_ends_at_the_cumulative_floor() {
+        // 2 of 9 effort units done (22 %), 3 in progress: the segment ends at 5/9 = 55 %, so it
+        // is 33 wide, and the two never pass 100.
+        let mut steps: Vec<StepState> = (0..7)
+            .map(|n| state(&format!("S{n}"), StepStatus::Pending))
+            .collect();
+        steps[0].status = StepStatus::Done;
+        steps[1].status = StepStatus::Done;
+        steps[2].status = StepStatus::InProgress;
+        steps[2].effort = 3;
+        let p = progress(&steps);
+        assert_eq!((p.percent(), p.active_percent()), (22, 33));
+        let all_open = [
+            state("A", StepStatus::InProgress),
+            state("B", StepStatus::InProgress),
+            state("C", StepStatus::Done),
+        ];
+        let p = progress(&all_open);
+        assert_eq!((p.percent(), p.active_percent()), (33, 67));
     }
 
     #[test]

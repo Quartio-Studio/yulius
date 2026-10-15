@@ -267,7 +267,7 @@ TaskSummary = {
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
-  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
+  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14},
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
@@ -297,6 +297,9 @@ task paused, not an error.
 `steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
 default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
+`steps.active_percent` is the share of the steps **in progress** (SPEC-159), so that `percent +
+active_percent` is the finished and in-progress share rounded down; the task strip draws it as a
+second segment in the working colour. Older servers omit it (read 0).
 
 `updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
 the last change of the task's **status or activity** (setting the same value again does not move
