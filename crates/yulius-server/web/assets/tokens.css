@@ -143,6 +143,18 @@
   --session-del-bg: #2f2220;
   --session-web: #4a4744;  /* the corner's spider web, decoration */
   --session-roach: #6f5646; /* the cockroach that runs by now and then, decoration */
+  /* a watched live session (SPEC-179): the terminal's own colours, with these for its prompt strip and diffs */
+  --live-prompt-bg: #1d1b1a;
+  --live-add-bg: #15291c;
+  --live-del-bg: #331a16;
+  /* the electro-blue octopus that crawls along the top of a watched session (SPEC-179), decoration */
+  --octo-body: #2bb8ff;
+  --octo-shade: #1584e6;
+  --octo-glow: #bff0ff;
+  --octo-sucker: #8adcff;
+  --octo-ink: #0d3a8a;
+  --octo-eye: #03122e;
+  --octo-aura: rgb(43 184 255 / 0.45);
   /* teammates in a notepad (SPEC-112): caret, selection and a name tag in --peer-ink on the colour */
   --peer-1: #f0a46b; --peer-2: #f28b8b; --peer-3: #e39be6; --peer-4: #b7a3f5;
   --peer-5: #8db2f7; --peer-6: #67c6d6; --peer-7: #74cfa4; --peer-8: #b6d46c;
@@ -225,6 +237,16 @@
   --session-del-bg: #eedcd7;
   --session-web: #c4bdb1;
   --session-roach: #8c6d58;
+  --live-prompt-bg: #ebe6dd;
+  --live-add-bg: #dcefe1;
+  --live-del-bg: #f7ddd7;
+  --octo-body: #1ea7f7;
+  --octo-shade: #0b74cf;
+  --octo-glow: #c8f2ff;
+  --octo-sucker: #93dcff;
+  --octo-ink: #08265e;
+  --octo-eye: #03122e;
+  --octo-aura: rgb(30 167 247 / 0.25);
   --peer-1: #c2410c; --peer-2: #b91c1c; --peer-3: #a21caf; --peer-4: #6d28d9;
   --peer-5: #1d4ed8; --peer-6: #0e7490; --peer-7: #047857; --peer-8: #4d7c0f;
   --peer-ink: #ffffff;
@@ -330,6 +352,10 @@
   --duration-ripple: 0.7s;    /* the agent's click ripple in the browser view */
   --duration-spider: 8s;      /* one loop of the session web's spider: hang, climb, hang, drop */
   --duration-scurry: 160ms;   /* one stride of the cockroach that runs across a session */
+  --duration-octo-crawl: 560ms; /* four arm frames of the watched session's octopus crawling */
+  --duration-octo-rest: 2.4s;   /* four arm frames of it resting, swaying */
+  --duration-octo-wave: 520ms;  /* two frames of its raised arm waving */
+  --duration-octo-blink: 4.6s;  /* how often it blinks */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Layout */

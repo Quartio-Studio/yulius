@@ -761,8 +761,8 @@ until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-s
 [decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
 token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
 agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
-owner, and the terminal opens read-only for others. Anyone else who may work in the project asks
-for control; the owner hands it over or declines, and an absent owner's task passes at once.
+owner. Anyone else who may work in the project asks for control; the owner hands it over or
+declines, and an absent owner's task passes at once.
 
 ```mermaid
 flowchart LR
@@ -774,6 +774,35 @@ flowchart LR
   OWN --> TOK["Yulius's pushes, PRs, merges as Bob"]
   OWN --> ID["worktree commit identity: Bob"]
   OWN --> GATE["load_task: only Bob writes"]
+```
+
+Everyone but the owner watches the task as its live transcript, not its terminal: the terminal is
+drawn for the size its writer's browser sets and is unreadable at another
+([SPEC-179](../.ai/specs/SPEC-179-ui-problem-when-someone-else-has-a-contr.md),
+[decision 0145](decisions/0145-someone-else-s-task-is-watched-as-its-live-transcript.md)).
+`watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
+reads on from where it stopped; `App::task_transcript` reads the latest lineage entry's file
+(`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a `stat`.
+An electro-blue pixel octopus (`octopus.js`) crawls along a lane stuck to the transcript's top.
+
+```mermaid
+sequenceDiagram
+  participant W as Watcher's browser (watchview.js)
+  participant API as GET /api/tasks/{tid}/transcript
+  participant F as Session transcript (JSONL)
+  W->>API: tail (no from)
+  API->>F: read_tail: last 200 entries, redacted
+  API-->>W: entries, end, bytes, session_id
+  loop every 1.5 s while live and shown
+    W->>API: from=end, seen=bytes, session
+    API->>F: stat
+    alt same session, same size
+      API-->>W: no entries
+    else grown
+      API->>F: read_page from end
+      API-->>W: new entries, end, bytes
+    end
+  end
 ```
 
 ## Ready-made automations

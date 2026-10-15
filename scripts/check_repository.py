@@ -300,6 +300,10 @@ CONTRAST_PAIRS = [
     *((fg, "--session-bg", 4.5) for fg in ("--session-fg", "--session-dim", "--session-ok", "--session-err")),
     *(("--session-fg", bg, 4.5) for bg in ("--session-prompt-bg", "--session-add-bg", "--session-del-bg")),
     ("--session-dim", "--session-prompt-bg", 4.5),
+    # A watched live session (SPEC-179): the terminal's colours on its prompt strip and diffs.
+    *((fg, "--term-bg", 4.5) for fg in ("--ansi-green", "--ansi-red")),
+    *((fg, "--live-prompt-bg", 4.5) for fg in ("--term-fg", "--ansi-bright-black")),
+    *(("--term-fg", bg, 4.5) for bg in ("--live-add-bg", "--live-del-bg")),
 ]
 
 

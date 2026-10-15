@@ -6,6 +6,7 @@ import { append, h, icon, iconButton, setChildren, toast, errorToast, skeleton, 
 import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
+import { createWatchView } from './watchview.js';
 import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
@@ -136,41 +137,75 @@ export function mountTaskView(ctx, sandbox, task) {
     terminal.refit();
   });
 
-  // ---- terminal
-  const terminal = createTerminalView({
-    transport: ctx.transport,
-    path: `/api/tasks/${enc(task.id)}/terminal`,
-    onLink: (uri, event) => ctx.openLink(uri, event),
-    // Without write access to the sandbox that is the reason; with it, the task's owner (SPEC-070).
-    readOnlyLabel: () => {
-      const box = ctx.store.sandboxById(sandbox.id) || sandbox;
-      return owner() && allows(box.access, 'write') ? `Read-only: @${owner()} owns this task` : readOnlyText(box);
-    },
-    exitMessage: (exit) => endedMessage(exit.status || current.status),
-    emptyMessage: () => emptyTerminalMessage(current),
-    exitActions: (exit) => {
-      const message = endedMessage(exit.status || current.status);
-      const actions = [];
-      // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
-      // else sees the subscriptions' state in the Status panel (#147).
-      if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
-      // The exit can arrive before the task's new status: write access is enough, but an archived
-      // task is restored first, as in its menu (taskActions).
-      if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
-        actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
-      }
-      return actions;
-    },
-    // Paths of files in the task's worktree open in the Editor (F 2026-10-10). The files API needs
-    // write access, as the editor does.
-    fileLinks: allows(sandbox.access, 'write') ? {
-      list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(`task:${task.id}`)}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
-      roots: () => (detail && detail.worktree ? [detail.worktree] : []),
-      open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
-    } : null,
+  // ---- terminal, or the live transcript of someone else's task (SPEC-179): the owner's terminal
+  // is drawn for the owner's window, so a watcher reads the session as the Sessions view prints it.
+  // `terminal` stays a terminal's interface: while watching, one that sends nothing.
+  const makeTerminal = () => {
+    const view = createTerminalView({
+      transport: ctx.transport,
+      path: `/api/tasks/${enc(task.id)}/terminal`,
+      onLink: (uri, event) => ctx.openLink(uri, event),
+      // Without write access to the sandbox that is the reason; someone else's task is watched as
+      // its transcript, never in a terminal (SPEC-179).
+      readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
+      exitMessage: (exit) => endedMessage(exit.status || current.status),
+      emptyMessage: () => emptyTerminalMessage(current),
+      exitActions: (exit) => {
+        const message = endedMessage(exit.status || current.status);
+        const actions = [];
+        // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
+        // else sees the subscriptions' state in the Status panel (#147).
+        if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
+        // The exit can arrive before the task's new status: write access is enough, but an archived
+        // task is restored first, as in its menu (taskActions).
+        if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
+          actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
+        }
+        return actions;
+      },
+      // Paths of files in the task's worktree open in the Editor (F 2026-10-10). The files API needs
+      // write access, as the editor does.
+      fileLinks: allows(sandbox.access, 'write') ? {
+        list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(`task:${task.id}`)}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
+        roots: () => (detail && detail.worktree ? [detail.worktree] : []),
+        open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
+      } : null,
+    });
+    // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
+    attachTerminalDrop(ctx, view, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
+    return view;
+  };
+  const makeWatch = () => createWatchView(ctx, {
+    taskId: task.id,
+    task: () => current,
+    owner,
+    emptyMessage: emptyTerminalMessage,
+    sessionPath: (docId) => `/s/${encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug)}/sessions/${encodeURIComponent(docId)}`,
   });
-  // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
-  attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
+  const watchingTerminal = (view) => ({
+    el: view.el, term: null, socket: { status: 'closed' }, canWrite: false, ready: true,
+    start() { view.start(); }, focus() { view.focus(); }, sendKeys: () => false,
+    reconnect() {}, refit() {}, refreshEmpty() {}, destroy() { view.destroy(); },
+  });
+  let watch = owner() ? makeWatch() : null;
+  let terminal = watch ? watchingTerminal(watch) : makeTerminal();
+  let started = false;
+  /** Control passed (SPEC-070): a watcher gets the transcript, the owner the terminal. */
+  function placeScreen() {
+    if (Boolean(owner()) === Boolean(watch)) return;
+    const previous = terminal;
+    // The keyboard in the screen that goes moves to the one that comes (not to the page).
+    const focused = previous.el.contains(document.activeElement);
+    watch = owner() ? makeWatch() : null;
+    terminal = watch ? watchingTerminal(watch) : makeTerminal();
+    previous.el.replaceWith(terminal.el);
+    previous.destroy();
+    termArea.classList.toggle('watching', Boolean(watch));
+    if (started) {
+      terminal.start();
+      if (focused || (!watch && !isPhone())) terminal.focus();
+    }
+  }
 
   // ---- phone quick input
   const quickInput = h('input', { class: 'input', type: 'text', placeholder: 'Message the agent…', autocomplete: 'off', autocapitalize: 'off', enterkeyhint: 'send', 'aria-label': 'Quick input' });
@@ -250,7 +285,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const mine = request && request.by.login === me();
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `@${owner()} owns this task: `), 'it acts on GitHub as them.', request ? ` @${request.by.login} asked for control.` : '']),
+          : [h('strong', null, `You are watching @${owner()}'s task. `), `Only @${owner()} can type in it; it acts on GitHub as them.`, request ? ` @${request.by.login} asked for control.` : '']),
       mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
         : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
@@ -544,7 +579,9 @@ export function mountTaskView(ctx, sandbox, task) {
     }
   }
 
-  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention, held, queueSlot), quickbar);
+  // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
+  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
     renderAttention();
@@ -678,6 +715,7 @@ export function mountTaskView(ctx, sandbox, task) {
     el,
     key: `task:${task.id}`,
     start() {
+      started = true;
       terminal.start();
       // Focus lands in the terminal as soon as it shows (the keyboard is the agent's).
       if (!isPhone()) terminal.focus();
@@ -695,12 +733,17 @@ export function mountTaskView(ctx, sandbox, task) {
       if (current.status !== previousStatus || (queueOpen() && current.updated_at !== previousUpdate)) loadDetail();
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
+      if (watch) watch.update();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
-      // Control passed (SPEC-070): the terminal asks again whether this viewer may type.
-      else if (owner() !== previousOwner) terminal.reconnect();
+      // Control passed (SPEC-070): the screen changes between the terminal and the transcript, or
+      // the terminal asks again whether this viewer may type.
+      if (owner() !== previousOwner) {
+        if (Boolean(owner()) !== Boolean(watch)) placeScreen();
+        else terminal.reconnect();
+      }
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },

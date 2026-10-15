@@ -7,7 +7,7 @@
 //! wrote (the tool call's path decides) — so task transcripts, which are not redacted at the
 //! source, are safe to show to people and to other tasks.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -458,6 +458,11 @@ pub struct Page {
     pub entries: Vec<TranscriptEntry>,
     /// The line to continue from; `None` at the end.
     pub next: Option<u64>,
+    /// The line after the last one read: where a reader of a growing transcript continues. A last
+    /// line still being written (no newline yet) is not read.
+    pub end: u64,
+    /// Whether entries before the page were left out ([`read_tail`]).
+    pub earlier: bool,
     /// Lines skipped (unreadable or too long).
     pub skipped: u32,
 }
@@ -501,7 +506,10 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
         let read = read_line(&mut reader, &mut buf, MAX_LINE_BYTES)?;
         let current = line;
         match read {
-            LineRead::Eof => return Ok(page),
+            LineRead::Eof => {
+                page.end = line;
+                return Ok(page);
+            }
             LineRead::TooLong(_) => {
                 line += 1;
                 if current >= from {
@@ -522,6 +530,7 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
         }
         if page.entries.len() >= limit || chars >= max_chars {
             page.next = Some(current);
+            page.end = current;
             return Ok(page);
         }
         if buf.iter().all(u8::is_ascii_whitespace) {
@@ -537,6 +546,59 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
             Err(_) => page.skipped += 1,
         }
     }
+}
+
+/// Reads the last `limit` entries (≤ [`MAX_PAGE_ENTRIES`]) within about `max_chars` of text (≤
+/// [`MAX_PAGE_CHARS`]; the last entry is kept whatever its size): the tail of a live session
+/// (SPEC-179 WAT-001). The whole transcript is read, so a dotenv file read before the tail is still
+/// redacted in it. `earlier` says entries were left out; `end` is where a reader continues.
+///
+/// # Errors
+/// I/O failures opening or reading the transcript.
+pub fn read_tail(path: &Path, limit: usize, max_chars: usize) -> io::Result<Page> {
+    let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
+    let max_chars = max_chars.clamp(1, MAX_PAGE_CHARS);
+    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
+    let mut buf = Vec::new();
+    let mut env_calls = EnvCalls::default();
+    let mut tail: VecDeque<(usize, TranscriptEntry)> = VecDeque::new();
+    let mut page = Page::default();
+    let mut chars = 0;
+    let mut line = 0_u64;
+    loop {
+        let current = line;
+        match read_line(&mut reader, &mut buf, MAX_LINE_BYTES)? {
+            LineRead::Eof => break,
+            LineRead::TooLong(_) => {
+                line += 1;
+                page.skipped += 1;
+                continue;
+            }
+            LineRead::Line(_) => line += 1,
+        }
+        if buf.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        match serde_json::from_slice::<Value>(&buf) {
+            Ok(record) => {
+                if let Some(entry) = entry_of(current, &record, &mut env_calls) {
+                    let size = page_chars(&entry);
+                    chars += size;
+                    tail.push_back((size, entry));
+                    while tail.len() > 1 && (tail.len() > limit || chars > max_chars) {
+                        if let Some((size, _)) = tail.pop_front() {
+                            chars -= size;
+                            page.earlier = true;
+                        }
+                    }
+                }
+            }
+            Err(_) => page.skipped += 1,
+        }
+    }
+    page.entries = tail.into_iter().map(|(_, entry)| entry).collect();
+    page.end = line;
+    Ok(page)
 }
 
 fn memchr_tool_use(line: &[u8]) -> bool {
@@ -792,6 +854,55 @@ mod tests {
             return Err("tool result".into());
         };
         assert!(text.contains("[REDACTED:"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_page_ends_before_a_line_still_being_written_and_reads_it_once_complete() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let page = read_page(&path, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(page.end, 7, "the unfinished line is left for later");
+        let full = read_page(&path, 0, 2, MAX_PAGE_CHARS)?;
+        assert_eq!(full.end, 3, "a full page ends where the next one starts");
+        let mut text = std::fs::read_to_string(&path)?;
+        text.push_str(" cart\"}}\n");
+        std::fs::write(&path, text)?;
+        let rest = read_page(&path, page.end, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            rest.entries.iter().map(|e| e.line).collect::<Vec<_>>(),
+            vec![7]
+        );
+        assert_eq!((rest.end, rest.next), (8, None));
+        Ok(())
+    }
+
+    #[test]
+    fn the_tail_holds_the_last_entries_with_env_tracking_from_the_start() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let tail = read_tail(&path, 4, MAX_PAGE_CHARS)?;
+        let lines: Vec<u64> = tail.entries.iter().map(|e| e.line).collect();
+        assert_eq!(lines, vec![3, 4, 5, 6]);
+        assert!(tail.earlier, "lines 1 and 2 were left out");
+        assert_eq!((tail.end, tail.next), (7, None));
+        let TranscriptBlock::ToolResult { text, .. } = &tail.entries[0].blocks[0] else {
+            return Err("tool result".into());
+        };
+        assert!(
+            text.contains("[REDACTED:"),
+            "the .env read before the tail: {text}"
+        );
+        let all = read_tail(&path, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(all.entries.len(), 6);
+        assert!(!all.earlier);
+        let bounded = read_tail(&path, 100, 1)?;
+        assert_eq!(
+            bounded.entries.len(),
+            1,
+            "the text bound keeps the last entry"
+        );
+        assert!(bounded.earlier);
         Ok(())
     }
 

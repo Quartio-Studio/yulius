@@ -17,7 +17,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::sessions::{
-    SessionDoc, SessionHit, SessionList, SessionTask, SnippetPart, TranscriptBlock,
+    SessionDoc, SessionHit, SessionList, SessionTask, SnippetPart, TaskTranscript, TranscriptBlock,
     TranscriptEntry, TranscriptPage,
 };
 use yulius_contracts::api::tasks::TaskSummary;
@@ -178,6 +178,19 @@ fn kind_arg(text: Option<&str>) -> AppResult<Option<SessionKind>> {
             .map(Some)
             .ok_or_else(|| AppError::Invalid("kind must be all, task or imported".into())),
     }
+}
+
+/// What a watcher asks of [`App::task_transcript`] (SPEC-179 WAT-001).
+#[derive(Debug, Clone, Default)]
+pub struct TranscriptRead {
+    /// The line to read from; `None` for the tail.
+    pub from: Option<u64>,
+    /// Most entries.
+    pub limit: usize,
+    /// The transcript size the reader saw last.
+    pub seen: Option<u64>,
+    /// The session the reader saw last.
+    pub session: Option<String>,
 }
 
 /// Parses the `kind` query parameter of the list endpoint.
@@ -711,6 +724,91 @@ impl App {
             next: page.next,
             skipped_lines: page.skipped,
         })
+    }
+
+    /// `GET /api/tasks/{tid}/transcript` (read; SPEC-179 WAT-001): the task's latest session as its
+    /// watchers read it: the tail without `from`, else the lines from `from`, redacted as session
+    /// pages are. With `seen` and `session` naming the current session at its current size the
+    /// file is not read (one `stat`): watchers ask often while nothing changes.
+    ///
+    /// # Errors
+    /// `NotFound` for unknown tasks or without access.
+    pub async fn task_transcript(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        read: TranscriptRead,
+    ) -> AppResult<TaskTranscript> {
+        let task = self.load_task(ctx, id, Action::View).await?;
+        let Some(entry) = self.deps.store.provider_sessions(&task.id).await?.pop() else {
+            return Ok(TaskTranscript::default());
+        };
+        let path = self.task_transcript_path(&task, &entry);
+        let session_id = entry.session_id;
+        let from = read.from;
+        let unchanged = read
+            .seen
+            .filter(|_| from.is_some() && read.session.as_deref() == Some(session_id.as_str()));
+        let limit = read.limit;
+        let found = blocking(move || {
+            let bytes = match fs::metadata(&path) {
+                Ok(meta) => meta.len(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(AppError::internal(err)),
+            };
+            if unchanged == Some(bytes) {
+                return Ok(Some((bytes, None)));
+            }
+            let page = match from {
+                Some(from) => transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS),
+                None => transcripts::read_tail(&path, limit, MAX_PAGE_CHARS),
+            };
+            match page {
+                Ok(page) => Ok(Some((bytes, Some(page)))),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(err) => Err(AppError::internal(err)),
+            }
+        })
+        .await?;
+        let mut view = TaskTranscript {
+            session_id: Some(session_id),
+            ..TaskTranscript::default()
+        };
+        let Some((bytes, page)) = found else {
+            return Ok(view);
+        };
+        view.bytes = bytes;
+        let Some(page) = page else {
+            view.end = from.unwrap_or_default();
+            return Ok(view);
+        };
+        let mut entries = page.entries;
+        self.redact_page_secrets(&task.sandbox_id, &mut entries)
+            .await;
+        if from.is_none() {
+            view.doc_id = self.task_doc_id(&task, view.session_id.as_deref()).await;
+        }
+        view.entries = entries;
+        view.next = page.next;
+        view.end = page.end;
+        view.earlier = page.earlier;
+        view.skipped_lines = page.skipped;
+        Ok(view)
+    }
+
+    /// The document of a task's session, created when it has none yet; `None` when that fails.
+    async fn task_doc_id(&self, task: &TaskRecord, session_id: Option<&str>) -> Option<String> {
+        if let Err(err) = self.sync_task_docs(&task.sandbox_id).await {
+            tracing::warn!(error = %err, "could not list a task's session documents");
+            return None;
+        }
+        let docs = self.deps.store.session_docs(&task.sandbox_id).await.ok()?;
+        docs.into_iter()
+            .find(|doc| {
+                doc.task_id.as_ref() == Some(&task.id)
+                    && Some(doc.session_id.as_str()) == session_id
+            })
+            .map(|doc| doc.id)
     }
 
     /// The sandbox's agent secrets (exact values and encodings, the vault's matcher) in text

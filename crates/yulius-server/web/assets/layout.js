@@ -5,7 +5,7 @@ import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, 
 import { relLong, bytes, duration, dateTime, resetLabel, compact } from './format.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
-import { taskInfo, taskActions, activityLine, allows } from './status.js';
+import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
 import { href, placeFor } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openMoveToGitHubDialog, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
@@ -751,7 +751,9 @@ export function createSidebar(ctx) {
       const title = h('span', { class: 'task-title' });
       const sub = h('span', { class: 'sr-only' });
       const age = h('span', { class: 'task-age' });
-      const link = h('a', { class: 'task-link' }, mark, num, chips, title, sub, age);
+      // Someone else's task (SPEC-070, SPEC-179): its owner's initials, the words in the tooltip.
+      const owner = h('span', { class: 'task-owner', 'aria-hidden': 'true', hidden: true });
+      const link = h('a', { class: 'task-link' }, mark, num, chips, title, sub, owner, age);
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -765,7 +767,7 @@ export function createSidebar(ctx) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, num, chips, title, age, sub, archive, task };
+      row = { el, link, mark, num, chips, title, age, sub, owner, archive, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -774,7 +776,7 @@ export function createSidebar(ctx) {
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
     row.time = taskTime(task, row.info);
-    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr]);
+    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr, ctx.store.state.me?.user?.login]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -792,14 +794,19 @@ export function createSidebar(ctx) {
     row.el.classList.toggle('active', active);
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
-    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
+    const owner = otherOwner(task, ctx.store.state.me?.user?.login);
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
+    row.owner.hidden = !owner;
+    row.owner.textContent = owner ? initials(owner).toUpperCase() : '';
+    if (owner) row.owner.title = `@${owner} owns this task`;
+    else row.owner.removeAttribute('title');
     setChildren(row.mark, statusMark(info, 16));
     setChildren(row.num, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`);
     row.num.title = `Task #${task.number}`;
     setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
-    row.sub.textContent = `, ${activityLine(task, info)}`;
+    row.sub.textContent = `, ${activityLine(task, info)}${owner ? `, owned by @${owner}` : ''}`;
     // What the time measures depends on the group, and the words say it (SPEC-087 TIM-003).
     row.age.textContent = row.time.text;
     row.age.title = row.time.title;
