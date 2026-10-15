@@ -1,0 +1,159 @@
+---
+yulius-task: 82b37c7c-efa0-48af-bb6d-5ce9021f385d
+status: in-progress
+---
+
+# SPEC-140: task_done, supervision and merge_train tests hold under host load
+
+Status: in progress
+Date: 2026-10-15
+Owner: Yulius task #127
+Scope authorization: task #127, part of task #118 ("Fix all open actionable GitHub issues without
+creating new issues, and close them"; SPEC-138 lists the lanes). Fixes #404, #464, #353 and #443.
+No new GitHub issue is created. Refines SPEC-065 (END-001) and SPEC-002 §7.5 (hooks).
+
+## Goal
+
+The integration tests named in #404, #464, #353 and #443 pass on a loaded host (Yulius CI, parallel
+tasks) because the product does what they wait for and their bounds come from the product's own
+bounds. Two product races found on the way are fixed test-first. No retry and no sleep is added.
+
+## Context
+
+All four issues were still open on `dev` at 4373149 (2026-10-15): none of their tests or the code
+they exercise had changed since they were filed. The CI runs the issues cite have expired
+(`ci_status`: not found), so the causes come from reproductions and measurements in this task's
+sandbox (12 CPUs, shared with other tasks; load average 2 to 79).
+
+**Reproductions under load.** The issues' tests run the same way, with 16 to 24 CPU-bound busy loops
+beside them and, in one round, 3 writers that write and fsync 64 MiB files:
+- the whole integration binary (533 tests, 12 threads), three times in a row at load 25 to 69: all
+  passed;
+- the ten tests named in the issues, 4 copies each, 16 at once, at load 63 to 79: 40 of 40 passed;
+- every `task_done` test, 2 copies each, 16 at once, with the fsync writers, at load 36: 64 of 64
+  passed. Each wait's longest time stayed well inside its bound (the longest one-shot waits, "the
+  monitor counted" and "one background shell", under 2 s against 10 s and 20 s).
+
+CPU and disk load stretch these tests about two to four times, which their bounds absorb. The CI
+failures are of another kind: in #404 a test that takes 10 s waited its full 90 s for Done, and
+another test took 12.5 s and failed a 10 s wait that takes under 2 s at load 36. Those runs did not
+go slowly; they hung. Measuring each wait, and the hook handling on the server, shows two product
+races and one test bound with no margin.
+
+**#464: a stop that comes while a switch launches its run waits for the escalation.** Timing each
+wait of `a_switch_waits_for_a_background_agent_launched_in_the_turn` alone, on an idle host: in 3 of
+4 runs "the stop" took 20.1 s, in the other 0.1 s. 20 s is the stop escalation
+(`stop_escalation_ms` = interrupt 5 s + term 5 s + kill 10 s). The test stops the task as soon as the
+switch's new attempt exists. At that moment the switch is still launching it: the new run is
+spawned, and Yulius is not attached to it yet. `stop_task_now` moves the task to Stopping, records
+the cancel intent and asks the attached run to shut down (`request_shutdown`). There is no attached
+run yet, so nothing is asked. `attach_run` then attaches the run and nothing asks it either, so the
+run works on until the escalation terminates its host at 20 s and the run is recorded as lost. On a
+loaded host, 20 s plus termination and recording passes the test's 30 s: the 48.6 s failure is the
+test's 18 s plus its 30 s wait. A person who stops a task while it starts or switches waits 20 s
+for it in the same way, and its run ends as lost instead of stopped. The same window exists for a
+first launch (Starting) and for a close.
+
+**#404: a hook whose client gave up is lost half-way.** The agents' hooks reach Yulius through the
+`yulius hook` client. It waits `HOOK_TIMEOUT` (5 s) for the answer and then lets the agent go on
+(fail-open), closing its connection. The server ran the hook's handling inside the HTTP handler, and
+hyper drops a handler when its connection closes. A Stop hook does a dozen database round trips on
+the store's single database thread and runs Git in the worktree (`stop_reasons`) before its last
+step, `settle_clean_turn`. That step sets Done or Your turn and starts the probe of background
+shells and monitors. Timed under load (load 36, fsync writers), Stop hooks took about 100 ms, and up
+to 2.0 s. On the CI host (load 35 to 50, other gates building, memory pressure: SPEC-082) a Stop
+that passes 5 s is cut off before that step. The task then stays Working, which is each symptom in
+#404:
+- "timed out waiting for Done" (90 s) and "…for Your turn" (90 s): the activity is never set;
+- "…for one background shell" (20 s) and "…the monitor counted" (10 s): the probe that counts them
+  never runs;
+- `a_done_task_can_be_archived` after 90.5 s: its "the shell probe" wait for Done.
+Shown deterministically: a hook sent over TCP by a client that hangs up while the server handles
+it is never applied. With the client still connected, it is applied (control). In use, a loaded
+host leaves a finished task Working with nothing to wake it.
+
+**#353: a stop's bound with 10 s of margin.** `supervision::a_done_task_frees_its_slot_for_a_queued_task`
+stops two tasks and waits 30 s for each, one after the other. Its stops took 0.1 s in every run
+measured (5 alone, 4 at load 79), and both runs were attached when stopped, so the launch race above
+does not apply. The product bounds a stop by the escalation: at `stop_escalation_ms` (20 s) the
+run's host is terminated and the run recorded as lost (SPEC-065 END-001), so a test's 30 s leaves
+10 s for the termination, the recording and the test's own polling, on a starved runner. The
+failure (33.8 s at load 35 to 50) cannot say which step was slow: the test reports only "timed out".
+
+**#443: per-phase deadlines in a test whose total the runner bounds.** `merge_train::a_red_train_falls_back_to_one_by_one_merges`
+took 9.2 to 10 s alone and 37 to 41 s in 8 copies at once beside 24 busy loops (load 34 to 79). Per
+phase under that load: fixture 4 to 9 s, the train's run and failure about 14 s, the one-by-one
+rounds 10 to 11 s and 2 s (the product's `merge_armed` alone 8 to 9 s of Git work in round one).
+Each phase has its own fixed `WAIT` of 50 s, and the test's total is bounded only by nextest
+(`slow-timeout` 30 s × `terminate-after` 4 = 120 s). A busy host that stretches one phase past 50 s
+fails the test although its total is far from 120 s.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| STP-001 | A stop or close that comes while the task's run is launching (spawned, Yulius not attached yet) asks the run to shut down once it is attached, so the run ends as stopped or closed at once, not at the escalation. A stop that comes later still finds the run itself; the process host takes a second shutdown request as the first. | `task_done::a_stop_while_the_run_is_launching_ends_it_once_attached` (fails without: the stop waits for a 60 s escalation); `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` ("the stop" 20.1 s → 0.1 s) |
+| HKS-001 | A hook event Yulius received is handled to its end even when its client stops waiting and closes the connection: the server runs it in its own task, and the HTTP handler only waits for its answer. The status line is unchanged (it only reads). | `agent_hooks::a_hook_whose_client_hangs_up_is_still_applied` (fails without: the notice is never applied) |
+| TWT-001 | A test that stops a task waits for the stop within the product's own bound: the stop escalation (`stop_escalation_ms` of that app) plus a settle margin for the termination and its record, waiting for every stopped task at once. When the bound passes, the error names each task's status and its runs' states and exit reasons. | `support::wait_stopped`, used by `task_done` and `supervision` |
+| TWT-002 | The merge train tests share one deadline from the start of the test, under nextest's kill bound with room to report what was seen (100 s of the 120 s), instead of a fixed 50 s per phase. | `merge_train::*` |
+
+## Plan
+
+- [x] Spec: the four flakes reproduced under load, each cause named
+- [x] A stop during a run's launch ends it once attached (#464), test-first
+- [x] A hook whose client gave up is applied to its end (#404), test-first
+- [ ] Stop waits use the stop's own bound and say what they saw (#353)
+- [ ] Merge-train waits share one deadline under nextest's kill bound (#443)
+- [ ] Loaded repeat runs of every named test pass
+- [ ] Decision record, architecture and changes log; every gate green
+- [ ] Independent review in a fresh session, findings fixed test-first
+
+## Acceptance criteria
+
+- AC-1 (STP-001, HKS-001): each new test fails without its fix and passes with it.
+- AC-2: the tests named in #404, #464 and #353 pass 10 or more runs in a row each, run in parallel
+  copies beside CPU-bound busy loops (load average 30 or more), with the load recorded; #464's
+  "the stop" takes under 1 s in every run.
+- AC-3 (#443): the red-train test's loaded duration is well under its bound, and it passes 10 runs
+  in parallel beside CPU-bound load.
+- AC-4: `scripts/dev ci` passes; Yulius CI is green at the merged head.
+
+## Test plan
+
+- STP-001: a session host that attaches a run only once the test releases it, and says when an
+  attach is asked for. The test stops the task while the attach is held, releases it, and expects
+  the task stopped as cancelled within 30 s with its run not lost, under an escalation of 60 s. Without
+  the fix the run ends only at the escalation.
+- HKS-001: the internal router served over TCP, with a test layer that reads the request, starts its
+  handler, says so and never takes it further (as a dropped handler). A raw client sends a
+  "permission" notice and hangs up once the handler started. The task must need attention.
+  Without the fix the notice is never applied. Shown with hyper too: with the layer resuming the
+  handler after 1 s, the notice is lost when the client hangs up and applied when it stays.
+- Loaded runs: `hammer.sh` (scratchpad) runs N copies of each test binary filter in parallel beside
+  busy loops (`load.sh`) and fsync writers (`ioload.sh`), recording each run's exit and time and each
+  wait's time (temporary instrumentation, not committed).
+- `scripts/dev ci` once at the end.
+
+## Decisions
+
+- **Hooks run detached from their connection (ADR-0115).** The agent goes on once the client gives
+  up, so the event happened; applying it late is right, cutting it off half-way leaves a state that
+  nothing repairs. A longer client timeout only moves the threshold and keeps the agent waiting
+  longer at every boundary. Rejected: a server-side deadline (it would cut the same work off, only
+  at a known point).
+- **A launch asks the run it attached, rather than a stop waiting for the launch.** The stop returns
+  at once as before; the launch already reads the task's state after the spawn. Waiting for the
+  launch would make a stop block on a spawn and its Git work.
+- **Test bounds come from the product's bounds and the runner's.** A stop is bounded by the
+  escalation, so a test waits the escalation plus a settle margin (40 s: three times the
+  measured worst recording under load, which is under 1 s, would do; the margin covers a starved
+  runner and stays inside the 120 s kill). A merge train test is bounded by the runner, so its
+  phases share the runner's budget. A failure then says what it saw.
+- **No hang was reproduced from CPU and disk load alone**, so the hook loss is shown at the point
+  of the race (a client that hangs up while its hook is handled) rather than by retrying a loaded
+  run until it hangs.
+- **Found on the way, left as is (follow-up in the issue comment):** a stop that comes while a switch
+  waits for the old run to exit replaces the switch's intent; the old run's end is then read as the
+  stop, and the switch goes on to launch the new run of a stopped task. The window is the old run's
+  exit (at most `SWITCH_TIMEOUT_MS / 2`). It is not what the tests here meet and needs its own
+  regression test.
