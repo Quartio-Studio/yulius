@@ -123,3 +123,11 @@ over CI and wrote `?section=cd&run=` there (regression test first); the late-ans
 CCD-003; ADR-0025 and the decision index mark the amendment; the agents' CD text names the
 canonical address; the index order; the architecture line wrap; this spec's status. Accepted: the
 `/cd` link nit (Decisions).
+
+Independent review round 2 (fresh session, head eca175d2, which also merges `origin/dev` 9e609fa1,
+SPEC-149): approved. It re-ran `scripts/check_repository.py` and `cd`, `ci` and `navigation` e2e
+(21 of 21 passed at load ~82) and confirmed every round-1 fix. Fixed: this Evidence names the
+reviewed head, and the architecture line is wrapped. Accepted: the failure toast still shows after
+leaving the CD tab (a failed deploy is worth hearing about; a success needs no confirmation there);
+`ci.js`'s `showRun` has no teardown guard because no path reaches it after teardown. The gates of
+the merged head run as Yulius CI on the pull request.
