@@ -12,6 +12,31 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   restart (one by one; at once on a cancel). Updates no longer wait for long turns or get cancelled
   after 30 minutes. A run that cannot be frozen (no delegated cgroup) still pauses at its turn
   boundary. A provider response streaming at the restart is cut and retried by Claude Code.
+- The e2e suite holds under host load, and the Editor waits for all of Monaco (SPEC-148,
+  ADR-0122, task #134):
+  - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
+    of them. `python3 -m http.server` queued 5 and closed every connection, so on a loaded machine
+    the kernel dropped a page's module requests and the browser waited 1–3 s to try again.
+    Starved to a fifth of a CPU per thread, about 1 run in 360 still fails a 5 s wait; #354
+    stays open for that.
+  - **#394:** a file opened while Monaco loaded made a second editor from the half-loaded
+    `window.monaco`, which lacked five services ("depends on UNKNOWN service ICodeLensCache").
+    The editor now waits for all of `editor.main`, and tests touch Monaco's API only once the
+    Editor shows (`editorShown`). An editor whose setup failed is disposed, so the next file
+    makes one instead of a second.
+  - **#356, #349:** the Editor's first opening is waited for with Monaco's cold-load budget, and the
+    kept-notes test reads the text after a load that can succeed instead of waiting out the backoff.
+- CI jobs and CD runs record what they used (SPEC-154, ADR-0127, task #129; fixes #488): the
+  process host measures a job's reaped process tree (CPU time, the largest process's peak memory,
+  bytes written on Linux) into `exit.json`, and the job's or run's span gets `cpu_ms`,
+  `memory_peak_mb` and `disk_written_mb` with its end (absent when unmeasured, never 0). The
+  Pipeline page's stage table shows CPU time and peak memory p50 · p90 beside the durations, and a
+  waterfall row its own figures.
+- Text selected in Claude Code's full-screen view is copied again (SPEC-158, ADR-0130, task #149,
+  fixes #519). Claude Code copies its own plain-drag selection with OSC 52, which the web terminal
+  dropped; the write now reaches the clipboard of the viewer who just used the terminal, and when
+  the browser refuses it (Safari, plain HTTP) ⌘C / Ctrl+Shift+C copies it. Queries are never
+  answered.
 - The onboarding agent protects the production branch itself (SPEC-157, ADR-0129, task #148).
   When onboarding finds `main` writable by agents, the preparation agent calls the new
   `production_protect` tool: Yulius adds the ruleset `yulius-people-only-<branch>` (Restrict

@@ -608,6 +608,142 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-154 USE-002, USE-003: what a CI job or a CD run used is stored with its end and added
+    /// to its span's figures in the same write; unknown use is absent, never 0 or null.
+    #[tokio::test]
+    async fn a_job_s_and_a_deploy_s_use_are_figures_of_their_spans() -> TestResult {
+        use yulius_app::ci::CiJobUpdate;
+        use yulius_app::ci::cd::CdRunEnd;
+        use yulius_app::ports::store_ext::CdStore as _;
+        use yulius_domain::ci::RunState;
+        use yulius_domain::stages::ResourceUse;
+        let store = seeded().await?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, requested_by, queued_at, started_at) VALUES ('r1', 's1', 'pr/7', 'abc', 'yulius_toml', 'running', 'yulius', 10, 20);
+                     INSERT INTO ci_jobs (id, run_id, ordinal, name, job_key, command, state, started_at) VALUES ('j1', 'r1', 0, 'build', 'build', 'make', 'queued', NULL);
+                     INSERT INTO ci_jobs (id, run_id, ordinal, name, job_key, command, state, started_at) VALUES ('j2', 'r1', 1, 'lint', 'lint', 'make', 'queued', NULL);
+                     UPDATE ci_jobs SET state = 'running', started_at = 25;
+                     INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) VALUES ('cd1', 's1', 'dev', 'dev', 'abc', 'running', 'alice', 100);
+                     INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) VALUES ('cd2', 's1', 'prod', 'main', 'abc', 'running', 'alice', 100);",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let used = ResourceUse {
+            cpu_ms: 61_250,
+            memory_peak_mb: 1_536,
+            disk_written_mb: Some(0),
+        };
+        let end = |usage| CiJobUpdate {
+            exit_code: Some(0),
+            ended_at: Some(Timestamp(40)),
+            usage,
+            ..CiJobUpdate::default()
+        };
+        let running = [RunState::Running];
+        assert!(
+            store
+                .transition_ci_job("j1", &running, RunState::Passed, &end(Some(used)))
+                .await?
+        );
+        assert!(
+            store
+                .transition_ci_job("j2", &running, RunState::Error, &end(None))
+                .await?
+        );
+        let cd_end = |usage| CdRunEnd {
+            state: RunState::Passed,
+            reason: None,
+            exit_code: Some(0),
+            output: String::new(),
+            ended_at: Timestamp(170),
+            usage,
+        };
+        let partly = ResourceUse {
+            disk_written_mb: None,
+            ..used
+        };
+        assert!(store.finish_cd_run("cd1", &cd_end(Some(partly))).await?);
+        assert!(store.finish_cd_run("cd2", &cd_end(None)).await?);
+
+        let ci = spans(&store, SubjectKind::CiRun, "r1").await?;
+        let job = |name: &str| {
+            ci.iter()
+                .find(|s| s.kind == "job" && s.name == name)
+                .map(detail)
+                .ok_or(format!("no job {name}"))
+        };
+        let build = job("build")?;
+        assert_eq!(
+            (
+                build["cpu_ms"].as_i64(),
+                build["memory_peak_mb"].as_i64(),
+                build["disk_written_mb"].as_i64(),
+                build["exit_code"].as_i64(),
+            ),
+            (Some(61_250), Some(1_536), Some(0), Some(0))
+        );
+        let lint = job("lint")?;
+        for figure in ["cpu_ms", "memory_peak_mb", "disk_written_mb"] {
+            assert!(lint.get(figure).is_none(), "unknown {figure}: {lint}");
+        }
+        let deploy = detail(&spans(&store, SubjectKind::CdRun, "cd1").await?[0]);
+        assert_eq!(
+            (deploy["cpu_ms"].as_i64(), deploy["memory_peak_mb"].as_i64()),
+            (Some(61_250), Some(1_536))
+        );
+        assert!(deploy.get("disk_written_mb").is_none(), "{deploy}");
+        let unmeasured = detail(&spans(&store, SubjectKind::CdRun, "cd2").await?[0]);
+        assert!(unmeasured.get("cpu_ms").is_none(), "{unmeasured}");
+        assert_eq!(unmeasured["exit_code"].as_i64(), Some(0));
+
+        // Review round 2: a run queued again (a restart) runs its jobs anew; a job that then ends
+        // unmeasured never shows the earlier attempt's use.
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "UPDATE ci_runs SET state = 'running' WHERE id = 'r1';
+                     UPDATE ci_jobs SET state = 'running', ended_at = NULL WHERE id = 'j1';",
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert!(store.requeue_ci_run("r1", "again", Timestamp(50)).await?);
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "UPDATE ci_runs SET state = 'running', started_at = 60 WHERE id = 'r1';
+                     UPDATE ci_jobs SET state = 'running', started_at = 65 WHERE id = 'j1';",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let again = CiJobUpdate {
+            ended_at: Some(Timestamp(70)),
+            ..CiJobUpdate::default()
+        };
+        assert!(
+            store
+                .transition_ci_job("j1", &running, RunState::Cancelled, &again)
+                .await?
+        );
+        let rerun = spans(&store, SubjectKind::CiRun, "r1")
+            .await?
+            .into_iter()
+            .find(|s| s.key == "job:j1@65")
+            .map(|s| detail(&s))
+            .ok_or("the second attempt's span")?;
+        for figure in ["cpu_ms", "memory_peak_mb", "disk_written_mb"] {
+            assert!(
+                rerun.get(figure).is_none(),
+                "{figure} of the first attempt: {rerun}"
+            );
+        }
+        Ok(())
+    }
+
     /// STG-301: a CD run is a span with its trigger and commit; the phases Yulius started end with
     /// it (a failed run fails what was still open).
     #[tokio::test]

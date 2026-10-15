@@ -9,7 +9,8 @@ import { h, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
 import { duration, int } from '../format.js';
 import { replaceQuietly } from '../router.js';
 import { pageFrame, loader } from './common.js';
-import { trendChart, stageTitle, loadWaterfall, subjectLabel } from '../stages.js';
+import { BRAND } from '../brand.js';
+import { trendChart, stageTitle, loadWaterfall, subjectLabel, cpuTime, mebibytes } from '../stages.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -141,6 +142,11 @@ export function mountPipelinePage(ctx, sandbox, route) {
     ];
   }
 
+  /** "31 min · 52 min": a figure's p50 and p90, a dash when no span of the row measured it. */
+  function pair(p50, p90, format) {
+    return Number.isFinite(p50) ? `${format(p50)} · ${format(p90)}` : '—';
+  }
+
   function stagesCard(summary) {
     const rows = summary.stages || [];
     const reused = summary.reused_runs || 0;
@@ -155,7 +161,9 @@ export function mountPipelinePage(ctx, sandbox, route) {
       h('div', { class: 'table-wrap' }, h('table', { class: 'table pl-table' },
         h('thead', null, h('tr', null,
           h('th', null, 'Stage'), h('th', { class: 'hide-phone' }, 'Job or environment'), h('th', { class: 'num' }, 'Ended'), h('th', { class: 'num' }, 'Failed'),
-          h('th', { class: 'num' }, 'p50'), h('th', { class: 'num' }, 'p90'), h('th', { class: 'num hide-phone' }, 'Longest'), h('th', { class: 'num hide-phone' }, 'Total'))),
+          h('th', { class: 'num' }, 'p50'), h('th', { class: 'num' }, 'p90'), h('th', { class: 'num hide-phone' }, 'Longest'), h('th', { class: 'num hide-phone' }, 'Total'),
+          h('th', { class: 'num hide-phone', title: 'CPU time its processes used (CI jobs and deployments)' }, 'CPU time p50 · p90'),
+          h('th', { class: 'num hide-phone', title: 'The largest peak memory of one of its processes (CI jobs and deployments)' }, 'Peak memory p50 · p90'))),
         h('tbody', null, rows.map((row) => {
           const chosen = row.subject_kind === current.subject_kind && row.kind === current.kind && row.name === current.name;
           return h('tr', { class: chosen ? 'pl-chosen' : null },
@@ -168,9 +176,11 @@ export function mountPipelinePage(ctx, sandbox, route) {
             h('td', { class: 'num' }, duration(row.p50_ms)),
             h('td', { class: 'num' }, duration(row.p90_ms)),
             h('td', { class: 'num hide-phone' }, duration(row.max_ms)),
-            h('td', { class: 'num hide-phone' }, duration(row.total_ms)));
+            h('td', { class: 'num hide-phone' }, duration(row.total_ms)),
+            h('td', { class: 'num hide-phone pl-cpu' }, pair(row.cpu_p50_ms, row.cpu_p90_ms, cpuTime)),
+            h('td', { class: 'num hide-phone pl-memory' }, pair(row.memory_peak_p50_mb, row.memory_peak_p90_mb, mebibytes)));
         })))),
-      h('p', { class: 'muted small' }, `${subjectLabel('task')} stages follow each task’s states, steps, runs, pauses and delivery; CI and CD stages are their queue, jobs, deploys and the stages their output names (::yulius-stage).`));
+      h('p', { class: 'muted small' }, `${subjectLabel('task')} stages follow each task’s states, steps, runs, pauses and delivery; CI and CD stages are their queue, jobs, deploys and the stages their output names (::yulius-stage). A job’s and a deployment’s CPU time and peak memory are what ${BRAND.name} measured its processes using; the peak is the largest single process’s.`));
   }
 
   function deliveryCard(envs) {

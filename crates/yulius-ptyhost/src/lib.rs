@@ -37,7 +37,7 @@ pub use client::{CONNECT_TIMEOUT, ClientError, PtyClient, PtyReader, PtyWriter};
 pub use containment::{BWRAP_PROGRAM, SYSTEM_READONLY_DIRS, bwrap_argv};
 pub use host::{HostError, MAX_SHUTDOWN_GRACE_MS, run_host};
 pub use reconcile::{
-    RunDirState, TerminateError, current_boot_id, inspect_run_dir, terminate_recorded,
+    RunDirState, TerminateError, current_boot_id, exit_usage, inspect_run_dir, terminate_recorded,
 };
 pub use spawn::{DEFAULT_SPAWN_TIMEOUT, HostProcessExit, SpawnError, SpawnedHost, spawn_host};
 pub use yulius_contracts::ptyhost::BubblewrapSpec;

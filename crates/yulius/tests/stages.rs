@@ -24,6 +24,7 @@ use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
+use yulius_domain::stages::ResourceUse;
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
@@ -197,9 +198,15 @@ async fn lifecycle(f: &Fixture) -> TestResult {
     store
         .transition_delivery(&DeliveryStage::PrOpen, &merged)
         .await?;
-    for (id, start, state) in [
-        ("cd1", OCT1 + 2 * HOUR, RunState::Failed),
-        ("cd2", OCT1 + 3 * HOUR, RunState::Passed),
+    // cd1's use was measured (SPEC-154), cd2's not.
+    let used = ResourceUse {
+        cpu_ms: 42_000,
+        memory_peak_mb: 300,
+        disk_written_mb: Some(12),
+    };
+    for (id, start, state, usage) in [
+        ("cd1", OCT1 + 2 * HOUR, RunState::Failed, Some(used)),
+        ("cd2", OCT1 + 3 * HOUR, RunState::Passed, None),
     ] {
         store
             .insert_cd_run(&CdRunRecord {
@@ -230,6 +237,7 @@ async fn lifecycle(f: &Fixture) -> TestResult {
                     exit_code: Some(0),
                     output: String::new(),
                     ended_at: Timestamp(start + 10 * MIN),
+                    usage,
                 },
             )
             .await?;
@@ -354,6 +362,17 @@ async fn the_summary_has_percentiles_a_daily_trend_and_delivery_figures() -> Tes
         ),
         (Some(2), Some(1), Some("dev"))
     );
+    // SPEC-154 USE-005: the percentiles of what the runs that measured it used.
+    assert_eq!(
+        (
+            cd["cpu_p50_ms"].as_i64(),
+            cd["cpu_p90_ms"].as_i64(),
+            cd["memory_peak_p50_mb"].as_i64(),
+            cd["memory_peak_p90_mb"].as_i64()
+        ),
+        (Some(42_000), Some(42_000), Some(300), Some(300))
+    );
+    assert!(run.get("cpu_p50_ms").is_none(), "unknown, not 0: {run}");
     let days = r.body["trend"]["days"].as_array().ok_or("days")?;
     assert_eq!(days.len(), 3);
     assert_eq!(

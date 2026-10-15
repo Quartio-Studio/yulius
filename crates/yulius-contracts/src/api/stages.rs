@@ -84,6 +84,18 @@ pub struct StageRow {
     pub max_ms: Option<i64>,
     /// Sum.
     pub total_ms: i64,
+    /// Median CPU time of the ended spans that measured it (CI jobs, CD runs; SPEC-154).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_p50_ms: Option<i64>,
+    /// 90th percentile of the CPU time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_p90_ms: Option<i64>,
+    /// Median peak memory (MiB) of the ended spans that measured it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_peak_p50_mb: Option<i64>,
+    /// 90th percentile of the peak memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_peak_p90_mb: Option<i64>,
 }
 
 /// One UTC day of a stage's trend.
