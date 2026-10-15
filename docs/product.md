@@ -30,7 +30,7 @@ watching, steering and unblocking.
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
   and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
-  pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
+  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
@@ -67,6 +67,9 @@ watching, steering and unblocking.
   A **supertask** (the composer's start menu, for broad work such as security hardening) waits
   for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
+  The Tasks page's **Graph** (also from the sidebar's Working group) shows that structure at a
+  glance: the queue in the order tasks get a free session, the chains, start rules and supertask
+  holds as arrows between tasks, the prepared tasks and those on their own (SPEC-164).
   A task can also be **prepared**: written now and started later, when the person presses Start
   now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
   holds no session, can be rescheduled or cancelled, and sits with the queued tasks.

@@ -177,8 +177,14 @@ The record marks it with an empty repository owner. The browser packs a chosen f
 working tree, `git/` the history part of `.git`); the server takes only `HEAD`, `packed-refs`,
 `shallow`, `objects/` and `refs/` of it, copies the branches and tags into the new `origin` with the
 hardened Git, and commits the working files on top. `delivery_merge` squashes a task branch onto
-the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing). CI
-sync, hygiene, the automatic pull request and reconciliation skip playgrounds.
+the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing) on green
+Yulius CI ([SPEC-163](../.ai/specs/SPEC-163-fix-411-yulius-ci-runs-the-gate-on-a-pla.md),
+[decision 0134](decisions/0134-a-playground-s-ci-tests-the-head-merged-into-its-integration-branch.md)):
+the CI sync tests the integration head without GitHub, and `delivery_merge` first builds the task
+head merged into the integration branch in Yulius's clone (the merge train's builder, a merge
+commit) and tests it as `task/<n>`; while that run goes the merge is armed, and it lands once the
+run passed. Nothing is published to GitHub. Hygiene, the automatic pull request and reconciliation
+skip playgrounds.
 
 ```mermaid
 flowchart LR
@@ -186,7 +192,9 @@ flowchart LR
   S -->|"init --bare, copy refs, commit the files"| O[("data/playgrounds/id.git (outside the sandbox)")]
   O -->|"clone; fetch by path"| R["sandbox/repo"]
   R -->|"worktree from origin/dev"| T["Task worktree (agent, contained)"]
-  T -->|"delivery_merge: Yulius squashes, pushes by path"| O
+  T -->|"delivery_merge: head merged into dev, built in the clone"| C["task/n run (Yulius CI)"]
+  R -->|"dev head"| D["branch/dev run (Yulius CI)"]
+  C -->|"passed: Yulius squashes, pushes by path"| O
 ```
 
 ## Parallel tasks at merge
@@ -802,6 +810,22 @@ items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
+
+The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
+is drawn from the task summaries the store already holds, with no endpoint of its own:
+`taskgraph.js` reads each open task's `after` (a chain, or a start rule's `#N`s), `held_by`,
+`supertask`, `status` and `state_since` into the queue in start order, a layered graph (a column
+per longest path, rows by barycenter, cycles never followed) drawn as HTML cards over SVG arrows,
+the prepared tasks and the rest, and redraws on the store's `tasks` events.
+
+```mermaid
+flowchart LR
+  S["store.js tasksOf(sandbox)"] -->|"after, held_by, supertask, status, state_since"| M["taskgraph.js taskStructure"]
+  EV["task.updated / task.created"] --> S
+  M --> Q["Starts next (supertasks first, then longest queued)"]
+  M --> L["layered layout: columns, rows"] --> V["cards (links) over SVG arrows"]
+  M --> R["Prepared, On their own"]
+```
 
 ```mermaid
 flowchart LR
