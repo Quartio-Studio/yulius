@@ -1,11 +1,11 @@
 ---
 yulius-task: 5fa13a44-bb38-4bbc-8815-06d6b1de33dd
-status: in-progress
+status: done
 ---
 
 # SPEC-174: Review findings in the change's own code are fixed before merge, never deferred
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #164
 Scope authorization: task #164 ("Tighten the delivery rules so that agents fix review findings in
@@ -67,7 +67,7 @@ lets an agent defer a finding in its own change's code to an issue:
 - [x] Catalog skills and workflows state the own-code rule, checked by a test
 - [x] The briefing and the issue_create tool state the own-code rule, with tests
 - [x] Repository primitives, docs, SPEC-001 and ADR-0141 state the own-code rule
-- [ ] Gates green and independent review approved
+- [x] Gates green and independent review approved
 
 ## Acceptance criteria
 
@@ -99,3 +99,36 @@ lets an agent defer a finding in its own change's code to an issue:
   `short_parts_donate_budget_to_long_ones`. Rather than relax either test, the issue rule is folded
   into the existing "Report a bug you confirm" sentence and the review line is terse; the full
   wording lives in the skills and `docs/engineering/workflow.md`.
+- **Workflow instructions count against the same budget.** The session hook subtracts a task's
+  workflow instructions from the 9,500 bytes (`hooks.rs`), and SPEC-173's test models them as at
+  most 1.7 KB. The first wording grew the Fix workflow from 1,394 to 2,031 bytes, which would have
+  cut the briefing's mandatory tail (the architecture pointer, an isolated sandbox's Containers
+  section) in every Fix task. The workflows now state the rule in one terse sentence (Fix: 1,683
+  bytes with its heading; Feature: 1,415), Fix's "record other problems you notice with
+  `issue_create`" folds into it, and `the_shipped_catalog_is_valid` fails any bundled workflow over
+  1,700 bytes. The Git rules grow by at most the 39 bytes of slack dev left in
+  `the_containers_section_never_displaces_the_task_or_the_architecture`.
+
+## Evidence
+
+- `skills::tests::review_findings_in_own_code_are_never_deferred` failed before the edits
+  ("delivery-pipeline/SKILL.md does not say \"own code\""), passes now; its pre-existing-major
+  assertion failed before the round-1 fix. The briefing and `issue_create` tests failed on the old
+  text, then passed; `the_shipped_catalog_is_valid` failed at 1,713 bytes (Feature) before the
+  workflows were shortened.
+- `scripts/dev ci`: exit 0, 1849 tests passed (at 51a91ca0 and at 59888ce1); rerun on the final
+  head before delivery.
+- `python3 scripts/check_repository.py`: passed. `apm install` (apm-cli 0.33.0): `.agents/skills`
+  and `.claude/skills` match `.apm`, `apm.lock.yaml` updated.
+- `scripts/dev security`: **unrun**, exit 2, "Vidoc rejected the key (HTTP 401)" (#470,
+  ADR-0104); the CI `security` job reports it skipped.
+- e2e: not run; no web UI change.
+- Independent review in fresh sessions (`om-code-review`): round 1 (51a91ca0) requested changes,
+  with one major (the verdict gave no outcome for a pre-existing major), three minors and four nits,
+  all in this change's own code and all fixed test-first. Round 2 (59888ce1) approved and listed one
+  minor (this Evidence section) and three briefing nits, all own code and fixed. Merging dev then
+  exposed the budget problem above, also own code, also fixed. A confirmation round reviews the
+  final head.
+- Pre-existing, filed: #556 (Feature and Fix workflows still say "promote, verify production",
+  present on dev before this change).
+

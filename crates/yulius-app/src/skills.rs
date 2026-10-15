@@ -919,10 +919,10 @@ mod tests {
                 .to_lowercase();
             for stated in [
                 "own code",
-                "never becomes a follow-up issue",
+                "follow-up issue",
                 "round limit",
                 "pre-existing",
-                "flaky test the change did not cause",
+                "the change did not cause",
                 "outside the change",
                 "request changes",
             ] {

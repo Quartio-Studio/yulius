@@ -660,9 +660,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
          400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
-         given only the diff range, the spec and skill `om-code-review`), which marks findings own \
-         code or pre-existing; answer each in the pull request. Fix own code test-first, never as \
-         an issue (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
+         given only the diff range, the spec and skill `om-code-review`) marking findings own code \
+         or pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \
+         split or `needs_you`.\n\
          - When the work is ready (spec valid if needed, steps done, all committed), Yulius \
          pushes your branch and opens the pull request at the end of your turn or when you call \
          `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
@@ -671,9 +671,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
-         - Report a bug you confirm with `issue_create` unless an open issue tracks it (then \
-         reference it); one met on the way, a flaky test you did not cause or a nit left after 3 \
-         rounds says why it is outside your change; a task told not to \
+         - Report a bug you confirm with `issue_create` unless an open issue tracks it (reference \
+         it); one met on the way, an unrelated flaky test or a leftover nit says why it is outside \
+         your change; a task told not to \
          create issues never does, and comments or says it in its summary instead. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
@@ -1401,12 +1401,12 @@ mod tests {
             "Report a bug you confirm",
             "unless an open issue tracks it",
             "`ci_status`",
-            "marks findings own code or pre-existing",
-            "answer each in the pull request",
+            "marking findings own code or pre-existing",
+            "answer all.",
             "never as an issue",
-            "after 3 rounds: keep fixing, split the change or `needs_you`",
-            "one met on the way, a flaky test you did not cause or a nit left after 3 rounds says \
-             why it is outside your change",
+            "never as an issue; after 3 rounds split or `needs_you`",
+            "one met on the way, an unrelated flaky test or a leftover nit says why it is outside \
+             your change",
         ] {
             assert!(text.contains(needle), "missing {needle}");
         }

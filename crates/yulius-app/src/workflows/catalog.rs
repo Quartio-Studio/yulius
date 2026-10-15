@@ -113,6 +113,13 @@ mod tests {
                 .contains("Once the defect is confirmed, report it")
                 && w.instructions.contains("never does")
         }));
+        // The session hook takes a workflow's instructions out of the briefing's budget; the
+        // briefing's tests assume at most 1.7 KB (SPEC-173 CTR-002), so a longer workflow would
+        // cut the briefing's mandatory parts (SPEC-174).
+        for w in defaults() {
+            let block = format!("\n\n## Workflow instructions\n\n{}\n", w.instructions);
+            assert!(block.len() <= 1_700, "{} is {} bytes", w.id, block.len());
+        }
         Ok(())
     }
 

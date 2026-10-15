@@ -29,16 +29,12 @@ Follow `delivery-pipeline`; a fix is small, so keep it to one concern.
 - The spec can be short: symptom, root cause, the regression test, the fix, and what else the
   cause could break.
 - Fix with `om-fix`: commit the regression test first and show it fails, then the smallest fix
-  that makes it pass. No unrelated refactoring; record other pre-existing problems you notice with
-  `issue_create`.
+  that makes it pass. No unrelated refactoring.
 - A flaky test is a defect too: reproduce it under load and fix the cause (wait on conditions,
   inject the clock, isolate data); never add retries.
-- Review in a fresh session (`om-code-review`). The reviewer classifies each finding as own code or
-  pre-existing, and the pull request answers every one. A finding in code or tests this change added
-  or modified is fixed here, test-first, and never becomes a follow-up issue; the round limit (3)
-  does not excuse it: keep fixing, split the change or ask a person (`needs_you`), and deferring it
-  makes the verdict request changes. Only a pre-existing bug, a flaky test the change did not cause,
-  or a cosmetic nit left at the round limit becomes an issue, saying why it is outside the change
-  (for example "present on the integration branch before this change").
-- Then `om-check-and-commit` and deliver: merge on green, deploy and verify, promote, verify
-  production, clean up (`git-hygiene`).
+- Review in a fresh session (`om-code-review`); it marks findings own code or pre-existing; the PR
+  answers each. Own code is fixed test-first whatever the round limit, never as a follow-up issue
+  (that is request changes); only pre-existing bugs, flaky tests the change did not cause and
+  leftover nits become issues, saying why they are outside the change. Then `om-check-and-commit`
+  and deliver: merge on green, deploy and verify, promote, verify production, clean up
+  (`git-hygiene`).

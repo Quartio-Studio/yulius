@@ -27,13 +27,10 @@ Follow `delivery-pipeline` end to end; nobody accepts the result for you.
   leaving the project working.
 - Build each slice with `test-driven-development`: a test that fails without the change, then the
   change. One step in progress at a time, marked done as soon as it is finished.
-- Review: a fresh reviewer with no shared context runs `om-code-review` on the diff and the spec.
-  It classifies each finding as own code or pre-existing, and the pull request answers every one.
-  A finding in code or tests this change added or modified is fixed here, test-first, and never
-  becomes a follow-up issue; the round limit (3) does not excuse it: keep fixing, split the change
-  or ask a person (`needs_you`), and deferring it makes the verdict request changes. Only a
-  pre-existing bug, a flaky test the change did not cause, or a cosmetic nit left at the round
-  limit becomes an issue, saying why it is outside the change (for example "present on the
-  integration branch before this change").
+- Review: a fresh reviewer with no shared context runs `om-code-review` on the diff and the spec; it
+  marks findings own code or pre-existing; the PR answers each. Own code is fixed test-first
+  whatever the round limit, never as a follow-up issue (that is request changes); only pre-existing
+  bugs, flaky tests the change did not cause and leftover nits become issues, saying why they are
+  outside the change.
 - Finish with `om-check-and-commit` and `verification-before-completion`, then deliver: merge on
   green, deploy and verify, promote, verify production, clean up (`git-hygiene`).
