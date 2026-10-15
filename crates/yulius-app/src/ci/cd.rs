@@ -149,7 +149,12 @@ struct Prepared {
     target: CdTarget,
     secrets: Vec<(String, String)>,
     note: Option<String>,
+    /// When the promotion it made started and ended (SPEC-137).
+    promoted: Option<(Timestamp, Timestamp)>,
 }
+
+/// Longest confirmation wait recorded, in milliseconds.
+const MAX_CONFIRM_MS: u64 = 60 * 60 * 1000;
 
 /// An environment's configuration as the clone shows it (the page; never what a deploy runs).
 struct ShownSource {
@@ -422,7 +427,7 @@ impl App {
                 env,
                 requester,
                 &CdActor::Person(&ctx.user),
-                req.expect.as_deref(),
+                (req.expect.as_deref(), req.confirm_ms),
             )
             .await?;
         Ok(self.cd_run_view(&run, false).await)
@@ -451,8 +456,14 @@ impl App {
         let (sandbox, _) = self
             .require(&owner, &ctx.task.sandbox_id, Action::Work)
             .await?;
-        self.cd_start(&sandbox, env, Requester::Agent, &CdActor::Agent(ctx), None)
-            .await
+        self.cd_start(
+            &sandbox,
+            env,
+            Requester::Agent,
+            &CdActor::Agent(ctx),
+            (None, None),
+        )
+        .await
     }
 
     /// Checks everything, promotes when production says so, records the run and starts it.
@@ -462,8 +473,9 @@ impl App {
         env: CdEnv,
         requester: Requester<'_>,
         actor: &CdActor<'_>,
-        expected: Option<&str>,
+        (expected, confirm_ms): (Option<&str>, Option<u64>),
     ) -> AppResult<CdRunRecord> {
+        let requested = self.now();
         // A playground has no deploy: its Git stays on the server (SPEC-099).
         crate::playground::refuse_in_playground(sandbox, "A deploy")?;
         let target_name = format!("{}/{}", sandbox.slug, env.as_str());
@@ -526,6 +538,8 @@ impl App {
                 AppError::Conflict(_) => running_refusal(env),
                 other => other,
             })?;
+        self.cd_start_spans(&run, requested, prepared.promoted, confirm_ms)
+            .await;
         let detail = format!(
             "run {} of {} at {}; deploy: {}; verify: {}; secrets: [{}]{}",
             run.id,
@@ -579,6 +593,60 @@ impl App {
             app.cd_execute(sandbox, started, prepared.secrets, rx).await;
         });
         Ok(run)
+    }
+
+    /// What came before a run's deploy (SPEC-137 STG-301/302): the person's confirmation of a
+    /// production deploy as the page measured it, the checks from the request to the run (the
+    /// verified commit, its table, the secrets) and the promotion they made.
+    async fn cd_start_spans(
+        &self,
+        run: &CdRunRecord,
+        requested: Timestamp,
+        promoted: Option<(Timestamp, Timestamp)>,
+        confirm_ms: Option<u64>,
+    ) {
+        let span = |key: &str, kind: &str, name: &str, (from, to): (Timestamp, Timestamp)| {
+            crate::stages::NewSpan {
+                sandbox_id: run.sandbox_id.clone(),
+                subject_kind: yulius_domain::stages::SubjectKind::CdRun,
+                subject_id: run.id.clone(),
+                key: key.to_owned(),
+                parent_key: None,
+                kind: kind.to_owned(),
+                name: name.to_owned(),
+                environment: Some(run.environment.as_str().to_owned()),
+                job: None,
+                started_at: from,
+                ended_at: Some(to),
+                outcome: Some("passed".to_owned()),
+                detail: None,
+            }
+        };
+        if run.environment == CdEnv::Prod
+            && let Some(ms) = confirm_ms.filter(|ms| *ms <= MAX_CONFIRM_MS)
+        {
+            let ms = i64::try_from(ms).unwrap_or(0);
+            let mut confirm = span(
+                "confirm",
+                "wait",
+                "confirmation",
+                (Timestamp(requested.0 - ms), requested),
+            );
+            confirm.outcome = Some("confirmed".to_owned());
+            confirm.detail = Some(serde_json::json!({ "measured_by": "page" }).to_string());
+            self.record_span(confirm).await;
+        }
+        self.record_span(span(
+            "prepare",
+            "prepare",
+            "checks",
+            (requested, run.started_at),
+        ))
+        .await;
+        if let Some(window) = promoted {
+            self.record_span(span("promote", "promote", "promotion", window))
+                .await;
+        }
     }
 
     /// The commit GitHub reports as `branch`'s head, taken from the sandbox clone into the CD
@@ -728,6 +796,7 @@ impl App {
                 target,
                 secrets,
                 note: None,
+                promoted: None,
             });
         }
         let CdActor::Person(user) = actor else {
@@ -739,13 +808,17 @@ impl App {
             .await?;
         // From verified commits, never the agents' clone (round 2, M-C).
         let contained = self.deps.git.is_ancestor(&mirror, &sha, &before).await?;
+        let mut promoted = None;
         let note = if contained {
             format!(
                 "'{}' already contains '{}': nothing to promote",
                 profile.production_branch, profile.integration_branch
             )
         } else {
-            self.cd_promote(sandbox, &profile, user, &sha).await?
+            let promoting = self.now();
+            let note = self.cd_promote(sandbox, &profile, user, &sha).await?;
+            promoted = Some((promoting, self.now()));
+            note
         };
         self.dlv_refresh_clone(sandbox).await?;
         let production = self
@@ -787,6 +860,7 @@ impl App {
             target,
             secrets,
             note: Some(note),
+            promoted,
         })
     }
 

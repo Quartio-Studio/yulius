@@ -1115,3 +1115,118 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
     assert!(!run_dir.exists(), "the lost run's files are removed");
     Ok(())
 }
+
+/// SPEC-137 STG-301/302: a production deploy is measured stage by stage: the person's
+/// confirmation (as the page measured it, up to an hour), the checks, the promotion, the run with
+/// its commit and trigger, its deploy with the stages its output names, and its verify.
+#[tokio::test]
+async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() -> TestResult {
+    use std::sync::atomic::Ordering;
+    use yulius_app::ports::store_ext::SpanStore as _;
+    use yulius_domain::ids::SandboxId;
+    use yulius_domain::stages::SubjectKind;
+    let f = fixture(
+        "[cd.dev]\n\
+         about = \"no dev machine yet\"\n\n\
+         [cd.prod]\n\
+         promote = true\n\
+         deploy = \"echo '::yulius-stage build'; sleep 1; echo '::yulius-stage upload'; MARKS={marks} DEV_TOKEN=none sh scripts/cd/deploy.sh\"\n\
+         verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n",
+    )
+    .await?;
+    let clock = Arc::clone(&f.h.clock);
+    let follow = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        loop {
+            tick.tick().await;
+            clock.0.fetch_add(20, Ordering::SeqCst);
+        }
+    });
+    f.push("dev", &[("feature.txt", Some("new\n"))])?;
+    let deploy = |confirm_ms: u64| {
+        call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/cd/prod/deploy",
+            Some(json!({"confirm": "app", "confirm_ms": confirm_ms})),
+            &f.bob,
+        )
+    };
+    let started = deploy(4_200).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let id = started.body["run_id"].as_str().ok_or("id")?.to_owned();
+    let run = f.ended(&id).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let spans =
+        f.h.store
+            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CdRun, &id)
+            .await?;
+    let find = |key: &str| {
+        spans
+            .iter()
+            .find(|s| s.key == key)
+            .ok_or_else(|| format!("no {key} in {spans:?}"))
+    };
+    let confirm = find("confirm")?;
+    assert_eq!(
+        (confirm.kind.as_str(), confirm.name.as_str()),
+        ("wait", "confirmation")
+    );
+    assert_eq!(confirm.duration_ms(), Some(4_200));
+    assert!(confirm.detail.as_deref().unwrap_or("").contains("page"));
+    for key in ["prepare", "promote"] {
+        let span = find(key)?;
+        assert_eq!(
+            (span.outcome.as_deref(), span.environment.as_deref()),
+            (Some("passed"), Some("prod")),
+            "{span:?}"
+        );
+    }
+    assert!(find("promote")?.started_at >= find("prepare")?.started_at);
+    let whole = find("run")?;
+    assert_eq!(whole.outcome.as_deref(), Some("passed"));
+    let detail: Value = serde_json::from_str(whole.detail.as_deref().unwrap_or("{}"))?;
+    assert_eq!(
+        (detail["requested_by"].as_str(), detail["sha"].as_str()),
+        (Some("bob"), Some(f.head("main")?.as_str()))
+    );
+    let deploy_span = find("run/deploy")?;
+    let verify_span = find("run/verify")?;
+    assert_eq!(
+        (
+            deploy_span.outcome.as_deref(),
+            verify_span.outcome.as_deref()
+        ),
+        (Some("passed"), Some("passed"))
+    );
+    let build = find("run/deploy/stage:1")?;
+    let upload = find("run/deploy/stage:2")?;
+    assert_eq!(
+        (build.name.as_str(), upload.name.as_str()),
+        ("build", "upload")
+    );
+    assert_eq!(build.parent_key.as_deref(), Some("run/deploy"));
+    assert!(build.duration_ms().unwrap_or(0) >= 500, "{build:?}");
+    assert!(
+        deploy_span.ended_at <= verify_span.started_at.into()
+            && verify_span.ended_at <= whole.ended_at
+    );
+
+    // A confirmation held over an hour is not a measurement.
+    let again = deploy(2 * 60 * 60 * 1000).await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    let again_id = again.body["run_id"].as_str().ok_or("id")?.to_owned();
+    f.ended(&again_id).await?;
+    follow.abort();
+    let again_spans =
+        f.h.store
+            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CdRun, &again_id)
+            .await?;
+    assert!(
+        again_spans
+            .iter()
+            .all(|s| s.key != "confirm" && s.key != "promote"),
+        "{again_spans:?}"
+    );
+    Ok(())
+}
