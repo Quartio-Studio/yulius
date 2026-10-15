@@ -194,6 +194,8 @@ test('MCP’s scope and the Dashboard’s period come back with the page', async
 // other sandbox opened one meanwhile.
 test('a sandbox left without a tool comes back without one', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // The sandbox is left once its task is shown: leaving it while it still loads records no tool.
+  await expect(heading(screen)).toHaveText('#12 Checkout API');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
