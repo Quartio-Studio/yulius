@@ -43,9 +43,11 @@ watching, steering and unblocking.
   automations and enables the ready-made ones, asking the person before each change. Task agents
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
-  panel follows it.
+  panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
+  them or a command prints shows there as `[secret:NAME]` (SPEC-147).
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
-  task run on every subscription, their secrets taken from the agent secrets. A repository's
+  task run on every subscription and to the Superagent, their secrets taken from the agent
+  secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.

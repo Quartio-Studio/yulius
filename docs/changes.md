@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
+  task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
+  to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
+  secret environment. Its Bash commands, hooks and stdio servers run through `yulius --scrub-exec`
+  and its tool results pass the `PostToolUse` redaction hook, its only hook, as in task runs: an
+  agent secret prints as `[secret:NAME]`. Both load their fingerprints with the person's workspace
+  token, which the scrub endpoints now accept while the person may work in the sandbox. Literal
+  values typed into a server's form are not agent secrets and stay unredacted, as in task runs.
 - Yulius CI jobs can use agent secrets, and every pull request runs a `security` job (SPEC-142,
   ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
   and only the integration branch's entry of the job's name counts: a pull request's own grant
