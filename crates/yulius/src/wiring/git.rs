@@ -205,6 +205,11 @@ impl GitPort for GitAdapter {
         blocking(move || git.remote_refs(&repo, &url)).await
     }
 
+    async fn scrub_transport_config(&self, repo: &Path) -> AppResult<()> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        blocking(move || git.scrub_transport_config(&repo)).await
+    }
+
     async fn set_origin_url(&self, repo: &Path, url: &str) -> AppResult<()> {
         let (git, repo, url) = (self.git(), repo.to_path_buf(), url.to_owned());
         blocking(move || git.set_remote_url(&repo, "origin", &url)).await

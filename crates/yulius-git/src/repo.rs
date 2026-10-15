@@ -166,6 +166,65 @@ impl Git {
         Ok(refs)
     }
 
+    /// Removes from `repo`'s own configuration (`.git/config` and `.git/config.worktree`) every
+    /// setting that steers transport or loads more configuration: `http.*`, `url.*`,
+    /// `include*`, `credential.*`, SSH and proxy commands and `origin`'s proxy and push or pack
+    /// overrides. Yulius's Git then carries a token in a clone whose configuration a sandbox
+    /// could write without handing it elsewhere (SPEC-176). Every other setting stays.
+    pub fn scrub_transport_config(&self, repo: &Path) -> Result<(), GitError> {
+        const PREFIXES: &[&str] = &[
+            "http.",
+            "https.",
+            "url.",
+            "include.",
+            "includeif.",
+            "credential.",
+            "core.sshcommand",
+            "core.gitproxy",
+            "core.askpass",
+            "remote.origin.proxy",
+            "remote.origin.pushurl",
+            "remote.origin.uploadpack",
+            "remote.origin.receivepack",
+        ];
+        let worktree_config = repo.join(".git").join("config.worktree");
+        let mut scopes = vec![vec!["--local".to_owned()]];
+        if worktree_config.is_file() {
+            scopes.push(vec![
+                "--file".to_owned(),
+                worktree_config.to_string_lossy().into_owned(),
+            ]);
+        }
+        for scope in scopes {
+            let listed = self.run_ok(
+                Invocation::new(self, "config", Some(repo))
+                    .arg("config")
+                    .args(scope.iter().map(String::as_str))
+                    .args(["--list", "--name-only"]),
+            )?;
+            let mut names: Vec<String> = listed
+                .stdout_trimmed()
+                .lines()
+                .filter(|name| {
+                    let lower = name.to_ascii_lowercase();
+                    PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+                })
+                .map(str::to_owned)
+                .collect();
+            names.sort();
+            names.dedup();
+            for name in names {
+                self.run_ok(
+                    Invocation::new(self, "config", Some(repo))
+                        .arg("config")
+                        .args(scope.iter().map(String::as_str))
+                        .args(["--unset-all", &name]),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Points the remote `name` of `repo` at `url`.
     pub fn set_remote_url(&self, repo: &Path, name: &str, url: &str) -> Result<(), GitError> {
         validate_remote_name(name)?;

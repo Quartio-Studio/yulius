@@ -1494,3 +1494,50 @@ fn a_push_of_every_ref_is_all_or_nothing() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-176 (final review): before Yulius's Git carries a token in a clone whose configuration its
+/// sandbox could write, every local setting that steers transport or loads more configuration is
+/// removed; the rest stays.
+#[test]
+fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let planted = [
+        ("http.proxy", "http://127.0.0.1:9"),
+        ("http.https://github.com/.sslVerify", "false"),
+        ("url./tmp/evil/.insteadOf", "https://github.com/"),
+        ("include.path", "/tmp/evil.cfg"),
+        ("includeIf.gitdir:/.path", "/tmp/evil.cfg"),
+        ("core.sshCommand", "evil"),
+        ("credential.helper", "evil"),
+        ("remote.origin.proxy", "http://127.0.0.1:9"),
+        ("remote.origin.pushurl", "/tmp/evil.git"),
+        ("user.name", "Kept Name"),
+    ];
+    // The same key twice, apart.
+    fx.raw(
+        &repo,
+        &[
+            "config",
+            "--local",
+            "--add",
+            "include.path",
+            "/tmp/evil2.cfg",
+        ],
+    )?;
+    for (key, value) in planted {
+        fx.raw(&repo, &["config", "--local", key, value])?;
+    }
+    fx.git.scrub_transport_config(&repo)?;
+    let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
+    let left: Vec<&str> = left.lines().collect();
+    for (key, _) in &planted[..9] {
+        assert!(
+            !left.iter().any(|k| k.eq_ignore_ascii_case(key)),
+            "{key} is left: {left:?}"
+        );
+    }
+    assert!(left.contains(&"user.name"), "{left:?}");
+    assert!(left.contains(&"remote.origin.url"), "{left:?}");
+    Ok(())
+}

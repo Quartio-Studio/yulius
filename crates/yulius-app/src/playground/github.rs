@@ -143,12 +143,21 @@ impl App {
         }
         // Access mirrors GitHub now: every viewer reads its sandboxes again.
         self.publish_resync(None);
-        let moved = self
-            .deps
-            .store
-            .sandbox(&id)
-            .await?
-            .ok_or(AppError::NotFound)?;
+        // The record as written; read back when the store answers, else as the move wrote it.
+        let moved = match self.deps.store.sandbox(&id).await {
+            Ok(Some(moved)) => moved,
+            read => {
+                if let Err(err) = read {
+                    tracing::warn!(sandbox = %id, error = %err, "could not read a moved playground back");
+                }
+                SandboxRecord {
+                    repo_owner: owner.clone(),
+                    repo_name: name.clone(),
+                    github_repo_id: repo_id,
+                    ..record
+                }
+            }
+        };
         let level = self
             .access_level(&ctx.user, &moved)
             .await
@@ -274,7 +283,8 @@ impl App {
         }
     }
 
-    /// Points the clone's `origin` at `url` and fetches it; on failure points it back.
+    /// Points the clone's `origin` at `url`, its own transport settings removed first, and fetches
+    /// it; on failure points it back.
     async fn repoint_clone(
         &self,
         record: &SandboxRecord,
@@ -283,6 +293,9 @@ impl App {
     ) -> AppResult<()> {
         let clone = self.sandbox_repo(&record.id);
         let git = &self.deps.git;
+        // The clone's configuration is the playground's agents' to write, and the fetch below
+        // carries the installation token: no proxy, rewrite or include of theirs may steer it.
+        git.scrub_transport_config(&clone).await?;
         git.set_origin_url(&clone, url).await?;
         if let Err(err) = git.sync_clone(url, &clone, token).await {
             self.restore_origin(record).await;

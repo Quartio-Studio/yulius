@@ -52,9 +52,9 @@ GitHub from then on.
 | --- | --- | --- |
 | MPG-001 | `POST /api/sandboxes/{sid}/move-to-github` `{name}` moves a live playground into the repository `<instance owner>/<name>`. Only an admin of the playground (its maker or the superadmin) may move it, and only one IMP-002 would let import that repository: a person needs `admin` or `maintain` on it on GitHub, the superadmin one the App installation can access. Without the App it is a 409, and so is a repository that is already a sandbox. A GitHub sandbox is a 409. The response is the sandbox's new view. | `playground_move::a_playground_moves_into_an_empty_github_repository`, `only_who_could_import_the_repository_moves_a_playground` |
 | MPG-002 | The repository must be empty. It may also hold only this playground's branches and tags, at their commits or behind them, as a move that failed after its push leaves it (merges may have landed since); the push then fast-forwards them. A repository with any other branch, tag or commit is refused (409) and nothing is pushed. | `playground_move::a_repository_that_is_not_empty_is_refused`, `a_move_retried_after_its_push_completes`, `a_retry_after_the_playground_moved_on_fast_forwards` |
-| MPG-003 | The move pushes every branch and tag of the playground's `origin` to the repository in one atomic push that never forces, with the installation token. It points the sandbox clone's `origin` at the repository and fetches it. It then records the GitHub owner, name and repository id on the sandbox in one compare-and-set that holds only while the sandbox is still a playground. Last, it deletes the bare `origin` on the server and audits `sandbox.moved_to_github`. The slug, tasks, attempts, sessions, steps, task branches and worktrees stay. | `playground_move::a_playground_moves_into_an_empty_github_repository` |
+| MPG-003 | The move pushes the playground's default branch alone, then every branch and tag of its `origin` in one atomic push; neither forces, both carry the installation token. It removes the clone's own transport settings (`http.*`, `url.*`, includes, credential helpers, proxy and SSH commands), points the clone's `origin` at the repository and fetches it. It then records the GitHub owner, name and repository id on the sandbox in one compare-and-set that holds only while the sandbox is still a playground. Last, it deletes the bare `origin` on the server and audits `sandbox.moved_to_github`. The slug, tasks, attempts, sessions, steps, task branches and worktrees stay. | `playground_move::a_playground_moves_into_an_empty_github_repository`, `a_planted_transport_setting_never_steers_the_move`; `git_ops::transport_settings_of_a_clone_are_scrubbed` |
 | MPG-004 | From then on the sandbox is a GitHub sandbox. Access mirrors GitHub (ACC-007): its maker keeps access only through their GitHub permission on the repository, and nobody else's access comes from having made the playground. Yulius fetches and pushes it on GitHub, and its tasks deliver by pull request. The playground note and limits are gone. | `playground_move::a_playground_moves_into_an_empty_github_repository` (maker without GitHub permission sees nothing; with it, their GitHub level) |
-| MPG-005 | A refused or failed move leaves the playground as it was: its record, its clone's `origin`, the bare repository and its branches. It refuses before any push while a task of the sandbox is live or queued, or a CI run of it is, and says so; it checks again just before the record update. A push GitHub refuses changes nothing. A failure after the push (the clone's fetch, the record update) puts the clone's `origin` back. The move runs detached from its request: a client that goes away never leaves it half done. Once the record changed, a failed audit or deletion of the bare `origin` is logged and the move still answers its new view. | `playground_move::a_failed_push_leaves_the_playground_as_it_was`, `a_move_failing_after_its_push_points_the_clone_back_and_is_retried`, `a_live_task_holds_the_move`, `an_active_ci_run_holds_the_move`, `a_repository_that_is_not_empty_is_refused`, `a_repository_that_is_already_a_sandbox_is_refused`, `a_move_ends_when_its_client_goes_away` |
+| MPG-005 | A refused or failed move leaves the playground as it was: its record, its clone's `origin`, the bare repository and its branches. It refuses before any push while a task of the sandbox is live or queued, or a CI run of it is, and says so; it checks again just before the record update. A push GitHub refuses leaves the repository as it was, or holding only the default branch, which a retry accepts (MPG-002). A failure after the push (the clone's fetch, the record update) puts the clone's `origin` back. The move runs detached from its request: a client that goes away never leaves it half done. Once the record changed, a failed audit or deletion of the bare `origin` is logged and the move still answers its new view. | `playground_move::a_failed_push_leaves_the_playground_as_it_was`, `a_move_failing_after_its_push_points_the_clone_back_and_is_retried`, `a_live_task_holds_the_move`, `an_active_ci_run_holds_the_move`, `a_repository_that_is_not_empty_is_refused`, `a_repository_that_is_already_a_sandbox_is_refused`, `a_move_ends_when_its_client_goes_away` |
 | MPG-006 | The web UI offers it. The sandbox menu of a playground has "Move to GitHub…" for its admins once GitHub is connected. Its dialog names the owner, asks for the name of an empty repository, and says what happens: branches and tags are pushed, access then follows GitHub, tasks stay. On success the page shows the sandbox as a GitHub sandbox. | `e2e/tests/playground.e2e.ts` "a playground moves to GitHub from the sandbox menu" |
 
 ## Plan
@@ -107,7 +107,8 @@ GitHub from then on.
   an organisation and a personal account. The cost is one step on GitHub first: create an empty
   repository, and on an installation limited to selected repositories, add it to the App.
 - **Atomic push, then the clone, then the record: the record is the commit point.** `git push
-  --atomic` updates all refs or none, so a refused push leaves GitHub as it was. After the push,
+  --atomic` updates all refs or none, so a refused push leaves GitHub as it was, except the default
+  branch pushed alone before it (decision 5 of ADR-0142), which a retry accepts. After the push,
   the clone's `origin` is repointed, and the record's compare-and-set flips the sandbox to GitHub.
   When that write fails, the clone is pointed back. The bare `origin` is deleted only after the
   record changed, so a failure at any point leaves a working playground. A failure after the push
@@ -135,6 +136,16 @@ GitHub from then on.
   on the receiving repository, and the server's Git runs with `core.hooksPath=/dev/null`, which
   reaches a local remote's `receive-pack` too. It shares `restore_origin` with the tested fetch
   failure.
+- **Review round 3 (fresh session, approved), fixed:** the move's fetch carries the installation
+  token through the clone's configuration, which the playground's agents may write (#54 part B,
+  ADR-0114), so a playground's maker without GitHub access could have steered it to a proxy when
+  someone else moved the playground. The move now removes the clone's own transport settings
+  first, tested. If the move then fails, they stay removed, which only takes away settings a
+  playground's server-side Git never used (it fetches its `origin` by path). A moved sandbox's
+  view is answered from what the move wrote when reading it back fails. Left as is: a bare
+  `origin` whose deletion failed after the commit point stays on disk (logged; the quota ignores
+  it), and a resting playground task's armed merge decided after the move waits for a pull request
+  it never gets until re-armed. Both are narrow and change no data.
 - **Live or queued tasks hold the move.** Their agents were started with a playground's briefing,
   tools and Git credentials, and a running playground merge or armed CI merge would land on the
   bare `origin` after the push. Requiring them to be stopped first (they continue after the move
@@ -161,20 +172,22 @@ Run on the branch head after merging `dev` (`152d7ec7`, 2026-10-15):
 - `cd e2e && npx e2e run`: exit 0, `Test Files 55 passed | 1 skipped`, `Tests 526 passed | 1
   skipped`. The two new tests in `playground.e2e.ts` failed before the UI change (no "Move to
   GitHub…" menu item) and pass with it.
-- `playground_move::` (12 integration tests, real Git and store, fake GitHub): all pass, covering
-  MPG-001 to MPG-006. They failed before the change (no route). Mutations proved the regressions:
+- `playground_move::` (13 integration tests, real Git and store, fake GitHub): all pass, covering
+  MPG-001 to MPG-005 (MPG-006 is the e2e suite's). They failed before the change (no route). Mutations proved the regressions:
   without the live-task check `a_live_task_holds_the_move` fails; without the emptiness check
   `a_repository_that_is_not_empty_is_refused` fails; without the detached run, the CI hold and the
   fast-forward acceptance, `a_move_ends_when_its_client_goes_away`, `an_active_ci_run_holds_the_move`
-  and `a_retry_after_the_playground_moved_on_fast_forwards` fail.
+  and `a_retry_after_the_playground_moved_on_fast_forwards` fail; without the scrub,
+  `a_planted_transport_setting_never_steers_the_move` fails.
 - `yulius-git` `every_branch_and_tag_is_pushed_at_once_and_read_back` and
-  `a_push_of_every_ref_is_all_or_nothing`, and `yulius-store`
+  `a_push_of_every_ref_is_all_or_nothing`, `transport_settings_of_a_clone_are_scrubbed`, and
+  `yulius-store`
   `a_playground_record_moves_to_github_once`: pass (they did not compile before the change).
 - `scripts/dev security`: exit 2, **not run**. Vidoc rejected the key (HTTP 401), as since
   2026-10-14 (#470, ADR-0104). This is unrun, not passed.
-- Independent review: two rounds in fresh sessions. Round 1 asked for changes (1 major, 6 minor),
-  all fixed test-first. Round 2 approved with minors, which were fixed as well (Decisions). A final
-  review covers the head that is delivered.
+- Independent review: rounds in fresh sessions. Round 1 asked for changes (1 major, 6 minor), all
+  fixed test-first. Round 2 approved with minors, which were fixed as well (Decisions). Round 3
+  approved; its minors were fixed (Decisions), and a review of the delivered head follows.
 - Not tested here: GitHub itself. The fake GitHub answers permissions, and local bare repositories
   stand in for its Git (`GitAdapter::with_github_base`), so GitHub's choice of default branch, its
   push limits and a real installation token are not exercised. A real browser on a real server

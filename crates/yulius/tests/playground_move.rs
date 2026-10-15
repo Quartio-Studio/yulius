@@ -702,3 +702,37 @@ async fn a_move_ends_when_its_client_goes_away() -> TestResult {
     assert_eq!(refs(&github)?, before);
     Ok(())
 }
+
+/// MPG-003 (final review): the clone's configuration is the playground's agents' to write, and the
+/// move fetches GitHub through it with the installation token; a rewrite planted there never
+/// steers that fetch, and it is gone after the move.
+#[tokio::test]
+async fn a_planted_transport_setting_never_steers_the_move() -> TestResult {
+    let w = world().await?;
+    let (sandbox, _origin) = w.playground(&w.alice, "alices-lab").await?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    let clone = w.clone_of(&sandbox)?;
+    let key = "url./nonexistent/agent/.insteadOf";
+    git(
+        &clone,
+        &[
+            "config",
+            "--local",
+            key,
+            &format!("https://github.com/{OWNER}/"),
+        ],
+    )?;
+
+    let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
+    let left = git(&clone, &["config", "--local", "--list", "--name-only"])?;
+    assert!(!left.to_ascii_lowercase().contains("url."), "{left}");
+    git(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
+    assert!(!refs(&github)?.is_empty());
+    Ok(())
+}

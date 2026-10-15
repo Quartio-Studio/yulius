@@ -384,6 +384,12 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, url, token);
         unsupported("listing a remote's refs")
     }
+    /// Removes the clone `repo`'s own transport settings (`http.*`, `url.*`, includes, credential
+    /// helpers, proxy and SSH commands) before a token travels through it (SPEC-176).
+    async fn scrub_transport_config(&self, repo: &Path) -> AppResult<()> {
+        let _ = repo;
+        unsupported("scrubbing a clone's configuration")
+    }
     /// Points the clone `repo`'s `origin` at `url` (SPEC-176).
     async fn set_origin_url(&self, repo: &Path, url: &str) -> AppResult<()> {
         let _ = (repo, url);
