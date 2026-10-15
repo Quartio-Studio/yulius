@@ -1,8 +1,10 @@
 // The new-task prompt with its files inside the text (SPEC-124, ADR-0101). A file pasted or
-// dropped lands at the caret (the drop point) as an inline atom: an image as a thumbnail, another
-// file as a chip with its name. An atom is one character for editing: arrows step over it,
+// dropped lands at the caret (the drop point) as an inline atom, a placeholder one line high: an
+// image as `Image N`, another file as a chip with its name (SPEC-150; the composer's tray shows
+// the files themselves). An atom is one character for editing: arrows step over it,
 // Backspace and Delete remove it, a selection takes it along. It moves by dragging it, or by
-// cutting (⌘/Ctrl+X) and pasting (⌘/Ctrl+V) it, the keyboard way. The text is plain: pasted text
+// cutting (⌘/Ctrl+X) and pasting (⌘/Ctrl+V) it, the keyboard way, and `place` puts a file at a
+// point (a tray thumbnail dropped on the text, `PLACE_TYPE`) or at the caret. The text is plain: pasted text
 // stays text, formatting commands are refused, and the Markdown keys of mdinput.js work as in a
 // textarea.
 //
@@ -12,7 +14,9 @@
 // mdinput.js apply as they are. Typing stays the browser's own; every other edit (Enter, paste,
 // drop, cut, a move, a Markdown key) is made on the model and drawn again. The undo history is
 // its own: each edit is a step (typing a word is one), and ⌘/Ctrl+Z, ⇧⌘Z / Ctrl+Y and the
-// browser's Undo walk it, files included.
+// browser's Undo walk it, files included. Each step also keeps the files attached outside the
+// text (the composer's tray, `attached`), so undo and redo bring back a removed file in its place
+// and undoing a paste takes its upload away (SPEC-150).
 //
 // `value` is the prompt as sent: each file at its place as the mention `@'<path>'`.
 
@@ -23,6 +27,8 @@ import { mentionOf, splitMentions } from './promptparts.js';
 
 /** One atom in the model's text. */
 export const ATOM = '\uFFFC';
+/** A drag carrying a file's path to put in the text (a tray thumbnail, SPEC-150). */
+export const PLACE_TYPE = 'application/x-yulius-file';
 /** Steps the undo history keeps. */
 const HISTORY_MAX = 100;
 /** Typing within this long of the last typing joins its undo step (within a word). */
@@ -30,17 +36,23 @@ const TYPING_MS = 1000;
 
 const countAtoms = (text) => text.split(ATOM).length - 1;
 const sameAtoms = (a, b) => a.length === b.length && a.every((atom, i) => atom.path === b[i].path && atom.pending === b[i].pending);
+const sameList = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
+/** `list` with each of `items` it lacks added at its end. */
+const withItems = (list, items) => [...list, ...items.filter((item) => !list.includes(item))];
 
 /**
  * A prompt text box. Options:
  *   label, placeholder, keyshortcuts, maxLength   its accessible name, hint, keys and length cap
- *   face(path)        how a file looks: `{ name, image? }` (`image` a URL to draw it from)
+ *   face(path)        how a file looks: `{ name, label?, image? }` (`label` its placeholder's text,
+ *                     the name by default; `image` true for an image)
  *   known(path)       whether a pasted mention names a file of this prompt (it becomes the file)
  *   onChange()        after every change of the text, by the person or by an edit
  *   onSubmit()        ⌘/Ctrl+Enter
  *   onOpen(path)      a file is double-clicked (an image previews)
+ *   attached          `{ read(), write(list) }`: the files attached outside the text, kept in each
+ *                     undo step (`read` gives a copy; `write` is called before an undone step draws)
  */
-export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLength = 100000, face, known = () => false, onChange = () => {}, onSubmit = () => {}, onOpen = () => {} }) {
+export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLength = 100000, face, known = () => false, onChange = () => {}, onSubmit = () => {}, onOpen = () => {}, attached = { read: () => [], write: () => {} } }) {
   const el = h('div', {
     class: 'composer-prompt prompt-input', role: 'textbox', 'aria-multiline': 'true', 'aria-label': label,
     'aria-keyshortcuts': keyshortcuts, tabindex: '0', spellcheck: 'true', 'data-placeholder': placeholder,
@@ -51,7 +63,10 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   let dragged = null; // the file being dragged, while it is
   let moving = null; // `[start, end]` of this box's own selection or file being dragged
   let pendingCount = 0;
+  let kept = null; // the caret when the box last lost the keyboard (`place` puts a file there)
   const history = { states: [], index: -1, kind: '', at: 0 };
+  // Steps cut off as a redo branch by a new edit: an upload pasted in one of them is in none.
+  const discarded = new WeakSet();
 
   // ---------------------------------------------------------------- the DOM and the model
 
@@ -65,9 +80,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
         h('span', { class: 'pi-spinner', 'aria-hidden': 'true' }), h('span', { class: 'pi-file-name' }, 'Uploading…'));
     } else {
       const look = face(atom.path) || { name: atom.path.split('/').pop() };
-      node = h('span', { class: ['pi-atom', look.image ? 'pi-image' : 'pi-file'], dataset: { path: atom.path }, title: look.name });
-      if (look.image) node.append(h('img', { src: look.image, alt: look.name, draggable: 'false' }));
-      else node.append(icon('file', { size: 14 }), h('span', { class: 'pi-file-name' }, look.name));
+      node = h('span', { class: ['pi-atom', look.image ? 'pi-image' : 'pi-file'], dataset: { path: atom.path }, title: look.name },
+        icon(look.image ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, look.label || look.name));
       node.draggable = true;
     }
     node.contentEditable = 'false';
@@ -183,15 +197,17 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   function record(kind) {
     const { plain, atoms } = scan();
     const [start, end] = el.contains(document.activeElement) || document.activeElement === el ? selection() : [plain.length, plain.length];
-    const state = { plain, atoms, start, end };
+    const files = attached.read();
+    const state = { plain, atoms, start, end, files };
     const current = history.states[history.index];
     const now = Date.now();
-    if (current && current.plain === plain && sameAtoms(current.atoms, atoms)) {
+    const sameFiles = current && sameList(current.files, files);
+    if (current && current.plain === plain && sameAtoms(current.atoms, atoms) && sameFiles) {
       Object.assign(current, { start, end });
-    } else if (current && kind === 'type' && history.kind === 'type' && now - history.at < TYPING_MS && !/\s$/.test(current.plain.slice(0, current.end))) {
+    } else if (current && sameFiles && kind === 'type' && history.kind === 'type' && now - history.at < TYPING_MS && !/\s$/.test(current.plain.slice(0, current.end))) {
       history.states[history.index] = state;
     } else {
-      history.states.splice(history.index + 1);
+      for (const gone of history.states.splice(history.index + 1)) discarded.add(gone);
       history.states.push(state);
       if (history.states.length > HISTORY_MAX) history.states.shift();
       history.index = history.states.length - 1;
@@ -201,6 +217,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   }
 
   function restore(state) {
+    attached.write([...state.files]);
     draw(state.plain, state.atoms);
     select(state.start, state.end);
     history.kind = '';
@@ -242,10 +259,13 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
 
   /**
    * Placeholder `id` becomes `files` (none: it goes), in the box and in every step of the history
-   * that holds it, so it is never a step of its own and undo never shows it again. False when the
-   * box no longer holds it.
+   * that holds it, so it is never a step of its own and undo never shows it again. `items`, the
+   * uploads, join the attached files of every step from `from` (the placeholder's step) on, and of
+   * every step when that step fell off the history's start; the steps before it never had them,
+   * nor any step when it was cut off as a redo branch (the paste was undone). False when the box
+   * no longer holds the placeholder.
    */
-  function swapPending(id, files) {
+  function swapPending(id, files, items = [], from = null) {
     const swap = (state) => {
       const i = state.atoms.findIndex((atom) => atom.pending === id);
       if (i === -1) return null;
@@ -258,12 +278,19 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       state.end = shift(state.end);
       return pos;
     };
-    for (const state of history.states) swap(state);
+    const first = history.states.indexOf(from);
+    history.states.forEach((state, i) => {
+      const held = swap(state) !== null;
+      const fromOn = first === -1 ? !discarded.has(from) : i >= first;
+      if (items.length && (held || fromOn)) state.files = withItems(state.files, items);
+    });
     const focused = document.activeElement === el;
     const { plain, atoms } = scan();
     const [start, end] = focused ? selection() : [plain.length, plain.length];
     const live = { plain, atoms, start, end };
-    if (swap(live) === null) return false;
+    const at = swap(live);
+    if (at === null) return false;
+    if (kept) kept = kept.map((o) => (o > at ? o + files.length - 1 : o));
     draw(live.plain, live.atoms);
     if (focused) select(live.start, live.end);
     if (el.isConnected) onChange();
@@ -475,6 +502,11 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     event.preventDefault();
     if (!editable()) { dragDone(); return; }
     const target = offsetAtPoint(event.clientX, event.clientY);
+    const placing = !moving && [...event.dataTransfer.types].includes(PLACE_TYPE) ? event.dataTransfer.getData(PLACE_TYPE) : '';
+    if (placing && known(placing)) {
+      place(placing, target);
+      return;
+    }
     if (moving) {
       const [start, end] = moving;
       dragDone();
@@ -508,6 +540,49 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     onChange();
   }
 
+  /**
+   * Puts file `path` at model offset `to` (the caret kept when the box lost the keyboard, by
+   * default): its first placeholder moves there, or one is inserted when the text holds none. One
+   * undo step.
+   */
+  function place(path, to = null) {
+    if (!editable()) return;
+    const { plain, atoms } = scan();
+    const at = Math.min(to ?? (kept ? kept[1] : plain.length), plain.length);
+    const index = atoms.findIndex((atom) => atom.path === path);
+    el.focus({ preventScroll: true });
+    if (index === -1) {
+      replace(at, at, ATOM, [{ path }], null, { files: true });
+      return;
+    }
+    let pos = -1;
+    for (let seen = 0; seen <= index; seen += 1) pos = plain.indexOf(ATOM, pos + 1);
+    move(pos, pos + 1, at);
+  }
+
+  /** Takes every placeholder of file `path` out of the text: one undo step. False when it held none. */
+  function remove(path) {
+    const { plain, atoms } = scan();
+    if (!atoms.some((atom) => atom.path === path)) return false;
+    const focused = document.activeElement === el;
+    const [start, end] = focused ? selection() : [plain.length, plain.length];
+    let next = '';
+    const left = [];
+    const gone = []; // the offsets of the placeholders taken out
+    plain.split(ATOM).forEach((text, i) => {
+      if (i > 0 && atoms[i - 1].path === path) gone.push(next.length + gone.length);
+      else if (i > 0) { next += ATOM; left.push(atoms[i - 1]); }
+      next += text;
+    });
+    draw(next, left);
+    const shift = (o) => o - gone.filter((at) => at < o).length;
+    if (focused) select(shift(start), shift(end));
+    if (kept) kept = kept.map(shift);
+    record('edit');
+    if (el.isConnected) onChange();
+    return true;
+  }
+
   /** Shows the caret where a drop at this point of the window lands. */
   function showPoint(x, y) {
     if (!editable()) return;
@@ -528,23 +603,21 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     if (at !== null) setTimeout(() => select(at, at + 1));
   });
 
+  // Where `place` puts a file by default: the caret the person left.
+  el.addEventListener('focusout', () => { kept = selection(); });
+
   // ---------------------------------------------------------------- the composer's side
 
-  function setValue(text, appended = []) {
+  function setValue(text) {
     let plain = '';
     const atoms = [];
     for (const piece of splitMentions(String(text ?? '').replace(/\r\n?/g, '\n').replaceAll(ATOM, ''))) {
       if ('path' in piece && known(piece.path)) { plain += ATOM; atoms.push({ path: piece.path }); } else plain += 'text' in piece ? piece.text : piece.mention;
     }
-    // Files this text does not hold yet (a draft from before SPEC-124) follow it.
-    const missing = appended.filter((path) => !atoms.some((atom) => atom.path === path));
-    if (missing.length) {
-      plain = `${plain}${plain && !/\s$/.test(plain) ? '\n' : ''}${ATOM.repeat(missing.length)}`;
-      atoms.push(...missing.map((path) => ({ path })));
-    }
     draw(plain, atoms);
     history.states = [];
     history.index = -1;
+    kept = null;
     record('set');
   }
 
@@ -553,7 +626,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     /** The prompt as sent: each file at its place as `@'<path>'` (a file uploading is left out). */
     get value() { const { plain, atoms } = scan(); return asText(plain, atoms); },
     set value(text) { setValue(text); },
-    /** Sets the text (mentions of known files become files; `appended` paths follow it); a new history. */
+    /** Sets the text (mentions of known files become files); a new history. */
     setValue,
     /** The text without its files. */
     text() { const { plain } = scan(); return plain.replaceAll(ATOM, ''); },
@@ -576,8 +649,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     focus(options) { el.focus(options); },
     /**
      * Where files uploading now will land: at the caret, or at a drop's point (`event`). A
-     * placeholder shows there until `insert(paths)` puts the files in its place (or at the end
-     * when it was taken out meanwhile) or `cancel()` takes it away.
+     * placeholder shows there until `insert(paths)` puts the files in its place (none when it was
+     * taken out meanwhile: the tray keeps them) or `cancel()` takes it away.
      */
     begin(event) {
       if (!editable()) return null;
@@ -587,19 +660,26 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
         ? [offsetAtPoint(event.clientX, event.clientY), offsetAtPoint(event.clientX, event.clientY)]
         : selection();
       replace(start, end, ATOM, [{ pending: id }], null, { files: true });
+      const step = history.states[history.index];
       return {
-        /** The files take the placeholder's place (after the text when it was taken out). */
-        insert(paths) {
-          const files = paths.map((path) => ({ path }));
-          if (swapPending(id, files)) return;
-          const { plain } = scan();
-          replace(plain.length, plain.length, ATOM.repeat(files.length), files, null, { files: true });
+        /**
+         * The files take the placeholder's place (nowhere when it was taken out); `items`, now
+         * attached, are attached in every step from the paste on. When the box no longer holds the
+         * placeholder, the attached files are the current step's: an undone paste brings no file
+         * until it is redone.
+         */
+        insert(paths, items = []) {
+          if (swapPending(id, paths.map((path) => ({ path })), items, step)) return;
+          const current = history.states[history.index];
+          if (!current || sameList(current.files, attached.read())) return;
+          attached.write([...current.files]);
+          if (el.isConnected) onChange();
         },
         cancel() {
           swapPending(id, []);
           // Taken out of every step (also when the box no longer held it), the placeholder's step is
           // now a copy of the one before it: not a step to undo.
-          const same = (a, b) => a.plain === b.plain && sameAtoms(a.atoms, b.atoms);
+          const same = (a, b) => a.plain === b.plain && sameAtoms(a.atoms, b.atoms) && sameList(a.files, b.files);
           const states = history.states;
           const kept = states.filter((state, i) => i === 0 || !same(state, states[i - 1]));
           history.index -= states.slice(0, history.index + 1).filter((state, i) => i > 0 && same(state, states[i - 1])).length;
@@ -609,14 +689,20 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     },
     /** Shows the caret where something dropped at this point lands. */
     showPoint,
-    /** Adds files after the text, one undo step (an upload that ended in another view). */
-    append(paths) {
-      if (!paths.length) return;
-      const { plain } = scan();
-      const gap = plain && !/\s$/.test(plain) ? '\n' : '';
-      replace(plain.length, plain.length, gap + ATOM.repeat(paths.length), paths.map((path) => ({ path })), null, { files: true });
+    /** Puts a file at the caret the person left (its placeholder moves there, or one is added). */
+    place: (path) => place(path),
+    /** Takes a file's placeholders out of the text (it left the tray), one undo step; false when none. */
+    remove,
+    /** Records the attached files as an undo step (they changed, the text did not). */
+    commit() { record('edit'); if (el.isConnected) onChange(); },
+    /** The current step keeps the attached files as they are now (not a step of its own). */
+    amend() { const current = history.states[history.index]; if (current) current.files = attached.read(); },
+    /** Files attached outside any edit (an upload that ended elsewhere) are attached in every step. */
+    adopt(items) {
+      const fresh = items.filter((item) => !history.states.some((state) => state.files.includes(item)));
+      if (fresh.length) for (const state of history.states) state.files = withItems(state.files, fresh);
     },
-    /** Draws the files again (a thumbnail became available), the caret kept. */
+    /** Draws the files again (their numbers changed), the caret kept. */
     refresh() {
       const focused = document.activeElement === el;
       const [start, end] = focused ? selection() : [0, 0];

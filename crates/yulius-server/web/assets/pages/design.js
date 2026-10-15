@@ -29,6 +29,7 @@ const STATUSES = [
   { status: 'running', activity: 'done', background_shells: 1 }, { status: 'running', activity: 'waiting', yulius_wait: true },
   { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'prepared' }, { status: 'prepared', start_at: new Date(Date.now() + 86400e3).toISOString() }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
   { status: 'switching' }, { status: 'stopping' },
+  { status: 'closed', not_started: true, awaits_start_onboarding: true }, { status: 'closed', not_started: true },
   { status: 'closed' }, { status: 'stopped_cancelled' }, { status: 'stopped_crashed' }, { status: 'failed_spawn_error' },
 ];
 // What only the live store adds (taskInfo): a held prompt, a browser request and the pull request.

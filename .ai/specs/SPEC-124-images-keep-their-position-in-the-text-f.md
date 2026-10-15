@@ -17,6 +17,10 @@ kept in place in the message the agent gets, in the stored prompt and in the ori
 view; text-only and older prompts keep working. Builds on #102 (SPEC-117): one first message,
 never a second one.
 
+> Refined by [SPEC-150](SPEC-150-fix-the-ux-i-d-expect-uploading-images-a.md) (ADR-0124): uploads
+> show in a tray above the text and the text holds a one-line placeholder (`Image N`), not a
+> thumbnail; deleting a placeholder keeps the file, which is sent after the text (INL-001, INL-005).
+
 ## Goal
 
 A file pasted or dropped into the new-task composer sits in the text where it was put, as an

@@ -175,6 +175,20 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
+    async fn transition_onboarding(&self, id: &SandboxId, from: &str, to: &str) -> AppResult<bool> {
+        let (id, from, to) = (id.as_str().to_owned(), from.to_owned(), to.to_owned());
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE sandboxes SET onboarding_state = ?1 WHERE id = ?2 AND onboarding_state = ?3",
+                    params![to, id, from],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
     async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()> {
         let id = id.as_str().to_owned();
         self.call_access(move |c| {
