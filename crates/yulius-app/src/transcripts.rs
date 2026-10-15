@@ -835,7 +835,9 @@ mod tests {
     fn diff_in(line: &Value) -> Result<TranscriptDiff, Box<dyn std::error::Error>> {
         let entry = entry_of(0, line, &mut EnvCalls::default()).ok_or("no entry")?;
         match entry.blocks.into_iter().next() {
-            Some(TranscriptBlock::ToolCall { diff: Some(diff), .. }) => Ok(diff),
+            Some(TranscriptBlock::ToolCall {
+                diff: Some(diff), ..
+            }) => Ok(diff),
             other => Err(format!("not an edit: {other:?}").into()),
         }
     }
@@ -897,7 +899,10 @@ mod tests {
         )
         .ok_or("no entry")?;
         let (text, _) = render_text(&[entry], 100_000);
-        assert!(text.ends_with("  …(cut: the change is longer)\n\n"), "{text}");
+        assert!(
+            text.ends_with("  …(cut: the change is longer)\n\n"),
+            "{text}"
+        );
         let old: TranscriptDiff = serde_json::from_value(json!({"path": "a.rs", "hunks": []}))?;
         assert!(!old.truncated, "a diff without the field is whole");
         Ok(())
@@ -917,13 +922,22 @@ mod tests {
         let system = |text: String| json!({"type": "system", "content": text});
         assert_eq!(meta(&user("short".into()))?, ("short".to_owned(), false));
         let (text, cut_off) = meta(&user("s".repeat(MAX_RESULT_CHARS)))?;
-        assert!(!cut_off && text.len() == MAX_RESULT_CHARS, "at the bound it is whole");
+        assert!(
+            !cut_off && text.len() == MAX_RESULT_CHARS,
+            "at the bound it is whole"
+        );
         let (text, cut_off) = meta(&user("s".repeat(MAX_RESULT_CHARS + 1)))?;
-        assert!(cut_off && text.len() == MAX_RESULT_CHARS, "over the bound it is cut");
+        assert!(
+            cut_off && text.len() == MAX_RESULT_CHARS,
+            "over the bound it is cut"
+        );
         let (_, cut_off) = meta(&system("s".repeat(MAX_TEXT_CHARS)))?;
         assert!(!cut_off, "a system line at its bound is whole");
         let (text, cut_off) = meta(&system("s".repeat(MAX_TEXT_CHARS + 1)))?;
-        assert!(cut_off && text.len() == MAX_TEXT_CHARS, "a system line over it is cut");
+        assert!(
+            cut_off && text.len() == MAX_TEXT_CHARS,
+            "a system line over it is cut"
+        );
         let old: TranscriptBlock = serde_json::from_value(json!({"type": "meta", "text": "x"}))?;
         assert_eq!(
             old,
