@@ -18,6 +18,30 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#399:** the task summary says `not_started` and `awaits_start_onboarding`. The UI reads the
     onboarding task of a `pending` sandbox "Waits for Start onboarding", and a task that never ran
     "Not started". Neither is in the Closed group, tab or count.
+- CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
+  entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
+  Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
+- The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
+  task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
+  to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
+  secret environment. Its Bash commands, hooks and stdio servers run through `yulius --scrub-exec`
+  and its tool results pass the `PostToolUse` redaction hook, its only hook, as in task runs: an
+  agent secret prints as `[secret:NAME]`. Both load their fingerprints with the person's workspace
+  token, which the scrub endpoints now accept while the person may work in the sandbox, and its
+  screen is redacted on the server as a task's terminal is. Literal values typed into a server's
+  form are not agent secrets and stay unredacted, as in task runs; servers imported from
+  `.mcp.json` with agent-secret placeholders need the egress proxy, which the Superagent does not
+  have yet.
+- A failed CI test's output stays readable (SPEC-145, ADR-0119, task #128; fixes #460, part of #485).
+  While a job runs, Yulius keeps each failing test's block (nextest's `FAIL` line with its stdout and
+  stderr, or libtest's), at most 8 KiB each and 32 KiB per job, and `ci_status` with `run_id` shows
+  them before the end of the job's output. Flaky tests:
+  - `cockpit::a_cockpit_manages_the_project_for_its_owner` archived the task it created before the
+    task's start had failed in the background; it now waits for the task to rest (#460).
+  - `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` advanced the clock once,
+    and a disk check that ended after the jump dated the next check a minute later; it now lets time
+    pass until the runs start. That race only times out, while CI saw a fast failure that stays
+    unexplained, so the test is quarantined and #485 stays open.
 - Opening Settings → Instance checks `main` at once (SPEC-149, ADR-0123, task #143): the page no
   longer shows a check up to an hour old until "Check now". The server reuses a check younger than
   30 s; a failed automatic check keeps the last result without an error toast.

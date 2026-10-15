@@ -462,12 +462,24 @@ other server. The Superagent starts with `--settings` naming every one of them i
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
+The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
+redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
+hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
+server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
+token the person's environment holds, answered while the person may work in the sandbox (by an
+access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
+proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+[decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
+  MS -->|"mcp_attachments: values in the secret environment"| HP
+  SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
   APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
@@ -536,9 +548,11 @@ flowchart LR
 
 CD runs a project's deploy and verify scripts like CI runs its checks
 ([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
-ADR-0110, ADR-0111). `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the
-heads of the protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree
-never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
+ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
+tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
+`yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
+protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
+changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
@@ -850,6 +864,18 @@ before/after recorded")]
 live / gone"| keep[("metrics kept;
 outcome recorded")]
 ```
+
+## CI job output
+
+A CI job's output is read from its log while it runs: the stored output is its last 512 KiB
+(escape sequences removed), and the same reads feed the stage scanner and the failure scanner
+(`FailureScanner` in `yulius-domain::ci::failures`). The failure scanner keeps every failing test's
+block it sees anywhere in the output, nextest's (`FAIL [ 0.5s] …` with its `stdout ───` and
+`stderr ───`) and libtest's, at most 8 KiB each and 32 KiB per job, in `ci_jobs.failures` when the
+job ends. `ci_status` with a `run_id` shows them before the end of a failed job's output, so a test
+that failed early in a long job stays diagnosable
+([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
+[decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
 ## Stages
 

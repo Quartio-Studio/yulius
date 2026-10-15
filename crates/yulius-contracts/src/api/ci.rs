@@ -52,6 +52,11 @@ pub struct CiJob {
     /// sequences removed, plus Yulius notes; partial while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// Its failing tests' output (only in [`CiRunDetail`]): each failing test's block (status
+    /// line, stdout and stderr) found anywhere in its output, at most 8 KiB each and 32 KiB in
+    /// all (SPEC-145).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures: Option<String>,
 }
 
 /// One CI run (lists leave the output out).

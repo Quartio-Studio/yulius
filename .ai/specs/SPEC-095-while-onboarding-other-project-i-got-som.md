@@ -61,7 +61,7 @@ there does. The Superagent opens straight on its prompt.
   `${secret:NAME}` (MCP-003), resolved when a run starts. A header may be `Bearer ${secret:NAME}`.
 - Gaps found and not fixed here: the Superagent gets none of the servers configured in Yulius
   (MGT-004 attaches only `yulius`), and they would reach it without the redaction hook that task
-  runs have. Filed as #395.
+  runs have. Filed as #395, fixed by SPEC-147.
 
 ## Requirements
 

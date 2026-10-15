@@ -482,6 +482,8 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
     };
     let plan = plan_cockpit(&request)?;
     // No Yulius settings (hooks, status line), MCP, prompt or approval bypass (SPEC-021
@@ -592,6 +594,8 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             token: Secret::new("ck_SYNTHETIC".into()),
         }),
         project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-037 MGT-004: the Yulius MCP server inline, its bearer read from the environment; the
@@ -666,6 +670,8 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
             "pipedream-gmail".into(),
             "it's \"odd\"; $(x)".into(),
         ],
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
     };
     let plan = plan_cockpit(&request)?;
     let at = plan
@@ -685,5 +691,140 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         ["--model", "claude-opus-5-5", "--effort", "high"]
     );
     assert!(!plan.argv.iter().any(|a| a == "--strict-mcp-config"));
+    Ok(())
+}
+
+/// SPEC-147 SAM-001/002 (ADR-0121): the Superagent gets the sandbox's MCP servers next to `yulius`,
+/// in the task run's shape (values only as `${VAR}` references), and the task runs' `PostToolUse`
+/// redaction hook as its only hook, beside the rejected `.mcp.json` servers.
+#[test]
+fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult {
+    let request = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: None,
+        continue_interrupted: false,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: Some(CockpitYulius {
+            url: "http://127.0.0.1:8081".into(),
+            token: Secret::new("ck_SYNTHETIC".into()),
+        }),
+        project_mcp_servers: vec!["apify".into()],
+        mcp_servers: servers(),
+        redaction_exe: Some(PathBuf::from("/opt/yulius it's/yulius")),
+    };
+    let plan = plan_cockpit(&request)?;
+    let value_of = |flag: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        let at = plan
+            .argv
+            .iter()
+            .position(|a| a == flag)
+            .ok_or(format!("{flag} missing"))?;
+        Ok(serde_json::from_str(&plan.argv[at + 1])?)
+    };
+    let mcp = value_of("--mcp-config")?;
+    assert_eq!(
+        mcp["mcpServers"]["yulius"]["headers"]["Authorization"],
+        "Bearer ${YULIUS_COCKPIT_TOKEN}"
+    );
+    assert_eq!(
+        mcp["mcpServers"]["apify"],
+        json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@apify/actors-mcp-server"],
+            "env": { "APIFY_TOKEN": "${YULIUS_MCP_APIFY_APIFY_TOKEN}" }
+        })
+    );
+    assert_eq!(
+        mcp["mcpServers"]["quartio"],
+        json!({
+            "type": "http",
+            "url": "https://mcp.example.test/mcp",
+            "headers": { "Authorization": "Bearer ${QUARTIO_MCP_TOKEN}" }
+        })
+    );
+    let settings = value_of("--settings")?;
+    assert_eq!(settings["disabledMcpjsonServers"], json!(["apify"]));
+    assert_eq!(
+        settings["hooks"],
+        json!({ "PostToolUse": [{ "matcher": "*", "hooks": [{
+            "type": "command",
+            "command": r"'/opt/yulius it'\''s/yulius' hook claude PostToolUse",
+            "timeout": 60
+        }] }] })
+    );
+    assert_eq!(
+        settings.as_object().map(serde_json::Map::len),
+        Some(2),
+        "no other setting: {settings}"
+    );
+    assert!(!plan.argv.iter().any(|a| a == "--strict-mcp-config"));
+    assert!(plan.files.is_empty());
+
+    // Without the Yulius server the sandbox's servers still come, with nothing pre-allowed;
+    // without servers, redaction or rejected servers there is no config and no setting.
+    let alone = plan_cockpit(&CockpitRequest {
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        redaction_exe: None,
+        ..request.clone()
+    })?;
+    let at = alone
+        .argv
+        .iter()
+        .position(|a| a == "--mcp-config")
+        .ok_or("--mcp-config")?;
+    let only: Value = serde_json::from_str(&alone.argv[at + 1])?;
+    assert!(only["mcpServers"]["yulius"].is_null());
+    assert!(only["mcpServers"]["apify"].is_object());
+    assert!(
+        !alone
+            .argv
+            .iter()
+            .any(|a| a == "--allowedTools" || a == "--settings")
+    );
+
+    // A server is validated as for a task run.
+    let named = |name: &str| McpServerSpec {
+        name: name.into(),
+        transport: McpTransport::Http {
+            url: "https://x.test/mcp".into(),
+            bearer_env: None,
+        },
+    };
+    for (servers, error) in [
+        (
+            vec![named("yulius")],
+            LaunchError::DuplicateMcpServer("yulius".into()),
+        ),
+        (
+            vec![named("a"), named("a")],
+            LaunchError::DuplicateMcpServer("a".into()),
+        ),
+        (
+            vec![named("bad name")],
+            LaunchError::Invalid("mcp server name"),
+        ),
+        (
+            vec![McpServerSpec {
+                name: "s".into(),
+                transport: McpTransport::Stdio {
+                    command: "npx".into(),
+                    args: Vec::new(),
+                    env_vars: vec![("A".into(), "B-C".into())],
+                },
+            }],
+            LaunchError::Invalid("mcp env name"),
+        ),
+    ] {
+        assert_eq!(
+            plan_cockpit(&CockpitRequest {
+                mcp_servers: servers,
+                ..request.clone()
+            }),
+            Err(error)
+        );
+    }
     Ok(())
 }
