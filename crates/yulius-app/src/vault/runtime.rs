@@ -306,40 +306,53 @@ impl App {
         })
     }
 
-    /// `POST /internal/scrub/fingerprints`: the caller's run's fingerprints.
+    /// Whose redaction calls with `token`: a live run's attempt (`task:<n>`), or a person's
+    /// workspace, where their Superagent runs (SPEC-147 SAM-003). Answers the sandbox, the key a
+    /// redaction is audited once per, and the audit actor.
+    async fn scrub_caller(&self, token: &str) -> AppResult<(SandboxId, String, String)> {
+        match self.agent_context(token).await {
+            Ok(ctx) => Ok((
+                ctx.task.sandbox_id.clone(),
+                ctx.attempt.id.as_str().to_owned(),
+                ctx.actor(),
+            )),
+            Err(AppError::Unauthenticated) => {
+                let (user, sandbox) = self.workspace_worker(token).await?;
+                let once = format!("ws:{}:{}", user.id.as_str(), sandbox.as_str());
+                let actor = user.github_login.unwrap_or_else(|| "superadmin".into());
+                Ok((sandbox, once, actor))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// `POST /internal/scrub/fingerprints`: the caller's run's fingerprints, or those of a
+    /// person's workspace (SPEC-147 SAM-003).
     ///
     /// # Errors
-    /// `Unauthenticated` for unknown or ended runs; store failures.
+    /// `Unauthenticated` for unknown or ended runs and for people who may no longer work in the
+    /// workspace's sandbox; store failures.
     pub async fn scrub_fingerprints(&self, token: &str) -> AppResult<FingerprintSet> {
-        let ctx = self.agent_context(token).await?;
-        self.scrub_fingerprints_for(&ctx.task.sandbox_id).await
+        let (sandbox, _, _) = self.scrub_caller(token).await?;
+        self.scrub_fingerprints_for(&sandbox).await
     }
 
     /// `POST /internal/scrub/report`: a sandbox process redacted these secrets (audited once
-    /// per run, secret and channel).
+    /// per run, or person and sandbox, secret and channel).
     ///
     /// # Errors
     /// `Unauthenticated`, `Invalid` channel.
     pub async fn scrub_report(&self, token: &str, report: &RedactionReport) -> AppResult<()> {
-        let ctx = self.agent_context(token).await?;
+        let (sandbox, once, actor) = self.scrub_caller(token).await?;
         if !matches!(report.channel.as_str(), "bash" | "tool") {
             return Err(AppError::Invalid("channel must be bash or tool".into()));
         }
-        let records = self
-            .deps
-            .store
-            .vault_agent(Some(&ctx.task.sandbox_id))
-            .await?;
+        let records = self.deps.store.vault_agent(Some(&sandbox)).await?;
         for name in report.names.iter().take(64) {
             if let Some(record) = records.iter().find(|r| &r.name == name) {
                 self.vault_audit_once(
-                    format!(
-                        "redacted|{}|{}|{}",
-                        ctx.attempt.id.as_str(),
-                        record.id,
-                        report.channel
-                    ),
-                    &ctx.actor(),
+                    format!("redacted|{once}|{}|{}", record.id, report.channel),
+                    &actor,
                     "vault.agent.redacted",
                     Some(&record.id),
                     &format!("{} in {} output", record.name, report.channel),

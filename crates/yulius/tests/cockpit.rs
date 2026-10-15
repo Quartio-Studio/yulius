@@ -60,6 +60,8 @@ for a in \"$@\"; do\n\
 done\n\
 echo \"cockpit-args:[${args# }]\"\n\
 echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
+echo \"workspace:${YULIUS_TASK_TOKEN:-none}\"\n\
+echo \"prefix:${CLAUDE_CODE_SHELL_PREFIX:-none}\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
 echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
@@ -1347,6 +1349,103 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
         .await?;
     let refused = mcp(&f, &token, "tools/list", json!({})).await?;
     assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// An agent secret's value, referenced by the sandbox's `apify` MCP server (SPEC-147).
+const SECRET_VALUE: &str = "apify_synthetic_9f3Qz7LmWc2Rk8Tn";
+
+/// alice adds the agent secret `APIFY_KEY` to `s1`.
+async fn add_apify_key(f: &Fixture) -> TestResult {
+    let resp = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "APIFY_KEY", "hosts": ["api.apify.test"], "value": SECRET_VALUE})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::CREATED, "{:?}", resp.body);
+    Ok(())
+}
+
+/// A POST to the internal scrub endpoint `what` with `token`.
+async fn scrub(
+    f: &Fixture,
+    token: &str,
+    what: &str,
+    body: Value,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/internal/scrub/{what}"),
+        Some(body),
+        &Creds {
+            bearer: Some(token.to_owned()),
+            ..Creds::default()
+        },
+    )
+    .await
+}
+
+/// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
+/// workspace token, which its environment already holds: answered while the person may work in
+/// the sandbox, refused once they cannot, and a redaction is audited with their login.
+#[tokio::test]
+async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let workspace = printed(&screen, "workspace")?;
+    assert!(workspace.starts_with("ws_"), "{workspace}");
+
+    let answered = scrub(&f, &workspace, "fingerprints", json!({})).await?;
+    assert_eq!(answered.status, StatusCode::OK, "{:?}", answered.body);
+    assert_eq!(answered.body["names"], json!(["APIFY_KEY"]));
+    assert!(!answered.body.to_string().contains(SECRET_VALUE));
+    let reported = scrub(
+        &f,
+        &workspace,
+        "report",
+        json!({"channel": "bash", "names": ["APIFY_KEY"]}),
+    )
+    .await?;
+    assert_eq!(reported.status, StatusCode::NO_CONTENT);
+    let activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert!(
+        activity.body.as_array().is_some_and(|a| a
+            .iter()
+            .any(|e| e["action"] == "vault.agent.redacted" && e["actor"] == "alice")),
+        "{:?}",
+        activity.body
+    );
+
+    assert_eq!(
+        scrub(&f, "ws_0000", "fingerprints", json!({})).await?.status,
+        StatusCode::UNAUTHORIZED
+    );
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    assert_eq!(
+        scrub(&f, &workspace, "fingerprints", json!({})).await?.status,
+        StatusCode::UNAUTHORIZED,
+        "a person who lost write access reads nothing"
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }
