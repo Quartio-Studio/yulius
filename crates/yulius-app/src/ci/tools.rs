@@ -79,8 +79,10 @@ impl App {
         let mut runs = Vec::new();
         for run in self.deps.store.ci_runs(&sandbox.id, TOOL_RUNS).await? {
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            // Its pull request's runs and the merge trains it is in (SPEC-084).
-            let mine = pr.is_some_and(|n| run.reference.covers(n));
+            // Its pull request's runs and the merge trains it is in (SPEC-084), or in a playground
+            // the runs of its head merged into the integration branch (SPEC-163).
+            let mine = pr.is_some_and(|n| run.reference.covers(n))
+                || run.reference == yulius_domain::ci::CiRef::Task(u64::from(ctx.task.number));
             let mut value =
                 serde_json::to_value(run_view(&run, &jobs, false)).map_err(AppError::internal)?;
             value["this_task"] = Value::Bool(mine);
@@ -95,8 +97,13 @@ impl App {
             "problem": view.problem,
             "github_actions_workflows": view.workflows,
             "pull_request": pr,
+            "playground": sandbox.is_playground(),
             "runs": runs,
-            "note": "Merges that require checks wait for the latest run at the pull request head to pass. Read a run's output with run_id.",
+            "note": if sandbox.is_playground() {
+                "delivery_merge squashes once the run of your head merged into the integration branch passed. Read a run's output with run_id."
+            } else {
+                "Merges that require checks wait for the latest run at the pull request head to pass. Read a run's output with run_id."
+            },
         }))
     }
 

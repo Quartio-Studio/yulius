@@ -822,6 +822,12 @@ export function createSidebar(ctx) {
     const size = groupRows.length;
     const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
     if (group.id === 'done') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label, archiveAllButton(groupRows));
+    // How the open tasks wait for each other, on the Tasks page's Graph (SPEC-164).
+    if (group.id === 'working') {
+      const path = `/s/${encodeURIComponent(sandbox.slug)}/tasks?view=graph`;
+      return h('div', { class: ['task-group-head', `group-${group.id}`] }, label,
+        h('a', { class: ['btn-icon', 'task-group-action', 'task-group-graph'], href: href(path), dataset: { route: path }, 'aria-label': 'Show as a graph', title: 'Show as a graph: the queue, chains and rules' }, icon('workflow', { size: 14 })));
+    }
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;

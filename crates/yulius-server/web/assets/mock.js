@@ -312,6 +312,35 @@ function seed(params) {
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
   }
+  // `tasks=graph`: studio's tasks form a structure (SPEC-164): a chain #12 → #15 → #16, a rule
+  // #17 over #12 and #16, a supertask #20 holding #8 and #21 in the queue, prepared #18 and #19,
+  // and a rule #22 naming the archived #1. `graph=cycle` adds two tasks waiting for each other.
+  if (params.get('tasks') === 'graph') {
+    const find = (number) => db.tasks.find((x) => x.sandbox_id === 'sb_studio' && x.number === number);
+    const add = (...args) => { const task = t('sb_studio', ...args); db.tasks.push(task); return task; };
+    const cart = add(15, 'Cart totals', 'claude', 'chained', null, { noSteps: true, updated: 40 * MIN });
+    const receipts = add(16, 'Receipt emails', 'claude', 'chained', null, { noSteps: true, updated: 35 * MIN });
+    const release = add(17, 'Release checklist', 'claude', 'chained', null, { noSteps: true, updated: 30 * MIN });
+    chainAfter(cart, find(12));
+    chainAfter(receipts, cart);
+    chainAfter(release, find(12), '#12 done and #16 done');
+    // #14 ran after #13 and has started: its link is history, not a wait.
+    chainAfter(find(14), find(13));
+    add(18, 'Weekly cleanup', 'claude', 'prepared', null, { noSteps: true, updated: 25 * MIN }).start_at = isoIn(2 * DAY);
+    add(19, 'Pricing experiment', 'claude', 'prepared', null, { noSteps: true, updated: 20 * MIN });
+    const hardening = add(20, 'Security hardening', 'claude', 'queued', null, { noSteps: true, updated: 15 * MIN });
+    hardening.supertask = true;
+    hardening.heldBy = mockHeldBy(db, hardening);
+    find(8).heldBy = [20];
+    add(21, 'Translate the docs', 'claude', 'queued', null, { noSteps: true, updated: 10 * MIN }).heldBy = [20];
+    chainAfter(add(22, 'Restore the old landing', 'claude', 'chained', null, { noSteps: true, updated: 5 * MIN }), find(15), '#1 done or #15 ended');
+    if (params.get('graph') === 'cycle') {
+      const a = add(23, 'Loop A', 'claude', 'chained', null, { noSteps: true, updated: 4 * MIN });
+      const b = add(24, 'Loop B', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN });
+      chainAfter(a, b);
+      chainAfter(b, a);
+    }
+  }
   recount(db);
   return db;
 }
@@ -4475,7 +4504,8 @@ function startAmbient(db) {
   setInterval(() => {
     if (db.eventSockets.size === 0) return;
     tick += 1;
-    const queued = db.tasks.find((t) => t.status === 'queued' && t.sandbox_id === 'sb_studio' && !t.archived && t.number === 8);
+    // A task a supertask holds does not start (`tasks=graph`).
+    const queued = db.tasks.find((t) => t.status === 'queued' && t.sandbox_id === 'sb_studio' && !t.archived && t.number === 8 && !(t.heldBy && t.heldBy.length));
     if (tick === 3 && queued) touch(db, queued, { status: 'starting' });
     if (tick === 5 && queued) touch(db, queued, { status: 'running', activity: 'working', account_label: 'Claude #1' });
     const switching = db.tasks.find((t) => t.id === 'tsk_studio_9');
