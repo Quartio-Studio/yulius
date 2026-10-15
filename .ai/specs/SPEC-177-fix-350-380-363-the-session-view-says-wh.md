@@ -54,10 +54,15 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   whenever its size changes (a `ResizeObserver` per view, disconnected when the view goes). Before
   it is laid out (an off-screen entry under `content-visibility: auto`, a closed fold) the block
   keeps an estimate for the narrowest layout (38 columns), so a block that may scroll is never
-  skipped by the keyboard. A block that does not scroll is no tab stop.
-- **SCV-004 (#363).** Region names say whose block it is: `Result of Bash(npm test)`,
-  `Input of Grep(…)`, `Changed lines of path` with `(n of m)` for several hunks, and
-  `Result (line N)` for a result whose call is not on the page.
+  skipped by the keyboard. A block that does not scroll is no tab stop; one that stops scrolling
+  while it has the keyboard stays a region until the keyboard leaves it.
+- **SCV-004 (#363).** Region names say whose block it is, naming the call as its line does:
+  `Result of Bash(npm test)`, `Input of Grep(…)`, `Changed lines of path` with `(n of m)` for
+  several hunks, and `Result (line N)` for a result whose call is not on the page. A name already
+  used in the view (a command run twice, a second added context) adds ` (line N)`.
+- **SCV-005 (review round 1).** A cut meta block whose last line is command output says "Cut here:
+  the output is longer."; an opened result whose call is not on the page keeps a name for its
+  summary ("Tool result", for assistive technology).
 
 ## Plan
 
@@ -66,7 +71,8 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
 - [x] A cut context says so and shows its size as at least (#380)
 - [x] Scrollers become regions by measured overflow, with distinct names (#363)
 - [x] Docs, ADR and changes updated
-- [ ] Gates green and independent review passed
+- [x] Gates green and independent review passed
+- [x] Review round 1 findings fixed: focus kept, unique names, cut output, tests
 
 ## Acceptance criteria
 
@@ -79,6 +85,10 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
 - `sessions.e2e.ts` at 390 × 844: a result of 16 lines × 60 characters is the region
   `Result of Bash(…)` and axe passes; at 1280 px the same result is no tab stop. Fails without
   SCV-003/004.
+- `sessions.e2e.ts` (review round 1): two hunks are `(1 of 2)` and `(2 of 2)`, a result without
+  its call is `Result (line 19)`, a second run of a command is `… (line 21)`, no region says
+  `Edit(`, a cut command output says "output", with no axe violations; in the page, a focused
+  region that stops scrolling keeps its tab stop until blurred.
 - Existing session e2e tests stay green (the long diff and the skill body stay regions).
 
 ## Test plan
@@ -99,3 +109,7 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
 - Code blocks inside messages keep the name "Code": a message rarely holds several long ones, and
   naming them by line would add a parameter through `richText` for little gain.
 - The new fields are `#[serde(default)]` so stored or older payloads still deserialize.
+- Review round 1 (approve, 290f72ff; minors fixed here per ADR-0141): a focused region is not
+  demoted under the keyboard; repeated names add their line; names use the TUI's labels.
+  `render_text` capping hunks at 40/80 lines without a marker is older than this change and is
+  left as it is (noted in the task summary; this task creates no issues).

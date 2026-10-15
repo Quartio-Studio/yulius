@@ -203,13 +203,25 @@ function scroller(text, label) {
   return { 'data-region': label, ...(rows > 16 ? regionAttrs(label) : null) };
 }
 
-/** Makes a laid-out block a region exactly when it scrolls; one not laid out keeps its estimate. */
+const leaving = new WeakSet(); // regions that stopped scrolling while they had the keyboard
+
+/**
+ * Makes a laid-out block a region exactly when it scrolls; one not laid out keeps its estimate.
+ * A region that stops scrolling while it has the keyboard stays one until the keyboard leaves it.
+ */
 export function markRegion(el) {
   if (!el.clientHeight) return;
   const scrolls = el.scrollHeight > el.clientHeight;
   if (scrolls === (el.getAttribute('role') === 'region')) return;
-  if (scrolls) for (const [key, value] of Object.entries(regionAttrs(el.dataset.region))) el.setAttribute(key, value);
-  else for (const key of Object.keys(regionAttrs(''))) el.removeAttribute(key);
+  if (scrolls) {
+    for (const [key, value] of Object.entries(regionAttrs(el.dataset.region))) el.setAttribute(key, value);
+  } else if (el === document.activeElement) {
+    if (leaving.has(el)) return;
+    leaving.add(el);
+    el.addEventListener('blur', () => { leaving.delete(el); markRegion(el); }, { once: true });
+  } else {
+    for (const key of Object.keys(regionAttrs(''))) el.removeAttribute(key);
+  }
 }
 
 const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
@@ -359,7 +371,10 @@ function metaOf(item) {
 const outLines = (lines, className, attrs = null) => h('span', { class: ['ss-line', 'ss-out', ...[className].flat(Infinity)], ...attrs }, mark('⎿', 'out'), h('span', { class: 'ss-line-body' }, h('span', { class: 'ss-out-text' }, lines.join('\n'))));
 
 /** `Bash(npm test)`: a call as its summary line names it, for region names. */
-const callName = (item) => (item.summary ? `${item.name}(${item.summary})` : item.name);
+const callName = (item) => {
+  const name = TOOL_LABEL[item.name] || item.name;
+  return item.summary ? `${name}(${item.summary})` : name;
+};
 
 function toolCall(item, result) {
   const failed = Boolean(result && result.is_error);
@@ -394,7 +409,8 @@ function block(item, results, role, line) {
       return toolCall(item, results.get(item.id));
     case 'tool_result':
       return results.has(item.tool_use_id) && results.get(item.tool_use_id).shown ? null : h('details', { class: ['ss-fold', 'ss-tool', item.is_error && 'ss-tool-error'] },
-        h('summary', null, outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
+        // Opened, the folded preview hides: the summary keeps a name (axe summary-name).
+        h('summary', null, h('span', { class: 'sr-only' }, 'Tool result'), outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
         outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], scroller(item.text, `Result (line ${line})`)),
         item.truncated ? cutNote('result') : null);
     case 'image':
@@ -409,7 +425,9 @@ function block(item, results, role, line) {
         if (line.kind === 'out' || line.kind === 'err') return outLines(linesOf(line.text), line.kind === 'err' && 'ss-out-err');
         return foldsNote(line.text) ? foldedNote(line.text, cutFold && index === parsed.length - 1) : h('div', { class: 'ss-meta ss-dim' }, line.text);
       });
-      return lines.length ? h('div', { class: 'ss-block' }, lines, item.truncated && !cutFold ? cutNote('context') : null) : null;
+      const last = parsed.length ? parsed[parsed.length - 1].kind : null;
+      const cutWhat = last === 'out' || last === 'err' ? 'output' : 'context';
+      return lines.length ? h('div', { class: 'ss-block' }, lines, item.truncated && !cutFold ? cutNote(cutWhat) : null) : null;
     }
     default:
       return null;
@@ -585,6 +603,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   const results = new Map(); // tool_use_id → result, shown inside its call
   // Scrolling blocks are regions as laid out, again when their width changes (#363).
   const regions = typeof ResizeObserver === 'function' ? new ResizeObserver((changes) => changes.forEach((change) => markRegion(change.target))) : null;
+  const regionNames = new Set(); // a name used again (a command run twice) names its line
 
   const titleEl = h('h1', { class: 'page-title gt-title' }, 'Session');
   const meta = h('div', { class: 'gt-meta' });
@@ -670,7 +689,16 @@ export function mountSessionView(ctx, sandbox, id, route) {
     for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_call' && results.has(b.id)) results.get(b.id).shown = true;
     const added = entries.map(entry).filter(Boolean);
     entriesEl.append(...added);
-    if (regions) for (const li of added) li.querySelectorAll('[data-region]').forEach((el) => regions.observe(el));
+    for (const li of added) {
+      for (const el of li.querySelectorAll('[data-region]')) {
+        if (regionNames.has(el.dataset.region)) {
+          el.dataset.region = `${el.dataset.region} (line ${li.dataset.line})`;
+          if (el.hasAttribute('aria-label')) el.setAttribute('aria-label', el.dataset.region);
+        }
+        regionNames.add(el.dataset.region);
+        if (regions) regions.observe(el);
+      }
+    }
   }
 
   function renderMore() {

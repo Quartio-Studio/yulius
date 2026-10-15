@@ -21,12 +21,14 @@ be measured until they come near it.
 - Each scrolling-capable block carries its region name (`data-region`). Once laid out it is a region
   exactly when `scrollHeight > clientHeight`, checked by one `ResizeObserver` per session view when
   the block is first laid out and whenever its size changes (a rotation, a zoom, a panel beside it,
-  a fold opened). The observer is disconnected when the view goes.
+  a fold opened). The observer is disconnected when the view goes. A region that stops scrolling
+  while it has the keyboard stays one until the keyboard leaves it.
 - Until a block is laid out (an off-screen entry, a closed fold) it keeps an estimate for the
   narrowest layout, 38 columns and more than 16 rows, so a block that may scroll is never skipped
   by the keyboard.
 - Region names say whose block it is: `Result of Bash(npm test)`, `Input of …`, `Changed lines of
-  path (n of m)` for several hunks, `Result (line N)` for a result whose call is on another page.
+  path (n of m)` for several hunks, `Result (line N)` for a result whose call is on another page;
+  a name already used in the view adds ` (line N)`.
 
 ## Alternatives
 

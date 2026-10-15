@@ -810,6 +810,52 @@ test('a result that scrolls only on a phone is a named region there and no tab s
   await expect(result).toHaveAttribute('role', 'region');
 });
 
+// Review round 1 of SPEC-177: region names tell blocks apart, a cut output says "output", and a
+// block that stops scrolling while it has the keyboard keeps its tab stop until it loses it.
+test('scroll regions have distinct names and a cut output says so', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const named = (label: string) => browser.locator(`.ss-tui [role="region"][aria-label="${label}"]`);
+  await expect(named('Changed lines of e2e/login.spec.ts (1 of 2)')).toHaveCount(1);
+  await expect(named('Changed lines of e2e/login.spec.ts (2 of 2)')).toHaveCount(1);
+  await browser.locator('.ss-tui li[data-line="19"] details.ss-tool > summary').click();
+  await expect(named('Result (line 19)')).toHaveCount(1);
+  // The command first run on line 1 keeps its name; the second run names its line.
+  await browser.locator('.ss-tui li[data-line="21"] details.ss-tool > summary').click();
+  await expect(named('Result of Bash(npx playwright test login) (line 21)')).toHaveCount(1);
+  await expect(browser.locator('.ss-tui li[data-line="20"] .ss-cut')).toHaveText('Cut here: the output is longer.');
+  expect(await axeViolations(browser)).toEqual([]);
+  // A region named after its call names it as the line above it does: "Update", not "Edit".
+  const regions = await browser.evaluate(() => [...document.querySelectorAll('.ss-tui [data-region]')].map((el) => el.getAttribute('data-region')));
+  expect(regions.filter((name) => /Edit\(/.test(name ?? ''))).toEqual([]);
+});
+
+test('a region that stops scrolling keeps its tab stop while it has the keyboard (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions'));
+  const states = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { markRegion } = await import(url);
+    const box = document.createElement('pre');
+    Object.assign(box.style, { maxHeight: '480px', overflow: 'auto', margin: '0' });
+    box.dataset.region = 'Code';
+    for (const [key, value] of Object.entries({ tabindex: '0', role: 'region', 'aria-label': 'Code' })) box.setAttribute(key, value);
+    box.textContent = 'short';
+    document.body.append(box);
+    const state = () => [box.getAttribute('role'), box.getAttribute('tabindex')].join(' ');
+    box.focus();
+    markRegion(box);
+    markRegion(box);
+    const focused = state();
+    box.blur();
+    const left = state();
+    box.textContent = 'line\n'.repeat(200);
+    markRegion(box);
+    const scrolls = state();
+    box.remove();
+    return { focused, left, scrolls };
+  });
+  expect(states).toEqual({ focused: 'region 0', left: ' ', scrolls: 'region 0' });
+});
+
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions?q=fulfilling'));
   await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).click();

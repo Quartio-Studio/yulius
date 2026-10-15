@@ -3369,6 +3369,14 @@ function sessionDocs(db) {
     entry(15, 'user', [result('b2', Array.from({ length: 16 }, (_, i) => `[chromium] › e2e/login.spec.ts:${String(i + 1).padStart(2, '0')} › signs in with a link`.padEnd(60, '.')).join('\n'))]),
     // Hook context the server cut at its bound (#380).
     entry(16, 'user', [{ type: 'meta', text: ['Hook context: flaky test history', '', ...Array.from({ length: 400 }, (_, i) => `- run ${i + 1}: e2e/login.spec.ts timed out after 5000ms`)].join('\n').slice(0, 16384), truncated: true }]),
+    // Review round 1 of SPEC-177: hunks, a result whose call is not on the page, a cut command
+    // output and a command run twice are told apart.
+    entry(17, 'assistant', [call('m1', 'MultiEdit', 'e2e/login.spec.ts', { file_path: 'e2e/login.spec.ts' }, { path: 'e2e/login.spec.ts', hunks: [1, 2].map((n) => ({ old: Array.from({ length: 30 }, (_, i) => `  await page.waitForTimeout(${n}${i});`).join('\n'), new: Array.from({ length: 30 }, (_, i) => `  await expect(page.getByRole('heading', { name: 'Step ${n}${i}' })).toBeVisible();`).join('\n') })) })]),
+    entry(18, 'user', [result('m1', 'Applied 2 edits to e2e/login.spec.ts')]),
+    entry(19, 'user', [result('gone1', Array.from({ length: 40 }, (_, i) => `e2e/report-${i}.json`).join('\n'))]),
+    entry(20, 'user', [{ type: 'meta', text: `<local-command-stdout>${Array.from({ length: 40 }, (_, i) => `Usage line ${i}`).join('\n')}`, truncated: true }]),
+    entry(21, 'assistant', [call('b3', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
+    entry(22, 'user', [result('b3', Array.from({ length: 40 }, (_, i) => `  ✓ ${i + 1} [chromium] › e2e/login.spec.ts:${i + 1}`).join('\n'))]),
   ];
   // Claude Code's wrappers as recorded (a slash command, its output, a `!` command, reminders).
   const meta = (t) => ({ type: 'meta', text: t });
