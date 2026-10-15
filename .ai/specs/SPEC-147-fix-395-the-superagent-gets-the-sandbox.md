@@ -78,12 +78,13 @@ there as it is in a task run.
 
 ## Plan
 
-- [ ] Spec SPEC-147 and ADR-0121 amending MGT-004 and CKP-002, validated
-- [ ] The harness plans a Superagent with the sandbox's MCP servers and the redaction hook
-- [ ] The scrub endpoints accept a person's workspace token
-- [ ] The Superagent launches with the sandbox's MCP servers, their values only in its secret environment, and the Bash wrapper
-- [ ] Docs: SPEC-021, SPEC-037, architecture, product summary and changes say what the Superagent gets
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Spec SPEC-147 and ADR-0121 amending MGT-004 and CKP-002, validated
+- [x] The harness plans a Superagent with the sandbox's MCP servers and the redaction hook
+- [x] The scrub endpoints accept a person's workspace token
+- [x] The Superagent launches with the sandbox's MCP servers, their values only in its secret environment, and the Bash wrapper
+- [x] Docs: SPEC-021, SPEC-037, architecture, product summary and changes say what the Superagent gets
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 2 approves the head with the screen redaction and settled access
 - [ ] Gates green locally; merged into dev on green Yulius CI; #395 closed
 
 ## Acceptance criteria
