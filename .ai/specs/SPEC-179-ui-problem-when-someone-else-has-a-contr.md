@@ -1,11 +1,11 @@
 ---
 yulius-task: 7e3b8966-8570-4246-b8f4-8cfdad5d602e
-status: in-progress
+status: done
 ---
 
 # SPEC-179: Someone else's task is watched as its live transcript, with an octopus
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #166
 Scope authorization: task #166: "when someone is an owner of the task, other users should see a
@@ -107,8 +107,8 @@ reference face crawls along the top between the corners.
 - [x] Someone else's task shows its live transcript instead of a broken terminal, following new output and the owner's prompts
 - [x] The live transcript keeps the terminal's colours, and ownership is said clearly in the view and the sidebar
 - [x] An electro-blue pixel octopus with the reference face crawls between the top corners of a watched task
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -165,3 +165,29 @@ reference face crawls along the top between the corners.
   them with one rule.
 - **The face.** Dot eyes and an `ε` mouth, pixel for pixel: one dark pixel per eye, the mouth a
   three-row zigzag between them, no cheeks, brows or highlights on the face.
+
+## Evidence
+
+- `scripts/dev ci` (doctor, repository check, script unit tests, check, fmt, clippy `-D warnings`,
+  nextest, doctests, deny, shear, doc) passed on the round-1 head `24e20ac1`: 1877 tests passed, 18
+  skipped. An earlier run on `23e048f5` failed only in
+  `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn`, the supervisor race of
+  open issue #527 (this change touches no supervisor code; the occurrence is noted on #527); its
+  doctests, deps and docs steps were then run on their own and passed.
+- `crates/yulius/tests/task_transcript.rs` (AC-WAT-1): tail with `earlier`, `end` before a
+  half-written line and the line read once complete, the unchanged-size answer, the latest lineage
+  entry, another session's `seen` not skipping the read, the session document, redaction of a
+  token and of an agent secret on a tail and a paged read (fails with `redact_page_secrets`
+  removed), reader allowed, outsider 404, anonymous 401, task without a session. Unit tests in
+  `transcripts.rs` for `read_tail` and `Page.end`.
+- e2e, full suite: 533 passed, 1 skipped (`agent.e2e.ts` needs a model key) before review; after the
+  review fixes `watching.e2e.ts` (20 tests: AC-WAT-2..6 and the review's cases), `sessions.e2e.ts`
+  and `ownership.e2e.ts`: 48/48 passed. Each review fix's test was seen failing without the fix.
+- Visual check in Chromium (desktop dark and light, phone width): the transcript in the terminal's
+  colours, the control card above it, the owner's initials in the sidebar, the octopus resting in
+  the top-right corner and waving; its ten frames rendered enlarged in both themes.
+- `scripts/dev security`: not run. Vidoc rejects the key (HTTP 401, #470); per ADR-0104 this is
+  unrun, not passed.
+- Independent review (`om-code-review`, fresh session): round 1 requested changes (a failed first
+  read stopping the polling, an untested agent-secret redaction, several minors), all fixed
+  test-first; round 2 found one minor (a reprint copying untouched fold states), fixed test-first.
