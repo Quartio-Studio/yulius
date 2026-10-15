@@ -65,6 +65,20 @@ flowchart TD
   SBX --> CIG["ci/ weight 400: CI jobs"]
 ```
 
+The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent runs it, and the
+`ci/` leaf in CI. Its static server (`e2e/serve.py`) keeps connections alive and queues 1024 of
+them, so a page's burst of module requests waits for a busy server instead of having its SYNs
+dropped; the runner's workers stay bounded by the CPU budget
+([SPEC-148](../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
+[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)).
+
+```mermaid
+flowchart LR
+  R["e2e runner (workers ≤ CPU budget / 2)"] --> B["Chromium page (mock mode)"]
+  B -->|"HTTP/1.1 keep-alive, ~200 files"| S["serve.py: listen queue 1024"]
+  S --> W["crates/yulius-server/web"]
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -787,7 +801,9 @@ Tasks and Git back links) go back there, and a link to where the person already 
 path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
 Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
 the background keeps its files' text without Monaco models. Sign-out and an expired session forget
-the places.
+the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
+run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
+and an editor made earlier lacks them (decision 0122).
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box

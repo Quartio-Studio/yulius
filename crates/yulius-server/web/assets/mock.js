@@ -325,8 +325,12 @@ function stepsSummary(task) {
   const finished = list.filter((s) => s.status === 'done' || s.status === 'skipped');
   const effort = (s) => Math.min(3, Math.max(1, s.effort || 1));
   const total = list.reduce((sum, s) => sum + effort(s), 0);
-  const percent = total ? Math.floor((finished.reduce((sum, s) => sum + effort(s), 0) * 100) / total) : 0;
-  return { done: finished.length, total: list.length, current: current ? current.title : null, percent };
+  const finishedEffort = finished.reduce((sum, s) => sum + effort(s), 0);
+  const percent = total ? Math.floor((finishedEffort * 100) / total) : 0;
+  // The share in progress ends at the cumulative floor, as the server computes it (SPEC-159).
+  const activeEffort = list.filter((s) => s.status === 'in_progress').reduce((sum, s) => sum + effort(s), 0);
+  const active_percent = total ? Math.min(100, Math.floor(((finishedEffort + activeEffort) * 100) / total)) - percent : 0;
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
 }
 
 function summary(task) {
@@ -4397,6 +4401,8 @@ function openSocket(db, path) {
  * Ambient activity so live updates are visible: one bounded timer for the whole mock. The browser
  * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
  * late"): keep its delay well under 15 s and its reason, or change that test with it.
+ * `browserask=0` leaves it out: its toast stays while pointed at and can cover the tool panel's
+ * top, which tests that point there would hit on a slow machine (#349).
  */
 function startAmbient(db) {
   if (db.ambient) return;
@@ -4404,7 +4410,7 @@ function startAmbient(db) {
   let tick = 0;
   setTimeout(() => {
     // Like the server, events reach only viewers of the sandbox (none without GitHub).
-    if (!db.sandboxes.some((s) => s.id === 'sb_studio')) return;
+    if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
   }, 5000);
   setInterval(() => {
@@ -4508,6 +4514,8 @@ export function createMockTransport(params) {
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';
+  // `browserask=0`: no sign-in request from the sandbox browser 5 s after the start (startAmbient).
+  db.noBrowserAsk = params.get('browserask') === '0';
   notesOf(db);
   return {
     kind: 'mock',

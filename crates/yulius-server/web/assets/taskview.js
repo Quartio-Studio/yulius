@@ -83,7 +83,9 @@ export function mountTaskView(ctx, sandbox, task) {
   // ---- step strip
   const stripLabel = h('span', { class: 'step-label' });
   const progressFill = h('div', { class: 'step-progress-fill' });
-  const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill);
+  // The step in progress follows the finished share in the working colour (#150, SPEC-159).
+  const progressActive = h('div', { class: 'step-progress-active', hidden: true });
+  const progress = h('div', { class: 'step-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 }, progressFill, progressActive);
   // The session's state in words, coloured by tone; announced when it changes. The mode stays
   // beside it, in the strip's own colours; the subscription is not a property of the task (F
   // 2026-10-10) and shows only in Task details.
@@ -360,9 +362,13 @@ export function mountTaskView(ctx, sandbox, task) {
         : h('span', { class: 'step-current muted' }, 'No plan steps yet'));
     // The server weighs steps by their declared effort (STP-006); older servers send no percent.
     const pct = !total ? 0 : Number.isFinite(steps.percent) ? steps.percent : Math.floor((done / total) * 100);
+    // Older servers send no in-progress share: no second segment.
+    const active = !total || !Number.isFinite(steps.active_percent) ? 0 : Math.max(0, Math.min(100 - pct, steps.active_percent));
     progressFill.style.width = `${pct}%`;
+    progressActive.style.width = `${active}%`;
+    progressActive.hidden = !active;
     progress.setAttribute('aria-valuenow', String(pct));
-    progress.setAttribute('aria-label', `${done} of ${total} steps done, ${pct}% of the plan`);
+    progress.setAttribute('aria-label', `${done} of ${total} steps done, ${pct}% of the plan${active ? `, ${active}% in progress` : ''}`);
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
     const reset = current.status === 'waiting_capacity' ? resetAround(current.resumes_at) : '';
