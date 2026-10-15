@@ -1,11 +1,11 @@
 ---
 yulius-task: 495d1c13-9b41-40f8-a15b-f96aefe8cd73
-status: in-progress
+status: done
 ---
 
 # SPEC-164: the Tasks page shows how a project's tasks hang together, as a graph
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: task #154
 Scope authorization: the person's request (task #154), "Structure of the tasks became very
@@ -60,13 +60,13 @@ runs on its own; each task one click from its overview.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A mock project whose tasks form chains, a rule, a supertask hold, a queue and prepared tasks
-- [ ] The task graph model: nodes, links, queue order and layered layout from the task summaries
-- [ ] The Graph view on the Tasks page: Starts next, the drawn graph with its legend, Prepared, On their own
-- [ ] The List / Graph switch in the URL and the sidebar's "Show as a graph" button
-- [ ] Docs, ADR and requirements updated for the graph view
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A mock project whose tasks form chains, a rule, a supertask hold, a queue and prepared tasks
+- [x] The task graph model: nodes, links, queue order and layered layout from the task summaries
+- [x] The Graph view on the Tasks page: Starts next, the drawn graph with its legend, Prepared, On their own
+- [x] The List / Graph switch in the URL and the sidebar's "Show as a graph" button
+- [x] Docs, ADR and requirements updated for the graph view
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -118,3 +118,31 @@ runs on its own; each task one click from its overview.
   it no longer waits, so its link is history and it sits On its own.
 - **A live repaint rebuilds the graph** and puts focus and the frame's scroll back (review round
   1); the layout is cheap at these bounds, so no diffing.
+
+## Evidence
+
+Run on 2026-10-15 in the task's worktree (Linux, Node 24.21, Chromium 153), branch head merged with
+`dev` at 33f8c8f5.
+
+- `cd e2e && npx e2e run tests/task-graph.e2e.ts`: 7 tests failed before the feature (no Graph
+  radio, no `.tg-*` nodes), then 7/7 passed; the 4 review regression tests (focus and scroll on a
+  live update, the loading shape and empty state, a started task's old chain, card order, j / k
+  and the search) failed before their fixes, then 10/10 passed.
+- Full e2e suite, `npx e2e run`: before review, 478 passed, 1 skipped (17m 35s). After the review
+  fixes and the `dev` merge, 487 passed, 1 skipped, 2 failed at host load ~33 on 12 cores
+  (`ownership.e2e.ts` "the owner is asked for control…", `terminal.e2e.ts` "the program has the
+  mouse…", both timeouts on the task view, outside this change); both files then passed alone,
+  19/19. Tracked in #506 (comment with this run), not retried into green.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0; 1823 Rust tests passed, 18
+  skipped; repository check, lint, doctests, cargo-deny (advisories, bans, licenses, sources) ok.
+- `scripts/dev check`: exit 0 (the repository check needed `--sync-brand` once: `index.html`
+  preloads the new `taskgraph.js` module).
+- `scripts/dev security`: exit 2, **not run**: Vidoc rejects the agent secret's key (HTTP 401,
+  #470); unrun is not passed (ADR-0104).
+- Independent review (fresh session, `om-code-review`), round 1: REQUEST CHANGES, one major (a
+  live repaint dropped focus and the frame's scroll) and minors (search's Show all matching in the
+  Graph, the loading shape, Tab order, j / k, untested empty state, faded node and 390 px axe, a
+  started task's old chain still drawn); all fixed test-first in 10ab9152. Long arrows passing
+  behind cards in skipped columns are accepted (ADR-0135).
+- Not testable here: the real server's live data (the mock answers like it); a real queue across
+  several projects of one instance.
