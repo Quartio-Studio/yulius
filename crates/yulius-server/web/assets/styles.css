@@ -299,6 +299,14 @@ p { margin: 0; }
 .tab:hover { color: var(--text); text-decoration: none; background: var(--surface); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); background: var(--surface); }
 .tab.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+/* The grip says a sandbox tab drags (SPEC-167, as the Notes tabs' in SPEC-136): faint at rest, the
+   tab's colour when it is hovered or current, 8 px from the edge and 4 px from the name; hidden
+   without a mouse or pen. */
+.tab-grip { display: inline-flex; flex: none; margin: 0 -2px 0 -4px; color: var(--text-faint); cursor: grab; }
+.tab:hover .tab-grip, .tab.active .tab-grip { color: currentColor; }
+@media not (any-pointer: fine) {
+  .tab-grip { display: none; }
+}
 .tab-name { overflow: hidden; text-overflow: ellipsis; }
 .tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
 .tab-running { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; }
