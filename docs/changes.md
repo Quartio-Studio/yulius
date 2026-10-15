@@ -9,6 +9,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
   entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
   Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
+- Opening Settings → Instance checks `main` at once (SPEC-149, ADR-0123, task #143): the page no
+  longer shows a check up to an hour old until "Check now". The server reuses a check younger than
+  30 s; a failed automatic check keeps the last result without an error toast.
 - A shell ends only when its host is proven gone; a launch `/goal` is watched again after a restart
   (SPEC-146, ADR-0120, task #125, fixes #346 and #453). A terminal or the Superagent whose host
   cannot be terminated stays live with its run directory, listed and closable again, and its
@@ -16,7 +19,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   same conversation. A goal task whose launch `/goal` was not recorded when the server restarted is
   watched again and flagged if Claude Code never takes it; a goal recorded meanwhile (also while
   Yulius was down) is never flagged.
-
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
