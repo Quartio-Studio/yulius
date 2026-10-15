@@ -437,6 +437,15 @@ fn planned(report: &ProjectReport) -> (&'static str, Vec<String>) {
     }
 }
 
+/// The ruleset a repository admin adds so only people move the production branch (ADR-0114).
+fn production_ruleset_fix(repo: &str, branch: &str) -> String {
+    format!(
+        "A repository admin must add a branch ruleset on GitHub (https://github.com/{repo}/settings/rules): \
+         target `{branch}`, enforcement Active, rules Restrict updates, Restrict deletions and Block \
+         force pushes, and only the Repository admin role in the bypass list (never the Yulius App)."
+    )
+}
+
 /// Refuses a caller that is not a person in the browser: onboarding starts only from the sandbox
 /// page (SPEC-051 OBD-002, ADR-0038).
 fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
@@ -493,11 +502,18 @@ impl App {
         let profile = self.profile_of(sandbox);
         let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
         let (title, steps) = planned(report);
-        let prompt = if report.is_valid() {
+        let mut prompt = if report.is_valid() {
             environment_prompt(&repo, &profile)
         } else {
             onboarding_prompt(&repo, &profile, report)
         };
+        if let Some(warning) = self.production_branch_warning(sandbox).await {
+            prompt.push_str(&format!(
+                "\n\n{warning} Only a person can apply it: ask one with `needs_you`, quoting that \
+                 setting, and carry on with the rest; never change the repository's protection \
+                 yourself."
+            ));
+        }
         let task = self
             .create_task_internal(NewTask {
                 sandbox: sandbox.id.clone(),
@@ -1018,6 +1034,7 @@ impl App {
                         summary: "Not ready yet: the preparation task is missing; an admin can skip preparation.".into(),
                         pending: vec!["an admin skips the preparation".into()],
                         task: view,
+                        warnings: self.production_branch_warning(sandbox).await.into_iter().collect(),
                     });
                 };
                 if task.status == yulius_domain::task::TaskStatus::WaitingCapacity {
@@ -1095,7 +1112,51 @@ impl App {
             summary,
             pending,
             task: view,
+            warnings: self
+                .production_branch_warning(sandbox)
+                .await
+                .into_iter()
+                .collect(),
         })
+    }
+
+    /// What people must know when the agents of `sandbox` could write its production branch
+    /// (ADR-0114): GitHub is asked with an agent's own token which rules apply to the branch and
+    /// whether that token may bypass them. A check that fails is said too, never taken as safe.
+    /// `None` for a guarded branch and for a playground (no GitHub repository).
+    pub(crate) async fn production_branch_warning(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> Option<String> {
+        if sandbox.is_playground() {
+            return None;
+        }
+        let branch = crate::delivery::delivery_profile(sandbox).production_branch;
+        let checked = match self.agent_github_token(sandbox).await {
+            Ok(token) => {
+                self.deps
+                    .github
+                    .branch_guard(&token, &sandbox.repo_owner, &sandbox.repo_name, &branch)
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
+        let fix = production_ruleset_fix(&repo, &branch);
+        match checked {
+            Ok(guard) if guard.is_guarded() => None,
+            Ok(_) => Some(format!(
+                "The production branch `{branch}` is not protected from agents: with their GitHub \
+                 token, agents could push to or merge into it. {fix}"
+            )),
+            Err(err) => {
+                tracing::info!(sandbox = %sandbox.id, error = %err, "checking the production branch failed");
+                Some(format!(
+                    "Yulius could not check whether agents can write the production branch \
+                     `{branch}` ({err}). {fix}"
+                ))
+            }
+        }
     }
 
     /// `POST /api/sandboxes/{sid}/onboarding/approve` (write, browser only): Start onboarding —
