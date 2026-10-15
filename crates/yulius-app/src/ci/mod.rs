@@ -790,6 +790,8 @@ impl App {
         let Some(source) = source else {
             return Ok(false);
         };
+        // Its jobs keep the verdict they had there: a skipped one stays skipped (SPEC-162).
+        let tested = self.deps.store.ci_jobs(&source.id, false).await?;
         let now = self.now();
         let note = format!(
             "not run again: {} has the same tree as {} ({}), which passed",
@@ -817,22 +819,32 @@ impl App {
             .jobs
             .iter()
             .enumerate()
-            .map(|(index, job)| CiJobRecord {
-                id: self.deps.crypto.new_id(),
-                run_id: run.id.clone(),
-                ordinal: u32::try_from(index).unwrap_or(u32::MAX),
-                name: job.name.clone(),
-                key: job.key.clone(),
-                command: job.command.clone(),
-                matrix: job.matrix.clone(),
-                state: RunState::Passed,
-                reason: Some(note.clone()),
-                exit_code: Some(0),
-                output: format!("{note}.\n"),
-                failures: None,
-                started_at: Some(now),
-                ended_at: Some(now),
-                need: job.need,
+            .map(|(index, job)| {
+                // The values of a matrix job share its key: match the value too. A job the
+                // source did not have (the gate changed since) is passed, as before SPEC-162.
+                let (state, exit_code) = dom::copied_job_verdict(
+                    tested
+                        .iter()
+                        .find(|t| t.key == job.key && t.matrix == job.matrix)
+                        .map(|t| t.state),
+                );
+                CiJobRecord {
+                    id: self.deps.crypto.new_id(),
+                    run_id: run.id.clone(),
+                    ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                    name: job.name.clone(),
+                    key: job.key.clone(),
+                    command: job.command.clone(),
+                    matrix: job.matrix.clone(),
+                    state,
+                    reason: Some(note.clone()),
+                    exit_code: Some(exit_code),
+                    output: format!("{note}.\n"),
+                    failures: None,
+                    started_at: Some(now),
+                    ended_at: Some(now),
+                    need: job.need,
+                }
             })
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
@@ -961,6 +973,7 @@ impl App {
         let summary = RunSummary {
             jobs: jobs.len(),
             passed: jobs.iter().filter(|j| j.state == RunState::Passed).count(),
+            skipped: jobs.iter().filter(|j| j.state == RunState::Skipped).count(),
             failed_job: failed.map(|j| (j.name.as_str(), j.exit_code)),
             duration_ms: run
                 .started_at

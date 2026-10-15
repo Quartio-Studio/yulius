@@ -13,6 +13,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
   playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
   as before.
+- A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
+  fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
+  skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),
+  on the CI page and in `ci_status`. The `security` job now ends skipped when the Vidoc scan cannot
+  run (no key, a rejected one), and is granted `VIDOC_API_KEY` through the egress proxy (#466).
+  Until `dev` is promoted to `main`, the running instance gives no skip code and the job still
+  passes, with `security scan skipped` in its output.
+- An update pauses every task at once (SPEC-160, ADR-0131, task #151). When the new version is
+  built, each task's agent is frozen mid-turn with the cgroup v2 freezer: its output stops, nothing
+  is told to it, and it goes on from the same instruction when its task is thawed after the
+  restart (one by one; at once on a cancel). Updates no longer wait for long turns or get cancelled
+  after 30 minutes. A run that cannot be frozen (no delegated cgroup) still pauses at its turn
+  boundary. A provider response streaming at the restart is cut and retried by Claude Code.
+- Reply in a task's attention bar does something visible (SPEC-156, task #147, #516). On
+  "Needs you" and "The agent is waiting for your reply" it opens a reply field in the bar; Enter or
+  Send types the answer into the session as the person's prompt, which also ends a `needs_you`
+  request, and Escape or Cancel closes it. Before, Reply only focused the terminal, which showed
+  nothing because Claude Code draws its own cursor. While the agent shows a menu in the terminal,
+  Reply still goes to the terminal, so typed text never picks a menu option unseen. Phones keep
+  their quick input.
 - The task strip's progress bar shows the step in progress (SPEC-159, task #150): after the
   finished share comes the open step's share in the working colour, so "Step 2/4" no longer sits
   beside a bar that looks a quarter done. The API's step summary carries `active_percent`.

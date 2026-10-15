@@ -487,7 +487,7 @@ fn ci_checks_word(gate: yulius_domain::ci::GateResult) -> Option<&'static str> {
     match gate {
         GateResult::NotConfigured => None,
         GateResult::Run(None | Some(RunState::Queued | RunState::Running)) => Some("pending"),
-        GateResult::Run(Some(RunState::Passed)) => Some("success"),
+        GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => Some("success"),
         GateResult::Run(Some(RunState::Error)) => Some("error"),
         GateResult::Run(Some(RunState::Failed | RunState::Cancelled)) => Some("failure"),
     }

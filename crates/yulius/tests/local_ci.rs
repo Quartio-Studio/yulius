@@ -673,6 +673,95 @@ command = 'printf "        FAIL [   0.547s] (290/1670) yulius::main cockpit::man
     Ok(())
 }
 
+/// SPEC-162 SKP-001..003: a job that exits with the skip code Yulius gives it ends skipped, not
+/// passed; its run passes and the commit status says a job was skipped, also when a merge with
+/// the same tree reuses that result.
+#[tokio::test]
+async fn a_job_that_exits_with_the_skip_code_ends_skipped() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "scan"
+command = 'echo "nothing to scan"; exit "$YULIUS_CI_SKIP_CODE"'
+
+[[ci.jobs]]
+name = "split"
+matrix = "1 2"
+command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
+"#
+        .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let job = |name: &str| jobs.iter().find(|j| j["name"] == name).ok_or("job");
+    assert_eq!(job("check")?["state"], "passed", "{detail}");
+    assert_eq!(job("scan")?["state"], "skipped", "{detail}");
+    assert_eq!(job("scan")?["exit_code"], 78, "{detail}");
+    assert_eq!(job("split (1)")?["state"], "passed", "{detail}");
+    assert_eq!(job("split (2)")?["state"], "skipped", "{detail}");
+    let sha = run["sha"].as_str().ok_or("sha")?;
+    let (state, description, _) = f.last_status(sha).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(
+        description.starts_with("Passed: 4 jobs, 2 skipped"),
+        "{description}"
+    );
+
+    // A merge with the tested tree reuses the result, and the reused job stays skipped.
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let reused = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["sha"] == merged.as_str())
+        .cloned()
+        .ok_or("dev run")?;
+    assert_eq!(reused["state"], "passed", "{reused}");
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            reused["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let job = |name: &str| jobs.iter().find(|j| j["name"] == name).ok_or("job");
+    assert_eq!(job("check")?["state"], "passed", "{detail}");
+    assert_eq!(job("scan")?["state"], "skipped", "{detail}");
+    assert_eq!(job("scan")?["exit_code"], 78, "{detail}");
+    // Each value of a matrix job keeps its own verdict (they share the definition's key).
+    assert_eq!(job("split (1)")?["state"], "passed", "{detail}");
+    assert_eq!(job("split (2)")?["state"], "skipped", "{detail}");
+    let (_, description, _) = f.last_status(&merged).ok_or("status")?;
+    assert!(description.contains("2 skipped"), "{description}");
+    Ok(())
+}
+
 /// A squash merge of an up-to-date pull request has exactly the tree its run tested: the
 /// integration branch reuses that result instead of running everything again (F 2026-10-12:
 /// every merge cost a second run in the sandbox's one CI lane).

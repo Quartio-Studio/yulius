@@ -882,22 +882,26 @@ impl App {
         };
         let copies: Vec<CiJobRecord> = jobs
             .iter()
-            .map(|job| CiJobRecord {
-                id: self.deps.crypto.new_id(),
-                run_id: run.id.clone(),
-                ordinal: job.ordinal,
-                name: job.name.clone(),
-                key: job.key.clone(),
-                command: job.command.clone(),
-                matrix: job.matrix.clone(),
-                state: RunState::Passed,
-                reason: Some(note.clone()),
-                exit_code: Some(0),
-                output: format!("{note}.\n"),
-                failures: None,
-                started_at: Some(now),
-                ended_at: Some(now),
-                need: job.need,
+            .map(|job| {
+                // A job the train skipped stays skipped in the verdict (SPEC-162).
+                let (state, exit_code) = yulius_domain::ci::copied_job_verdict(Some(job.state));
+                CiJobRecord {
+                    id: self.deps.crypto.new_id(),
+                    run_id: run.id.clone(),
+                    ordinal: job.ordinal,
+                    name: job.name.clone(),
+                    key: job.key.clone(),
+                    command: job.command.clone(),
+                    matrix: job.matrix.clone(),
+                    state,
+                    reason: Some(note.clone()),
+                    exit_code: Some(exit_code),
+                    output: format!("{note}.\n"),
+                    failures: None,
+                    started_at: Some(now),
+                    ended_at: Some(now),
+                    need: job.need,
+                }
             })
             .collect();
         store

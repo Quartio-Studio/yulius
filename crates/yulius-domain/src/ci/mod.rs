@@ -334,8 +334,8 @@ pub fn effective_gate(profile: Option<&str>, project: &[Job]) -> Option<Gate> {
 }
 
 /// The state of a run from its jobs' states: running while any job is active, then failed if
-/// any failed, error if any errored, cancelled if any was cancelled, else passed. A run without
-/// jobs is an error.
+/// any failed, error if any errored, cancelled if any was cancelled, else passed (skipped jobs
+/// included, SPEC-162). A run without jobs is an error.
 #[must_use]
 pub fn aggregate(jobs: &[RunState]) -> RunState {
     if jobs.is_empty() {
@@ -373,7 +373,14 @@ pub enum RunState {
     Error,
     /// Cancelled by a person or superseded by a newer head.
     Cancelled,
+    /// A job that exited with [`SKIP_EXIT_CODE`]: it checked nothing and says so (SPEC-162). It
+    /// blocks no merge and is never counted as passed; a run is never skipped itself.
+    Skipped,
 }
+
+/// The exit code with which a CI job says it was skipped (SPEC-162 SKP-001, ADR-0133), given to
+/// every job as `YULIUS_CI_SKIP_CODE`: `EX_CONFIG` from `sysexits.h`, Drone's "skip" code.
+pub const SKIP_EXIT_CODE: i32 = 78;
 
 impl RunState {
     /// Wire name.
@@ -386,6 +393,7 @@ impl RunState {
             Self::Failed => "failed",
             Self::Error => "error",
             Self::Cancelled => "cancelled",
+            Self::Skipped => "skipped",
         }
     }
 
@@ -399,6 +407,7 @@ impl RunState {
             "failed" => Some(Self::Failed),
             "error" => Some(Self::Error),
             "cancelled" => Some(Self::Cancelled),
+            "skipped" => Some(Self::Skipped),
             _ => None,
         }
     }
@@ -562,6 +571,16 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
     out
 }
 
+/// The state and exit code of a job copied from a passed run (a tree reused, a merge train's
+/// verdict): a job that was skipped there stays skipped (SPEC-162), every other one passed.
+#[must_use]
+pub fn copied_job_verdict(source: Option<RunState>) -> (RunState, i32) {
+    match source {
+        Some(RunState::Skipped) => (RunState::Skipped, SKIP_EXIT_CODE),
+        _ => (RunState::Passed, 0),
+    }
+}
+
 fn has_verdict(state: RunState) -> bool {
     matches!(state, RunState::Passed | RunState::Failed | RunState::Error)
 }
@@ -608,6 +627,8 @@ pub struct RunSummary<'a> {
     pub jobs: usize,
     /// Jobs that passed.
     pub passed: usize,
+    /// Jobs that were skipped (SPEC-162).
+    pub skipped: usize,
     /// The first failed job and its exit code, when one failed.
     pub failed_job: Option<(&'a str, Option<i32>)>,
     /// Wall time of the run, once it ran.
@@ -666,15 +687,25 @@ pub fn commit_status(state: RunState, summary: RunSummary<'_>) -> CommitStatus {
         ),
         RunState::Running => (
             CommitState::Pending,
-            format!(
-                "Running on Yulius: {} of {} passed",
-                summary.passed,
-                jobs_word(summary.jobs)
-            ),
+            match summary.skipped {
+                0 => format!(
+                    "Running on Yulius: {} of {} passed",
+                    summary.passed,
+                    jobs_word(summary.jobs)
+                ),
+                n => format!(
+                    "Running on Yulius: {} of {} passed, {n} skipped",
+                    summary.passed,
+                    jobs_word(summary.jobs)
+                ),
+            },
         ),
-        RunState::Passed => (
+        RunState::Passed | RunState::Skipped => (
             CommitState::Success,
-            format!("Passed: {}{took}", jobs_word(summary.jobs)),
+            match summary.skipped {
+                0 => format!("Passed: {}{took}", jobs_word(summary.jobs)),
+                n => format!("Passed: {}, {n} skipped{took}", jobs_word(summary.jobs)),
+            },
         ),
         RunState::Failed => (
             CommitState::Failure,
@@ -722,7 +753,7 @@ pub fn gate_checks(github: ChecksState, gate: GateResult) -> ChecksState {
     match gate {
         GateResult::NotConfigured => github,
         GateResult::Run(None | Some(RunState::Queued | RunState::Running)) => ChecksState::Pending,
-        GateResult::Run(Some(RunState::Passed)) => ChecksState::Success,
+        GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => ChecksState::Success,
         GateResult::Run(Some(RunState::Failed | RunState::Error | RunState::Cancelled)) => {
             ChecksState::Failure
         }
@@ -1035,6 +1066,21 @@ mod tests {
         assert_eq!(aggregate(&[S::Passed, S::Error, S::Cancelled]), S::Error);
         assert_eq!(aggregate(&[S::Passed, S::Cancelled]), S::Cancelled);
         assert_eq!(aggregate(&[S::Passed, S::Passed]), S::Passed);
+        // SPEC-162 SKP-002: a skipped job does not hold a run back, and never hides a failure.
+        assert_eq!(aggregate(&[S::Passed, S::Skipped]), S::Passed);
+        assert_eq!(aggregate(&[S::Skipped]), S::Passed);
+        assert_eq!(aggregate(&[S::Skipped, S::Running]), S::Running);
+        assert_eq!(aggregate(&[S::Skipped, S::Failed]), S::Failed);
+        assert_eq!(aggregate(&[S::Skipped, S::Cancelled]), S::Cancelled);
+    }
+
+    /// SPEC-162: a copied verdict never turns a skipped job into a passed one.
+    #[test]
+    fn a_copied_verdict_keeps_skipped_jobs_skipped() {
+        use RunState as S;
+        assert_eq!(copied_job_verdict(Some(S::Skipped)), (S::Skipped, 78));
+        assert_eq!(copied_job_verdict(Some(S::Passed)), (S::Passed, 0));
+        assert_eq!(copied_job_verdict(None), (S::Passed, 0));
     }
 
     #[test]
@@ -1077,6 +1123,7 @@ mod tests {
             RunState::Failed,
             RunState::Error,
             RunState::Cancelled,
+            RunState::Skipped,
         ] {
             assert_eq!(RunState::parse(state.as_str()), Some(state));
         }
@@ -1126,11 +1173,28 @@ mod tests {
         );
         assert_eq!(passed.state, CommitState::Success);
         assert_eq!(passed.description, "Passed: 3 jobs in 3 min 12 s");
+        // SPEC-162 SKP-003: the status says how many jobs were skipped, never "all passed".
+        let skipped = commit_status(
+            RunState::Passed,
+            RunSummary {
+                jobs: 3,
+                passed: 2,
+                skipped: 1,
+                duration_ms: Some(192_000),
+                ..RunSummary::default()
+            },
+        );
+        assert_eq!(skipped.state, CommitState::Success);
+        assert_eq!(
+            skipped.description,
+            "Passed: 3 jobs, 1 skipped in 3 min 12 s"
+        );
         let failed = commit_status(
             RunState::Failed,
             RunSummary {
                 jobs: 2,
                 passed: 1,
+                skipped: 0,
                 failed_job: Some(("test (1/2)", Some(101))),
                 duration_ms: Some(5_000),
                 reason: None,
@@ -1163,6 +1227,19 @@ mod tests {
         );
         assert_eq!(running.state, CommitState::Pending);
         assert_eq!(running.description, "Running on Yulius: 0 of 1 job passed");
+        let running = commit_status(
+            RunState::Running,
+            RunSummary {
+                jobs: 3,
+                passed: 1,
+                skipped: 1,
+                ..RunSummary::default()
+            },
+        );
+        assert_eq!(
+            running.description,
+            "Running on Yulius: 1 of 3 jobs passed, 1 skipped"
+        );
         // SPEC-059 CI-301: a run waiting for disk stays pending and says why.
         let waiting = commit_status(
             RunState::Queued,

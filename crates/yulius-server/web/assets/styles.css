@@ -1086,6 +1086,14 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* The icon (16px) and the gap (12px) share the first row with the words. */
 .attention-bar.wrap .attention-text { flex-basis: calc(100% - 28px); }
 .attention-row { display: flex; align-items: center; gap: 12px; }
+/* A reply being written (SPEC-156): the words on the first row, the field and its buttons below. */
+.attention-bar.replying { flex-wrap: wrap; row-gap: 8px; }
+.attention-bar.replying .attention-text { flex-basis: calc(100% - 28px); }
+.attention-reply { display: flex; flex: 1 1 100%; gap: 8px; }
+.attention-reply[hidden] { display: none; }
+/* The bar holds the keyboard after a reply field closed under typing: it shows it has it. */
+.attention-bar:focus-visible { box-shadow: var(--focus), var(--shadow); }
+.attention-reply .input { flex: 1; min-width: 0; height: var(--control-sm); }
 /* Queued messages (SPEC-052): at the bottom of a waiting task's empty terminal. */
 .queue-slot { position: absolute; left: 50%; bottom: 16px; z-index: var(--z-float); width: min(640px, calc(100% - 32px)); transform: translateX(-50%); }
 .queue-slot[hidden] { display: none; }
@@ -2561,7 +2569,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ci-state { display: inline-flex; color: var(--muted); }
 .ci-passed { color: var(--ok-fg); }
 .ci-failed, .ci-error { color: var(--danger-fg); }
-.ci-running { color: var(--warn-fg); }
+.ci-running, .ci-skipped { color: var(--warn-fg); }
 .ci-running .icon { animation: spin var(--duration-spin-slow) linear infinite; }
 .ci-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 .ci-tab { display: inline-flex; align-items: center; gap: 6px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
