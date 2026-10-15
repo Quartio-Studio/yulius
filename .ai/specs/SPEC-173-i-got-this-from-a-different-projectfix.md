@@ -60,8 +60,8 @@ setup or a rollback around a Docker daemon it cannot have.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -83,3 +83,20 @@ setup or a rollback around a Docker daemon it cannot have.
 - [ADR-0140](../../docs/decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md):
   isolated sandboxes run no container engine; the briefing says so and points to a remote engine.
   An engine per sandbox is #551.
+
+## Evidence
+
+- **Reproduction** (this task's isolated sandbox, 2026-10-15):
+  - `docker version`: `failed to connect to the docker API at unix:///var/run/docker.sock`.
+  - `dockerd --data-root /tmp/dk/data --exec-root /tmp/dk/exec -H unix:///tmp/dk/docker.sock`:
+    `failed to create NAT chain DOCKER: iptables … Permission denied`, exit 1.
+  - `unshare -U|-n|-m true`: `Operation not permitted`.
+- **Regression test before the fix** (commit `8453ec08`): `cargo test -p yulius-domain --lib
+  briefing::tests::an_isolated` → FAILED (`## Containers not in …`).
+- **After the fix:** `cargo test -p yulius-domain --lib briefing::` → 16 passed.
+- **Gate:** `scripts/dev ci` at `450b51ee` → exit 0; nextest 1848 tests run, 1848 passed, 18 skipped.
+  After merging `origin/dev` (web-only #548), `python3 scripts/check_repository.py` passed.
+- **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
+  expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
+- **Not run here:** the host-level isolation suite (`YULIUS_ISOLATION_TEST=1`) cannot run inside a
+  sandbox. This change does not touch containment.
