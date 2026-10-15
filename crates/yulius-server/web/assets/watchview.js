@@ -100,8 +100,10 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     timer = null;
     if (!alive || reading) return;
     // The tail first, and again for a session that had none; then on from where the last read ended.
+    // `seen` lets the server answer an unchanged transcript without reading it; after a full page
+    // the rest is read whatever the size (null).
     const query = seen.loaded && seen.session
-      ? `?from=${seen.end}&seen=${seen.bytes}&session=${encodeURIComponent(seen.session)}`
+      ? `?from=${seen.end}&session=${encodeURIComponent(seen.session)}${seen.bytes === null ? '' : `&seen=${seen.bytes}`}`
       : `?limit=${TAIL}`;
     reading = new AbortController();
     let page = null;
@@ -131,6 +133,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       apply(page);
       if (page.next !== null && page.next !== undefined) {
         seen.end = page.next;
+        seen.bytes = null;
         read();
         return;
       }

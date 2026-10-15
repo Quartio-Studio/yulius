@@ -75,6 +75,15 @@ test('the watched transcript follows the bottom, and stays put with "New message
   await expect(screen.getByRole('button', 'New messages')).toBeHidden();
 });
 
+test('a burst longer than a page is read to its end', async ({ app, browser, screen }) => {
+  await watchStudio12(app, browser);
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+  // 250 entries at once, after the first read: one page of 200, then the rest from where it stopped.
+  await append(browser, Array.from({ length: 250 }, (_, i) => ({ role: 'assistant', text: `Burst line ${i + 1}.` })));
+  await expect(screen.getByText('Burst line 250.')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('.watch .ss-entries > li').length)).toBe(3 + 250);
+});
+
 test('a watcher asks for new lines while the task is live, and once more when it ends', async ({ app, browser }) => {
   await watchStudio12(app, browser);
   const state = () => browser.evaluate(() => (document.querySelector('.taskview .watch') as HTMLElement).dataset.reading ?? null);
