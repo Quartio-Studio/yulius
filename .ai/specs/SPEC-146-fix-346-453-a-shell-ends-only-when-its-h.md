@@ -66,8 +66,8 @@ Both concern the supervisor's process lifecycle across ends and restarts:
 ## Plan
 
 - [x] Spec and plan for #346 and #453
-- [ ] A terminal ends only when its host is proven gone (#346)
-- [ ] The Superagent's usage-limit move waits for the old host to be gone (#346)
+- [x] A terminal ends only when its host is proven gone (#346)
+- [x] The Superagent's usage-limit move waits for the old host to be gone (#346)
 - [ ] A launch /goal held across a restart is watched again (#453)
 - [ ] Docs, ADR and changes
 - [ ] Independent review and fixes

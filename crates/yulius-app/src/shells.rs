@@ -57,7 +57,7 @@ const TERMINAL_NOT_ENDED: &str =
 const COCKPIT_NOT_ENDED: &str = "The Superagent's process could not be ended, so it keeps running.";
 /// The Superagent whose host could not be terminated is not moved past a usage limit (SPEC-146
 /// SHE-002).
-const COCKPIT_NOT_MOVED: &str = "The Superagent could not move to another subscription: its \
+pub(crate) const COCKPIT_NOT_MOVED: &str = "The Superagent could not move to another subscription: its \
      process could not be ended, so it stays on this one.";
 /// What a Cockpit's bearer is derived for, hashed with its host token.
 const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
@@ -987,15 +987,13 @@ impl App {
             Err(_) if runtime.has_ended() => true,
             Err(err) => {
                 tracing::error!(shell = %runtime.id, sandbox = %runtime.sandbox, error = %err, "the shell's host could not be terminated; it stays live");
-                let notice = match runtime.kind {
-                    ShellKind::Terminal => TERMINAL_NOT_ENDED,
-                    ShellKind::Cockpit if runtime.switching.load(Ordering::SeqCst) => {
-                        COCKPIT_NOT_MOVED
-                    }
-                    ShellKind::Cockpit => COCKPIT_NOT_ENDED,
-                };
                 runtime.closing.store(false, Ordering::SeqCst);
-                runtime.hub.notice(notice);
+                // A Superagent's move says so itself, once it decided (SPEC-146 SHE-002).
+                match runtime.kind {
+                    ShellKind::Terminal => runtime.hub.notice(TERMINAL_NOT_ENDED),
+                    ShellKind::Cockpit if runtime.switching.load(Ordering::SeqCst) => {}
+                    ShellKind::Cockpit => runtime.hub.notice(COCKPIT_NOT_ENDED),
+                }
                 false
             }
         }
