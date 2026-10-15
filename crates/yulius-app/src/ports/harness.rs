@@ -106,6 +106,9 @@ pub struct CockpitLaunch {
     /// Every server name in the repository's `.mcp.json`: Yulius attaches them itself, so Claude
     /// Code rejects them instead of asking (SPEC-095 PMC-004).
     pub project_mcp_servers: Vec<String>,
+    /// The sandbox's MCP servers, as a task run of the sandbox gets them (SPEC-147 SAM-001); the
+    /// adapter puts their values in the secret environment.
+    pub mcp: Vec<McpAttachment>,
 }
 
 /// A launch plan plus the session id known up front.
@@ -258,8 +261,9 @@ pub trait HarnessPort: Send + Sync {
     /// # Errors
     /// `Invalid` for impossible requests.
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan>;
-    /// Plans a Cockpit: plain Claude Code without hooks, MCP or settings, its first-run screens
-    /// and the folder trust settled in its config dir.
+    /// Plans a Cockpit: Claude Code with the Yulius and the sandbox's MCP servers and the
+    /// redaction hook as its only hook (SPEC-147), its first-run screens and the folder trust
+    /// settled in its config dir.
     ///
     /// # Errors
     /// `Invalid` for impossible requests, `Upstream` when the config cannot be prepared.

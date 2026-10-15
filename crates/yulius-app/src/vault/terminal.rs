@@ -1,6 +1,7 @@
-//! Redaction of the task terminal people watch (VLT-007): PTY output passes a streaming
-//! redactor before the hub's screen model and every viewer; a held tail that could begin a
-//! value is released 40 ms after the output stops, and snapshots are redacted whole.
+//! Redaction of the terminals people watch (VLT-007): a task's, and a Superagent's (SPEC-147
+//! SAM-004). PTY output passes a streaming redactor before the hub's screen model and every
+//! viewer; a held tail that could begin a value is released 40 ms after the output stops, and
+//! snapshots are redacted whole.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,7 +23,7 @@ struct Inner {
     epoch: u64,
 }
 
-/// Redaction state of one task's terminal (cheap to clone).
+/// Redaction state of one terminal (cheap to clone).
 #[derive(Clone, Default)]
 pub struct TerminalScrub(Arc<Mutex<Inner>>);
 
@@ -58,6 +59,26 @@ impl App {
         seq: u64,
         bytes: &[u8],
     ) {
+        let app = Arc::clone(self);
+        let task = task.clone();
+        self.scrub_output(scrub, sandbox, seq, bytes, move |seq, out| {
+            app.runtime(&task).hub.output(seq, out);
+        })
+        .await;
+    }
+
+    /// Redacts one chunk of PTY output and feeds it to `sink` (a hub); schedules the release of
+    /// a held tail.
+    pub(crate) async fn scrub_output<F>(
+        &self,
+        scrub: &TerminalScrub,
+        sandbox: &SandboxId,
+        seq: u64,
+        bytes: &[u8],
+        sink: F,
+    ) where
+        F: Fn(u64, &[u8]) + Send + Sync + 'static,
+    {
         let generation = self.vault_generation();
         let stale = scrub
             .0
@@ -77,7 +98,7 @@ impl App {
                 held
             });
             if let Some(held) = released.filter(|h| !h.is_empty()) {
-                self.runtime(task).hub.output(seq, &held);
+                sink(seq, &held);
             }
         }
         let (out, epoch, holding) = match scrub.0.lock() {
@@ -95,12 +116,10 @@ impl App {
             Err(_) => (bytes.to_vec(), 0, false),
         };
         if !out.is_empty() {
-            self.runtime(task).hub.output(seq, &out);
+            sink(seq, &out);
         }
         if holding {
-            let app = Arc::clone(self);
             let scrub = scrub.clone();
-            let task = task.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(FLUSH_AFTER).await;
                 let held = scrub.0.lock().ok().and_then(|mut inner| {
@@ -109,7 +128,7 @@ impl App {
                         .flatten()
                 });
                 if let Some(held) = held.filter(|h| !h.is_empty()) {
-                    app.runtime(&task).hub.output(seq, &held);
+                    sink(seq, &held);
                 }
             });
         }

@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
+  task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
+  to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
+  secret environment. Its Bash commands, hooks and stdio servers run through `yulius --scrub-exec`
+  and its tool results pass the `PostToolUse` redaction hook, its only hook, as in task runs: an
+  agent secret prints as `[secret:NAME]`. Both load their fingerprints with the person's workspace
+  token, which the scrub endpoints now accept while the person may work in the sandbox, and its
+  screen is redacted on the server as a task's terminal is. Literal values typed into a server's
+  form are not agent secrets and stay unredacted, as in task runs; servers imported from
+  `.mcp.json` with agent-secret placeholders need the egress proxy, which the Superagent does not
+  have yet.
 - A failed CI test's output stays readable (SPEC-145, ADR-0119, task #128; fixes #460, part of #485).
   While a job runs, Yulius keeps each failing test's block (nextest's `FAIL` line with its stdout and
   stderr, or libtest's), at most 8 KiB each and 32 KiB per job, and `ci_status` with `run_id` shows
