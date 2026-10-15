@@ -286,9 +286,11 @@ async fn a_read_with_the_known_sha256_answers_no_content_while_unchanged() -> Te
         let refused = read(format!("&known={bad}"), alice.clone()).await?;
         assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
     }
-    // A reader of the sandbox is refused as for a read, whatever the hash.
-    let reader = read(format!("&known={sha}"), bob.clone()).await?;
-    assert_eq!(reader.status, StatusCode::FORBIDDEN);
+    // A reader of the sandbox is refused as for a read, whatever the hash, malformed too.
+    for known in [sha.as_str(), "abc"] {
+        let reader = read(format!("&known={known}"), bob.clone()).await?;
+        assert_eq!(reader.status, StatusCode::FORBIDDEN, "{known}");
+    }
     Ok(())
 }
 

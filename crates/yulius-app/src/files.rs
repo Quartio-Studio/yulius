@@ -271,10 +271,10 @@ impl App {
         path: &str,
         known: Option<&str>,
     ) -> AppResult<Option<FileContent>> {
+        let target = self.file_target(ctx, sandbox, root, path, false).await?;
         if known.is_some_and(|sha| !is_sha256_hex(sha)) {
             return Err(AppError::Invalid("known is 64 lowercase hex digits".into()));
         }
-        let target = self.file_target(ctx, sandbox, root, path, false).await?;
         let file = Self::existing(&target)?;
         let meta = std::fs::metadata(&file).map_err(|e| io_error(&e))?;
         if meta.is_dir() {
@@ -290,7 +290,8 @@ impl App {
                 sha256: String::new(),
             }));
         }
-        let bytes = std::fs::read(&file).map_err(|e| io_error(&e))?;
+        // Read every 2 s while someone has the file in front: off the runtime's threads.
+        let bytes = tokio::fs::read(&file).await.map_err(|e| io_error(&e))?;
         let sha256 = self.deps.crypto.sha256_hex(&bytes);
         if known == Some(sha256.as_str()) {
             return Ok(None);
