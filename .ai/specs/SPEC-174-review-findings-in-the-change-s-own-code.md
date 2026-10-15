@@ -65,8 +65,8 @@ lets an agent defer a finding in its own change's code to an issue:
 
 - [x] Read the documents and the code they describe
 - [x] Catalog skills and workflows state the own-code rule, checked by a test
-- [ ] The briefing and the issue_create tool state the own-code rule, with tests
-- [ ] Repository primitives, docs, SPEC-001 and ADR-0141 state the own-code rule
+- [x] The briefing and the issue_create tool state the own-code rule, with tests
+- [x] Repository primitives, docs, SPEC-001 and ADR-0141 state the own-code rule
 - [ ] Gates green and independent review approved
 
 ## Acceptance criteria

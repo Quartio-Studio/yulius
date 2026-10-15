@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Review findings in a change's own code are fixed before merge, never deferred to an issue
+  (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
+  report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and
+  `yulius-git` primitives, the engineering workflow, the briefing and the `issue_create` tool now
+  say the same: an own-code finding is fixed test-first in the same pull request whatever the
+  round (keep fixing, split, or ask a person); only pre-existing bugs, flaky tests the change did
+  not cause and nits left at the round limit become issues, saying why; the reviewer marks each
+  finding own code or pre-existing, and deferring an own-code one is "request changes". A unit
+  test keeps every location stating the rule.
 - The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
   crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
   the narrow-strip e2e test now checks that no strip chip's text overflows its box.
