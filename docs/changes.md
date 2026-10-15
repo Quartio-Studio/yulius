@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Queued messages show and take files as placeholders (SPEC-168, ADR-0137, task #158). The
+  "Queued messages" card no longer shows a request's files as raw `@'/path'` mentions: each is a
+  placeholder (`Image N`, or the file's name) that opens the image, or downloads the file, on a
+  click. The message box is the composer's prompt input: an image pasted or dropped there uploads
+  to the task and sits at the caret as a placeholder that moves and deletes like a character, and
+  is queued at its place. Queue waits for an upload still running.
 - An update pauses every task at once (SPEC-160, ADR-0131, task #151). When the new version is
   built, each task's agent is frozen mid-turn with the cgroup v2 freezer: its output stops, nothing
   is told to it, and it goes on from the same instruction when its task is thawed after the
