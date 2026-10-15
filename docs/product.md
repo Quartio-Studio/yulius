@@ -91,8 +91,9 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  every pull request runs Yulius's own `security` job, which scans with Vidoc once it is granted
-  its key (when the running instance knows `secrets`) and the key works (#470).
+  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans with
+  Vidoc once the key works (#470). A job that checked nothing exits with `$YULIUS_CI_SKIP_CODE` and
+  reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
@@ -158,6 +159,8 @@ watching, steering and unblocking.
   there, and a person allows that once per secret (SPEC-129).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
+  Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
+  restart; the agents don't notice (SPEC-160).
 
 ## Principles
 

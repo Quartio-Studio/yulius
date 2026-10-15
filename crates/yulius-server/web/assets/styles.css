@@ -2576,7 +2576,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ci-state { display: inline-flex; color: var(--muted); }
 .ci-passed { color: var(--ok-fg); }
 .ci-failed, .ci-error { color: var(--danger-fg); }
-.ci-running { color: var(--warn-fg); }
+.ci-running, .ci-skipped { color: var(--warn-fg); }
 .ci-running .icon { animation: spin var(--duration-spin-slow) linear infinite; }
 .ci-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 .ci-tab { display: inline-flex; align-items: center; gap: 6px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }

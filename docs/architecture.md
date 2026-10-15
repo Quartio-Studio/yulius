@@ -910,6 +910,28 @@ that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
+## CI job states
+
+A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`):
+0 is passed, the skip code `yulius_domain::ci::SKIP_EXIT_CODE` (78, given to every job as
+`YULIUS_CI_SKIP_CODE`) is skipped, any other exit or a signal is failed; a timeout, the output
+limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` makes the run's
+state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
+rule; the commit status counts the skipped jobs
+([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
+[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)).
+
+```mermaid
+flowchart LR
+  EXIT["job's process ends"] -->|"exit 0"| P["passed"]
+  EXIT -->|"exit $YULIUS_CI_SKIP_CODE (78)"| S["skipped: checked nothing"]
+  EXIT -->|"other exit or a signal"| F["failed"]
+  EXIT -->|"timeout, output limit, lost host"| E["error"]
+  P --> RUN["run: passed when every job passed or was skipped"]
+  S --> RUN
+  F --> RF["run: failed (blocks the merge)"]
+```
+
 ## Stages
 
 Every stage of a task, a CI run and a CD run is one row of `spans`
@@ -1015,6 +1037,32 @@ sequenceDiagram
         A->>S: GET notes
         A-->>A: same text: adopt; else Keep mine / Use theirs
     end
+```
+
+## Updates
+
+An update from `main` (SPEC-002 ADR-18) builds while tasks work, then freezes every task at once
+(SPEC-160, ADR-0131): the server asks the process host to move each run's agent tree into its own
+cgroup `…/sandboxes/<sandbox>/agents/run-<attempt>` and freeze it (`yulius_sandbox::freeze`), so the
+agent stops mid-turn with nothing to notice while its ptyhost keeps serving. The root helper
+restarts the service; the new server releases and thaws the tasks one by one. A run that cannot be
+frozen (no delegated cgroup) pauses at its turn boundary through the hook hold instead.
+
+```mermaid
+sequenceDiagram
+  participant S as Server (updates.rs)
+  participant H as Process host (freeze)
+  participant K as Kernel cgroup v2
+  participant R as Root helper
+  S->>R: build request (tasks keep working)
+  R-->>S: built
+  S->>H: freeze(run) for every live task
+  H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
+  K-->>H: cgroup.events frozen 1
+  S->>R: install request (two passes all frozen)
+  R->>S: stop, back up, install, start, health check
+  S->>H: thaw(run) one by one after releasing each task
+  H->>K: cgroup.freeze=0
 ```
 
 ## Agent primitives
