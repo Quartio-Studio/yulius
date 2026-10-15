@@ -524,7 +524,11 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     )
     .await?;
     assert_eq!(missing.status, StatusCode::NOT_FOUND, "{:?}", missing.body);
-    for path in ["src", "src/nothing.rs"] {
+    // A link to a folder is not followed to tell what it is (it may lead outside): leaving it is
+    // relayed like leaving a file that is gone (#477).
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::os::unix::fs::symlink(repo.join("src"), repo.join("src-link"))?;
+    for path in ["src", "src/nothing.rs", "src-link"] {
         let left = call(
             &h.router,
             Method::PUT,
@@ -550,8 +554,8 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     )
     .await?;
     assert_eq!(edge.status, StatusCode::NO_CONTENT, "{:?}", edge.body);
-    // Leaving a deleted file, and the largest offset.
-    assert_eq!(published(&mut events).len(), 2);
+    // Leaving a deleted file and a link to a folder, and the largest offset.
+    assert_eq!(published(&mut events).len(), 3);
     Ok(())
 }
 

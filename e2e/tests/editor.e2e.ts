@@ -719,3 +719,80 @@ test('a tab clicked while a redraw is held back is the one clicked, and is chose
   expect(await browser.evaluate(() => (window as unknown as { __clicks: unknown[] }).__clicks)).toEqual([{ same: true, connected: true, path: 'AGENTS.md' }]);
   await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
 });
+
+// #477 (SPEC-127 review round 2): the presence loop itself (unit, in the page). A file closed with
+// an update on its way still leaves once that is answered, and nothing is armed after `destroy()`;
+// refusals of access or input are not sent again, while too many requests and a lost one are.
+test('a destroyed presence sends its waiting leave and arms no timer; only lost or throttled updates go again', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    type Presence = { setShown(shown: boolean): void; soon(): void; destroy(options?: { going?: boolean }): void };
+    type Create = (options: { put(body: unknown, options: { keepalive: boolean }): Promise<void>; state(): unknown; draw(): void; myId: string }) => Presence;
+    const { createPresence } = await import('/assets/presence.js' as string) as { createPresence: Create };
+    // The timers presence.js arms and has not cleared or run, told apart by where they were armed.
+    const live = new Map<number, number>();
+    const realSet = window.setTimeout;
+    const realClear = window.clearTimeout;
+    window.setTimeout = ((fn: () => void, ms?: number) => {
+      if (!(new Error().stack ?? '').includes('/assets/presence.js')) return realSet(fn, ms);
+      const id = realSet(() => { live.delete(id); fn(); }, ms);
+      live.set(id, ms ?? 0);
+      return id;
+    }) as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => { if (id !== undefined) live.delete(id); realClear(id); }) as typeof window.clearTimeout;
+    const settle = () => new Promise((resolve) => realSet(resolve, 0));
+    try {
+      // Destroyed with an update on its way: the leave waits for its answer, then goes once.
+      const sent: { selection: unknown; keepalive: boolean }[] = [];
+      const answers: { resolve(): void; reject(error: unknown): void }[] = [];
+      const presence = createPresence({
+        put: (body, { keepalive }) => {
+          sent.push({ selection: (body as { selection: unknown }).selection, keepalive });
+          return new Promise<void>((resolve, reject) => answers.push({ resolve, reject }));
+        },
+        state: () => ({ revision: 1, selection: { anchor: 0, head: 1 } }),
+        draw: () => {},
+        myId: 'me',
+      });
+      presence.setShown(true);
+      presence.soon(); // a change while the hello is on its way: a timer armed
+      const armedBefore = live.size;
+      presence.destroy({ going: false });
+      const afterDestroy = { sent: sent.length, timers: live.size };
+      answers[0].resolve();
+      await settle();
+      const afterAnswer = { sent: sent.slice(1), timers: live.size };
+      answers[1].reject({ status: 503 }); // the leave is not sent again
+      await settle();
+      const destroyed = { armedBefore, afterDestroy, afterAnswer, finally: { sent: sent.length, timers: live.size } };
+
+      // Each refusal of the hello: is a retry armed?
+      const retried: Record<string, number[]> = {};
+      for (const status of [403, 404, 409, 422, 429, 503, 0]) {
+        live.clear();
+        const refused = createPresence({
+          put: () => Promise.reject(status ? { status } : new Error('lost')),
+          state: () => ({ revision: 1, selection: { anchor: 0, head: 0 } }),
+          draw: () => {},
+          myId: 'me',
+        });
+        refused.setShown(true);
+        await settle();
+        retried[status || 'lost'] = [...live.values()];
+        for (const id of live.keys()) realClear(id);
+        live.clear();
+      }
+      return { destroyed, retried };
+    } finally {
+      window.setTimeout = realSet;
+      window.clearTimeout = realClear;
+    }
+  });
+  expect(result.destroyed).toEqual({
+    armedBefore: 1,
+    afterDestroy: { sent: 1, timers: 0 },
+    afterAnswer: { sent: [{ selection: null, keepalive: false }], timers: 0 },
+    finally: { sent: 2, timers: 0 },
+  });
+  expect(result.retried).toEqual({ 403: [], 404: [], 409: [], 422: [], 429: [1000], 503: [1000], lost: [1000] });
+});
