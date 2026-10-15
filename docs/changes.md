@@ -12,6 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   one-line placeholder (`Image 1`) at the caret, moved by drag, by cut and paste or by dragging its
   tray thumbnail into the text. × in the tray removes a file; a file without a placeholder is sent
   after the text.
+- CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
+  entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
+  Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
 - The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
   task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
   to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
