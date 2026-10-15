@@ -533,13 +533,29 @@ wins over the file.
 
 Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
 allow: the server's installation tokens, and people's sign-in (user-to-server) tokens, which are
-also capped by the person's own repository access. Everything a task does on GitHub uses its
-creator's sign-in token, so GitHub shows that person (GIT-003): the agent's Git and `gh`,
-Yulius's push and pull request for the task, the agent's merges, promotions, issues and labels.
-Without a usable one (no linked account, as for the superadmin, or a sign-in that can no longer
-be refreshed) the App acts — with a token restricted to the sandbox's repository for the agent —
-and the task's terminal says so once. Yulius CI's statuses, branch cleanup and background reads
-stay with the App. The manifest flow requests these repository permissions:
+also capped by the person's own repository access. What Yulius does on GitHub for a task uses its
+owner's sign-in token, so GitHub shows that person (GIT-003): Yulius's push and pull request for
+the task, its merges, promotions, issues and labels. Without a usable one (no linked account, as
+for the superadmin, or a sign-in that can no longer be refreshed) the App acts, and the task's
+terminal says so once. Yulius CI's statuses, branch cleanup and background reads stay with the App.
+
+The agent's own Git and `gh` never hold a person's token (ADR-0114): they get an installation token
+of the App restricted to the sandbox's repository and to Contents and Pull requests and Issues
+(write), Checks, Commit statuses and Metadata (read). Commits stay authored by the task's owner;
+an agent's own pushes and comments show the App. Without Administration that token cannot touch
+rulesets, settings or deploy keys; without Workflows it cannot add a GitHub Actions workflow.
+
+**Protecting the production branch.** Only a person may move it (ADR-0110). Add a branch ruleset
+on each repository (Settings → Rules → Rulesets → New branch ruleset): target the production
+branch (`main`), enforcement Active, rules **Restrict updates**, **Restrict deletions** and **Block
+force pushes**, and in the bypass list only the **Repository admin** role, never the Yulius App.
+GitHub then refuses the agents' token every push, merge, fast-forward or deletion of that branch,
+`--no-verify` and `gh` included, while an admin's promotion goes through. Projects Yulius creates
+get it; for an imported repository onboarding (`yulius onboard`, the preparation task) says when it
+is missing, and the preparation agent asks a person for it. A promotion needs a repository admin
+once the ruleset exists.
+
+The manifest flow requests these repository permissions:
 
 | Permission | Access | What Yulius does with it |
 | --- | --- | --- |
