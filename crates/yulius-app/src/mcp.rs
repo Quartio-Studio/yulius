@@ -23,8 +23,9 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
-/// MGT-006, SPEC-066 MGT-012). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 15] = [
+/// MGT-006, SPEC-066 MGT-012) and reading its agent vault (SPEC-178, ADR-0144). Everything else
+/// belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 16] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -40,6 +41,7 @@ pub const COCKPIT_TOOLS: [&str; 15] = [
     "workflows_list",
     "sessions_search",
     "session_read",
+    "secrets_list",
 ];
 
 /// Who calls the MCP server.
@@ -499,6 +501,7 @@ impl App {
                 self.tool_automation_template_enable(&project, &args).await
             }
             "workflows_list" => self.tool_workflows_list(&project).await,
+            "secrets_list" => self.tool_secrets_list(&project).await,
             _ => match caller {
                 McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
                 McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {
@@ -555,7 +558,6 @@ impl App {
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
-            "secrets_list" => self.tool_secrets_list(ctx).await,
             "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             "secret_request_hosts" => self.tool_secret_request_hosts(ctx, &args).await,
             "secret_copy_to_env" => self.tool_secret_copy_to_env(ctx, &args).await,

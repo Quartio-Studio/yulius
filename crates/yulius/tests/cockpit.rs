@@ -1215,6 +1215,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "secrets_list",
             "session_read",
             "sessions_search",
             "task_archive",
@@ -2317,6 +2318,58 @@ async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult
     other_cockpit(&f, &id).await?;
     let usage = usage_of(&f.h, "acc-a").await?;
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-178 VAU-001, VAU-003 (ADR-0144): the Superagent lists its own sandbox's agent secrets,
+/// names and hosts only, and is told how it checks a value and where a person manages them; the
+/// vault tools that use a value (proxy hosts, `.env` copies, the browser) stay a task's.
+#[tokio::test]
+async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    add_apify_key(&f).await?;
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let other = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"name": "OTHER_KEY", "value": "other_synthetic_value_4471"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+
+    let (listed, is_error) = cockpit_tool(&f, &token, "secrets_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["secrets"][0]["name"], "APIFY_KEY", "{listed}");
+    assert_eq!(listed["secrets"][0]["hosts"], json!(["api.apify.test"]));
+    assert_eq!(listed["secrets"].as_array().map(Vec::len), Some(1), "{listed}");
+    let raw = listed.to_string();
+    for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
+        assert!(!raw.contains(hidden), "{hidden} in {raw}");
+    }
+    // The Superagent's own guidance: it has no placeholders, it verifies with `secret_verify`,
+    // and a person manages secrets on the Secrets page.
+    let how = listed["how_to_use"].to_string();
+    assert!(how.contains("secret_verify"), "{how}");
+    assert!(how.contains("/s/fixture/secrets?section=agents"), "{how}");
+    assert!(!how.contains("secret_copy_to_env"), "{how}");
+
+    for tool in ["secret_copy_to_env", "secret_request_hosts", "browser_fill_secret"] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, tool, json!({"secret": "APIFY_KEY"})).await?;
+        assert!(is_error, "{tool}: {refused}");
+        assert!(refused.to_string().contains("unknown tool"), "{tool}: {refused}");
+    }
     f.h.app.end_all_shells().await;
     Ok(())
 }
