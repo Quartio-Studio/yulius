@@ -230,14 +230,19 @@ sequenceDiagram
 A task's agent is a native Claude Code session, and its first message is in before a person can
 type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
 [decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
-attached on the new-task composer are uploaded to the sandbox's drafts folder, and each sits in
-the prompt's text where it was pasted or dropped: the prompt is stored with it there as the
+attached on the new-task composer are uploaded to the sandbox's drafts folder and show in the
+composer's tray, and each sits in the prompt's text as a placeholder where it was pasted, dropped
+or placed from the tray ([SPEC-150](../.ai/specs/SPEC-150-fix-the-ux-i-d-expect-uploading-images-a.md),
+[decision 0124](decisions/0124-uploaded-files-sit-in-a-tray-the-text-holds-placeholders.md)); a
+file without one follows the text. The prompt is stored with it there as the
 mention `@'<path>'` (an older prompt has its files after the text, a line `@path` each), and
 `Request::parse` keeps that order everywhere the prompt goes
 ([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
 [decision 0101](decisions/0101-attached-files-keep-their-place-in-the-prompt.md)). A goal task (the
 default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
-typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
+typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. Until it
+is confirmed the run directory holds `launch-goal-pending`, so a restarted server watches it again
+([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md)). The
 condition names the request file in the sandbox home, which keeps the whole request, and the
 attached files, which the agent opens with its Read tool (a `/goal` carries no image
 block); the request file writes each file inside the text where it sits (`[file N: <path>]`). A
@@ -426,7 +431,11 @@ it started is recorded on that subscription as a task's is. The Cockpit then sta
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
 process ends with the exit status `switched`, and the panel follows it to the new one. Without
-capacity, it stays and its viewers get a notice.
+capacity, it stays and its viewers get a notice. A shell, the Cockpit included, is recorded as
+ended only once it exited or its host was terminated: when its host cannot be ended it stays live
+and its viewers are told, and the move starts no second Cockpit on the same conversation
+([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md),
+[decision 0120](decisions/0120-a-shell-ends-only-when-its-host-is-proven-gone.md)).
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -450,12 +459,24 @@ other server. The Superagent starts with `--settings` naming every one of them i
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
+The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
+redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
+hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
+server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
+token the person's environment holds, answered while the person may work in the sandbox (by an
+access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
+proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+[decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
-  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
+  MS -->|"mcp_attachments: values in the secret environment"| HP
+  SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
   APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
@@ -524,9 +545,11 @@ flowchart LR
 
 CD runs a project's deploy and verify scripts like CI runs its checks
 ([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
-ADR-0110, ADR-0111). `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the
-heads of the protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree
-never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
+ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
+tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
+`yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
+protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
+changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
@@ -838,6 +861,18 @@ before/after recorded")]
 live / gone"| keep[("metrics kept;
 outcome recorded")]
 ```
+
+## CI job output
+
+A CI job's output is read from its log while it runs: the stored output is its last 512 KiB
+(escape sequences removed), and the same reads feed the stage scanner and the failure scanner
+(`FailureScanner` in `yulius-domain::ci::failures`). The failure scanner keeps every failing test's
+block it sees anywhere in the output, nextest's (`FAIL [ 0.5s] …` with its `stdout ───` and
+`stderr ───`) and libtest's, at most 8 KiB each and 32 KiB per job, in `ci_jobs.failures` when the
+job ends. `ci_status` with a `run_id` shows them before the end of a failed job's output, so a test
+that failed early in a long job stays diagnosable
+([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
+[decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
 ## Stages
 

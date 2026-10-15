@@ -50,6 +50,15 @@ pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
 /// The exit status a Cockpit's viewers get when it ended to start again on another subscription
 /// (SPEC-074 SUP-004): the panel follows it to the new one.
 pub const SWITCHED_STATUS: &str = "switched";
+/// A terminal whose host could not be terminated stays live (SPEC-146 SHE-003).
+const TERMINAL_NOT_ENDED: &str =
+    "This terminal's process could not be ended, so it keeps running. Close it again to retry.";
+/// The Superagent whose host could not be terminated stays live (SPEC-146 SHE-003).
+const COCKPIT_NOT_ENDED: &str = "The Superagent's process could not be ended, so it keeps running.";
+/// The Superagent whose host could not be terminated is not moved past a usage limit (SPEC-146
+/// SHE-002).
+pub(crate) const COCKPIT_NOT_MOVED: &str = "The Superagent could not move to another subscription: its \
+     process could not be ended, so it stays on this one.";
 /// What a Cockpit's bearer is derived for, hashed with its host token.
 const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
 
@@ -69,8 +78,9 @@ pub const REAP_INTERVAL: Duration = Duration::from_secs(60);
 /// Grace per escalation step of a shutdown request (Ctrl-C, then SIGTERM, then SIGKILL;
 /// interactive shells ignore SIGTERM, so ending a shell takes about two steps).
 const SHUTDOWN_GRACE_MS: u32 = 500;
-/// Wait for the exit of a shell that was asked to stop before it is terminated.
-const EXIT_WAIT: Duration = Duration::from_secs(10);
+/// Wait for the exit of a shell that was asked to stop before it is terminated; the default of
+/// [`crate::context::AppConfig::shell_exit_ms`].
+pub const SHELL_EXIT_WAIT: Duration = Duration::from_secs(10);
 /// Reattach attempts after an unexpected host disconnect.
 const REATTACH_ATTEMPTS: u32 = 3;
 /// Initial PTY size before the first viewer reports its size.
@@ -149,6 +159,8 @@ pub struct ShellRuntime {
     run_dir: PathBuf,
     token: [u8; 32],
     hub: Hub,
+    /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
+    scrub: crate::vault::TerminalScrub,
     writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
@@ -715,7 +727,9 @@ impl App {
         // Viewers learn at once; the exit frame follows when the process is gone.
         shell.hub.notice("Closing this terminal…");
         let app = Arc::clone(self);
-        tokio::spawn(async move { app.end_shells(&[shell]).await });
+        tokio::spawn(async move {
+            app.end_shells(&[shell]).await;
+        });
         Ok(())
     }
 
@@ -775,6 +789,7 @@ impl App {
             run_dir: shell_dir_root(&self.config.data_dir).join(id),
             token: self.deps.crypto.random_bytes(),
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+            scrub: crate::vault::TerminalScrub::default(),
             writer: tokio::sync::Mutex::new(None),
             ended: AtomicBool::new(false),
             closing: AtomicBool::new(false),
@@ -845,6 +860,17 @@ impl App {
         self.attach_shell(runtime).await
     }
 
+    /// A whole screen of the shell as viewers see it: a Cockpit's redacted of agent secrets
+    /// (SPEC-147 SAM-004), a terminal's as it is.
+    async fn shell_screen(&self, runtime: &ShellRuntime, bytes: &[u8]) -> Vec<u8> {
+        if runtime.kind == ShellKind::Cockpit {
+            self.terminal_snapshot(&runtime.scrub, &runtime.sandbox, bytes)
+                .await
+        } else {
+            bytes.to_vec()
+        }
+    }
+
     /// Connects to the shell's host and loads its screen into the hub.
     async fn attach_shell(&self, runtime: &ShellRuntime) -> AppResult<Box<dyn RunReader>> {
         let attached = self
@@ -853,12 +879,12 @@ impl App {
             .attach(&runtime.run_dir, &runtime.token)
             .await?;
         let welcome = attached.welcome;
-        runtime.hub.reset(
-            welcome.seq,
-            welcome.snapshot.as_deref().unwrap_or_default(),
-            welcome.cols,
-            welcome.rows,
-        );
+        let screen = self
+            .shell_screen(runtime, welcome.snapshot.as_deref().unwrap_or_default())
+            .await;
+        runtime
+            .hub
+            .reset(welcome.seq, &screen, welcome.cols, welcome.rows);
         *runtime.writer.lock().await = Some(attached.writer);
         Ok(attached.reader)
     }
@@ -884,10 +910,24 @@ impl App {
         let mut reattaches = 0;
         let exit = loop {
             match reader.next().await {
+                Ok(Some(RunEvent::Output { seq, bytes })) if runtime.kind == ShellKind::Cockpit => {
+                    let shell = Arc::clone(&runtime);
+                    self.scrub_output(
+                        &runtime.scrub,
+                        &runtime.sandbox,
+                        seq,
+                        &bytes,
+                        move |seq, out| {
+                            shell.hub.output(seq, out);
+                        },
+                    )
+                    .await;
+                }
                 Ok(Some(RunEvent::Output { seq, bytes })) => runtime.hub.output(seq, &bytes),
                 Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
                     let (cols, rows) = runtime.hub.size();
-                    runtime.hub.reset(seq, &bytes, cols, rows);
+                    let screen = self.shell_screen(&runtime, &bytes).await;
+                    runtime.hub.reset(seq, &screen, cols, rows);
                 }
                 Ok(Some(RunEvent::Exit(exit))) => break Some(exit),
                 Ok(None) | Err(_) => {
@@ -902,10 +942,17 @@ impl App {
                     }
                     break match self.deps.session_host.inspect(&runtime.run_dir) {
                         RunInspection::Exited(exit) => Some(exit),
+                        // Its host or its process lives on: ended only once they are gone
+                        // (SPEC-146 SHE-001).
                         RunInspection::Recorded {
-                            host_alive: true, ..
-                        } => {
-                            let _ = self.deps.session_host.terminate(&runtime.run_dir);
+                            host_alive,
+                            child_alive,
+                            ..
+                        } if host_alive || child_alive => {
+                            if let Err(err) = self.deps.session_host.terminate(&runtime.run_dir) {
+                                self.keep_unended(&runtime, &err);
+                                return;
+                            }
                             None
                         }
                         _ => None,
@@ -949,28 +996,63 @@ impl App {
     }
 
     /// Waits until `deadline` for a shell's exit, then terminates its host and records the end
-    /// (a timeout is not proof of exit, so the host is killed rather than forgotten).
-    async fn await_shell_exit(&self, runtime: &ShellRuntime, deadline: tokio::time::Instant) {
+    /// (a timeout is not proof of exit, so the host is killed rather than forgotten). Returns
+    /// whether the shell ended: when its host cannot be terminated it stays live, as a task run
+    /// does (SPEC-146 SHE-001, ADR-0050): registered with its run directory, listed and closable
+    /// again, its viewers told.
+    async fn await_shell_exit(
+        &self,
+        runtime: &ShellRuntime,
+        deadline: tokio::time::Instant,
+    ) -> bool {
         let mut ended = runtime.ended_tx.subscribe();
         let exited = tokio::time::timeout_at(deadline, ended.wait_for(|ended| *ended))
             .await
             .is_ok_and(|result| result.is_ok());
-        if !exited {
-            tracing::warn!(shell = %runtime.id, "shell did not exit after shutdown; terminating its host");
-            let _ = self.deps.session_host.terminate(&runtime.run_dir);
-            self.finish_shell(runtime, None).await;
+        if exited {
+            return true;
+        }
+        tracing::warn!(shell = %runtime.id, "shell did not exit after shutdown; terminating its host");
+        match self.deps.session_host.terminate(&runtime.run_dir) {
+            Ok(()) => {
+                self.finish_shell(runtime, None).await;
+                true
+            }
+            // It exited meanwhile: its pump recorded the end.
+            Err(_) if runtime.has_ended() => true,
+            Err(err) => {
+                self.keep_unended(runtime, &err);
+                false
+            }
+        }
+    }
+
+    /// A shell whose host or process could not be terminated stays live (SPEC-146 SHE-001):
+    /// registered with its run directory, listed and closable again, its viewers told.
+    fn keep_unended(&self, runtime: &ShellRuntime, err: &AppError) {
+        tracing::error!(shell = %runtime.id, sandbox = %runtime.sandbox, error = %err, "the shell's host could not be terminated; it stays live");
+        runtime.closing.store(false, Ordering::SeqCst);
+        // A Superagent's move says so itself, once it decided (SPEC-146 SHE-002).
+        match runtime.kind {
+            ShellKind::Terminal => runtime.hub.notice(TERMINAL_NOT_ENDED),
+            ShellKind::Cockpit if runtime.switching.load(Ordering::SeqCst) => {}
+            ShellKind::Cockpit => runtime.hub.notice(COCKPIT_NOT_ENDED),
         }
     }
 
     /// Ends shells: every shell is asked first, then all are awaited against one deadline.
-    pub(crate) async fn end_shells(&self, shells: &[Arc<ShellRuntime>]) {
+    /// Returns whether every one ended (see [`Self::await_shell_exit`]).
+    pub(crate) async fn end_shells(&self, shells: &[Arc<ShellRuntime>]) -> bool {
         for shell in shells {
             Self::request_shell_exit(shell).await;
         }
-        let deadline = tokio::time::Instant::now() + EXIT_WAIT;
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(self.config.shell_exit_ms);
+        let mut all = true;
         for shell in shells {
-            self.await_shell_exit(shell, deadline).await;
+            all &= self.await_shell_exit(shell, deadline).await;
         }
+        all
     }
 
     /// Attaches a viewer to a shell: only its creator, while they keep write access to the
@@ -1160,7 +1242,7 @@ impl App {
             tracing::info!(shell = %shell.id, "ending a shell without viewers");
         }
         self.end_shells(&idle).await;
-        idle.len()
+        idle.iter().filter(|shell| shell.has_ended()).count()
     }
 
     /// Adopts the shells a previous server process left running (their detached hosts survive
@@ -1284,6 +1366,7 @@ impl App {
             run_dir: run_dir.to_path_buf(),
             token,
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
+            scrub: crate::vault::TerminalScrub::default(),
             writer: tokio::sync::Mutex::new(None),
             ended: AtomicBool::new(false),
             closing: AtomicBool::new(false),

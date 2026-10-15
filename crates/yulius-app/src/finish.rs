@@ -72,6 +72,9 @@ pub struct TranscriptFacts {
     pub last_turn_at: Option<yulius_domain::time::Timestamp>,
     /// A goal is open: set or "not met", not achieved, failed or cleared since (SPEC-079 BGW-005).
     pub goal_open: bool,
+    /// Claude Code recorded a goal in this session (any outcome): a launch `/goal` was taken
+    /// (SPEC-146 GWR-003).
+    pub goal_recorded: bool,
 }
 
 impl TranscriptFacts {
@@ -112,6 +115,7 @@ impl TranscriptFacts {
             }
             Observation::Compacted => self.context_full = false,
             Observation::Goal(outcome) => {
+                self.goal_recorded = true;
                 self.goal_open = goal_stays_open(*outcome);
                 self.fold_goal(*outcome);
             }
@@ -645,6 +649,10 @@ impl App {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
         runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
+        // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
+        if facts.goal_recorded {
+            runtime.goal_submitted.store(true, Ordering::SeqCst);
+        }
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
@@ -1076,6 +1084,7 @@ mod tests {
                 limit_pending: false,
                 last_turn_at: Some(Timestamp(1)),
                 goal_open: false,
+                goal_recorded: true,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -1096,6 +1105,9 @@ mod tests {
         // A prompt-mode session never says anything about a goal.
         let plain = reduce(&[PROMPT, Observation::TurnComplete { at: None }]);
         assert_eq!(plain.goal_achieved, Some(false));
+        assert!(!plain.goal_recorded);
+        // SPEC-146 GWR-003: any record of a goal says it was taken.
+        assert!(reduce(&[Observation::Goal(GoalOutcome::Cleared)]).goal_recorded);
         let limit = reduce(&[Observation::LimitReached {
             resets_at: None,
             message: "limit".into(),

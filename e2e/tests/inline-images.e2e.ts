@@ -36,9 +36,9 @@ test('an image pasted mid-text stays there, deletes and comes back, moves, and r
   await prompt.click();
   await browser.keyboard.type('This part ');
   await pasteImage(browser, 'shot.png');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
-  // No row of thumbnails above the text: the image is inside it, at the caret.
-  await expect(browser.locator('.composer-attachments')).toHaveCount(0);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
+  // SPEC-150: the upload shows in the tray above the text; the text holds its placeholder.
+  await expect(browser.locator('.composer-attachments .composer-attachment')).toHaveCount(1);
   await browser.keyboard.type('looks wrong, while the header is fine.');
   expect(await promptText(browser)).toBe('This part [shot.png]looks wrong, while the header is fine.');
   expect(await axeViolations(browser)).toEqual([]);
@@ -49,7 +49,7 @@ test('an image pasted mid-text stays there, deletes and comes back, moves, and r
   await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
   expect(await promptText(browser)).toBe('This part looks wrong, while the header is fine.');
   await browser.keyboard.press('ControlOrMeta+z');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   expect(await promptText(browser)).toBe('This part [shot.png]looks wrong, while the header is fine.');
   await browser.keyboard.press('ControlOrMeta+Shift+z');
   await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
@@ -64,7 +64,7 @@ test('an image pasted mid-text stays there, deletes and comes back, moves, and r
   await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
   for (let i = 0; i < 'looks wrong, while the header'.length; i += 1) await browser.keyboard.press('ArrowRight');
   await browser.keyboard.press('ControlOrMeta+v');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   expect(await promptText(browser)).toBe('This part looks wrong, while the header[shot.png] is fine.');
 
   await browser.keyboard.press('ControlOrMeta+Enter');
@@ -89,7 +89,7 @@ test('an image dragged to another place in the text lands at the drop point', as
   await screen.getByRole('textbox', 'Task prompt').click();
   await browser.keyboard.type('Before the image, ');
   await pasteImage(browser, 'drag.png');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   await browser.keyboard.type(' after it.');
 
   // Dragged onto the space after "Before": the browser's own drag events, as a mouse makes them.
@@ -114,7 +114,7 @@ test('an image dragged to another place in the text lands at the drop point', as
   expect(await promptText(browser)).toBe('Before the image, [drag.png] after it.');
 });
 
-test('a draft keeps each image in its place across a reload; an older draft shows its files after the text', async ({ app, browser, screen }) => {
+test('a draft keeps each image in its place across a reload; an older draft shows its files in the tray', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await screen.getByRole('textbox', 'Task prompt').click();
   await browser.keyboard.type('Here ');
@@ -135,8 +135,10 @@ test('a draft keeps each image in its place across a reload; an older draft show
     localStorage.setItem(key, JSON.stringify({ text: 'Older words', attached: [{ path: `${drafts}/old.png`, name: 'old.png', type: 'image/png', at: Date.now() }] }));
   }, DRAFTS);
   await browser.reload();
-  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(1);
-  expect(await promptText(browser)).toBe('Older words\n[old.png]');
+  // SPEC-150: they show in the tray, not in the text, and are sent after it.
+  await expect(browser.locator('.composer-attachments .composer-attachment')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
+  expect(await promptText(browser)).toBe('Older words');
 });
 
 test('a file dropped on the prompt lands at the drop point, and the prompt fits a phone', async ({ app, browser, screen }) => {
@@ -176,11 +178,11 @@ test('undo right after a paste, or after typing while it uploaded, never shows t
   await screen.getByRole('textbox', 'Task prompt').click();
   await browser.keyboard.type('One ');
   await pasteImage(browser, 'a.png');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   await browser.keyboard.press('ControlOrMeta+z');
   await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
   await browser.keyboard.press('ControlOrMeta+Shift+z');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
 
   // Typed while the next one uploads: undoing the typing keeps the file, never the placeholder.
@@ -192,7 +194,7 @@ test('undo right after a paste, or after typing while it uploaded, never shows t
   await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
   await browser.keyboard.type(' two three');
   await browser.evaluate(() => (window as unknown as { __release: () => void }).__release());
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(2);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(2);
   expect(await promptText(browser)).toBe('One [a.png][b.png] two three');
   // Undo walks the typing back word by word to the inserted file, never to a placeholder…
   for (let i = 0; i < 6 && (await promptText(browser)) !== 'One [a.png][b.png]'; i += 1) {
@@ -240,7 +242,7 @@ test('at the length cap typing stops, and a pasted image still lands', async ({ 
   await browser.keyboard.type('yz');
   await expect.poll(async () => (await promptText(browser)).length).toBe(100000);
   await pasteImage(browser, 'capped.png');
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
 });
 
@@ -360,4 +362,290 @@ test('a placeholder deleted before its upload fails leaves no empty undo steps',
     before = now;
   }
   expect(before).toBe('');
+});
+
+// SPEC-150 (task #144): "i'd expect uploading images and then positioning placeholders. Moreover
+// i still want to zoom the image". Uploads sit in a tray above the text, where an image opens
+// large; the text holds a one-line placeholder per file, which the person positions.
+
+/** The tray's files, as their tiles' names, in order. */
+const trayNames = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.composer-attachments .composer-attachment-name')].map((name) => name.textContent));
+
+test('an uploaded image shows in the tray, opens large from there, and sits in the text as a one-line placeholder', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('This part ');
+  await browser.keyboard.press('Enter');
+  await browser.keyboard.type('next');
+  await browser.keyboard.press('ArrowUp');
+  await browser.keyboard.press('End');
+  /** Where the second line starts: it moves down when the first line grows. */
+  const secondLine = () => browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt')!;
+    const text = [...input.childNodes].find((n) => n.nodeType === 3 && (n as Text).data.includes('next')) as Text;
+    const range = document.createRange();
+    range.setStart(text, text.data.indexOf('next'));
+    range.setEnd(text, text.data.indexOf('next') + 1);
+    return Math.round(range.getBoundingClientRect().top - input.getBoundingClientRect().top);
+  });
+  const textOnly = await secondLine();
+  await pasteImage(browser, 'shot.png');
+  await expect(browser.locator('ul.composer-attachments[aria-label="Attached files"] > li')).toHaveCount(1);
+  // The placeholder leaves the line as high as the text alone, and its tooltip is the file's name.
+  expect(await secondLine()).toBe(textOnly);
+  expect(await browser.evaluate(() => document.querySelector('.composer-prompt .pi-atom')!.getAttribute('title'))).toBe('shot.png');
+  await browser.keyboard.type(' looks wrong, and ');
+  await pasteImage(browser, 'other.png');
+  await expect.poll(() => trayNames(browser)).toEqual(['shot.png', 'other.png']);
+  // The tray shows each image, numbered; the text holds "Image N", never the picture.
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(2);
+  await expect(browser.locator('.composer-attachment-number')).toHaveText(['1', '2']);
+  await expect(browser.locator('.composer-prompt img')).toHaveCount(0);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveText(['Image 1', 'Image 2']);
+  expect(await promptText(browser)).toBe('This part [shot.png] looks wrong, and [other.png]\nnext');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A double-click on the placeholder opens the file.
+  await browser.evaluate(() => document.querySelector('.composer-prompt .pi-atom')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 })));
+  await expect(screen.getByRole('dialog', 'shot.png').getByRole('img', 'shot.png')).toBeVisible();
+  await browser.locator('dialog.modal').press('Escape');
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
+  // A click on the thumbnail opens it large; its name says which placeholder it is.
+  await screen.getByRole('button', 'Open Image 1, shot.png').click();
+  await expect(screen.getByRole('dialog', 'shot.png').getByRole('img', 'shot.png')).toBeVisible();
+  await browser.locator('dialog.modal').press('Escape');
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
+});
+
+test('× takes a file out of the tray and the text in one undo step; a deleted placeholder keeps the file, sent after the text', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('Look at ');
+  await pasteImage(browser, 'a.png');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png']);
+  await browser.keyboard.type(' here');
+
+  await screen.getByRole('button', 'Remove a.png').click();
+  await expect.poll(() => trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('Look at  here');
+  await prompt.click();
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png']);
+  expect(await promptText(browser)).toBe('Look at [a.png] here');
+
+  // Deleting the placeholder leaves the file in the tray, marked as not placed.
+  await prompt.press('End');
+  for (let i = 0; i < ' here'.length; i += 1) await prompt.press('ArrowLeft');
+  await prompt.press('Backspace');
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png']);
+  await expect(browser.locator('.composer-attachment.unplaced')).toHaveCount(1);
+  await expect(browser.locator('.composer-attachment.unplaced .sr-only')).toHaveText('Not in the text: sent after it.');
+  // The Preview shows it too, after the formatted text, as it will be sent.
+  await screen.getByRole('button', 'Preview').click();
+  await expect(browser.locator('.composer-preview .pi-preview-after').getByRole('button', { name: 'Open a.png' })).toBeVisible();
+  await screen.getByRole('button', 'Preview').click();
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  // Sent after the text, as older prompts were: the agent still gets it.
+  expect(await lastPrompt(browser)).toBe(`Look at  here\n\n@${DRAFTS}/a.png`);
+});
+
+test('a tray thumbnail dragged into the text puts its placeholder there; the keyboard way puts it at the caret', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('Before the image, ');
+  await pasteImage(browser, 'drag.png');
+  await expect.poll(() => trayNames(browser)).toEqual(['drag.png']);
+  await browser.keyboard.type(' after it.');
+
+  /** Drags the tray tile onto the space after "Before", as a mouse does. */
+  const dragTile = () => browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt')!;
+    const tile = document.querySelector('.composer-attachments .composer-attachment')!;
+    const text = [...input.childNodes].find((n) => n.nodeType === 3 && (n as Text).data.startsWith('Before'))!;
+    const range = document.createRange();
+    range.setStart(text, 'Before'.length);
+    range.setEnd(text, 'Before'.length + 1);
+    const box = range.getBoundingClientRect();
+    const data = new DataTransfer();
+    const at = { clientX: box.left + 1, clientY: box.top + box.height / 2 };
+    tile.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
+    input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data, ...at }));
+    input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data, ...at }));
+    tile.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
+  });
+  // Placed already: the placeholder moves there, one undo step.
+  await dragTile();
+  expect(await promptText(browser)).toBe('Before[drag.png] the image,  after it.');
+  await browser.keyboard.press('ControlOrMeta+z');
+  expect(await promptText(browser)).toBe('Before the image, [drag.png] after it.');
+
+  // Not placed: the drag inserts it.
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await prompt.press('End');
+  for (let i = 0; i < ' after it.'.length; i += 1) await prompt.press('ArrowLeft');
+  await prompt.press('Backspace');
+  expect(await promptText(browser)).toBe('Before the image,  after it.');
+  await dragTile();
+  expect(await promptText(browser)).toBe('Before[drag.png] the image,  after it.');
+
+  // The keyboard way: the caret where it belongs, then the tile's button.
+  await prompt.press('ControlOrMeta+z');
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
+  await prompt.press('Home');
+  await screen.getByRole('button', 'Put drag.png in the text').click();
+  expect(await promptText(browser)).toBe('[drag.png]Before the image,  after it.');
+  await expect(browser.locator('[aria-label="Put drag.png in the text"]')).toHaveCount(0);
+});
+
+test('the tray wraps at phone width and an older draft fills it', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 360, height: 800 });
+  await browser.addInitScript(() => {
+    const file = (name: string) => ({ path: `/var/lib/yulius/sandboxes/sb_studio/attachments/drafts/usr_1/${name}`, name, type: 'image/png', at: Date.now() });
+    localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({ text: 'Older words', attached: ['a-very-long-screenshot-name.png', 'b.png', 'c.png', 'd.png', 'e.png'].map(file) }));
+  });
+  await app.open(mock('/s/studio'));
+  await expect.poll(() => trayNames(browser)).toEqual(['a-very-long-screenshot-name.png', 'b.png', 'c.png', 'd.png', 'e.png']);
+  expect(await promptText(browser)).toBe('Older words');
+  const fits = await browser.evaluate(() => {
+    const box = document.querySelector('.composer-box')!.getBoundingClientRect();
+    const tiles = [...document.querySelectorAll('.composer-attachment')].map((a) => a.getBoundingClientRect());
+    return { page: document.documentElement.scrollWidth <= document.documentElement.clientWidth, tiles: tiles.every((a) => a.left >= box.left - 1 && a.right <= box.right + 1) };
+  });
+  expect(fits).toEqual({ page: true, tiles: true });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-150 review round 1: the tray is part of the prompt's undo history.
+test('the tray is part of undo: × on a file not in the text comes back, undo keeps the tray order, and a redone × is not sent', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('See ');
+  for (const name of ['a.png', 'b.png', 'c.png']) {
+    await pasteImage(browser, name);
+    await expect(browser.locator('.composer-prompt .pi-atom:not(.pi-pending)')).toHaveCount(['a.png', 'b.png', 'c.png'].indexOf(name) + 1);
+  }
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png', 'c.png']);
+
+  // c leaves the text, then the tray: undo brings it back to the tray, still not in the text.
+  await prompt.press('End');
+  await prompt.press('Backspace');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png', 'c.png']);
+  await screen.getByRole('button', 'Remove c.png').click();
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png']);
+  // The keyboard stays in the tray, on the tile now in that place (the last one here).
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Open Image 2, b.png');
+  await prompt.click();
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png', 'c.png']);
+  expect(await promptText(browser)).toBe('See [a.png][b.png]');
+
+  // × a then undo: the same order and numbers as before.
+  await screen.getByRole('button', 'Remove a.png').click();
+  await expect.poll(() => trayNames(browser)).toEqual(['b.png', 'c.png']);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveText(['Image 1']);
+  await prompt.click();
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png', 'c.png']);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveText(['Image 1', 'Image 2']);
+  // Redo takes it out of both again: it is not sent after the text.
+  await browser.keyboard.press('ControlOrMeta+Shift+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['b.png', 'c.png']);
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  expect(await lastPrompt(browser)).toBe(`See @'${DRAFTS}/b.png'\n\n@${DRAFTS}/c.png`);
+});
+
+// SPEC-150 review round 2: an upload that ends after its paste was undone is not attached.
+test('an upload ending after its paste was undone stays out of the tray until the paste is redone', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('One ');
+  await holdUploads(browser);
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  // The upload has ended: its status says so.
+  await expect(browser.locator('.composer-box .upload-status-float')).toHaveText(/Added b\.png/);
+  expect(await trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('One ');
+  // Redo brings the paste back, the file with it; undo takes both again, and nothing is sent.
+  await browser.keyboard.press('ControlOrMeta+Shift+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['b.png']);
+  expect(await promptText(browser)).toBe('One [b.png]');
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual([]);
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  expect(await lastPrompt(browser)).toBe('One');
+});
+
+// SPEC-150 review round 3: typing after the undo drops the paste's redo step; the upload stays out.
+test('an upload ending after its paste was undone and typed over stays out of the tray and is not sent', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('One ');
+  await holdUploads(browser);
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await browser.keyboard.type('two');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect(browser.locator('.composer-box .upload-status-float')).toHaveText(/Added b\.png/);
+  expect(await trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('One two');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  expect(await lastPrompt(browser)).toBe('One two');
+});
+
+test('undoing a paste takes its upload out of the tray, and an upload whose placeholder went first stays in the tray only', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('One ');
+  await pasteImage(browser, 'a.png');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png']);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('One ');
+  await browser.keyboard.press('ControlOrMeta+Shift+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png']);
+  expect(await promptText(browser)).toBe('One [a.png]');
+
+  await holdUploads(browser);
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.press('Backspace');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png']);
+  expect(await promptText(browser)).toBe('One [a.png]');
+  await expect(browser.locator('.composer-attachment.unplaced')).toHaveCount(1);
+});
+
+test('a file put in the text after × lands at the caret the person left, which the × shifted', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('A ');
+  await pasteImage(browser, 'gone.png');
+  await expect(browser.locator('.composer-prompt .pi-atom:not(.pi-pending)')).toHaveCount(1);
+  await browser.keyboard.type(' B');
+  await pasteImage(browser, 'put.png');
+  await expect(browser.locator('.composer-prompt .pi-atom:not(.pi-pending)')).toHaveCount(2);
+  await browser.keyboard.press('Backspace');
+  await browser.keyboard.type('C');
+  await browser.keyboard.press('ArrowLeft');
+  expect(await promptText(browser)).toBe('A [gone.png] BC');
+  // The caret is between B and C; × on the first file, then the second one goes to the caret.
+  await screen.getByRole('button', 'Remove gone.png').click();
+  expect(await promptText(browser)).toBe('A  BC');
+  await screen.getByRole('button', 'Put put.png in the text').click();
+  expect(await promptText(browser)).toBe('A  B[put.png]C');
 });

@@ -44,7 +44,8 @@ const WAIT: Duration = Duration::from_secs(20);
 const TOKEN: &str = "synthetic-oauth-token";
 
 /// Prints its arguments (the MCP config, allowed tools and settings, too long for a line, go to
-/// files in its config dir) and environment, then stays as an interactive shell.
+/// files in its config dir, as does its shell prefix) and environment, then stays as an
+/// interactive shell.
 const FAKE_CLAUDE: &str = "#!/bin/sh\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/kill-resume\" ]; then kill -KILL $$; fi\n\
@@ -60,6 +61,8 @@ for a in \"$@\"; do\n\
 done\n\
 echo \"cockpit-args:[${args# }]\"\n\
 echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
+echo \"workspace:${YULIUS_TASK_TOKEN:-none}\"\n\
+printf %s \"${CLAUDE_CODE_SHELL_PREFIX:-none}\" > \"$CLAUDE_CONFIG_DIR/launch-shell-prefix\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
 echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
@@ -88,17 +91,37 @@ async fn fixture_with(
     account: bool,
     data_dir: Option<PathBuf>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_ending(account, data_dir, None).await
+}
+
+/// [`fixture_with`], optionally with another wait for a shell's exit before its host is
+/// terminated (`shell_exit_ms`).
+async fn fixture_ending(
+    account: bool,
+    data_dir: Option<PathBuf>,
+    exit_ms: Option<u64>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let gate = Arc::new(GatedHost::new(exe));
+    let gate = Arc::new(GatedHost::new(exe.clone()));
+    // The real `yulius` runs the Superagent's redaction wrapper and hook (SPEC-147).
+    let harness = Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+        exe.clone(),
+        "http://127.0.0.1:1",
+    ));
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
+        harness: Some(harness),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.contained = false;
+            config.yulius_exe = exe;
             if let Some(data) = data_dir {
                 config.data_dir = data;
+            }
+            if let Some(ms) = exit_ms {
+                config.shell_exit_ms = ms;
             }
         })),
         ..HarnessOptions::default()
@@ -676,7 +699,8 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
     let config = PathBuf::from(printed(&screen, "config")?);
-    assert!(!config.join("launch-settings").exists());
+    let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
+    assert!(settings["disabledMcpjsonServers"].is_null(), "{settings}");
     assert_eq!(f.h.store.mcp_servers(&sid()).await?.len(), 3);
     Ok(())
 }
@@ -1129,6 +1153,25 @@ async fn cockpit_tool(
     Ok((record, body["result"]["isError"].as_bool().unwrap_or(true)))
 }
 
+/// Waits until `task`'s start has ended (it rests: failed, stopped or closed).
+async fn task_rests(
+    f: &Fixture,
+    task: &yulius_domain::ids::TaskId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::TaskStore;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let status = f.h.store.task(task).await?.ok_or("task")?.status;
+        if status.is_resting() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the task did not come to rest: {status:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
 /// its owner; nothing else is served, and the token ends with the Cockpit and its owner's
 /// access.
@@ -1234,7 +1277,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         .ok_or("audit entry")?;
     assert_eq!(entry.actor, "cockpit:alice");
 
-    // Runs it now, then deletes it, and archives and deletes the task (which ended: no
+    // Runs it now, then deletes it, and archives and deletes the task once it ended (no
     // repository here): each audited with the Cockpit (SPEC-066 MGT-010, MGT-011).
     let (ran, is_error) = cockpit_tool(
         &f,
@@ -1253,6 +1296,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     .await?;
     assert!(!is_error, "{deleted}");
     assert!(f.h.store.automation(id).await?.is_none());
+    // Its start fails in the background, after `task_create` answered (#460: under load the
+    // archive came first and was refused while the task was still queued).
+    task_rests(&f, &task.id).await?;
     let (archived, is_error) =
         cockpit_tool(&f, &token, "task_archive", json!({"number": task.number})).await?;
     assert!(!is_error, "{archived}");
@@ -1347,6 +1393,325 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
         .await?;
     let refused = mcp(&f, &token, "tools/list", json!({})).await?;
     assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// An agent secret's value, referenced by the sandbox's `apify` MCP server (SPEC-147).
+const SECRET_VALUE: &str = "apify_synthetic_9f3Qz7LmWc2Rk8Tn";
+const SECRET_LABEL: &str = "[secret:APIFY_KEY]";
+/// A literal bearer typed into an MCP server's form (not an agent secret).
+const LITERAL_BEARER: &str = "quartio-literal-bearer-5521";
+
+/// alice adds the agent secret `APIFY_KEY` to `s1`.
+async fn add_apify_key(f: &Fixture) -> TestResult {
+    let resp = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "APIFY_KEY", "hosts": ["api.apify.test"], "value": SECRET_VALUE})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::CREATED, "{:?}", resp.body);
+    Ok(())
+}
+
+/// A POST to the internal scrub endpoint `what` with `token`.
+async fn scrub(
+    f: &Fixture,
+    token: &str,
+    what: &str,
+    body: Value,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/internal/scrub/{what}"),
+        Some(body),
+        &Creds {
+            bearer: Some(token.to_owned()),
+            ..Creds::default()
+        },
+    )
+    .await
+}
+
+/// SPEC-147 SAM-001/002/004 (#395, ADR-0121): the Superagent gets the sandbox's MCP servers as a
+/// task run does, next to `yulius`, their values only in its secret environment, and the task
+/// runs' redaction: a value a Bash command prints through its wrapper, or a tool result holds,
+/// comes back as `[secret:NAME]`, as does one its screen shows; without its fingerprints a command
+/// does not run.
+#[tokio::test]
+async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let internal = serve(f.h.internal.clone()).await?;
+    add_apify_key(&f).await?;
+    for server in [
+        json!({"name": "apify", "transport": "stdio", "command": "npx",
+               "args": ["-y", "@apify/actors-mcp-server"],
+               "env": {"APIFY_TOKEN": "${secret:APIFY_KEY}"}}),
+        json!({"name": "quartio", "transport": "http", "url": "https://mcp.quartio.test/mcp",
+               "headers": {"Authorization": format!("Bearer {LITERAL_BEARER}")}}),
+    ] {
+        let resp = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/mcp",
+            Some(server),
+            &f.alice,
+        )
+        .await?;
+        assert!(resp.status.is_success(), "{:?}", resp.body);
+    }
+
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let mcp_text = std::fs::read_to_string(config.join("launch-mcp-config"))?;
+    let mcp_config: Value = serde_json::from_str(&mcp_text)?;
+    assert_eq!(
+        mcp_config["mcpServers"]["yulius"]["headers"]["Authorization"],
+        "Bearer ${YULIUS_COCKPIT_TOKEN}"
+    );
+    assert_eq!(
+        mcp_config["mcpServers"]["apify"],
+        json!({"type": "stdio", "command": "npx", "args": ["-y", "@apify/actors-mcp-server"],
+               "env": {"APIFY_TOKEN": "${YULIUS_MCP_APIFY_APIFY_TOKEN}"}})
+    );
+    assert_eq!(
+        mcp_config["mcpServers"]["quartio"],
+        json!({"type": "http", "url": "https://mcp.quartio.test/mcp",
+               "headers": {"Authorization": "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"}})
+    );
+    for value in [SECRET_VALUE, LITERAL_BEARER] {
+        assert!(!mcp_text.contains(value), "a value in argv: {mcp_text}");
+    }
+    // The redaction hook is the only hook; the wrapper runs Bash, hooks and stdio servers.
+    let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
+    let hooks = settings["hooks"].as_object().ok_or("hooks")?;
+    assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PostToolUse"]);
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let hook = format!("'{}' hook claude PostToolUse", exe.display());
+    assert_eq!(
+        settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+        hook
+    );
+    assert_eq!(
+        std::fs::read_to_string(config.join("launch-shell-prefix"))?,
+        format!("{} --scrub-exec", exe.display())
+    );
+    let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
+    for value in [SECRET_VALUE, LITERAL_BEARER] {
+        assert!(!record.contains(value), "a value in the shell record");
+    }
+
+    // Typed into the session as its Bash tool runs a command: the value is in the environment
+    // (its length shows) but the output carries the label.
+    let url = format!("http://{}", internal.addr);
+    let typed = |line: String| json!({"type": "input", "data": line}).to_string();
+    socket
+        .send(Message::text(typed(format!(
+            "YULIUS_URL={url} $CLAUDE_CODE_SHELL_PREFIX 'echo \"bash=<$YULIUS_MCP_APIFY_APIFY_TOKEN> len=${{#YULIUS_MCP_APIFY_APIFY_TOKEN}} bearer=${{#YULIUS_MCP_QUARTIO_TOKEN}}\"'\r"
+        ))))
+        .await?;
+    read_until(&mut socket, &mut screen, &format!("bash=<{SECRET_LABEL}>")).await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("len={} bearer={}", SECRET_VALUE.len(), LITERAL_BEARER.len()),
+    )
+    .await?;
+    // A tool result holding the value, as an MCP server returns it, through the settings' hook.
+    socket
+        .send(Message::text(typed(format!(
+            "printf '{{\"tool_name\":\"mcp__apify__run\",\"tool_response\":{{\"text\":\"key %s\"}}}}' \"$YULIUS_MCP_APIFY_APIFY_TOKEN\" | YULIUS_URL={url} {hook}; echo ' hook-done'\r"
+        ))))
+        .await?;
+    read_until(&mut socket, &mut screen, "hook-done\r\n").await?;
+    let answer = format!("\"updatedToolOutput\":{{\"text\":\"key {SECRET_LABEL}\"}}");
+    assert!(screen.contains(&answer), "{screen}");
+    // What reaches the screen past the in-session layers (an MCP error Claude Code shows as it
+    // came, a hook that let a result through) is redacted as a task's terminal is (VLT-007).
+    socket
+        .send(Message::text(typed(
+            "echo \"raw=<$YULIUS_MCP_APIFY_APIFY_TOKEN>\"\r".into(),
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, &format!("raw=<{SECRET_LABEL}>")).await?;
+    // Without its fingerprints (Yulius unreachable) a command does not run.
+    socket
+        .send(Message::text(typed(
+            "$CLAUDE_CODE_SHELL_PREFIX 'echo ran-$((40+2))'; echo \" status=$?\"\r".into(),
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, " status=126").await?;
+    assert!(!screen.contains("ran-42"), "{screen}");
+    assert!(
+        !screen.contains(SECRET_VALUE),
+        "the value reached the screen"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-147 SAM-004: a Superagent adopted after a server restart shows its screen redacted, as
+/// it was before the restart.
+#[tokio::test]
+async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": format!("echo shown-{SECRET_VALUE}-end\r")})
+                .to_string(),
+        ))
+        .await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("shown-{SECRET_LABEL}-end\r\n"),
+    )
+    .await?;
+    assert!(!screen.contains(SECRET_VALUE), "{screen}");
+    drop(socket);
+    f.h.app.stop_workspace_services().await;
+
+    // The restarted server's vault (the test store is in memory) holds the same secret.
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    add_apify_key(&g).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    let served = serve(g.h.router.clone()).await?;
+    let mut socket = attach(served.addr, &id, &g.alice).await?;
+    let mut screen = String::new();
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("shown-{SECRET_LABEL}-end"),
+    )
+    .await?;
+    assert!(!screen.contains(SECRET_VALUE), "{screen}");
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
+/// workspace token, which its environment already holds: answered while the person may work in
+/// the sandbox, refused once they cannot, and a redaction is audited with their login.
+#[tokio::test]
+async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let workspace = printed(&screen, "workspace")?;
+    assert!(workspace.starts_with("ws_"), "{workspace}");
+
+    let answered = scrub(&f, &workspace, "fingerprints", json!({})).await?;
+    assert_eq!(answered.status, StatusCode::OK, "{:?}", answered.body);
+    assert_eq!(answered.body["names"], json!(["APIFY_KEY"]));
+    assert!(!answered.body.to_string().contains(SECRET_VALUE));
+    let reported = scrub(
+        &f,
+        &workspace,
+        "report",
+        json!({"channel": "bash", "names": ["APIFY_KEY"]}),
+    )
+    .await?;
+    assert_eq!(reported.status, StatusCode::NO_CONTENT);
+    let activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert!(
+        activity.body.as_array().is_some_and(|a| a
+            .iter()
+            .any(|e| e["action"] == "vault.agent.redacted" && e["actor"] == "alice")),
+        "{:?}",
+        activity.body
+    );
+
+    assert_eq!(
+        scrub(&f, "ws_0000", "fingerprints", json!({}))
+            .await?
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    // Every Superagent command and tool result asks, within the client's 2 s: a decision on the
+    // person's access within the staleness bound answers without asking GitHub again, even
+    // while GitHub hangs (#395 review).
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    f.h.github.hang_permissions.store(true, Ordering::SeqCst);
+    let quick = tokio::time::timeout(
+        Duration::from_secs(2),
+        scrub(&f, &workspace, "fingerprints", json!({})),
+    )
+    .await
+    .map_err(|_| "the fingerprints waited on GitHub")??;
+    assert_eq!(quick.status, StatusCode::OK);
+    f.h.github.hang_permissions.store(false, Ordering::SeqCst);
+    // Past the staleness bound GitHub decides again: a person who lost write access reads and
+    // reports nothing.
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_stale_ms, Ordering::SeqCst);
+    assert_eq!(
+        scrub(&f, &workspace, "fingerprints", json!({}))
+            .await?
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "a person who lost write access reads nothing"
+    );
+    let report = json!({"channel": "tool", "names": ["APIFY_KEY"]});
+    assert_eq!(
+        scrub(&f, &workspace, "report", report).await?.status,
+        StatusCode::UNAUTHORIZED
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-147 SAM-003: a disabled person's workspace token reads no fingerprints.
+#[tokio::test]
+async fn a_disabled_persons_workspace_token_reads_no_fingerprints() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let workspace = printed(&screen, "workspace")?;
+    f.h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(f.h.app.now())), None)
+        .await?;
+    assert_eq!(
+        scrub(&f, &workspace, "fingerprints", json!({}))
+            .await?
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -1566,6 +1931,66 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
     let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
     assert!(record.contains("\"account\":\"acc-b\""), "{record}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-146 SHE-002 (#346): a usage limit in a Superagent whose process cannot be ended (the end
+/// request is lost and `terminate` fails) starts no second one on the same conversation: the old
+/// one stays live on its subscription, the panel finds it, and its viewer is told why.
+#[tokio::test]
+async fn a_superagent_whose_host_cannot_be_ended_is_not_moved() -> TestResult {
+    let f = fixture_ending(false, None, Some(500)).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+
+    f.gate.refuse_ends(true);
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        limited_conversation(1_791_400_000),
+    )?;
+    let notice = loop {
+        let notice = read_message(&mut socket, "notice").await?;
+        if notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("could not move"))
+        {
+            break notice;
+        }
+    };
+    assert_eq!(
+        notice["text"],
+        "The Superagent could not move to another subscription: its process could not be \
+         ended, so it stays on this one."
+    );
+    // The panel's start waits for the move's start lock: the move is over when it answers.
+    assert_eq!(cockpit_id(&f, &f.alice).await?, id, "the same Superagent");
+    let live: Vec<String> =
+        f.h.app
+            .sandbox_shells(&sid())
+            .into_iter()
+            .filter(|shell| !shell.has_ended())
+            .map(|shell| shell.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![id.clone()], "no second Superagent");
+    // SUP-003 still holds: acc-a is recorded limited.
+    let usage = usage_of(&f.h, "acc-a").await?;
+    assert_eq!(usage["limit_reached"], true, "{usage}");
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "echo kept-$((3+4))\r"}).to_string(),
+        ))
+        .await?;
+    read_until(&mut socket, &mut screen, "kept-7").await?;
+    f.gate.refuse_ends(false);
     f.h.app.end_all_shells().await;
     Ok(())
 }
