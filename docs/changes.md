@@ -12,6 +12,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
   notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
   sent as a teammate's tab hid no longer leaves their caret drawn.
+- The Editor never opens a file twice, and a moved image placeholder is never shown as selected
+  text (SPEC-166, task #156). The task's screenshots, two editors stacked in one host, were #394,
+  fixed by #523 before this task. Reproducing them showed the Editor still broke another way:
+  - **#534:** a file opened again before its first open showed it (a double-click on its row,
+    which is two clicks) got a second tab, with a second model of the same file. Every open of a
+    path now waits for the one under way.
+  - **#535:** a press on a placeholder in the new-task prompt, and a drop, select it so Delete,
+    cut or a drag takes it. The browser painted that selection as a text highlight over the label
+    "Image 1". Now the placeholder is marked as a whole and its label is never painted.
+- Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
+  playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
+  `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes
+  (Yulius lands it when it passes, or builds and tests again when `dev` moved), and refuses on red.
+  A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
+  playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
+  as before.
 - The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
   #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
   CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
