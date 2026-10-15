@@ -60,11 +60,11 @@ gets cancelled after 30 minutes because one task was still working.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A run's agent tree can be frozen and thawed in its own cgroup, never its host
-- [ ] An update freezes every task as soon as the build is done and installs within seconds
-- [ ] Tasks thaw one by one after the restart, at once on a cancel, and none stays frozen after a crash
-- [ ] The instance page, banner and confirmation say tasks pause at once
-- [ ] Docs, ADR and the changes log describe the freeze and its limits
+- [x] A run's agent tree can be frozen and thawed in its own cgroup, never its host
+- [x] An update freezes every task as soon as the build is done and installs within seconds
+- [x] Tasks thaw one by one after the restart, at once on a cancel, and none stays frozen after a crash
+- [x] The instance page, banner and confirmation say tasks pause at once
+- [x] Docs, ADR and the changes log describe the freeze and its limits
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, evidence recorded, delivered on green CI
 
@@ -120,7 +120,7 @@ gets cancelled after 30 minutes because one task was still working.
 - **The provider stream is cut by the restart.** The egress proxy lives in the server process, so
   a response streaming at the restart ends; after the thaw Claude Code sees a dropped connection
   and retries the request itself (the model sees nothing; the terminal may show a retry line).
-  Keeping tunnels open across a restart needs the proxy outside the server: follow-up issue.
+  Keeping tunnels open across a restart needs the proxy outside the server: follow-up #529.
 - **Wall-clock timers count the pause.** A tool timeout (Claude Code's Bash tool: 2 minutes by
   default) keeps running while frozen, so a command within about a minute of its timeout may time
   out after the thaw. The pause is about a minute (install and health check), which keeps this

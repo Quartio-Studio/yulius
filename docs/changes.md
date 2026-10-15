@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- An update pauses every task at once (SPEC-160, ADR-0131, task #151). When the new version is
+  built, each task's agent is frozen mid-turn with the cgroup v2 freezer: its output stops, nothing
+  is told to it, and it goes on from the same instruction when its task is thawed after the
+  restart (one by one; at once on a cancel). Updates no longer wait for long turns or get cancelled
+  after 30 minutes. A run that cannot be frozen (no delegated cgroup) still pauses at its turn
+  boundary. A provider response streaming at the restart is cut and retried by Claude Code.
 - Automations can prepare their tasks (SPEC-155, ADR-0128, task #142, fixes #416). The automation
   editor's start chip, the automations API (`prepared`, beside `supertask`, `after_task_id` and
   `start_rule`) and the `automation_create` / `automation_update` tools offer "When I decide": each
