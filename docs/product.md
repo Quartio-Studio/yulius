@@ -70,7 +70,8 @@ watching, steering and unblocking.
   thumbnail or chip that moves and deletes like a character, and the agent gets it at that place.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
-  A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
+  A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
+  and `gh` use a narrowed App token), so only they change it. Others
   see it read-only and can ask the owner for control; once handed over, it acts as the new owner.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
@@ -96,7 +97,9 @@ watching, steering and unblocking.
   (deployment) page. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
-  administrator types the project's slug. Agents build and improve CD through pull requests but
+  administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
+  keeps the production branch out of reach of the agents' own token, which is never a person's
+  (onboarding says when that ruleset is missing). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
   down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself

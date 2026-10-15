@@ -491,6 +491,24 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
     assert_eq!(listed[0]["title"], "Prepare this repository for Yulius");
     assert_eq!(listed[0]["archived"], false);
     assert_ne!(listed[0]["status"], "closed", "it started: {listed:?}");
+    // SPEC-141 R5: the preparation agent raises a production branch agents could write with a
+    // person, who alone can protect it.
+    let task =
+        w.h.store
+            .tasks(&sandbox.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("onboarding task")?;
+    assert!(
+        task.prompt.contains("`main` is not protected from agents")
+            || task
+                .prompt
+                .contains("could not check whether agents can write"),
+        "{}",
+        task.prompt
+    );
+    assert!(task.prompt.contains("needs_you"), "{}", task.prompt);
     Ok(())
 }
 
@@ -619,6 +637,33 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "{:?}",
         result.body["onboarding_status"]
     );
+    // SPEC-141 R5: onboarding reports a production branch the agents could write, naming the
+    // ruleset a repository admin must add; with that ruleset in place it says nothing.
+    let warnings = result.body["onboarding_status"]["warnings"].to_string();
+    assert!(
+        warnings.contains("`main`") && warnings.contains("Restrict updates"),
+        "{:?}",
+        result.body["onboarding_status"]
+    );
+    {
+        use yulius_app::ports::store::InstanceStore as _;
+        w.h.store.set_installation(Some(1)).await?;
+    }
+    let writable = w.h.app.onboarding_status(&stored).await?;
+    assert_eq!(writable.warnings.len(), 1, "{writable:?}");
+    assert!(
+        writable.warnings[0].contains("agents could push to or merge into"),
+        "{writable:?}"
+    );
+    w.github.rulesets.lock().map_err(|e| e.to_string())?.push((
+        format!("{OWNER}/shop"),
+        yulius_app::projects::rulesets_for(&yulius_domain::delivery::DeliveryProfile::standard())
+            .pop()
+            .ok_or("production ruleset")?,
+        "admin".into(),
+    ));
+    let guarded = w.h.app.onboarding_status(&stored).await?;
+    assert!(guarded.warnings.is_empty(), "{guarded:?}");
     assert_eq!(result.body["sandbox_url"], "https://yulius.test/s/shop");
     assert_eq!(
         result.body["sessions_url"],

@@ -409,6 +409,7 @@ fn onboarding(state: &ServerState) -> OnboardingStatus {
             summary: "Ready: the preparation task adapted the repository.".to_owned(),
             pending: Vec::new(),
             task: None,
+            warnings: Vec::new(),
         }
     } else {
         // The upload never starts onboarding: a person does in the browser (SPEC-051).
@@ -422,6 +423,10 @@ fn onboarding(state: &ServerState) -> OnboardingStatus {
                 "the repository passes the Yulius format check".to_owned(),
             ],
             task: None,
+            warnings: vec![
+                "The production branch `main` is not protected from agents: add a ruleset."
+                    .to_owned(),
+            ],
         }
     }
 }

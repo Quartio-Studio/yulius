@@ -25,12 +25,16 @@ pub struct GitHubClient {
     pub(crate) inner: Arc<Inner>,
 }
 
+/// Cache key of an installation token: installation, repository restriction (lower case) and
+/// whether it carries only the agent permissions.
+pub(crate) type TokenKey = (u64, Option<String>, bool);
+
 pub(crate) struct Inner {
     pub(crate) config: GitHubConfig,
     pub(crate) transport: Transport,
     pub(crate) signer: Option<AppSigner>,
-    /// Installation tokens by (installation, repository restriction).
-    pub(crate) tokens: Mutex<HashMap<(u64, Option<String>), InstallationToken>>,
+    /// Installation tokens by (installation, repository restriction, agent permissions).
+    pub(crate) tokens: Mutex<HashMap<TokenKey, InstallationToken>>,
 }
 
 impl std::fmt::Debug for GitHubClient {

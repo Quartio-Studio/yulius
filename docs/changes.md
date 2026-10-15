@@ -20,6 +20,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#430, #446, #455:** the `context_full` tests wait for the audit rows they check, and in the
     e2e suite opening or reloading a mock page waits for the mock, so tests no longer fail on a
     busy machine for those reasons.
+- Agents can no longer push to, merge into or fast-forward the production branch with a person's
+  token (SPEC-141, ADR-0114, task #139, issue #486). The agent's Git and `gh` now hold an App
+  installation token restricted to the repository and to contents, pull requests and issues
+  (write) and checks, statuses and metadata (read): never the task owner's token, never
+  Administration or Workflows. The production ruleset Yulius gives new projects also restricts
+  updates, with repository admins as the only bypass actors, so GitHub refuses that token on the
+  branch, `--no-verify` and `gh` included. Onboarding (`yulius onboard`, the import result and the
+  preparation task's prompt) reports a production branch the agents could write and names the
+  ruleset a repository admin must add. Commits stay authored by the owner; Yulius's own pushes,
+  pull requests and merges for a task stay the owner's.
 
 - Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
   table records, as things happen, a task's waits before it starts, its states (needs you and how
