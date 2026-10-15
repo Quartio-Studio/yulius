@@ -411,8 +411,8 @@ impl App {
             let clipped: String = text.chars().take(3_000).collect();
             // The workflows describe GitHub delivery; a playground has only the local merge.
             let note = if sandbox.is_playground() {
-                "\nIn this playground, delivery is `delivery_merge` alone: no pull request, CI, \
-                 deploy or promotion.\n"
+                "\nIn this playground, delivery is `delivery_merge` alone, on green Yulius CI: no \
+                 pull request, deploy or promotion.\n"
             } else {
                 ""
             };

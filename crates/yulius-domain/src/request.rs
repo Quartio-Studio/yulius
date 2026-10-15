@@ -28,8 +28,9 @@ pub struct DoneDefinition {
     pub production_branch: String,
     /// Environments after integration that an agent deploys and verifies (they have a command).
     pub integration_environments: Vec<String>,
-    /// A playground (SPEC-099): its Git stays on the server; no Yulius CI, pull request or
-    /// deploy, and `delivery_merge` squashes the task into the integration branch there.
+    /// A playground (SPEC-099): its Git stays on the server; no pull request or deploy, and
+    /// `delivery_merge` squashes the task into the integration branch there once Yulius CI passed
+    /// on it (SPEC-163).
     pub playground: bool,
 }
 
@@ -355,8 +356,8 @@ impl DoneDefinition {
         if self.playground {
             return format!(
                 "Done = repository changes merged into {} of this playground with delivery_merge \
-                 after your own gates and the review, or work needing no change reported; closing \
-                 summary given.",
+                 on green Yulius CI after your own gates and the review, or work needing no change \
+                 reported; closing summary given.",
                 self.integration_branch
             );
         }
@@ -384,13 +385,15 @@ impl DoneDefinition {
                 "Yulius holds this task to it. Work on your own until it is met; do not stop to \
                  ask anyone in between.\n\n\
                  This sandbox is a playground: its Git stays on this server, and there is no \
-                 Yulius CI, no pull request and no deploy. GitHub is not connected to it.\n\n\
+                 pull request and no deploy. GitHub is not connected to it.\n\n\
                  - **If the request changes this repository:** work on this task's branch (it \
                  starts from `{integration}`); write the spec first where the repository's rules \
                  ask for one; implement with tests; run the project's gates yourself; get the \
                  independent review of the exact head; then merge into `{integration}` with \
-                 `delivery_merge`, which squashes your branch onto it here. If it refuses, do what \
-                 it says and call it again.\n\
+                 `delivery_merge`. Yulius CI tests your head merged into `{integration}` first \
+                 (when the project has CI), and `delivery_merge` squashes your branch onto it here \
+                 once that passed; while it runs, the merge is armed. If it refuses, do what it \
+                 says and call it again.\n\
                  - **If it needs no repository change** (research, a brainstorm, an answer): do it \
                  and report the result.\n\
                  - **End with a short summary:** what changed, how it was verified, and what could \
@@ -476,10 +479,6 @@ pub fn request_markdown(
     }
     out.push_str("\n## Definition of done\n\n");
     out.push_str(&done.full());
-    if done.playground {
-        out.push('\n');
-        return out;
-    }
     out.push_str(
         "\n\n## Waiting\n\nWhen only Yulius CI or a person can move the task forward, start \
          `yulius wait` with `run_in_background` and end your turn: it returns when the checks at \
@@ -963,8 +962,9 @@ mod tests {
         assert!(file.contains("`yulius wait` with `run_in_background`"));
     }
 
-    /// SPEC-099 PLY-006: a playground's tasks merge into its own `dev` with `delivery_merge`; there
-    /// is no Yulius CI, pull request or deploy, and they are told so.
+    /// SPEC-099 PLY-006, SPEC-163 PCI-007: a playground's tasks merge into its own `dev` with
+    /// `delivery_merge` on green Yulius CI; there is no pull request or deploy, and they are told
+    /// so, and how to wait.
     #[test]
     fn a_playground_done_definition_merges_locally() {
         let playground = DoneDefinition {
@@ -978,21 +978,22 @@ mod tests {
             ),
             "{short}"
         );
-        assert!(!short.contains("Yulius CI"), "{short}");
+        assert!(short.contains("on green Yulius CI"), "{short}");
         let full = playground.full();
         assert!(full.contains("This sandbox is a playground"), "{full}");
+        assert!(full.contains("no pull request and no deploy"), "{full}");
         assert!(
-            full.contains("no Yulius CI, no pull request and no deploy"),
+            full.contains("Yulius CI tests your head merged into `dev`"),
             "{full}"
         );
+        assert!(!full.contains("no Yulius CI"), "{full}");
         assert!(full.contains("run the project's gates yourself"), "{full}");
         assert!(
             full.contains("merge into `dev` with `delivery_merge`"),
             "{full}"
         );
-        assert!(!full.contains("on green Yulius CI"), "{full}");
         assert!(!full.contains("delivery_deploy"), "{full}");
         let file = request_markdown(3, "x", "a", &Request::parse("x"), &playground);
-        assert!(!file.contains("yulius wait"), "nothing to wait for: {file}");
+        assert!(file.contains("`yulius wait`"), "{file}");
     }
 }

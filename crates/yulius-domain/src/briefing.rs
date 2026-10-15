@@ -298,7 +298,8 @@ pub struct BriefingInput<'a> {
     pub foundations: Foundations,
     /// Now, for the pace of the steps.
     pub now: Timestamp,
-    /// A playground (SPEC-099): its Git stays on the server; no pull request, CI or deploy.
+    /// A playground (SPEC-099): its Git stays on the server; no pull request or deploy, and Yulius
+    /// CI tests a task's head merged into the integration branch (SPEC-163).
     pub playground: bool,
 }
 
@@ -686,7 +687,7 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
         "## Git and delivery\n\n\
          This sandbox is a playground: someone is trying Yulius on this code before connecting \
          GitHub. Its Git stays on this server (`origin` is a repository here), and there is no \
-         pull request, no Yulius CI, no deploy and no GitHub issue.\n\
+         pull request, no deploy and no GitHub issue.\n\
          You are autonomous: never ask a person for help, a decision or an action, and never end \
          a turn waiting for one; decide, record why and carry on.\n\
          Features and fixes take one path: spec → implementation with tests → independent \
@@ -701,10 +702,14 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`); fix findings \
          test-first.\n\
-         - Nothing runs your checks for you: run every project gate yourself. When the work is \
-         ready (spec valid if needed, steps done, all committed) and the review approved the \
-         exact head, `delivery_merge` squashes your branch onto {integration} here as one \
-         commit. If it refuses, do what it says and call it again.\n\
+         - Before delivery, run every project gate yourself. When the work is ready (spec valid \
+         if needed, steps done, all committed) and the review approved the exact head, call \
+         `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
+         project has CI; `ci_status`, `ci_rerun`), and `delivery_merge` squashes your branch onto \
+         {integration} \
+         here as one commit once that passed. While it runs the merge is armed: start `yulius \
+         wait` with run_in_background and end your turn. If it refuses, do what it says and call \
+         it again.\n\
          - Put follow-up work in your summary.\n\n",
         branch = code(&input.task.branch, 200),
     )
@@ -758,16 +763,15 @@ fn foundations(input: &BriefingInput<'_>) -> String {
 
 /// The tools by name only: each MCP tool's own description says when to use it, and the
 /// briefing has to stay under Claude Code's hook-context limit (F 2026-10-12).
-/// A playground leaves out the tools of GitHub, CI and deployment (SPEC-099).
+/// A playground leaves out the tools of GitHub and deployment (SPEC-099); its Yulius CI is
+/// read and run again like any other (SPEC-163).
 fn tools(playground: bool) -> String {
-    const NOT_IN_A_PLAYGROUND: [&str; 8] = [
+    const NOT_IN_A_PLAYGROUND: [&str; 6] = [
         "delivery_deploy",
         "production_protect",
         "cd_status",
         "cd_deploy",
         "issue_create",
-        "ci_status",
-        "ci_rerun",
         "ci_setup",
     ];
     let names = YULIUS_TOOLS
@@ -776,11 +780,7 @@ fn tools(playground: bool) -> String {
         .map(|(name, _)| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ");
-    let wait = if playground {
-        ""
-    } else {
-        " In the shell, `yulius wait` waits for your checks, your merge or your delivery."
-    };
+    let wait = " In the shell, `yulius wait` waits for your checks, your merge or your delivery.";
     format!(
         "## Yulius tools\n\nThe `yulius` MCP server (each tool's description says when to use \
          it): {names}.{wait}\n\n"
@@ -1796,9 +1796,9 @@ mod tests {
         }
     }
 
-    /// SPEC-099 PLY-006: a playground's agent learns that its Git stays on the server, that it
-    /// runs the gates itself, and that `delivery_merge` squashes its branch here; no pull request,
-    /// CI, deploy or wait is promised.
+    /// SPEC-099 PLY-006, SPEC-163 PCI-007: a playground's agent learns that its Git stays on the
+    /// server, that Yulius CI tests its head merged into `dev` before `delivery_merge` squashes its
+    /// branch here, and how to wait for it; no pull request or deploy is promised.
     #[test]
     fn a_playgrounds_briefing_merges_locally() -> TestResult {
         let profile = DeliveryProfile::standard();
@@ -1814,11 +1814,18 @@ mod tests {
             text.contains("`delivery_merge` squashes your branch onto `dev`"),
             "{text}"
         );
+        for present in [
+            "Yulius CI tests your head merged into `dev`",
+            "`yulius wait`",
+            "`ci_status`",
+            "`ci_rerun`",
+        ] {
+            assert!(text.contains(present), "{present} not in {text}");
+        }
         for absent in [
             "opens the pull request",
             "`delivery_deploy`",
-            "`yulius wait`",
-            "`ci_status`",
+            "no Yulius CI",
         ] {
             assert!(!text.contains(absent), "{absent} in {text}");
         }

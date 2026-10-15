@@ -66,7 +66,7 @@ of it reaches GitHub.
 - [x] Armed playground merges land, drop or follow a moved dev when a run ends
 - [x] The person's merge action waits for green in a playground
 - [x] yulius wait and ci_status follow a playground task's run
-- [ ] A playground's agents are told about its CI
+- [x] A playground's agents are told about its CI
 - [ ] SPEC-099, ADR-0134, architecture and changes describe playground CI
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Gates green, delivered and merged into dev
