@@ -121,3 +121,4 @@ number differs from the file name, and a record this index does not list.
 - [0108](0108-the-superadmin-updates-from-the-sidebar-foot.md): The superadmin's Update button sits beside the account button in the sidebar foot; one click opens the update's confirmation
 - [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button
 - [0113](0113-github-s-branch-says-whether-a-head-is-pushed.md): A head is pushed when GitHub's branch is at it, whatever `git push` said; `yulius wait` clears a push note once the branch is at its head, and `delivery_merge` answers only with the note its own call wrote
+- [0118](0118-the-mock-drives-the-pull-request-read-clock.md): The store plans its pull request reads on a clock the transport may give; the mock's `pullclock=manual` clock moves only by `advanceClock`, so tests of read spacing do not depend on the host's speed
