@@ -21,6 +21,14 @@ commits and tracked/untracked/ignored user data. Keep permanent dev/main worktre
 Avoid `gh pr merge --delete-branch` in a linked worktree; use repository remote
 auto-deletion and explicit local worktree-then-branch cleanup from the dev worktree.
 
+Merge only after the PR answers every review finding (own code or pre-existing,
+`docs/engineering/workflow.md`, Review output). Each finding in code or tests the
+change added or modified is fixed in the PR, test-first, and never becomes a
+follow-up issue; the round limit does not excuse it (keep fixing, split the change
+or ask a person), and deferring it means request changes. Only a pre-existing bug,
+a flaky test the change did not cause or a cosmetic nit left at the round limit is
+filed, saying why it is outside the change.
+
 Require a successful `yulius/ci` status on the exact resulting dev SHA. A task's work
 ends there; promote only when the task asks for a release: open dev → main with a
 release title; after its checks pass, author-merge with a merge commit, never squash.

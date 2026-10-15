@@ -266,12 +266,22 @@ Flag any of these on sight:
 | Severity | Meaning | Examples |
 |----------|---------|----------|
 | **blocker** | Merging this causes or invites real damage: security holes, data loss or corruption, cross-scope data leaks, silently broken public contracts, failing validation gates | Missing permission check; SQL built by concatenation; dropped column consumers still read; secret in a log line |
-| **major** | A defect or debt that must be resolved before merge unless a recorded decision (reason and follow-up issue) accepts the risk | Correctness bug on a realistic path; bug fix without a regression test; unbounded query; check-then-act race; weakened assertions |
+| **major** | A defect or debt that must be resolved before merge | Correctness bug on a realistic path; bug fix without a regression test; unbounded query; check-then-act race; weakened assertions; a test that cannot fail |
 | **minor** | Should be fixed, but does not block the merge on its own | Convention violation; readability problem; stale comment; missing log context |
 | **nit** | Optional polish; the author decides | Naming taste; comment phrasing; boolean-argument readability |
+
+## Own Code or Pre-existing
+
+Mark every finding **own code** (in code or tests the change added or modified) or **pre-existing**
+(present on the integration branch before the change, with the evidence).
+
+- An own-code finding of any severity is fixed in the same pull request, test-first, and never becomes a follow-up issue — including a test that cannot fail, a weak or missing assertion, a race or a missing regression test. The round limit does not excuse it: the author keeps fixing, splits the change, or stops and asks a person.
+- Only a pre-existing bug, a flaky test the change did not cause, or a cosmetic nit (naming, wording) left at the round limit may become a new issue, and the issue says why it is outside the change (for example "present on the integration branch before this change").
+- The pull request answers every finding.
 
 ## Verdict Rule
 
 - Any **blocker** → **request changes**. No exceptions, no matter how green the other checks are.
-- Any **major** without a recorded decision accepting it (reason and follow-up issue) → **request changes**.
-- Only minors and nits → **approve**, and list them in the review so the author can pick them up.
+- Any **major** in the change's own code → **request changes**.
+- Any own-code finding deferred to an issue → **request changes**.
+- Only minors and nits → **approve**, and list them in the review; the author still fixes those in its own code.

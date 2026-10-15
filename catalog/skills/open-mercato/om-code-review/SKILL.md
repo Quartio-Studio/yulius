@@ -14,7 +14,7 @@ produce actionable findings with a clear verdict.
 fresh session or a subagent that receives only the diff range (or pull request number), the spec
 path and this skill. The reviewer is read-only: no fixes, commits or pushes; it judges the code
 and the tests separately. The author fixes findings test-first (`om-fix`, `test-driven-development`)
-and asks for a new round; after 3 rounds the author decides on the rest and records why.
+and asks for a new round, up to 3 rounds (see Own code or pre-existing).
 
 ## Input
 
@@ -57,12 +57,29 @@ uncommitted changes.
 | Severity | Criteria | Action |
 |---|---|---|
 | blocker | Security hole, data loss or corruption, cross-scope leak, missing permission check, breaking contract without a deprecation path, failing gate | Fix before merge |
-| major | Correctness bug on a realistic path, bug fix without a regression test, weakened assertions, unbounded query on growing data, race on shared state, architecture violation | Fix before merge, unless a recorded decision with its reason and a follow-up issue accepts the risk |
+| major | Correctness bug on a realistic path, bug fix without a regression test, weakened assertions, a test that cannot fail, unbounded query on growing data, race on shared state, architecture violation | Fix before merge |
 | minor | Convention violation, suboptimal pattern, readability | Should fix; does not block alone |
 | nit | Style, optional polish | Author's call |
 
-The verdict is mechanical: any blocker, or any major without a recorded decision, means
-**request changes**; only minors and nits means **approve** (list them).
+The verdict is mechanical: any blocker, any major in the change's own code, or any own-code
+finding the author deferred to an issue means **request changes**; only minors and nits means
+**approve** (list them; the author still fixes those in its own code).
+
+## Own code or pre-existing
+
+Mark every finding **own code** (in code or tests this change added or modified) or
+**pre-existing** (present on the integration branch before this change; say how you know).
+
+1. An own-code finding is fixed in this pull request, test-first, and never becomes a follow-up
+   issue, whatever its severity: a test that cannot fail, a weak or missing assertion, a race, a
+   missing regression test. The round limit does not excuse it: when 3 rounds are not enough, the
+   author keeps fixing, splits the change, or stops and asks a person. Nothing merges with a known
+   defect in its own code.
+2. Only these may become a new issue: a pre-existing bug, a flaky test the change did not cause,
+   and cosmetic nits (naming, wording) left at the round limit. Each says why it is outside the
+   change, with the evidence (for example "present on the integration branch before this change").
+3. The pull request answers every finding. Deferring an own-code finding makes the verdict
+   request changes.
 
 ## Highest-impact rules
 
