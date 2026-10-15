@@ -68,7 +68,10 @@ secret allows each secret to be copied, once, on the Secrets page, the way they 
   `export NAME=…`) is replaced in place (later duplicates are dropped); a missing one is appended.
   Values are written unquoted when they hold only `A-Za-z0-9_-./:+=@,%^`, else in single quotes,
   else (a value with `'`) in double quotes. A value with `\` or `${`, or with `'` and also `"`,
-  `$` or a backtick, is refused. The file is written with mode 0600 and is at most 256 KiB:
+  `$` or a backtick, is refused. So is a file where a copied name already holds a value over
+  several lines (replacing its first line would leave the others as stray lines), or where a
+  quoted value never closes (SPEC-138, #475: the lines appended for the copied names would land
+  inside that value). The file is written with mode 0600 and is at most 256 KiB:
   through a temporary file renamed into place when Git ignores the temporary name, else in place.
   Every read and write goes through the target folder's handle, opened without following links
   and checked to be inside the worktree.

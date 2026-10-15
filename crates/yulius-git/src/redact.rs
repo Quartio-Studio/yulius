@@ -1,6 +1,10 @@
 //! Credential redaction for text that may reach logs or error messages (SEC-002).
 
-const TOKEN_PREFIXES: &[&str] = &["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
+use yulius_domain::redact::{INSTALLATION_TOKEN_PREFIX, stateless_installation_token_len};
+
+/// `ghs_` first: a stateless installation token is removed whole before another prefix found
+/// inside its base64url payload or signature could cut it.
+const TOKEN_PREFIXES: &[&str] = &["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
 const REDACTED: &str = "[redacted]";
 
 /// Removes credential-shaped substrings from `text`: URL user information
@@ -44,18 +48,35 @@ fn redact_line(line: &str) -> String {
 fn redact_word(word: &str) -> String {
     let mut word = redact_userinfo(word);
     for prefix in TOKEN_PREFIXES {
-        while let Some(start) = word.find(prefix) {
+        let mut from = 0;
+        while let Some(found) = word[from..].find(prefix) {
+            let start = from + found;
             let tail = &word[start + prefix.len()..];
-            let len = tail
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .unwrap_or(tail.len());
+            let len = token_len(prefix, tail);
             if len == 0 {
-                break;
+                // A bare prefix: search on after it.
+                from = start + prefix.len();
+                continue;
             }
             word.replace_range(start..start + prefix.len() + len, REDACTED);
+            from = start + REDACTED.len();
         }
     }
     word
+}
+
+/// Length of the token after `prefix`: a stateless installation token (`ghs_<APPID>_<JWT>`)
+/// through its signature, any other through its `[A-Za-z0-9_]` run.
+fn token_len(prefix: &str, tail: &str) -> usize {
+    let stateless = if prefix == INSTALLATION_TOKEN_PREFIX {
+        stateless_installation_token_len(tail)
+    } else {
+        None
+    };
+    stateless.unwrap_or_else(|| {
+        tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len())
+    })
 }
 
 fn redact_userinfo(word: &str) -> String {
@@ -86,6 +107,55 @@ mod tests {
         assert!(!clean.contains("github_pat_11ABC_xyz"), "{clean}");
         assert!(clean.contains("github.com/o/r.git"), "{clean}");
         assert!(clean.contains("403"), "{clean}");
+    }
+
+    /// #424: a stateless installation token (`ghs_<APPID>_<JWT>`) is removed whole, not cut at
+    /// the JWT's first `.`.
+    #[test]
+    fn removes_a_whole_stateless_installation_token() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJ{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "pc3MiOiIxIn0".repeat(10),
+            "c2lnbmF0dXJl_-".repeat(16)
+        );
+        let text = format!(
+            "fatal: unable to access 'https://x-access-token:{token}@github.com/o/r.git/'\n\
+             remote: {token}."
+        );
+        assert_eq!(
+            redact(&text),
+            "fatal: unable to access 'https://[redacted]@github.com/o/r.git/'\nremote: [redacted]."
+        );
+    }
+
+    /// Review of SPEC-138: a payload that happens to hold another prefix (`ghu_`) is not cut
+    /// there, leaving the rest of the token.
+    #[test]
+    fn a_stateless_token_holding_another_prefix_is_removed_whole() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIxghu_AB-{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "PAYLOADSECRET".repeat(3),
+            "SIGNATURESECRET_-ghp_x".repeat(3)
+        );
+        assert_eq!(
+            redact(&format!("remote: {token} failed")),
+            "remote: [redacted] failed"
+        );
+    }
+
+    /// Review of SPEC-138, round 2: a bare prefix earlier in the word does not end the search.
+    #[test]
+    fn a_bare_prefix_does_not_hide_a_later_token() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIx.c2lnbmF0dXJl",
+            "hbGciOiJSUzI1NiJ9"
+        );
+        assert_eq!(
+            redact(&format!("ghs_:{token} and ghp_-ghp_{}", "aB3dE".repeat(8))),
+            "ghs_:[redacted] and ghp_-[redacted]"
+        );
     }
 
     #[test]

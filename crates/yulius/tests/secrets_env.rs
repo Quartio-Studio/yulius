@@ -560,6 +560,65 @@ async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
     Ok(())
 }
 
+/// #475: a `.env` that cannot be updated without breaking it is refused before a person is
+/// asked, and nothing is written: a copied name already holding a value over several lines, or a
+/// quote left open at the end of the file. An existing `.env.example` keeps its mode when a
+/// name is added to it.
+#[tokio::test]
+async fn a_dotenv_that_cannot_be_updated_is_refused_and_the_example_keeps_its_mode() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let w = world().await?;
+    let env = w.worktree.join(".env");
+    let copy = || {
+        support::mcp_tool(
+            &w.h,
+            TOKEN,
+            "secret_copy_to_env",
+            json!({"secrets": ["STRIPE_KEY"]}),
+        )
+    };
+    for (text, why) in [
+        (
+            "STRIPE_KEY=\"-----BEGIN KEY-----\nabc\n-----END KEY-----\"\nB=1\n",
+            "already holds a value over several lines",
+        ),
+        (
+            "A=1\nBROKEN='never closed\n",
+            "on line 2 of the file never closes",
+        ),
+    ] {
+        std::fs::write(&env, text)?;
+        let refused = copy().await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(refused.to_string().contains(why), "{refused}");
+        assert_eq!(read(&env), text, "nothing is written");
+        assert!(!w.worktree.join(".env.example").exists());
+        assert_eq!(
+            w.h.store.vault_get(&w.id).await?.ok_or("secret")?.env_files,
+            EnvFiles::No,
+            "a person is not asked for a copy that cannot work"
+        );
+    }
+
+    std::fs::write(&env, "A=1\n")?;
+    let example = w.worktree.join(".env.example");
+    std::fs::write(&example, "A=\n")?;
+    std::fs::set_permissions(&example, std::fs::Permissions::from_mode(0o755))?;
+    w.h.store
+        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .await?;
+    let copied = copy().await?;
+    assert_ne!(copied["isError"], true, "{copied}");
+    assert_eq!(read(&env), format!("A=1\nSTRIPE_KEY={VALUE}\n"));
+    assert_eq!(read(&example), "A=\nSTRIPE_KEY=\n");
+    assert_eq!(
+        std::fs::metadata(&example)?.permissions().mode() & 0o777,
+        0o755,
+        "the template keeps the mode it was committed with"
+    );
+    Ok(())
+}
+
 /// Review of SPEC-129, L5: a secret of every project is answered by instance administrators
 /// only, and its askers name their project.
 #[tokio::test]

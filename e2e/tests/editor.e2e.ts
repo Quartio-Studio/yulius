@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -112,7 +112,6 @@ const LONG = Array.from({ length: 200 }, (_, i) => (i === 4 ? `long ${'word '.re
 /** Opens the Editor with `long.md` (set in the mock repository first). */
 async function openLong(app: { open(url: string): Promise<void> }, browser: Browser, screen: import('@e2e-dev/web').Screen, options = '') {
   await app.open(mock('/s/studio/t/12', options));
-  await mockReady(browser);
   await browser.evaluate((text) => (window as unknown as { __yuliusMock: { repoFile(s: string, p: string, t: string): void } }).__yuliusMock.repoFile('sb_studio', 'long.md', text), LONG);
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
