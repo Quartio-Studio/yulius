@@ -197,15 +197,31 @@ commit) and tests it as `task/<n>`; while that run goes the merge is armed, and 
 run passed. Nothing is published to GitHub. Hygiene, the automatic pull request and reconciliation
 skip playgrounds.
 
+A local checkout without GitHub comes in from the command line too
+([SPEC-171](../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)): `yulius onboard
+--playground` sends a bundle of every branch and tag, the uncommitted work and the chosen sessions
+through the import pipeline, with `playground: true` on the plan and the manifest. Into a new
+playground the job's files go under an id reserved when the job is created; the playground is made
+when the upload completes, as from a folder (the bundle's refs copied into `origin` with the
+hardened Git, the uncommitted work one commit on the checked-out branch). Into the person's
+existing playground of that name the upload lands as an import does, under `import/<login>/`.
+A removed playground's code goes on request
+([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md)):
+the request is kept in `playground_purges`, and its `origin` and sandbox directory are deleted
+only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
+once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
+
 ```mermaid
 flowchart LR
   B["Browser: folder → tar.gz"] -->|"POST /api/playgrounds"| S["Server: unpack files/ and the history of git/"]
+  L["yulius onboard --playground: bundle, snapshot, sessions"] -->|"import job, then complete"| S
   S -->|"init --bare, copy refs, commit the files"| O[("data/playgrounds/id.git (outside the sandbox)")]
   O -->|"clone; fetch by path"| R["sandbox/repo"]
   R -->|"worktree from origin/dev"| T["Task worktree (agent, contained)"]
   T -->|"delivery_merge: head merged into dev, built in the clone"| C["task/n run (Yulius CI)"]
   R -->|"dev head"| D["branch/dev run (Yulius CI)"]
   C -->|"passed: Yulius squashes, pushes by path"| O
+  P["Purge of a removed playground"] -.->|"once nothing of the sandbox runs: delete"| O
 ```
 
 ## Parallel tasks at merge

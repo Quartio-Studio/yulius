@@ -31,7 +31,9 @@ watching, steering and unblocking.
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
   and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
   pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
-  optional and can wait (SPEC-099).
+  optional and can wait (SPEC-099). A local checkout without GitHub, with its Claude Code
+  sessions, comes in with `yulius onboard --playground`, and removing a playground can delete its
+  code from the server for good, which frees its place among its maker's 10 (SPEC-171).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
   the tools toggle; the top bar has no button of its own since SPEC-132), for quick work

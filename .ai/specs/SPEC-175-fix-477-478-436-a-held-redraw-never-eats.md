@@ -145,7 +145,8 @@ Three web UI defects, each a redraw or remount landing in the middle of a gestur
 - **Flaky test met on the way:** `scripts/test_vidoc_scan.py` `RealRunner` failed the gate twice
   under load with `ProcessLookupError` in `alive()`: a child reaped between opening and reading its
   `/proc/<pid>/stat`. Reproduced every run with a 0.5 s delay between the open and the read; with
-  the fix (`ProcessLookupError` is "not alive") the same probe passes.
+  the fix (`ProcessLookupError` is "not alive") the same probe passes. The same fix reached `dev`
+  with #560 (SPEC-171) meanwhile; the merge keeps `dev`'s version, so this change adds none.
 - **Gates:** `scripts/dev ci` exit 0 (after the flake fix); full e2e suite
   `E2E_TELEMETRY_DISABLED=1 npx e2e run`: 513 passed, 1 skipped (56 files) before the review fixes;
   the review's new and changed tests then passed 4 times in a row with the touched files.

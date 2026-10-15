@@ -156,6 +156,9 @@ impl App {
                         app.purge_removed_sandbox(sandbox, removed.0).await;
                     }
                 }
+                // Removed playgrounds whose code was asked to go, once nothing of them runs
+                // (SPEC-171).
+                app.run_purges().await;
             }
         });
     }

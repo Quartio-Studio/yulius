@@ -715,9 +715,19 @@ def alive(pid):
     try:
         with open(f"/proc/{pid}/stat") as stat:
             return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
-    # Gone before the open, or reaped between the open and the read (ESRCH).
     except (FileNotFoundError, ProcessLookupError):
+        # Gone, or reaped between the open and the read.
         return False
+
+
+class AliveHelper(unittest.TestCase):
+    def test_a_process_reaped_between_open_and_read_reads_as_ended(self):
+        # /proc/<pid>/stat opened just before the process is reaped reads ESRCH, not ENOENT.
+        class Reaped(io.StringIO):
+            def read(self, *args):
+                raise ProcessLookupError(3, "No such process")
+        with unittest.mock.patch("builtins.open", lambda *a, **k: Reaped()):
+            self.assertFalse(alive(1))
 
 
 class RealRunner(unittest.TestCase):

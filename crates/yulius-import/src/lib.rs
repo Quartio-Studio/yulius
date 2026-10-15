@@ -33,8 +33,8 @@ mod upload;
 
 pub use device::{DeviceError, DeviceLoginOptions, MAX_DEVICE_WAIT, device_login};
 pub use git::{
-    GitHubRemote, RepoError, RepoInfo, UnpublishedRef, create_bundle, discover_repo,
-    parse_github_remote, unpublished_refs,
+    GitHubRemote, RepoError, RepoInfo, UnpublishedRef, create_bundle, create_full_bundle,
+    discover_playground_checkout, discover_repo, parse_github_remote, unpublished_refs,
 };
 pub use http::{ApiError, RetryPolicy};
 pub use process::GitError;

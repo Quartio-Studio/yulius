@@ -117,6 +117,15 @@ enum Command {
         /// List every redacted secret's rule and key name.
         #[arg(long)]
         show_redactions: bool,
+        /// Upload into a playground of yours (local Git on the server) instead of a GitHub
+        /// repository's sandbox: no GitHub remote needed; every branch, the uncommitted work and
+        /// the chosen sessions are sent, and nothing is pushed anywhere.
+        #[arg(long)]
+        playground: bool,
+        /// The playground's name with --playground (default: the checkout directory's name); an
+        /// existing playground of yours with that name receives the upload.
+        #[arg(long, requires = "playground")]
+        name: Option<String>,
         /// Do not ask anything.
         #[arg(long)]
         yes: bool,
@@ -215,6 +224,8 @@ fn main() -> ExitCode {
             dry_run,
             status,
             show_redactions,
+            playground,
+            name,
             yes,
             no_color,
         } => yulius::cli::onboard(yulius::cli::OnboardArgs {
@@ -227,6 +238,8 @@ fn main() -> ExitCode {
             dry_run,
             status,
             show_redactions,
+            playground,
+            playground_name: name,
             no_color,
         }),
         Command::Doctor {

@@ -1861,3 +1861,798 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     Ok(())
 }
+
+// ------------------------------------------------- `yulius onboard --playground` (SPEC-171)
+
+/// The router served on a loopback port as `yulius serve` serves it, for the real CLI client.
+async fn serve(h: &Harness) -> BoxResult<(yulius_import::Url, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let addr = listener.local_addr()?;
+    let service = yulius_server::public_router(h.app.clone())
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, service).await;
+    });
+    Ok((yulius_import::Url::parse(&format!("http://{addr}"))?, task))
+}
+
+/// The terminal of the real CLI in a test: no person answers, the bearer token is given.
+struct CliIo {
+    ui: yulius_import::PlainUi<std::io::Cursor<Vec<u8>>, Vec<u8>>,
+    token: String,
+    claude: PathBuf,
+}
+
+impl yulius_import::ImportIo for CliIo {
+    fn ui(&mut self) -> &mut dyn yulius_import::Ui {
+        &mut self.ui
+    }
+    fn interactive(&self) -> bool {
+        false
+    }
+    fn token(
+        &mut self,
+        _server: &yulius_import::Url,
+    ) -> Result<yulius_import::Secret, yulius_import::ImportError> {
+        Ok(yulius_import::Secret::new(&self.token))
+    }
+    fn session_sources(&self) -> yulius_import::SessionSources {
+        yulius_import::SessionSources {
+            claude_dir: Some(self.claude.clone()),
+        }
+    }
+    fn now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+}
+
+/// Runs `yulius onboard --playground --yes --sessions all [--name]` (the real client) on
+/// `checkout` against `server`; returns the outcome (or its error) and what it printed.
+async fn onboard_cli(
+    server: &yulius_import::Url,
+    token: &str,
+    checkout: &Path,
+    claude: &Path,
+    name: Option<&str>,
+) -> BoxResult<(Result<yulius_import::OnboardOutcome, String>, String)> {
+    let options = yulius_import::ImportOptions {
+        sessions: Some(yulius_import::SessionChoice::All),
+        assume_yes: true,
+        playground: true,
+        playground_name: name.map(str::to_owned),
+        ..yulius_import::ImportOptions::new(checkout.to_path_buf(), server.clone())
+    };
+    let mut io = CliIo {
+        ui: yulius_import::PlainUi::new(std::io::Cursor::new(Vec::new()), Vec::new()),
+        token: token.to_owned(),
+        claude: claude.to_path_buf(),
+    };
+    let outcome = tokio::task::spawn_blocking(move || {
+        let outcome = yulius_import::run_import(&options, &mut io).map_err(|err| err.to_string());
+        (
+            outcome,
+            String::from_utf8_lossy(io.ui.output()).into_owned(),
+        )
+    })
+    .await?;
+    Ok(outcome)
+}
+
+/// A laptop checkout named `shop` whose only remote is a local bare repository (not GitHub),
+/// with `main` pushed there, a local `feature` branch and tag `v1`, uncommitted work (an edit,
+/// a new file, a deletion) and one Claude Code session opened in it. Returns the checkout, the
+/// remote and the Claude configuration directory.
+fn laptop(dir: &Path) -> BoxResult<(PathBuf, PathBuf, PathBuf)> {
+    let remote = dir.join("elsewhere.git");
+    let checkout = dir.join("laptop").join("shop");
+    std::fs::create_dir_all(&remote)?;
+    std::fs::create_dir_all(&checkout)?;
+    git(&remote, &["init", "--quiet", "--bare", "-b", "main"])?;
+    git(&checkout, &["init", "--quiet", "-b", "main"])?;
+    std::fs::write(checkout.join("README.md"), "# shop\n")?;
+    std::fs::write(checkout.join("gone.txt"), "deleted later\n")?;
+    git(&checkout, &["add", "-A"])?;
+    git(&checkout, &["commit", "--quiet", "-m", "initial"])?;
+    git(
+        &checkout,
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    )?;
+    git(&checkout, &["push", "--quiet", "origin", "main"])?;
+    git(&checkout, &["checkout", "--quiet", "-b", "feature"])?;
+    std::fs::write(checkout.join("feature.txt"), "feature\n")?;
+    git(&checkout, &["add", "feature.txt"])?;
+    git(&checkout, &["commit", "--quiet", "-m", "feature work"])?;
+    git(&checkout, &["tag", "v1"])?;
+    git(&checkout, &["checkout", "--quiet", "main"])?;
+    std::fs::write(checkout.join("README.md"), "# shop, edited on the laptop\n")?;
+    std::fs::write(checkout.join("new.txt"), "not committed\n")?;
+    std::fs::remove_file(checkout.join("gone.txt"))?;
+    let claude = dir.join("claude");
+    let cwd = std::fs::canonicalize(&checkout)?;
+    let slug: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let session = claude.join("projects").join(slug);
+    std::fs::create_dir_all(&session)?;
+    let line = |kind: &str, at: &str, content: Value| {
+        json!({"type": kind, "cwd": cwd.to_string_lossy(), "sessionId": "5a1e0000-cli",
+               "timestamp": at, "gitBranch": "main", "version": "2.1.292",
+               "message": {"role": kind, "content": content}})
+        .to_string()
+    };
+    std::fs::write(
+        session.join("5a1e0000-cli.jsonl"),
+        format!(
+            "{}\n{}\n",
+            line(
+                "user",
+                "2026-10-14T10:00:00.000Z",
+                json!("Add a basket to the shop")
+            ),
+            line(
+                "assistant",
+                "2026-10-14T10:05:00.000Z",
+                json!([{"type": "text", "text": "ok"}])
+            )
+        ),
+    )?;
+    Ok((checkout, remote, claude))
+}
+
+/// Every ref of a repository with its commit, sorted.
+fn refs(repo: &Path) -> BoxResult<String> {
+    Ok(git(
+        repo,
+        &["for-each-ref", "--format=%(refname) %(objectname)"],
+    )?)
+}
+
+/// The playgrounds a person made, as the store keeps them (not removed).
+async fn playgrounds_named(
+    h: &Harness,
+    name: &str,
+) -> BoxResult<Vec<yulius_app::model::SandboxRecord>> {
+    use yulius_app::ports::store::SandboxStore;
+    Ok(h.store
+        .sandboxes()
+        .await?
+        .into_iter()
+        .filter(|s| s.is_playground() && s.repo_name.starts_with(name))
+        .collect())
+}
+
+/// SPEC-171 PGL-001, PGL-003, PGL-004: the real `yulius onboard --playground` on a checkout whose
+/// only remote is not GitHub makes a playground with every branch and tag, the uncommitted work as
+/// one commit on the checked-out branch, `dev`, and the session on its Sessions page. Nothing is
+/// pushed to the checkout's remote, and GitHub is never written to while its permission lookups
+/// fail (a GitHub path would have failed the upload).
+#[tokio::test]
+async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let bearer = support::superadmin_bearer(&h).await?;
+    let token = bearer.bearer.clone().ok_or("token")?;
+    let (server, _serving) = serve(&h).await?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, remote, claude) = laptop(tmp.path())?;
+    let remote_before = refs(&remote)?;
+    let laptop_main = git(&checkout, &["rev-parse", "main"])?.trim().to_owned();
+    let laptop_feature = git(&checkout, &["rev-parse", "feature"])?.trim().to_owned();
+
+    let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
+    let outcome = outcome.map_err(|err| format!("{err}\n{output}"))?;
+    let result = outcome.result.ok_or("applied")?;
+    assert_eq!(result.sessions_imported, 1, "{output}");
+    assert_eq!(result.onboarding, "not_needed");
+    assert!(output.contains("✓ shop is on Yulius"), "{output}");
+
+    let made = playgrounds_named(&h, "shop").await?;
+    assert_eq!(made.len(), 1, "{made:?}");
+    let sandbox = json!({"id": made[0].id.as_str()});
+    let origin = origin_of(&h, &sandbox);
+    assert_eq!(branches(&origin)?, ["dev", "feature", "main"]);
+    assert_eq!(
+        git(&origin, &["rev-parse", "feature"])?.trim(),
+        laptop_feature
+    );
+    assert_eq!(git(&origin, &["rev-parse", "v1"])?.trim(), laptop_feature);
+    // The uncommitted work is one commit on `main`, on top of the laptop's `main`.
+    assert_eq!(git(&origin, &["rev-parse", "main~1"])?.trim(), laptop_main);
+    assert_eq!(
+        file_at(&origin, "main", "README.md")?,
+        "# shop, edited on the laptop\n"
+    );
+    assert_eq!(file_at(&origin, "main", "new.txt")?, "not committed\n");
+    assert!(git(&origin, &["cat-file", "-e", "main:gone.txt"]).is_err());
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?,
+        git(&origin, &["rev-parse", "main"])?
+    );
+    // Its sandbox has the clone, and its Sessions page the session.
+    assert!(sandbox_dir(&h, &sandbox).join("repo").join(".git").exists());
+    let sessions = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}/sessions", made[0].id),
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(sessions.status, StatusCode::OK, "{:?}", sessions.body);
+    let listed = sessions.body["sessions"].to_string();
+    assert!(listed.contains("Add a basket to the shop"), "{listed}");
+
+    // Nothing was pushed anywhere, and GitHub was never written to.
+    assert_eq!(refs(&remote)?, remote_before);
+    no_github_writes(&h)?;
+
+    // The same checkout again lands in the same playground and makes no other.
+    let (again, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
+    let again = again.map_err(|err| format!("{err}\n{output}"))?;
+    assert_eq!(again.sessions_sent, 0, "{output}");
+    assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
+    // Review round 1: branches it already has are not imported again under `import/`.
+    let clone = sandbox_dir(&h, &sandbox).join("repo");
+    let local = branches(&clone)?;
+    assert!(!local.iter().any(|b| b.starts_with("import/")), "{local:?}");
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// SPEC-171 PGL-002: without the playground flag an empty owner is still refused, and a new
+/// playground from the CLI needs the checkout's branches.
+#[tokio::test]
+async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
+    let (h, owner) = world().await?;
+    let manifest = |playground: bool| {
+        json!({"manifest": {
+            "version": 1,
+            "repo": {"remote_url": "", "owner": "", "name": "shop",
+                     "head_branch": "main", "head_sha": "0123456789abcdef0123456789abcdef01234567"},
+            "bundle": null, "snapshot": null, "sessions": [], "since": "2026-09-23T00:00:00.000Z",
+            "playground": playground
+        }})
+    };
+    for playground in [false, true] {
+        let refused = call(
+            &h.router,
+            Method::POST,
+            "/api/import",
+            Some(manifest(playground)),
+            &owner,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{playground}: {:?}",
+            refused.body
+        );
+    }
+    let plan = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(json!({"owner": "", "name": "shop", "sessions": [], "playground": true})),
+        &owner,
+    )
+    .await?;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["can_create"], true);
+    assert!(plan.body["sandbox"].is_null());
+    Ok(())
+}
+
+/// SPEC-171 PGL-002, PGL-004: into the person's existing playground of that name the CLI upload
+/// lands as an import does (branches under `import/<login>/`, the uncommitted work on a snapshot
+/// branch, in the sandbox clone): the playground's own branches are untouched, no other is made.
+#[tokio::test]
+async fn onboard_cli_uploads_into_an_existing_playground() -> TestResult {
+    let (h, owner) = world().await?;
+    let bearer = support::superadmin_bearer(&h).await?;
+    let token = bearer.bearer.clone().ok_or("token")?;
+    let (server, _serving) = serve(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let origin = origin_of(&h, &made.body);
+    let before = refs(&origin)?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, claude) = laptop(tmp.path())?;
+    let feature = git(&checkout, &["rev-parse", "feature"])?.trim().to_owned();
+
+    let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, Some("Shop")).await?;
+    let outcome = outcome.map_err(|err| format!("{err}\n{output}"))?;
+    let result = outcome.result.ok_or("applied")?;
+    assert_eq!(result.sandbox_id, made.body["id"].as_str().ok_or("id")?);
+    assert_eq!(result.sessions_imported, 1, "{output}");
+    assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
+    assert_eq!(
+        refs(&origin)?,
+        before,
+        "the playground's own branches are untouched"
+    );
+    let clone = sandbox_dir(&h, &made.body).join("repo");
+    let imported = branches(&clone)?;
+    assert!(
+        imported.iter().any(|b| b == "import/user/feature"),
+        "{imported:?}"
+    );
+    assert!(
+        imported.iter().any(|b| b == "import/user/main"),
+        "{imported:?}"
+    );
+    let snapshot = imported
+        .iter()
+        .find(|b| b.starts_with("import/user/snapshot-"))
+        .ok_or("snapshot branch")?;
+    assert_eq!(
+        git(&clone, &["rev-parse", "import/user/feature"])?.trim(),
+        feature
+    );
+    assert_eq!(file_at(&clone, snapshot, "new.txt")?, "not committed\n");
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// SPEC-171 PGL-002: a CLI upload makes a playground only within the person's limit of 10; their
+/// existing playground of that name still receives it.
+#[tokio::test]
+async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    for n in 0..10 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    }
+    let user = h
+        .store
+        .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+        .await?
+        .ok_or("alice")?;
+    let bearer = Creds {
+        bearer: Some(
+            h.app
+                .issue_api_token(&user, "tests")
+                .await?
+                .expose()
+                .to_owned(),
+        ),
+        ..Creds::default()
+    };
+    let plan = |name: &str| json!({"owner": "", "name": name, "sessions": [], "playground": true});
+    let refused = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(plan("shop")),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::OK, "{:?}", refused.body);
+    assert_eq!(refused.body["can_create"], false);
+    assert!(
+        refused.body["refusal"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("10 playgrounds")
+    );
+    let existing = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(plan("lab 3")),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(existing.status, StatusCode::OK, "{:?}", existing.body);
+    assert_eq!(
+        existing.body["sandbox"]["slug"], "lab-3",
+        "{:?}",
+        existing.body
+    );
+    assert!(existing.body["refusal"].is_null());
+
+    let (server, _serving) = serve(&h).await?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, claude) = laptop(tmp.path())?;
+    let token = bearer.bearer.clone().ok_or("token")?;
+    let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
+    let err = outcome.err().ok_or("an eleventh playground was made")?;
+    assert!(err.contains("10 playgrounds"), "{err}\n{output}");
+    assert!(playgrounds_named(&h, "shop").await?.is_empty());
+    Ok(())
+}
+
+// ------------------------------------------------- purging a removed playground (SPEC-171)
+
+async fn purge(h: &Harness, creds: &Creds, sid: &str) -> BoxResult<support::Resp> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/purge"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// The audit actions recorded on a sandbox, oldest first.
+async fn audit_actions(h: &Harness, sid: &str) -> BoxResult<Vec<String>> {
+    use yulius_app::ports::store_ext::AutomationStore;
+    let mut entries = h.store.automation_audit(sid, 100).await?;
+    entries.reverse();
+    Ok(entries.into_iter().map(|e| e.action).collect())
+}
+
+/// SPEC-171 PGL-006: the purge of a removed playground deletes nothing while a process of its
+/// sandbox runs (here: an agent run still ending after the removal stopped its task), and
+/// deletes `origin` and the sandbox directory on the first round after it ended.
+#[tokio::test]
+async fn a_purge_waits_while_a_process_of_the_sandbox_runs() -> TestResult {
+    use yulius_app::ports::store::{TaskStore, UserStore};
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?.to_owned();
+    let (origin, dir) = (origin_of(&h, &made.body), sandbox_dir(&h, &made.body));
+    let creator = h.store.superadmin().await?.ok_or("superadmin")?.id;
+    support::seed_task(
+        &h,
+        "t1",
+        &sid,
+        creator.as_str(),
+        yulius_domain::task::TaskStatus::Closed,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+
+    let asked = purge(&h, &owner, &sid).await?;
+    assert_eq!(asked.status, StatusCode::OK, "{:?}", asked.body);
+    assert_eq!(asked.body["state"], "waiting", "{:?}", asked.body);
+    assert_eq!(
+        asked.body["waiting_for"][0], "1 agent run",
+        "{:?}",
+        asked.body
+    );
+    assert!(
+        origin.exists() && dir.exists(),
+        "nothing is deleted while a run lives"
+    );
+    // The playground is removed at once: nobody sees it any more.
+    let listed = call(&h.router, Method::GET, "/api/sandboxes", None, &owner).await?;
+    assert!(!listed.body.to_string().contains(&sid), "{:?}", listed.body);
+    assert_eq!(h.app.run_purges().await, 0);
+    assert!(
+        origin.exists() && dir.exists(),
+        "a round while it runs deletes nothing"
+    );
+
+    let attempt = yulius_domain::ids::AttemptId::parse("a-t1")?;
+    assert!(
+        h.store
+            .transition_attempt(
+                &attempt,
+                yulius_domain::task::AttemptState::Exited,
+                &yulius_app::ports::store::AttemptUpdate::default(),
+            )
+            .await?
+    );
+    assert_eq!(h.app.run_purges().await, 1);
+    assert!(
+        !origin.exists() && !dir.exists(),
+        "deleted once nothing runs"
+    );
+    assert_eq!(h.app.run_purges().await, 0, "a purge is done once");
+    let actions = audit_actions(&h, &sid).await?;
+    assert!(
+        actions.ends_with(&[
+            "sandbox.removed".into(),
+            "sandbox.purge_requested".into(),
+            "sandbox.purged".into()
+        ]),
+        "{actions:?}"
+    );
+    // Task records stay.
+    assert!(
+        h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .is_some()
+    );
+    Ok(())
+}
+
+/// SPEC-171 PGL-005, PGL-007: purging on removal deletes the code at once when nothing runs, and
+/// its maker may make another playground at the limit of 10.
+#[tokio::test]
+async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult {
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let mut last = Value::Null;
+    for n in 0..10 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+        last = made.body;
+    }
+    let sid = last["id"].as_str().ok_or("id")?;
+    let purged = purge(&h, &alice, sid).await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    assert!(!origin_of(&h, &last).exists());
+    assert!(!sandbox_dir(&h, &last).exists());
+    let again = from_template(&h, &alice, "lab again").await?;
+    assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
+    // The removal's export of its tasks stays.
+    let exports = std::fs::read_dir(h.app.config.data_dir.join("exports"))?.count();
+    assert!(exports >= 1);
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// SPEC-171 PGL-005: a GitHub sandbox's code is on GitHub and is never purged; nothing is removed.
+#[tokio::test]
+async fn a_github_sandbox_is_never_purged() -> TestResult {
+    let (h, owner) = world().await?;
+    let creator = {
+        use yulius_app::ports::store::UserStore;
+        h.store.superadmin().await?.ok_or("superadmin")?.id
+    };
+    support::seed_sandbox(&h, "s1", "shop", creator.as_str()).await?;
+    let refused = purge(&h, &owner, "s1").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    let still = call(&h.router, Method::GET, "/api/sandboxes/s1", None, &owner).await?;
+    assert_eq!(still.status, StatusCode::OK, "{:?}", still.body);
+    Ok(())
+}
+
+/// SPEC-171 PGL-005: only an admin of the playground purges it; a removed playground is purged by
+/// the superadmin only (it is invisible to everyone else).
+#[tokio::test]
+async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = support::seed_github_user(&h, "u-bob", "bob").await?;
+    let made = from_template(&h, &alice, "lab").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?;
+    assert_eq!(purge(&h, &bob, sid).await?.status, StatusCode::NOT_FOUND);
+    assert!(origin_of(&h, &made.body).exists());
+    let removed = call(
+        &h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/{sid}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(removed.status.is_success(), "{:?}", removed.body);
+    assert_eq!(purge(&h, &alice, sid).await?.status, StatusCode::NOT_FOUND);
+    assert!(origin_of(&h, &made.body).exists());
+    let purged = purge(&h, &owner, sid).await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged");
+    assert!(!origin_of(&h, &made.body).exists());
+    Ok(())
+}
+
+// ------------------------------------------------- review round 1 (SPEC-171)
+
+/// A CLI upload of `checkout` into a new playground `name` as the CLI makes it, through the HTTP
+/// API: the job is created and every file uploaded, not completed. Returns the job id.
+async fn cli_job(h: &Harness, creds: &Creds, checkout: &Path, name: &str) -> BoxResult<String> {
+    let bundle_path = checkout.join("..").join(format!("{name}.bundle"));
+    git(
+        checkout,
+        &[
+            "bundle",
+            "create",
+            "--quiet",
+            &bundle_path.to_string_lossy(),
+            "--branches",
+            "--tags",
+        ],
+    )?;
+    let bundle = std::fs::read(&bundle_path)?;
+    let head = git(checkout, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let manifest = json!({"manifest": {
+        "version": 1,
+        "repo": {"remote_url": "", "owner": "", "name": name, "head_branch": "main", "head_sha": head},
+        "bundle": {"name": "repo.bundle", "size": bundle.len(), "sha256": h.app.deps.crypto.sha256_hex(&bundle)},
+        "snapshot": null, "sessions": [], "since": "1970-01-01T00:00:00.000Z", "playground": true
+    }});
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/import",
+        Some(manifest),
+        creds,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = created.body["job_id"].as_str().ok_or("job")?.to_owned();
+    if created.body["missing"]
+        .as_array()
+        .is_some_and(|m| !m.is_empty())
+    {
+        let sha = h.app.deps.crypto.sha256_hex(&bundle);
+        let put = support::repos::call_raw(
+            &h.router,
+            Method::PUT,
+            &format!("/api/import/{job}/files/repo.bundle?offset=0"),
+            bundle,
+            &[
+                ("x-chunk-sha256", &sha),
+                ("content-type", "application/octet-stream"),
+            ],
+            creds,
+        )
+        .await?;
+        assert_eq!(put.status, StatusCode::OK, "{:?}", put.body);
+    }
+    Ok(job)
+}
+
+async fn complete_job(h: &Harness, creds: &Creds, job: &str) -> BoxResult<support::Resp> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/import/{job}/complete"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// Review round 1 (major): a new playground that cannot be made when its upload completes (here:
+/// another playground took the person's tenth place meanwhile) keeps the uploaded files, so
+/// completing again once there is room makes it (PGL-003).
+#[tokio::test]
+async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let user = h
+        .store
+        .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+        .await?
+        .ok_or("alice")?;
+    let bearer = Creds {
+        bearer: Some(
+            h.app
+                .issue_api_token(&user, "tests")
+                .await?
+                .expose()
+                .to_owned(),
+        ),
+        ..Creds::default()
+    };
+    let mut first = Value::Null;
+    for n in 0..9 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+        if n == 0 {
+            first = made.body;
+        }
+    }
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, _claude) = laptop(tmp.path())?;
+    let job = cli_job(&h, &bearer, &checkout, "shop").await?;
+    let tenth = from_template(&h, &alice, "lab 9").await?;
+    assert_eq!(tenth.status, StatusCode::CREATED, "{:?}", tenth.body);
+
+    let refused = complete_job(&h, &bearer, &job).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert!(playgrounds_named(&h, "shop").await?.is_empty());
+
+    let sid = first["id"].as_str().ok_or("id")?;
+    let purged = purge(&h, &alice, sid).await?;
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    let done = complete_job(&h, &bearer, &job).await?;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.body);
+    let made = playgrounds_named(&h, "shop").await?;
+    assert_eq!(made.len(), 1);
+    let origin = origin_of(&h, &json!({"id": made[0].id.as_str()}));
+    assert_eq!(branches(&origin)?, ["dev", "feature", "main"]);
+    Ok(())
+}
+
+/// Review round 1: a person has one new-playground upload open at a time; starting another
+/// supersedes the earlier one, whose files go, so abandoned uploads cannot pile up on the disk.
+#[tokio::test]
+async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
+    let (h, _owner) = world().await?;
+    let bearer = support::superadmin_bearer(&h).await?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, _claude) = laptop(tmp.path())?;
+    let first = cli_job(&h, &bearer, &checkout, "shop").await?;
+    let reserved = {
+        use yulius_app::ports::store_ext::ImportStore;
+        h.store
+            .import_job(&first)
+            .await?
+            .ok_or("job")?
+            .sandbox_id
+            .ok_or("sandbox")?
+    };
+    let dir = h
+        .app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(reserved.as_str());
+    assert!(
+        dir.join("imports")
+            .join(&first)
+            .join("repo.bundle")
+            .exists()
+    );
+    // The same upload again resumes the same job.
+    assert_eq!(cli_job(&h, &bearer, &checkout, "shop").await?, first);
+
+    let second = cli_job(&h, &bearer, &checkout, "lab").await?;
+    assert_ne!(second, first);
+    assert!(!dir.exists(), "the superseded upload's files are gone");
+    let stale = complete_job(&h, &bearer, &first).await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.body);
+    assert!(
+        stale.body.to_string().contains("superseded"),
+        "{:?}",
+        stale.body
+    );
+    let done = complete_job(&h, &bearer, &second).await?;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.body);
+    assert_eq!(playgrounds_named(&h, "lab").await?.len(), 1);
+    Ok(())
+}
+
+/// Review round 1 (PGL-006): the purge waits for a CI run of the sandbox too (its checkouts are
+/// claimed while a run executes), and an already purged playground is not purged or audited again.
+#[tokio::test]
+async fn a_purge_waits_for_a_ci_run_and_is_done_once() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?.to_owned();
+    let id = yulius_domain::ids::SandboxId::parse(&sid)?;
+    assert!(h.app.ci_claim(&id), "a CI run holds the checkouts");
+    let asked = purge(&h, &owner, &sid).await?;
+    assert_eq!(asked.body["state"], "waiting", "{:?}", asked.body);
+    assert_eq!(asked.body["waiting_for"][0], "a CI run", "{:?}", asked.body);
+    assert!(origin_of(&h, &made.body).exists());
+    h.app.ci_release(&id);
+    assert_eq!(h.app.run_purges().await, 1);
+    assert!(!origin_of(&h, &made.body).exists() && !sandbox_dir(&h, &made.body).exists());
+
+    let again = purge(&h, &owner, &sid).await?;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
+    assert_eq!(again.body["state"], "purged");
+    let actions = audit_actions(&h, &sid).await?;
+    assert_eq!(
+        actions.iter().filter(|a| *a == "sandbox.purged").count(),
+        1,
+        "{actions:?}"
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| *a == "sandbox.purge_requested")
+            .count(),
+        1,
+        "{actions:?}"
+    );
+    Ok(())
+}
