@@ -275,7 +275,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "issue_create".into(),
-            description: "Open a GitHub issue for follow-up work, a bug or a flaky test you found, instead of widening this task. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
             input_schema: schema(json!({
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
@@ -679,6 +679,28 @@ mod tests {
         for name in COCKPIT_TOOLS {
             assert!(served.iter().any(|s| s == name), "`{name}` is not served");
         }
+    }
+
+    /// SPEC-174 (ADR-0141): `issue_create` is for what lies outside the change, never for a
+    /// finding in the change's own code.
+    #[test]
+    fn issue_create_is_only_for_what_lies_outside_the_change() {
+        let tool = tool_descriptors()
+            .into_iter()
+            .find(|t| t.name == "issue_create");
+        let description = tool.map(|t| t.description).unwrap_or_default();
+        for stated in [
+            "outside this change",
+            "pre-existing",
+            "flaky test this change did not cause",
+            "Never a finding in code or tests this change added or modified",
+        ] {
+            assert!(
+                description.contains(stated),
+                "missing {stated:?}: {description}"
+            );
+        }
+        assert!(!description.contains("follow-up work"), "{description}");
     }
 
     #[test]

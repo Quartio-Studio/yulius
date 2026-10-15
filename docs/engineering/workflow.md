@@ -27,7 +27,8 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
    existing default behavior. Classify findings with concrete failure scenarios.
    Green tests do not establish untested product acceptance. Get an independent
    review in a fresh session too: a reviewer with no shared context (a subagent given
-   only the diff range and the spec), read-only; fix each finding test-first.
+   only the diff range and the spec), read-only; fix each finding in the change's own
+   code test-first, never deferring it ([Review output](#review-output)).
 6. **Deliver and hand off:** for authorized delivery, follow the Git sequence through
    verified dev and main merges, without waiting for reviewer approval. Report
    changed behavior, exact evidence and unresolved limits. Update
@@ -58,7 +59,25 @@ workflow. Record unrun hosted checks separately from local equivalents.
 
 ## Review output
 
-For each finding: severity, path/location, concrete trigger, impact, and recommended
-change. Report no findings if none were discovered, plus validation scope and gaps.
+For each finding: severity, path/location, concrete trigger, impact, recommended
+change, and whether it is **own code** (code or tests the change added or modified)
+or **pre-existing** (on dev before the change). Report no findings if none were
+discovered, plus validation scope and gaps.
+
+Findings in the change's own code are fixed, never deferred
+([ADR-0141](../decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)):
+
+1. An own-code finding is fixed in the same pull request, test-first, and never becomes a
+   follow-up issue, whatever its severity: a test that cannot fail, a weak or missing
+   assertion, a race, a missing regression test. The round limit (3) does not excuse it:
+   keep fixing, split the change, or stop and ask a person (`needs_you`). Never merge
+   with a known defect in the change's own code.
+2. Only these may become a new issue: a pre-existing bug found on the way, a flaky test
+   the change did not cause, and cosmetic nits (naming, wording) left at the round limit.
+   Each says why it is outside the change, with the evidence (for example "present on
+   dev before this change").
+3. The reviewer classifies each finding as own code or pre-existing, and the pull request
+   answers every finding. Deferring an own-code finding makes the verdict request changes.
+
 Do not invent issues for balance. For changes to existing mechanisms, identify the
 old guarantee and test it under the new default configuration.

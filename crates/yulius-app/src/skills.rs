@@ -894,6 +894,79 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-174 (task #164, ADR-0141): every place that states the review rule says the same
+    /// three things — a finding in the change's own code is fixed in its pull request whatever the
+    /// round, only pre-existing bugs, unrelated flaky tests and leftover nits become issues, and
+    /// deferring an own-code finding is "request changes" — and none still allows the deferral.
+    #[test]
+    fn review_findings_in_own_code_are_never_deferred() -> TestResult {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+            "catalog/workflows/feature.md",
+            "catalog/workflows/fix.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            ".apm/skills/yulius-git/SKILL.md",
+            "docs/engineering/workflow.md",
+        ] {
+            let text = fs::read_to_string(root.join(rel))?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            for stated in [
+                "own code",
+                "round limit",
+                "pre-existing",
+                "flaky test",
+                "the change did not cause",
+                "outside the change",
+                "request changes",
+            ] {
+                assert!(text.contains(stated), "{rel} does not say {stated:?}");
+            }
+            assert!(
+                [
+                    "never becomes a follow-up issue",
+                    "never as a follow-up issue"
+                ]
+                .iter()
+                .any(|never| text.contains(never)),
+                "{rel} does not say an own-code finding never becomes a follow-up issue"
+            );
+            for gone in [
+                "follow-up issue accepts",
+                "reason and follow-up issue",
+                "decide, record the reasoning",
+                "the author decides on the rest",
+                "follow-ups, bugs you find",
+                "at most 3 rounds.",
+            ] {
+                assert!(!text.contains(gone), "{rel} still says {gone:?}");
+            }
+        }
+        // The verdict covers a major in older code too, and a pre-existing blocker still blocks.
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+        ] {
+            let text = fs::read_to_string(root.join(rel))?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for stated in [
+                "pre-existing majors filed as issues with the evidence",
+                "pre-existing or not",
+            ] {
+                assert!(text.contains(stated), "{rel} does not say {stated:?}");
+            }
+        }
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {
