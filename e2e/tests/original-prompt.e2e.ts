@@ -109,7 +109,7 @@ test('a file inside the prompt shows in place, every file below it', async ({ ap
   const files = dialog.getByRole('list', 'Attached files');
   await expect(files.getByRole('img', 'after.png')).toBeVisible();
   await expect(files.getByRole('img', 'inline.png')).toBeVisible();
-  await expect(text.getByRole('button', { name: 'Open Image 2, after.png' })).toHaveCount(0);
+  expect(await browser.evaluate(() => document.querySelectorAll('.prompt-modal .prompt-text [aria-label*="after.png"], .prompt-modal .prompt-text [title*="after.png"]').length)).toBe(0);
   expect(await axeViolations(browser)).toEqual([]);
 
   await text.getByRole('button', { name: 'Open Image 1, inline.png' }).click();
@@ -137,12 +137,12 @@ test('an image inside the prompt is a one-line Image N placeholder, its picture 
   // Labels, not pictures: the text holds no image, and reads as written.
   await expect(text.getByRole('img')).toHaveCount(0);
   await expect(text).toHaveText(/First\s*Image 1\s*then\s*notes\.txt\s*and\s*Image 1\s*again,\s*second\s*Image 2\s*line\./);
-  // One line high: the placeholder is no taller than two lines of the text around it.
+  // One line high: the placeholder is no taller than a line of the text around it.
   const sizes = await browser.evaluate(() => {
     const atom = document.querySelector('.prompt-modal .prompt-text [aria-label="Open Image 2, b.png"]')!;
     return { atom: atom.getBoundingClientRect().height, line: parseFloat(getComputedStyle(atom.parentElement!).lineHeight) || 24 };
   });
-  expect(sizes.atom).toBeLessThan(2 * sizes.line);
+  expect(sizes.atom).toBeLessThanOrEqual(sizes.line + 2);
 
   // The list holds every file once, in order, an image's thumbnail with its number.
   const files = dialog.getByRole('list', 'Attached files');
@@ -158,4 +158,61 @@ test('an image inside the prompt is a one-line Image N placeholder, its picture 
   await expect(preview.getByRole('img', 'b.png')).toBeVisible();
   await browser.keyboard.press('Escape');
   await expect(preview).toBeHidden();
+});
+
+// SPEC-180 OPP-002 (review round 1): a placeholder reads its image once, shared with the list,
+// opens one preview however often it is clicked, and tries again after a failed read.
+test('a placeholder opens its image once, and tries again after a failed read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, { prompt: `See @'${drafts}/a.png' here.` });
+  type Mock = { __yuliusMock: { failPath: string | null; promptFileReads?: Record<string, number> } };
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.failPath = '/api/tasks/tsk_studio_12/prompt/attachments/0'; });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  await expect(dialog.getByRole('list', 'Attached files')).toHaveText(/a\.png\s*Couldn’t load it/);
+  const text = browser.locator('.prompt-modal .prompt-text');
+  await text.getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  await expect(browser.locator('.toast-msg:has-text("Couldn’t open a.png")')).toBeVisible();
+
+  // The server answers again: the next click reads it and opens it.
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.failPath = null; });
+  await text.getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  const preview = screen.getByRole('dialog', 'a.png');
+  await expect(preview.getByRole('img', 'a.png')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+
+  // A double-click opens one preview, from the file already read.
+  await text.getByRole('button', { name: 'Open Image 1, a.png' }).dblclick();
+  await expect(preview.getByRole('img', 'a.png')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(2);
+  expect(await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.promptFileReads?.['tsk_studio_12/0'] ?? 0)).toBe(1);
+});
+
+// SPEC-180 (review round 1): a gone image keeps its number, as in the queue card (SPEC-168), and a
+// gone file never hides an available one of the same name from the list.
+test('a gone image keeps its number, and the list keeps a file named like a gone one', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const attachments = '/srv/yulius/sandboxes/sb_studio/attachments';
+  await touchTask(browser, 'sb_studio', 12, {
+    prompt: `Old @'${attachments}/drafts/usr_other/old.png', gone @'${attachments}/drafts/usr_other/a.png', new @'${attachments}/drafts/usr_mkarp/a.png'.`,
+  });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  const text = browser.locator('.prompt-modal .prompt-text');
+  await expect(text).toHaveText(/Old\s*old\.png\s*No longer on the server\s*,\s*gone\s*a\.png\s*No longer on the server\s*,\s*new\s*Image 2\s*\./);
+  await expect(text.getByRole('button', { name: 'Open Image 2, a.png' })).toBeVisible();
+
+  const files = dialog.getByRole('list', 'Attached files');
+  await expect(files.getByRole('listitem')).toHaveCount(3);
+  await expect(files.getByRole('listitem').filter({ hasText: 'No longer on the server' })).toHaveCount(2);
+  await expect(files.getByRole('img', 'a.png')).toBeVisible();
+  await expect(files.getByRole('button', 'Open Image 2, a.png')).toBeVisible();
 });
