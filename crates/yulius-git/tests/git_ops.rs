@@ -1419,3 +1419,224 @@ fn the_cd_mirror_takes_only_the_expected_commit_and_ignores_replacements() -> Te
     assert!(refused.is_err(), "{refused:?}");
     Ok(())
 }
+
+/// SPEC-176 MPG-002/003: every branch and tag of a repository reaches an empty remote in one
+/// push, the remote's refs are read back, and a remote is repointed.
+#[test]
+fn every_branch_and_tag_is_pushed_at_once_and_read_back() -> TestResult {
+    let fx = Fixture::new()?;
+    let (origin, repo) = fx.repo_with_remote()?;
+    fx.git
+        .push(&repo, "origin", "refs/heads/main:refs/heads/dev")?;
+    fx.raw(&repo, &["tag", "v1"])?;
+    fx.raw(&repo, &["push", "--quiet", "origin", "refs/tags/v1"])?;
+    let main = fx.git.rev_parse(&repo, "HEAD")?;
+    let target = fx.path("github.git");
+    fx.git.init(&target, "main", true)?;
+    assert!(fx.git.remote_refs(&origin, path_str(&target)?)?.is_empty());
+
+    fx.git
+        .push_all_refs(&origin, path_str(&target)?, Some("dev"))?;
+    let want = vec![
+        ("refs/heads/dev".to_owned(), main.clone()),
+        ("refs/heads/main".to_owned(), main.clone()),
+        ("refs/tags/v1".to_owned(), main.clone()),
+    ];
+    assert_eq!(fx.git.remote_refs(&origin, path_str(&target)?)?, want);
+    assert_eq!(fx.git.remote_refs(&repo, path_str(&origin)?)?, want);
+
+    fx.git.set_remote_url(&repo, "origin", path_str(&target)?)?;
+    assert_eq!(
+        fx.raw(&repo, &["remote", "get-url", "origin"])?,
+        path_str(&target)?
+    );
+    assert!(
+        fx.git
+            .set_remote_url(&repo, "origin", "ext::sh -c x")
+            .is_err()
+    );
+    Ok(())
+}
+
+/// SPEC-176 MPG-005: the push never forces and is atomic: when one ref is refused, none moves.
+#[test]
+fn a_push_of_every_ref_is_all_or_nothing() -> TestResult {
+    let fx = Fixture::new()?;
+    let (origin, repo) = fx.repo_with_remote()?;
+    let target = fx.path("github.git");
+    fx.git.init(&target, "main", true)?;
+    // The remote's `main` has a commit the source does not.
+    let other = fx.path("other");
+    fx.git.init(&other, "main", false)?;
+    fs::write(other.join("b.txt"), "b\n")?;
+    fx.git.commit_all(&other, "other", &author())?;
+    fx.git.remote_add(&other, "origin", path_str(&target)?)?;
+    fx.git.push(&other, "origin", "refs/heads/main")?;
+    let before = fx.git.remote_refs(&repo, path_str(&target)?)?;
+    fx.git
+        .push(&repo, "origin", "refs/heads/main:refs/heads/dev")?;
+
+    assert!(
+        fx.git
+            .push_all_refs(&origin, path_str(&target)?, None)
+            .is_err()
+    );
+    assert!(
+        fx.git
+            .push_all_refs(&origin, path_str(&target)?, Some("-x"))
+            .is_err(),
+        "the first branch is a branch name"
+    );
+    assert_eq!(
+        fx.git.remote_refs(&repo, path_str(&target)?)?,
+        before,
+        "nothing moved, `dev` included"
+    );
+    Ok(())
+}
+
+/// SPEC-176 (final review): before Yulius's Git carries a token in a clone whose configuration its
+/// sandbox could write, every local setting that steers transport or loads more configuration is
+/// removed; the rest stays.
+#[test]
+fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let planted = [
+        ("http.proxy", "http://127.0.0.1:9"),
+        ("http.https://github.com/.sslVerify", "false"),
+        ("url./tmp/evil/.insteadOf", "https://github.com/"),
+        ("include.path", "/tmp/evil.cfg"),
+        ("includeIf.gitdir:/.path", "/tmp/evil.cfg"),
+        ("core.sshCommand", "evil"),
+        ("credential.helper", "evil"),
+        ("remote.origin.proxy", "http://127.0.0.1:9"),
+        ("remote.origin.pushurl", "/tmp/evil.git"),
+        ("core.alternateRefsCommand", "evil"),
+        ("fetch.recurseSubmodules", "true"),
+        ("submodule.recurse", "true"),
+        ("push.recurseSubmodules", "on-demand"),
+        ("user.name", "Kept Name"),
+        ("submodule.lib.url", "https://example.invalid/lib.git"),
+        ("submodule.recurse-lib.url", "https://example.invalid/r.git"),
+    ];
+    // The same key twice, apart.
+    fx.raw(
+        &repo,
+        &[
+            "config",
+            "--local",
+            "--add",
+            "include.path",
+            "/tmp/evil2.cfg",
+        ],
+    )?;
+    for (key, value) in planted {
+        fx.raw(&repo, &["config", "--local", key, value])?;
+    }
+    fx.git.scrub_transport_config(&repo)?;
+    let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
+    let left: Vec<&str> = left.lines().collect();
+    for (key, _) in &planted[..13] {
+        assert!(
+            !left.iter().any(|k| k.eq_ignore_ascii_case(key)),
+            "{key} is left: {left:?}"
+        );
+    }
+    assert!(left.contains(&"user.name"), "{left:?}");
+    assert!(
+        left.contains(&"submodule.lib.url"),
+        "an initialised submodule stays: {left:?}"
+    );
+    assert!(
+        left.contains(&"submodule.recurse-lib.url"),
+        "a submodule named recurse-… stays: {left:?}"
+    );
+    assert!(left.contains(&"remote.origin.url"), "{left:?}");
+    Ok(())
+}
+
+/// SPEC-176 (review of the delivered head): the per-worktree configuration Git reads once
+/// `extensions.worktreeConfig` is on is scrubbed too.
+#[test]
+fn transport_settings_of_a_clone_s_worktree_config_are_scrubbed() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "extensions.worktreeConfig", "true"],
+    )?;
+    fx.raw(
+        &repo,
+        &["config", "--worktree", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    fx.raw(
+        &repo,
+        &[
+            "config",
+            "--worktree",
+            "url./tmp/evil/.insteadOf",
+            "https://github.com/",
+        ],
+    )?;
+    fx.raw(
+        &repo,
+        &["config", "--worktree", "user.email", "kept@example.invalid"],
+    )?;
+    fx.git.scrub_transport_config(&repo)?;
+    let left = fx.raw(&repo, &["config", "--worktree", "--list", "--name-only"])?;
+    assert_eq!(left, "user.email", "{left}");
+    Ok(())
+}
+
+/// SPEC-176 (review of the delivered head): a configuration file that is a link is refused, never
+/// written through: Git would write to the file it points at.
+#[test]
+fn a_linked_clone_configuration_is_refused_untouched() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let outside = fx.path("outside.cfg");
+    fs::write(&outside, "[http]\n\tproxy = http://127.0.0.1:9\n")?;
+    std::os::unix::fs::symlink(&outside, repo.join(".git/config.worktree"))?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(
+        fs::read_to_string(&outside)?,
+        "[http]\n\tproxy = http://127.0.0.1:9\n",
+        "the file the link points at is untouched"
+    );
+    Ok(())
+}
+
+/// SPEC-176 (review of the delivered head): a clone whose `.git` is a pointer file, or whose
+/// `.git/config` is a link, is refused before anything is written.
+#[test]
+fn a_redirected_clone_git_directory_is_refused() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let elsewhere = fx.path("elsewhere.git");
+    fs::rename(repo.join(".git"), &elsewhere)?;
+    fs::write(
+        repo.join(".git"),
+        format!("gitdir: {}\n", elsewhere.display()),
+    )?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(
+        fx.raw(&repo, &["config", "--local", "http.proxy"])?,
+        "http://127.0.0.1:9",
+        "nothing was written"
+    );
+
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let outside = fx.path("outside.cfg");
+    fs::rename(repo.join(".git/config"), &outside)?;
+    std::os::unix::fs::symlink(&outside, repo.join(".git/config"))?;
+    let before = fs::read_to_string(&outside)?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(fs::read_to_string(&outside)?, before);
+    Ok(())
+}

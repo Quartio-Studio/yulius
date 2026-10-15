@@ -114,6 +114,153 @@ impl Git {
         Ok(())
     }
 
+    /// Pushes every branch and tag of `repo` to `url` under the same names in one atomic push
+    /// that never forces: the remote takes all of them or none (a playground moved to GitHub,
+    /// SPEC-176). With `first`, that branch goes alone before (non-forcing too): GitHub makes the
+    /// first branch pushed into an empty repository its default branch. The network timeout
+    /// applies to each push.
+    pub fn push_all_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        first: Option<&str>,
+    ) -> Result<(), GitError> {
+        validate_remote_url(url)?;
+        if let Some(branch) = first {
+            validate_branch_name(branch)?;
+            let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+            self.run_ok(
+                Invocation::new(self, "push", Some(repo))
+                    .args(["push", "--quiet", "--", url, &refspec])
+                    .timeout(self.network_timeout),
+            )?;
+        }
+        self.run_ok(
+            Invocation::new(self, "push", Some(repo))
+                .args(["push", "--quiet", "--atomic", "--", url])
+                .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .timeout(self.network_timeout),
+        )?;
+        Ok(())
+    }
+
+    /// The branches and tags of the repository at `url`, as it answers now (`git ls-remote`):
+    /// `(ref name, commit)` pairs sorted by name, peeled tags left out. The network timeout
+    /// applies.
+    pub fn remote_refs(&self, repo: &Path, url: &str) -> Result<Vec<(String, String)>, GitError> {
+        validate_remote_url(url)?;
+        let listed = self.run_ok(
+            Invocation::new(self, "ls-remote", Some(repo))
+                .args(["ls-remote", "--refs", "--heads", "--tags", "--", url])
+                .timeout(self.network_timeout),
+        )?;
+        let mut refs: Vec<(String, String)> = listed
+            .stdout_trimmed()
+            .lines()
+            .filter_map(|line| {
+                let (sha, name) = line.split_once('\t')?;
+                Some((name.to_owned(), sha.to_owned()))
+            })
+            .collect();
+        refs.sort();
+        Ok(refs)
+    }
+
+    /// Removes from `repo`'s own configuration (`.git/config` and `.git/config.worktree`) every
+    /// setting that steers transport, runs a command during a fetch or loads more configuration:
+    /// `http.*`, `url.*`, `include*`, `credential.*`, SSH, proxy and alternate-refs commands,
+    /// submodule recursion (`submodule.recurse`, `fetch.` and `push.recurseSubmodules`) and
+    /// `origin`'s proxy and push or pack overrides. Every other setting stays. A `.git` that is not
+    /// a directory, or a configuration file that is a link, is refused before any write: Git would
+    /// read or write configuration elsewhere (SPEC-176).
+    pub fn scrub_transport_config(&self, repo: &Path) -> Result<(), GitError> {
+        // Whole keys: a prefix would also take `submodule.<name>.url` of a submodule named so.
+        const KEYS: &[&str] = &["submodule.recurse"];
+        const PREFIXES: &[&str] = &[
+            "http.",
+            "https.",
+            "url.",
+            "include.",
+            "includeif.",
+            "credential.",
+            "core.sshcommand",
+            "core.gitproxy",
+            "core.askpass",
+            "core.alternaterefscommand",
+            "fetch.recursesubmodules",
+            "push.recursesubmodules",
+            "remote.origin.proxy",
+            "remote.origin.pushurl",
+            "remote.origin.uploadpack",
+            "remote.origin.receivepack",
+        ];
+        // Yulius makes every clone with a real `.git` directory; a pointer file or a link would
+        // send the scrub to configuration elsewhere while Git still reads another.
+        let git_dir = repo.join(".git");
+        if !std::fs::symlink_metadata(&git_dir).is_ok_and(|meta| meta.file_type().is_dir()) {
+            return Err(GitError::InvalidInput {
+                what: "repository",
+                reason: "its .git is not a directory".to_owned(),
+            });
+        }
+        let worktree_config = git_dir.join("config.worktree");
+        for file in [git_dir.join("config"), worktree_config.clone()] {
+            if std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                return Err(GitError::InvalidInput {
+                    what: "repository configuration",
+                    reason: "a configuration file is a link".to_owned(),
+                });
+            }
+        }
+        let mut scopes = vec![vec!["--local".to_owned()]];
+        if worktree_config.is_file() {
+            scopes.push(vec![
+                "--file".to_owned(),
+                worktree_config.to_string_lossy().into_owned(),
+            ]);
+        }
+        for scope in scopes {
+            let listed = self.run_ok(
+                Invocation::new(self, "config", Some(repo))
+                    .arg("config")
+                    .args(scope.iter().map(String::as_str))
+                    .args(["--list", "--name-only"]),
+            )?;
+            let mut names: Vec<String> = listed
+                .stdout_trimmed()
+                .lines()
+                .filter(|name| {
+                    let lower = name.to_ascii_lowercase();
+                    KEYS.contains(&lower.as_str())
+                        || PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+                })
+                .map(str::to_owned)
+                .collect();
+            names.sort();
+            names.dedup();
+            for name in names {
+                self.run_ok(
+                    Invocation::new(self, "config", Some(repo))
+                        .arg("config")
+                        .args(scope.iter().map(String::as_str))
+                        .args(["--unset-all", &name]),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Points the remote `name` of `repo` at `url`.
+    pub fn set_remote_url(&self, repo: &Path, name: &str, url: &str) -> Result<(), GitError> {
+        validate_remote_name(name)?;
+        validate_remote_url(url)?;
+        self.run_ok(
+            Invocation::new(self, "remote set-url", Some(repo))
+                .args(["remote", "set-url", "--", name, url]),
+        )?;
+        Ok(())
+    }
+
     /// The remote default branch (`refs/remotes/origin/HEAD`), falling back to the branch
     /// `HEAD` points at (correct for a fresh clone).
     pub fn default_branch(&self, repo: &Path) -> Result<String, GitError> {

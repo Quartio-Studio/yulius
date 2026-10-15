@@ -1525,14 +1525,14 @@ span.composer-attachment-open { cursor: default; }
 .prompt-file.image { flex-direction: column; align-items: stretch; width: 96px; }
 .prompt-file-name { overflow: hidden; font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
 .prompt-file.image .prompt-file-name { font-size: var(--fs-xs); }
-.prompt-thumb { width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
+.prompt-thumb { position: relative; width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
 .prompt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .prompt-file.gone { opacity: 0.8; }
 /* A file inside the text (SPEC-124) sits in the line, where it was put. */
 .prompt-file.inline { display: inline-flex; max-width: 100%; margin: 2px; vertical-align: middle; }
-.prompt-file.image.inline { width: auto; }
-.prompt-file.inline .prompt-thumb { width: auto; min-width: 48px; max-width: min(240px, 100%); height: auto; min-height: 36px; }
-.prompt-file.inline .prompt-thumb img { width: auto; max-width: 100%; height: auto; max-height: 160px; object-fit: contain; }
+/* An image inside the text is the composer's one-line placeholder (SPEC-180), opened by a click. */
+.prompt-text .prompt-atom { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
+.prompt-text .prompt-atom:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
 .attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 /* The box shows focus; the prompt itself draws no ring (the global :focus-visible would). */
 .composer-prompt:focus-visible { box-shadow: none; }
