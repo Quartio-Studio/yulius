@@ -4,7 +4,8 @@
 // words of the open files for other popular languages). Each user's view (open files, unsaved
 // text) lives only in this browser tab: nothing is stored on the server or shared. Saving
 // writes the file into the sandbox; a file changed on disk since it was opened (agents edit
-// the same files) is not overwritten silently. Word wrap (EDT-005) is one switch for every open
+// the same files) is not overwritten silently. The file in front follows the disk: looked at every
+// 2 s while shown, it takes what others wrote when the person has not edited it (SPEC-181). Word wrap (EDT-005) is one switch for every open
 // file — the toolbar button or ⌥Z / Alt+Z as in VS Code — off by default and kept per user in
 // this browser.
 //
@@ -33,6 +34,8 @@ const WRAP_KEY = 'yulius.editorWordWrap';
 /** The explorer's narrowest width, and the room it always leaves the open file (UI-044). */
 const EXPLORER_MIN = 140;
 const EDITOR_MIN = 240;
+/** How often the file in front is looked at on disk while the Editor is shown (SPEC-181 EDT-015). */
+export const LOOK_MS = 2000;
 
 /** ⌥Z / Alt+Z, the VS Code word-wrap toggle (`code` for macOS, where ⌥Z types "Ω"). */
 function isWrapShortcut(event) {
@@ -264,7 +267,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   folder.addEventListener('keydown', wrapKeys);
   const status = h('div', { class: 'ed-status' });
   const treeHead = h('div', { class: 'ed-tree-head' },
-    h('span', null, 'Explorer'),
+    h('span', { title: 'Explorer' }, 'Explorer'),
     iconButton('plus', 'New file or folder', (event) => newEntryMenu(event.currentTarget, '')),
     iconButton('refresh', 'Refresh', () => refreshTree()));
   const side = h('div', { class: 'ed-side' }, treeHead, tree);
@@ -517,7 +520,10 @@ export function createEditorView(ctx, sandbox, getTask) {
   // People who went quiet fade out; the file in front says it is still there now and then.
   const sweep = setInterval(() => { for (const tab of tabs) tab.presence.tick(); }, PRESENCE_SWEEP_MS);
   // A hidden page has left its file for the others (with a request that outlives a closing page).
-  const onVisibility = () => syncPresence({ going: document.visibilityState === 'hidden' });
+  const onVisibility = () => {
+    syncPresence({ going: document.visibilityState === 'hidden' });
+    if (document.visibilityState !== 'hidden' && shown && !suspended && active && active.model && !active.saving) refreshFromDisk(active);
+  };
   const onPageHide = () => { for (const tab of tabs) tab.presence.setShown(false, { going: true }); };
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('pagehide', onPageHide);
@@ -674,31 +680,86 @@ export function createEditorView(ctx, sandbox, getTask) {
     refreshFromDisk(tab);
   }
 
-  /** Picks up changes made on disk (agents) while the tab was in the background. */
-  async function refreshFromDisk(tab) {
-    if (tab.dirty) return;
+  /**
+   * Picks up what others wrote into `tab`'s file (teammates, agents, shells; SPEC-181 EDT-015).
+   * Unedited text takes the disk's version as one undoable edit of the part that changed, so the
+   * cursor and the teammates' marks stay with their text; edited text is kept and the status bar
+   * says the disk moved on. The newest look wins: a save or a later look makes an earlier one moot.
+   * `reload`: the person chose "Reload from disk", so the whole file is asked for.
+   */
+  async function refreshFromDisk(tab, { reload = false } = {}) {
+    // A look answered with the text from before a save would put that text back as saved.
+    if (tab.saving) return;
+    const look = (tab.look || 0) + 1;
+    tab.look = look;
+    tab.looking = true;
     try {
-      const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}`);
-      if (file.content != null && file.sha256 !== tab.sha && !tab.dirty && !tab.model) {
+      // Unchanged since what this tab knows (its saved version, or the disk's newer one) is a 204.
+      const known = reload ? null : (tab.dirty && tab.diskSha) || tab.sha;
+      const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}${known ? `&known=${known}` : ''}`);
+      if (tab.look !== look || !tabs.includes(tab) || tab.saving) return;
+      if (!file || file.content == null) return; // unchanged, or no longer text: the text stays
+      if (file.sha256 === tab.sha) { setDiskSha(tab, null); return; }
+      if (tab.dirty) { setDiskSha(tab, file.sha256); return; }
+      setDiskSha(tab, null);
+      if (!tab.model) {
         // Suspended meanwhile (another sandbox in front): the kept text takes the disk's version.
         tab.text = file.content;
         savedAs(tab, file.content, null);
         tab.sha = file.sha256;
         return;
       }
-      if (file.content != null && file.sha256 !== tab.sha && !tab.dirty) {
-        const view = active === tab ? editor.saveViewState() : null;
-        tab.ignoreChange = true;
-        tab.model.setValue(file.content);
-        tab.ignoreChange = false;
-        tab.sha = file.sha256;
-        savedAs(tab, tab.model.getValue());
-        presenceMoved(tab);
-        if (view) editor.restoreViewState(view);
-        toast(`${tab.path} changed on disk and was reloaded.`, { kind: 'info' });
-      }
-    } catch { /* deleted or unreachable: the next save reports it */ }
+      replaceText(tab, file.content);
+      tab.sha = file.sha256;
+      savedAs(tab, tab.model.getValue());
+      presenceMoved(tab);
+    } catch { /* deleted or unreachable: the text stays, the next save reports it */ } finally {
+      if (tab.look === look) tab.looking = false;
+    }
   }
+
+  /** The disk's version when it differs from what the person edits (`null`: the same). */
+  function setDiskSha(tab, sha) {
+    if (tab.diskSha === sha) return;
+    tab.diskSha = sha;
+    if (tab === active) renderStatus();
+  }
+
+  /**
+   * `tab`'s model takes `text` as one edit of the part that differs, its own undo step. Monaco gives
+   * inserted text the model's line ending and keeps a BOM out of the text: a file whose line ending
+   * changed changes the model's too, and a BOM is not text to compare.
+   */
+  function replaceText(tab, text) {
+    const model = tab.model;
+    const next = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+    // The line ending most of the lines have, as when Monaco opens a file; none: the model's.
+    const lines = (next.match(/\n/g) || []).length;
+    const crlf = (next.match(/\r\n/g) || []).length;
+    const eol = lines ? (crlf > lines - crlf ? '\r\n' : '\n') : model.getEOL();
+    tab.ignoreChange = true;
+    try {
+      model.pushStackElement();
+      if (eol !== model.getEOL()) model.pushEOL(eol === '\r\n' ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      const edit = textEdit(model.getValue(), next);
+      if (edit.start !== edit.endA || edit.start !== edit.endB) {
+        const from = model.getPositionAt(edit.start);
+        const to = model.getPositionAt(edit.endA);
+        model.pushEditOperations(null, [{ range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: next.slice(edit.start, edit.endB) }], () => null);
+      }
+      model.pushStackElement();
+    } finally {
+      tab.ignoreChange = false;
+    }
+  }
+
+  // The file in front follows the disk while the person can see it: the timer waits for its last
+  // look, the newest look wins, and none starts while the file saves. Other tabs look when they
+  // come to the front (activate).
+  const looker = setInterval(() => {
+    if (!shown || suspended || document.visibilityState === 'hidden') return;
+    if (active && active.model && !active.looking && !active.saving) refreshFromDisk(active);
+  }, LOOK_MS);
 
   /**
    * `fromKeyboard`: closed with Delete/Backspace on the strip — focus stays on the tabs instead
@@ -738,6 +799,8 @@ export function createEditorView(ctx, sandbox, getTask) {
   async function save(tab, overwrite = false) {
     if (tab.saving) return;
     tab.saving = true;
+    tab.look = (tab.look || 0) + 1; // a look in flight may predate this save
+    tab.looking = false;
     renderStatus();
     try {
       let baseSha = tab.sha;
@@ -750,6 +813,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       const version = model ? model.getAlternativeVersionId() : null;
       const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content, base_sha256: baseSha });
       tab.sha = written.sha256;
+      tab.diskSha = null;
       // The model may have gone meanwhile (another sandbox in front): then compared in full.
       savedAs(tab, content, model && tab.model === model ? version : null);
       tab.dirty = false;
@@ -767,8 +831,9 @@ export function createEditorView(ctx, sandbox, getTask) {
           ],
         }).result;
         tab.saving = false;
-        if (choice === 'overwrite') return save(tab, true);
-        if (choice === 'reload') { tab.dirty = false; await refreshFromDisk(tab); }
+        // Awaited: until the overwrite is written, the file is saving and no look starts.
+        if (choice === 'overwrite') return await save(tab, true);
+        if (choice === 'reload') { tab.dirty = false; await refreshFromDisk(tab, { reload: true }); }
       } else {
         errorToast(error, `Couldn’t save ${tab.path}`);
       }
@@ -845,6 +910,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     setChildren(status,
       h('span', null, active.path),
       h('span', { class: 'muted' }, active.saving ? 'Saving…' : active.dirty ? 'Modified' : 'Saved'),
+      active.dirty && active.diskSha ? h('span', { class: 'ed-disk-changed', title: 'Someone (or an agent) changed this file on disk. Saving asks whether to overwrite it or reload.' }, 'Changed on disk') : null,
       h('span', { class: 'muted' }, position ? `Ln ${position.lineNumber}, Col ${position.column}` : ''),
       h('span', { class: 'muted' }, active.model.getLanguageId()),
       LANGUAGE_SERVICES.has(active.model.getLanguageId()) ? h('span', { class: 'muted', title: 'Type-aware suggestions run in the browser' }, 'IntelliSense') : null);
@@ -859,6 +925,8 @@ export function createEditorView(ctx, sandbox, getTask) {
     show(opts = {}) {
       shown = true;
       syncPresence();
+      // Back in front: what was written meanwhile shows at once, not at the next look.
+      if (active && active.model && !suspended && !active.saving) refreshFromDisk(active);
       if (!started) { started = true; if (!(opts && opts.file && opts.file.root !== root)) loadDir(''); }
       if (editor) editor.layout();
       explorerSplitter.sync();
@@ -904,6 +972,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       tabDrag.cancel();
       for (const tab of tabs) tab.presence.destroy({ going: false });
       clearInterval(sweep);
+      clearInterval(looker);
       offs.forEach((off) => off());
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);

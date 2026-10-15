@@ -159,7 +159,9 @@ watching, steering and unblocking.
 - **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
   selection is drawn rounded and glides, people who have the same file open see each other's
   caret, name and selection in their Notes colour (awareness only: unsaved text stays each
-  person's own), and its tabs go in any order.
+  person's own), and its tabs go in any order. The file in front follows the disk: what
+  teammates, agents and shells write shows within about 2 s while the person has not edited it
+  (SPEC-181).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are

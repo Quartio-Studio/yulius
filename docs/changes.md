@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Editor's file in front follows the disk, and the Explorer's buttons stay in the Explorer
+  (SPEC-181, ADR-0146, task #168). While the Editor is shown, the file in front is looked at every
+  2 s (and at once when the Editor or the page comes back) with `known=<sha256>`; the files API
+  answers 204 while the file is unchanged. What teammates, agents or shells wrote replaces unedited
+  text as one undoable edit of the changed part, so the cursor stays with its text and no toast
+  repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
+  shortens at its narrowest instead of pushing the Refresh button over the first file tab.
+  Co-editing of unsaved text is #566.
 - The Superagent reads the agent vault (SPEC-178, ADR-0144, task #165): `secrets_list` names its
   project's agent secrets (never values) with guidance for a session outside the proxy, and the
   new `secret_verify {secret, sha256}`, the Superagent's only, tells whether a value the person holds
