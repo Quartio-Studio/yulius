@@ -36,7 +36,8 @@ opened the Pipeline keeps working and lands on that tab; the sidebar's Dashboard
 - `router.js` `SANDBOX_PAGES` holds `pipeline`; `app.js` maps it to `mountPipelinePage`. No Rust
   code or agent text links to `/pipeline`.
 - e2e: `pipeline.e2e.ts`, `navigation.e2e.ts`, `responsive.e2e.ts`, `quality.e2e.ts` open
-  `/s/studio/pipeline`; `dashboard.e2e.ts` covers the Dashboard.
+  `/s/studio/pipeline`; the Dashboard is covered by `pipeline.e2e.ts` (its Pipeline card),
+  `places.e2e.ts` (its range in the address), `times.e2e.ts` and `subscriptions.e2e.ts`.
 - ADR-0112 places the Pipeline page "beside CI and CD"; ADR-0125 kept it its own entry because
   task #145 named CI and CD only.
 
@@ -45,7 +46,7 @@ opened the Pipeline keeps working and lands on that tab; the sidebar's Dashboard
 | ID | Requirement | Verification |
 | --- | --- | --- |
 | DPL-001 | The sandbox navigation lists Tasks, Git, CI/CD, Secrets and Dashboard (then More); no "Pipeline (stages)" entry. | e2e `navigation.e2e.ts` |
-| DPL-002 | The Dashboard page keeps its heading **Dashboard**; under it a "Section" radiogroup with **Overview** and **Pipeline (stages)**, styled and keyboard-driven like the CI/CD page's tabs. Each tab shows exactly what its page showed before, with its own header actions and sub-heading; leaving a tab stops its refreshes. | e2e `dashboard.e2e.ts`, `pipeline.e2e.ts` (with axe) |
+| DPL-002 | The Dashboard page keeps its heading **Dashboard**; under it a "Section" radiogroup with **Overview** and **Pipeline (stages)**, styled and keyboard-driven like the CI/CD page's tabs. Each tab shows exactly what its page showed before, with its own header actions and sub-heading; leaving a tab stops its refreshes. | e2e `pipeline.e2e.ts` (with axe), `places.e2e.ts` |
 | DPL-003 | The Overview tab's address is `/s/<slug>/dashboard` (with `?days=`), the Pipeline tab's `/s/<slug>/dashboard?section=pipeline`, followed by its own state (`days`, `subject`, `environment`, `job`, `trend`, `open`); a tab change writes it quietly and a reload keeps the tab and its state. | e2e `pipeline.e2e.ts` |
 | DPL-004 | Every earlier address keeps working: `/s/<slug>/pipeline` with any query opens the Pipeline tab with that state and its address becomes the canonical one; "In Pipeline" (CI and CD runs), a task's stages link and the Overview's Pipeline card open the Pipeline tab; the sidebar's Dashboard is current on both tabs. | e2e `pipeline.e2e.ts`, `navigation.e2e.ts` |
 | DPL-005 | ADR-0132 records the move (amending ADR-0112's and ADR-0125's placement); SPEC-001 UI-004, the product summary, the architecture, the web README and the e2e README name the Dashboard's Pipeline tab. | review |
@@ -76,8 +77,12 @@ opened the Pipeline keeps working and lands on that tab; the sidebar's Dashboard
 - e2e (mock), written first and failing before the change: `navigation.e2e.ts` expects no Pipeline
   entry; `pipeline.e2e.ts` opens the Pipeline through the Dashboard's tab (click, arrow key, reload,
   address, header actions, axe), opens the old `/pipeline` addresses as aliases and expects the
-  canonical addresses everywhere it wrote `/pipeline`; `dashboard.e2e.ts`'s Pipeline card opens the
-  tab. `responsive.e2e.ts` and `quality.e2e.ts` open the canonical address.
+  canonical addresses everywhere it wrote `/pipeline`; the Overview's Pipeline card opens the tab.
+  `responsive.e2e.ts` and `quality.e2e.ts` open the canonical address.
+- Review round 1: `consistency.e2e.ts` opens `/s/studio/constructor` (a name every object has) and
+  expects Page not found; `pipeline.e2e.ts` counts the pages' live refreshes across tab changes and
+  leaving the page (it fails when a section's teardown keeps its interval), opens the card with a
+  7-day range and "In Pipeline" from a deploy's dialog.
 - `scripts/dev check`, `scripts/dev lint`, `scripts/dev test`, `scripts/dev security`, the e2e suite.
 
 ## Decisions

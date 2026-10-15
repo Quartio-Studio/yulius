@@ -141,6 +141,9 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
   await app.open(mock('/s/studio/cd?run=cd_s2'));
   const deploy = screen.getByRole('region', 'Stages of this deploy');
   for (const text of ['Checks', 'Deployment', 'Deploy', 'build', 'upload']) await expect(deploy).toContainText(text);
+  await screen.getByRole('dialog', 'Deploy').getByRole('link', 'In Pipeline').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&open=cd_run%3Acd_s2$/);
+  await expect(screen.getByRole('region', 'Deployment stages')).toBeVisible();
 
   // A task's states, steps, delivery and its pull request's CI runs.
   await app.open(mock('/s/studio/tasks/12'));
@@ -165,4 +168,52 @@ test('the Dashboard shows the pipeline overview and opens the Pipeline tab', asy
   await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline$/);
+
+  // The card keeps the Overview's range (SPEC-161 review round 1).
+  await app.open(mock('/s/studio/dashboard?days=7'));
+  await screen.getByRole('link', 'Open Pipeline').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&days=7$/);
+  await expect(screen.getByRole('radiogroup', 'Date range').getByRole('radio', '7 days')).toBeChecked();
+});
+
+// SPEC-161 DPL-002 (review round 1): the tab left stops its refreshes (the Overview's every 30 s,
+// the Pipeline's every 5 minutes), and so does the page left. The pages' live refreshes (their
+// callback reloads quietly; the sidebar's clock is another 30 s one) are counted from here on.
+test('a tab left behind and the page left stop their refreshes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Record<string, unknown> & typeof window;
+    const live = new Map<unknown, unknown>();
+    const set = window.setInterval.bind(window);
+    const clear = window.clearInterval.bind(window);
+    w.setInterval = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+      const id = set(fn, ms, ...rest);
+      if (String(fn).includes('reload({ quiet: true })')) live.set(id, ms);
+      return id;
+    }) as typeof window.setInterval;
+    w.clearInterval = ((id?: number) => { live.delete(id); clear(id); }) as typeof window.clearInterval;
+    w.__liveIntervals = (ms: number) => [...live.values()].filter((v) => v === ms).length;
+  });
+  const live = (ms: number) => browser.evaluate((m) => (window as unknown as { __liveIntervals: (n: number) => number }).__liveIntervals(m), ms);
+  const nav = screen.getByRole('navigation', 'Sandbox');
+
+  await nav.getByRole('link', 'Dashboard').click();
+  await expect(screen.getByRole('radio', 'Overview')).toHaveAttribute('aria-checked', 'true');
+  await expect.poll(() => live(30_000)).toBe(1);
+  await expect.poll(() => live(300_000)).toBe(0);
+
+  await screen.getByRole('radio', 'Pipeline (stages)').click();
+  await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
+  await expect.poll(() => live(30_000)).toBe(0);
+  await expect.poll(() => live(300_000)).toBe(1);
+
+  await screen.getByRole('radio', 'Overview').click();
+  await expect.poll(() => live(300_000)).toBe(0);
+  await expect.poll(() => live(30_000)).toBe(1);
+
+  await screen.getByRole('radio', 'Pipeline (stages)').click();
+  await nav.getByRole('link', 'Tasks').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  await expect.poll(() => live(30_000)).toBe(0);
+  await expect.poll(() => live(300_000)).toBe(0);
 });

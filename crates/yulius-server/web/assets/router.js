@@ -207,7 +207,7 @@ export function matchRoute(path, query = new URLSearchParams()) {
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
     // Earlier addresses of a page that is now a tab of another: the CD page's is the CI/CD page's
     // CD tab (SPEC-151 CCD-004), the Pipeline page's the Dashboard's Pipeline tab (SPEC-161 DPL-004).
-    if (parts.length === 3 && SECTION_ALIASES[third]) {
+    if (parts.length === 3 && Object.hasOwn(SECTION_ALIASES, third)) {
       const section = new URLSearchParams([['section', third], ...[...query].filter(([key]) => key !== 'section')]);
       return { ...base, query: section, name: 'page', slug: second, page: SECTION_ALIASES[third] };
     }
