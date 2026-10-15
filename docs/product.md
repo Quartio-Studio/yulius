@@ -65,7 +65,9 @@ watching, steering and unblocking.
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,
-  so the agent gets the correction when the task starts.
+  so the agent gets the correction when the task starts. The request and the message box show
+  files as placeholders (`Image N`) that open on a click (a double-click in the box); images pasted or dropped into a message
+  land where they are put and move like a character, as in the composer.
   A **supertask** (the composer's start menu, for broad work such as security hardening) waits
   for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
