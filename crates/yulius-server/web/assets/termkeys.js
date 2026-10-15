@@ -13,6 +13,9 @@
 //   Ctrl+V (macOS)               —           paste: read the clipboard (the browser has no paste key)
 //   Ctrl+Shift+V, Shift+Insert   —           paste: the browser's paste event
 //   anything else                —           the terminal's own handling
+//
+// A program that has the mouse (Claude Code's full-screen view) selects a plain drag itself and
+// copies it with OSC 52 (task #149, SPEC-158); `osc52Text` reads such a write.
 
 /** The letter a key event stands for: `key`, or the physical key on non-Latin layouts. */
 function letterOf(event) {
@@ -50,4 +53,18 @@ export function clipboardKeyAction(event, { mac = false, selection = false } = {
   if (shift) return letter === 'c' ? { copy: true, clear: false } : { paste: mac ? 'read' : 'native' };
   if (letter === 'c') return selection ? { copy: true, clear: true } : null;
   return { paste: mac ? 'read' : 'native' };
+}
+
+/**
+ * The text of an OSC 52 clipboard write (`<selection letters>;<base64 of UTF-8>`), or null for a
+ * query (`?`), an empty or malformed payload: a program never reads the clipboard.
+ */
+export function osc52Text(data) {
+  const at = typeof data === 'string' ? data.indexOf(';') : -1;
+  if (at < 0) return null;
+  const payload = data.slice(at + 1);
+  if (!payload || payload === '?') return null;
+  let binary;
+  try { binary = atob(payload); } catch { return null; }
+  return new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0))) || null;
 }
