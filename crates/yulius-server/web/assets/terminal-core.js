@@ -312,9 +312,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   };
   if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', onFontsLoaded);
 
+  // The text of the program's last copy (OSC 52) the browser refused, for the copy keys.
+  let programCopy = '';
   // Copy on select, like many terminals: the selection is in the clipboard right away.
   let copyTimer = 0;
   term.onSelectionChange(() => {
+    // A selection of xterm's own is what the copy keys take from now on, not an older program copy.
+    if (term.hasSelection()) programCopy = '';
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
       const text = term.getSelection();
@@ -340,15 +344,20 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     if (!text) return;
     const fromProgram = !term.hasSelection();
     // xterm fills the copy event only for its own selection; the program's text is filled here.
+    let filled = false;
     const fill = (event) => {
       if (!event.clipboardData) return;
       event.clipboardData.setData('text/plain', text);
       event.preventDefault();
+      filled = true;
     };
     if (fromProgram) document.addEventListener('copy', fill, true);
     let copied = false;
     try { copied = document.execCommand('copy'); } catch { copied = false; }
-    if (fromProgram) document.removeEventListener('copy', fill, true);
+    if (fromProgram) {
+      document.removeEventListener('copy', fill, true);
+      copied = copied && filled;
+    }
     if (copied) showNotice('Copied');
     else writeClipboard(text);
     if (fromProgram) programCopy = '';
@@ -361,10 +370,14 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // agent's code, so only a viewer who can write and pressed a key or the mouse here moments ago
   // takes it; a query is never answered. A write the browser refuses (Safari, no user gesture;
   // plain HTTP, no clipboard API) waits for the copy key, whose copy command needs no permission.
-  let programCopy = '';
   let handsOnAt = 0;
   const handsOn = () => { handsOnAt = Date.now(); };
-  for (const type of ['keydown', 'mousedown', 'mouseup']) el.addEventListener(type, handsOn, true);
+  el.addEventListener('keydown', handsOn, true);
+  // A drag may end anywhere (the program still gets that release): the release counts too.
+  el.addEventListener('mousedown', () => {
+    handsOn();
+    window.addEventListener('mouseup', handsOn, { capture: true, once: true });
+  }, true);
   term.parser.registerOscHandler(52, (data) => {
     const text = osc52Text(data);
     if (!text || !state.can_write || Date.now() - handsOnAt > PROGRAM_COPY_MS) return true;
@@ -424,7 +437,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (!pageKey(event)) { event.preventDefault(); return; }
     } else if (event.shiftKey) return;
     event.preventDefault();
-    const selected = term.getSelection();
+    const selected = term.getSelection() || programCopy;
     openMenu({ x: event.clientX, y: event.clientY }, [
       { label: 'Copy', hint: IS_MAC ? '⌘C' : 'Ctrl+C', disabled: !selected, title: selected ? null : 'Select text first', onSelect: () => { writeClipboard(selected); term.focus(); } },
       { label: 'Paste', hint: IS_MAC ? '⌘V' : 'Ctrl+V', disabled: !state.can_write, title: state.can_write ? null : readOnlyText(), onSelect: () => { term.focus(); pasteFromClipboard(); } },

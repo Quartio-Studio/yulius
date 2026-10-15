@@ -41,8 +41,8 @@ person's clipboard, as it is in a native terminal.
 
 | ID | Requirement |
 | --- | --- |
-| OSC-001 | An OSC 52 clipboard write (`Pc;<base64>`, any selection letters, UTF-8 text) from the program is written to the browser clipboard with a "Copied" notice, when this viewer can write and sent the terminal input (a key or a mouse report) in the last 5 seconds. |
-| OSC-002 | When the browser refuses that write (or has no clipboard API), the notice says to press ⌘C (Ctrl+Shift+C elsewhere), and that key copies the program's text while xterm has no selection of its own. |
+| OSC-001 | An OSC 52 clipboard write (`Pc;<base64>`, any selection letters, UTF-8 text) from the program is written to the browser clipboard with a "Copied" notice, when this viewer can write and pressed a key or a mouse button in this terminal (or released one after such a press, anywhere) in the last 5 seconds. Answers xterm sends by itself do not count. |
+| OSC-002 | When the browser refuses that write (or has no clipboard API), the notice says to press ⌘C (Ctrl+Shift+C elsewhere), and that key (or the right-click Copy) copies the program's text while xterm has no selection of its own; a newer xterm selection drops it. |
 | OSC-003 | An OSC 52 query (`?`), an empty or malformed payload, a write to a read-only viewer and a write with no recent input from this viewer change nothing and are never answered: a program cannot read the clipboard, nor write it for a viewer who is only watching. |
 | OSC-004 | xterm's own selection (Shift-drag, Option-drag on macOS) is copied as before, and keeps precedence over the program's copy for the copy keys. |
 
@@ -61,7 +61,9 @@ person's clipboard, as it is in a native terminal.
 - With the clipboard API refusing, the same drag shows the ⌘C / Ctrl+Shift+C hint and that key
   copies the text (the copy event carries it).
 - An OSC 52 write the program prints without input from this viewer, and a `?` query, write
-  nothing.
+  nothing; a read-only viewer who just clicked into the terminal gets nothing either.
+- After a refused copy, a Shift-drag (Option-drag) selection and the copy key copy that selection;
+  once it is cleared, the copy key copies nothing (the program's copy went with it).
 - The parser turns `c;<base64 of UTF-8>` into the text and `c;?`, `c;`, `c;%%%` and a payload
   without `;` into nothing.
 
@@ -69,7 +71,9 @@ person's clipboard, as it is in a native terminal.
 
 - `e2e/tests/terminal.e2e.ts` (mock, Chromium): "a selection the program copies (OSC 52) reaches
   the clipboard" drives the drag, the refused write and ⌘C / Ctrl+Shift+C, and the unsolicited
-  write; it fails before the fix (nothing written). The clipboard key table test gains the OSC 52
+  write; it fails before the fix (nothing written). "a read-only viewer's clipboard is never
+  written by the program" fails when the `can_write` gate is removed. Unasked writes are followed
+  by a marker line the test waits for, not a sleep. The clipboard key table test gains the OSC 52
   parser's cases.
 - `mock.js`: the mock Claude Code copies a primary drag's text with OSC 52 on release, as the real
   one does.

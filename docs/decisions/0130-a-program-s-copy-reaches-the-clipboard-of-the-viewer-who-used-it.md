@@ -22,7 +22,8 @@ several viewers, and the program is an agent running code from a sandbox.
 - Queries (`?`) are never answered: no program reads a person's clipboard.
 - A write the browser refuses (Safari without a user gesture, a plain-HTTP origin without the
   clipboard API) is kept, the notice says "Press ⌘C to copy" (Ctrl+Shift+C elsewhere), and that key
-  copies it through the browser's copy command while xterm has no selection of its own.
+  copies it through the browser's copy command while xterm has no selection of its own; a newer
+  xterm selection drops it.
 
 ## Alternatives
 
@@ -37,5 +38,13 @@ several viewers, and the program is an agent running code from a sandbox.
 
 - Copying in Claude Code's full-screen view works as in a native terminal, in task terminals,
   sandbox shells and the Superagent panel; so do other programs that copy with OSC 52.
-- A copy the program makes more than 5 seconds after the viewer's last key or click is dropped.
+- A copy the program makes more than 5 seconds after the viewer's last key or mouse press or
+  release is dropped (a release outside the terminal counts: a drag may end anywhere).
+- Two writers who both used the terminal in those 5 seconds both get the copy. Telling whose drag
+  it was would take the program's own state; the copy is text both could already see.
+- The remaining risk is the native terminals' one: a program the person just started (`cat` of an
+  untrusted file, `git log` in a hostile repository) can replace their clipboard in that window,
+  so a later paste carries its text. Watchers, read-only viewers and idle writers are not exposed.
+- A refused copy waits for the copy key until it is copied, a later write succeeds or xterm makes a
+  selection of its own; the right-click Copy offers it too.
 - Safari users may need one extra ⌘C after a drag; Chromium writes at once.

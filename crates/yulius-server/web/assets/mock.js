@@ -3788,8 +3788,8 @@ class TermSession {
   release(col, row) {
     const press = this.pressed;
     this.pressed = null;
-    if (!press || press[1] !== row || press[0] === col) return;
     const bottom = this.regionBottom();
+    if (!press || press[1] !== row || press[0] === col || row < 1 || row > bottom) return;
     const line = this.lines[this.lines.length - this.scroll - bottom + row - 1];
     if (!line) return;
     const text = line.replace(/\x1b\[[0-9;]*m/g, '').slice(Math.min(press[0], col) - 1, Math.max(press[0], col)).trim();
