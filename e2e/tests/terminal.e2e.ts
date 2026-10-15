@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock } from './support.ts';
+import { editorShown, failOnPageErrors, mock, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -289,6 +289,9 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
 test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/t/1'));
   await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  // That banner is the sandbox's; the terminal says read-only once its first state arrived, which
+  // shows it. A paste before then has no terminal to land in (#354).
+  await terminalShown(browser);
   await browser.evaluate(() => {
     const data = new DataTransfer();
     data.setData('text/plain', 'should not arrive');

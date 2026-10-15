@@ -70,6 +70,15 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
   after it is in the box).
 - **#349 "a save whose answer was lost…" and #356 archive "quick Archive":** first-load waits
   (`getByRole("status", "Save state")`, `getByRole("heading")`) that timed out, as in #354.
+- **Found under load after the first fixes** (the four files 10 times each, 4 workers, load 23–93):
+  - `notes.e2e.ts` "the tabs show a grip…" failed 10 of 10 (it passed alone). The pointer rested on
+    the "Me" tab, but `document.elementFromPoint` there was a toast: the mock's sandbox browser asks
+    for an AWS sign-in 5 s after the start, its toast moves to the top edge while the notepad has
+    the keyboard (WCAG 2.4.11, `dom.js` `avoidFocus`) and pauses while pointed at. A fast run
+    hovered before it came. The drag and Escape tests point at the same tabs.
+  - `terminal.e2e.ts` "a read-only viewer cannot paste" failed 1 of 10 waiting for the page's
+    "Read-only" banner at load about 90; the test then pasted into xterm without waiting for the
+    terminal, which comes after that banner.
 - **#356 archive "the keyboard stays on its control when the sidebar list is rebuilt"** (the
   Stopped toggle read `aria-expanded="false"` after its second Enter): not reproduced in 25 runs on
   the unchanged code at load 53–73 (5 in the four-file run, then 20 of this test alone). The
@@ -89,6 +98,8 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 | E2L-003 | Tests touch `window.monaco.editor` only after the Editor shows a Monaco editor (`editorShown` in `support.ts`, the DOM's `.ed-host .monaco-editor`). The Editor's first opening in a test waits for it with the cold load's budget (`MONACO_LOAD_MS`, 60 s, as before in `terminal.e2e.ts` and `filedrop.e2e.ts`); every other wait keeps its default budget. | `editor.e2e.ts`, `terminal.e2e.ts`, `filedrop.e2e.ts`, `places.e2e.ts` |
 | E2L-004 | The notes test that keeps text over a reload while loads fail reads the text only after a load that can succeed: once loads may succeed again it switches tabs, which loads the notepad at once, instead of waiting out a backoff that a busy machine stretches past 5 s. | `notes.e2e.ts` "text kept over a reload survives…" |
 | E2L-005 | The Stopped toggle keeps its state and the keyboard when the sidebar list is rebuilt while it is folded and focused, and Enter still unfolds it. | `archive.e2e.ts` "the Stopped toggle keeps its state and the keyboard when the list is rebuilt between presses" (fails with a rebuild that resets the toggle) |
+| E2L-006 | The notes tests that point at the tab strip (drag, grip, Escape) open the mock with `browserask=0`, which leaves out the sandbox browser's sign-in request 5 s after the start. Its toast moves to the top while the notepad has the keyboard (WCAG 2.4.11), covers the tabs and stays while pointed at, so a slow run hovered the toast, not the tab. | `notes.e2e.ts` "Team comes first…", "the tabs show a grip…", "Escape puts a dragged tab back…" |
+| E2L-007 | "a read-only viewer cannot paste" pastes only once the terminal shows (`terminalShown`): the page's read-only banner is the sandbox's and comes before the terminal and its first state. | `terminal.e2e.ts` "a read-only viewer cannot paste" |
 
 ## Plan
 

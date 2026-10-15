@@ -523,7 +523,8 @@ test('a conflict on Me is always with the person’s own other tab, even under a
 // SPEC-112: the tabs in any order, Team first by default.
 
 test('Team comes first and opens first; the tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  // The pointer goes to the tabs: no browser sign-in toast may come over them (#349).
+  await app.open(mock('/s/studio', '&browserask=0'));
   await openNotes(screen, null);
   expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
   await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
@@ -566,7 +567,7 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
   await browser.reload();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
-  await app.open(mock('/s/product'));
+  await app.open(mock('/s/product', '&browserask=0')); // the same page: only the address's path changes
   expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
 
   // A stored order that is not the three tabs is ignored.
@@ -577,7 +578,8 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
 });
 
 test('the tabs show a grip and say they can be clicked or dragged', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  // The pointer goes to the tabs: no browser sign-in toast may come over them (#349).
+  await app.open(mock('/s/studio', '&browserask=0'));
   await openNotes(screen, null);
   // SPEC-136 NOT-022/023: a decorative grip before each name, a title naming click and drag (the keys
   // are announced once, through aria-keyshortcuts).
@@ -862,7 +864,8 @@ test('one person in two tabs stays shown until both have left', async ({ app, br
 });
 
 test('Escape puts a dragged tab back, and a forced-colours screen gets the native selection', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  // The pointer goes to the tabs: no browser sign-in toast may come over them (#349).
+  await app.open(mock('/s/studio', '&browserask=0'));
   await openNotes(screen, null);
   const me = await screen.getByRole('tab', 'Me').boundingBox();
   const team = await screen.getByRole('tab', 'Team').boundingBox();
