@@ -395,6 +395,27 @@ pub(crate) fn opening_sent(run_dir: &str) {
     }
 }
 
+/// File in a run directory while the run's launch `/goal` (SPEC-117) is not confirmed: written
+/// before the spawn, removed when the goal watch ends with an outcome (the goal recorded, or the
+/// task flagged). A restarted server watches the goal of a reattached run that still has it
+/// (SPEC-146 GWR-001, GWR-002).
+const LAUNCH_GOAL_FILE: &str = "launch-goal-pending";
+
+/// Whether the run in `run_dir` has a launch goal not confirmed yet.
+fn launch_goal_pending(run_dir: &Path) -> bool {
+    run_dir.join(LAUNCH_GOAL_FILE).exists()
+}
+
+/// The launch goal of the run in `run_dir` has an outcome: no later server watches it again.
+fn launch_goal_settled(run_dir: &Path) {
+    match std::fs::remove_file(run_dir.join(LAUNCH_GOAL_FILE)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not clear the pending launch goal");
+        }
+        _ => {}
+    }
+}
+
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -1222,6 +1243,11 @@ impl App {
         {
             tracing::warn!(task = %task.id, error = %err, "could not record the pending first message");
         }
+        // Before the spawn too: a restart from now on watches the goal again (SPEC-146 GWR-001).
+        if goal_in_prompt && let Err(err) = write_private_file(&run_dir.join(LAUNCH_GOAL_FILE), b"")
+        {
+            tracing::warn!(task = %task.id, error = %err, "could not record the pending launch goal");
+        }
         let runtime = self.runtime(&task.id);
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
@@ -1302,7 +1328,7 @@ impl App {
         self.publish_task(&task.id).await;
         if goal_in_prompt {
             // Nothing to type: the goal is watched until Claude Code records it.
-            self.spawn_goal_watch(&task.id, &attempt_id);
+            self.spawn_goal_watch(&task.id, &attempt_id, &run_dir);
         } else if request_unwritten {
             self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
                 .await;
@@ -1643,10 +1669,17 @@ impl App {
     /// Claude Code runs the goal once it is answered. Once it reads input, Claude Code has to
     /// record the goal within [`crate::context::AppConfig::launch_goal_ms`] (time while a hold for
     /// capacity or an update keeps the prompt does not count), else the task is flagged as for a
-    /// typed goal never taken (TSK-010).
-    fn spawn_goal_watch(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
+    /// typed goal never taken (TSK-010). A watch that ends with an outcome clears the run's
+    /// [`LAUNCH_GOAL_FILE`]; a restart watches a goal whose marker is left (SPEC-146 GWR-002).
+    fn spawn_goal_watch(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        run_dir: &Path,
+    ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
+        let run_dir = run_dir.to_path_buf();
         tokio::spawn(async move {
             let mut typed_before = 0;
             let started = tokio::time::Instant::now();
@@ -1661,6 +1694,7 @@ impl App {
                         "{TRUST_UNANSWERED}; the task starts by itself once it is answered."
                     ));
                     app.flag_task(&task_id).await;
+                    launch_goal_settled(&run_dir);
                     return;
                 }
             }
@@ -1669,9 +1703,11 @@ impl App {
             let step = Duration::from_millis(200);
             let mut waited = Duration::ZERO;
             while waited < bound {
-                if runtime.goal_submitted.load(Ordering::SeqCst)
-                    || !app.attempt_live(&task_id, &attempt_id).await
-                {
+                if runtime.goal_submitted.load(Ordering::SeqCst) {
+                    launch_goal_settled(&run_dir);
+                    return;
+                }
+                if !app.attempt_live(&task_id, &attempt_id).await {
                     return;
                 }
                 tokio::time::sleep(step).await;
@@ -1688,6 +1724,9 @@ impl App {
                 tracing::error!(task = %task_id, "the task's launch goal was never taken by the agent");
                 app.goal_not_taken(&task_id, "Claude Code did not take the task's goal")
                     .await;
+                launch_goal_settled(&run_dir);
+            } else if runtime.goal_submitted.load(Ordering::SeqCst) {
+                launch_goal_settled(&run_dir);
             }
         });
     }
@@ -3065,6 +3104,12 @@ impl App {
                         "Yulius restarted before it set this task's goal",
                     )
                     .await;
+                }
+                // A launch goal the old server was watching is watched again: the transcript
+                // replay says whether Claude Code recorded it meanwhile (SPEC-146 GWR-002).
+                let run_dir = Path::new(&attempt.run_dir);
+                if launch_goal_pending(run_dir) {
+                    self.spawn_goal_watch(&attempt.task_id, &attempt.id, run_dir);
                 }
                 continue;
             }
