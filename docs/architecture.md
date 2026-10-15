@@ -728,7 +728,10 @@ finished. The editor shows the choice as New task's start chip in its action bar
 sends the choice the chip shows for that run only
 ([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
 [decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
-run uses the stored choice.
+run uses the stored choice. "When I decide" creates the task through `create_task_held` as a
+prepared task without a time, which waits for Start now and keeps the next runs skipped while it
+waits ([SPEC-155](../.ai/specs/SPEC-155-fix-416-automations-can-create-prepared.md),
+[decision 0128](decisions/0128-an-automation-can-prepare-its-tasks.md)).
 
 ```mermaid
 flowchart LR
@@ -738,6 +741,7 @@ flowchart LR
   START -->|"After #N, not ended"| CH["chained after #N"]
   START -->|"After #N, ended"| RD["chained on rule #N done"]
   START -->|"Rule"| RL["chained on the rule"]
+  START -->|"When I decide"| PR["prepared until Start now (SPEC-105)"]
 ```
 
 ## Web UI state
