@@ -110,6 +110,28 @@ pub struct TranscriptPage {
     pub skipped_lines: u32,
 }
 
+/// `GET /api/tasks/{tid}/transcript` response (SPEC-179 WAT-001): the task's latest session as
+/// its watchers read it, the tail or the lines from `from`, and where to continue as it grows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskTranscript {
+    /// The provider session read; `None` before the task has one.
+    pub session_id: Option<String>,
+    /// The session's document (`/api/sessions/{id}`), on a tail read once it has one.
+    pub doc_id: Option<String>,
+    /// Entries in transcript order.
+    pub entries: Vec<TranscriptEntry>,
+    /// The `from` of the next page when this one was full; `None` at the end.
+    pub next: Option<u64>,
+    /// The line after the last complete line read: the `from` that continues a growing session.
+    pub end: u64,
+    /// The transcript's size when it was read (`seen` of the next read).
+    pub bytes: u64,
+    /// Whether a tail left out entries before it.
+    pub earlier: bool,
+    /// Lines skipped as unreadable or over the line bound.
+    pub skipped_lines: u32,
+}
+
 /// One transcript line rendered for reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptEntry {
