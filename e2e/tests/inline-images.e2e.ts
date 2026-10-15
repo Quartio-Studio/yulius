@@ -429,11 +429,16 @@ test('a drag from the prompt that a thumbnail interrupted is refused on drop, no
     end.setEnd(text, text.data.length);
     const box = end.getBoundingClientRect();
     const at = { clientX: box.right, clientY: box.top + box.height / 2 };
-    input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+    // A drag the script made keeps `dropEffect` at none whatever is set: what the page sets is
+    // recorded instead.
+    let effect = '';
+    Object.defineProperty(w.__drag, 'dropEffect', { get: () => effect || 'none', set: (value: string) => { effect = value; } });
+    const over = !input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
     // The page takes the drop (the browser inserts nothing of its own) and makes no change.
-    return !input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+    const drop = !input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+    return { over, effect, drop };
   });
-  expect(dropped, 'the drop is the page’s').toBe(true);
+  expect(dropped, 'the drag is refused over the prompt, its drop the page’s').toEqual({ over: true, effect: 'none', drop: true });
   expect(await promptText(browser)).toBe(before);
 });
 
