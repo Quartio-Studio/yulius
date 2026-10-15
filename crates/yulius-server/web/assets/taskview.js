@@ -187,6 +187,7 @@ export function mountTaskView(ctx, sandbox, task) {
     if (replyButton.isConnected) replyButton.focus();
   };
   const sendReply = () => {
+    if (!replying) return; // a closed (hidden) field never sends
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
     if (!typeAndSubmit(text)) return;

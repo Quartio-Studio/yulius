@@ -10,7 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   "Needs you" and "The agent is waiting for your reply" it opens a reply field in the bar; Enter or
   Send types the answer into the session as the person's prompt, which also ends a `needs_you`
   request, and Escape or Cancel closes it. Before, Reply only focused the terminal, which showed
-  nothing because Claude Code draws its own cursor. Phones keep their quick input.
+  nothing because Claude Code draws its own cursor. While the agent shows a menu in the terminal,
+  Reply still goes to the terminal, so typed text never picks a menu option unseen. Phones keep
+  their quick input.
 - Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
   task #126, fixes #406, #431 and #399):
   - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start

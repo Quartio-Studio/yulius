@@ -1,11 +1,11 @@
 ---
 yulius-task: a0bcb221-6c4a-4e7d-9e4d-bd4100dc436f
-status: in-progress
+status: done
 ---
 
 # SPEC-156: Reply in the attention bar opens a reply field
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #147
 Scope authorization: task #147, "when i click reply, nothing happens. Fix." (screenshot: a
@@ -53,7 +53,7 @@ sends nothing.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -105,3 +105,48 @@ sends nothing.
   - with an Open link, the link wraps to its own row while replying;
   - read-only viewers can open the field, and the terminal refuses the send with its notice, as it
     did for the Reply button and the quick input.
+- Review round 3 (fresh session, `f97be33a`) approved, with no blocker or major. Its cheap
+  minors are done here:
+  - a closed field never sends (`sendReply` checks `replying`);
+  - the bar shows a focus ring when it holds the keyboard;
+  - tests assert the keyboard returns to Reply on Escape, and that Enter after a close sends
+    nothing;
+  - the docs name the menu, close-under-typing and phone cases.
+  Left as they were (not regressions): a focused Reply button drops the keyboard when the bar
+  updates, as every button in the bar always did; a window narrowed to phone width keeps an open
+  field.
+  A final review in a fresh session checks this last delta.
+
+## Evidence
+
+- Reproduction (read-only probe, not committed): after clicking Reply on a Needs you bar in the
+  mock, `document.activeElement` was xterm's `.xterm-helper-textarea`. Focus moved, but nothing
+  changed on screen.
+- Regression first:
+  - `f4e932eb`: `npx e2e run tests/reply.e2e.ts` failed 3/3. There was no "Reply to the agent"
+    textbox, and focus stayed on "Terminal input".
+  - `fb311c08` (round 1 tests): 2 failed, the needs_attention case and the close-under-typing case.
+  - `42aa7a41` (round 2 test): 1 failed, the keyboard was not on the bar.
+  - Each passed with the fix that followed.
+  - A mutation check (focus restore removed at `17050ad9`) made the re-render test fail.
+- `reply.e2e.ts` with `cd.e2e.ts`, `task-done.e2e.ts`, `phone.e2e.ts`, `supertask.e2e.ts` and
+  `prepared.e2e.ts`: passed.
+- Full e2e at `f97be33a` (after merging `origin/dev`), host load about 50-66: 466 passed,
+  1 skipped, 2 failed. Both failures were in `notes.e2e.ts` (tab order and grip polls), a file
+  this change does not touch, and are the known load flakes #503 and #510. `notes.e2e.ts` alone
+  then passed 35/35.
+- Load flakes met on the way:
+  - `ownership.e2e.ts` "hands the task over" failed under load on this branch and on `origin/dev`
+    (scratch worktree), and passed alone.
+  - One timeout in the new reply test (an attention-bar text wait at load ~66) did not reproduce
+    in the next 5 runs (30 tests).
+  - Both are recorded on #506; no retries were added.
+- `scripts/dev check` and `scripts/dev lint` passed after the dev merge.
+- `scripts/dev test`: not run here, because `cargo-nextest` is not installed in this sandbox. No
+  Rust changed. Yulius CI runs it on the pull request.
+- `scripts/dev security`: exit 2, not run. Vidoc answers 401 to the stored key (#470, ADR-0104).
+  It counts as unrun, not passed.
+- Visual check in the Yulius browser (mock, port 20107):
+  - Reply on "The agent is waiting for your reply" opened the field under the words, with Send
+    and Cancel.
+  - Enter typed "Ruleset added" into the session, the agent answered, and the bar closed.

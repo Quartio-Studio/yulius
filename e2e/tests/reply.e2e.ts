@@ -63,6 +63,7 @@ test('Escape closes the reply field and sends nothing', async ({ app, browser, s
   await browser.keyboard.press('Escape');
   await expect(field).toBeHidden();
   await expect(screen.getByRole('button', 'Reply')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.textContent ?? null)).toBe('Reply');
   expect(await typedIntoTask(browser)).toBe('');
 
   // The words wait for the next Reply; Cancel closes it too.
@@ -122,8 +123,10 @@ test('a reply field that closes while typing keeps the keys out of the terminal'
   await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('attention-bar') ?? false)).toBe(true);
   await browser.keyboard.type('lo 2');
   expect(await typedIntoTask(browser)).toBe('');
-  // The words wait, hidden, for the next Reply.
+  // Enter (which would approve a menu) sends nothing either; the words wait, hidden, for the next Reply.
+  await browser.keyboard.press('Enter');
   expect(await browser.evaluate(() => document.querySelector<HTMLInputElement>('.attention-reply input')?.value ?? null)).toBe('Hal');
+  expect(await typedIntoTask(browser)).toBe('');
 });
 
 test('Reply on a phone focuses the quick input; no field opens', async ({ app, browser, screen }) => {

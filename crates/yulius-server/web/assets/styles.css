@@ -1091,6 +1091,8 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-bar.replying .attention-text { flex-basis: calc(100% - 28px); }
 .attention-reply { display: flex; flex: 1 1 100%; gap: 8px; }
 .attention-reply[hidden] { display: none; }
+/* The bar holds the keyboard after a reply field closed under typing: it shows it has it. */
+.attention-bar:focus-visible { box-shadow: var(--focus), var(--shadow); }
 .attention-reply .input { flex: 1; min-width: 0; height: var(--control-sm); }
 /* Queued messages (SPEC-052): at the bottom of a waiting task's empty terminal. */
 .queue-slot { position: absolute; left: 50%; bottom: 16px; z-index: var(--z-float); width: min(640px, calc(100% - 32px)); transform: translateX(-50%); }
