@@ -1247,3 +1247,159 @@ async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     Ok(())
 }
+
+// ------------------------------------------------------------------ Yulius CI (SPEC-163)
+
+/// The CI of [`ci_playground`]: one job that fails when the commit has a file named `broken`.
+const CI_JOBS: &str =
+    "\n[[ci.jobs]]\nname = \"check\"\ncommand = \"test ! -f broken && echo check-ok\"\n";
+
+/// A harness whose CI jobs run for real (the detached process host), with the real Git adapter,
+/// the superadmin signed in and a GitHub App configured, so a GitHub call would be recorded.
+async fn ci_world() -> BoxResult<(Harness, Creds)> {
+    // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
+    let dir = tempfile::Builder::new().prefix("ypg").tempdir_in("/tmp")?;
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let h = harness_with(HarnessOptions {
+        session_host: Some(Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
+        git: Some(Arc::new(GitAdapter::new("git"))),
+        dir: Some(dir),
+        configure: Some(Box::new(|config| {
+            config.ci.job_timeout = std::time::Duration::from_secs(30);
+        })),
+        ..HarnessOptions::default()
+    })?;
+    let owner = support::setup_superadmin_creds(&h).await?;
+    support::configure_github_app(&h).await?;
+    Ok((h, owner))
+}
+
+/// Commits `files` onto the playground's `dev` in its `origin` (another person's merge), and
+/// returns the new `dev` head.
+fn push_to_dev(h: &Harness, body: &Value, files: &[(&str, &str)]) -> BoxResult<String> {
+    let origin = origin_of(h, body);
+    let scratch = h.app.config.data_dir.join(format!(
+        "push-{}",
+        git(&origin, &["rev-parse", "dev"])?.trim()
+    ));
+    git(
+        &h.app.config.data_dir,
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "dev",
+            origin.to_str().ok_or("path")?,
+            scratch.to_str().ok_or("path")?,
+        ],
+    )?;
+    for (path, text) in files {
+        let path = scratch.join(path);
+        let mut current = std::fs::read_to_string(&path).unwrap_or_default();
+        current.push_str(text);
+        std::fs::write(path, current)?;
+    }
+    git(&scratch, &["add", "-A"])?;
+    git(&scratch, &["commit", "-q", "-m", "chore: on dev"])?;
+    git(&scratch, &["push", "-q", "origin", "HEAD:dev"])?;
+    std::fs::remove_dir_all(&scratch)?;
+    Ok(git(&origin, &["rev-parse", "dev"])?.trim().to_owned())
+}
+
+/// A playground (template) whose `dev` has Yulius CI ([`CI_JOBS`] in its `yulius.toml`).
+async fn ci_playground(h: &Harness, creds: &Creds) -> BoxResult<Value> {
+    let made = from_template(h, creds, "shop").await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    push_to_dev(h, &made.body, &[("yulius.toml", CI_JOBS)])?;
+    Ok(made.body)
+}
+
+/// The sandbox's CI overview as `creds` sees it.
+async fn ci_overview(h: &Harness, creds: &Creds, body: &Value) -> BoxResult<Value> {
+    let sid = body["id"].as_str().ok_or("id")?;
+    let got = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}/ci"),
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(got.status, StatusCode::OK, "{:?}", got.body);
+    Ok(got.body)
+}
+
+/// Dispatches until no run of the playground is queued or running (the background loops do not
+/// run here); the overview then.
+async fn ci_settle(h: &Harness, creds: &Creds, body: &Value) -> BoxResult<Value> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        h.app.ci_dispatch().await;
+        let overview = ci_overview(h, creds, body).await?;
+        let active = overview["runs"]
+            .as_array()
+            .ok_or("runs")?
+            .iter()
+            .any(|r| r["state"] == "queued" || r["state"] == "running");
+        if !active {
+            return Ok(overview);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("CI did not settle: {overview}").into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+}
+
+/// No commit status or other write reached GitHub.
+fn nothing_on_github(h: &Harness) -> BoxResult<()> {
+    no_github_writes(h)?;
+    assert!(
+        h.github.statuses().is_empty(),
+        "a commit status was published: {:?}",
+        h.github.statuses()
+    );
+    Ok(())
+}
+
+/// PCI-001, PCI-005 (#411): a playground's `dev` is tested once per commit with its
+/// `[[ci.jobs]]`, without any GitHub call; its run publishes no commit status and says why.
+#[tokio::test]
+async fn a_playgrounds_dev_is_tested_without_github() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let dev = git(&origin_of(&h, &body), &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
+
+    h.app.ci_sync_all().await;
+    let overview = ci_settle(&h, &owner, &body).await?;
+    assert_eq!(overview["gate"]["jobs"][0]["name"], "check", "{overview}");
+    let runs = overview["runs"].as_array().ok_or("runs")?;
+    assert_eq!(runs.len(), 1, "only dev is tested: {overview}");
+    assert_eq!(runs[0]["reference"], "branch/dev", "{overview}");
+    assert_eq!(runs[0]["sha"], dev.as_str(), "{overview}");
+    assert_eq!(runs[0]["state"], "passed", "{overview}");
+    assert!(
+        runs[0]["status"]
+            .as_str()
+            .is_some_and(|s| s.contains("playground")),
+        "{overview}"
+    );
+
+    // Once per commit; a new dev head gets its own run.
+    h.app.ci_sync_all().await;
+    assert_eq!(
+        ci_settle(&h, &owner, &body).await?["runs"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    let moved = push_to_dev(&h, &body, &[("notes.txt", "more\n")])?;
+    h.app.ci_sync_all().await;
+    let overview = ci_settle(&h, &owner, &body).await?;
+    assert_eq!(overview["runs"][0]["sha"], moved.as_str(), "{overview}");
+    assert_eq!(overview["runs"][0]["state"], "passed", "{overview}");
+    nothing_on_github(&h)?;
+    Ok(())
+}

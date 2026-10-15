@@ -420,16 +420,20 @@ pub enum CiRef {
     /// A merge train (SPEC-084): the integration branch with these pull requests merged in this
     /// order, a commit that exists only in Yulius's clone (no commit status is published for it).
     Train(Vec<u64>),
+    /// A playground task's head merged into the integration branch (SPEC-163): a commit that
+    /// exists only in Yulius's clone, tested when its agent calls `delivery_merge`.
+    Task(u64),
 }
 
 impl CiRef {
-    /// Stable key (`pr/12`, `branch/dev`, `train/12+15`): one active run per key.
+    /// Stable key (`pr/12`, `branch/dev`, `train/12+15`, `task/7`): one active run per key.
     #[must_use]
     pub fn key(&self) -> String {
         match self {
             Self::PullRequest(number) => format!("pr/{number}"),
             Self::Branch(name) => format!("branch/{name}"),
             Self::Train(numbers) => format!("train/{}", joined(numbers, "+", "")),
+            Self::Task(number) => format!("task/{number}"),
         }
     }
 
@@ -443,6 +447,9 @@ impl CiRef {
                 .filter(|n| *n > 0)
                 .map(Self::PullRequest);
         }
+        if let Some(number) = key.strip_prefix("task/") {
+            return number.parse().ok().filter(|n| *n > 0).map(Self::Task);
+        }
         if let Some(numbers) = key.strip_prefix("train/") {
             let parsed: Option<Vec<u64>> = numbers
                 .split('+')
@@ -455,13 +462,14 @@ impl CiRef {
             .map(|name| Self::Branch(name.to_owned()))
     }
 
-    /// Words for people: `PR #12`, `dev`, `Merge train #12 + #15`.
+    /// Words for people: `PR #12`, `dev`, `Merge train #12 + #15`, `Task #7`.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
             Self::PullRequest(number) => format!("PR #{number}"),
             Self::Branch(name) => name.clone(),
             Self::Train(numbers) => format!("Merge train {}", joined(numbers, " + ", "#")),
+            Self::Task(number) => format!("Task #{number}"),
         }
     }
 
@@ -471,7 +479,7 @@ impl CiRef {
         match self {
             Self::PullRequest(n) => *n == number,
             Self::Train(numbers) => numbers.contains(&number),
-            Self::Branch(_) => false,
+            Self::Branch(_) | Self::Task(_) => false,
         }
     }
 }
@@ -1035,13 +1043,22 @@ mod tests {
             CiRef::PullRequest(12),
             CiRef::Branch("dev".into()),
             CiRef::Train(vec![12, 15, 3]),
+            CiRef::Task(7),
         ] {
             assert_eq!(CiRef::parse(&reference.key()), Some(reference.clone()));
         }
         assert_eq!(CiRef::parse("pr/0"), None);
         assert_eq!(CiRef::parse("branch/"), None);
         assert_eq!(CiRef::parse("tag/x"), None);
-        for bad in ["train/", "train/1+", "train/0", "train/1+x"] {
+        for bad in [
+            "train/",
+            "train/1+",
+            "train/0",
+            "train/1+x",
+            "task/",
+            "task/0",
+            "task/x",
+        ] {
             assert_eq!(CiRef::parse(bad), None, "{bad}");
         }
         assert_eq!(CiRef::PullRequest(7).label(), "PR #7");
@@ -1049,6 +1066,10 @@ mod tests {
         assert_eq!(CiRef::Train(vec![7, 9]).label(), "Merge train #7 + #9");
         assert!(CiRef::Train(vec![7, 9]).covers(9) && !CiRef::Train(vec![7]).covers(9));
         assert!(CiRef::PullRequest(9).covers(9) && !CiRef::Branch("dev".into()).covers(9));
+        // A playground task's run (SPEC-163) is no pull request's.
+        assert_eq!(CiRef::Task(7).key(), "task/7");
+        assert_eq!(CiRef::Task(7).label(), "Task #7");
+        assert!(!CiRef::Task(9).covers(9));
         for state in [
             RunState::Queued,
             RunState::Running,
