@@ -151,3 +151,115 @@ test('the view says whose task it is and that you watch it, above the transcript
   await touchTask(browser, 'sb_studio', 12, { owner: { login: 'mkarp' } });
   await expect(mark).toBeHidden();
 });
+
+// "In archive, we have a spider. In other's owner, we need an electroblue octopus which is moving
+// between corners, being sticked to the top, and moving tentacles in pixel animation. […] the face
+// should be exactly like here": dot eyes and an ε mouth (WAT-006).
+test('an electro-blue pixel octopus with dot eyes and an ε mouth crawls between the top corners of a watched task', async ({ app, browser, screen }) => {
+  await watchStudio12(app, browser);
+  const octo = () => browser.evaluate(() => {
+    const el = document.querySelector('.watch .watch-lane > .octo') as HTMLElement | null;
+    if (!el) return null;
+    const lane = el.parentElement!.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    const frames = (kind: string) => [...el.querySelectorAll(`.octo-${kind}`)].map((f) => getComputedStyle(f).visibility === 'visible');
+    return {
+      classes: [...el.classList].filter((c) => c.startsWith('is-')).sort(),
+      corner: el.dataset.corner ?? null,
+      left: Math.round(box.left - lane.left), right: Math.round(lane.right - box.right),
+      crawl: frames('crawl'), rest: frames('rest'), moving: el.getAnimations().length,
+    };
+  });
+  // Its face and body: two single-pixel eyes either side of the head's middle, an ε of 7 half pixels
+  // below them, eight arms in every frame (crawl ×4, rest ×4, wave ×2), electro blue.
+  const sprite = await browser.evaluate(() => {
+    const svg = document.querySelector('.watch .octo svg')!;
+    const eyes = [...svg.querySelectorAll('.octo-eye')].map((r) => [Number(r.getAttribute('x')), Number(r.getAttribute('width'))]);
+    const mouth = [...svg.querySelectorAll('.octo-mouth')].map((r) => [Number(r.getAttribute('x')), Number(r.getAttribute('y'))]);
+    const width = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
+    const body = getComputedStyle(svg.querySelector('.octo-body')!).fill;
+    return {
+      eyes, mouth: mouth.length, mouthLeft: Math.min(...mouth.map(([x]) => x)), mouthTop: Math.min(...mouth.map(([, y]) => y)),
+      eyeRow: Number(svg.querySelector('.octo-eye')!.getAttribute('y')), middle: width / 2,
+      frames: ['crawl', 'rest', 'wave'].map((kind) => svg.querySelectorAll(`.octo-frame.octo-${kind}`).length), body,
+    };
+  });
+  expect(sprite.eyes.map(([, w]) => w)).toEqual([1, 1]);
+  expect(sprite.middle - (sprite.eyes[0][0] + 0.5), 'eyes as far from the middle').toBe(sprite.eyes[1][0] + 0.5 - sprite.middle);
+  expect(sprite.mouth).toBe(7);
+  expect(sprite.mouthTop, 'the mouth below the eyes').toBeGreaterThan(sprite.eyeRow);
+  expect(sprite.mouthLeft > sprite.eyes[0][0] && sprite.mouthLeft < sprite.eyes[1][0], 'the mouth between them').toBe(true);
+  expect(sprite.frames).toEqual([4, 4, 2]);
+  const [r, g, b] = sprite.body.match(/\d+/g)!.map(Number);
+  expect(b > 200 && b > r + 120 && g > r, `electro blue: ${sprite.body}`).toBe(true);
+
+  // It starts resting in the top-right corner.
+  const start = (await octo())!;
+  expect(start.corner).toBe('right');
+  expect(start.right).toBeLessThan(2);
+  // It crawls to the other corner, its arms changing frames, its eyes looking where it goes.
+  await expect.poll(async () => (await octo())!.classes.includes('is-crawling'), { timeout: 10_000, message: 'it sets off' }).toBe(true);
+  expect((await octo())!.classes).toContain('is-left');
+  const seen = new Set<number>();
+  await expect.poll(async () => {
+    const now = (await octo())!;
+    seen.add(now.crawl.indexOf(true));
+    return [...seen].filter((i) => i >= 0).length;
+  }, { message: 'its arms step through their crawling frames' }).toBeGreaterThan(2);
+  const lefts: number[] = [];
+  await expect.poll(async () => {
+    lefts.push((await octo())!.left);
+    return lefts.length > 1 && lefts[lefts.length - 1] < lefts[0];
+  }, { message: 'it moves left' }).toBe(true);
+  await browser.evaluate(() => { for (const a of document.querySelector('.watch .octo')!.getAnimations()) a.finish(); });
+  await expect.poll(async () => (await octo())!.corner).toBe('left');
+  const arrived = (await octo())!;
+  expect(arrived.left).toBeLessThan(2);
+  expect(arrived.classes).toContain('is-resting');
+
+  // Stuck to the top: the transcript scrolls under its lane, which stays at the top of the view.
+  await append(browser, Array.from({ length: 40 }, (_, i) => ({ role: 'assistant', text: `Line ${i} of a long answer.` })));
+  await expect(screen.getByText('Line 39 of a long answer.')).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const scroller = document.querySelector('.watch .watch-scroll')!;
+    const lane = document.querySelector('.watch .watch-lane')!;
+    return [scroller.scrollTop > 200, Math.round(lane.getBoundingClientRect().top - scroller.getBoundingClientRect().top)];
+  })).toEqual([true, 0]);
+
+  // Leaving the task takes it away.
+  await app.open(mock('/s/studio/t/14'));
+  await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.octo').length)).toBe(0);
+});
+
+test('under reduced motion the octopus rests still in the top-right corner', async ({ app, browser }) => {
+  await browser.addInitScript(() => {
+    const media = window.matchMedia.bind(window);
+    window.matchMedia = (query: string) => (query.includes('prefers-reduced-motion') ? ({ ...media(query), matches: true, media: query } as MediaQueryList) : media(query));
+  });
+  await watchStudio12(app, browser);
+  const state = await browser.evaluate(() => {
+    const el = document.querySelector('.watch .octo') as HTMLElement;
+    const lane = el.parentElement!.getBoundingClientRect();
+    return { still: el.classList.contains('is-still'), corner: el.dataset.corner, right: Math.round(lane.right - el.getBoundingClientRect().right), moving: el.getAnimations().length };
+  });
+  expect(state).toEqual({ still: true, corner: 'right', right: 0, moving: 0 });
+  // The stylesheet stops its frames, its bob and its blink under reduced motion.
+  const stopped = await browser.evaluate(() => {
+    const found: string[] = [];
+    const visit = (rules: CSSRuleList, reduced: boolean) => {
+      for (const rule of rules) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, reduced || rule.conditionText.includes('prefers-reduced-motion: reduce'));
+        else if (reduced && rule instanceof CSSStyleRule && rule.style.animationName === 'none') found.push(rule.selectorText);
+      }
+    };
+    for (const sheet of document.styleSheets) { try { visit(sheet.cssRules, false); } catch { /* another origin */ } }
+    return found.join(' | ');
+  });
+  for (const part of ['.octo-frame', '.octo-head', '.octo-eyes']) expect(stopped).toContain(part);
+});
+
+test('a past session keeps its spider and has no octopus', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  expect(await browser.evaluate(() => [document.querySelectorAll('.ss-tui .ss-web').length, document.querySelectorAll('.octo').length])).toEqual([1, 0]);
+});

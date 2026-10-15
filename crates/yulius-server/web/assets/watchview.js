@@ -9,6 +9,7 @@ import { h, icon, setChildren, loadError } from './dom.js';
 import { href } from './router.js';
 import { isLive } from './status.js';
 import { transcriptEntries } from './pages/sessions.js';
+import { createOctopus } from './octopus.js';
 
 /** How often a watcher asks for new lines while the task is live (WAT-003). */
 export const WATCH_POLL_MS = 1500;
@@ -44,6 +45,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   let reading = null; // the AbortController of the read in flight
   let failed = false;
   let again = false; // the task changed during a read: read once more after it
+  let octopus = null; // the octopus crawling along the top (WAT-006), once the view shows
   let seen = { session: null, end: 0, bytes: 0, loaded: false };
 
   const atBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= FOLLOW_SLACK;
@@ -150,6 +152,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     start() {
       if (started) return;
       started = true;
+      octopus = createOctopus(lane);
       read();
     },
     /** The task changed: say so, and read once more when it ended or started again. */
@@ -170,6 +173,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       alive = false;
       clearTimeout(timer);
       if (reading) reading.abort();
+      if (octopus) octopus.stop();
       document.removeEventListener('visibilitychange', visibility);
     },
   };

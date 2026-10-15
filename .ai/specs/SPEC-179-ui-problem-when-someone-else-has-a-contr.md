@@ -106,7 +106,7 @@ reference face crawls along the top between the corners.
 - [ ] The server serves a task's live transcript to its watchers, cheaply when nothing changed
 - [x] Someone else's task shows its live transcript instead of a broken terminal, following new output and the owner's prompts
 - [x] The live transcript keeps the terminal's colours, and ownership is said clearly in the view and the sidebar
-- [ ] An electro-blue pixel octopus with the reference face crawls between the top corners of a watched task
+- [x] An electro-blue pixel octopus with the reference face crawls between the top corners of a watched task
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
