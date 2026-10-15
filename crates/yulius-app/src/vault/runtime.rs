@@ -396,21 +396,27 @@ impl App {
             SCRUB_FILE_ENV.into(),
             scrub_file.to_string_lossy().into_owned(),
         ));
-        // Claude Code runs `'<prefix before the last " -">' <flag> '<command>'` for Bash
-        // commands, hooks and stdio MCP servers.
+        launch.env.extend(self.scrub_shell_prefix());
+        self.egress_env("yulius", task_token, run_dir, launch);
+        Ok(())
+    }
+
+    /// The Bash wrapper of agent sessions and the Superagent (SPEC-147 SAM-002):
+    /// `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`. Claude Code runs
+    /// `'<prefix before the last " -">' <flag> '<command>'` for Bash commands, hooks and stdio MCP
+    /// servers, so a path holding `" -"` cannot be the prefix (`None`, with a warning).
+    pub(crate) fn scrub_shell_prefix(&self) -> Option<(String, String)> {
         let exe = self.config.yulius_exe.to_string_lossy();
         if exe.contains(" -") {
             tracing::warn!(
                 "the yulius path contains \" -\": Bash output is redacted by the tool hook only"
             );
-        } else {
-            launch.env.push((
-                "CLAUDE_CODE_SHELL_PREFIX".into(),
-                format!("{exe} {SCRUB_EXEC_FLAG}"),
-            ));
+            return None;
         }
-        self.egress_env("yulius", task_token, run_dir, launch);
-        Ok(())
+        Some((
+            "CLAUDE_CODE_SHELL_PREFIX".into(),
+            format!("{exe} {SCRUB_EXEC_FLAG}"),
+        ))
     }
 
     /// Adds the egress proxy to a run's environment when the proxy is wired (`false` when it is

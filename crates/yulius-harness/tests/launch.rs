@@ -778,7 +778,12 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
     let only: Value = serde_json::from_str(&alone.argv[at + 1])?;
     assert!(only["mcpServers"]["yulius"].is_null());
     assert!(only["mcpServers"]["apify"].is_object());
-    assert!(!alone.argv.iter().any(|a| a == "--allowedTools" || a == "--settings"));
+    assert!(
+        !alone
+            .argv
+            .iter()
+            .any(|a| a == "--allowedTools" || a == "--settings")
+    );
 
     // A server is validated as for a task run.
     let named = |name: &str| McpServerSpec {
@@ -789,12 +794,18 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         },
     };
     for (servers, error) in [
-        (vec![named("yulius")], LaunchError::DuplicateMcpServer("yulius".into())),
+        (
+            vec![named("yulius")],
+            LaunchError::DuplicateMcpServer("yulius".into()),
+        ),
         (
             vec![named("a"), named("a")],
             LaunchError::DuplicateMcpServer("a".into()),
         ),
-        (vec![named("bad name")], LaunchError::Invalid("mcp server name")),
+        (
+            vec![named("bad name")],
+            LaunchError::Invalid("mcp server name"),
+        ),
         (
             vec![McpServerSpec {
                 name: "s".into(),
@@ -817,4 +828,3 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
     }
     Ok(())
 }
-

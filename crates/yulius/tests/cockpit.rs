@@ -44,7 +44,8 @@ const WAIT: Duration = Duration::from_secs(20);
 const TOKEN: &str = "synthetic-oauth-token";
 
 /// Prints its arguments (the MCP config, allowed tools and settings, too long for a line, go to
-/// files in its config dir) and environment, then stays as an interactive shell.
+/// files in its config dir, as does its shell prefix) and environment, then stays as an
+/// interactive shell.
 const FAKE_CLAUDE: &str = "#!/bin/sh\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/kill-resume\" ]; then kill -KILL $$; fi\n\
@@ -61,7 +62,7 @@ done\n\
 echo \"cockpit-args:[${args# }]\"\n\
 echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
 echo \"workspace:${YULIUS_TASK_TOKEN:-none}\"\n\
-echo \"prefix:${CLAUDE_CODE_SHELL_PREFIX:-none}\"\n\
+printf %s \"${CLAUDE_CODE_SHELL_PREFIX:-none}\" > \"$CLAUDE_CONFIG_DIR/launch-shell-prefix\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
 echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
@@ -93,12 +94,19 @@ async fn fixture_with(
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let gate = Arc::new(GatedHost::new(exe));
+    let gate = Arc::new(GatedHost::new(exe.clone()));
+    // The real `yulius` runs the Superagent's redaction wrapper and hook (SPEC-147).
+    let harness = Arc::new(yulius::wiring::harness::HarnessAdapter::new(
+        exe.clone(),
+        "http://127.0.0.1:1",
+    ));
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
+        harness: Some(harness),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.contained = false;
+            config.yulius_exe = exe;
             if let Some(data) = data_dir {
                 config.data_dir = data;
             }
@@ -678,7 +686,8 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
     let config = PathBuf::from(printed(&screen, "config")?);
-    assert!(!config.join("launch-settings").exists());
+    let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
+    assert!(settings["disabledMcpjsonServers"].is_null(), "{settings}");
     assert_eq!(f.h.store.mcp_servers(&sid()).await?.len(), 3);
     Ok(())
 }
@@ -1355,6 +1364,9 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
 
 /// An agent secret's value, referenced by the sandbox's `apify` MCP server (SPEC-147).
 const SECRET_VALUE: &str = "apify_synthetic_9f3Qz7LmWc2Rk8Tn";
+const SECRET_LABEL: &str = "[secret:APIFY_KEY]";
+/// A literal bearer typed into an MCP server's form (not an agent secret).
+const LITERAL_BEARER: &str = "quartio-literal-bearer-5521";
 
 /// alice adds the agent secret `APIFY_KEY` to `s1`.
 async fn add_apify_key(f: &Fixture) -> TestResult {
@@ -1388,6 +1400,118 @@ async fn scrub(
         },
     )
     .await
+}
+
+/// SPEC-147 SAM-001/002/004 (#395, ADR-0121): the Superagent gets the sandbox's MCP servers as a
+/// task run does, next to `yulius`, their values only in its secret environment, and the task
+/// runs' redaction: a value a Bash command prints through its wrapper, or a tool result holds,
+/// comes back as `[secret:NAME]`; without its fingerprints a command does not run.
+#[tokio::test]
+async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let internal = serve(f.h.internal.clone()).await?;
+    add_apify_key(&f).await?;
+    for server in [
+        json!({"name": "apify", "transport": "stdio", "command": "npx",
+               "args": ["-y", "@apify/actors-mcp-server"],
+               "env": {"APIFY_TOKEN": "${secret:APIFY_KEY}"}}),
+        json!({"name": "quartio", "transport": "http", "url": "https://mcp.quartio.test/mcp",
+               "headers": {"Authorization": format!("Bearer {LITERAL_BEARER}")}}),
+    ] {
+        let resp = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/mcp",
+            Some(server),
+            &f.alice,
+        )
+        .await?;
+        assert!(resp.status.is_success(), "{:?}", resp.body);
+    }
+
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let mcp_text = std::fs::read_to_string(config.join("launch-mcp-config"))?;
+    let mcp_config: Value = serde_json::from_str(&mcp_text)?;
+    assert_eq!(
+        mcp_config["mcpServers"]["yulius"]["headers"]["Authorization"],
+        "Bearer ${YULIUS_COCKPIT_TOKEN}"
+    );
+    assert_eq!(
+        mcp_config["mcpServers"]["apify"],
+        json!({"type": "stdio", "command": "npx", "args": ["-y", "@apify/actors-mcp-server"],
+               "env": {"APIFY_TOKEN": "${YULIUS_MCP_APIFY_APIFY_TOKEN}"}})
+    );
+    assert_eq!(
+        mcp_config["mcpServers"]["quartio"],
+        json!({"type": "http", "url": "https://mcp.quartio.test/mcp",
+               "headers": {"Authorization": "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"}})
+    );
+    for value in [SECRET_VALUE, LITERAL_BEARER] {
+        assert!(!mcp_text.contains(value), "a value in argv: {mcp_text}");
+    }
+    // The redaction hook is the only hook; the wrapper runs Bash, hooks and stdio servers.
+    let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
+    let hooks = settings["hooks"].as_object().ok_or("hooks")?;
+    assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PostToolUse"]);
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let hook = format!("'{}' hook claude PostToolUse", exe.display());
+    assert_eq!(
+        settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+        hook
+    );
+    assert_eq!(
+        std::fs::read_to_string(config.join("launch-shell-prefix"))?,
+        format!("{} --scrub-exec", exe.display())
+    );
+    let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
+    for value in [SECRET_VALUE, LITERAL_BEARER] {
+        assert!(!record.contains(value), "a value in the shell record");
+    }
+
+    // Typed into the session as its Bash tool runs a command: the value is in the environment
+    // (its length shows) but the output carries the label.
+    let url = format!("http://{}", internal.addr);
+    let typed = |line: String| json!({"type": "input", "data": line}).to_string();
+    socket
+        .send(Message::text(typed(format!(
+            "YULIUS_URL={url} $CLAUDE_CODE_SHELL_PREFIX 'echo \"bash=<$YULIUS_MCP_APIFY_APIFY_TOKEN> len=${{#YULIUS_MCP_APIFY_APIFY_TOKEN}} bearer=${{#YULIUS_MCP_QUARTIO_TOKEN}}\"'\r"
+        ))))
+        .await?;
+    read_until(&mut socket, &mut screen, &format!("bash=<{SECRET_LABEL}>")).await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("len={} bearer={}", SECRET_VALUE.len(), LITERAL_BEARER.len()),
+    )
+    .await?;
+    // A tool result holding the value, as an MCP server returns it, through the settings' hook.
+    socket
+        .send(Message::text(typed(format!(
+            "printf '{{\"tool_name\":\"mcp__apify__run\",\"tool_response\":{{\"text\":\"key %s\"}}}}' \"$YULIUS_MCP_APIFY_APIFY_TOKEN\" | YULIUS_URL={url} {hook}; echo ' hook-done'\r"
+        ))))
+        .await?;
+    read_until(&mut socket, &mut screen, "hook-done\r\n").await?;
+    let answer = format!("\"updatedToolOutput\":{{\"text\":\"key {SECRET_LABEL}\"}}");
+    assert!(screen.contains(&answer), "{screen}");
+    // Without its fingerprints (Yulius unreachable) a command does not run.
+    socket
+        .send(Message::text(typed(
+            "$CLAUDE_CODE_SHELL_PREFIX 'echo ran-$((40+2))'; echo \" status=$?\"\r".into(),
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, " status=126").await?;
+    assert!(!screen.contains("ran-42"), "{screen}");
+    assert!(
+        !screen.contains(SECRET_VALUE),
+        "the value reached the screen"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
 }
 
 /// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
@@ -1434,7 +1558,9 @@ async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() 
     );
 
     assert_eq!(
-        scrub(&f, "ws_0000", "fingerprints", json!({})).await?.status,
+        scrub(&f, "ws_0000", "fingerprints", json!({}))
+            .await?
+            .status,
         StatusCode::UNAUTHORIZED
     );
     f.h.github.set_perm("alice", "acme/fixture", perms("read"));
@@ -1442,7 +1568,9 @@ async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() 
         .0
         .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
     assert_eq!(
-        scrub(&f, &workspace, "fingerprints", json!({})).await?.status,
+        scrub(&f, &workspace, "fingerprints", json!({}))
+            .await?
+            .status,
         StatusCode::UNAUTHORIZED,
         "a person who lost write access reads nothing"
     );
