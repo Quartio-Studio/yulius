@@ -79,6 +79,17 @@ flowchart LR
   S --> W["crates/yulius-server/web"]
 ```
 
+## Containers
+
+An isolated sandbox runs no container engine. Its runs (agents, CI jobs, CD) have Docker's default
+capability set and a seccomp filter without mount APIs or nested user namespaces, which a daemon
+needs; a `docker` client is there only when the base copied one from the host's `/usr`. The
+briefing says so in a `## Containers` section, its last mandatory part, and points agents to an
+engine on another machine (`DOCKER_HOST=ssh://…`) and to `apt` for test services
+([SPEC-173](../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md),
+[decision 0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)); an
+engine per sandbox is #551.
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
