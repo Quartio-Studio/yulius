@@ -488,16 +488,17 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
  * is kept at once (`prompt.begin(event)`: the caret, or the drop's point, shown while the files
  * are dragged over the prompt), each file is uploaded with `upload(file, options)`
  * (draftAttachments), and `onAttach([{path, name, file}], place)` puts them there, inside the
- * text. `box` is the zone, `prompt` the prompt input (promptinput.js).
+ * text. `box` is the zone, `prompt` the prompt input (promptinput.js). `writable()` can refuse more
+ * (a queued message's task that started, SPEC-168), saying `unwritable` when files end then.
  */
-export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) {
+export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach, writable = () => true, unwritable = 'The prompt is being read; the files were not added.' }) {
   return attachPathDrop(ctx, {
     zone: box,
     overlayHost: () => box,
     label,
     upload,
-    canWrite: () => !prompt.readOnly && !prompt.disabled,
-    unwritable: 'The prompt is being read; the files were not added.',
+    canWrite: () => !prompt.readOnly && !prompt.disabled && writable(),
+    unwritable,
     begin: (event) => prompt.begin(event),
     onOver: (event) => prompt.showPoint(event.clientX, event.clientY),
     insert(stored, place) {
