@@ -47,6 +47,9 @@ pub struct AppConfig {
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
     /// terminated (SPEC-065 END-008).
     pub stop_escalation_ms: u64,
+    /// How long a sandbox shell or the Superagent asked to end gets to exit before its host is
+    /// terminated ([`crate::shells::SHELL_EXIT_WAIT`], SPEC-146 SHE-001). Tests shorten it.
+    pub shell_exit_ms: u64,
     /// CPUs an agent session, terminal or Cockpit plans for (`YULIUS_AGENT_CPUS`, SPEC-082
     /// RES-005); `None`: a third of the sandbox's.
     pub agent_cpus: Option<u32>,
@@ -115,6 +118,8 @@ impl AppConfig {
                     + yulius_domain::task::STOP_KILL_WAIT_MS,
             )
             .unwrap_or(20_000),
+            shell_exit_ms: u64::try_from(crate::shells::SHELL_EXIT_WAIT.as_millis())
+                .unwrap_or(10_000),
             goal_ready_ms: u64::try_from(crate::supervisor::GOAL_READY_TIMEOUT.as_millis())
                 .unwrap_or(90_000),
             trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
