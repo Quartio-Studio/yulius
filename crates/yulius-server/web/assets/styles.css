@@ -631,6 +631,11 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .glance-name { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
 .account-glance .usage-pct { font-size: var(--fs-xs); line-height: var(--lh-xs); }
 /* A narrow list (the Status panel on a phone) keeps the names and percents and gives the bars' room to the name. */
+/* Beside the glance, a folded row's state shows as its icon where the list is narrow; its name still reads it. */
+@container accounts (width < 480px) {
+  .account-fold .account-state { padding: 0 6px; }
+  .account-fold .account-state-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
 @container accounts (width < 360px) { .account-glance { grid-template-columns: auto minmax(4ch, auto); } .account-glance .meter { display: none; } }
 .account-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
 .account-card .account-body { padding-top: 0; }

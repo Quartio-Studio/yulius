@@ -9,7 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A folded subscription shows both its 5-hour and its weekly usage, without opening it (SPEC-172,
   task #162). The Status panel's and the Dashboard's rows showed only the 5-hour bar; each now has
   two lines, "5 h" and "Week", with a bar and the percent used. Where the list is narrower than
-  360 px (the Status panel on a phone), the lines keep their percents and drop the bars.
+  360 px (the Status panel on a phone), the lines keep their percents and drop the bars; in the
+  Status panel a row's state ("Limit reached") shows as its icon, so the name keeps its room.
 - The Editor never opens a file twice, and a moved image placeholder is never shown as selected
   text (SPEC-166, task #156). The task's screenshots, two editors stacked in one host, were #394,
   fixed by #523 before this task. Reproducing them showed the Editor still broke another way:

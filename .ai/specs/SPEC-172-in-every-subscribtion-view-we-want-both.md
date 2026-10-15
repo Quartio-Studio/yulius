@@ -44,8 +44,10 @@ percent used of each.
   value as text, so a screen reader hears both without unfolding.
 - **GLN-003.** Unfolded, the glance hides as before: the body's rows say the same with reset times.
 - **GLN-004.** Where the row is narrow (the list under 360 px wide: the Status panel on a phone),
-  the glance keeps both names and percents and drops the bars, so the subscription's name keeps
-  room; nothing overflows the row.
+  the glance keeps both names and percents and drops the bars; nothing overflows the row.
+  Where the list is under 480 px (the Status panel), a folded row's state badge shows its icon
+  and keeps its words for screen readers and on hover. The subscription's name keeps at least
+  64 px (or all of itself) and its full text on hover.
 - **GLN-005.** The Subscriptions page (card form) is unchanged.
 
 ## Plan
@@ -85,4 +87,11 @@ percent used of each.
   Claude Code run (#147); the meters' accessible names use the full names of the unfolded rows.
 - **Bars dropped below 360 px rather than a second layout.** The percents carry the information;
   a container query on the list keeps one markup for every width.
+- **The 5-hour window and the overall week only.** Per-model weekly caps (Opus, Sonnet) stay in the
+  unfolded rows: the request names session and weekly usage, and a third line would not fit the
+  row's two-line height. The glance's short names are fixed, as its title was before: Claude
+  reports these two windows with these lengths.
+- **The state badge gives way before the name** (review round 1): beside the wider glance, a badge
+  such as "Limit reached" left "Claude #5" 55 of 68 px in the 406 px Status panel and 31 px at
+  360 px. Its icon carries the tone; its words stay for screen readers and on hover.
 - No ADR: this is a presentation detail of ROT-009 with no lasting architectural choice.

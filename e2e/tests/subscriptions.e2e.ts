@@ -75,10 +75,18 @@ test('an unknown cost reads as unknown, never as $0 (unit, in the page)', async 
   expect(text).not.toContain('$0.00');
 });
 
-/** Each folded subscription under `root`: its name, the glance's lines and whether its bars show. */
+/**
+ * Each folded subscription under `root`: its name and how much of it shows, its state badge's text,
+ * the glance's lines and whether its bars show.
+ */
 const glances = (browser: Browser, root: string) => browser.evaluate((css) =>
   [...document.querySelectorAll(`${css} .account-fold`)].map((fold) => ({
     label: fold.querySelector('.account-name strong')?.textContent ?? null,
+    nameShown: fold.querySelector('.account-name strong')!.getBoundingClientRect().width,
+    nameFull: fold.querySelector('.account-name strong')!.scrollWidth,
+    nameTitle: fold.querySelector('.account-name strong')!.getAttribute('title'),
+    state: fold.querySelector('.account-state')?.textContent ?? null,
+    open: (fold as HTMLDetailsElement).open,
     lines: [...fold.querySelectorAll('summary .account-glance .glance-line')].map((line) => {
       const meter = line.querySelector('[role="meter"]') as HTMLElement | null;
       return {
@@ -112,18 +120,45 @@ test('a folded subscription shows its 5-hour and weekly usage without opening (S
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('at phone width the Status panel keeps both percents and drops the glance bars (SPEC-172)', async ({ app, browser }) => {
-  await browser.setViewport({ width: 360, height: 780 });
+/** GLN-004: the name keeps at least 64 px (or all of itself), with its full text on hover. */
+const expectNameRoom = (row: { label: string | null; nameShown: number; nameFull: number; nameTitle: string | null }) => {
+  expect(row.nameShown, `${row.label} shows ${row.nameShown} of ${row.nameFull} px`).toBeGreaterThanOrEqual(Math.min(row.nameFull, 64) - 0.5);
+  expect(row.nameTitle).toBe(row.label);
+};
+
+test('the desktop Status panel shows both windows with their bars, and names keep room beside a state (SPEC-172)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/git'));
   await browser.locator('.btn-status').click();
   await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
   const rows = await glances(browser, '.status-pop');
   expect(rows.length).toBeGreaterThan(3);
-  // GLN-004: names and percents stay, bars go, nothing wider than its row.
+  // A subscription that needs attention opens by itself, its rows instead of the glance (GLN-003).
   for (const row of rows) {
-    expect(row.lines.map((l) => [l.name, l.bar])).toEqual([['5 h', false], ['Week', false]]);
-    expect(row.lines.every((l) => l.pct === '—' || /^\d+%$/.test(l.pct ?? ''))).toBe(true);
-    expect(row.overflows).toBe(false);
+    expect(row.lines.map((l) => [l.name, l.meter, l.bar])).toEqual([['5 h', '5-hour window', !row.open], ['Week', 'This week', !row.open]]);
+    expectNameRoom(row);
+  }
+  // The state still reads in full, also where only its icon shows.
+  expect(rows.find((r) => r.label === 'Claude #5')!.state).toBe('Limit reached');
+
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('at phone width the Status panel and the Dashboard keep both percents and drop the glance bars (SPEC-172)', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/dashboard'));
+  await expect(browser.locator('.db-card .account-fold').first()).toBeVisible();
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  for (const root of ['.status-pop', '.db-card']) {
+    const rows = await glances(browser, root);
+    expect(rows.length).toBeGreaterThan(3);
+    // GLN-004: names and percents stay, bars go, nothing wider than its row.
+    for (const row of rows) {
+      expect(row.lines.map((l) => [l.name, l.bar])).toEqual([['5 h', false], ['Week', false]]);
+      expect(row.lines.every((l) => l.pct === '—' || /^\d+%$/.test(l.pct ?? ''))).toBe(true);
+      expect(row.overflows).toBe(false);
+      expectNameRoom(row);
+    }
   }
 
   expect(await axeViolations(browser)).toEqual([]);

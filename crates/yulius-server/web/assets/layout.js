@@ -462,9 +462,9 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
   const head = [
     h('span', { class: 'avatar account-avatar', 'aria-hidden': 'true' }, accountInitials(account)),
     h('span', { class: 'account-who' },
-      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis' }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
+      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis', title: account.label || account.id }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
       h('span', { class: 'account-sub' }, account.email || provider)),
-    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label) : null,
+    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null,
     foldable ? glance() : null,
     foldable ? icon('down', { size: 14 }) : null,
   ];
