@@ -1,11 +1,11 @@
 ---
 yulius-task: f794fb5e-c905-47da-89ac-411b6f9224ab
-status: in-progress
+status: done
 ---
 
 # SPEC-176: moving a playground into a GitHub repository
 
-Status: in progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #132 (part of task #118, SPEC-138)
 Scope authorization: issue [#410](https://github.com/Quartio-Studio/yulius/issues/410), a
@@ -60,13 +60,13 @@ GitHub from then on.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Git pushes every branch and tag of a repository atomically and repoints origin
-- [ ] A playground admin moves it into an empty GitHub repository, its tasks kept
-- [ ] A refused or failed move leaves the playground as it was
-- [ ] The sandbox menu offers Move to GitHub once GitHub is connected
-- [ ] Docs, SPEC-001 PRJ-012, the ADR and the changes log say what a move does
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green and the change delivered into dev
+- [x] Git pushes every branch and tag of a repository atomically and repoints origin
+- [x] A playground admin moves it into an empty GitHub repository, its tasks kept
+- [x] A refused or failed move leaves the playground as it was
+- [x] The sandbox menu offers Move to GitHub once GitHub is connected
+- [x] Docs, SPEC-001 PRJ-012, the ADR and the changes log say what a move does
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green and the change delivered into dev
 
 ## Acceptance criteria
 
@@ -154,4 +154,28 @@ GitHub from then on.
 
 ## Evidence
 
-To be filled at delivery.
+Run on the branch head after merging `dev` (`152d7ec7`, 2026-10-15):
+
+- `scripts/dev ci`: exit 0. Repository contracts passed; nextest `1882 tests run: 1882 passed, 18
+  skipped`; clippy with `-D warnings`, rustdoc, doctests, cargo-deny and cargo-shear clean.
+- `cd e2e && npx e2e run`: exit 0, `Test Files 55 passed | 1 skipped`, `Tests 526 passed | 1
+  skipped`. The two new tests in `playground.e2e.ts` failed before the UI change (no "Move to
+  GitHub…" menu item) and pass with it.
+- `playground_move::` (12 integration tests, real Git and store, fake GitHub): all pass, covering
+  MPG-001 to MPG-006. They failed before the change (no route). Mutations proved the regressions:
+  without the live-task check `a_live_task_holds_the_move` fails; without the emptiness check
+  `a_repository_that_is_not_empty_is_refused` fails; without the detached run, the CI hold and the
+  fast-forward acceptance, `a_move_ends_when_its_client_goes_away`, `an_active_ci_run_holds_the_move`
+  and `a_retry_after_the_playground_moved_on_fast_forwards` fail.
+- `yulius-git` `every_branch_and_tag_is_pushed_at_once_and_read_back` and
+  `a_push_of_every_ref_is_all_or_nothing`, and `yulius-store`
+  `a_playground_record_moves_to_github_once`: pass (they did not compile before the change).
+- `scripts/dev security`: exit 2, **not run**. Vidoc rejected the key (HTTP 401), as since
+  2026-10-14 (#470, ADR-0104). This is unrun, not passed.
+- Independent review: two rounds in fresh sessions. Round 1 asked for changes (1 major, 6 minor),
+  all fixed test-first. Round 2 approved with minors, which were fixed as well (Decisions). A final
+  review covers the head that is delivered.
+- Not tested here: GitHub itself. The fake GitHub answers permissions, and local bare repositories
+  stand in for its Git (`GitAdapter::with_github_base`), so GitHub's choice of default branch, its
+  push limits and a real installation token are not exercised. A real browser on a real server
+  was not driven either: the e2e suite runs against the mock server.
