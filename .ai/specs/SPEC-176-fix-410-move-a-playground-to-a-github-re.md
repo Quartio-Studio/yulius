@@ -165,11 +165,12 @@ GitHub from then on.
 
 ## Evidence
 
-Run on the branch head after merging `dev` (`152d7ec7`, 2026-10-15):
+Run on the branch head after merging `dev` (2026-10-15):
 
-- `scripts/dev ci`: exit 0. Repository contracts passed; nextest `1882 tests run: 1882 passed, 18
-  skipped`; clippy with `-D warnings`, rustdoc, doctests, cargo-deny and cargo-shear clean.
-- `cd e2e && npx e2e run`: exit 0, `Test Files 55 passed | 1 skipped`, `Tests 526 passed | 1
+- `scripts/dev ci` on `4bd6f533`: exit 0. Repository contracts passed; nextest `1889 tests run: 1889
+  passed, 18 skipped`; clippy with `-D warnings`, rustdoc, doctests, cargo-deny and cargo-shear
+  clean.
+- `cd e2e && npx e2e run` on `152d7ec7` (no web asset or e2e file changed since): exit 0, `Test Files 55 passed | 1 skipped`, `Tests 526 passed | 1
   skipped`. The two new tests in `playground.e2e.ts` failed before the UI change (no "Move to
   GitHub…" menu item) and pass with it.
 - `playground_move::` (13 integration tests, real Git and store, fake GitHub): all pass, covering
