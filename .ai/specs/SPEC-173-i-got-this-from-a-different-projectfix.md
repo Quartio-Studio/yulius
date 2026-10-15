@@ -1,11 +1,11 @@
 ---
 yulius-task: 18fcb52b-ce6f-4546-bab5-a771d949c52e
-status: in-progress
+status: done
 ---
 
 # SPEC-173: an isolated sandbox's agent is told there is no container engine, and what works instead
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: task #163
 Scope authorization: the person's request (task #163): "i got this from a different project
@@ -63,7 +63,7 @@ setup or a rollback around a Docker daemon it cannot have.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -115,5 +115,9 @@ setup or a rollback around a Docker daemon it cannot have.
   `## Architecture`) is #555.
 - **Gate after the review fixes and a merge of `origin/dev` (#547):** `scripts/dev ci` at `da11cf61` →
   exit 0; nextest 1850 tests run, 1850 passed, 18 skipped.
+- **Review rounds 2 and 3** (fresh sessions): round 2 approved `61e5fb3c` with one minor, a spec-path
+  check that never matched (the briefing puts the path in backticks). It was fixed in `50482eb4`,
+  with a guard that every check matches the plain briefing. Round 3 approved `81f0d175`, after a
+  clean merge of `origin/dev` (#552).
 - **Not run here:** the host-level isolation suite (`YULIUS_ISOLATION_TEST=1`) cannot run inside a
   sandbox. This change does not touch containment.

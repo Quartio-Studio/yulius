@@ -12,9 +12,9 @@
 //!
 //! Mandatory parts (role, discipline, git, docs index, tools, ports, task header, foundations,
 //! architecture pointer, containers when isolated) are always included; user-controlled strings
-//! inside them are clipped per field so they stay small. The optional parts (steps, project summary, decisions,
-//! recent changes, parallel tasks) share the remaining budget by weight; a part that needs less
-//! donates the rest. Every cut is UTF-8 safe and marked `(truncated)`. Inline fields are
+//! inside them are clipped per field so they stay small. The optional parts (steps, project summary,
+//! decisions, recent changes, parallel tasks) share the remaining budget by weight; a part that
+//! needs less donates the rest. Every cut is UTF-8 safe and marked `(truncated)`. Inline fields are
 //! collapsed to one line so repository or user text cannot forge briefing headings. Output is
 //! deterministic.
 //!
