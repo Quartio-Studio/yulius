@@ -23,6 +23,9 @@ reviewer agrees, and it is listed in the spec's Evidence. Exit 2 means unrun: if
 shows no bound host, request `api.vidoc.dev` with `secret_request_hosts` and report the scan as
 unrun, never as passed. When `.config/vidoc.toml` sets `enabled = false` (ADR-0107), the gate
 prints "Security scan disabled" and exits 0: report the scan as disabled, never as passed.
+Yulius CI's `security` job runs the same gate on every pull request head (ADR-0116): its findings
+fail the check. Until a scan can run (#470) its exit 2 passes the job with "the security scan did
+not run": read the job's output, and report that scan as unrun, never as passed.
 
 If a command fails, distinguish missing prerequisite/network failure from product
 or test defects. Record the exact failing command and output location. Repair

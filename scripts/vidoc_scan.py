@@ -8,6 +8,11 @@ takes the verdict from the REST API: the scan this run started must be complete 
 and the branch must have no open critical or high finding. Exit codes: 0 passed, 1 failed, 2 not
 run (no key or a rejected one, no Node, a detached HEAD, uncommitted files, no base).
 
+In Yulius CI on a pull request head (`YULIUS_CI_REF=pr/<n>`, SPEC-142) the checkout is a detached
+worktree of the sandbox's shared clone, with no GitHub credential: the gate then scans a private
+clone of the commit on branch `yulius-ci/pr-<n>`, whose origin answers from a local mirror of
+origin's default branch (`ci_clone`).
+
 `.config/vidoc.toml` (SPEC-131) turns the gate off with `enabled = false`: it then exits 0 at once
 and says nothing was scanned, once that line is committed (an uncommitted edit exits 2). Without
 the file the gate is on; a malformed one exits 2.
@@ -234,6 +239,67 @@ def check_repository(git, cli_environment):
     return branch.strip(), base, [line for line in changed.splitlines() if line.strip()]
 
 
+def ci_pull_request(env):
+    """The pull request number when this runs in Yulius CI on a pull request head
+    (`YULIUS_CI=1`, `YULIUS_CI_REF=pr/<n>`), else None."""
+    match = re.fullmatch(r"pr/([1-9][0-9]{0,9})", env.get("YULIUS_CI_REF") or "")
+    return int(match.group(1)) if env.get("YULIUS_CI") == "1" and match else None
+
+
+def _git_ok(git, *args, what):
+    code, out = git(*args)
+    if code != 0:
+        raise Usage(f"preparing the CI scan failed: {what} (git {args[0]} exit {code})")
+    return out.strip()
+
+
+def ci_clone(git, scratch, number):
+    """See `_ci_clone`; a file-system error is "not run" (exit 2), like any other preparation
+    failure, never a failed scan."""
+    try:
+        return _ci_clone(git, scratch, number)
+    except OSError as err:
+        raise Usage(f"preparing the CI scan failed: {err}") from err
+
+
+def _ci_clone(git, scratch, number):
+    """A private clone of the CI checkout's commit under `scratch`, on branch
+    `yulius-ci/pr-<number>`, for the CLI: `git` runs in the checkout. Its origin keeps the real URL
+    (Vidoc names the repository after it) and resolves, through a URL rewrite in the clone's own
+    configuration, to a bare mirror whose HEAD is origin's default branch as the sandbox last
+    fetched it; so the CLI's `ls-remote`, `remote show` and `fetch` answer as GitHub would. Objects
+    are shared through alternates, and nothing is written to the shared clone."""
+    url = _git_ok(git, "config", "--get", "remote.origin.url", what="the checkout has no origin")
+    code, head = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    prefix = "refs/remotes/origin/"
+    if code != 0 or not head.strip().startswith(prefix):
+        raise Usage("cannot tell origin's default branch in the CI checkout "
+                    "(refs/remotes/origin/HEAD is not set)")
+    default = head.strip()[len(prefix):]
+    base = _git_ok(git, "rev-parse", "--verify", "--quiet", f"{prefix}{default}^{{commit}}",
+                   what=f"origin/{default} is not in the checkout")
+    commit = _git_ok(git, "rev-parse", "--verify", "HEAD^{commit}", what="HEAD has no commit")
+    common = _git_ok(git, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                     what="the checkout's repository cannot be found")
+    objects = str(Path(common) / "objects") + "\n"
+    mirror, clone = Path(scratch) / "origin.git", Path(scratch) / "repo"
+    _git_ok(git_in(scratch), "init", "--quiet", "--bare", str(mirror), what="creating the mirror")
+    (mirror / "objects" / "info" / "alternates").write_text(objects)
+    in_mirror = git_in(mirror)
+    _git_ok(in_mirror, "update-ref", f"refs/heads/{default}", base, what="the mirror's branch")
+    _git_ok(in_mirror, "symbolic-ref", "HEAD", f"refs/heads/{default}", what="the mirror's HEAD")
+    _git_ok(git_in(scratch), "init", "--quiet", str(clone), what="creating the clone")
+    (clone / ".git" / "objects" / "info" / "alternates").write_text(objects)
+    in_clone = git_in(clone)
+    for args in (("remote", "add", "origin", url),
+                 ("config", f"url.{mirror}.insteadOf", url),
+                 ("update-ref", f"{prefix}{default}", base),
+                 ("symbolic-ref", f"{prefix}HEAD", f"{prefix}{default}"),
+                 ("checkout", "--quiet", "-b", f"yulius-ci/pr-{number}", commit)):
+        _git_ok(in_clone, *args, what=f"the clone ({args[0]})")
+    return clone
+
+
 def check_scan(scan, scan_id, branch):
     """The scan's codebase ID once it is this run's completed scan of `branch`."""
     if not isinstance(scan, dict) or scan.get("id") != scan_id:
@@ -436,6 +502,7 @@ def main(root=None, env=None):
     env = dict(os.environ) if env is None else env
     install_signal_handlers()
     log = None
+    scratch = None
     try:
         if not switch(root):
             committed_switch(git_in(root))
@@ -449,17 +516,30 @@ def main(root=None, env=None):
             subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=tool,
                            check=True, timeout=NPM_TIMEOUT_S)
             mark_installed(tool)
+        scan_root = root
+        number = ci_pull_request(env)
+        if number is not None:
+            try:
+                scratch = Path(tempfile.mkdtemp(prefix="vidoc-ci-"))
+            except OSError as err:
+                raise Usage(f"preparing the CI scan failed: {err}") from err
+            scan_root = ci_clone(git_in(root), scratch, number)
+            print(f"Vidoc: Yulius CI pull request #{number}: scanning its head in a private clone "
+                  f"on branch yulius-ci/pr-{number}.", flush=True)
         handle, name = tempfile.mkstemp(prefix="vidoc-", suffix=".log")
         os.close(handle)
         log = Path(name)
-        cli = run_cli([str(tool / "node_modules" / ".bin" / "vidoc")], root, CLI_TIMEOUT_S)
-        code = gate(env, git_in(root), Api(url, token), cli, log, sys.stdout)
+        cli = run_cli([str(tool / "node_modules" / ".bin" / "vidoc")], scan_root, CLI_TIMEOUT_S)
+        code = gate(env, git_in(scan_root), Api(url, token), cli, log, sys.stdout)
     except Usage as err:
         print(f"Security scan not run: {err}", file=sys.stderr)
         code = 2
     except (Failed, subprocess.CalledProcessError, subprocess.TimeoutExpired) as err:
         print(f"Security scan failed: {err}", file=sys.stderr)
         return 1
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     if log is not None and code != 1:
         log.unlink(missing_ok=True)
     return code

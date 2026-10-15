@@ -17,7 +17,8 @@
 //!   job checkouts);
 //! - a run's jobs run in parallel, each holding one of [`CiSettings::max_jobs`] instance-wide
 //!   slots; a job runs through the process host ([`crate::ports::session::SessionHost`]) inside
-//!   the sandbox's containment, with no secret in its environment, for at most
+//!   the sandbox's containment, with no secret in its environment (only the placeholders and
+//!   egress proxy of the agent secrets its integration branch entry grants, SPEC-142), for at most
 //!   [`CiSettings::job_timeout`]; cancellation and timeouts kill the job's process group, and
 //!   the host is terminated when the exit is not seen within [`KILL_GRACE`];
 //! - output is the job's log file, read while it runs, kept as the last [`OUTPUT_BYTES`]
