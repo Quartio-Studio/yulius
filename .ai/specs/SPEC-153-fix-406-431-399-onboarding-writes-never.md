@@ -1,11 +1,11 @@
 ---
 yulius-task: d77e8c62-5100-42ca-a9f4-808194f0028c
-status: in-progress
+status: done
 ---
 
 # SPEC-153: onboarding writes never undo a Skip; archive test and wording; a task that never ran is not Closed
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #126 (part of task #118, SPEC-138 lanes)
 Scope authorization: the person's request (task #126): fix GitHub issues #406, #431 and #399, all
@@ -75,8 +75,8 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 - [x] The web UI shows Not started and Waits for Start onboarding outside Closed
 - [x] Docs, ADR and changes
 - [x] Round-1 review findings fixed test-first
-- [ ] Round-2 review approves the current head
-- [ ] Gates green, evidence and delivery
+- [x] Round-2 review approves the current head
+- [x] Gates green, evidence and delivery
 
 ## Acceptance criteria
 
@@ -137,3 +137,39 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
   task page) read only the task; the sandbox state there may be stale. The server knows both.
 - **The mock nit of #406** was already done by #405. The server's matching order was checked
   (OLC-002): it holds, so only a regression test is added.
+
+## Evidence
+
+- Checked on `dev` first: none of the three was fixed. `start_onboarding` re-read the sandbox
+  and wrote `preparing` unconditionally; no test archived a live Done onboarding task; a never-run
+  task read "Closed". The #406 mock nit was already done by #405.
+- Test-first, each failing before its fix:
+  - `task_done::a_skip_during_start_onboarding_stays_skipped`: the audit read
+    `["pending -> skipped", "skipped -> preparing"]` and the sandbox `preparing`.
+  - `task_done::a_done_onboarding_task_is_archived_and_the_sandbox_is_ready` passes, and fails
+    with `close_task_now` swapped in (409 "the project waits for this onboarding task").
+  - `task_delete::closing_a_switching_task_for_deletion_is_refused_at_once` with the new wording.
+  - `import_server::onboarding_starts_only_from_the_browser` and
+    `import_server::a_skipped_onboarding_task_reads_not_started`: `not_started` was `null`.
+  - `task_done::a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person` (review round
+    1): only `system` was audited.
+  - e2e `onboarding.e2e.ts` "the onboarding task a new task waits for reads Waits for Start
+    onboarding, not Closed": the row read "Closed · 0/6 steps … closed just now".
+  - `import_server::a_refused_new_task_creates_no_onboarding_task` passed before any change
+    (OLC-002 already held); kept as a regression test.
+- Store: `onboarding_transitions_only_from_the_state_read` passes.
+- e2e: `onboarding.e2e.ts` 13/13 and `consistency.e2e.ts` pass; `archive.e2e.ts` 7/7 alone. Run
+  together with other files at load average 40-90, four `archive.e2e.ts` tests and one onboarding
+  test failed and passed on rerun (the races task #134 fixes, #354, #349).
+- `scripts/dev ci` on `71d11c6f`: check, fmt, clippy `-D warnings`, deny and shear passed; nextest
+  1810 tests, 1809 passed, 1 failed: `first_message::a_launch_goal_unrecorded_across_a_restart_is_watched_again`
+  timed out waiting for its flag at load average ~50. It passes alone 3/3 (about 6 s each). It is
+  the open flake #514 (SPEC-146's test), untouched by this change.
+- `scripts/dev security`: not run, exit 2. Vidoc rejects the key (HTTP 401, #470); unrun under
+  ADR-0104.
+- Independent review: round 1 approved `65d966a8` with five minors and three nits, all fixed in
+  `c021ece9`. Round 2 approved `ddda7bbb` with one minor (audit the starter also when a refresh
+  wrote `ready`) and nits, fixed in `71d11c6f`.
+- Not exercised here: a real Claude Code onboarding in production (the fake agent drives the real
+  ptyhost); the defensive 409 of a skip that keeps losing, which cannot be reached while the
+  state only moves forward under the lock.
