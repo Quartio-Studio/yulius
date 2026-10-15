@@ -1245,9 +1245,12 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-chart { height: 160px; border-radius: var(--radius); }
 .skeleton-spark { border-radius: var(--radius-sm); }
 .skeleton-button { flex: none; width: 72px; height: var(--control-md); border-radius: var(--radius); }
+.skeleton-button-sm { height: var(--control-sm); }
 .skeleton-dot { display: block; flex: none; width: 16px; height: 16px; border-radius: 50%; }
 .tl-chips-loading { display: flex; gap: 8px; }
 .tl-chips-loading[hidden] { display: none; }
+/* A radio in a choice row (SHAPES.rows): about the room Chrome's radio takes with its margins. */
+.skeleton-radio { flex: none; width: 12px; height: 12px; margin: 4px; border-radius: 50%; }
 .skeleton-chip { width: 88px; height: var(--control-lg); border-radius: var(--radius-full); }
 .tl-tabs[aria-busy="true"] .tl-tab { cursor: default; }
 .tl-tabs[aria-busy="true"] .tl-tab:hover { background: transparent; color: var(--text-2); }
@@ -1283,8 +1286,10 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* A narrow centre (a tool panel open beside it): the step name, then the state and count give way,
    so the strip's parts never overlap (UI-046). */
 @container strip (max-width: 560px) {
-  .step-progress { width: 60px; }
-  .step-current, .strip-extra { display: none; }
+  /* `.stepstrip` outranks the base rules that come later (they kept the bar at 120 px and the
+     chips' box shown, #348). */
+  .stepstrip .step-progress { width: 60px; }
+  .step-current, .stepstrip .strip-extras { display: none; }
 }
 @container strip (max-width: 420px) {
   .strip-state, .step-count { display: none; }
@@ -1317,6 +1322,10 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }
 .strip-extras { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .strip-extras:empty { display: none; }
+/* Parts that gave way so the strip keeps within its edge (#348, fitStrip in taskview.js); while
+   the chips decide, the state keeps its words, so chips go first. */
+.stepstrip-main .strip-gone { display: none; }
+.strip-fitting .strip-status { flex-shrink: 0; }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; min-width: 30px; max-width: 40%; height: var(--control-sm); padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
 .strip-status .glyph { flex: none; }
 .strip-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -2216,7 +2225,7 @@ a.dl-task:hover { text-decoration: underline; }
   .quickbar { display: flex; }
   .step-progress { width: 60px; }
   /* Phones: the task title keeps the strip; state shows as its icon, the step as the bar (UX2-06). */
-  .strip-state, .strip-extra, .step-count { display: none; }
+  .strip-state, .strip-extras, .step-count { display: none; }
   .step-current { display: none; }
   .stepstrip-toggle { min-width: 0; }
   .composer { padding-top: 16px; }
@@ -2241,7 +2250,9 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-root { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(120px, min(var(--ed-side-w, max(160px, 22%)), calc(100% - 240px))) minmax(0, 1fr); }
 .ed-side { position: relative; z-index: var(--z-raised); display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--border); background: var(--surface); }
 .ed-tree-head { display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; font-size: var(--fs-xs); line-height: var(--lh-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--border); }
-.ed-tree-head > span { flex: 1; }
+/* The label gives way at the Explorer's narrowest (EDT-013): it shortens, the buttons never leave. */
+.ed-tree-head > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-tree-head > button { flex: none; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font-size: var(--fs); line-height: var(--lh); }
 .ed-row { display: flex; align-items: center; gap: 4px; height: var(--control-sm); padding-right: 8px; white-space: nowrap; cursor: pointer; user-select: none; }
 .ed-row:hover { background: var(--overlay-hover); }
@@ -2347,6 +2358,7 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-empty[hidden] { display: none; }
 .ed-status { display: flex; gap: 12px; align-items: center; height: 22px; padding: 0 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); border-top: 1px solid var(--border); background: var(--surface); flex: none; overflow: hidden; white-space: nowrap; }
 .ed-status > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.ed-status > .ed-disk-changed { color: var(--warn-fg); }
 /* Dropped files (EDT-006, UI-048): the drop overlay says where files go (or why they cannot),
    the explorer marks the folder under the pointer, and a batch shows its progress and errors —
    at the foot of the explorer, or floating over a terminal. */

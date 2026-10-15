@@ -2071,15 +2071,20 @@ route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   const path = repoPath(query.get('path'));
   if (!tree.files.has(path)) fail(404, 'not_found', 'not found');
   const content = tree.files.get(path);
+  const known = query.get('known');
+  if (known !== null && !/^[0-9a-f]{64}$/.test(known)) fail(422, 'invalid', 'known is 64 lowercase hex digits');
+  if (known === mockSha(content)) return json(204);
   if (tree.binary && tree.binary.has(path)) return { path, content: null, binary: true, too_large: false, size: content.length, sha256: mockSha(content) };
   return { path, content, binary: false, too_large: false, size: content.length, sha256: mockSha(content) };
 });
-route('PUT', `/api/sandboxes/${ID}/files/content`, ({ db, p, body }) => {
+route('PUT', `/api/sandboxes/${ID}/files/content`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const tree = repoTree(db, p[0], body.root || 'sandbox');
   const path = repoPath(body.path);
   if (typeof body.content !== 'string') fail(422, 'invalid', 'content is required');
   if (!isDir(tree, parentOf(path))) fail(404, 'not_found', 'the folder does not exist');
+  // `holdSave = promise`: the save waits there, the file still as it was (SPEC-181).
+  if (db.holdSave) await db.holdSave;
   const exists = tree.files.has(path);
   if (body.base_sha256 ? !exists || mockSha(tree.files.get(path)) !== body.base_sha256 : exists) fail(409, 'conflict', exists ? 'the file changed since it was read' : 'the file no longer exists');
   tree.files.set(path, body.content);
@@ -3581,6 +3586,20 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 async function handleFetch(db, url, init = {}) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests).
   if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
+  // The Editor's file reads, as asked, and whether a save of a file was on its way (SPEC-181).
+  const fileContent = /^\/api\/sandboxes\/[^/]+\/files\/content$/.test(new URL(url, ORIGIN).pathname);
+  if (fileContent && (init.method || 'GET') === 'GET') {
+    const asked = new URL(url, ORIGIN).searchParams;
+    (db.fileReads = db.fileReads || []).push({ path: asked.get('path'), known: asked.get('known'), whileSaving: (db.savesOnTheirWay || 0) > 0 });
+  }
+  if (fileContent && init.method === 'PUT') {
+    db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
+    try { return await handleFetchAfterLatency(db, url, init); } finally { db.savesOnTheirWay -= 1; }
+  }
+  return handleFetchAfterLatency(db, url, init);
+}
+
+async function handleFetchAfterLatency(db, url, init) {
   await delay(50 + Math.random() * 150);
   if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   const u = new URL(url, ORIGIN);

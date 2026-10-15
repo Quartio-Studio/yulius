@@ -837,3 +837,212 @@ test('a destroyed presence sends its waiting leave and arms no timer; only lost 
   });
   expect(result.retried).toEqual({ 403: [], 404: [], 409: [], 422: [], 429: [1000], 503: [1000], lost: [1000] });
 });
+
+// SPEC-181 EDT-013: at the Explorer's narrowest the label "Explorer" kept its width, so the header
+// overflowed the Explorer and its Refresh button painted over the first file tab (task #168).
+test('the Explorer header keeps its buttons inside the Explorer at its narrowest widths', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect(screen.getByRole('tab', /^README\.md/)).toBeVisible();
+  const geometry = () => browser.evaluate(() => {
+    const side = document.querySelector('.ed-side')!.getBoundingClientRect();
+    const tab = document.querySelector('.ed-tab')!.getBoundingClientRect();
+    const buttons = [...document.querySelectorAll('.ed-tree-head button')].map((button) => button.getBoundingClientRect());
+    return {
+      width: Math.round(side.width),
+      buttons: buttons.length,
+      outside: buttons.filter((box) => box.left < side.left - 0.5 || box.right > side.right + 0.5).length,
+      overTab: buttons.filter((box) => box.right > tab.left + 0.5).length,
+    };
+  });
+  // The separator's Home: the narrowest the person can drag it (140 px).
+  await screen.getByRole('separator', 'Resize explorer').focus();
+  await browser.keyboard.press('Home');
+  await expect.poll(geometry).toEqual({ width: 140, buttons: 3, outside: 0, overTab: 0 });
+  // The stylesheet's floor (a narrow panel): 120 px.
+  await browser.evaluate(() => (document.querySelector('.ed-root') as HTMLElement).style.setProperty('--ed-side-w', '1px'));
+  await expect.poll(geometry).toEqual({ width: 120, buttons: 3, outside: 0, overTab: 0 });
+});
+
+// SPEC-181 EDT-015: the file in front follows the disk. It used to be looked at only when its tab
+// came to the front, so an agent's or a teammate's writes never showed while the person watched.
+type LiveModel = {
+  getValue(): string;
+  getEOL(): string;
+  getOffsetAt(position: { lineNumber: number; column: number }): number;
+};
+type LiveEditor = {
+  getModel(): LiveModel | null;
+  getPosition(): { lineNumber: number; column: number } | null;
+  setPosition(position: { lineNumber: number; column: number }): void;
+  trigger(source: string, handler: string, payload: unknown): void;
+  focus(): void;
+};
+type LiveWindow = Window & {
+  monaco: { editor: { getEditors(): LiveEditor[] } };
+  __yuliusMock: {
+    repoFile(sandbox: string, path: string, text: string): void;
+    fileReads?: { path: string; known: string | null; whileSaving: boolean }[];
+    holdSave: Promise<void> | null;
+  };
+};
+const ON_DISK = 'alpha\nbeta\ngamma\n';
+const writeDisk = (browser: Browser, text: string) => browser.evaluate((t) => (window as unknown as LiveWindow).__yuliusMock.repoFile('sb_studio', 'notes.txt', t), text);
+const editorText = (browser: Browser) => browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0]?.getModel()?.getValue() ?? '');
+/** The file in front is looked at every 2 s: a condition with room for a few looks. */
+const LOOKS_MS = 10_000;
+
+async function openLiveFile(app: { open(url: string): Promise<void> }, browser: Browser, screen: import('@e2e-dev/web').Screen) {
+  await app.open(mock('/s/studio/t/12'));
+  await writeDisk(browser, ON_DISK);
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'notes.txt').click();
+  await editorShown(browser);
+  await expect.poll(() => editorText(browser)).toBe(ON_DISK);
+  // The open's read and the activation's look have both been answered: what the disk does next is new.
+  await expect.poll(() => browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt').length)).toBeGreaterThanOrEqual(2);
+}
+
+test('the file in front shows what others write on disk, with the cursor on its text, quietly and undoably', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  // The cursor on "gamma"; a line arrives above it.
+  await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].setPosition({ lineNumber: 3, column: 3 }));
+  await writeDisk(browser, 'zero\nalpha\nbeta\ngamma\n');
+  await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('zero\nalpha\nbeta\ngamma\n');
+  expect(await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getPosition())).toEqual({ lineNumber: 4, column: 3 });
+  expect(await browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
+  expect(await browser.evaluate(() => document.body.innerText.includes('changed on disk and was reloaded'))).toBe(false);
+  // While nothing changes, the looks carry the known version and get no body.
+  const reads = () => browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt'));
+  const before = (await reads()).length;
+  await expect.poll(async () => (await reads()).length, { timeout: LOOKS_MS }).toBeGreaterThan(before);
+  expect((await reads()).slice(before).every((read) => typeof read.known === 'string' && read.known.length === 64)).toBe(true);
+  // The reload is its own undo step.
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.trigger('keyboard', 'undo', null); });
+  expect(await editorText(browser)).toBe(ON_DISK);
+});
+
+test('unsaved edits are kept when the disk moves on, and saving asks to overwrite or reload', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await expect.poll(() => editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await writeDisk(browser, 'theirs\n');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? ''), { timeout: LOOKS_MS }).toContain('Changed on disk');
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await browser.keyboard.press('Control+s');
+  const dialog = screen.getByRole('dialog', /changed on disk/);
+  await expect(dialog.getByRole('button', 'Overwrite')).toBeVisible();
+  await dialog.getByRole('button', 'Reload from disk').click();
+  await expect.poll(() => editorText(browser)).toBe('theirs\n');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).not.toContain('Changed on disk');
+});
+
+test('the Editor looks at the disk only while it is shown', async ({ app, browser, screen }) => {
+  // The look's timer is held here, so each look happens when the test says.
+  await app.open(mock('/s/studio/t/12'));
+  await browser.evaluate(async () => {
+    const { LOOK_MS } = await import('/assets/editorview.js');
+    const w = window as unknown as Window & { __looks: (() => void)[] };
+    w.__looks = [];
+    const real = window.setInterval.bind(window);
+    window.setInterval = ((fn: () => void, delay?: number, ...rest: unknown[]) => {
+      if (delay === LOOK_MS) { w.__looks.push(fn); return 0; }
+      return real(fn, delay, ...rest);
+    }) as typeof window.setInterval;
+  });
+  await writeDisk(browser, ON_DISK);
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'notes.txt').click();
+  await editorShown(browser);
+  await expect.poll(() => editorText(browser)).toBe(ON_DISK);
+  const reads = () => browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt').length);
+  const look = () => browser.evaluate(() => (window as unknown as { __looks: (() => void)[] }).__looks.forEach((fn) => fn()));
+  expect(await browser.evaluate(() => (window as unknown as { __looks: unknown[] }).__looks.length)).toBe(1);
+
+  // Shown: the timer looks (it skips while the activation's look is still on its way).
+  const shown = await reads();
+  await expect.poll(async () => { await look(); return reads(); }).toBeGreaterThan(shown);
+
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  const hidden = await reads();
+  await writeDisk(browser, 'while hidden\n');
+  await look();
+  await look();
+  expect(await reads()).toBe(hidden);
+
+  // Back in front, it looks at once, before the timer's next look: that one look, no other.
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Editor').click();
+  await expect.poll(() => editorText(browser)).toBe('while hidden\n');
+  expect(await reads()).toBe(hidden + 1);
+});
+
+// Review of SPEC-181: a look started while the file saves (its tab clicked) could be answered with
+// the text from before the save after the save ended, and put that text back as if saved.
+test('no look at the disk starts while the file in front saves, whichever way it is asked for', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await browser.evaluate(() => {
+    const w = window as unknown as LiveWindow & { __releaseSave(): void };
+    const m = w.__yuliusMock;
+    m.holdSave = new Promise((resolve) => { w.__releaseSave = () => { m.holdSave = null; resolve(); }; });
+  });
+  await browser.keyboard.press('Control+s');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saving');
+  await screen.getByRole('tab', /^notes\.txt/).click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'notes.txt').click();
+  await browser.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await browser.evaluate(() => (window as unknown as LiveWindow & { __releaseSave(): void }).__releaseSave());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
+  const during = await browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt' && read.whileSaving).length);
+  expect(during).toBe(0);
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+});
+
+// Review of SPEC-181: Monaco gives inserted text the model's line ending, so a file that went from
+// LF to CRLF on disk kept LF in the editor, and its next save rewrote every line ending.
+test('a change of line endings on disk reaches the editor, and a BOM file keeps its cursor', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  const eol = () => browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getModel()?.getEOL());
+  expect(await eol()).toBe('\n');
+  await writeDisk(browser, 'alpha\r\nbeta\r\ngamma\r\n');
+  await expect.poll(eol, { timeout: LOOKS_MS }).toBe('\r\n');
+  expect(await editorText(browser)).toBe('alpha\r\nbeta\r\ngamma\r\n');
+
+  // Monaco keeps a BOM out of its text: a line added above moves the cursor down, nothing more.
+  await writeDisk(browser, '\uFEFFone\ntwo\n');
+  await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('one\ntwo\n');
+  expect(await eol()).toBe('\n');
+  await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].setPosition({ lineNumber: 2, column: 2 }));
+  await writeDisk(browser, '\uFEFFzero\none\ntwo\n');
+  await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('zero\none\ntwo\n');
+  expect(await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getPosition())).toEqual({ lineNumber: 3, column: 2 });
+});
+
+// Review round 2 of SPEC-181: an Overwrite after a conflict saved with `saving` already cleared, so
+// a look could start while its write was on its way and put the other text back as saved.
+test('no look at the disk starts while an Overwrite after a conflict saves', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await writeDisk(browser, 'theirs\n');
+  await browser.keyboard.press('Control+s');
+  const dialog = screen.getByRole('dialog', /changed on disk/);
+  await expect(dialog.getByRole('button', 'Overwrite')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as LiveWindow & { __releaseSave(): void };
+    const m = w.__yuliusMock;
+    m.holdSave = new Promise((resolve) => { w.__releaseSave = () => { m.holdSave = null; resolve(); }; });
+  });
+  await dialog.getByRole('button', 'Overwrite').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { savesOnTheirWay?: number } }).__yuliusMock.savesOnTheirWay ?? 0)).toBe(1);
+  await screen.getByRole('tab', /^notes\.txt/).click();
+  await browser.evaluate(() => (window as unknown as LiveWindow & { __releaseSave(): void }).__releaseSave());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
+  const during = await browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt' && read.whileSaving).length);
+  expect(during).toBe(0);
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+});

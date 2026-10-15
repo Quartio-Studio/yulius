@@ -13,6 +13,23 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   tail of a long session first). "You are watching @owner's task" sits above it with Request
   control, the sidebar shows the owner's initials on their tasks, and an electro-blue pixel octopus
   with dot eyes and an ε mouth crawls between the top corners. New `GET /api/tasks/{tid}/transcript`.
+- The step strip never overflows, the keyboard survives a hidden Archive, and the last loading
+  states take their final shape (SPEC-182, ADR-0147, task #138, fixes #348, #331, #407, #449). The
+  task step strip gives way whole parts by priority (chain chips, Auto, Supertask, then the bar and
+  the pull request chip) so it never passes its edge and Task actions stays clickable beside a
+  panel; its bar is 60 px in narrow strips as SPEC-073 meant. The keyboard on a quick Archive that
+  hides moves to its row's link. The automation editor's loading start chip is a skeleton bar and
+  its Supertask tooltip reads as New task's. The New sandbox lists, the delivery and CI run dialogs,
+  a task's changes, commits and overview, and the CI hygiene and GitHub connection cards load in
+  their final layout.
+- The Editor's file in front follows the disk, and the Explorer's buttons stay in the Explorer
+  (SPEC-181, ADR-0146, task #168). While the Editor is shown, the file in front is looked at every
+  2 s (and at once when the Editor or the page comes back) with `known=<sha256>`; the files API
+  answers 204 while the file is unchanged. What teammates, agents or shells wrote replaces unedited
+  text as one undoable edit of the changed part, so the cursor stays with its text and no toast
+  repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
+  shortens at its narrowest instead of pushing the Refresh button over the first file tab.
+  Co-editing of unsaved text is #566.
 - The Superagent reads the agent vault (SPEC-178, ADR-0144, task #165): `secrets_list` names its
   project's agent secrets (never values) with guidance for a session outside the proxy, and the
   new `secret_verify {secret, sha256}`, the Superagent's only, tells whether a value the person holds

@@ -98,9 +98,35 @@ export function mountTaskView(ctx, sandbox, task) {
   const toggleButton = h('button', { type: 'button', class: 'stepstrip-toggle', 'aria-expanded': String(stripOpen) }, icon('right', { size: 14 }), stripLabel);
   const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, current), { 'aria-haspopup': 'menu' });
   const stepList = h('div', { class: 'steplist', hidden: !stripOpen });
-  const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] },
-    h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, extrasEl, deliveryEl, kebab),
-    stepList);
+  const stripMain = h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, extrasEl, deliveryEl, kebab);
+  const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] }, stripMain, stepList);
+  /**
+   * The strip never passes its edge (#348): parts give way whole, lowest priority first. The chain
+   * chips (the last first), Auto or Goal, then Supertask go while the state keeps its words; then
+   * the state's words shrink (SPEC-073), then the bar and the pull request chip go. The label, the
+   * state's icon and Task actions stay. Runs after every paint of the strip, when it resizes and
+   * when a web font finishes loading.
+   */
+  function fitStrip() {
+    for (const el of stripMain.querySelectorAll('.strip-gone')) el.classList.remove('strip-gone');
+    const over = () => stripMain.scrollWidth > stripMain.clientWidth;
+    const give = (el) => {
+      // The keyboard on a part that goes stays in the strip, on its label.
+      if (el.contains(document.activeElement)) toggleButton.focus({ preventScroll: true });
+      el.classList.add('strip-gone');
+    };
+    stripMain.classList.add('strip-fitting');
+    const chips = [...extrasEl.children].reverse();
+    for (const chip of chips) { if (!over()) break; give(chip); }
+    extrasEl.classList.toggle('strip-gone', chips.length > 0 && chips.every((chip) => chip.classList.contains('strip-gone')));
+    stripMain.classList.remove('strip-fitting');
+    for (const part of [progress, deliveryEl]) { if (!over()) break; give(part); }
+  }
+  const stripSize = new ResizeObserver(() => fitStrip());
+  stripSize.observe(stripMain);
+  // A web font that lands later changes the parts' widths, not the row's.
+  document.fonts.addEventListener('loadingdone', fitStrip);
+  destroyers.push(() => { stripSize.disconnect(); document.fonts.removeEventListener('loadingdone', fitStrip); });
   toggleButton.addEventListener('click', () => {
     stripOpen = !stripOpen;
     writeJson(STRIP_KEY, stripOpen);
@@ -615,6 +641,7 @@ export function mountTaskView(ctx, sandbox, task) {
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
       next);
+    fitStrip();
   }
 
   function renderStepList() {
@@ -661,7 +688,10 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   let delivery = null;
-  const renderDelivery = () => keepFocus(deliveryEl, () => setChildren(deliveryEl, deliveryStrip(ctx, current, delivery, { canAct: allows(sandbox.access, 'write'), reload: loadDelivery })));
+  const renderDelivery = () => {
+    keepFocus(deliveryEl, () => setChildren(deliveryEl, deliveryStrip(ctx, current, delivery, { canAct: allows(sandbox.access, 'write'), reload: loadDelivery })));
+    fitStrip();
+  };
   // Optional: the strip works without it (no GitHub, no branch yet), so a failed read stays quiet.
   const loadDelivery = singleFlight(async () => {
     try {

@@ -20,6 +20,20 @@ function box(browser: Browser, selector: string): Promise<Box | null> {
   }, selector);
 }
 
+/**
+ * The rectangle of the first element matching `selector` in an open dialog, its y measured from
+ * the dialog body's top: a centred dialog moves as its content grows.
+ */
+function dialogBox(browser: Browser, selector: string): Promise<Box | null> {
+  return browser.evaluate((s) => {
+    const el = document.querySelector(`.modal .modal-body ${s}`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const top = el.closest('.modal-body')!.getBoundingClientRect().top;
+    return { x: r.x, y: r.y - top, width: r.width, height: r.height };
+  }, selector);
+}
+
 /** `actual` sits where `expected` is: the named edges and sizes within 2 px. */
 function expectSameBox(actual: Box | null, expected: Box | null, keys: (keyof Box)[] = ['x', 'y', 'width', 'height']): void {
   expect(actual).not.toBeNull();
@@ -43,6 +57,15 @@ async function expectQuietShape(browser: Browser, root: string): Promise<void> {
 }
 
 const release = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+
+type Holding = { __yuliusMock: { holdPath: string | null; held: Promise<void> | null; release: () => void; released: boolean } };
+/** Holds the mock's GET answers for `path` from now on, as `hold=` does from the page load. */
+const holdNow = (browser: Browser, path: string) => browser.evaluate((p) => {
+  const db = (window as unknown as Holding).__yuliusMock;
+  db.holdPath = p;
+  db.released = false;
+  db.held = new Promise<void>((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+}, path);
 
 test('a page of item cards loads as item cards where the cards will be', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/workflows', '&hold=/api/sandboxes/sb_studio/workflows'));
@@ -278,4 +301,164 @@ test('loading shapes keep still under reduced motion and pass in the light theme
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(shape)).toHaveCount(0);
+});
+
+// #449: the loading states left as three text bars (SPEC-120 follow-up) load in their final layout.
+
+test('the New sandbox dialog’s repository and template lists load as their rows', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&hold=/api/github/repositories'));
+  await screen.getByRole('button', 'Import repository').click();
+  const shape = '.modal .card.list > .skeleton[role="status"]';
+  const inShape = '.card.list > .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading repositories…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .list-item`).count()).toBeGreaterThanOrEqual(3);
+  const row = await dialogBox(browser, `${inShape} .list-item`);
+  const title = await dialogBox(browser, `${inShape} .list-item .list-main`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(row, await dialogBox(browser, '.card.list > .list-item'), ['x', 'y', 'width']);
+  // The title bars start where the names land, after the radio.
+  expectSameBox(title, await dialogBox(browser, '.card.list > .list-item .list-main'), ['x']);
+
+  // The templates, under the playground's fields: rows with a name and a line under it.
+  await holdNow(browser, '/api/templates');
+  await browser.locator('.modal label:has-text("Playground")').first().click();
+  await expect(screen.getByRole('dialog', 'Add sandbox').getByRole('radio', 'Playground')).toBeChecked();
+  await expect(browser.locator(shape)).toHaveText('Loading templates…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .list-item .list-sub`).count()).toBeGreaterThanOrEqual(2);
+  const template = await dialogBox(browser, `${inShape} .list-item`);
+  const name = await dialogBox(browser, `${inShape} .list-item .list-main`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(template, await dialogBox(browser, '.card.list > .list-item'), ['x', 'y', 'width']);
+  expectSameBox(name, await dialogBox(browser, '.card.list > .list-item .list-main'), ['x']);
+});
+
+test('the delivery and CI run dialogs load as their sections', async ({ app, browser, screen }) => {
+  // Delivery: the stage track over the Pull request, Task spec and Next cards. The strip reads the
+  // delivery when the task opens; the dialog's read is held after that.
+  await app.open(mock('/s/studio/t/13'));
+  await expect(browser.locator('.taskview .strip-pr')).toHaveText(/^PR #520/);
+  await holdNow(browser, '/api/tasks/tsk_studio_13/delivery');
+  await browser.locator('.taskview .strip-pr').click();
+  let shape = '.modal .modal-body > .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading delivery…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .stage-track > .stage`).count()).toBeGreaterThanOrEqual(4);
+  expect(await browser.locator(`${shape} .card`).count()).toBe(3);
+  const track = await dialogBox(browser, `> .skeleton[role="status"] .stage-track`);
+  const card = await dialogBox(browser, `> .skeleton[role="status"] .card`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(track, await dialogBox(browser, '.stage-track'), ['x', 'y', 'width']);
+  // A note that comes with the read can sit above the cards: their columns are compared.
+  expectSameBox(card, await dialogBox(browser, '.card'), ['x', 'width']);
+  await browser.keyboard.press('Escape');
+  await expect(browser.locator('.modal')).toHaveCount(0);
+
+  // A CI run: its head line, the job tabs and the output box (its stages load after the run).
+  await app.open(mock('/s/studio/ci?run=ci_s3', '&hold=/api/sandboxes/sb_studio/ci/runs/ci_s3'));
+  shape = '.modal .modal-body > .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading the CI run…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .ci-tabs > .ci-tab`).count()).toBeGreaterThanOrEqual(2);
+  const head = await dialogBox(browser, `> .skeleton[role="status"] .row-wrap`);
+  const tabs = await dialogBox(browser, `> .skeleton[role="status"] .ci-tabs`);
+  const output = await dialogBox(browser, `> .skeleton[role="status"] .run-output`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  await expect(screen.getByRole('dialog', 'CI run').getByRole('tab', /lint/)).toBeVisible();
+  expectSameBox(head, await dialogBox(browser, '.row-wrap'), ['x', 'y', 'width']);
+  expectSameBox(tabs, await dialogBox(browser, '.ci-tabs'), ['x', 'width']);
+  expectSameBox(output, await dialogBox(browser, '.run-output'), ['x', 'width']);
+});
+
+test('a task’s changes, commits and overview load in their own layouts', async ({ app, browser, screen }) => {
+  const shape = '#main .skeleton[role="status"]';
+  // Changes: the toolbar, the file tree beside the files' summary line and file cards.
+  await app.open(mock('/s/studio/git/t/12', '&hold=/api/tasks/tsk_studio_12/changes'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Checkout API/);
+  await expect(browser.locator(shape)).toHaveText('Loading changes…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .gt-tree .gt-tree-row`).count()).toBeGreaterThanOrEqual(3);
+  expect(await browser.locator(`${shape} .gt-files > .gt-file`).count()).toBeGreaterThanOrEqual(2);
+  const toolbar = await box(browser, `${shape} .gt-toolbar`);
+  const tree = await box(browser, `${shape} .gt-tree`);
+  const file = await box(browser, `${shape} .gt-file`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(toolbar, await box(browser, '#main .gt-toolbar'), ['x', 'y', 'width', 'height']);
+  expectSameBox(tree, await box(browser, '#main .gt-tree'), ['x', 'y', 'width']);
+  expectSameBox(file, await box(browser, '#main .gt-file'), ['x', 'y', 'width']);
+
+  // Commits: rows of the commit list, as tall as the loaded ones.
+  await app.open(mock('/s/studio/git/t/12?tab=commits', '&hold=/api/tasks/tsk_studio_12/commits'));
+  await expect(browser.locator(shape)).toHaveText('Loading commits…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .gt-commits > .gt-commit`).count()).toBeGreaterThanOrEqual(3);
+  const commit = await box(browser, `${shape} .gt-commit`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(commit, await box(browser, '#main .gt-commit'), ['x', 'y', 'width', 'height']);
+
+  // The task overview: its six figures, then the Plan and Details cards.
+  await app.open(mock('/s/studio/tasks/12', '&hold=/api/tasks/tsk_studio_12'));
+  await expect(browser.locator(shape)).toHaveText('Loading the task…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .ti-facts > .ti-stat`).count()).toBe(6);
+  expect(await browser.locator(`${shape} .ti-columns > .ti-card`).count()).toBe(2);
+  const facts = await box(browser, `${shape} .ti-facts`);
+  const fact = await box(browser, `${shape} .ti-stat`);
+  const columns = await box(browser, `${shape} .ti-columns`);
+  const plan = await box(browser, `${shape} .ti-columns > .ti-card`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(facts, await box(browser, '#main .ti-facts'), ['x', 'y', 'width']);
+  expectSameBox(fact, await box(browser, '#main .ti-stat'), ['x', 'y', 'width']);
+  // The figures' height follows how their words wrap: the cards below keep their columns.
+  expectSameBox(columns, await box(browser, '#main .ti-columns'), ['x', 'width']);
+  expectSameBox(plan, await box(browser, '#main .ti-columns > .ti-card'), ['x', 'width']);
+});
+
+test('the CI hygiene and GitHub connection cards load as their cards', async ({ app, browser, screen }) => {
+  // Hygiene, under the CI runs (read apart): its head line with the controls' room, then its list.
+  await app.open(mock('/s/studio/ci', '&hold=/api/sandboxes/sb_studio/hygiene'));
+  let shape = '#main .skeleton[role="status"]:has(.ci-hygiene)';
+  await expect(browser.locator(shape)).toHaveText('Loading the repository hygiene…');
+  await expectQuietShape(browser, shape);
+  // Measured once the runs above it have landed.
+  await expect(browser.locator('#main .item-card').first()).toBeVisible();
+  await expect(browser.locator('#main .skeleton[role="status"]:has(.ci-heading)')).toHaveCount(0);
+  const card = await box(browser, `${shape} .card`);
+  const list = await box(browser, `${shape} .ci-hygiene`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(card, await box(browser, '#main section[aria-label="Repository hygiene"]'), ['x', 'y', 'width']);
+  expectSameBox(list, await box(browser, '#main .ci-hygiene'), ['x', 'y', 'width']);
+
+  // The GitHub connection: its state line, the App and owner, the next step.
+  await app.open(mock('/admin/github', '&hold=/api/admin/github'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('GitHub connection');
+  shape = '#main .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading the GitHub connection…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .card .kv > dt`).count()).toBe(2);
+  const connection = await box(browser, `${shape} .card`);
+  const facts = await box(browser, `${shape} .card .kv`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  await expect(screen.getByText('Connected')).toBeVisible();
+  expectSameBox(connection, await box(browser, '#main .card'), ['x', 'y', 'width']);
+  expectSameBox(facts, await box(browser, '#main .card .kv'), ['x', 'y', 'width']);
 });
