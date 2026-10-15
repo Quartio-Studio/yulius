@@ -87,8 +87,8 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 | E2L-001 | The e2e runner serves the UI with `e2e/serve.py`: Python's static file handler over HTTP/1.1 keep-alive, with a listen queue of 1024 connections. A connection made while the server is busy waits in the queue instead of having its SYN dropped, and one connection carries several requests. | `scripts/test_e2e_serve.py`; loaded runs (Evidence) |
 | E2L-002 | `loadMonaco()` resolves only when all of `editor.main` has run, whatever `window.monaco` says; `ensureEditor()` makes one editor per view even when files are opened while Monaco loads. | `editor.e2e.ts` "a second file opened while the editor loads waits for all of Monaco: one editor, no errors" |
 | E2L-003 | Tests touch `window.monaco.editor` only after the Editor shows a Monaco editor (`editorShown` in `support.ts`, the DOM's `.ed-host .monaco-editor`). The Editor's first opening in a test waits for it with the cold load's budget (`MONACO_LOAD_MS`, 60 s, as before in `terminal.e2e.ts` and `filedrop.e2e.ts`); every other wait keeps its default budget. | `editor.e2e.ts`, `terminal.e2e.ts`, `filedrop.e2e.ts`, `places.e2e.ts` |
-| E2L-005 | The Stopped toggle keeps its state and the keyboard when the sidebar list is rebuilt while it is folded and focused, and Enter still unfolds it. | `archive.e2e.ts` "the Stopped toggle keeps its state and the keyboard when the list is rebuilt between presses" (fails with a rebuild that resets the toggle) |
 | E2L-004 | The notes test that keeps text over a reload while loads fail reads the text only after a load that can succeed: once loads may succeed again it switches tabs, which loads the notepad at once, instead of waiting out a backoff that a busy machine stretches past 5 s. | `notes.e2e.ts` "text kept over a reload survives…" |
+| E2L-005 | The Stopped toggle keeps its state and the keyboard when the sidebar list is rebuilt while it is folded and focused, and Enter still unfolds it. | `archive.e2e.ts` "the Stopped toggle keeps its state and the keyboard when the list is rebuilt between presses" (fails with a rebuild that resets the toggle) |
 
 ## Plan
 
@@ -144,4 +144,40 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 
 ## Evidence
 
-To be filled in.
+All in task #134's sandbox (12 CPUs, shared with other tasks), on 2026-10-15. Load came from
+busy loops (`sh -c 'while :; do :; done'`) beside the runs, on top of the other tasks' work; the
+1-minute load average was sampled every 30 s and `TcpExtListenOverflows` read before and after.
+Every run used `CI=true` and the config's `retries: 0`.
+
+**Reproduction on the unchanged code** (an archive of `HEAD` before the changes, `d6489013`).
+- Full suite, 2 workers, 24 loops, load 8–53: 444 passed, 1 skipped, in 1134 s. The listen queue
+  overflowed 491 times during the run (141426 → 141917).
+- `notes`, `archive`, `editor` and `terminal` `--repeat-each 5 --workers 4`, 48 loops, load 33–74:
+  316 passed, 4 failed, in 1556 s; 660 listen overflows (141917 → 142577).
+  - `editor` "two people in one file…": 3 of 5 failed. One was #394 exactly (afterEach:
+    "Ws depends on UNKNOWN service ICodeLensCache" and four more); the other two at the step after
+    Bob closes his Editor (line 313): one with "no read completed" (the page did not answer an
+    evaluate within 5 s), one still showing Bob after 5 s.
+  - `editor` "the task terminal showing late…": 1 of 5 failed, `Editor content` not attached
+    after 5 s: Monaco's cold load (#356's editor failure).
+  - `archive` (35 runs) and `notes` (175 runs) passed at that load.
+  - `archive` "the keyboard stays on its control…" alone, `--repeat-each 20`, 2 workers, load 56:
+    20 of 20 passed.
+- #394 without load: holding the services chunk 15 s (`browser.route`) while the test polled
+  `monaco.editor.getEditors()` gave the five errors; holding it 20 s without the poll gave none,
+  and `window.monaco` was set at 5.1 s by `editor-BdtEMBbM.js`, at 24.8 s by `editor.main.js`.
+- #349 without load: a copy of the kept-text test that lets the backoff grow (until the mock
+  counted 8 note loads) before loads succeed: the text appeared 5.4 s after; the old ending failed
+  (`toHaveValue`, observed `""`), the new ending (a tab switch) passed.
+- Benchmark of the server alone (201 scripts and stylesheets, 3 clients × 6 connections, load
+  36): `http.server` 3.4–4.8 s a round, slowest request 1.06–1.51 s; `serve.py`'s settings
+  1.8–2.4 s, slowest 0.22–0.50 s.
+
+**Tests that fail without their change.**
+- `scripts/test_e2e_serve.py` with the stock settings: the burst test timed out connecting and
+  the keep-alive test read HTTP/1.0 (`10 != 11`); both pass with `serve.py`.
+- `editor.e2e.ts` "a second file opened while the editor loads…" without the `editorview.js`
+  change: "expected 2 to be 1" (two editors), "Element already has context attribute: ed-host" and
+  the five "UNKNOWN service" errors; passes with it.
+- `archive.e2e.ts` "the Stopped toggle keeps its state…" with a rebuild that resets the toggle
+  (mutation in `renderTasks`, reverted): `toHaveAttribute` failed; passes on the real code.
