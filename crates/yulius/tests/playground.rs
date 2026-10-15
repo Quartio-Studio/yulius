@@ -1718,8 +1718,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
 }
 
 /// Review round 1, major 1 (PCI-002): where both sides changed a `merge=union` file, the squash
-/// lands exactly the tree Yulius CI tested (Git orders a union by which side is "ours"), so the
-/// merged `dev` reuses the task's run.
+/// lands exactly the tree Yulius CI tested (Git orders a union by which side is "ours").
 #[tokio::test]
 async fn a_union_merged_file_lands_the_tested_tree() -> TestResult {
     let (h, owner) = ci_world().await?;

@@ -1,11 +1,11 @@
 ---
 yulius-task: 74d4c263-d6cc-4bee-b745-f30209b8bad0
-status: in-progress
+status: done
 ---
 
 # SPEC-163: Yulius CI runs the gate on a playground's task heads and its integration branch
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #130 (part of task #118, SPEC-138)
 Scope authorization: issue [#411](https://github.com/Quartio-Studio/yulius/issues/411), the
@@ -68,8 +68,8 @@ of it reaches GitHub.
 - [x] yulius wait and ci_status follow a playground task's run
 - [x] A playground's agents are told about its CI
 - [x] SPEC-099, ADR-0134, architecture and changes describe playground CI
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, delivered and merged into dev
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates green, delivered and merged into dev
 
 ## Acceptance criteria
 
@@ -122,3 +122,34 @@ of it reaches GitHub.
   promotion, which a playground does not have.
 - **The candidate builds are serialized per sandbox** with the existing armed-merge pass lock, so
   two merges never share the scratch checkout at once.
+
+## Evidence
+
+Run on the branch after merging `dev` (2026-10-15):
+
+- `scripts/dev ci` at 5df70105: exit 0. Repository contracts and script tests passed; nextest
+  `1831 tests run: 1831 passed, 18 skipped`; fmt, clippy with `-D warnings`, doctests, cargo-deny,
+  cargo-shear and rustdoc clean. An earlier run (before the review fixes) had one failure in
+  `first_message::a_manual_switch_of_a_held_first_message_keeps_its_image` ("task state changed
+  concurrently"), a timing-sensitive test this change does not touch; it passed 5 runs of 5 alone
+  and in the next full run.
+- `cargo test -p yulius --test main playground::`: 31 passed, among them the eight new ones
+  (`a_playgrounds_dev_is_tested_without_github`, `delivery_merge_tests_the_head_merged_into_dev_first`,
+  `a_failing_head_is_refused_and_its_armed_merge_dropped`, `an_armed_merge_follows_a_moved_dev`,
+  `a_persons_merge_waits_for_green`, `a_union_merged_file_lands_the_tested_tree`,
+  `a_reset_head_never_takes_a_later_heads_verdict`,
+  `a_persons_merge_without_required_checks_lands_at_once`). Each failed before its change: the
+  first because no run existed, the merge test because the squash landed at once, the review
+  regressions with the untested union order, a reset head merged on a later head's verdict and a
+  409 without required checks. The PLY tests pass unchanged (templates have no CI).
+- `cargo test -p yulius-domain --lib`: 330 passed (`refs_round_trip` with `task/<n>`; the
+  playground request and briefing texts).
+- `scripts/dev security`: exit 2, not run: Vidoc rejected the key (HTTP 401), the known state of
+  the agent secret since 2026-10-14 (ADR-0104: unrun, not passed).
+- Independent review: two rounds in a fresh session. Round 1 asked for changes (two majors: the
+  squash could land an untested `merge=union` order; a reset head could take a later head's
+  verdict; and minors), all fixed test-first; round 2 approved 5df70105.
+- Not tested here: a run that errors (a job timeout takes the job limit; same mapping as the other
+  states), a person merging while the agent's merge is armed (racy with the merge Yulius makes at
+  the run's end; the slot is cleared and the pass ends on a merged task), and a real agent's
+  `yulius wait` in a playground (the wait endpoint is exercised).
