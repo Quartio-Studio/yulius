@@ -12,6 +12,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   one-line placeholder (`Image 1`) at the caret, moved by drag, by cut and paste or by dragging its
   tray thumbnail into the text. × in the tray removes a file; a file without a placeholder is sent
   after the text.
+- A shell ends only when its host is proven gone; a launch `/goal` is watched again after a restart
+  (SPEC-146, ADR-0120, task #125, fixes #346 and #453). A terminal or the Superagent whose host
+  cannot be terminated stays live with its run directory, listed and closable again, and its
+  viewers are told; the Superagent's usage-limit move then starts no second Superagent on the
+  same conversation. A goal task whose launch `/goal` was not recorded when the server restarted is
+  watched again and flagged if Claude Code never takes it; a goal recorded meanwhile (also while
+  Yulius was down) is never flagged.
+
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
