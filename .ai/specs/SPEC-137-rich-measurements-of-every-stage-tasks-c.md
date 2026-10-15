@@ -1,11 +1,11 @@
 ---
 yulius-task: 72a9717c-ce79-4b0c-aa63-04eaf04ef7e2
-status: in-progress
+status: done
 ---
 
 # SPEC-137: every stage of tasks, CI and CD measured as it happens and shown as timelines and trends
 
-Status: in progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #116
 Scope authorization: the person's request (task #116): "We want rich measurements of every stage
@@ -115,10 +115,11 @@ Show (STG-4xx):
 - [ ] Waterfalls in CI runs, CD runs and task overviews, overview on the Dashboard
 - [x] Retention bounded and Yulius's gate prints its stages
 - [x] Docs, ADR and changes updated
-- [ ] Independent review approves the exact head
+- [x] Review round 3: test counts outside the figure budget, exact summary truncation
+- [x] Independent review approves the exact head
 - [x] Review round 1: backfill and triggers indexed, figures coalesced and reserved, timelines bounded and scoped, the confirmation sent
 - [x] Review round 2: a span's figure names bounded, timelines truncated exactly, test counts only from runners
-- [ ] Every gate green and the merge into dev armed on Yulius CI
+- [x] Every gate green and the merge into dev armed on Yulius CI
 
 ## Acceptance criteria
 
@@ -191,3 +192,32 @@ Show (STG-4xx):
   `truncated` was set at exactly 2,000 spans (one more is read); `tests_…` can no longer be set by
   `::yulius-measure`, so a set and a runner's count never interleave; a failed Dashboard read of the
   summary is not kept; docs list the reserved names and the timeline's bound.
+- **Review round 3** approved `e0745efe` (no critical or high finding); its low finding and nits
+  were fixed (`ad8db475`): a runner's test counts no longer share the 64-name budget, the summary's
+  `truncated` reads one more span, ADR-0112 states the cap, `target-*/` is ignored. A flaky e2e
+  test met on the way (pulls: an expired session found by a background read before the test's
+  click) was reproduced (1 of 3 runs) and fixed (5 of 5).
+
+## Evidence
+
+Commands run in the task's worktree (Linux, the pinned toolchain):
+
+| Command | Result |
+| --- | --- |
+| `scripts/dev ci` at `ad8db475` (doctor, check, fmt, clippy `-D warnings`, nextest, doctests, deny, shear, doc) | passed: 1,746 tests passed, 16 skipped |
+| `scripts/dev ci` at `fa318ba2` | passed |
+| e2e suite (`npx e2e run`) at `fa318ba2` | 52 files passed, 442 tests, 1 skipped |
+| e2e suite at `ad8db475` | 441 passed, 1 failed: `pulls.e2e.ts` "a session that expires…", a race in the test (above), fixed; `pulls.e2e.ts` then 5 of 5 runs passed; `pipeline`, `cd`, `times`, `places` passed |
+| `scripts/dev security` | **not run**: Vidoc rejected the key (HTTP 401, exit 2; ADR-0104, issue #470) |
+| `cargo nextest run -p yulius -E 'test(/^stages::/)'` | 4 passed: timeline, summary with p50/p90 and delivery figures, export CSV/JSON and access, another sandbox's task |
+| `local_ci::a_run_s_jobs_record_their_stages_and_test_counts` | passed: a real CI job's stages (real durations ≥ 0.5 s), checkout, slot wait, preparation, test counts and figures |
+| `cd::a_deploy_records_its_confirmation_checks_promotion_phases_and_stages` | passed: confirmation (4.2 s, measured by the page), checks, promotion, deploy with its stages, verify; an hour-long confirmation not recorded |
+| store tests (`spans::`, the version-27 backfill, a 25k-event history in well under 10 s) | passed (63 store tests) |
+| e2e `pipeline.e2e.ts` | 4 passed: Pipeline page, filters in the address, waterfalls of a CI run, a deploy and a task, the Dashboard overview |
+
+Not tested here: a production deploy on a real production host (the integration test runs
+production on the test's own host system); the Pipeline's figures on a long real history (the
+summary reads at most 200,000 spans and says when it was truncated). Follow-ups:
+[#488](https://github.com/Quartio-Studio/yulius/issues/488) (CPU, memory and disk per job),
+[#489](https://github.com/Quartio-Studio/yulius/issues/489) (a tool carried into a sandbox left
+while it loaded).
