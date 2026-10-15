@@ -170,3 +170,63 @@ test('a stored rule text opens in the rule editor as conditions, or not at all (
   });
   expect(read).toEqual(['#12 done', '#12 done and #13 merged', '#12 done or #4 ended', null, null, null, null]);
 });
+
+// "When I decide" (SPEC-155, AC-AUT-30): each task of the automation waits, prepared, until a
+// person presses Start now. The menu offers it without "At a time…": the schedule is the time.
+
+/** The stored `prepared` flag of a mock automation, and the status of its last run's task. */
+const preparedOf = (browser, id: string) => browser.evaluate((key) => {
+  const mockDb = (window as unknown as { __yuliusMock: { automations: { id: string; prepared?: boolean; last_run: { task_id: string | null } | null }[]; tasks: { id: string; status: string }[] } }).__yuliusMock;
+  const a = mockDb.automations.find((x) => x.id === key)!;
+  const task = a.last_run && a.last_run.task_id ? mockDb.tasks.find((t) => t.id === a.last_run!.task_id) : null;
+  return { prepared: Boolean(a.prepared), lastTask: task ? task.status : null };
+}, id);
+
+test('When I decide prepares each task: chip, sentence, Run now, Save and the list (AC-AUT-30)', async ({ app, browser, screen }) => {
+  // aut_2 has no earlier task still active, so its run creates one.
+  await app.open(mock('/s/studio/automations/aut_2'));
+  const chip = screen.getByRole('button', /^Start: /);
+  await expect(chip).toHaveText('Start: Start now');
+  await chip.click();
+  await expect(screen.getByRole('menuitemradio', /^When I decide/)).toHaveAttribute('aria-checked', 'false');
+  await expect(screen.getByRole('menuitemradio', /^At a time/)).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('menuitemradio', /^When I decide/).click();
+  await expect(chip).toHaveText('Start: When I decide');
+  await expect(chip).toHaveAttribute('title', 'Each task waits, prepared, until you press Start now.');
+  const sentence = browser.locator('.au-when');
+  await expect(sentence).toHaveText(/ · when I decide/);
+
+  // Not saved: Run now still prepares its task, and the automation keeps its stored choice.
+  await screen.getByRole('button', 'Run now').click();
+  await expect(screen.getByText(/^task created \(#\d+\)/)).toBeVisible();
+  expect(await preparedOf(browser, 'aut_2')).toEqual({ prepared: false, lastTask: 'prepared' });
+
+  await screen.getByRole('button', 'Save').click();
+  await expect(screen.getByRole('button', 'Save')).toBeDisabled();
+  expect(await preparedOf(browser, 'aut_2')).toEqual({ prepared: true, lastTask: 'prepared' });
+  // The prepared task still waits: the next run is skipped.
+  await screen.getByRole('button', 'Run now').click();
+  await expect(browser.locator('.toast-msg:has-text("skipped: previous task still active")')).toBeVisible();
+  expect(await preparedOf(browser, 'aut_2')).toEqual({ prepared: true, lastTask: null });
+
+  // Picked again, the menu marks it; another choice clears it.
+  await chip.click();
+  await expect(screen.getByRole('menuitemradio', /^When I decide/)).toHaveAttribute('aria-checked', 'true');
+  await screen.getByRole('menuitemradio', /^Supertask/).click();
+  await expect(chip).toHaveText('Start: Supertask');
+  await chip.click();
+  await screen.getByRole('menuitemradio', /^When I decide/).click();
+  await expect(screen.getByRole('button', 'Save')).toBeDisabled();
+
+  // The list names it, and its switch keeps it.
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations'; });
+  await expect(screen.getByText(/when I decide/)).toBeVisible();
+  await screen.getByRole('switch', 'Weekly dependency audit runs on schedule').click();
+  await expect(screen.getByText('Weekly dependency audit enabled.')).toBeVisible();
+  expect((await preparedOf(browser, 'aut_2')).prepared).toBe(true);
+
+  // Opened again, the chip reads it.
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_2'; });
+  await expect(chip).toHaveText('Start: When I decide');
+});

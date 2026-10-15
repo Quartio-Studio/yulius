@@ -39,8 +39,8 @@ pub struct Automation {
     /// Enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Created tasks are supertasks (SPEC-078, SPEC-071). Not together with `after_task_id` or
-    /// `start_rule`; none of the three: created tasks start now (queued).
+    /// Created tasks are supertasks (SPEC-078, SPEC-071). Not together with `after_task_id`,
+    /// `start_rule` or `prepared`; none of the four: created tasks start now (queued).
     #[serde(default)]
     pub supertask: bool,
     /// Created tasks run after this task of the project (SPEC-078, TSK-012); once it has ended,
@@ -54,6 +54,10 @@ pub struct Automation {
     /// stored canonically, e.g. `#12 done and #13 merged`.
     #[serde(default)]
     pub start_rule: Option<String>,
+    /// Created tasks wait `prepared` until a person presses Start now, "When I decide" (SPEC-155,
+    /// SPEC-105). Not together with the other three.
+    #[serde(default)]
+    pub prepared: bool,
     /// `ui` or `agent` (read-only).
     #[serde(default)]
     pub created_via: String,
@@ -79,6 +83,9 @@ pub struct RunAutomation {
     /// The task starts when this rule is true.
     #[serde(default)]
     pub start_rule: Option<String>,
+    /// The task waits, prepared, until a person starts it (SPEC-155).
+    #[serde(default)]
+    pub prepared: bool,
 }
 
 fn default_harness() -> String {
