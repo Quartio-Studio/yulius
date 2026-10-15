@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- CI jobs and CD runs record what they used (SPEC-154, ADR-0127, task #129; fixes #488): the
+  process host measures a job's reaped process tree (CPU time, the largest process's peak memory,
+  bytes written on Linux) into `exit.json`, and the job's or run's span gets `cpu_ms`,
+  `memory_peak_mb` and `disk_written_mb` with its end (absent when unmeasured, never 0). The
+  Pipeline page's stage table shows CPU time and peak memory p50 · p90 beside the durations, and a
+  waterfall row its own figures.
 - Text selected in Claude Code's full-screen view is copied again (SPEC-158, ADR-0130, task #149,
   fixes #519). Claude Code copies its own plain-drag selection with OSC 52, which the web terminal
   dropped; the write now reaches the clipboard of the viewer who just used the terminal, and when

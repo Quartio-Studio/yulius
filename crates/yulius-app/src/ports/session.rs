@@ -156,6 +156,8 @@ pub struct RunExit {
     pub signal: Option<i32>,
     /// The process could not be spawned.
     pub spawn_failed: bool,
+    /// What its process tree used, when its host measured it (SPEC-154).
+    pub usage: Option<yulius_domain::stages::ResourceUse>,
 }
 
 impl RunExit {

@@ -903,7 +903,12 @@ follow a state are written by SQLite triggers in the same transaction as the sta
 time the application wrote; the rest by Yulius as it happens (`yulius-app/src/stages.rs`): a CI
 run's preparation, job-slot waits and checkouts, a CD run's checks, promotion and confirmation, a
 task's armed-merge waits and updates onto the integration branch, and the stages job or deploy
-output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). Nothing
+output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). A CI
+job's or CD run's CPU time, peak memory and bytes written come from its process host, which measures
+the job's reaped process tree (`getrusage` of its children) into `exit.json`; they are stored with
+the job's end and the end trigger adds them to its span
+([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
+[decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
 task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
 
@@ -915,6 +920,7 @@ flowchart LR
   end
   T -->|"triggers, same transaction"| S[("spans")]
   C -->|"triggers, same transaction"| S
+  HOST["ptyhost: reaps the job, exit.json usage"] -->|"cpu_ms, memory_peak_mb, disk_written_mb with the job's end"| C
   LOG["job / deploy log (read every 0.5 s)"] -->|"::yulius-stage, test summaries"| SC["OutputScanner + OutputStages"]
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S

@@ -73,12 +73,17 @@ pub(crate) fn read_status(path: &Path) -> Result<Option<StatusRecord>, RecordErr
     }
 }
 
-/// Reads the [`ExitRecord`] from `exit.json`, rejecting newer record versions.
-pub(crate) fn read_exit(run_dir: &Path) -> Result<Option<ExitRecord>, RecordError> {
+/// Reads `exit.json`, rejecting newer record versions.
+pub(crate) fn read_exit_file(run_dir: &Path) -> Result<Option<ExitFile>, RecordError> {
     match read_record::<ExitFile>(&run_dir.join(EXIT_FILE))? {
         Some(file) if file.version > RECORD_VERSION => Err(RecordError::Version(file.version)),
-        other => Ok(other.map(|file| file.exit)),
+        other => Ok(other),
     }
+}
+
+/// Reads the [`ExitRecord`] from `exit.json`, rejecting newer record versions.
+pub(crate) fn read_exit(run_dir: &Path) -> Result<Option<ExitRecord>, RecordError> {
+    Ok(read_exit_file(run_dir)?.map(|file| file.exit))
 }
 
 /// Wall-clock Unix milliseconds.
