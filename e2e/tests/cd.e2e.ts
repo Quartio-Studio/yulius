@@ -15,7 +15,7 @@ test('the CD page shows dev and production as their branches define them', async
   const prod = screen.getByRole('region', 'Production environment');
   await expect(dev.getByText('scripts/cd/deploy.sh dev')).toBeVisible();
   await expect(dev.getByText('waiting for a person to allow it')).toBeVisible();
-  await expect(prod.getByText('Promotes')).toBeVisible();
+  await expect(prod.getByText(/^quartio at 9f3c2a1 into main$/)).toBeVisible();
   await expect(prod.getByText(/Production is always deployed by a person/)).toBeVisible();
   await expect(screen.getByText('ssh: connect to host')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
@@ -123,11 +123,13 @@ test('each card keeps its deploy button top right, never styles a dead deploy as
 
   // "Production · Not defined" is the widest head: its button fell under the title, left-aligned.
   await app.open(mock('/s/product/cd'));
-  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  await expect(screen.getByRole('region', 'Production environment').getByText('Not defined')).toBeVisible();
   expect(await deployHeads(browser)).toEqual([
     { name: 'Dev environment', sameRow: true, fromRight: 0, primary: false, disabled: true },
     { name: 'Production environment', sameRow: true, fromRight: 0, primary: false, disabled: true },
   ]);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 test('a promoting production names the branch and the commit it promotes', async ({ app, browser, screen }) => {
