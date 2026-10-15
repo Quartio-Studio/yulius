@@ -7,7 +7,8 @@ Amended by [0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md): `.
 turns the gate on or off. Amended by [0116](0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md):
 Yulius CI now runs the gate as the `security` job on pull request heads, and can give it
 `VIDOC_API_KEY` as a placeholder through the egress proxy; the title's "Yulius CI does not" no
-longer holds.
+longer holds. Amended by [0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the job is
+granted the key, and a scan that cannot run ends it skipped.
 
 ## Context
 
@@ -33,8 +34,8 @@ reason, and lists it in the spec's Evidence and in the summary. When the gate ca
 key, a detached HEAD, uncommitted files, an unreadable default branch: exit 2), the agent reports
 it as unrun, never as passed. The gate refuses a dirty tree because the CLI uploads and scans the
 working tree, not the commits. `scripts/dev ci` does not run the gate. (Since ADR-0116, Yulius CI
-runs it on pull request heads too, as the `security` job; findings fail that check, and until a
-scan can run, #470, its exit 2 does not.)
+runs it on pull request heads too, as the `security` job; findings fail that check, and since
+ADR-0133 its exit 2 ends the job skipped.)
 
 ## Alternatives
 

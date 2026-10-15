@@ -497,9 +497,9 @@ fn ci_status(value: &Value) -> Option<String> {
     Some(out)
 }
 
-/// `ci_status` with `run_id`: the run, each job's state and, for the jobs that failed or errored
-/// (or the job asked for by `job` whatever its state), its failing tests' output kept from all of
-/// its output, then the end of its output.
+/// `ci_status` with `run_id`: the run, each job's state and, for the jobs that failed, errored or
+/// were skipped (or the job asked for by `job` whatever its state), its failing tests' output
+/// kept from all of its output, then the end of its output.
 fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
     let jobs = value.get("jobs")?.as_array()?;
     let reason = text(value, "reason");
@@ -525,7 +525,8 @@ fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
     let mut failures_left = FAILURES_SHOWN;
     for job in jobs {
         push_line(&mut out, &format!("- {}", job_state(job, reason)));
-        let failed = matches!(text(job, "state"), Some("failed" | "error"));
+        // A skipped job's output says why nothing was checked (SPEC-162).
+        let failed = matches!(text(job, "state"), Some("failed" | "error" | "skipped"));
         let show = if wanted.is_some() { named(job) } else { failed };
         match text(job, "output") {
             Some(output) if show => {
@@ -985,6 +986,38 @@ mod tests {
             requested_by: "yulius".into(),
             status: "published".into(),
         }
+    }
+
+    /// SPEC-162 SKP-003: a skipped job says so, and its output (why nothing was checked) is shown
+    /// like a failed job's.
+    #[test]
+    fn a_run_shows_why_a_job_was_skipped() -> TestResult {
+        let value = serde_json::to_value(run(
+            "r9",
+            "PR #370",
+            "passed",
+            vec![
+                job("quality", "passed", Some(0), None, "PASS a"),
+                job(
+                    "security",
+                    "skipped",
+                    Some(78),
+                    None,
+                    "Security scan not run: No Vidoc API key",
+                ),
+            ],
+        ))?;
+        let text = render("ci_status", &json!({"run_id": "r9"}), &value);
+        assert!(
+            text.contains("- security skipped (exit 78) in 6m 30s\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Security scan not run: No Vidoc API key"),
+            "{text}"
+        );
+        assert!(!text.contains("PASS a"), "{text}");
+        Ok(())
     }
 
     /// TOL-003: one run with a failed job: the failed job's output, not the passed job's.

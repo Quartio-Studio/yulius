@@ -56,7 +56,7 @@ watching, steering and unblocking.
 - **Sandbox tabs**: the top row starts with All sandboxes, then a tab per sandbox in the order
   the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
   says it can be clicked or dragged; its menu moves it too.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Secrets, Dashboard — with Overview and Pipeline (stages) tabs —; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -94,17 +94,18 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  every pull request runs Yulius's own `security` job, which scans with Vidoc once it is granted
-  its key (when the running instance knows `secrets`) and the key works (#470).
+  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans with
+  Vidoc once the key works (#470). A job that checked nothing exits with `$YULIUS_CI_SKIP_CODE` and
+  reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
   (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
-  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Pipeline page shows
-  deployment frequency, lead time, change failure rate and time to restore for dev and production,
-  any stage's daily p50 and p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON
-  export; a CI
-  run, a deploy and a task show their own waterfall, and the Dashboard the overview.
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Dashboard's Pipeline
+  (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
+  time, change failure rate and time to restore for dev and production, any stage's daily p50 and
+  p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy
+  and a task show their own waterfall, and the Dashboard's Overview tab the overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
@@ -161,6 +162,8 @@ watching, steering and unblocking.
   there, and a person allows that once per secret (SPEC-129).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
+  Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
+  restart; the agents don't notice (SPEC-160).
 
 ## Principles
 
