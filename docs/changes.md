@@ -12,6 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   restart (one by one; at once on a cancel). Updates no longer wait for long turns or get cancelled
   after 30 minutes. A run that cannot be frozen (no delegated cgroup) still pauses at its turn
   boundary. A provider response streaming at the restart is cut and retried by Claude Code.
+- The task strip's progress bar shows the step in progress (SPEC-159, task #150): after the
+  finished share comes the open step's share in the working colour, so "Step 2/4" no longer sits
+  beside a bar that looks a quarter done. The API's step summary carries `active_percent`.
 - The e2e suite holds under host load, and the Editor waits for all of Monaco (SPEC-148,
   ADR-0122, task #134):
   - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
