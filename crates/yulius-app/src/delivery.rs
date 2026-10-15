@@ -1009,6 +1009,33 @@ impl Observed {
     }
 }
 
+/// Why a task's head is not pushed or not delivered, for `yulius wait` (SPEC-050 DLV-201,
+/// DLV-204).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PushNote {
+    /// The head it is about.
+    pub(crate) head: String,
+    /// What the agent reads, with what to do.
+    pub(crate) text: String,
+    /// A push of that head failed (not a "not delivered" note): GitHub's branch reaching the
+    /// head makes it stale (SPEC-139 PSH-002).
+    pub(crate) failed_push: bool,
+}
+
+/// Why one automatic delivery failed ([`App::try_auto_open_pr`]): the error, and the note this
+/// delivery wrote for it when a push failed, which says what to do (SPEC-139 PSH-003).
+#[derive(Debug)]
+pub(crate) struct AutoDeliveryError {
+    pub(crate) error: AppError,
+    pub(crate) note: Option<String>,
+}
+
+impl From<AppError> for AutoDeliveryError {
+    fn from(error: AppError) -> Self {
+        Self { error, note: None }
+    }
+}
+
 /// What one automatic delivery of a task's head did ([`App::try_auto_open_pr`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AutoDelivery {
@@ -2079,10 +2106,15 @@ impl App {
                 "the task has no branch or worktree yet; start it first".into(),
             ));
         };
-        self.deps
-            .git
-            .push(Path::new(&worktree), &branch, &branch, token)
-            .await?;
+        self.dlv_push_head(
+            sandbox,
+            &task.id,
+            Path::new(&worktree),
+            &branch,
+            observed.worktree_head.as_deref().unwrap_or_default(),
+            token,
+        )
+        .await?;
         let (policy, _) = self.dlv_branch_policy(sandbox, profile).await;
         let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(title) => title.to_owned(),
@@ -2229,7 +2261,7 @@ impl App {
         match self.try_auto_open_pr(task_id).await {
             Ok(AutoDelivery::Delivered(done)) => self.runtime(task_id).hub.notice(done),
             Ok(AutoDelivery::Unchanged | AutoDelivery::Blocked(_)) => {}
-            Err(err) => {
+            Err(AutoDeliveryError { error: err, .. }) => {
                 tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
                 self.runtime(task_id).hub.notice(format!(
                     "Yulius could not open the pull request by itself: {err} Use Deliver… on the task."
@@ -2275,13 +2307,17 @@ impl App {
              at the end of your turn once nothing blocks it."
         );
         if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock() {
-            *problem = Some((head, text));
+            *problem = Some(PushNote {
+                head,
+                text,
+                failed_push: false,
+            });
         }
     }
 
-    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
-    /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
-    /// pushed head back in, so nothing is force-pushed.
+    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201), and
+    /// returns that note. A branch rewritten after it was pushed is refused as not a
+    /// fast-forward; the remedy merges the pushed head back in, so nothing is force-pushed.
     pub(crate) fn set_push_problem(
         &self,
         task_id: &TaskId,
@@ -2289,7 +2325,7 @@ impl App {
         branch: &str,
         pull: Option<u64>,
         err: &AppError,
-    ) {
+    ) -> String {
         let reason = err.public_message();
         let target = pull.map_or_else(|| format!("`{branch}`"), |n| format!("pull request #{n}"));
         let short = head.get(..9).unwrap_or(head);
@@ -2312,12 +2348,96 @@ impl App {
             )
         };
         if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
-            *problem = Some((head.to_owned(), text));
+            *problem = Some(PushNote {
+                head: head.to_owned(),
+                text: text.clone(),
+                failed_push: true,
+            });
         }
+        text
     }
 
     fn clear_push_problem(&self, task_id: &TaskId) {
         if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
+            *problem = None;
+        }
+    }
+
+    /// Pushes the task's `branch`, at `head`, with `token` (SPEC-139 PSH-001): every push of a
+    /// task's head goes through here. A push Git reports failed while GitHub's branch is at
+    /// `head` is done (GitHub's `remote rejected … (failed)` after the ref moved, or the head
+    /// pushed some other way, #366); a push that is done clears the task's note.
+    ///
+    /// # Errors
+    /// The push's own error when GitHub's branch is not at `head` (or cannot be read).
+    pub(crate) async fn dlv_push_head(
+        &self,
+        sandbox: &SandboxRecord,
+        task_id: &TaskId,
+        worktree: &Path,
+        branch: &str,
+        head: &str,
+        token: &Secret,
+    ) -> AppResult<()> {
+        if let Err(err) = self.deps.git.push(worktree, branch, branch, token).await
+            && !self.dlv_branch_at(sandbox, branch, head, token).await
+        {
+            return Err(err);
+        }
+        self.clear_push_problem(task_id);
+        Ok(())
+    }
+
+    /// Whether GitHub's `branch` is at commit `head`; `false` when it cannot be read.
+    async fn dlv_branch_at(
+        &self,
+        sandbox: &SandboxRecord,
+        branch: &str,
+        head: &str,
+        token: &Secret,
+    ) -> bool {
+        !head.is_empty()
+            && self
+                .deps
+                .github
+                .branch_sha(token, &sandbox.repo_owner, &sandbox.repo_name, branch)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|sha| sha.eq_ignore_ascii_case(head))
+    }
+
+    /// Drops the note that a push of `head` failed once GitHub's branch is at `head`, so
+    /// `yulius wait` waits for the checks and the armed merge instead of ending on it (SPEC-139
+    /// PSH-002, #366). One GitHub read, only while such a note exists; GitHub unreachable, the
+    /// note stands.
+    pub(crate) async fn forget_push_problem_if_pushed(&self, task: &TaskRecord, head: &str) {
+        let noted = self
+            .runtime(&task.id)
+            .push_problem
+            .lock()
+            .ok()
+            .and_then(|problem| problem.clone())
+            .filter(|note| {
+                note.failed_push
+                    && !head.is_empty()
+                    && (note.head.starts_with(head) || head.starts_with(note.head.as_str()))
+            });
+        let (Some(note), Some(branch)) = (noted, task.branch.as_deref()) else {
+            return;
+        };
+        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
+            return;
+        };
+        let Ok(token) = self.task_github_token(task, &sandbox).await else {
+            return;
+        };
+        if self
+            .dlv_branch_at(&sandbox, branch, &note.head, &token)
+            .await
+            && let Ok(mut problem) = self.runtime(&task.id).push_problem.lock()
+            && problem.as_ref() == Some(&note)
+        {
             *problem = None;
         }
     }
@@ -2327,7 +2447,10 @@ impl App {
     /// is not ready (an invalid spec, an open step, uncommitted work);
     /// [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no commits
     /// ahead of the integration branch, a later stage, nothing new).
-    pub(crate) async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<AutoDelivery> {
+    pub(crate) async fn try_auto_open_pr(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<AutoDelivery, AutoDeliveryError> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
@@ -2413,16 +2536,24 @@ impl App {
                 return Ok(AutoDelivery::Unchanged);
             }
             let pushed = self
-                .deps
-                .git
-                .push(Path::new(&worktree), &branch, &branch, &token)
+                .dlv_push_head(
+                    &sandbox,
+                    task_id,
+                    Path::new(&worktree),
+                    &branch,
+                    &head,
+                    &token,
+                )
                 .await;
-            if let Err(err) = pushed {
+            if let Err(error) = pushed {
                 self.release_auto_head(task_id);
-                self.set_push_problem(task_id, &head, &branch, Some(pull.number), &err);
-                return Err(err);
+                let note =
+                    self.set_push_problem(task_id, &head, &branch, Some(pull.number), &error);
+                return Err(AutoDeliveryError {
+                    error,
+                    note: Some(note),
+                });
             }
-            self.clear_push_problem(task_id);
             return Ok(AutoDelivery::Delivered(format!(
                 "Yulius pushed your new commits to pull request #{}.",
                 pull.number
@@ -2463,10 +2594,13 @@ impl App {
                     profile.integration_branch
                 )))
             }
-            Err(err) => {
+            Err(error) => {
                 self.release_auto_head(task_id);
-                self.set_push_problem(task_id, &head, &branch, None, &err);
-                Err(err)
+                let note = self.set_push_problem(task_id, &head, &branch, None, &error);
+                Err(AutoDeliveryError {
+                    error,
+                    note: Some(note),
+                })
             }
         }
     }

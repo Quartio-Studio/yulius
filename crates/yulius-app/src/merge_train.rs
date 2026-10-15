@@ -662,7 +662,10 @@ impl App {
             if !moved {
                 return keep(armed.clone(), reason);
             }
-            match self.deps.git.push(worktree, branch, branch, &token).await {
+            match self
+                .dlv_push_head(sandbox, &task.id, worktree, branch, &head, &token)
+                .await
+            {
                 Ok(()) => {
                     self.save_armed_during(&task.id, deciding, &moved_armed);
                     self.train_branch_updated(sandbox, task, branch, &head, &integration)
@@ -692,7 +695,10 @@ impl App {
             Err(_) => return push(format!("#{}'s verdict could not be read", member.pr)).await,
         };
         if moved {
-            if let Err(err) = self.deps.git.push(worktree, branch, branch, &token).await {
+            if let Err(err) = self
+                .dlv_push_head(sandbox, &task.id, worktree, branch, &head, &token)
+                .await
+            {
                 self.set_push_problem(&task.id, &head, branch, None, &err);
                 return keep(armed, format!("#{} could not be pushed", member.pr));
             }

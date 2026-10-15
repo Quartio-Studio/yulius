@@ -50,9 +50,9 @@ wrote, never with an older one.
 ## Plan
 
 - [x] Spec and ADR for push outcomes
-- [ ] A push GitHub already has counts as done and clears the note
-- [ ] yulius wait ignores a push note once the remote branch is at the head
-- [ ] delivery_merge answers only with a note its own call wrote
+- [x] A push GitHub already has counts as done and clears the note
+- [x] yulius wait ignores a push note once the remote branch is at the head
+- [x] delivery_merge answers only with a note its own call wrote
 - [ ] Docs, gates, review and delivery
 
 ## Acceptance criteria

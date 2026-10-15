@@ -85,6 +85,33 @@ struct RealGit {
     origin: PathBuf,
     /// Pushes, in order: `<local>-><remote> token=<token>`.
     pushes: std::sync::Mutex<Vec<String>>,
+    /// How the next pushes fail, until cleared (SPEC-139).
+    push_failure: std::sync::Mutex<Option<PushFailure>>,
+    /// When set, `ahead_behind` fails with this message (SPEC-139 PSH-003).
+    ahead_behind_error: std::sync::Mutex<Option<String>>,
+}
+
+/// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PushFailure {
+    /// The remote is left as it was.
+    Refused,
+    /// The remote branch moved, and the push still reports the failure.
+    AfterLanding,
+}
+
+impl RealGit {
+    fn fail_pushes(&self, failure: Option<PushFailure>) {
+        if let Ok(mut slot) = self.push_failure.lock() {
+            *slot = failure;
+        }
+    }
+
+    fn fail_ahead_behind(&self, message: Option<&str>) {
+        if let Ok(mut slot) = self.ahead_behind_error.lock() {
+            *slot = message.map(str::to_owned);
+        }
+    }
 }
 
 impl RealGit {
@@ -278,6 +305,9 @@ impl GitPort for RealGit {
         Ok(stat)
     }
     async fn ahead_behind(&self, repo: &Path, base: &str, head: &str) -> AppResult<(u32, u32)> {
+        if let Some(message) = self.ahead_behind_error.lock().ok().and_then(|e| e.clone()) {
+            return Err(AppError::Upstream(message));
+        }
         let text = self
             .run(
                 repo,
@@ -354,6 +384,15 @@ impl GitPort for RealGit {
                 token.expose()
             ));
         }
+        let failure = self.push_failure.lock().ok().and_then(|f| *f);
+        let rejected = || {
+            AppError::Upstream(format!(
+                "git push: ! [remote rejected] {local_branch} -> {remote_branch} (failed)"
+            ))
+        };
+        if failure == Some(PushFailure::Refused) {
+            return Err(rejected());
+        }
         self.run(
             repo,
             &[
@@ -363,8 +402,11 @@ impl GitPort for RealGit {
                 &format!("refs/heads/{local_branch}:refs/heads/{remote_branch}"),
             ],
         )
-        .await
-        .map(drop)
+        .await?;
+        match failure {
+            Some(_) => Err(rejected()),
+            None => Ok(()),
+        }
     }
     async fn import_bundle(&self, _: &Path, _: &Path, _: &str) -> AppResult<Vec<String>> {
         Err(AppError::Upstream("not used".into()))
@@ -562,6 +604,8 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
     let real_git = Arc::new(RealGit {
         origin: origin.clone(),
         pushes: std::sync::Mutex::default(),
+        push_failure: std::sync::Mutex::default(),
+        ahead_behind_error: std::sync::Mutex::default(),
     });
     let h = harness_with_git(real_git.clone())?;
     h.github.set_remote(Arc::new(BareRemote {
@@ -3865,6 +3909,106 @@ async fn an_undelivered_head_says_what_blocks_it() -> TestResult {
     f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
     assert_eq!(f.origin_sha("feat/1-landing")?, head, "pushed");
     assert_eq!(t.wait_at(&head).await?["push_problem"], Value::Null);
+    Ok(())
+}
+
+/// SPEC-139 PSH-001 (#366): a push Git reports failed while GitHub's branch is at the head counts
+/// as done, and clears the note an earlier failed push of that head left.
+#[tokio::test]
+async fn a_push_github_already_has_counts_as_done() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    commit_file(&t.wt, "follow-up.txt", "more", "Follow-up")?;
+    let head = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+
+    // Refused first: the note says so.
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_ne!(f.origin_sha("feat/1-landing")?, head, "not pushed");
+    let state = t.wait_at(&head).await?;
+    let note = state["push_problem"].as_str().unwrap_or_default();
+    assert!(note.starts_with("Yulius could not push"), "{state}");
+
+    // GitHub takes the next push and still reports `remote rejected … (failed)`: delivered.
+    f.git.fail_pushes(Some(PushFailure::AfterLanding));
+    let armed = t.merge_at(&head).await?;
+    assert_eq!(armed["isError"], false, "{armed}");
+    assert_eq!(f.origin_sha("feat/1-landing")?, head, "landed");
+    assert_eq!(t.wait_at(&head).await?["push_problem"], Value::Null);
+    Ok(())
+}
+
+/// SPEC-139 PSH-002 (#366): after Yulius's push failed and the agent pushed the head itself,
+/// `yulius wait` at that head waits for its checks instead of ending on the old note.
+#[tokio::test]
+async fn a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    commit_file(&t.wt, "follow-up.txt", "more", "Follow-up")?;
+    let head = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    let state = t.wait_at(&head).await?;
+    assert!(settled(&state, None)?.is_some_and(|line| line.starts_with("Yulius could not push")));
+
+    // The agent's own `git push` from the worktree; no turn ends since.
+    git(&t.wt, &["push", "--quiet", "origin", "feat/1-landing"])?;
+    let state = t.wait_at(&head).await?;
+    assert_eq!(state["push_problem"], Value::Null, "{state}");
+    assert_eq!(settled(&state, None)?, None, "it waits for the checks");
+    // Gone for good: the next wait reads no note even with GitHub's branch moved on.
+    git(
+        &t.wt,
+        &[
+            "push",
+            "--quiet",
+            "origin",
+            &format!("{}:refs/heads/feat/1-landing", t.head),
+            "--force",
+        ],
+    )?;
+    assert_eq!(t.wait_at(&head).await?["push_problem"], Value::Null);
+    Ok(())
+}
+
+/// SPEC-139 PSH-003 (#448): a `delivery_merge` that fails for a reason unrelated to pushing,
+/// after an earlier call was refused for an open step since resolved, answers with its own
+/// failure, not the older "not delivered" note about the same head.
+#[tokio::test]
+async fn a_merge_call_answers_its_own_failure_not_an_older_note() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let merge = json!({"reviewed_head": head, "review_summary": "approve"});
+    let refusal = |result: &Value| {
+        assert_eq!(result["isError"], true, "{result}");
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    assert!(refusal(&blocked).contains("is in_progress"), "{blocked}");
+
+    // Resolved without a new commit; the next call fails reading the branch.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    f.git.fail_ahead_behind(Some("the object store is busy"));
+    let failed = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    let why = refusal(&failed);
+    assert!(
+        why.contains("the object store is busy") && !why.contains("in_progress"),
+        "{why}"
+    );
+    f.git.fail_ahead_behind(None);
     Ok(())
 }
 
