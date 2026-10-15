@@ -1574,6 +1574,7 @@ Schema version 1 (tables; columns abbreviated):
 | `skills` | id, scope (instance/sandbox/repo), name, source, enabled, digest |
 | `mcp_servers` | id, scope, sandbox_id, name, transport, command/url, args (json), env (enc json), headers (enc json), enabled |
 | `metrics` | attempt_id, input_tokens, output_tokens, cache_read, cache_write, model, turns, tool_calls, active_ms (nullable = unknown) |
+| `metrics_recounts` | attempt_id (PK), task_id, outcome (recomputed/no_transcript/no_lines/live/gone; NULL = queued), before (json: the figures when queued, NULL = no row), after (json), done_at: runs recorded before SPEC-087, recounted once from their transcripts (SPEC-091, schema version 23) |
 | `feedback` | task_id, user_id, verdict, comment, at |
 | `import_jobs` | id, sandbox_id, user_id, state, manifest (json), received (json), created_at |
 | `audit_log` | id, at, actor, action, target, detail |
@@ -1600,8 +1601,8 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 
 | State | Owner | Exit trigger | Timeout / missing trigger |
 | --- | --- | --- | --- |
-| `chained` | chain controller (ADR-16) | predecessor Done, or a person's Start now → `queued`; cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
-| `prepared` | the person, or the background tick for a time (SPEC-105, ADR-0085) | Start now, or its time on the minute tick once onboarding no longer blocks the sandbox → `queued`; cancel → `stopped(cancelled)` | No timeout without a time (it never starts by itself); with one, at most a minute late, or at the first tick after a restart; at most 32 per sandbox. |
+| `chained` | chain controller (ADR-16) | predecessor Done (the chain evaluated still stored), or a person's Start now → `queued`; a person's new start choice → `chained`, `prepared` or `queued` (SPEC-126, ADR-0102); cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
+| `prepared` | the person, or the background tick for a time (SPEC-105, ADR-0085) | Start now, or its time on the minute tick once onboarding no longer blocks the sandbox → `queued`; a person's new start choice → `chained`, `prepared` or `queued` (SPEC-126, ADR-0102); cancel → `stopped(cancelled)` | No timeout without a time (it never starts by itself); with one, at most a minute late, or at the first tick after a restart; at most 32 per sandbox. |
 | `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
 | `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
 | `running` | supervisor | child exit 0, or any exit after Claude Code's `SessionEnd` said the person left (`prompt_input_exit`, `logout`) → `closed`; ended by SIGTERM/SIGKILL/SIGHUP/SIGINT or exit 129/130/137/143 → `stopped(killed)`; any other exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
@@ -1945,7 +1946,8 @@ the task spec plus the project-docs problems; `project_context` returns the brie
 
 The hook binary reads the CLI's JSON from stdin (≤ 1 MiB), forwards it to `/hooks/<event>` with the
 task token (timeout 5 s) and prints the response. Failure to reach Yulius is fail-open (exit 0, no
-output) and is recorded. Responses:
+output) and is recorded. A hook the server received is handled to its end even when the client
+stopped waiting and closed the connection (SPEC-140 HKS-001, ADR-0115). Responses:
 
 - `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
 - `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns
@@ -2306,9 +2308,9 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Install and health check | health 120 s; install 15 min | rollback; `failed` |
 | Update resume stagger / hold retry | 2 s / `Retry-After: 3` | — |
 | Update backups kept | 3 | oldest removed |
-| Stop escalation | 5 s + 5 s + 10 s (`stop_escalation_ms`); shutdown request 2 s | host terminated, then `lost`; a host that cannot be terminated keeps the run live + notice (SPEC-065) |
+| Stop escalation | 5 s + 5 s + 10 s (`stop_escalation_ms`); shutdown request 2 s | host terminated, then `lost`; a host that cannot be terminated keeps the run live + notice (SPEC-065); a stop during a launch asks the run once it is attached (SPEC-140 STP-001) |
 | Switch total | 120 s | `stopped(switch_timeout)` |
-| Hook call | 5 s | fail-open |
+| Hook call | 5 s | fail-open; the server still applies a hook it received (ADR-0115) |
 | Hook hold (Stop, `UserPromptSubmit`) | `Retry-After` 10 s (client: 1–60 s), 2 s after a failure, 8 days in total (CLI `timeout` 8 days + 1 h) | fail-open; a reported limit then pauses as `limit` |
 | Resume of paused tasks | oldest first, 20 s apart; loop at least every 5 min | — |
 | Held prompt carried to another subscription | 100 KiB | longer prompts are not held (they run; a reported limit pauses them) |

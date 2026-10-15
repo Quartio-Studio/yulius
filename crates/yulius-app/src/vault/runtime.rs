@@ -24,7 +24,9 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
-use crate::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
+use crate::ports::egress::{
+    EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
+};
 use crate::ports::session::{LaunchPlan, PlannedFile};
 use crate::ports::vault::VaultSecretRecord;
 
@@ -64,6 +66,14 @@ const CLIENT_CACHE_MAX: usize = 1024;
 /// Recently authenticated proxy clients: (token digest, client, when).
 #[derive(Default)]
 pub(crate) struct ClientCache(Mutex<Vec<(Vec<u8>, EgressClient, Instant)>>);
+
+/// Most CI jobs holding a proxy credential at once (far above the CI's job slots).
+const CI_CLIENTS_MAX: usize = 256;
+
+/// The proxy credentials of running CI jobs (SPEC-142 CSE-004): (token digest, client). In
+/// memory only, removed when the job ends, never cached.
+#[derive(Default)]
+pub(crate) struct CiClients(Mutex<Vec<(Vec<u8>, EgressClient)>>);
 
 /// The authority (`host:port`) of an `http://` URL.
 fn authority(url: &str) -> Option<&str> {
@@ -190,7 +200,8 @@ impl App {
     }
 
     /// The value of the agent secret `name` that applies to `sandbox` (MCP `${secret:NAME}`
-    /// references, VLT-009).
+    /// references, VLT-009). A production secret (SPEC-134) never resolves: its value would reach
+    /// an agent run's environment.
     ///
     /// # Errors
     /// Store or decryption failures.
@@ -205,7 +216,7 @@ impl App {
             .vault_agent(Some(sandbox))
             .await?
             .into_iter()
-            .find(|r| r.name == name)
+            .find(|r| r.name == name && !r.cd_prod)
         else {
             return Ok(None);
         };
@@ -213,16 +224,22 @@ impl App {
         Ok(Some(zeroize::Zeroizing::new(payload.value.clone())))
     }
 
-    /// The agent secrets bound to `host:port` for a sandbox, with their payloads.
+    /// The agent secrets that apply to `client` and are bound to `host:port`, with their
+    /// payloads.
     async fn bound_secrets(
         &self,
-        sandbox: &SandboxId,
+        client: &EgressClient,
         host: &str,
         port: u16,
     ) -> AppResult<Vec<(VaultSecretRecord, AgentPayload)>> {
         let mut out = Vec::new();
-        for record in self.deps.store.vault_agent(Some(sandbox)).await? {
-            if bound_to(&record, host, port) {
+        for record in self
+            .deps
+            .store
+            .vault_agent(Some(&client.sandbox_id))
+            .await?
+        {
+            if client.may_use(&record.name, record.cd_prod) && bound_to(&record, host, port) {
                 let payload: AgentPayload = self.open_payload(&record)?;
                 out.push((record, payload));
             }
@@ -230,12 +247,11 @@ impl App {
         Ok(out)
     }
 
-    /// Records an agent's use of a secret: `last_used_at`, and one audit entry per run, secret
-    /// and context.
-    async fn note_agent_use(
+    /// Records a use of a secret by `actor` (`task:<n>`, `ci:<run>`): `last_used_at`, and one
+    /// audit entry per run (`run`: the agent's attempt or the CI job), secret and context.
+    pub(super) async fn note_agent_use(
         &self,
-        attempt: &str,
-        task_number: u32,
+        (run, actor): (&str, &str),
         record: &VaultSecretRecord,
         action: &str,
         context: &str,
@@ -246,8 +262,8 @@ impl App {
             .vault_touch_used(&record.id, self.now())
             .await;
         self.vault_audit_once(
-            format!("{action}|{attempt}|{}|{context}", record.id),
-            &format!("task:{task_number}"),
+            format!("{action}|{run}|{}|{context}", record.id),
+            actor,
             action,
             Some(&record.id),
             &format!("{} → {context}", record.name),
@@ -380,13 +396,27 @@ impl App {
                 format!("{exe} {SCRUB_EXEC_FLAG}"),
             ));
         }
+        self.egress_env("yulius", task_token, run_dir, launch);
+        Ok(())
+    }
+
+    /// Adds the egress proxy to a run's environment when the proxy is wired (`false` when it is
+    /// not): the proxy variables with `user:token` (secret environment), `NO_PROXY`, and the CA
+    /// bundle written to `run_dir`. Shared by agent runs and CI jobs (SPEC-142).
+    pub(crate) fn egress_env(
+        &self,
+        user: &str,
+        token: &str,
+        run_dir: &Path,
+        launch: &mut LaunchPlan,
+    ) -> bool {
         if !self.vault.egress.load(std::sync::atomic::Ordering::SeqCst) {
-            return Ok(());
+            return false;
         }
         let Some(proxy_authority) = authority(&self.config.internal_url) else {
-            return Ok(());
+            return false;
         };
-        let proxy = format!("http://yulius:{task_token}@{proxy_authority}");
+        let proxy = format!("http://{user}:{token}@{proxy_authority}");
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
             launch.secret_env.push((name.into(), proxy.clone()));
         }
@@ -414,7 +444,7 @@ impl App {
                     .push(((*name).to_owned(), path.to_string_lossy().into_owned()));
             }
         }
-        Ok(())
+        true
     }
 
     /// A streaming redactor of the task terminal for `sandbox` (`None` without agent secrets).
@@ -459,6 +489,7 @@ impl App {
                     "adds": injection_of(r).describe(),
                     "placeholder": format!("{PLACEHOLDER_PREFIX}{}", r.name),
                     "fields": r.fields,
+                    "env_files": r.env_files.as_str(),
                 })
             })
             .collect();
@@ -470,7 +501,8 @@ impl App {
                 "Code and CLIs that need a key: use the environment variable NAME (it holds the placeholder yulius-secret-NAME) or the placeholder itself in the header, Basic credentials or query the service expects (for example Authorization: Bearer $NAME, X-Api-Key: $NAME, curl -u user:$NAME); the proxy replaces it for the bound hosts only. Secrets added after this session started have no variable yet: write the placeholder.",
                 "Several secrets on one host and one header: choose with the request header X-Yulius-Secret: NAME.",
                 "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host; a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
-                "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values."
+                "Code that runs outside Yulius' proxy (a deployed app, a deploy script) reads its keys from the project's git-ignored .env, named without values in the tracked .env.example. Put an agent secret there with secret_copy_to_env, never by writing or editing the file: you would write [secret:NAME], not the value. A person allows each secret once (env_files: allowed); until then the call asks them.",
+                "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself."
             ],
         }))
     }
@@ -556,8 +588,7 @@ impl App {
             &format!("#{} {}", ctx.task.number, ctx.task.harness.display_name()),
         );
         self.note_agent_use(
-            ctx.attempt.id.as_str(),
-            ctx.task.number,
+            (ctx.attempt.id.as_str(), &ctx.actor()),
             &record,
             "vault.agent.fill",
             &format!("{field} on {host}"),
@@ -566,9 +597,54 @@ impl App {
         Ok(json!({"filled": true, "secret": record.name, "field": field, "host": host}))
     }
 
-    /// The egress client of a task token, cached briefly (compared in constant time).
+    /// Opens the egress proxy to a CI job of `run` (SPEC-142 CSE-004): a fresh credential whose
+    /// client, `ci:<run>`, may use only `secrets` of `sandbox`, until
+    /// [`App::ci_egress_close`]. `None` when too many jobs hold one.
+    #[must_use]
+    pub fn ci_egress_open(
+        &self,
+        sandbox: &SandboxId,
+        run: &str,
+        job: &str,
+        secrets: &[String],
+    ) -> Option<String> {
+        let token = crate::auth::hex_token(&self.deps.crypto.random_bytes());
+        let digest = self.deps.crypto.sha256_hex(token.as_bytes()).into_bytes();
+        let client = EgressClient {
+            caller: EgressCaller::Ci {
+                run_id: run.to_owned(),
+                job_id: job.to_owned(),
+                secrets: secrets.to_vec(),
+            },
+            sandbox_id: sandbox.clone(),
+        };
+        let mut clients = self.vault.ci_clients.0.lock().ok()?;
+        if clients.len() >= CI_CLIENTS_MAX {
+            return None;
+        }
+        clients.push((digest, client));
+        Some(token)
+    }
+
+    /// Ends a CI job's proxy credential: from now on the proxy refuses it (407).
+    pub fn ci_egress_close(&self, token: &str) {
+        let digest = self.deps.crypto.sha256_hex(token.as_bytes()).into_bytes();
+        if let Ok(mut clients) = self.vault.ci_clients.0.lock() {
+            clients.retain(|(d, _)| !self.deps.crypto.constant_time_eq(d, &digest));
+        }
+    }
+
+    /// The egress client of a CI job's credential or of a task token (the latter cached
+    /// briefly); digests are compared in constant time.
     async fn cached_egress_client(&self, token: &str) -> Option<EgressClient> {
         let digest = self.deps.crypto.sha256_hex(token.as_bytes()).into_bytes();
+        if let Ok(clients) = self.vault.ci_clients.0.lock()
+            && let Some((_, client)) = clients
+                .iter()
+                .find(|(d, _)| self.deps.crypto.constant_time_eq(d, &digest))
+        {
+            return Some(client.clone());
+        }
         if let Ok(cache) = self.vault.clients.0.lock()
             && let Some((_, client, _)) = cache.iter().find(|(d, _, at)| {
                 at.elapsed() < CLIENT_CACHE_TTL && self.deps.crypto.constant_time_eq(d, &digest)
@@ -578,9 +654,11 @@ impl App {
         }
         let ctx = self.agent_context(token).await.ok()?;
         let client = EgressClient {
-            attempt_id: ctx.attempt.id.as_str().to_owned(),
-            task_id: ctx.task.id.clone(),
-            task_number: ctx.task.number,
+            caller: EgressCaller::Agent {
+                attempt_id: ctx.attempt.id.as_str().to_owned(),
+                task_id: ctx.task.id.clone(),
+                task_number: ctx.task.number,
+            },
             sandbox_id: ctx.task.sandbox_id.clone(),
         };
         if let Ok(mut cache) = self.vault.clients.0.lock() {
@@ -602,7 +680,9 @@ impl EgressPolicy for App {
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
         match self.deps.store.vault_agent(Some(&client.sandbox_id)).await {
-            Ok(records) => records.iter().any(|r| bound_to(r, host, port)),
+            Ok(records) => records
+                .iter()
+                .any(|r| client.may_use(&r.name, r.cd_prod) && bound_to(r, host, port)),
             Err(err) => {
                 tracing::error!(error = %err, "agent secrets could not be read for the proxy");
                 false
@@ -612,7 +692,7 @@ impl EgressPolicy for App {
 
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision {
         let bound = match self
-            .bound_secrets(&client.sandbox_id, &request.host, request.port)
+            .bound_secrets(client, &request.host, request.port)
             .await
         {
             Ok(bound) => bound,
@@ -703,8 +783,7 @@ impl EgressPolicy for App {
         for name in &used {
             if let Some((record, _)) = bound.iter().find(|(r, _)| &r.name == name) {
                 self.note_agent_use(
-                    &client.attempt_id,
-                    client.task_number,
+                    (client.use_key(), &client.actor()),
                     record,
                     "vault.agent.use",
                     &request.host,

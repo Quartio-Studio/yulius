@@ -33,8 +33,8 @@ watching, steering and unblocking.
   pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
-  Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
-  first in the tools rail), for quick work
+  Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
+  the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to
@@ -49,7 +49,7 @@ watching, steering and unblocking.
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), CD (deployment), Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -63,33 +63,72 @@ watching, steering and unblocking.
   A task can also be **prepared**: written now and started later, when the person presses Start
   now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
   holds no session, can be rescheduled or cancelled, and sits with the queued tasks.
+  Until a task starts, how it starts can change: the start chip in a waiting task's view offers
+  the same choices as New task (after a task, a rule, When I decide, a time, Start now or
+  Supertask); a task that started keeps its start.
+  An image or file pasted or dropped into the prompt sits in its text where it was put, as a
+  thumbnail or chip that moves and deletes like a character, and the agent gets it at that place.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
-  A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
+  A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
+  and `gh` use a narrowed App token), so only they change it. Others
   see it read-only and can ask the owner for control; once handed over, it acts as the new owner.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
-  merge on green into `dev`, promotion to `main`, deploy and verify, cleanup. Profiles live in
+  merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
   promotions) that Yulius checks before every merge.
-- **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
+- **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
+  secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
+  placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
+  every pull request runs Yulius's own `security` job, which scans with Vidoc once it is granted
+  its key (when the running instance knows `secrets`) and the key works (#470).
+- **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
+  and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
+  pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
+  (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify. The
+  Pipeline page shows deployment frequency, lead time, change failure rate and time to restore for
+  dev and production, any stage's daily p50 and p90 and the stage table with CSV/JSON export; a CI
+  run, a deploy and a task show their own waterfall, and the Dashboard the overview.
+- **CD (deployment)**: beside CI, with the same discipline. Every project defines dev and
+  production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
+  committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
+  exact commits GitHub reports for the protected branches, dev inside the sandbox and production
+  outside it, with the agent secrets a person allowed for each, and shows each run on the CD
+  (deployment) page. A merge deploys nothing: a person or an agent
+  (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
+  automation deploys and tests it. Production (with its promotion) is always a person's: an
+  administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
+  keeps the production branch out of reach of the agents' own token, which is never a person's
+  (onboarding says when that ruleset is missing). Agents build and improve CD through pull requests but
+  cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
+  can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
+  down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself
+  dev is empty until it has a dev machine, and production is the push to `main` that instances
+  install by themselves.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
-- **Automations**: tasks on a schedule. Two ready-made ones, off until a person enables them in one
-  click on the Automations page: "Keep the docs up to date" and "Work through open issues" (the
-  core team's issues verified in parallel, a Fix task for each actionable one, no new issues),
+- **Automations**: tasks on a schedule. Three ready-made ones, off until a person enables them in
+  one click on the Automations page: "Keep the docs up to date", "Work through open issues" (the
+  core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
+  "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, picked with New task's start chip beside Run now and Save;
   Run now starts its task the way the chip shows.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
-  The tabs go in any order (Team first until moved). Selections are drawn rounded and glide, and
+  The tabs go in any order (Team first until moved); each shows a drag grip and says it can be
+  clicked or dragged. Selections are drawn rounded and glide, and
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
+- **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
+  selection is drawn rounded and glides, people who have the same file open see each other's
+  caret, name and selection in their Notes colour (awareness only: unsaved text stays each
+  person's own), and its tabs go in any order.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
@@ -103,8 +142,11 @@ watching, steering and unblocking.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
   button is pressed; it copies without being shown. An agent secret is added with a name, a value
   and a description: agents find the service's host and ask for it, and a person allows it with
-  one click (SPEC-121).
-- **Updates**: Yulius updates itself from `main` without losing running work.
+  one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
+  `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
+  there, and a person allows that once per secret (SPEC-129).
+- **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
+  starts an update from the Update button beside their account button in the sidebar (SPEC-133).
 
 ## Principles
 

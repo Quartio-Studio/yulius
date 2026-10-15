@@ -65,7 +65,7 @@ fn parse_harness(text: &str) -> AppResult<Harness> {
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
-fn prepared_alone() -> AppError {
+pub(crate) fn prepared_alone() -> AppError {
     AppError::Invalid(
         "a prepared task starts when you decide or at its time: it cannot also run after a task, \
          by a rule or as a supertask"
@@ -343,36 +343,26 @@ impl App {
             Some(AUTO) => WorkflowPick::Auto,
             Some(id) => WorkflowPick::Given(Box::new(self.visible_workflow(&sid, id).await?)),
         };
-        let after = match req.after_task_id.as_deref().map(str::trim) {
-            None | Some("") => None,
-            Some(id) => {
-                let id = TaskId::parse(id).map_err(|_| {
-                    AppError::Invalid("the task to run after does not exist".into())
-                })?;
-                Some(self.chain_predecessor(&sid, &id).await?)
-            }
-        };
-        let rule = match req.start_rule.as_deref().map(str::trim) {
-            None | Some("") => None,
-            Some(text) => Some(Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()))?),
-        };
-        // A supertask starts after the running work; waiting for a chain could wait for a task
-        // its own hold keeps from starting (SPEC-071, ADR-0054).
-        if req.supertask && (after.is_some() || rule.is_some()) {
-            return Err(AppError::Invalid(
-                "a supertask starts after the running tasks: it cannot also run after a task or a rule"
-                    .into(),
-            ));
-        }
-        // Prepared (SPEC-105): when a person decides, or at a time.
-        let prepared = match req.start_at.as_deref().map(str::trim) {
-            Some(text) if !text.is_empty() => {
-                Some(Some(crate::prepared::parse_start_at(text, self.now())?))
-            }
-            _ => req.prepared.then_some(None),
-        };
-        if prepared.is_some() && (after.is_some() || rule.is_some() || req.supertask) {
-            return Err(prepared_alone());
+        // The start choice, checked as a change of a waiting task checks it (SPEC-126).
+        let crate::start_change::CheckedStart {
+            after,
+            rule,
+            prepared,
+            ..
+        } = self
+            .check_start_choice(
+                &sid,
+                crate::start_change::StartFields {
+                    after_task_id: req.after_task_id.as_deref(),
+                    start_rule: req.start_rule.as_deref(),
+                    supertask: req.supertask,
+                    prepared: req.prepared,
+                    start_at: req.start_at.as_deref(),
+                },
+            )
+            .await?;
+        if after.is_some() {
+            self.ensure_chain_room(&sid).await?;
         }
         // Jev is asked only about a prompt the task accepts.
         let prompt = req.prompt.trim();
@@ -479,6 +469,8 @@ impl App {
         self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
             .await?;
         let account = parse_account(req)?;
+        // A person continues it: whatever its agent asked a person before is past (SPEC-134).
+        self.end_needs_you(&task.id).await;
         if task.archived_at.is_some() {
             let now = self.now();
             self.deps

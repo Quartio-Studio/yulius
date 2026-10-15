@@ -126,6 +126,9 @@ impl App {
             hosts: record.hosts.clone(),
             requested_hosts: record.requested_hosts.clone(),
             requested_by: record.requested_by.clone(),
+            env_files: record.env_files.as_str().into(),
+            env_requested_by: record.env_requested_by.clone(),
+            cd_prod: record.cd_prod,
             injection: injection.kind().into(),
             header_name: record.header_name.clone(),
             injection_text: injection.describe(),
@@ -230,6 +233,9 @@ impl App {
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
+            env_files: crate::ports::vault::EnvFiles::No,
+            env_requested_by: None,
+            cd_prod: false,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault.bump();
@@ -288,6 +294,9 @@ impl App {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
             .await?;
+        if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
         let mut payload: AgentPayload = self.open_payload(&record)?;
         let meta = meta(
             patch.name.as_deref().unwrap_or(&record.name),

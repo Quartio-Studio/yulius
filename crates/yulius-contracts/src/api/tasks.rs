@@ -99,6 +99,10 @@ pub struct TaskSummary {
     /// A prompt typed into the session that Yulius held for a decision (TSK-013).
     #[serde(default)]
     pub held_prompt: Option<Box<HeldPrompt>>,
+    /// What the agent asked a person to do (`needs_you`, SPEC-134); the task needs a person
+    /// until someone writes to it or the agent resolves it.
+    #[serde(default)]
+    pub needs_you: Option<NeedsYouView>,
     /// How "Auto" chose the task's mode and workflow when it was created (TSK-015); null when the
     /// person picked both.
     #[serde(default)]
@@ -159,6 +163,21 @@ pub struct ChainLink {
     /// plain "run after" chain.
     #[serde(default)]
     pub rule: Option<String>,
+}
+
+/// What a task's agent asked a person to do (SPEC-134 CDT-004, `needs_you`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeedsYouView {
+    /// What to do, one line.
+    pub action: String,
+    /// Why it is needed.
+    #[serde(default)]
+    pub why: Option<String>,
+    /// Where to do it (a Yulius page).
+    #[serde(default)]
+    pub link: Option<String>,
+    /// When it was asked (RFC 3339).
+    pub at: String,
 }
 
 /// A prompt held by the scope check (SPEC-001 TSK-013).
@@ -235,6 +254,28 @@ pub struct CreateTask {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ScheduleTask {
     /// The new time (RFC 3339), or null: it waits for a person.
+    #[serde(default)]
+    pub start_at: Option<String>,
+}
+
+/// `PUT /api/tasks/{tid}/start` (SPEC-126): how a task that waits to start (`chained` or
+/// `prepared`) starts instead, as New task's start choice; none of the fields: Start now.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChangeStart {
+    /// Run after this task of the same sandbox (TSK-012).
+    #[serde(default)]
+    pub after_task_id: Option<String>,
+    /// Start when this rule over the sandbox's tasks is true (SPEC-017). Not together with
+    /// `after_task_id`.
+    #[serde(default)]
+    pub start_rule: Option<String>,
+    /// Start now as a supertask (SPEC-071). Not together with `after_task_id` or `start_rule`.
+    #[serde(default)]
+    pub supertask: bool,
+    /// Wait until a person starts it (SPEC-105). Not together with the other choices.
+    #[serde(default)]
+    pub prepared: bool,
+    /// Prepared, and it starts by itself at this time (RFC 3339, PRP-001's window).
     #[serde(default)]
     pub start_at: Option<String>,
 }
@@ -396,6 +437,24 @@ pub struct TaskPrompt {
     pub text: String,
     /// The attached files, in order; `GET /api/tasks/{tid}/prompt/attachments/{n}` serves one.
     pub attachments: Vec<PromptAttachment>,
+    /// The prompt in order: its text and each attached file where it sits (SPEC-124).
+    pub parts: Vec<PromptPart>,
+}
+
+/// One piece of a task's prompt, in order (SPEC-124): `{"text"}` or `{"attachment": n}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PromptPart {
+    /// Text as written.
+    Text {
+        /// The text.
+        text: String,
+    },
+    /// Attached file `n` of [`TaskPrompt::attachments`], at this place.
+    Attachment {
+        /// Its index in the attachments.
+        attachment: usize,
+    },
 }
 
 /// A file attached to a task's prompt (SPEC-043).

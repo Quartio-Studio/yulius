@@ -1,6 +1,6 @@
 ---
 name: delivery-pipeline
-description: The one autonomous path every feature and fix takes, from a ready issue to verified production - spec, slice-by-slice implementation, independent review in a fresh session, fixes, gates, a small pull request, merge on green, deploy and verify, promotion, cleanup. Use for any change that will be delivered, and whenever you wonder what comes next.
+description: The one autonomous path every feature and fix takes, from a ready issue to a merge on green - spec, slice-by-slice implementation, independent review in a fresh session, fixes, gates, a small pull request, merge on green, cleanup - and how CD (deployment) follows it. Use for any change that will be delivered, and whenever you wonder what comes next.
 ---
 
 # Delivery pipeline
@@ -10,7 +10,8 @@ machine-checked and the review is independent, so you decide, record why, and mo
 
 ```text
 ready issue → spec → slices (test first) → local gates → independent review → fixes
-  → pull request → merge on green → deploy dev → verify → promotion → verify production → cleanup
+  → pull request → merge on green → cleanup
+CD, separately: deploy dev and verify (when asked, or nightly) · production: a person promotes and deploys
 ```
 
 Research, questions about the product, documentation and small chores skip the spec (and
@@ -85,14 +86,15 @@ refuses anything that is not green).
 When a check fails, it is a defect until proven otherwise: reproduce it, fix the cause on the
 same branch, test first. Never rerun until green, never skip, never weaken a test or a gate.
 
-## 7. Deploy, verify, promote
+## 7. Deploy (CD), separately
 
-After the merge, the integration environment deploys and its verification runs (smoke tests
-against the deployed app; in Yulius: `delivery_deploy`). A failure is fixed forward through the
-same pipeline. Then the integration branch is promoted to production (a merge commit, or
-fast-forward where the profile says so; `delivery_promote`) and production is verified the same
-way. Delivery is done only when production verification passed. `delivery_status` shows where
-the change is.
+A merge deploys nothing. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`
+and `[cd.prod]` run their deploy and verify scripts from the protected branches (skill
+`infra-bootstrap`, step 3). Deploy dev when your task asks for it (in Yulius: `cd_deploy`, then
+wait for the run and read it with `cd_status`), or let a nightly automation deploy and test it. A
+failed deploy or verification is fixed forward through this same pipeline. Production, with its
+promotion, is always a person's decision and action: never promote or deploy it; when your task
+needs it, ask a person (in Yulius: `needs_you`) and finish the rest.
 
 ## 8. Clean up
 

@@ -438,6 +438,13 @@ impl App {
         input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
+        // A person wrote to the task (they typed it, even a prompt held below): what its agent
+        // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
+        if crate::finish::is_typed_prompt(input.prompt.as_deref())
+            && self.typed_recently(&ctx.task.id).is_some()
+        {
+            self.end_needs_you(&ctx.task.id).await;
+        }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         let ctx = match store.open_pause(&ctx.task.id).await? {
@@ -826,14 +833,16 @@ pub struct GitCredential {
 }
 
 impl App {
-    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the task owner's own token, so the
-    /// agent's pushes are theirs on GitHub (F 2026-10-11); without a usable one, the App's
-    /// installation token restricted to the run's repository, said once in the task's terminal.
-    /// `gh` in the run asks the same way (`yulius gh-token`, SPEC-004). Requests for any other
-    /// host or repository are refused.
+    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the App's agent token, restricted to
+    /// the run's repository and to the agent permissions, never a person's token (ADR-0114), so
+    /// GitHub refuses it on the protected production branch and it cannot loosen that protection.
+    /// Commits stay authored by the task's owner; Yulius's own push, pull request and merge for
+    /// the task use the owner's token on the server. `gh` in the run asks the same way (`yulius
+    /// gh-token`, SPEC-004). Requests for any other host or repository are refused.
     ///
     /// # Errors
-    /// `Unauthenticated` for unknown runs, `Forbidden` for other repositories, GitHub failures.
+    /// `Unauthenticated` for unknown runs, `Forbidden` for other repositories, `Conflict` when the
+    /// App is not installed, GitHub failures.
     pub async fn agent_git_credential(
         &self,
         token: &str,
@@ -872,11 +881,39 @@ impl App {
                 ));
             }
         }
-        let token = match self.owner_github_token(&ctx.task).await {
-            Some(token) => token,
-            None => self.repository_installation_token(&sandbox).await?,
-        };
-        Ok(GitCredential { token })
+        Ok(GitCredential {
+            token: self.agent_github_token(&sandbox).await?,
+        })
+    }
+
+    /// The App's agent token for `sandbox`'s repository (ADR-0114).
+    ///
+    /// # Errors
+    /// `Conflict` when the App is not installed; GitHub failures.
+    pub(crate) async fn agent_github_token(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> AppResult<crate::model::Secret> {
+        crate::playground::refuse_in_playground(sandbox, "A GitHub token")?;
+        let installation = self.installation_id().await?;
+        let app = self.github_app().await?;
+        self.deps
+            .github
+            .agent_token(&app, installation, &sandbox.repo_name)
+            .await
+    }
+
+    /// The App's installation on this instance.
+    ///
+    /// # Errors
+    /// `Conflict` when the App is not installed; store failures.
+    async fn installation_id(&self) -> AppResult<u64> {
+        self.deps
+            .store
+            .instance()
+            .await?
+            .and_then(|i| i.installation_id)
+            .ok_or_else(|| AppError::Conflict("the GitHub App is not installed".into()))
     }
 
     /// An installation token restricted to `sandbox`'s repository (agents' Git, and the
@@ -889,13 +926,7 @@ impl App {
         sandbox: &crate::model::SandboxRecord,
     ) -> AppResult<crate::model::Secret> {
         crate::playground::refuse_in_playground(sandbox, "A GitHub token")?;
-        let installation = self
-            .deps
-            .store
-            .instance()
-            .await?
-            .and_then(|i| i.installation_id)
-            .ok_or_else(|| AppError::Conflict("the GitHub App is not installed".into()))?;
+        let installation = self.installation_id().await?;
         let app = self.github_app().await?;
         self.deps
             .github
@@ -956,6 +987,9 @@ fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
         test_command: commands.as_ref().is_some_and(|c| set(c.test.as_ref())),
         lint_command: commands.as_ref().is_some_and(|c| set(c.lint.as_ref())),
         actions_workflows: actions_workflows(root),
+        cd_defined: toml.is_some_and(|text| {
+            yulius_domain::spec_format::parse_yulius_toml_cd(text).is_ok_and(|cd| cd.is_defined())
+        }),
     }
 }
 

@@ -37,7 +37,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
-| `scripts/dev security` | Vidoc scan of the files the branch's commits changed since `dev` (pinned CLI in `tools/vidoc`); fails unless the scan completed for this branch with no open critical or high finding. Needs a key and the network; not part of `ci` |
+| `scripts/dev security` | Vidoc scan of the files the branch's commits changed since `dev` (pinned CLI in `tools/vidoc`); fails unless the scan completed for this branch with no open critical or high finding. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
@@ -73,24 +73,50 @@ reads the verdict from the API. It needs Node 20+ and an API key in `VIDOC_TOKEN
 files included, and scans the changed files as they are on disk, so the gate refuses a tree that is
 not clean. It also checks that `git remote show origin` names the default branch: without access
 to origin, the CLI would compare with `origin/main`. A scan takes 10 to 15 minutes, so run the gate
-with a tool timeout of 45 minutes or more, or in the background. Exit codes:
+with a tool timeout of 45 minutes or more, or in the background.
 
-- 0: passed, or the branch changed nothing that Vidoc scans.
+The gate is on. `enabled = false` in `.config/vidoc.toml`
+([SPEC-131](../../.ai/specs/SPEC-131-we-d-like-to-be-able-to-enable-and-disab.md),
+[ADR-0107](../decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)) turns it off
+for every branch that has that commit: it then prints `Security scan disabled: ...; nothing was
+scanned.` and exits 0 without a key, Node or the network. Agents report such a run as disabled,
+never as passed. Turn it off or on in a reviewed pull request that says why; an uncommitted
+`enabled = false` exits 2, and without the file the gate is on. Exit codes:
+
+- 0: passed, the branch changed nothing that Vidoc scans, or the gate is disabled (its message says
+  so).
 - 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
   scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
-- 2: not run. The causes: no key, a malformed key, or a rejected one; Vidoc unreachable or out of
-  quota (402, 429) before the scan; "nothing to scan" although the branch changed source files; no Node
-  20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
-  or origin unreachable the way the CLI checks it; no default branch or no merge base.
+- 2: not run. The causes: a malformed or uncommitted `.config/vidoc.toml` switch; no key, a
+  malformed key, or a rejected one; Vidoc unreachable or out of quota (402, 429) before the scan;
+  "nothing to scan" although the branch changed source files; no Node 20+ or npm; a detached
+  HEAD; uncommitted or untracked files; a first remote other than `origin`, or origin unreachable
+  the way the CLI checks it; no default branch or no merge base.
 
 Vidoc never indexes `bin/`, `vendor/`, `target/`, `build/`, `dist/`, `out/` and similar directories,
 so `crates/yulius-ptyhost/src/bin/` and vendored web assets are outside the scan. Agents run the
 gate for every change before delivery. They fix findings test-first. A false
 positive is ignored in Vidoc, with the reason, only after the independent reviewer agrees, and it
-is listed in the spec's Evidence. Yulius CI does not run the gate, because its jobs hold no secret
-([#466](https://github.com/Quartio-Studio/yulius/issues/466)). To update the CLI, change the pin in
+is listed in the spec's Evidence. To update the CLI, change the pin in
 `tools/vidoc/package.json`, run `npm install --package-lock-only` there, and check that the
 `Scan started with ID:` line still appears in its output.
+
+Yulius CI also runs the gate, as the `security` job of `yulius.toml`, on every pull request head
+([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md),
+[ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)); `dev` and
+`main` heads print that they are not scanned. A `secrets = "VIDOC_API_KEY"` line on the job, read
+from `dev`'s `yulius.toml` only, gives it the agent secret's placeholder and the egress proxy with a
+credential of its own, never the value; the proxy adds the key only toward `api.vidoc.dev`, and each
+use is in the secrets audit as `ci:<run>`. That line is not in `yulius.toml` yet: it waits until the
+running Yulius instance knows `secrets` (after `dev` is promoted to `main`; an older instance
+rejects the whole `yulius.toml`), so until then the job has no key and exits 2. A CI checkout is a
+detached worktree without a GitHub credential, so on a pull request the gate scans a private clone
+of the head on branch `yulius-ci/pr-<n>` whose `origin` answers from a local mirror of origin's
+default branch (`dev`). Findings (exit 1) fail the job and so the merge gate. Exit 2 does not fail
+it: while the stored key is rejected ([#470](https://github.com/Quartio-Studio/yulius/issues/470))
+every pull request would otherwise be blocked by something only a person can fix. The job then ends
+with `[yulius] the security scan did not run`, which is not a pass: agents still run the gate
+themselves and report it as unrun.
 
 ## Dead code
 

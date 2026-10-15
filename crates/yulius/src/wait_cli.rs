@@ -61,6 +61,23 @@ pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<Strin
 /// the wait last saw, `None` when it starts).
 #[must_use]
 pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
+    // A CD run this task started ended (SPEC-134 CDT-003): during this wait, or before it began
+    // and no wait reported it yet. First: its end is reported once, while a merge outcome stays
+    // readable for the next wait.
+    let cd_ended_now = before.is_some_and(|before| {
+        before.cd_state.as_deref() == Some("running")
+            && now.cd_run == before.cd_run
+            && now.cd_state.as_deref() != Some("running")
+    });
+    if cd_ended_now || now.cd_unreported {
+        return Some(format!(
+            "The CD run {} ({}) ended {}. Read it with `cd_status` and run_id {}.",
+            now.cd_run.as_deref().unwrap_or("?"),
+            now.cd_detail.as_deref().unwrap_or("dev"),
+            now.cd_state.as_deref().unwrap_or("?"),
+            now.cd_run.as_deref().unwrap_or("?"),
+        ));
+    }
     // How an armed merge ended (MSR-003): when it is decided during this wait, or already was
     // at this head when the wait starts.
     let decided = match before {
@@ -80,6 +97,7 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     if decided && let Some(outcome) = &now.merge_outcome {
         return Some(outcome.clone());
     }
+    let deploying = now.cd_state.as_deref() == Some("running");
     // Yulius could not push this head (DLV-201): no run will come until the agent acts.
     if let Some(problem) = &now.push_problem
         && before.is_none_or(|before| before.push_problem.as_ref() != Some(problem))
@@ -112,7 +130,7 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             }
         ));
     }
-    if now.checks_ended() && !now.merge_armed {
+    if now.checks_ended() && !now.merge_armed && !deploying {
         let head = short(&now.head);
         return Some(match now.checks.as_str() {
             "passed" => format!(
@@ -129,7 +147,7 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             ),
         });
     }
-    if before.is_none() && now.head.is_empty() && !now.merge_armed {
+    if before.is_none() && now.head.is_empty() && !now.merge_armed && !deploying {
         return Some(
             "Nothing to wait for: this directory has no commit. Run `yulius wait` in the task's \
              worktree."
@@ -158,7 +176,11 @@ fn describe(state: &WaitState) -> String {
         .as_deref()
         .map(|note| format!("; {note}"))
         .unwrap_or_default();
-    format!("{checks}{armed}; delivery {}{train}", state.stage)
+    let cd = match (&state.cd_run, state.cd_state.as_deref()) {
+        (Some(run), Some("running")) => format!("; CD run {run} deploying"),
+        _ => String::new(),
+    };
+    format!("{checks}{armed}; delivery {}{train}{cd}", state.stage)
 }
 
 fn short(sha: &str) -> &str {
@@ -231,6 +253,57 @@ mod tests {
             stage: "pr_open".into(),
             ..WaitState::default()
         }
+    }
+
+    /// SPEC-134 CDT-003: a CD run the task started keeps the wait open, even over passed checks,
+    /// and ends it when it ends.
+    #[test]
+    fn a_running_deploy_keeps_the_wait_until_it_ends() {
+        let deploying = WaitState {
+            cd_run: Some("r1".into()),
+            cd_state: Some("running".into()),
+            cd_detail: Some("dev".into()),
+            ..state("passed")
+        };
+        assert_eq!(
+            settled(&deploying, None),
+            None,
+            "passed checks wait for the deploy"
+        );
+        assert!(describe(&deploying).contains("CD run r1 deploying"));
+        let ended = WaitState {
+            cd_state: Some("failed".into()),
+            ..deploying.clone()
+        };
+        let line = settled(&ended, Some(&deploying)).unwrap_or_default();
+        assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
+        assert!(line.contains("cd_status"), "{line}");
+        // Ended before the wait began (review M4): reported once, then the wait goes on.
+        let unreported = WaitState {
+            cd_unreported: true,
+            ..ended.clone()
+        };
+        let line = settled(&unreported, None).unwrap_or_default();
+        assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
+        assert!(
+            settled(
+                &WaitState {
+                    cd_unreported: false,
+                    ..state("running")
+                },
+                None
+            )
+            .is_none(),
+            "a reported run does not end the next wait"
+        );
+        // Another run started and ended between two polls of a running wait (round 2, M-A).
+        let earlier = WaitState {
+            cd_run: Some("r0".into()),
+            cd_state: Some("passed".into()),
+            ..state("running")
+        };
+        let line = settled(&unreported, Some(&earlier)).unwrap_or_default();
+        assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
     }
 
     #[test]

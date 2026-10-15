@@ -533,13 +533,29 @@ wins over the file.
 
 Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
 allow: the server's installation tokens, and people's sign-in (user-to-server) tokens, which are
-also capped by the person's own repository access. Everything a task does on GitHub uses its
-creator's sign-in token, so GitHub shows that person (GIT-003): the agent's Git and `gh`,
-Yulius's push and pull request for the task, the agent's merges, promotions, issues and labels.
-Without a usable one (no linked account, as for the superadmin, or a sign-in that can no longer
-be refreshed) the App acts — with a token restricted to the sandbox's repository for the agent —
-and the task's terminal says so once. Yulius CI's statuses, branch cleanup and background reads
-stay with the App. The manifest flow requests these repository permissions:
+also capped by the person's own repository access. What Yulius does on GitHub for a task uses its
+owner's sign-in token, so GitHub shows that person (GIT-003): Yulius's push and pull request for
+the task, its merges, promotions, issues and labels. Without a usable one (no linked account, as
+for the superadmin, or a sign-in that can no longer be refreshed) the App acts, and the task's
+terminal says so once. Yulius CI's statuses, branch cleanup and background reads stay with the App.
+
+The agent's own Git and `gh` never hold a person's token (ADR-0114): they get an installation token
+of the App restricted to the sandbox's repository and to Contents and Pull requests and Issues
+(write), Checks, Commit statuses and Metadata (read). Commits stay authored by the task's owner;
+an agent's own pushes and comments show the App. Without Administration that token cannot touch
+rulesets, settings or deploy keys; without Workflows it cannot add a GitHub Actions workflow.
+
+**Protecting the production branch.** Only a person may move it (ADR-0110). Add a branch ruleset
+on each repository (Settings → Rules → Rulesets → New branch ruleset): target the production
+branch (`main`), enforcement Active, rules **Restrict updates**, **Restrict deletions** and **Block
+force pushes**, and in the bypass list only the **Repository admin** role, never the Yulius App.
+GitHub then refuses the agents' token every push, merge, fast-forward or deletion of that branch,
+`--no-verify` and `gh` included, while an admin's promotion goes through. Projects Yulius creates
+get it; for an imported repository onboarding (`yulius onboard`, the preparation task) says when it
+is missing, and the preparation agent asks a person for it. A promotion needs a repository admin
+once the ruleset exists.
+
+The manifest flow requests these repository permissions:
 
 | Permission | Access | What Yulius does with it |
 | --- | --- | --- |
@@ -635,7 +651,9 @@ involved.
    - Install what `uses:` steps installed on the machine or in the job's command.
 2. `git rm -r .github/workflows` in the same commit, then open the pull request. Yulius tests it with
    the CI it adds, because the integration branch has none yet.
-3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2.
+3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2. Yulius pushes
+   it with the task owner's token at the end of the agent's turn: the agent's own token never has
+   Workflows (ADR-0114).
 4. Turn GitHub Actions off for the repository (see "GitHub App permissions").
 5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
    enforces the delivery profile either way.
@@ -643,6 +661,30 @@ involved.
 **Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours each sandbox is
 scanned for stale branches and worktrees, shown on its CI page. People clean them up there, agents
 with `repo_cleanup`.
+
+### CD on this machine
+
+CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]` and
+`[cd.prod]` in their `yulius.toml`. A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
+containment: dev runs inside the sandbox (its tools, its network); production joins only the
+sandbox's network (no host loopback) on the host's read-only `/usr`, `/etc` and `/opt`, so its
+scripts install the tools they need into `$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
+mirror), `<data>/cd/<id>/cache/<env>` (`$YULIUS_CD_CACHE`) and `<data>/runs/cd-<run>/work` (the
+commit's tree, `HOME` and log, removed after each run); none is visible to agents. Runs are kept
+14 days, 50 per environment, and each environment's last passed run always.
+
+- **Secrets.** A dev run gets the real value of each secret its table names once a person allowed
+  it outside the proxy on the Secrets page (the same allowance as copying it into `.env`); a
+  production run only once someone who manages it chose "Allow for production deploys". Output is
+  redacted, but scripts hold the values while they run, so allow only what a deploy needs.
+- **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
+  deploys (which use the sandbox's network) have none either.
+- **Production.** Only an administrator deploys it, on the CD page, typing the project's slug. With
+  `promote = true` the deploy first promotes under that person's GitHub identity; a promotion pull
+  request whose checks still run refuses the deploy until they pass.
+- **Restarts.** A run that was running when the server stopped is recorded as `error` ("outcome
+  unknown") at the next start, its process host stopped and its files removed, and is never started
+  again by itself: check the environment and deploy again.
 
 ## 6. Onboarding a repository and your Claude sessions (`yulius onboard`)
 
@@ -836,6 +878,10 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 --release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
 
 ### Notes for specific upgrades
+
+- Upgrading to CD (deployment) (SPEC-134, task #113): migration 0027 adds `cd_runs` and
+  `tasks.needs_you`. Nothing deploys until a project defines `[cd.dev]` or `[cd.prod]`. The agent
+  tool `delivery_promote` is gone: production, with its promotion, is a person's on the CD page.
 
 - Upgrading to CI jobs with CPU priority (SPEC-053, #283, 2026-10-13): no migration and no
   configuration. The next time a sandbox is prepared, its cgroup gets `system/`, `agents/` and

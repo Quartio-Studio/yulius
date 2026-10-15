@@ -30,7 +30,7 @@ use std::fmt;
 pub use config::{
     ConfigProblem, FormatError, MAX_COMMAND_BYTES, MAX_CONFIG_BYTES, MAX_PATH_BYTES,
     parse_yulius_toml, parse_yulius_toml_branch_policy, parse_yulius_toml_caches,
-    parse_yulius_toml_docs, parse_yulius_toml_resources, render_yulius_toml,
+    parse_yulius_toml_cd, parse_yulius_toml_docs, parse_yulius_toml_resources, render_yulius_toml,
 };
 pub use project::{
     DecisionFiles, NamedFile, ProjectFiles, ProjectProblem, ProjectProblemKind, ProjectReport,

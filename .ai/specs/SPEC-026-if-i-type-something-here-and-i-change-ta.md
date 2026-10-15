@@ -5,7 +5,7 @@ status: done
 
 # SPEC-026: the new-task composer keeps its draft
 
-Status: implemented
+Status: implemented; a draft's files sit in its text since [SPEC-124](SPEC-124-images-keep-their-position-in-the-text-f.md) (the tray of thumbnails is gone)
 Date: 2026-10-12
 Owner: Yulius task #24
 Scope authorization: user request: "If I type something here and I change tab, I want it to be

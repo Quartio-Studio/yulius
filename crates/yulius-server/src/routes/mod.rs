@@ -5,6 +5,7 @@ mod admin;
 mod analytics;
 mod automations;
 mod browser;
+mod cd;
 mod ci;
 mod delivery;
 mod events;
@@ -23,6 +24,7 @@ mod sessions;
 mod setup_auth;
 mod shells;
 mod skills;
+mod stages;
 mod status;
 mod tasks;
 mod terminal;
@@ -87,6 +89,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/stop", post(tasks::stop))
         .route("/api/tasks/{tid}/start-now", post(tasks::start_now))
         .route("/api/tasks/{tid}/schedule", put(tasks::schedule))
+        .route("/api/tasks/{tid}/start", put(tasks::change_start))
         .route(
             "/api/tasks/{tid}/queued-messages",
             post(tasks::queue_message),
@@ -250,6 +253,19 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             post(delivery::confirm_environment),
         )
         .route("/api/sandboxes/{sid}/delivery/runs", get(delivery::runs))
+        .route("/api/sandboxes/{sid}/cd", get(cd::overview))
+        .route("/api/sandboxes/{sid}/cd/{env}/deploy", post(cd::deploy))
+        .route("/api/sandboxes/{sid}/cd/runs/{rid}", get(cd::run))
+        .route(
+            "/api/sandboxes/{sid}/cd/runs/{rid}/cancel",
+            post(cd::cancel),
+        )
+        .route(
+            "/api/sandboxes/{sid}/stages/timeline",
+            get(stages::timeline),
+        )
+        .route("/api/sandboxes/{sid}/stages/summary", get(stages::summary))
+        .route("/api/sandboxes/{sid}/stages/spans", get(stages::spans))
         .route("/api/sandboxes/{sid}/ci", get(ci::overview))
         .route("/api/sandboxes/{sid}/ci/sync", post(ci::sync))
         .route("/api/sandboxes/{sid}/ci/runs/{rid}", get(ci::run))
@@ -319,6 +335,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .put(notes::save_me)
                 .layer(DefaultBodyLimit::max(2 << 20)),
         )
+        // Who has a file open in the editor (SPEC-127): a selection, relayed and stored nowhere.
+        .route("/api/sandboxes/{sid}/files/presence", put(files::presence))
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
         // A folder packed by the browser becomes a playground (SPEC-099).

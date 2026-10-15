@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, oneshot};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
+use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
     Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
@@ -81,6 +82,10 @@ pub struct TaskRuntime {
     run: tokio::sync::Mutex<Option<ActiveRun>>,
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
+    /// The run whose transcript `usage` has read to its end at least once: only then is the
+    /// snapshot that run's figures (SPEC-143 RDM-001). A run that ends before (it ended while
+    /// Yulius was down, or right after a reattach) is counted from its transcript instead.
+    usage_read: Mutex<Option<AttemptId>>,
     watcher_alive: Arc<AtomicBool>,
     /// The latest transcript watcher started: an older one ends even when the next run starts
     /// before it saw its own run end (it would read the new run's lines as its own).
@@ -129,9 +134,9 @@ pub struct TaskRuntime {
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
-    /// Why Yulius could not push the agent's head (the head, the text), for `yulius wait`: the
-    /// agent learns it instead of waiting for a run that never comes (SPEC-050 DLV-201).
-    pub(crate) push_problem: Mutex<Option<(String, String)>>,
+    /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
+    /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
+    pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -225,6 +230,7 @@ impl TaskRuntime {
             run: tokio::sync::Mutex::new(None),
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
+            usage_read: Mutex::new(None),
             watcher_alive: Arc::new(AtomicBool::new(false)),
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
@@ -527,20 +533,26 @@ fn sets_goal(mode: &SessionMode) -> bool {
 }
 
 /// The pastes that type a first message with attached images (SPEC-030), each a bracketed paste
-/// (xterm `ESC [200~ … ESC [201~`) with what the screen shows once Claude Code took it: each
-/// image's path (`[Image #N]`), then the text. The text ends with a newline, so the cursor is
-/// never on a mention: Claude Code's file autocomplete would take the Enter (measured).
-fn opening_pastes(images: Vec<String>, text: &str) -> Vec<(Vec<u8>, Option<String>)> {
+/// (xterm `ESC [200~ … ESC [201~`) with what the screen shows once Claude Code took it: in the
+/// message's order (SPEC-124), each image's path (`[Image #N]`, at the cursor) and the text
+/// around it. Text that ends the message ends with a newline, so the cursor is never on a
+/// mention: Claude Code's file autocomplete would take the Enter (measured).
+fn opening_pastes(pastes: Vec<Paste>) -> Vec<(Vec<u8>, Option<String>)> {
     let paste = |content: &str| format!("\x1b[200~{content}\x1b[201~").into_bytes();
-    let mut pastes: Vec<(Vec<u8>, Option<String>)> = images
-        .iter()
-        .enumerate()
-        .map(|(i, path)| (paste(path), Some(format!("[Image #{}]", i + 1))))
-        .collect();
-    if !text.is_empty() {
-        pastes.push((paste(&format!("{text}\n")), None));
-    }
+    let last = pastes.len().saturating_sub(1);
+    let mut images = 0;
     pastes
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| match item {
+            Paste::Image(path) => {
+                images += 1;
+                (paste(&path), Some(format!("[Image #{images}]")))
+            }
+            Paste::Text(text) if i == last => (paste(&format!("{text}\n")), None),
+            Paste::Text(text) => (paste(&text), None),
+        })
+        .collect()
 }
 
 /// Branch name for a task: `feat/<number>-<slug>`.
@@ -961,6 +973,14 @@ impl App {
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
             };
+            // A waiting or resting task with no run left: an intent of a stop or close that ended
+            // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
+            // ends keeps it for that run's end.
+            if store.live_attempt(&task.id).await?.is_none()
+                && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
+            {
+                *intent = None;
+            }
             if !store
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?
@@ -1055,8 +1075,8 @@ impl App {
                     }
                     None => match Request::parse(&task.prompt).opening() {
                         Opening::Prompt(prompt) => Some(prompt),
-                        Opening::Typed { images, text } => {
-                            typed_opening = Some((images, text));
+                        Opening::Typed { pastes } => {
+                            typed_opening = Some(pastes);
                             None
                         }
                     },
@@ -1570,20 +1590,16 @@ impl App {
         )
     }
 
-    /// Types a session's first message that carries images (SPEC-030): each image's path as a
-    /// bracketed paste of its own, then the text as one paste, then Enter. Each paste is taken
+    /// Types a session's first message that carries images (SPEC-030): in order, each image's
+    /// path as a bracketed paste of its own where it sits, the text around them as pastes of their
+    /// own (SPEC-124), then Enter. Each paste is taken
     /// before the next is written (pastes written in one burst lose the image): the screen shows
     /// its `[Image #N]`, or the output changed and settled. Typed once, never retried, so the
     /// request is never sent twice. Typing stops once the attempt is no longer live: input goes
     /// to the task's current run, which would then be another session.
-    async fn type_opening(
-        &self,
-        task_id: &TaskId,
-        attempt_id: &AttemptId,
-        (images, text): (Vec<String>, String),
-    ) {
+    async fn type_opening(&self, task_id: &TaskId, attempt_id: &AttemptId, pastes: Vec<Paste>) {
         let runtime = self.runtime(task_id);
-        for (paste, shown) in opening_pastes(images, &text) {
+        for (paste, shown) in opening_pastes(pastes) {
             if !self.attempt_live(task_id, attempt_id).await {
                 return;
             }
@@ -1890,6 +1906,18 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        // A stop or close that came while the run was launching found no run to ask: it asks now,
+        // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
+        // comes later finds the run itself; the host takes a second request as the first.
+        let ending = runtime
+            .intent
+            .lock()
+            .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close)));
+        if ending {
+            // The stop may have come before this run existed, so it armed no escalation for it.
+            self.arm_escalation(task_id, Some(attempt.id.clone()));
+            request_shutdown(&runtime).await;
+        }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
         // it): the screen shows that viewer's size from the start, never the spawn size first,
         // and the PTY follows (TSK-006, F 2026-10-10).
@@ -2138,7 +2166,17 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        self.save_metrics(task_id, attempt_id, &runtime).await;
+        // The snapshot is the run's once its watcher read the run's transcript to its end;
+        // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
+        let read = runtime
+            .usage_read
+            .lock()
+            .is_ok_and(|read| read.as_ref() == Some(attempt_id));
+        if read {
+            self.save_metrics(task_id, attempt_id, &runtime).await;
+        } else {
+            self.save_counted_metrics(attempt_id).await;
+        }
         {
             let mut run = runtime.run.lock().await;
             if run.as_ref().is_some_and(|r| &r.attempt_id == attempt_id) {
@@ -2514,6 +2552,10 @@ impl App {
                         )
                         .await?
                 {
+                    // An earlier stop's intent that no run consumed goes with it (STP-002).
+                    if let Ok(mut intent) = self.runtime(task_id).intent.lock() {
+                        *intent = None;
+                    }
                     self.end_pause(task_id, "cancelled").await;
                     self.publish_task(task_id).await;
                     self.advance_chains(task_id).await;
@@ -3027,6 +3069,8 @@ impl App {
                 continue;
             }
             match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
+                // It ended while Yulius was down: no watcher of this process read it, so its
+                // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
@@ -3115,6 +3159,10 @@ impl App {
         runtime.watcher_alive.store(true, Ordering::SeqCst);
         runtime.hooks_seen.store(false, Ordering::SeqCst);
         runtime.at_limit.store(false, Ordering::SeqCst);
+        // Unmarked before it is emptied: a run is never taken as read with an empty snapshot.
+        if let Ok(mut read) = runtime.usage_read.lock() {
+            *read = None;
+        }
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
         }
@@ -3261,6 +3309,11 @@ impl App {
             let runtime = self.runtime(&task_id);
             if let Ok(mut u) = runtime.usage.lock() {
                 *u = usage.clone();
+            }
+            if w.caught_up()
+                && let Ok(mut read) = runtime.usage_read.lock()
+            {
+                *read = Some(attempt.id.clone());
             }
             let turn_ended = observations
                 .iter()
@@ -3542,11 +3595,15 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_first_message_pastes_each_image_then_the_text_ending_in_a_newline() {
-        let pastes = super::opening_pastes(
-            vec!["/s/a.png".into(), "/s/my b.png".into()],
-            "Look\n\n@\"/s/c.txt\"",
-        );
+    fn a_typed_first_message_pastes_each_image_where_it_sits_the_last_text_ending_in_a_newline() {
+        use yulius_domain::request::Paste;
+        let pastes = super::opening_pastes(vec![
+            Paste::Text("Look at ".into()),
+            Paste::Image("/s/a.png".into()),
+            Paste::Text(" and ".into()),
+            Paste::Image("/s/my b.png".into()),
+            Paste::Text(" @\"/s/c.txt\"".into()),
+        ]);
         let shown: Vec<(String, Option<String>)> = pastes
             .into_iter()
             .map(|(bytes, shown)| (String::from_utf8_lossy(&bytes).into_owned(), shown))
@@ -3554,18 +3611,23 @@ mod tests {
         assert_eq!(
             shown,
             [
+                ("\x1b[200~Look at \x1b[201~".to_owned(), None),
                 (
                     "\x1b[200~/s/a.png\x1b[201~".to_owned(),
                     Some("[Image #1]".to_owned())
                 ),
+                ("\x1b[200~ and \x1b[201~".to_owned(), None),
                 (
                     "\x1b[200~/s/my b.png\x1b[201~".to_owned(),
                     Some("[Image #2]".to_owned())
                 ),
-                ("\x1b[200~Look\n\n@\"/s/c.txt\"\n\x1b[201~".to_owned(), None),
+                ("\x1b[200~ @\"/s/c.txt\"\n\x1b[201~".to_owned(), None),
             ]
         );
-        assert_eq!(super::opening_pastes(vec!["/s/a.png".into()], "").len(), 1);
+        // A message that ends with an image ends with its paste.
+        let only = super::opening_pastes(vec![Paste::Image("/s/a.png".into())]);
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].1.as_deref(), Some("[Image #1]"));
     }
     #[test]
     fn final_screen_round_trips() -> Result<(), Box<dyn std::error::Error>> {

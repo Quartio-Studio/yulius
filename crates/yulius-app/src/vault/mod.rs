@@ -10,6 +10,7 @@
 //! with the row's id and section as associated data; plaintexts are zeroed when dropped.
 
 mod agents;
+mod env_files;
 mod requests;
 mod runtime;
 mod team;
@@ -54,6 +55,8 @@ pub struct VaultState {
     audited: Mutex<HashSet<String>>,
     /// Recently authenticated egress proxy clients.
     clients: runtime::ClientCache,
+    /// Proxy credentials of running CI jobs (SPEC-142).
+    ci_clients: runtime::CiClients,
 }
 
 impl VaultState {
@@ -187,6 +190,11 @@ impl From<StoredTeamPayload> for TeamPayload {
         }
     }
 }
+
+/// Why a production secret refuses a use by agents (SPEC-134, round 2 M-B): one that production
+/// deploys get is never also copied into `.env` files or sent to hosts.
+pub(crate) const PRODUCTION_SECRET: &str = "this is a production secret: production deploys get it \
+and agents never do. Add a separate secret for agents";
 
 /// Agent secret payload (sealed as JSON).
 #[derive(Default, Serialize, Deserialize)]

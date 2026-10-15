@@ -233,10 +233,11 @@ limited to the agent's sandbox.
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does, a `prepared` one whatever its time (409 otherwise, also while onboarding blocks the sandbox's tasks). Cancel it with `/stop` |
 | PUT | `/api/tasks/{tid}/schedule` | write | `{"start_at":"<RFC 3339>"|null}` → `TaskSummary`; when a `prepared` task starts by itself, or null: when a person starts it (SPEC-105; 422 outside the window of `CreateTask.start_at`, 409 when the task is not prepared). A time already due starts it at once |
+| PUT | `/api/tasks/{tid}/start` | write | `ChangeStart` (`after_task_id`, `start_rule`, `supertask`, `prepared`, `start_at`, as `CreateTask`; none: Start now) → `TaskSummary`; how a task waiting to start (`chained` or `prepared`) starts instead (SPEC-126). 409 once the task has started (also `queued`), 422 for a choice `CreateTask` refuses or a wait on itself, 429 beyond the sandbox's bound of chained or prepared tasks; the owner only (SPEC-070) |
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained`, `prepared` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
-| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
+| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}],"parts":[{"text"}\|{"attachment":n}]}`: the prompt the task started with, without its attached files (an inline `@'path'` mention or an `@path` line each), its attached files in order (SPEC-043), and `parts`, the prompt in order with each file where it sits (`n` indexes `attachments`; SPEC-124). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
 | GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065) |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
@@ -274,6 +275,7 @@ TaskSummary = {
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
+  "needs_you": {"action","why|null","link|null","at"}|null,   // SPEC-134: what the agent asked a person (`needs_you`)
   "background_shells": "0|1|…|null",
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
@@ -534,14 +536,17 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   through Yulius once no integration environment is pending; the outcome is added to `notes`
   and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
   work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
-  independent review approved, equal to the branch head), `delivery_deploy` (environments with a
-  command and `verify = "command"` only) and `delivery_promote`, which take these same paths with
-  the task creator's authority and are audited as `task:<n>` too (DLV-008). `issue_create`
+  independent review approved, equal to the branch head) and `delivery_deploy` (integration
+  environments with a command and `verify = "command"` only), which take these same paths with
+  the task creator's authority and are audited as `task:<n>` too (DLV-008). Agents never promote:
+  production is always a person's (ADR-0110; there is no `delivery_promote` any more), and they
+  deploy with CD (below). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,
   at least one `area:` label and an `## Acceptance criteria` checklist). On GitHub these tools
   act with the task creator's own token; a creator without a usable one (no linked account, an
   expired sign-in) gets the App's, and the task's terminal says so once (GIT-003).
-- **Promote** refuses while a merged task still has an integration environment pending, when
+- **Promote** needs an administrator and `{"confirm": "<slug>"}` (a release is a production deploy,
+  ADR-0110). It refuses while a merged task still has an integration environment pending, when
   production already equals integration, or when a fast-forward is impossible.
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
   `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
@@ -590,7 +595,7 @@ CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at 
                             # ANTHROPIC_*, CLAUDE_*, NODE_*, PYTHON*, *_PROXY, LD_* and similar)
 ```
 
-Jobs get `CI=true`, `HOME` (persistent), `YULIUS_CI_CACHE` (persistent), `YULIUS_CI_RUN`,
+Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent), `YULIUS_CI_CACHE` (persistent), `YULIUS_CI_RUN`,
 `YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX` and no secrets. A job
 starts once its CPUs and memory are free: the CI jobs of all lanes never ask for more than the
 sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of
@@ -644,6 +649,126 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
   production or default branch, nor one another open pull request uses). Cleanup never forces a
   worktree removal, never removes a live task's worktree, a protected branch or one with an open
   pull request, and removes `idle` branches (unmerged, no pull request) only with `force`.
+
+## CD (deployment)
+
+A project's CD (SPEC-134, ADR-0109/0110) is two environments in `yulius.toml`, read only from
+protected branches: `[cd.dev]` at the integration branch head, `[cd.prod]` at the commit it deploys
+(the integration head when that head's `[cd.prod]` promotes, else the production head).
+
+```toml
+[cd.dev]                            # missing: "not defined"; no deploy/verify/promote: "empty"
+about = "the team's dev VM"         # one line for people (at most 300 characters)
+deploy = "scripts/cd/deploy.sh dev" # one line, /bin/sh -c in the environment's own checkout
+verify = "scripts/cd/verify.sh dev" # after a successful deploy
+secrets = "DEV_SSH_KEY DEV_HOST"    # at most 16 agent secrets, as environment variables
+
+[cd.prod]                           # the same keys, and:
+promote = true                      # a person's deploy first promotes the integration branch
+```
+
+A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
+(every object checked, replacement refs ignored). It writes the commit's files into the run's own
+directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
+containment, production on the sandbox's network only and the host's read-only system), for at most the CI job
+timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
+`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment, out of the agents' reach), a
+`HOME` made for the run and removed after it, and the real value of each named secret allowed for
+that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
+allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
+agent secret of the sandbox redacted. One run per environment at a time; a run left running by a
+restart is recorded as `error` and never run again by itself.
+
+| Method and path | Access | Result |
+| --- | --- | --- |
+| `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
+| `POST /api/sandboxes/{sid}/cd/dev/deploy` | write | the running `CdRun` |
+| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
+| `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
+| `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
+| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it |
+
+```text
+CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": [CdRun] (newest 20),
+              "can_deploy_dev": true, "can_deploy_prod": false}
+CdEnvironment = {"name": "dev|prod", "label": "dev|production", "state": "not_defined|empty|ready",
+                 "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
+                 "promote", "promotes_from": "<integration head>"|null,
+                 "secrets": [{"name", "state": "ready|not_allowed|missing"}],
+                 "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
+CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|error|cancelled",
+         "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
+         "note": "promoted 'dev' to 'main' at …"|null, "reason", "exit_code", "started_at", "ended_at",
+         "output" (detail only)}
+```
+
+`expect` (optional, any deploy) is the commit the person was shown: the one deployed, or with a
+promotion the integration commit promoted; the deploy refuses (`conflict`) when the branch moved
+since. `confirm_ms` (optional, production) is how long the person kept the confirmation open, as the
+page measured it; up to an hour it is recorded as the run's confirmation wait (SPEC-137). A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
+copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it.
+
+Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
+environment or a production deploy without the slug typed exactly, `conflict` for an empty or
+undefined environment, a missing or not-allowed secret ("nothing ran: …"), a running run, or a
+promotion that cannot complete now (its pull request's checks). Every run is audited before it
+starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and refused production
+deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev only; production is
+refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
+`cd_detail` in its state).
+
+## Stages (pipeline measurements)
+
+Every stage of a task, a CI run and a CD run is a span (SPEC-137, ADR-0112), recorded by Yulius as
+it happens: a task's states (`queued`, `chained`, `prepared`, `starting`, `working`, `idle`,
+`needs_you`, `done`, `paused`, `switching`, `stopping`), its `needs_you` requests, steps (with the
+tokens and agent working time its runs recorded meanwhile), runs, pauses, delivery stages,
+armed-merge waits and updates onto the integration branch; a CI run's queue (with why it waited),
+preparation, job-slot waits, jobs, checkouts and the stages its output names; a CD run's
+confirmation, checks, promotion, deploy, verify and the stages their output names. Spans recorded
+before migration 28 from older tables are `backfilled`; a CI result reused from an identical tree
+is `detail.reused` and not counted. Spans are kept 180 days. Nothing writes them through the API.
+
+A CI job or CD script names its stages and figures with lines Yulius reads as it runs; Yulius
+times them by its own clock:
+
+```text
+::yulius-stage build            # a stage starts (the one before ends); 1-48 characters
+::yulius-measure cache_hits=3   # figures of the open stage (or the job): [a-z][a-z0-9_]{0,31}=<number>
+::yulius-stage-end              # the open stage ends (the job's end ends it too)
+```
+
+Test summaries of cargo nextest, cargo test, pytest and Playwright add `tests_passed`,
+`tests_failed`, `tests_skipped` and `tests_flaky` to the open stage. A figure never overwrites what
+Yulius records of the span: `tests_…`, `…_start` and the names Yulius writes itself
+(`RESERVED_FIGURES` in `yulius-domain/src/stages.rs`: `sha`, `reason`, `exit_code`, `cpus`,
+`input_tokens`…) are ignored, as are new names past 64 per span. Figures are written once per span
+each half second the output is read (counts added up, the last value kept).
+
+| Method and path | Access | Result |
+| --- | --- | --- |
+| `GET /api/sandboxes/{sid}/stages/timeline?subject=<task|ci_run|cd_run>:<id>` | read | `TimelineView` |
+| `GET /api/sandboxes/{sid}/stages/summary?from&to&subject&kind&stage&environment&job&trend` | read | `StageSummary` |
+| `GET /api/sandboxes/{sid}/stages/spans?format=json|csv&from&to&subject&kind&stage&environment&job` | read | `[SpanView]` or CSV (`yulius-stages-<from>-<to>.csv`) |
+
+`from`/`to` are UTC days (`YYYY-MM-DD`, default the last 30 days, at most 366); `trend` is
+`<subject>:<kind>:<name>` (default `ci_run:run:run`).
+
+```text
+SpanView = {"subject_kind", "subject_id", "key", "parent_key", "kind", "name", "environment", "job",
+            "started_at", "ended_at"|null, "duration_ms"|null, "outcome"|null,
+            "source": "recorded|backfilled", "detail": {…figures}}
+TimelineView = {"subject_kind", "subject_id", "spans": [SpanView] (the newest 2,000), "related": [SpanView]
+                (a task of this sandbox: its PR's CI runs), "truncated": bool (it has more)}
+StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "kind", "name",
+                "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
+                "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}
+StageRow = {"subject_kind", "kind", "name", "job", "environment", "count", "failed", "running",
+            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms"}
+DeliveryFigures = {"environment", "deployments", "passed", "per_week", "lead_time_p50_ms",
+                   "lead_time_p90_ms", "lead_time_count", "change_failure_rate",
+                   "time_to_restore_p50_ms", "restores"}
+```
 
 ## Skills, workflows, automations, MCP
 
@@ -862,6 +987,16 @@ resolves to nothing, the run gets the server without that variable or token.
   → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
+  `PUT /api/sandboxes/{sid}/files/presence` (write) `{"root?","path","sha256?","selection":
+  {"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-127): the caller's selection in UTF-16
+  offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when unknown),
+  or `null` when they left the file; `hello` and `client` as for notepad presence. Relayed as
+  `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
+  other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
+  4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
+  422 for unknown fields, a bad `sha256` or `client`, or an offset over 2 Mi; 403/404 without
+  write access; 429 past 20 updates a second per person and file (the notepads' limiter) or past
+  64 files and notepads a person is busy in at once.
 - Dropped files (EDT-006, UI-048). One file per request, the raw bytes as the body (`Content-Type`
   is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB by
   default; `GET /api/me` → `instance.upload_max_bytes`): a larger `Content-Length` is 422 before
@@ -1194,11 +1329,12 @@ after an unlock.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets) |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets) |
 | POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value` → `AgentSecret` (`value` replaces it; `""` clears `username`) |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
+| POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of the sandbox; of every sandbox for an instance-wide secret) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 
 ## UI event stream
@@ -1214,7 +1350,10 @@ found or moved; clients refetch `GET /api/update`),
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
 only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
 "revision","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a shared notepad, to
-the people who may read it; SPEC-112), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
+the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
+"client","name","sha256","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a file
+open in the editor, only to people with write access to that sandbox; SPEC-127),
+`{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`.
 
@@ -1269,5 +1408,9 @@ task; other hooks answer as usual.
   once per run, secret and channel (`vault.agent.redacted`).
 - MCP: `secrets_list`, `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
   selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
-  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing);
-  every MCP result is redacted.
+  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing),
+  and `secret_copy_to_env {secrets, path?: ".env", reason?}` (SPEC-129: writes the values of
+  secrets a person allowed into an ignored, untracked dotenv file of the task's worktree and
+  their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
+  for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
+  redacted.

@@ -280,6 +280,7 @@ impl SandboxIsolation for NamespaceIsolation {
                     private_dirs: join.private_dirs.iter().map(PathBuf::from).collect(),
                     system_passwd: joined.system_passwd,
                     system_group: joined.system_group,
+                    host_system: None,
                 }))
             }
             Ok(None) if self.strict => Err(AppError::Conflict(

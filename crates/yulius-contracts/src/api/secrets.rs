@@ -149,6 +149,16 @@ pub struct AgentSecretView {
     pub requested_hosts: Vec<String>,
     /// The task that asked last (`#107`).
     pub requested_by: Option<String>,
+    /// Whether agents may copy the value into the project's git-ignored `.env` files
+    /// (SPEC-129): `no`, `asked` (a person allows or dismisses it) or `allowed`.
+    #[serde(default)]
+    pub env_files: String,
+    /// The tasks asking to copy it (`#111`) while `env_files` is `asked`.
+    #[serde(default)]
+    pub env_requested_by: Option<String>,
+    /// Production CD runs get its value (SPEC-134): a person's allowance of its own.
+    #[serde(default)]
+    pub cd_prod: bool,
     /// `none`, `bearer`, `basic` or `header`.
     pub injection: String,
     /// Header of the `header` injection.
@@ -242,12 +252,37 @@ pub struct HostRequestAnswer {
     pub hosts: Vec<String>,
 }
 
+/// `POST /api/agent-secrets/{id}/env` body (SPEC-129): `true` allows agents to copy the secret
+/// into `.env` files (answering their request); `false` dismisses the request or revokes the
+/// allowance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvFilesAnswer {
+    /// Allow (`true`) or not.
+    pub allow: bool,
+    /// The `env_files` the person saw: the answer is refused (409) unless it still holds.
+    pub env_files: String,
+    /// The askers the person saw (`env_requested_by`), compared the same way.
+    #[serde(default)]
+    pub env_requested_by: Option<String>,
+}
+
+/// `POST /api/agent-secrets/{id}/cd-prod`: a person allows (or stops) production CD runs getting
+/// the secret's value (SPEC-134).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CdProdAnswer {
+    /// Allow (`true`) or revoke.
+    pub allow: bool,
+}
+
 /// One vault audit entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultActivity {
     /// When.
     pub at: String,
-    /// Who: a GitHub login, `superadmin`, or `task:<n>` in a sandbox.
+    /// Who: a GitHub login, `superadmin`, `task:<n>` in a sandbox, or `ci:<run>` for a CI job
+    /// (SPEC-142).
     pub actor: String,
     /// What, e.g. `vault.team.reveal`, `vault.agent.use`, `vault.agent.redacted`.
     pub action: String,

@@ -3,6 +3,7 @@
 //! and fingerprinted), TOTP arithmetic, re-authentication freshness and the egress destination
 //! policy. Pure functions only: hashing and HMAC are injected by callers.
 
+pub mod dotenv;
 pub mod encode;
 pub mod hosts;
 pub mod names;

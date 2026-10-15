@@ -264,6 +264,9 @@ export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
   // A prompt typed into the session was held before it reached the agent (TSK-013).
   if (task.held_prompt && info.group !== 'ended') return { ...info, icon: 'st-attention', tone: 'attention', label: 'Prompt held · your choice', group: 'needs', held: task.held_prompt };
+  // The agent asked a person to do something only a person can (`needs_you`, SPEC-134): it stays
+  // here until someone writes to the task or the agent resolves it, whatever the agent does meanwhile.
+  if (task.needs_you && info.group !== 'ended') return { ...info, icon: 'st-attention', tone: 'attention', label: `Needs you: ${task.needs_you.action}`, group: 'needs', detail: task.needs_you.why || undefined, needsYou: task.needs_you };
   const map = actionRequests && actionRequests.get(task.sandbox_id);
   if (map && info.group !== 'ended') {
     for (const [tabId, request] of map) {
@@ -297,6 +300,8 @@ export function taskInfo(task, actionRequests, pr) {
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
     // An achieved goal is done whatever the checks are still doing (TSK-014).
     if (task.activity === 'done') return done;
+    // Its agent waits for its checks or the merge it armed: not done before that (SPEC-130 DMD-003).
+    if (task.yulius_wait === true) return { ...info, pr };
     // Tested means known green (or no required checks); running or unreadable checks are not.
     if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
     return done;

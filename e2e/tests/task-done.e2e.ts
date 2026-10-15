@@ -93,6 +93,26 @@ test('an agent waiting for Yulius is Working, not your turn', async ({ app, brow
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
 });
 
+// SPEC-130 DMD-003 (#474, task #109 on 2026-10-14: "this is done but pr isnt purple"): its plan was
+// complete and its pull request's checks green, but its agent still waited in `yulius wait` for
+// the merge it had armed. Not Done before that merge: it goes on by itself.
+test('a task waiting for its armed merge is not Done before it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/11'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#11 3D model viewer');
+  // Its plan is complete and its pull request tested: with the agent stopped, that is Done.
+  await expect(browser.locator('.strip-status')).toHaveText(/^Done · PR #221/);
+
+  await touchStudioTask(browser, 11, { yulius_wait: true });
+  await expect(browser.locator('.strip-status')).toHaveText(/Waiting for checks or merge/);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /3D model viewer/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /3D model viewer/)).toBeHidden();
+
+  // An achieved goal is Done whatever the wait still does.
+  await touchStudioTask(browser, 11, { activity: 'done' });
+  await expect(browser.locator('.strip-status')).toHaveText(/^Done · PR #221/);
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /3D model viewer/)).toBeVisible();
+});
+
 // SPEC-100 WTI-001 (task #85, #393: "git icon started rotating and became green"): the branch of a
 // task waiting for Yulius stands still in the muted tone of the other waits, unlike the Working ring.
 test('an agent waiting for Yulius shows a still, muted branch', async ({ app, browser, screen }) => {

@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -93,7 +93,7 @@ const agentMarked = (browser: Browser) => browser.evaluate(() => [...document.qu
 
 test('each sandbox comes back with its own tool panel and the same Superagent session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
   await markAgent(browser);
 
@@ -101,7 +101,7 @@ test('each sandbox comes back with its own tool panel and the same Superagent se
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
-  await screen.getByRole('button', 'Hide Superagent').click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 
   // studio comes back with its Superagent open: the same session view, not a new one.
@@ -115,6 +115,32 @@ test('each sandbox comes back with its own tool panel and the same Superagent se
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+});
+
+// SPEC-132 review: with the rail hidden, a sandbox coming back to its tool shows the rail for that
+// tool only (KST-005); closing the panel hides the rail again and the hidden choice stays.
+test('a sandbox coming back to its tool shows the hidden rail only while the panel is open', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/agent'));
+  await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
+  const rail = screen.getByRole('navigation', 'Tools');
+  const panel = screen.getByRole('region', 'Tool panel');
+
+  // product shows the tool in view; closed there, the rail the link showed goes too.
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await screen.getByRole('button', 'Close panel').click();
+  await expect(panel).toBeHidden();
+  await expect(rail).toBeHidden();
+
+  // studio comes back with its Superagent, and the rail only for it.
+  await tab(screen, 'studio').click();
+  await expect(panel).toBeVisible();
+  await expect(rail.getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
+  await screen.getByRole('button', 'Close panel').click();
+  await expect(rail).toBeHidden();
+  await browser.reload();
+  await expect(screen.getByRole('button', /^Show tools/)).toBeVisible();
+  await expect(rail).toBeHidden();
 });
 
 type WithMonaco = Window & { monaco: { editor: { getModels(): { getValue(): string }[] } } };
@@ -166,12 +192,14 @@ test('MCP’s scope and the Dashboard’s period come back with the page', async
 
 // Review round 1 (SPEC-113): a sandbox left with no tool open comes back with none, even when the
 // other sandbox opened one meanwhile.
-test('a sandbox left without a tool comes back without one', async ({ app, screen }) => {
+test('a sandbox left without a tool comes back without one', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // The sandbox is left once its task is shown: leaving it while it still loads records no tool.
+  await expect(heading(screen)).toHaveText('#12 Checkout API');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
 
   await tab(screen, 'studio').click();
@@ -231,7 +259,7 @@ test('closing a CI run by leaving the page does not rewrite the new address', as
 
 test('a removed sandbox’s tool views go with it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
   await tab(screen, 'product').click();
   await expect(browser.locator('.panel-view:not([hidden]) > .agent .xterm-rows')).toHaveText(/cwd: .*product/);

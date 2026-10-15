@@ -1,0 +1,135 @@
+---
+yulius-task: f5066d67-9b38-48ec-a125-3015a85defbc
+status: done
+---
+
+# SPEC-143: a run that ends while Yulius is down keeps its metrics; the recount waits for reconciliation
+
+Status: done
+Date: 2026-10-15
+Owner: Yulius task #124 (part of task #118, SPEC-138 lanes)
+Scope authorization: the person's request (task #124): fix GitHub issues #385 and #389. "A run's
+stored figures must never be replaced by an empty snapshot: skip the save when no watcher read the
+run in this process, or count its transcript window first, as SPEC-091's `HarnessPort::recount`
+does. Integration test: restart after a run with figures exited while Yulius was down; the run
+keeps (or recounts) its figures. The live save path stays unchanged." And: "SPEC-002's data-model
+table lists `metrics_recounts` […]; and a test fails when the metrics recount runs after a failed
+reconciliation."
+
+## Goal
+
+A Yulius restart never erases a run's usage. A run that ended while Yulius was down gets the
+figures its own transcript lines give, by the live watch's rules, or keeps the ones it has when its
+transcript gives nothing. The metrics recount of SPEC-091 provably starts only after a
+reconciliation that succeeded.
+
+## Context
+
+- `App::reconcile` (`crates/yulius-app/src/supervisor.rs`) inspects each run recorded live before
+  the restart. A run whose host recorded its exit is ended by `finalize_attempt`, which calls
+  `save_metrics` with the task's runtime usage snapshot. In a new process no watcher read that
+  run, so the snapshot is empty and `put_metrics` (an upsert) replaces the run's stored tokens,
+  turns and active time with NULLs (#385, found by the review of SPEC-091, task #76).
+- `finalize_attempt` is also called when the host reports the exit to the attached reader, and
+  when a lost connection finds the run exited. `attach_run` started the run's watcher, but a
+  started watcher is not one that has read the transcript: it resets the snapshot and first polls
+  1 s later. An agent that exits while Yulius is down leaves its host lingering 30 s to hand the
+  exit over, so a quick restart reattaches and gets `Exit` at once, before that poll: the same
+  empty save (review round 1).
+- SPEC-091 counts an ended run's own window of its session transcript (`HarnessPort::recount`,
+  `App::count_ended_run` in `metrics_recount.rs`): from its start (or, resumed, the first line at or
+  after its start) to its end, sub-agents included, by the live watch's accumulator. It answers
+  "no transcript" and "no lines" without figures.
+- `App::start_background` (`background.rs`) starts the recount only when reconciliation succeeded
+  (SPEC-091 RCT-004): a run still recorded live would be recorded `live` and never recounted. Only
+  code review checks it (#389). SPEC-002's data-model table has no `metrics_recounts` row.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| RDM-001 | A run that ends before a watcher of this process has read its transcript to its end at least once — reconciliation finds it exited, or the host hands over the exit right after a reattach — is ended without saving the runtime's snapshot: once its end is recorded, its window of its transcript is counted as SPEC-091 RCT-001/RCT-002 count it, and its stored figures are replaced only by figures that count found. No session, worktree or transcript, a window with no line of the run, or a failed count leaves the stored row as it was (logged). | `run_metrics::a_run_that_ends_while_yulius_is_down_keeps_its_metrics` (host gone), `run_metrics::a_run_whose_exit_waits_for_the_next_start_keeps_its_metrics` (host lingering) |
+| RDM-002 | A run that ends after its watcher read its transcript to its end is saved as before: the watcher's snapshot, after the end is recorded. | `run_metrics::a_restart_keeps_a_resumed_run_s_metrics`, `supervision` suite (unchanged) |
+| RDM-003 | The start's recovery step reconciles, then starts the metrics recount only when reconciliation succeeded, and says whether it did (the recount's handle); `start_background` runs that step. While reconciliation fails no queued run is recorded; the next start that reconciles recounts them. | `metrics_recount::the_recount_waits_for_a_reconciliation_that_succeeds` |
+| RDM-004 | SPEC-002's data model lists `metrics_recounts` (schema version 23, SPEC-091). | SPEC-002 §data model |
+
+## Plan
+
+- [x] Spec and plan for #385 and #389
+- [x] A run that ended while Yulius was down keeps or recounts its figures (#385)
+- [x] Recount starts only after a successful reconciliation, proven by a test (#389)
+- [x] SPEC-002 lists metrics_recounts; docs, ADR and changes
+- [x] Independent review and fixes
+- [x] Gates green, evidence and delivery
+
+## Acceptance criteria
+
+- After a restart, a run with stored figures whose agent exited while Yulius was down stores its
+  transcript's figures — including lines written while Yulius was down — instead of NULLs; the
+  test fails without the fix.
+- The live save path is unchanged: the existing run-metrics and supervision suites pass as they
+  are.
+- A recovery whose reconciliation fails records no queued run; the next one that reconciles
+  recounts them; the test fails when the recount is started whatever reconciliation answered.
+- SPEC-002 has a `metrics_recounts` row; `scripts/dev ci` passes.
+
+## Test plan
+
+- Integration (`run_metrics.rs`, real ptyhost and fake agent writing a Claude Code shaped
+  transcript): a first server runs a turn and saves the run's figures; it goes down; a sub-agent
+  line is written and the agent is killed while it is down; the second server reconciles once the
+  host recorded the exit, with the host killed (reconciliation finds the exit record) and with the
+  host still lingering (reconciliation reattaches and gets the exit at once); the run stores its
+  turns and its tokens plus the sub-agent's, never NULLs.
+- Integration (`metrics_recount.rs`, a store upgraded from schema version 22): one queued ended
+  run without a transcript and a running task whose row the store cannot read (reconciliation
+  fails listing running tasks). The recovery step answers no recount and the queue is untouched;
+  with the row repaired, it answers a recount that records the run `no_transcript`.
+
+## Decisions
+
+- **Recount, not skip (ADR-0117).** Skipping the save keeps the figures of the last live save,
+  which miss what the run did after it (a turn or a goal continuation while Yulius was down, a
+  turn whose save the 30 s live throttle had not reached). Counting the run's window gives exactly
+  the figures a watched run would have stored, and when it finds nothing it falls back to
+  skipping. The cost is one transcript read per run that ended while Yulius was down, at start and
+  off the async workers.
+- **The runtime records which run its snapshot has read to the end.** `usage_read` names the run
+  whose transcript the watcher read to its end at least once (reset when a watcher starts, set by
+  the poll that reaches the end); `finalize_attempt` saves the snapshot only for that run and
+  counts otherwise. The first round passed the caller's knowledge (`Watched`/`Unwatched`), but a
+  reattached run's caller cannot know whether its watcher has polled yet (review round 1); naming
+  the run also keeps a snapshot from being taken for another run of the same task.
+- **The recovery step returns the recount's handle.** Extracting `recover` from
+  `start_background` lets a test observe, without sleeps, that no recount starts after a failed
+  reconciliation; the background loop is otherwise unchanged.
+- **A counted model replaces the stored one,** as a live save does (`put_metrics`, unchanged).
+  The stored model comes from an assistant line of the same window the count reads (SPEC-087 live
+  rules), so a count with no model means the stored row had none either; changing `put_metrics`
+  to keep a stored model would touch the live save path the task keeps unchanged (review round 1,
+  finding 2).
+
+## Evidence
+
+- Checked on `dev` first: neither issue was fixed (`finalize_attempt` saved the runtime snapshot on
+  every path; no test covered the recount's order; SPEC-002 had no `metrics_recounts` row).
+- Test-first: `run_metrics::a_run_that_ends_while_yulius_is_down_keeps_its_metrics` failed before
+  the fix with the run's figures turned to `(None, None)` against `(Some(1014), Some(1))`;
+  `run_metrics::a_run_whose_exit_waits_for_the_next_start_keeps_its_metrics` (review round 1) failed
+  the same way on the first fix; `metrics_recount::the_recount_waits_for_a_reconciliation_that_succeeds`
+  failed with `recover` changed to start the recount after a failed reconciliation. All pass now.
+- `cargo test -p yulius --test main -- run_metrics:: metrics_recount:: supervision::`: 42 passed,
+  1 ignored (live Claude Code).
+- `scripts/dev ci` on `3ae41bbd` (repository check, script tests, check, fmt, clippy `-D warnings`,
+  nextest, doctests, deny, shear, doc): exit 0, 1763 tests passed, 16 skipped. Also green on
+  `db551d86` and `0be8ba38`.
+- `scripts/dev security`: not run, exit 2. Vidoc rejects the key (HTTP 401, issue #470); reported
+  as unrun under ADR-0104.
+- Independent review: round 1 requested changes (a reattach to a lingering host still saved an
+  empty snapshot; the model choice; the diagram; a log), all fixed or decided above; round 2
+  approved `0be8ba38`; its minor and nits were applied (reset order, ADR wording on the start
+  path) or left as follow-ups: a test that proves the snapshot path is taken (a recount call
+  counter), `caught_up` consulting sub-agent tails, and a `current()` check before the watcher's
+  periodic save (pre-existing).
+- Not exercised here: a real Claude Code session across a production restart; the fake agent
+  writes Claude Code shaped transcripts through the real ptyhost.

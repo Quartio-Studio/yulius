@@ -145,6 +145,35 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(dialog.getByText('More options')).toBeHidden();
 });
 
+// SPEC-129 R4: an agent asks to copy a secret into the project's .env; a person allows it here,
+// and can revoke it later.
+test('a person allows an agent to copy a secret into .env, then revokes it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("STRIPE_KEY")');
+  await expect(card.getByText(/Task #111 asks to copy its value into the project’s git-ignored \.env/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files').click();
+  await expect(card.getByText(/asks to copy/)).toBeHidden();
+  await expect(card.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
+  await screen.getByRole('button', 'Stop agents copying STRIPE_KEY into .env files').click();
+  await expect(card.getByText(/may copy its value/)).toBeHidden();
+  // A secret nobody asked about says nothing about .env.
+  await expect(browser.locator('.item-card:has-text("VIDOC_API_KEY")').getByText(/\.env/)).toBeHidden();
+});
+
+// Task #113 (SPEC-134, review H1): production deploys get a secret only when someone who manages
+// it allows that, apart from .env copies.
+test('a person allows a secret for production deploys, then revokes it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
+  await expect(card.getByText(/Production deploys \(CD\) do not get it/)).toBeVisible();
+  await screen.getByRole('button', 'Let production deploys (CD) get VIDOC_API_KEY').click();
+  await expect(card.getByText('Production deploys (CD) get its value; agents never do.')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Stop production deploys getting VIDOC_API_KEY').click();
+  await expect(card.getByText(/do not get it until/)).toBeVisible();
+});
+
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
 // shown after explicitly clicking eye icon. On hover there should be option to copy + the current
 // copy button." (SPEC-114)

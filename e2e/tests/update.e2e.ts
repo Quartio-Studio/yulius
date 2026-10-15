@@ -1,4 +1,4 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
@@ -33,6 +33,108 @@ test('an update on offer is announced to the superadmin and runs to the end', as
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// The superadmin's Update button beside the account button (SPEC-133, task #121).
+const footButton = (browser: Browser, name: string | RegExp) => browser.locator('.sidebar-foot').getByRole('button', name);
+
+test('the sidebar foot offers Update and starts it after one confirmation', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&update=1'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // Dismissing the tab-row pill hides the announcement, never the button (UPB-006).
+  await screen.getByRole('button', 'Dismiss until the next update').click();
+  await expect(screen.getByRole('link', /^Update available:/)).toBeHidden();
+  const button = footButton(browser, 'Update Yulius to 9c1e7d3');
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText('Update');
+  await expect(button).toHaveAttribute('title', /^Update available: An update banner/);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // One click: the instance page's confirmation, on the page in view (UPB-003).
+  await button.click();
+  const dialog = screen.getByRole('dialog', 'Update Yulius to 9c1e7d3?');
+  await expect(dialog.getByText(/The agents don’t notice/)).toBeVisible();
+  await dialog.getByRole('button', 'Cancel').click();
+  await expect(dialog).toBeHidden();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+
+  await button.click();
+  await screen.getByRole('dialog', 'Update Yulius to 9c1e7d3?').getByRole('button', 'Update to 9c1e7d3').click();
+  await expect(screen.getByText('Update started. Tasks keep working while it builds.')).toBeVisible();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // While it runs the button says so and leads to the page with the steps (UPB-004).
+  const running = footButton(browser, /^Updating/);
+  await expect(running).toBeVisible();
+  await running.click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 15000 }).toMatch(/Updated to 9c1e7d3/);
+  await expect(footButton(browser, 'Version and updates')).toBeVisible();
+});
+
+test('without the update helper the button opens the instance page', async ({ app, screen, browser }) => {
+  await app.open(mock('/', '&update=1&helper=0'));
+  await footButton(browser, 'Update Yulius to 9c1e7d3').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+  await expect(screen.getByText(/Updates need the update helper/)).toBeVisible();
+  await expect(browser.locator('dialog[open]')).toHaveCount(0);
+  await expect(footButton(browser, 'Update Yulius to 9c1e7d3')).toHaveAttribute('title', /needs the update helper/);
+});
+
+test('with nothing on offer the button and the account menu lead to the instance page', async ({ app, browser, screen }) => {
+  await app.open(mock('/'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  const quiet = footButton(browser, 'Version and updates');
+  await expect(quiet).toBeVisible();
+  await expect(quiet).toHaveText('');
+  await quiet.click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+
+  await browser.evaluate(() => { window.location.hash = '#/'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Version and updates').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+});
+
+test('at its narrowest the sidebar keeps the account name and the Update button', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&update=1'));
+  await screen.getByRole('separator', 'Resize sidebar').press('Home');
+  await expect.poll(() => browser.evaluate(() => Math.round(document.querySelector('.sidebar')!.getBoundingClientRect().width))).toBe(200);
+  await expect(footButton(browser, 'Update Yulius to 9c1e7d3')).toHaveText('Update');
+  const fit = await browser.evaluate(() => {
+    const foot = document.querySelector('.sidebar-foot')!.getBoundingClientRect();
+    const button = document.querySelector('.sidebar-foot .update-btn')!.getBoundingClientRect();
+    const name = document.querySelector('.sidebar-foot .user-name')!.getBoundingClientRect();
+    return { inside: button.left >= foot.left && button.right <= foot.right, name: name.width > 8 };
+  });
+  expect(fit).toEqual({ inside: true, name: true });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('instance administrators get neither the button nor the menu entry', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&update=1&role=admin'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await screen.getByRole('button', /account menu$/).click();
+  await expect(screen.getByRole('menuitem', 'Users')).toBeVisible();
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Version and updates/);
+  expect(await browser.locator('.sidebar-foot .update-btn:not([hidden])').count()).toBe(0);
+});
+
+test('in the phone drawer the account name and the Update button fit', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/', '&update=1'));
+  await screen.getByRole('button', 'Open navigation').click();
+  const button = footButton(browser, 'Update Yulius to 9c1e7d3');
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText('Update');
+  const fit = await browser.evaluate(() => {
+    const foot = document.querySelector('.sidebar-foot')!.getBoundingClientRect();
+    const button = document.querySelector('.sidebar-foot .update-btn')!.getBoundingClientRect();
+    const name = document.querySelector('.sidebar-foot .user-name')!.getBoundingClientRect();
+    return { inside: button.left >= foot.left && button.right <= foot.right, name: name.width > 8 };
+  });
+  expect(fit).toEqual({ inside: true, name: true });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a rolled-back update is said plainly', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&update=fail'));
   await screen.getByRole('button', 'Update now…').click();
@@ -47,6 +149,11 @@ test('members see no offer and no instance page', async ({ app, browser, screen 
   await app.open(mock('/', '&update=1&role=member'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
   expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Update available/);
+  // No Update button and no menu entry: updates are the superadmin's (UPB-001, UPB-007).
+  expect(await browser.locator('.sidebar-foot .update-btn:not([hidden])').count()).toBe(0);
+  await screen.getByRole('button', /account menu$/).click();
+  await expect(screen.getByRole('menuitem', 'Sign out')).toBeVisible();
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Version and updates/);
   await app.open(mock('/admin/instance', '&update=1&role=member'));
   await expect(screen.getByText(/Only the superadmin manages updates/)).toBeVisible();
 });

@@ -4,8 +4,169 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-15
+
+- `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
+  - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
+    skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
+    had its box but no text.
+  - **#444:** the store plans its pull request reads on a clock the transport may give. The mock's
+    `pullclock=manual` clock moves only by `advanceClock`, so "announcements within the gap make
+    one read" counts reads without depending on the host's speed (ADR-0118).
+  - **#415:** a new case proves that a failed later Git overview read keeps the chips the page read.
+    The mock counts GETs it failed on purpose (`failedReads`).
+  - **#469:** was already fixed by #490 and is closed.
+- Yulius CI jobs can use agent secrets, and every pull request runs a `security` job (SPEC-142,
+  ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
+  and only the integration branch's entry of the job's name counts: a pull request's own grant
+  gives nothing. A granted job gets placeholders, the CA bundle and a proxy credential of its own,
+  never a value; the proxy client it names, `ci:<run>`, uses only those secrets toward their bound
+  hosts, and every use is in the secrets audit; the grant is verified at the integration head
+  GitHub reports, so nothing a job writes can forge it. This repository's new `security` job runs
+  `scripts/dev security` on pull request heads, in a private clone that reaches its base without a
+  GitHub credential. Findings fail it; "did not run" (exit 2) does not, while the stored key is
+  rejected (#470) and until the job's grant line is added, once the running instance knows
+  `secrets` (an older one rejects the whole `yulius.toml`).
+
+- A run that ends while Yulius is down keeps its metrics (SPEC-143, ADR-0117, task #124, fixes
+  #385 and #389). A run that ends before a watcher of this process read its transcript to its end
+  (reconciliation finds it exited, or a reattach gets its exit at once from a lingering host) is
+  counted from its transcript window (SPEC-091's recount), lines written while Yulius was down
+  included, instead of saving an empty snapshot, which replaced its tokens, turns and active time
+  with NULLs; when the count finds nothing the row stays. `App::recover` starts the metrics recount only after
+  a reconciliation that succeeded, now proven by a test; SPEC-002 lists `metrics_recounts`.
+
+- task_done, supervision and merge_train tests hold under host load (SPEC-140, ADR-0115, task #127;
+  fixes #404, #464, #353, #443). Two product races fixed: a hook whose client gave up after its 5 s
+  is still applied to its end (a slow Stop used to be cut off before setting Done), and a stop that
+  comes while a run is launching (a switch, a start) asks the run once it is attached instead of
+  waiting 20 s for the escalation. Tests wait for a stop within the stop escalation plus a margin and
+  say what they saw; merge train tests share one deadline under nextest's 120 s.
+- Open GitHub issues triaged and the first fixes delivered (SPEC-138, task #118). Of 63 open issues:
+  - #423, #425 and #465 were already fixed and are closed.
+  - The rest go to 20 chained tasks (#123–#142) in four lanes, or stay open with a comment naming
+    what only a person can provide (#321, #412, #470 and the checkpoint issues).
+
+  This task fixes:
+  - **#424:** GitHub's stateless installation tokens (`ghs_<APPID>_<JWT>`, about 520 characters)
+    are now redacted whole from transcripts, Git errors and GitHub errors. Before, transcripts
+    kept them in full, and the error redactors left the JWT's payload and signature.
+  - **#475:** `secret_copy_to_env` refuses a `.env` whose quoted value never closes, naming the
+    line, rather than appending names inside that value.
+  - **#430, #446, #455:** the `context_full` tests wait for the audit rows they check, and in the
+    e2e suite opening or reloading a mock page waits for the mock, so tests no longer fail on a
+    busy machine for those reasons.
+- `yulius wait` and `delivery_merge` report the current push state, not a stale note (SPEC-139,
+  ADR-0113, task #123, fixes #366 and #448). A head GitHub's branch already has counts as pushed
+  even when `git push` reported a failure, and clears the earlier note; `yulius wait` drops a
+  failed-push note once the branch is at its head and waits for the checks and the armed merge;
+  `delivery_merge` answers a failed delivery with that failure, or the note its own call wrote (a
+  refused push's remedy, or that the pull request did not open after its push), never with an
+  older "not delivered" note. The remote is asked with `git ls-remote`, bounded to 10 s.
+- Agents can no longer push to, merge into or fast-forward the production branch with a person's
+  token (SPEC-141, ADR-0114, task #139, issue #486). The agent's Git and `gh` now hold an App
+  installation token restricted to the repository and to contents, pull requests and issues
+  (write) and checks, statuses and metadata (read): never the task owner's token, never
+  Administration or Workflows. The production ruleset Yulius gives new projects also restricts
+  updates, with repository admins as the only bypass actors, so GitHub refuses that token on the
+  branch, `--no-verify` and `gh` included. Onboarding (`yulius onboard`, the import result and the
+  preparation task's prompt) reports a production branch the agents could write and names the
+  ruleset a repository admin must add. Commits stay authored by the owner; Yulius's own pushes,
+  pull requests and merges for a task stay the owner's.
+
+- Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
+  table records, as things happen, a task's waits before it starts, its states (needs you and how
+  long a person took to answer included), steps with the tokens and agent work spent in them, runs,
+  usage-limit pauses, pull request open → merged, armed-merge waits and updates onto dev; a CI
+  run's queue and why it waited, preparation, job-slot waits, checkouts, jobs and the stages their
+  output names with `::yulius-stage` (test counts read from nextest, cargo test, pytest and
+  Playwright; reused results marked, never counted); a deploy's confirmation, checks, promotion,
+  deploy, verify and their stages. Existing CI, CD, run, step and pause history is backfilled and
+  marked. A new Pipeline (stages) page beside CI and CD shows dev and production deployment
+  frequency, lead time from merge, change failure rate and time to restore, any stage's daily p50
+  and p90 and the stage table with CSV/JSON export; CI runs, deploys and task overviews show their
+  stages as a waterfall, and the Dashboard the overview. `scripts/dev ci` names its gates.
+
+- CD (deployment) runs beside CI, with the same discipline (SPEC-134, ADR-0109..0111, task #113).
+  Every project defines dev and production in `yulius.toml`, as `[cd.dev]` and `[cd.prod]`. Each
+  has deploy and verify scripts committed under `scripts/cd/`, or is explicitly empty while it
+  deploys nothing yet. Yulius deploys exactly the commit GitHub reports for the protected branch,
+  taken into a mirror only it writes, so nothing an agent can write (a task branch, a worktree,
+  the sandbox clone) changes what a deploy runs. Dev runs inside the sandbox like a CI job;
+  production joins only the sandbox's network, on the host's clean system. A run's files, `HOME`, log and cache are
+  out of the agents' reach, and its output is stored redacted. Dev gets the agent secrets a person
+  allowed outside the proxy; production only those allowed "for production deploys" on the
+  Secrets page. A merge deploys nothing. Dev is deployed by a person on the new
+  CD (deployment) page, by an agent with `cd_deploy` (and `yulius wait`), or by the ready-made
+  "Deploy dev every night" automation, which also tests it. Production, with its promotion, is
+  only an administrator's, who types the project's slug (the promotion API too). Agents lost
+  `delivery_promote` and can no longer run production-stage environments. A new tool, `needs_you`, lets an agent put its task
+  in Needs you ("Needs you: <action>") until a person writes to it. Onboarding finds how a project
+  deploys today and writes it down this way, and "Set up CD with an agent" does the same later
+  through a task. Yulius itself: dev empty (no dev machine yet), production the push to `main`
+  that instances install by themselves. Task #112, the archived first attempt, left nothing behind.
+- The Notes tabs show that they drag (SPEC-136, task #122). Each tab has a six-dot grip before its
+  name, the one the workflow editor's steps use, faint at rest and brighter on the chosen or
+  hovered tab, and its tooltip reads "Click to open, drag to reorder". A device with no mouse or
+  pen, which moves tabs from the menu, does not show the grip.
+
 ## 2026-10-14
 
+- The superadmin updates Yulius from the sidebar (SPEC-133, ADR-0108, task #121). A button beside
+  the account button reads "Update" when main has moved on, and one click opens the update's
+  confirmation; while an update runs it reads "Updating", and otherwise it is a quiet "Version
+  and updates" icon leading to the instance page. Dismissing the tab-row pill no longer hides the
+  way to update, and the account menu lists "Version and updates" too.
+- The Editor gets the notepads' smooth selection and teammates' presence (SPEC-127, ADR-0103,
+  task #114). A selection in the Editor is drawn in rounded shapes that glide, exactly where
+  Monaco lays it out, so it stays right with word wrap on or off and when scrolled. People who
+  have the same file open see each other's caret, name and selection in the colour they have in
+  Notes, live; someone who switches file, closes it or leaves the Editor disappears at once.
+  It is awareness only: unsaved text stays each person's own and saving works as before. The
+  server relays where people are (`PUT /api/sandboxes/{sid}/files/presence`, `file.presence`)
+  only to the sandbox's writers, with the notepads' rate limit. The Editor's file tabs move by
+  drag, Alt+← / Alt+→ or the tab's menu. Notes and the Editor now share the presence loop, the
+  drawing and the tab drag; and a tool replaced by another in the panel is hidden like a closed
+  panel, so its presence leaves and the browser stream stops.
+- Images keep their place in the text, from paste to the agent (SPEC-124, ADR-0101, task #105).
+  A pasted or dropped image used to become a thumbnail in a row above the prompt, and the agent
+  got the images after the text, apart from the words about them. Now a file lands at the caret
+  (or the drop point) inside the text, as a thumbnail or a chip. It deletes like a character, with
+  undo, and moves by drag or by cut and paste. The prompt is stored with each file at its place
+  (`@'<path>'`). The agent gets it there: in the request file, in the CLI prompt, or pasted where
+  it sits in a typed first message, still one message. The original prompt view shows it inside
+  the text. Older prompts and drafts keep working; their files show after the text.
+- The top bar has no Superagent button any more (SPEC-132, ADR-0106, task #120). The Superagent
+  is first in the tools rail, right under the tools toggle, so the button beside the toggle was a
+  second way to the same panel. The toggle now reads "Show tools (Superagent, browser, editor,
+  shell, notes)", and the Superagent links (`/s/<slug>/superagent`, `/agent`, `/cockpit`) open it as
+  before.
+- The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
+  `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
+  and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
+  counts: an uncommitted one exits 2. A missing file means on; a malformed one exits 2.
+- Done means done (SPEC-130, task #117, #473, #474). The process probe could keep a task whose
+  goal was achieved reading Working for good: a server the agent started as `(server &)` left
+  an orphaned subshell with Claude Code's wrapper command line, which the sandbox's init adopted.
+  Task #108 read Working until it was closed. Such orphans are no longer counted; only the
+  agent's own shells are. The opposite case is fixed too: a task whose agent waits in
+  `yulius wait` for its armed merge no longer reads Done because its plan is complete and its
+  checks are green. It reads "Waiting for checks or merge" until the merge, in the sidebar and
+  on the server.
+- A task that has not started can change how it starts (SPEC-126, ADR-0102, task #115). A chained
+  or prepared task's view has a start chip ("When I decide", "After #12", "When #12 done",
+  "At …") that opens New task's start menu: it can be chained after a task or a rule, prepared,
+  scheduled, started now or as a supertask. A task that started keeps its start, and a wait on
+  itself is refused. API: `PUT /api/tasks/{tid}/start`. A chain evaluated before the change no
+  longer starts the task, and a start rule judges the tasks that existed when it was written.
+- Keys have a default place: a git-ignored `.env` beside a tracked `.env.example` (SPEC-129,
+  ADR-0105, task #111). When a project's code needs an agent secret's real value, the agent calls
+  `secret_copy_to_env`. Yulius writes the value into `.env` and the name into `.env.example`; the
+  agent only ever sees `[secret:NAME]`, so it never writes the masked text by mistake. Git must
+  ignore the file and not track it, or nothing is written. A person allows each secret once on the
+  Secrets page ("Task #N asks to copy its value into the project's git-ignored .env": Allow,
+  Dismiss, later Revoke). The briefing, `secrets_list` and `infra-bootstrap` name this default.
+  This prepares Yulius CD (task #113).
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has

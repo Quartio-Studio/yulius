@@ -36,11 +36,21 @@ function writeJson(key, value) {
   try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
 }
 
+/** The real clock of pull request reads; the mock can give its own (SPEC-144, ADR-0118). */
+const REAL_CLOCK = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (id) => clearTimeout(id),
+  setInterval: (fn, ms) => setInterval(fn, ms),
+  clearInterval: (id) => clearInterval(id),
+};
+
 /**
  * Create the store bound to an API client. `pullGapMs`: the least time between the starts of a
- * sandbox's pull request reads that an announced change brings (SPEC-108).
+ * sandbox's pull request reads that an announced change brings (SPEC-108). `clock`: the time and
+ * timers those reads are planned with (tests drive a manual one, SPEC-144).
  */
-export function createStore(api, { pullGapMs = 3000 } = {}) {
+export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) {
   const subscribers = new Map();
   const state = {
     me: null,
@@ -212,6 +222,7 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
       case 'update.updated': emit('update', event); break;
       case 'note.updated': emit('note', event); break;
       case 'note.presence': emit('note-presence', event); break;
+      case 'file.presence': emit('file-presence', event); break;
       case 'pulls.updated': pullsChanged(event.sandbox_id); break;
       case 'resync': emit('resync'); break;
       default: break;
@@ -285,7 +296,7 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
     const read = { again: false };
     pullReads.set(sandboxId, read);
     const entry = pullWatch.get(sandboxId);
-    if (entry) Object.assign(entry, { at: Date.now(), due: false });
+    if (entry) Object.assign(entry, { at: clock.now(), due: false });
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
@@ -323,12 +334,12 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
       return;
     }
     if (entry.soon) return; // a read is planned already and will see this change
-    const wait = entry.at + pullGapMs - Date.now();
+    const wait = entry.at + pullGapMs - clock.now();
     if (wait <= 0) {
       loadPulls(sandboxId, true);
       return;
     }
-    entry.soon = setTimeout(() => {
+    entry.soon = clock.setTimeout(() => {
       entry.soon = null;
       if (pullWatch.get(sandboxId) !== entry) return;
       if (pollPaused()) entry.due = true;
@@ -338,7 +349,7 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
   function watchPulls(sandboxId) {
     let entry = pullWatch.get(sandboxId);
     if (!entry) {
-      entry = { views: 0, at: 0, due: false, soon: null, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
+      entry = { views: 0, at: 0, due: false, soon: null, timer: clock.setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
       pullWatch.set(sandboxId, entry);
       // A read that runs from before this watch may predate a change announced while nobody
       // watched (and so dropped): read again after it.
@@ -346,18 +357,18 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
       if (running) running.again = true;
     }
     entry.views += 1;
-    if (Date.now() - entry.at > 15_000) loadPulls(sandboxId);
+    if (clock.now() - entry.at > 15_000) loadPulls(sandboxId);
     let done = false;
     return () => {
       if (done) return;
       done = true;
       entry.views -= 1;
-      if (entry.views <= 0) { clearInterval(entry.timer); clearTimeout(entry.soon); pullWatch.delete(sandboxId); }
+      if (entry.views <= 0) { clock.clearInterval(entry.timer); clock.clearTimeout(entry.soon); pullWatch.delete(sandboxId); }
     };
   }
   const refreshPulls = () => {
     if (pollPaused()) return;
-    for (const [id, entry] of pullWatch) if (entry.due || Date.now() - entry.at > 15_000) loadPulls(id, entry.due);
+    for (const [id, entry] of pullWatch) if (entry.due || clock.now() - entry.at > 15_000) loadPulls(id, entry.due);
   };
   document.addEventListener('visibilitychange', refreshPulls);
   window.addEventListener('focus', refreshPulls);

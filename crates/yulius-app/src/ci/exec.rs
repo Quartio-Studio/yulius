@@ -6,10 +6,12 @@
 //! the configured shell text is never spliced into Yulius's script. The log is read while the
 //! job runs (complete from the first byte, unlike a terminal attached after the start) and its
 //! tail stored. The environment has no secret: no task token, provider credential or GitHub
-//! token. `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared by its lanes (up to
-//! [`super::CiSettings::lanes`] runs at once, so a job's installs there must tolerate a concurrent
-//! run), and each job keeps a persistent checkout per lane ([`checkout_name`]), so caches
-//! (dependency downloads, build outputs) survive between runs.
+//! token. A job the integration branch's `[[ci.jobs]]` entry grants agent secrets gets their
+//! placeholders and the egress proxy with a credential of its own, never a value (SPEC-142,
+//! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared
+//! by its lanes (up to [`super::CiSettings::lanes`] runs at once, so a job's installs there must
+//! tolerate a concurrent run), and each job keeps a persistent checkout per lane
+//! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,8 +19,9 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
-use yulius_domain::ci::{self as dom, RunState};
+use yulius_domain::ci::{self as dom, Gate, GateSource, RunState};
 use yulius_domain::resources::{Budget, budget_env};
+use yulius_domain::vault::{SecretName, placeholder};
 
 use super::{
     CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, KILL_GRACE, MAX_LOG_FILE_BYTES,
@@ -31,6 +34,8 @@ use crate::model::SandboxRecord;
 use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunSignal};
 use crate::resources::repository_templates;
+use crate::stages::{NewSpan, OutputStages};
+use yulius_domain::stages::SubjectKind;
 
 /// The fixed wrapper: output to the log, stdin closed, then the configured command.
 const WRAPPER: &str = "exec >>\"$1\" 2>&1 </dev/null; exec /bin/sh -c \"$2\"";
@@ -99,15 +104,24 @@ impl AnsiStripper {
 
 /// A CI job joins the sandbox's CI group, weighted above the agents' (SPEC-053 CPU-203), so its
 /// speed does not depend on what the agents build.
-fn ci_join(join: SandboxJoin) -> SandboxJoin {
+pub(super) fn ci_join(join: SandboxJoin) -> SandboxJoin {
     SandboxJoin {
         cgroup: join.ci_cgroup.clone().or(join.cgroup),
         ..join
     }
 }
 
+/// Where a watched process's output goes while it runs: a CI job's row, or a CD run's
+/// (SPEC-134), redacted of the sandbox's agent secrets first.
+pub(super) enum Sink<'a> {
+    /// A CI job.
+    CiJob(&'a str),
+    /// A CD run of a sandbox.
+    CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
+}
+
 /// How a job's process ended.
-enum Ended {
+pub(super) enum Ended {
     Exit(RunExit),
     Cancelled(String),
     TimedOut,
@@ -133,6 +147,47 @@ const NO_DISK_REASON: &str = "waiting for disk space: a job was refused over the
 /// What a job refused over the disk quota leaves in its output when its run is queued again.
 const NO_DISK_REQUEUE: &str =
     "[yulius] queued again: the sandbox was over its disk quota when this run started\n";
+
+/// The agent secrets a job of definition `key` may use (SPEC-142 CSE-002): what the integration
+/// branch's entry of that name grants. Only the integration branch's `[[ci.jobs]]` grant; a
+/// profile gate grants nothing, and neither does a pull request's own configuration (it never
+/// reaches `gate`, which [`App::ci_gate`] reads from the integration branch).
+fn granted(gate: Option<&Gate>, key: &str) -> Vec<String> {
+    gate.filter(|gate| gate.source == GateSource::ProjectConfig)
+        .and_then(|gate| gate.jobs.iter().find(|job| job.key == key))
+        .map(|job| job.secrets.clone())
+        .unwrap_or_default()
+}
+
+/// A CI job's proxy credential (SPEC-142 CSE-004): closed when dropped, so it ends on every
+/// path out of the job, a cancelled or panicking one included.
+struct CiProxy<'a> {
+    app: &'a App,
+    token: String,
+}
+
+impl Drop for CiProxy<'_> {
+    fn drop(&mut self) {
+        self.app.ci_egress_close(&self.token);
+    }
+}
+
+/// Binds the files a plan writes outside the sandbox (the CA bundle in the run directory)
+/// read-only into its containment, at the same path, as agent runs do.
+fn bind_run_files(plan: &mut LaunchPlan) {
+    if let Containment::Bubblewrap {
+        readonly,
+        sandbox_root,
+        ..
+    } = &mut plan.containment
+    {
+        for file in &plan.files {
+            if !file.path.starts_with(&*sandbox_root) && !readonly.contains(&file.path) {
+                readonly.push(file.path.clone());
+            }
+        }
+    }
+}
 
 /// The directory of a job's persistent checkout: the definition's name, plus the matrix value's
 /// position for matrix jobs (siblings run in parallel and need their own), plus the lane past
@@ -209,10 +264,27 @@ impl App {
             Ok(Some(sandbox)) if sandbox.removed_at.is_none() => Some(sandbox),
             _ => None,
         };
+        let preparing = self.now();
         let prepared = match &sandbox {
             Some(sandbox) => self.ci_prepare(sandbox, run).await,
             None => Err("the sandbox was removed".to_owned()),
         };
+        self.record_span(NewSpan {
+            sandbox_id: run.sandbox_id.clone(),
+            subject_kind: SubjectKind::CiRun,
+            subject_id: run.id.clone(),
+            key: format!("prepare@{}", preparing.0),
+            parent_key: None,
+            kind: "prepare".to_owned(),
+            name: "commit".to_owned(),
+            environment: None,
+            job: None,
+            started_at: preparing,
+            ended_at: Some(self.now()),
+            outcome: Some(if prepared.is_ok() { "passed" } else { "error" }.to_owned()),
+            detail: None,
+        })
+        .await;
         let mut no_disk = 0usize;
         match (sandbox, prepared) {
             (Some(sandbox), Ok(())) => {
@@ -307,7 +379,10 @@ impl App {
         // A job the sandbox refused over its quota (usage crossed it after the dispatcher's
         // check) and nothing failed: the run waits for disk in the queue (CI-303).
         if cancel.borrow().is_none() && requeue_for_disk(&states, no_disk) {
-            match store.requeue_ci_run(&run.id, NO_DISK_REQUEUE).await {
+            match store
+                .requeue_ci_run(&run.id, NO_DISK_REQUEUE, self.now())
+                .await
+            {
                 Ok(true) => {
                     tracing::info!(run = %run.id, "CI run queued again: the sandbox is over its disk quota");
                     self.ci_disk_backoff(&run.sandbox_id);
@@ -404,6 +479,7 @@ impl App {
         mut cancel: watch::Receiver<Option<String>>,
     ) -> bool {
         let store = &self.deps.store;
+        let waiting = self.now();
         let slots = self.ci_slots();
         let budget = self.capacity().ci_job(job.need, share);
         let held = async {
@@ -432,8 +508,9 @@ impl App {
         let Some(_permit) = permit else {
             return false;
         };
+        let started_at = self.now();
         let started = CiJobUpdate {
-            started_at: Some(self.now()),
+            started_at: Some(started_at),
             ..CiJobUpdate::default()
         };
         if !matches!(
@@ -444,13 +521,48 @@ impl App {
         ) {
             return false;
         }
+        // Its stages (SPEC-137): the wait for a slot and its budget, then what its output names,
+        // under the job's span (the store opened it with the start).
+        let mut stages = OutputStages::ci_job(
+            run.sandbox_id.clone(),
+            &run.id,
+            &format!("job:{}@{}", job.id, started_at.0),
+            &job.key,
+        );
+        self.record_span(NewSpan {
+            sandbox_id: run.sandbox_id.clone(),
+            subject_kind: SubjectKind::CiRun,
+            subject_id: run.id.clone(),
+            key: format!("wait:{}@{}", job.id, waiting.0),
+            parent_key: None,
+            kind: "wait".to_owned(),
+            name: "job slot".to_owned(),
+            environment: None,
+            job: Some(job.key.clone()),
+            started_at: waiting,
+            ended_at: Some(started_at),
+            outcome: Some("started".to_owned()),
+            detail: Some(
+                serde_json::json!({ "cpus": budget.cpus, "memory_mb": budget.memory_mb })
+                    .to_string(),
+            ),
+        })
+        .await;
         let mut ring = OutputRing::new(OUTPUT_BYTES);
         ring.push_str(&format!(
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
             budget.cpus, budget.memory_mb
         ));
         let ended = self
-            .ci_job_process(sandbox, run, job, budget, checkout, &mut ring, &mut cancel)
+            .ci_job_process(
+                sandbox,
+                run,
+                job,
+                budget,
+                checkout,
+                (&mut ring, &mut stages),
+                &mut cancel,
+            )
             .await;
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
@@ -544,10 +656,94 @@ impl App {
         env
     }
 
+    /// Gives a job the agent secrets the integration branch grants it (SPEC-142 CSE-002..004):
+    /// a placeholder for each granted agent secret of the sandbox (never a production-deploy
+    /// one) and, when the egress proxy is wired, the proxy with a fresh credential naming client
+    /// `ci:<run>` and the CA bundle in `run_dir`, readable inside the containment. Returns the
+    /// credential, closed when it is dropped (the job ended, or its task went); `None` without a
+    /// grant.
+    async fn ci_job_secrets(
+        &self,
+        sandbox: &SandboxRecord,
+        (run, job): (&CiRunRecord, &CiJobRecord),
+        run_dir: &Path,
+        plan: &mut LaunchPlan,
+        ring: &mut OutputRing,
+    ) -> Option<CiProxy<'_>> {
+        // The sandbox clone (which CI jobs can write) only says whether to look; the grant itself
+        // is read from the verified integration head (review B1).
+        if granted(self.ci_gate(sandbox).await.gate.as_ref(), &job.key).is_empty() {
+            return None;
+        }
+        let grant = match self.ci_verified_gate(sandbox).await {
+            Ok(gate) => granted(gate.as_ref(), &job.key),
+            Err(err) => {
+                ring.push_str(&format!(
+                    "[yulius] agent secrets: none; the integration branch's grant could not be verified: {}\n",
+                    err.public_message()
+                ));
+                return None;
+            }
+        };
+        if grant.is_empty() {
+            ring.push_str(
+                "[yulius] agent secrets: none; the integration branch grants this job none\n",
+            );
+            return None;
+        }
+        let records = match self.deps.store.vault_agent(Some(&sandbox.id)).await {
+            Ok(records) => records,
+            Err(err) => {
+                tracing::warn!(job = %job.id, error = %err, "agent secrets could not be read for a CI job");
+                Vec::new()
+            }
+        };
+        let (mut given, mut missing, mut production) = (Vec::new(), Vec::new(), Vec::new());
+        for name in &grant {
+            let record = records.iter().find(|r| &r.name == name);
+            match (record, SecretName::parse(name)) {
+                (Some(record), _) if record.cd_prod => production.push(name.as_str()),
+                (Some(_), Ok(parsed)) => {
+                    plan.env.push((name.clone(), placeholder(&parsed)));
+                    given.push(name.as_str());
+                }
+                _ => missing.push(name.as_str()),
+            }
+        }
+        let mut note = format!("[yulius] agent secrets: {}", given.join(", "));
+        if given.is_empty() {
+            note = "[yulius] agent secrets: none".to_owned();
+        }
+        if !missing.is_empty() {
+            note.push_str(&format!(
+                " (not in the sandbox's agent secrets: {})",
+                missing.join(", ")
+            ));
+        }
+        if !production.is_empty() {
+            note.push_str(&format!(
+                " (production-deploy secrets are never given to CI: {})",
+                production.join(", ")
+            ));
+        }
+        let token = self
+            .ci_egress_open(&sandbox.id, &run.id, &job.id, &grant)
+            .map(|token| CiProxy { app: self, token });
+        let proxied = token
+            .as_ref()
+            .is_some_and(|proxy| self.egress_env("yulius-ci", &proxy.token, run_dir, plan));
+        if !proxied {
+            note.push_str("; the egress proxy is not available, so no secret reaches a host");
+        }
+        ring.push_str(&format!("{note}\n"));
+        bind_run_files(plan);
+        token.filter(|_| proxied)
+    }
+
     /// The job's containment: the sandbox's holder when it is isolated (SPEC-002 ADR-22: the
     /// job sees the packages the sandbox installed and its private network), else the previous
     /// containment.
-    fn ci_containment(
+    pub(super) fn ci_containment(
         &self,
         sandbox: &SandboxRecord,
         home: &Path,
@@ -581,7 +777,7 @@ impl App {
         job: &CiJobRecord,
         budget: Budget,
         checkout_name: &str,
-        ring: &mut OutputRing,
+        (ring, stages): (&mut OutputRing, &mut OutputStages),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
         let ci_dir = self.ci_dir(&sandbox.id);
@@ -596,10 +792,25 @@ impl App {
                 .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
         }
         let repo = self.sandbox_repo(&sandbox.id);
-        self.deps
+        let checking_out = self.now();
+        let checked_out = self
+            .deps
             .git
             .ci_checkout(&repo, &checkout, &run.sha, &ci_dir)
-            .await
+            .await;
+        let span = stages.child(
+            "checkout",
+            "prepare",
+            "checkout",
+            (checking_out, self.now()),
+            if checked_out.is_ok() {
+                "passed"
+            } else {
+                "error"
+            },
+        );
+        self.record_span(span).await;
+        checked_out
             .map_err(|err| format!("checking out {} failed: {}", run.sha, err.public_message()))?;
         let log = logs.join(format!("{}.log", job.id));
         let _ = std::fs::remove_file(&log);
@@ -614,7 +825,7 @@ impl App {
             }
             Err(err) => return Err(err.public_message()),
         };
-        let plan = LaunchPlan {
+        let mut plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),
                 "-c".into(),
@@ -630,31 +841,50 @@ impl App {
             containment: self.ci_containment(sandbox, &home, join),
         };
         let run_dir = self.ci_run_dir(&job.id);
+        let proxy = self
+            .ci_job_secrets(sandbox, (run, job), &run_dir, &mut plan, ring)
+            .await;
         let _ = std::fs::remove_dir_all(&run_dir);
         std::fs::create_dir_all(&run_dir)
             .map_err(|e| format!("creating the run directory failed: {e}"))?;
         let token = self.deps.crypto.random_bytes();
         let outcome = self
-            .ci_watch(&run_dir, job, &plan, &token, &log, ring, cancel)
+            .ci_watch(
+                &run_dir,
+                (&job.id, &job.run_id),
+                Sink::CiJob(&job.id),
+                &plan,
+                &token,
+                &log,
+                (ring, stages),
+                cancel,
+            )
             .await;
+        // The job's process ended (or its host is gone): its proxy credential ends too.
+        drop(proxy);
         let _ = std::fs::remove_dir_all(&run_dir);
         let _ = std::fs::remove_file(&log);
         outcome
     }
 
+    /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
+    /// it to its end: its log into `ring` and `sink`, cancellation, the CI job timeout and the
+    /// output limit.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
-    async fn ci_watch(
+    pub(super) async fn ci_watch(
         &self,
         run_dir: &Path,
-        job: &CiJobRecord,
+        ids: (&str, &str),
+        sink: Sink<'_>,
         plan: &LaunchPlan,
         token: &[u8; 32],
         log: &Path,
-        ring: &mut OutputRing,
+        (ring, stages): (&mut OutputRing, &mut OutputStages),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
+        let (sandbox, subject) = stages.subject();
         let host = &self.deps.session_host;
-        host.spawn(run_dir, &job.id, &job.run_id, plan, token, (160, 48))
+        host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
             .map_err(|err| format!("the job could not be started: {}", err.public_message()))?;
         let attached = match host.attach(run_dir, token).await {
@@ -708,21 +938,38 @@ impl App {
                         }
                         _ => {}
                     }
+                    let ops = stages.feed(&tail.take_fresh(), self.now());
+                    self.record_spans(&sandbox, (subject.0, &subject.1), ops).await;
                     ticks += 1;
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
-                        let _ = self.deps.store.set_ci_job_output(&job.id, &ring.text()).await;
+                        match sink {
+                            Sink::CiJob(id) => {
+                                let _ = self.deps.store.set_ci_job_output(id, &ring.text()).await;
+                            }
+                            Sink::CdRun(id, sandbox) => {
+                                let shown = self.redact_for_sandbox(sandbox, &ring.text()).await;
+                                let _ = self.deps.store.set_cd_run_output(id, &shown).await;
+                            }
+                        }
                     }
                 }
             }
         };
         // What the job wrote last (bounded: one more read of at most a chunk per pass).
         for _ in 0..8 {
-            match tail.read(ring).await {
+            let read = tail.read(ring).await;
+            let ops = stages.feed(&tail.take_fresh(), self.now());
+            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+                .await;
+            match read {
                 Ok(_) if tail.caught_up() => break,
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
+        let ops = stages.finish(self.now());
+        self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+            .await;
         Ok(ended)
     }
 }
@@ -756,6 +1003,9 @@ struct LogTail {
     offset: u64,
     size: u64,
     strip: AnsiStripper,
+    /// What the reads since the last [`LogTail::take_fresh`] added (escape sequences removed),
+    /// for the job's stages; bounded by the reads' chunks.
+    fresh: Vec<u8>,
 }
 
 impl LogTail {
@@ -765,7 +1015,13 @@ impl LogTail {
             offset: 0,
             size: 0,
             strip: AnsiStripper::default(),
+            fresh: Vec::new(),
         }
+    }
+
+    /// The output read since the last call.
+    fn take_fresh(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.fresh)
     }
 
     fn caught_up(&self) -> bool {
@@ -804,6 +1060,7 @@ impl LogTail {
         let mut clean = Vec::with_capacity(filled);
         self.strip.push(&buf[..filled], &mut clean);
         ring.push(&clean);
+        self.fresh.extend_from_slice(&clean);
         Ok(self.size)
     }
 }
@@ -862,6 +1119,7 @@ mod tests {
             private_dirs: Vec::new(),
             system_passwd: None,
             system_group: None,
+            host_system: None,
         };
         let ci = ci_join(join.clone());
         assert_eq!(ci.cgroup, join.ci_cgroup);
@@ -873,6 +1131,80 @@ mod tests {
             ..join
         };
         assert_eq!(ci_join(bare.clone()), bare);
+    }
+
+    /// SPEC-142 CSE-002: only the integration branch's `[[ci.jobs]]` entry of the same name
+    /// grants secrets; the profile's gate and a pull request's own jobs grant nothing.
+    #[test]
+    fn only_the_integration_branch_jobs_grant_secrets() {
+        let job = |key: &str, secrets: &[&str]| dom::Job {
+            name: key.into(),
+            key: key.into(),
+            command: "x".into(),
+            matrix: None,
+            need: yulius_domain::resources::Need::default(),
+            secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let gate = |source| Gate {
+            jobs: vec![job("scan", &["VIDOC_API_KEY"]), job("lint", &[])],
+            source,
+        };
+        let project = gate(GateSource::ProjectConfig);
+        assert_eq!(granted(Some(&project), "scan"), ["VIDOC_API_KEY"]);
+        assert!(granted(Some(&project), "lint").is_empty());
+        assert!(granted(Some(&project), "other").is_empty());
+        assert!(granted(Some(&gate(GateSource::Profile)), "scan").is_empty());
+        assert!(granted(Some(&gate(GateSource::PullRequest)), "scan").is_empty());
+        assert!(granted(None, "scan").is_empty());
+    }
+
+    /// SPEC-142 CSE-003: the run's files outside the sandbox (the CA bundle) are readable
+    /// inside the containment; the sandbox's own are already there.
+    #[test]
+    fn run_files_outside_the_sandbox_are_bound_read_only() {
+        use crate::ports::session::PlannedFile;
+        let file = |path: &str| PlannedFile {
+            path: path.into(),
+            contents: Vec::new(),
+            mode: 0o600,
+        };
+        let mut plan = LaunchPlan {
+            argv: Vec::new(),
+            cwd: "/data/sandboxes/s1/ci/jobs/scan".into(),
+            env: Vec::new(),
+            secret_env: Vec::new(),
+            files: vec![
+                file("/data/runs/ci-j1/egress-ca.pem"),
+                file("/data/sandboxes/s1/x"),
+            ],
+            containment: Containment::Bubblewrap {
+                sandbox_root: "/data/sandboxes/s1".into(),
+                home: "/data/sandboxes/s1/ci/home".into(),
+                writable: Vec::new(),
+                readonly: vec!["/usr".into()],
+                binds: Vec::new(),
+                identity: None,
+                join: None,
+            },
+        };
+        bind_run_files(&mut plan);
+        bind_run_files(&mut plan);
+        let Containment::Bubblewrap { readonly, .. } = &plan.containment else {
+            panic!("contained");
+        };
+        assert_eq!(
+            readonly,
+            &[
+                PathBuf::from("/usr"),
+                PathBuf::from("/data/runs/ci-j1/egress-ca.pem")
+            ]
+        );
+        let mut open = LaunchPlan {
+            containment: Containment::None,
+            ..plan
+        };
+        bind_run_files(&mut open);
+        assert_eq!(open.containment, Containment::None);
     }
 
     #[test]

@@ -458,6 +458,36 @@ fn commit_all_and_push_with_explicit_refspecs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-139: the remote's own answer for a branch, which a push that reported a failure may
+/// have moved, and none for a branch it does not have.
+#[test]
+fn remote_branch_head_reads_the_remote_itself() -> TestResult {
+    let fx = Fixture::new()?;
+    let remote = fx.path("remote.git");
+    let work = fx.path("work");
+    fx.git.init(&remote, "main", true)?;
+    fx.git.init(&work, "main", false)?;
+    fs::write(work.join("a.txt"), "a\n")?;
+    let sha = fx
+        .git
+        .commit_all(&work, "chore: a", &author())?
+        .ok_or("expected a commit")?;
+    fx.git.remote_add(&work, "origin", path_str(&remote)?)?;
+    assert_eq!(fx.git.remote_branch_head(&work, "origin", "main")?, None);
+    fx.git
+        .push(&work, "origin", "refs/heads/main:refs/heads/feat/1-x")?;
+    assert_eq!(
+        fx.git.remote_branch_head(&work, "origin", "feat/1-x")?,
+        Some(sha)
+    );
+    assert_eq!(fx.git.remote_branch_head(&work, "origin", "feat/1")?, None);
+    assert!(matches!(
+        fx.git.remote_branch_head(&work, "origin", "-x"),
+        Err(GitError::InvalidBranchName { .. })
+    ));
+    Ok(())
+}
+
 #[test]
 fn status_reports_hostile_file_names_verbatim() -> TestResult {
     let fx = Fixture::new()?;
@@ -805,6 +835,28 @@ fn local_identity_is_worktree_scoped() -> TestResult {
             .set_local_identity(&task, "-c core.pager=evil", "x@y"),
         Err(GitError::InvalidInput { .. })
     ));
+    Ok(())
+}
+
+/// SPEC-139: a remote that never answers is given up on within `REMOTE_HEAD_TIMEOUT`, not the
+/// half-hour network deadline, so `yulius wait` stays within its own bound.
+#[cfg(unix)]
+#[test]
+fn reading_a_remote_branch_gives_up_on_a_stalled_remote() -> TestResult {
+    let fx = Fixture::new()?;
+    let script = fx.path("stalled-git");
+    write_hook(&script, "#!/bin/sh\nexec sleep 60\n")?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.remote_branch_head(&fx.root, "origin", "feat/1-x") {
+        Err(GitError::Timeout { .. }) => {}
+        other => return Err(format!("expected timeout, got {other:?}").into()),
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= yulius_git::REMOTE_HEAD_TIMEOUT && elapsed < yulius_git::REMOTE_HEAD_TIMEOUT * 3,
+        "{elapsed:?}"
+    );
     Ok(())
 }
 
@@ -1303,5 +1355,67 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     )?;
     assert_eq!(conflict, SquashLanding::Conflict(vec!["x.txt".to_owned()]));
     assert_eq!(fx.git.rev_parse(&remote, "dev")?, commit, "nothing pushed");
+    Ok(())
+}
+
+/// SPEC-134 (review C1): CD reads a project's scripts from a mirror only Yulius writes. A
+/// replacement planted in the sandbox clone (`git replace`, writable by its agents) never reaches
+/// it, a tracking ref that moved away from the expected commit is refused, and the exported tree
+/// is exactly the commit's.
+#[test]
+fn the_cd_mirror_takes_only_the_expected_commit_and_ignores_replacements() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::create_dir_all(repo.join("scripts/cd"))?;
+    fs::write(repo.join("scripts/cd/deploy.sh"), "echo honest\n")?;
+    fx.git.commit_all(&repo, "deploy script", &author())?;
+    fx.raw(&repo, &["push", "--quiet", "origin", "main"])?;
+    fx.raw(&repo, &["fetch", "--quiet", "origin"])?;
+    let sha = fx.git.rev_parse(&repo, "origin/main")?;
+
+    // An agent plants a replacement for the script's blob in the sandbox clone.
+    let honest = fx.raw(
+        &repo,
+        &["rev-parse", &format!("{sha}:scripts/cd/deploy.sh")],
+    )?;
+    fs::write(fx.path("evil.sh"), "echo evil\n")?;
+    let evil = fx.raw(
+        &repo,
+        &[
+            "hash-object",
+            "-w",
+            fx.path("evil.sh").to_str().ok_or("path")?,
+        ],
+    )?;
+    fx.raw(&repo, &["replace", honest.trim(), evil.trim()])?;
+
+    let mirror = fx.path("cd/source.git");
+    fx.git.cd_mirror_fetch(&mirror, &repo, "main", &sha)?;
+    assert_eq!(
+        fx.git
+            .show_file(&mirror, &sha, "scripts/cd/deploy.sh")?
+            .as_deref(),
+        Some("echo honest\n")
+    );
+    let dest = fx.path("run/src");
+    fx.git.export_tree(&mirror, &sha, &dest)?;
+    assert_eq!(
+        fs::read_to_string(dest.join("scripts/cd/deploy.sh"))?,
+        "echo honest\n"
+    );
+    assert!(dest.join("README.md").exists() || fs::read_dir(&dest)?.count() > 1);
+    assert!(!dest.join(".git").exists(), "a plain tree, no repository");
+
+    // The clone's tracking ref moved to another commit: refused, nothing fetched for it.
+    let other = fx.raw(
+        &repo,
+        &["commit-tree", "-m", "x", &format!("{sha}^{{tree}}")],
+    )?;
+    fx.raw(
+        &repo,
+        &["update-ref", "refs/remotes/origin/main", other.trim()],
+    )?;
+    let refused = fx.git.cd_mirror_fetch(&mirror, &repo, "main", &sha);
+    assert!(refused.is_err(), "{refused:?}");
     Ok(())
 }

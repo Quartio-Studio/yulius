@@ -1,0 +1,4 @@
+# The Vidoc security gate, `scripts/dev security` (SPEC-131, ADR-0107). With `enabled = false` it
+# exits 0 at once and says nothing was scanned; agents then report the scan as disabled, never as
+# passed. Turn it off in a reviewed pull request that says why. Without this file the gate is on.
+enabled = true

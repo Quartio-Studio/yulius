@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -11,11 +11,31 @@ failOnPageErrors();
 // The shown Superagent: another sandbox's stays alive, hidden, after a switch (SPEC-113).
 const agentTerminal = '.panel-view:not([hidden]) > .agent .xterm-rows';
 
+// SPEC-132 NSB-001: the Superagent sits first in the tools rail, right under the tools toggle, so
+// the top bar has no button of its own for it, on a desktop or a phone.
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`the top bar has no Superagent button at ${viewport.width} px; the rail opens it`, async ({ app, browser, screen }) => {
+    await browser.setViewport(viewport);
+    await app.open(mock('/s/studio/t/12'));
+    const topBar = browser.locator('header.tabrow');
+    // The toggle above the rail names the Superagent among the tools it shows.
+    await expect(topBar.getByRole('button', /^Show tools \(Superagent, /)).toBeVisible();
+    expect(await browser.evaluate(() => [...document.querySelectorAll('header.tabrow :is(button, a, [role="button"]):not(.tools-toggle)')]
+      .map((b) => `${b.textContent} ${b.getAttribute('aria-label') ?? ''} ${b.getAttribute('title') ?? ''}`)
+      .filter((text) => /Superagent/i.test(text)))).toEqual([]);
+    expect(await browser.locator('.agent-toggle, .btn-agent').count()).toBe(0);
+
+    await openSuperagent(browser, screen);
+    await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+    await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
+  });
+}
+
 test('the Superagent opens on the right beside the page, says what it is for and keeps its session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
 
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   const panel = screen.getByRole('region', 'Tool panel');
   await expect(panel).toBeVisible();
   // The task stays in the centre: the Superagent is beside it, not instead of it.
@@ -38,20 +58,21 @@ test('the Superagent opens on the right beside the page, says what it is for and
 
   // Nothing calls it the Cockpit or the Agent any more (SPEC-074 SUP-007).
   expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Cockpit/);
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.agent, .agent-toggle, nav[aria-label="Tools"]')]
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.agent, nav[aria-label="Tools"]')]
     .map((el) => `${el.textContent} ${el.getAttribute('aria-label') ?? ''}`).join(' '))).not.toMatch(/\bAgent\b/);
 
   // Hidden and shown again, and after another page, it is the same session.
-  await screen.getByRole('button', 'Hide Superagent').click();
+  const railAgent = screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent');
+  await railAgent.click();
   await expect(panel).toBeHidden();
   await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Tasks').click();
-  await screen.getByRole('button', 'Show Superagent').click();
+  await railAgent.click();
   await expect(terminal).toHaveText(/Good question/);
 });
 
 test('the Superagent notice opens a new task for bigger work', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();
   await expect(browser).toHaveURL(/#\/s\/studio$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
@@ -69,7 +90,7 @@ for (const path of ['superagent', 'agent', 'cockpit']) {
     await app.open(mock(`/s/studio/${path}`));
     await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
     await expect(browser).toHaveURL(/#\/s\/studio$/);
-    await expect(screen.getByRole('button', 'Hide Superagent')).toBeVisible();
+    await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
   });
 }
 
@@ -109,7 +130,7 @@ test('read access explains why the Superagent is not available', async ({ app, b
 // Review round 1: New task from a task page hands the keyboard to the composer, not the Superagent.
 test('New task from the Superagent beside a task focuses the composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
@@ -127,12 +148,12 @@ test('on a phone, New task closes the Superagent so the composer shows', async (
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
 });
 
-test('the Superagent opens from the rail, keeps its session across tools and the top bar follows', async ({ app, browser, screen }) => {
+test('the Superagent opens from the rail and keeps its session across tools', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await screen.getByRole('button', /^Show tools/).click();
   const rail = screen.getByRole('navigation', 'Tools');
   await rail.getByRole('button', 'Superagent').click();
-  await expect(screen.getByRole('button', 'Hide Superagent')).toHaveAttribute('aria-pressed', 'true');
+  await expect(rail.getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
   const terminal = browser.locator(agentTerminal);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await browser.keyboard.type('why?');
@@ -141,26 +162,25 @@ test('the Superagent opens from the rail, keeps its session across tools and the
 
   // Another tool in the panel: the button is released; back to the Superagent, the same session.
   await rail.getByRole('button', 'Shell').click();
-  await expect(screen.getByRole('button', 'Show Superagent')).toHaveAttribute('aria-pressed', 'false');
+  await expect(rail.getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'false');
   await rail.getByRole('button', 'Superagent').click();
   await expect(terminal).toHaveText(/Good question/);
 });
 
-test('the top-bar Superagent button does not leave the tools rail on for good', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/tasks'));
-  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
-  await screen.getByRole('button', 'Show Superagent').click();
+test('a Superagent link does not leave the tools rail on for good', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/agent'));
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
-  await screen.getByRole('button', 'Hide Superagent').click();
+  await expect(screen.getByRole('navigation', 'Tools')).toBeVisible();
+  await screen.getByRole('button', 'Close panel').click();
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
   await browser.reload();
-  await expect(screen.getByRole('button', 'Show Superagent')).toBeVisible();
+  await expect(screen.getByRole('button', /^Show tools/)).toBeVisible();
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
 });
 
 test('switching sandbox with the Superagent open shows that sandbox’s Superagent', async ({ app, screen }) => {
   await app.open(mock('/s/studio/agent'));
-  await expect(screen.getByRole('button', 'Hide Superagent')).toBeVisible();
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
   await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^sandbox-3\b/).click();
   await expect(screen.getByText('The Superagent needs write access to this sandbox.')).toBeVisible();
   // Read users get no New task link they cannot use.
@@ -170,7 +190,7 @@ test('switching sandbox with the Superagent open shows that sandbox’s Superage
 // Review round 2: the new sandbox's Superagent starts beside the page without taking the keyboard.
 test('switching to a sandbox whose Superagent starts keeps the keyboard on the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
@@ -178,11 +198,11 @@ test('switching to a sandbox whose Superagent starts keeps the keyboard on the p
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
 });
 
-// Review round 3: the rail shown for the top-bar Superagent becomes the person's when they use it for
+// Review round 3: the rail shown for a Superagent link becomes the person's when they use it for
 // another tool, and goes again when the Superagent is closed from the rail.
-test('a tool picked from the rail after the top-bar Superagent keeps the rail', async ({ app, screen }) => {
-  await app.open(mock('/s/studio/tasks'));
-  await screen.getByRole('button', 'Show Superagent').click();
+test('a tool picked from the rail after a Superagent link keeps the rail', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/agent'));
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   const rail = screen.getByRole('navigation', 'Tools');
   await rail.getByRole('button', 'Shell').click();
   await rail.getByRole('button', 'Shell').click();
@@ -190,9 +210,9 @@ test('a tool picked from the rail after the top-bar Superagent keeps the rail', 
   await expect(rail).toBeVisible();
 });
 
-test('closing the top-bar Superagent from the rail hides the rail again', async ({ app, screen }) => {
-  await app.open(mock('/s/studio/tasks'));
-  await screen.getByRole('button', 'Show Superagent').click();
+test('closing a linked Superagent from the rail hides the rail again', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/agent'));
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
@@ -200,7 +220,7 @@ test('closing the top-bar Superagent from the rail hides the rail again', async 
 
 test('a Superagent recovered right after opening it has the keyboard', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks', '&cockpit=gone'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
 });
@@ -210,13 +230,11 @@ type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCoc
 
 test('a Superagent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  // The mock backend loads after the page (a dynamic import): wait for it before holding its answer.
-  await mockReady(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
   });
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   // Shimmering fields while it starts (SPEC-092), what starts said to screen readers.
   await expect(browser.locator('.skeleton[role="status"]').filter({ hasText: 'Starting your Superagent…' })).toBeVisible();
   // While it starts, the person goes back to the page.
@@ -231,7 +249,7 @@ test('a Superagent that starts slowly does not take the keyboard from the page',
 // Review round 4: the wish to focus on opening does not outlive the opening.
 test('a Superagent recovered long after it was opened leaves the keyboard on the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   const terminal = browser.locator(agentTerminal);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await browser.keyboard.type('why?');
@@ -253,7 +271,7 @@ test('a Superagent moved to another subscription after a usage limit goes on in 
   // Wide enough that the panel's terminal does not wrap the welcome line.
   await browser.setViewport({ width: 1920, height: 1000 });
   await app.open(mock('/s/studio'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   const terminal = browser.locator(agentTerminal);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
@@ -273,7 +291,7 @@ test('a Superagent moved to another subscription after a usage limit goes on in 
 test('a Superagent whose move to another subscription failed says why and starts again', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1920, height: 1000 });
   await app.open(mock('/s/studio'));
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   const terminal = browser.locator(agentTerminal);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
 

@@ -151,6 +151,27 @@ pub struct RulesetSpec {
     pub block_force_push: bool,
     /// Block branch deletion.
     pub block_deletion: bool,
+    /// Restrict updates (`update` rule) with repository admins as the only bypass actors: GitHub
+    /// then refuses every other actor's push, merge or fast-forward, the App's tokens included
+    /// (ADR-0114).
+    pub restrict_updates: bool,
+}
+
+/// Whether a token could write a branch, as GitHub's rules say (ADR-0114).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BranchGuard {
+    /// An active `update` rule applies that the token can never bypass.
+    pub updates_restricted: bool,
+    /// An active `deletion` rule applies that the token can never bypass.
+    pub deletion_restricted: bool,
+}
+
+impl BranchGuard {
+    /// The token can neither move nor delete the branch.
+    #[must_use]
+    pub fn is_guarded(self) -> bool {
+        self.updates_restricted && self.deletion_restricted
+    }
 }
 
 /// Pull request state.

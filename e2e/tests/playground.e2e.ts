@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -40,7 +40,6 @@ test('a fresh instance without GitHub offers a playground first', async ({ app, 
 test('a dropped folder becomes a playground and opens', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&sandboxes=0&github=0'));
   await expect(screen.getByRole('group', 'Project folder')).toBeVisible();
-  await mockReady(browser);
 
   await dropFiles(browser, [['README.md', '# Lab\n'], ['app.py', "print('hi')\n"]]);
   await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/project');

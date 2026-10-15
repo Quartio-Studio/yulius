@@ -14,15 +14,19 @@ import { readJson, writeJson } from './store.js';
 import { NEW_TASK_KEYS, NEW_TASK_ARIA, HOME_KEYS, HOME_ARIA } from './shortcuts.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
 import { isPhone } from './theme.js';
+import { INSTANCE_ROUTE } from './updates.js';
 
 /** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
-// The sandbox pages used every day (SPEC-029); a CD page would join CI here.
+// The sandbox pages used every day (SPEC-029); CD (SPEC-134) sits next to CI, and the Pipeline's
+// stages (SPEC-137) next to both.
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
   ['ci', 'CI (tests)', 'check'],
+  ['cd', 'CD (deployment)', 'upload'],
+  ['pipeline', 'Pipeline (stages)', 'clock'],
   ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];
@@ -38,7 +42,10 @@ const MORE_OPEN_KEY = 'yulius.sidebarMoreOpen';
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, Superagent, tools toggle. */
+/**
+ * Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, tools toggle.
+ * The Superagent is first in the tools rail, right under the toggle (SPEC-132).
+ */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -58,8 +65,8 @@ export function createTabRow(ctx) {
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and subscription usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
-  // Shows/hides the right tool rail (browser, editor, shell); hidden by default.
-  const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
+  // Shows/hides the right tool rail (Superagent, browser, editor, shell, notes); hidden by default.
+  const toolsButton = iconButton('tools', 'Show tools (Superagent, browser, editor, shell, notes)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
   toolsButton.append(toolsDot);
   toolsButton.style.position = 'relative';
@@ -67,7 +74,7 @@ export function createTabRow(ctx) {
   let toolsAttention = false;
   let railVisible = false;
   const labelTools = () => {
-    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (browser, editor, shell)';
+    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (Superagent, browser, editor, shell, notes)';
     toolsButton.setAttribute('aria-label', `${toolsButton.title}${toolsAttention ? ', an agent needs your action' : ''}`);
   };
   ctx.onToolsAttention = (attention) => { toolsAttention = attention; toolsDot.hidden = !attention; labelTools(); };
@@ -76,16 +83,6 @@ export function createTabRow(ctx) {
     toolsButton.classList.toggle('active', visible);
     toolsButton.setAttribute('aria-pressed', String(visible));
     labelTools();
-  };
-  // The Superagent (SPEC-035 AGT-005, SPEC-074): the user's own session for quick work, in the right
-  // panel; one click opens or closes it, whether the tools rail shows or not.
-  const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Superagent', 'aria-pressed': 'false', title: 'Superagent: your own Claude Code session that manages this project, for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
-    icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Superagent'));
-  ctx.onPanelChange = (kind) => {
-    const open = kind === 'agent';
-    agentButton.classList.toggle('active', open);
-    agentButton.setAttribute('aria-pressed', String(open));
-    agentButton.setAttribute('aria-label', open ? 'Hide Superagent' : 'Show Superagent');
   };
   const notifications = createNotificationCenter(ctx);
   ctx.notifications = notifications;
@@ -98,7 +95,7 @@ export function createTabRow(ctx) {
     tabs,
     select,
     addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, agentButton, toolsButton),
+    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, toolsButton),
   );
 
   let currentSlug = null;
@@ -234,6 +231,8 @@ function openUserMenu(ctx, anchor) {
     items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
     items.push({ label: 'Subscriptions', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
     if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
+    // The instance page: the version and its updates, also beside this button (SPEC-133 UPB-007).
+    if (superadmin) items.push({ label: 'Version and updates', icon: 'download', onSelect: () => ctx.navigate(INSTANCE_ROUTE) });
     items.push(
       // One name per scope (#147): "Every sandbox" (the instance) and "This sandbox".
       { label: 'MCP for every sandbox', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },

@@ -29,16 +29,23 @@ function storePulls(browser: Browser, rows: unknown): Promise<void> {
   }, rows);
 }
 
-/** The sidebar's chips once the Git overview answered, as their texts ("#41"). */
+/**
+ * The sidebar's chips once the Git overview answered and they are drawn, as their texts ("PR #41…").
+ * Rows skip rendering until they are drawn (`content-visibility: auto`): a chip in a row inserted
+ * since the last frame has its box but no rendered text yet, which a loaded host stretches (#438).
+ */
 async function chipsAfterRead(browser: Browser): Promise<string[]> {
-  await expect(chips(browser).first()).toBeVisible();
-  return chips(browser).allTextContents();
+  let seen: string[] = [];
+  await expect.poll(async () => {
+    seen = await chips(browser).allTextContents();
+    return seen.length > 0 && seen.every((text) => text !== '');
+  }).toBe(true);
+  return seen;
 }
 
 test('after a reload the sidebar shows the pull requests at once, before the Git overview answers', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const seen = await chipsAfterRead(browser);
-  expect(seen.length).toBeGreaterThan(0);
 
   // The reload's overview read is held: the rows already show what was last seen.
   await app.open(mock('/s/studio', `&hold=${GIT}`));
@@ -138,8 +145,12 @@ test('a session that expires removes the stored pull requests', async ({ app, br
   await app.open(mock('/s/studio'));
   await chipsAfterRead(browser);
   expect(await storedPulls(browser)).not.toBeNull();
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { signedIn: boolean } }).__yuliusMock.signedIn = false; });
-  await screen.getByRole('link', /^Git/).first().click();
+  // The session ends; the next request finds it ended. That may be the page's own background read
+  // before any click, so the test asks for a page by its address (a link could be gone by then).
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { signedIn: boolean } }).__yuliusMock.signedIn = false;
+    window.location.hash = '#/s/studio/git';
+  });
   await expect(screen.getByText('You were signed out. Please sign in again.')).toBeVisible();
   expect(await storedPulls(browser)).toBeNull();
 });
@@ -166,6 +177,9 @@ type Mocked = {
     gitReads: () => number;
     gitRequests: number;
     releaseGit: () => void;
+    advanceClock: (ms: number) => void;
+    failPath: string | null;
+    failedReads: number;
   };
 };
 const mocked = <T>(browser: Browser, run: (m: Mocked['__yuliusMock']) => T) => browser.evaluate(`(${run.toString()})(window.__yuliusMock)`) as Promise<T>;
@@ -182,6 +196,24 @@ async function handledSoFar(browser: Browser, title: string): Promise<number> {
   await expect(browser.locator('.task-list .task-row').filter({ hasText: title })).toBeVisible();
   return mocked(browser, (m) => m.gitRequests);
 }
+
+// #415: a later read that fails (a deploy restarting the server) keeps the chips this page read;
+// only chips seeded from storage are dropped when a read fails (PRC-003).
+test('a failed later read keeps the chips the page read before', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  const seen = await chipsAfterRead(browser);
+  await mocked(browser, (m) => {
+    m.failPath = '/api/sandboxes/sb_studio/git';
+    m.announcePulls('sb_studio');
+    m.announcePulls('sb_studio');
+  });
+  // Reads never overlap: the second failed read is asked for only once the first one was handled.
+  await expect.poll(() => mocked(browser, (m) => m.failedReads)).toBe(2);
+  // The sidebar repaints rows and chips together: once this rename shows, it repainted after the failure.
+  await touchTask(browser, 'sb_studio', 13, { title: 'Improve the code, after the failure' });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Improve the code, after the failure' })).toBeVisible();
+  await expect(chips(browser)).toHaveText(seen);
+});
 
 test('a merge Yulius announces reaches the row at once', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
@@ -241,14 +273,19 @@ test('announced reads of a sandbox keep their gap', async ({ app, browser }) => 
 });
 
 test('announcements within the gap make one read when it has passed', async ({ app, browser }) => {
-  await app.open(mock('/s/studio', '&pullgap=1500'));
+  // The store's read clock is the mock's: only advanceClock moves it, so the announcements come
+  // within the gap however slow the host is (#444: on real time a loaded host reached them after
+  // the gap, so the first read at once and the other two one more read after it).
+  await app.open(mock('/s/studio', '&pullgap=1500&pullclock=manual'));
   await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
   const before = await handledSoFar(browser, 'Improve the code, before');
   await mocked(browser, (m) => {
     m.changePull('sb_studio', 520, { state: 'merged' });
     for (let i = 0; i < 3; i += 1) m.announcePulls('sb_studio');
   });
-  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 10_000 });
+  expect(await handledSoFar(browser, 'Improve the code, within the gap')).toBe(before);
+  await mocked(browser, (m) => m.advanceClock(1500));
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged');
   expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before + 1);
 });
 

@@ -79,7 +79,10 @@ mod tests {
             }
         }
         let ids: Vec<&str> = templates().iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["docs-up-to-date", "open-issues"]);
+        assert_eq!(
+            ids,
+            ["docs-up-to-date", "open-issues", "nightly-dev-deploy"]
+        );
         for t in templates() {
             assert_eq!((t.cron.as_str(), t.utc_offset_minutes), ("0 3 * * *", 120));
             assert!(
@@ -118,6 +121,19 @@ mod tests {
         assert!(issues.prompt.contains("Needs a person:"));
         assert!(issues.prompt.contains("not this automation or its tasks"));
         assert!(issues.prompt.contains("--search \"Fixes #<number>\""));
+        // SPEC-134 CDK-003: dev is deployed and tested every night, never production.
+        let deploy = template("nightly-dev-deploy").ok_or("deploy template")?;
+        for wording in [
+            "`cd_deploy`",
+            "`yulius wait`",
+            "`cd_status`",
+            "`issue_create`",
+            "Never deploy production",
+            "not defined",
+            "empty",
+        ] {
+            assert!(deploy.prompt.contains(wording), "{wording}");
+        }
         Ok(())
     }
 

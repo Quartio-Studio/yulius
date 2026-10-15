@@ -762,7 +762,7 @@ fn clip_bytes(text: &str, max: usize) -> &str {
     &text[..cut]
 }
 
-fn tail_bytes(text: &str, max: usize) -> &str {
+pub(crate) fn tail_bytes(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
@@ -1007,6 +1007,43 @@ impl Observed {
             production_diverged: false,
         }
     }
+}
+
+/// Why a task's head is not pushed or not delivered, for `yulius wait` (SPEC-050 DLV-201,
+/// DLV-204).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PushNote {
+    /// The head it is about.
+    pub(crate) head: String,
+    /// What the agent reads, with what to do.
+    pub(crate) text: String,
+    /// A push of that head failed (not a "not delivered" note): GitHub's branch reaching the
+    /// head makes it stale (SPEC-139 PSH-002).
+    pub(crate) failed_push: bool,
+}
+
+/// Why one automatic delivery failed ([`App::try_auto_open_pr`]): the error, and the note this
+/// delivery wrote for it when a push failed, which says what to do (SPEC-139 PSH-003).
+#[derive(Debug)]
+pub(crate) struct AutoDeliveryError {
+    pub(crate) error: AppError,
+    pub(crate) note: Option<String>,
+}
+
+impl From<AppError> for AutoDeliveryError {
+    fn from(error: AppError) -> Self {
+        Self { error, note: None }
+    }
+}
+
+/// Which step of opening a pull request failed ([`App::try_auto_open_pr`]).
+enum Failed {
+    /// The delivery rules refused it: nothing was pushed.
+    Refused,
+    /// The push.
+    Push,
+    /// Opening the pull request, after the push.
+    Open,
 }
 
 /// What one automatic delivery of a task's head did ([`App::try_auto_open_pr`]).
@@ -2036,6 +2073,18 @@ impl App {
         if observed.dirty {
             return Err(AppError::Conflict(DIRTY_WORKTREE.into()));
         }
+        if let (Some(branch), Some(worktree)) =
+            (task.branch.as_deref(), task.worktree_path.as_deref())
+        {
+            self.dlv_push_head(
+                &task.id,
+                Path::new(worktree),
+                branch,
+                observed.worktree_head.as_deref().unwrap_or_default(),
+                &token,
+            )
+            .await?;
+        }
         self.dlv_open_pull(
             &sandbox,
             &task,
@@ -2056,11 +2105,11 @@ impl App {
         self.delivery_view(&task, Some(&ctx.user)).await
     }
 
-    /// Pushes the task branch and opens its pull request into the integration branch, both with
-    /// `token` (its account pushes and authors the pull request: the person who delivers, or for
-    /// Yulius the task's owner, F 2026-10-11); records `pr_open`, audits it as `actor` and
-    /// publishes the task. The caller has checked the domain rules and the worktree
-    /// (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
+    /// Opens the task's pull request into the integration branch with `token` (its account
+    /// pushes and authors the pull request: the person who delivers, or for Yulius the task's
+    /// owner, F 2026-10-11); records `pr_open`, audits it as `actor` and publishes the task. The
+    /// caller has checked the domain rules and the worktree and pushed the branch with
+    /// [`App::dlv_push_head`] (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
     #[allow(clippy::too_many_arguments)]
     async fn dlv_open_pull(
         &self,
@@ -2079,10 +2128,6 @@ impl App {
                 "the task has no branch or worktree yet; start it first".into(),
             ));
         };
-        self.deps
-            .git
-            .push(Path::new(&worktree), &branch, &branch, token)
-            .await?;
         let (policy, _) = self.dlv_branch_policy(sandbox, profile).await;
         let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(title) => title.to_owned(),
@@ -2229,7 +2274,7 @@ impl App {
         match self.try_auto_open_pr(task_id).await {
             Ok(AutoDelivery::Delivered(done)) => self.runtime(task_id).hub.notice(done),
             Ok(AutoDelivery::Unchanged | AutoDelivery::Blocked(_)) => {}
-            Err(err) => {
+            Err(AutoDeliveryError { error: err, .. }) => {
                 tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
                 self.runtime(task_id).hub.notice(format!(
                     "Yulius could not open the pull request by itself: {err} Use Deliver… on the task."
@@ -2275,13 +2320,17 @@ impl App {
              at the end of your turn once nothing blocks it."
         );
         if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock() {
-            *problem = Some((head, text));
+            *problem = Some(PushNote {
+                head,
+                text,
+                failed_push: false,
+            });
         }
     }
 
-    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
-    /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
-    /// pushed head back in, so nothing is force-pushed.
+    /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201), and
+    /// returns that note. A branch rewritten after it was pushed is refused as not a
+    /// fast-forward; the remedy merges the pushed head back in, so nothing is force-pushed.
     pub(crate) fn set_push_problem(
         &self,
         task_id: &TaskId,
@@ -2289,7 +2338,7 @@ impl App {
         branch: &str,
         pull: Option<u64>,
         err: &AppError,
-    ) {
+    ) -> String {
         let reason = err.public_message();
         let target = pull.map_or_else(|| format!("`{branch}`"), |n| format!("pull request #{n}"));
         let short = head.get(..9).unwrap_or(head);
@@ -2312,8 +2361,13 @@ impl App {
             )
         };
         if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
-            *problem = Some((head.to_owned(), text));
+            *problem = Some(PushNote {
+                head: head.to_owned(),
+                text: text.clone(),
+                failed_push: true,
+            });
         }
+        text
     }
 
     fn clear_push_problem(&self, task_id: &TaskId) {
@@ -2322,12 +2376,145 @@ impl App {
         }
     }
 
+    /// Pushes the task's `branch`, at `head`, with `token` (SPEC-139 PSH-001): every push of a
+    /// task's head goes through here. A push Git reports failed while the remote's branch is at
+    /// `head` is done (GitHub's `remote rejected … (failed)` after the ref moved, or the head
+    /// pushed some other way, #366); a push that is done clears the task's note about `head`.
+    ///
+    /// # Errors
+    /// The push's own error when the remote's branch is not at `head` (or cannot be read).
+    pub(crate) async fn dlv_push_head(
+        &self,
+        task_id: &TaskId,
+        worktree: &Path,
+        branch: &str,
+        head: &str,
+        token: &Secret,
+    ) -> AppResult<()> {
+        if let Err(err) = self.deps.git.push(worktree, branch, branch, token).await
+            && !self.dlv_branch_at(worktree, branch, head, token).await
+        {
+            return Err(err);
+        }
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock()
+            && problem.as_ref().is_some_and(|note| note.head == head)
+        {
+            *problem = None;
+        }
+        Ok(())
+    }
+
+    /// Whether the remote's `branch` is at commit `head`, as the remote answers now (not a
+    /// remote-tracking ref, which a push from elsewhere never moves); `false` when it cannot be
+    /// read.
+    async fn dlv_branch_at(
+        &self,
+        worktree: &Path,
+        branch: &str,
+        head: &str,
+        token: &Secret,
+    ) -> bool {
+        if head.is_empty() {
+            return false;
+        }
+        match self
+            .deps
+            .git
+            .remote_branch_head(worktree, branch, token)
+            .await
+        {
+            Ok(remote) => remote.is_some_and(|sha| sha.eq_ignore_ascii_case(head)),
+            Err(err) => {
+                tracing::debug!(%branch, error = %err, "the remote's branch could not be read");
+                false
+            }
+        }
+    }
+
+    /// Records that `head` was pushed but its pull request could not be opened, for `yulius
+    /// wait`, and returns that note: not a push failure, so the branch at the head does not make
+    /// it stale (SPEC-139 PSH-002).
+    fn set_open_problem(&self, task_id: &TaskId, head: &str, err: &AppError) -> String {
+        let short = head.get(..9).unwrap_or(head);
+        let text = format!(
+            "Yulius pushed {short} but could not open its pull request: {} It tries again at the \
+             end of your next turn and on `delivery_merge`; `delivery_status` shows the branch \
+             state.",
+            err.public_message()
+        );
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
+            *problem = Some(PushNote {
+                head: head.to_owned(),
+                text: text.clone(),
+                failed_push: false,
+            });
+        }
+        text
+    }
+
+    /// Drops the note that a push of `head` failed once the remote's branch is at `head`, so
+    /// `yulius wait` waits for the checks and the armed merge instead of ending on it (SPEC-139
+    /// PSH-002, #366). Without a pull request there is nothing to wait for: the note then says
+    /// the branch is pushed and how the pull request opens. One read of the remote, only while
+    /// such a note exists; unreadable, the note stands.
+    pub(crate) async fn forget_push_problem_if_pushed(&self, task: &TaskRecord, head: &str) {
+        let noted = self
+            .runtime(&task.id)
+            .push_problem
+            .lock()
+            .ok()
+            .and_then(|problem| problem.clone())
+            .filter(|note| {
+                note.failed_push
+                    && !head.is_empty()
+                    && (note.head.starts_with(head) || head.starts_with(note.head.as_str()))
+            });
+        let (Some(note), Some(branch), Some(worktree)) =
+            (noted, task.branch.as_deref(), task.worktree_path.as_deref())
+        else {
+            return;
+        };
+        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
+            return;
+        };
+        let Ok(token) = self.task_github_token(task, &sandbox).await else {
+            return;
+        };
+        if !self
+            .dlv_branch_at(Path::new(worktree), branch, &note.head, &token)
+            .await
+        {
+            return;
+        }
+        let unopened = !matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record)) if record.stage != DeliveryStage::None
+        );
+        let next = unopened.then(|| PushNote {
+            head: note.head.clone(),
+            text: format!(
+                "Yulius sees {} pushed to `{branch}`, but its pull request is not open yet: call \
+                 `delivery_merge` (or end your turn) and Yulius opens it.",
+                note.head.get(..9).unwrap_or(&note.head)
+            ),
+            failed_push: false,
+        });
+        if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock()
+            && problem.as_ref() == Some(&note)
+        {
+            *problem = next;
+        }
+    }
+
     /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
     /// to the open one (#68). [`AutoDelivery::Blocked`] says why a head with commits to deliver
     /// is not ready (an invalid spec, an open step, uncommitted work);
     /// [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no commits
     /// ahead of the integration branch, a later stage, nothing new).
-    pub(crate) async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<AutoDelivery> {
+    pub(crate) async fn try_auto_open_pr(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<AutoDelivery, AutoDeliveryError> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
@@ -2413,16 +2600,17 @@ impl App {
                 return Ok(AutoDelivery::Unchanged);
             }
             let pushed = self
-                .deps
-                .git
-                .push(Path::new(&worktree), &branch, &branch, &token)
+                .dlv_push_head(task_id, Path::new(&worktree), &branch, &head, &token)
                 .await;
-            if let Err(err) = pushed {
+            if let Err(error) = pushed {
                 self.release_auto_head(task_id);
-                self.set_push_problem(task_id, &head, &branch, Some(pull.number), &err);
-                return Err(err);
+                let note =
+                    self.set_push_problem(task_id, &head, &branch, Some(pull.number), &error);
+                return Err(AutoDeliveryError {
+                    error,
+                    note: Some(note),
+                });
             }
-            self.clear_push_problem(task_id);
             return Ok(AutoDelivery::Delivered(format!(
                 "Yulius pushed your new commits to pull request #{}.",
                 pull.number
@@ -2440,6 +2628,8 @@ impl App {
         if ahead == 0 || !self.claim_auto_head(task_id, &head)? {
             return Ok(AutoDelivery::Unchanged);
         }
+        // Which step failed: only a push failure's note is about pushing, and a refusal pushed
+        // nothing (SPEC-139 PSH-002).
         let opened = match dlv::apply(
             &observed.record.stage,
             &DeliveryAction::OpenPr,
@@ -2447,13 +2637,19 @@ impl App {
             &profile,
             &observed.facts(),
         ) {
-            Ok(_) => {
-                self.dlv_open_pull(
-                    &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
-                )
+            Ok(_) => match self
+                .dlv_push_head(task_id, Path::new(&worktree), &branch, &head, &token)
                 .await
-            }
-            Err(err) => Err(refusal(&err)),
+            {
+                Ok(()) => self
+                    .dlv_open_pull(
+                        &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
+                    )
+                    .await
+                    .map_err(|err| (err, Failed::Open)),
+                Err(err) => Err((err, Failed::Push)),
+            },
+            Err(err) => Err((refusal(&err), Failed::Refused)),
         };
         match opened {
             Ok(number) => {
@@ -2463,10 +2659,21 @@ impl App {
                     profile.integration_branch
                 )))
             }
-            Err(err) => {
+            Err((error, failed)) => {
                 self.release_auto_head(task_id);
-                self.set_push_problem(task_id, &head, &branch, None, &err);
-                Err(err)
+                let note = match failed {
+                    Failed::Push => {
+                        Some(self.set_push_problem(task_id, &head, &branch, None, &error))
+                    }
+                    Failed::Open => Some(self.set_open_problem(task_id, &head, &error)),
+                    // Defensive: `not_ready` already holds back what the rules refuse here.
+                    Failed::Refused => {
+                        self.note_undelivered(&task, &worktree, &error.public_message())
+                            .await;
+                        None
+                    }
+                };
+                Err(AutoDeliveryError { error, note })
             }
         }
     }
@@ -3008,7 +3215,7 @@ impl App {
 
     /// `(integration-only commits, production-only commits)` from the sandbox clone, fetched
     /// first unless `fetched`; `None` when Git cannot tell.
-    async fn dlv_branch_relation(
+    pub(crate) async fn dlv_branch_relation(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
@@ -3032,7 +3239,7 @@ impl App {
     /// Promotes the integration branch: fast-forward, or open/merge the promotion pull request
     /// (merge commit). Tasks waiting for promotion advance once production moved. `fetched`
     /// says the sandbox clone was fetched just before.
-    async fn dlv_promote(
+    pub(crate) async fn dlv_promote(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
@@ -3041,7 +3248,33 @@ impl App {
         token: &Secret,
         fetched: bool,
     ) -> AppResult<PromoteResult> {
+        self.dlv_promote_exactly(sandbox, profile, by, actor, token, fetched, None)
+            .await
+    }
+
+    /// [`App::dlv_promote`] that promotes only `expected`, the integration commit a person
+    /// confirmed (SPEC-134 review round 3): refused, before anything moves, when the integration
+    /// branch or the promotion pull request's head is another commit.
+    #[allow(clippy::too_many_arguments)] // `dlv_promote`'s context and the confirmed commit.
+    pub(crate) async fn dlv_promote_exactly(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        by: Initiator,
+        actor: &UserRecord,
+        token: &Secret,
+        fetched: bool,
+        expected: Option<&str>,
+    ) -> AppResult<PromoteResult> {
         crate::playground::refuse_in_playground(sandbox, "Promotion")?;
+        let moved = |at: &str| {
+            AppError::Conflict(format!(
+                "nothing was promoted: '{}' moved since it was confirmed (it is now {}); review \
+                 it and deploy again",
+                profile.integration_branch,
+                at.get(..7).unwrap_or(at)
+            ))
+        };
         let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
             .dlv_sandbox_deliveries(sandbox)
             .await?
@@ -3072,6 +3305,9 @@ impl App {
                     profile.integration_branch
                 ))
             })?;
+        if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
+            return Err(moved(&integration_sha));
+        }
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
@@ -3217,6 +3453,9 @@ impl App {
                         ));
                     }
                     Some(pull) => {
+                        if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&pull.head_sha)) {
+                            return Err(moved(&pull.head_sha));
+                        }
                         self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
                             .await?;
                         if profile.require_checks {
@@ -3333,7 +3572,8 @@ impl App {
         }
     }
 
-    /// `POST /api/sandboxes/{sid}/delivery/promote` (write): an explicit promotion. It acts as
+    /// `POST /api/sandboxes/{sid}/delivery/promote` (admin, `{"confirm": "<slug>"}`): an explicit
+    /// promotion, a production release as the CD page's (ADR-0110). It acts as
     /// the caller on GitHub, so the superadmin without a GitHub identity is told to release on
     /// GitHub (ACC-012).
     ///
@@ -3344,11 +3584,27 @@ impl App {
         &self,
         ctx: &AuthContext,
         sandbox_id: &str,
+        confirm: Option<&str>,
     ) -> AppResult<PromoteResult> {
-        let sandbox = self
-            .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
-            .await?;
+        // A promotion is a production release: an administrator's, with the project's slug typed,
+        // as a production deploy on the CD page (SPEC-134, ADR-0110).
+        let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
         crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
+        yulius_domain::cd::may_deploy(
+            yulius_domain::cd::CdEnv::Prod,
+            yulius_domain::cd::Requester::Person {
+                administrator: level.allows(Action::Administer),
+                confirmation: confirm,
+            },
+            &sandbox.slug,
+        )
+        .map_err(|refused| match refused {
+            yulius_domain::cd::CdRefusal::ConfirmationMismatch { .. } => {
+                AppError::Invalid(refused.to_string())
+            }
+            other => AppError::Forbidden(other.to_string()),
+        })?;
         let profile = delivery_profile(&sandbox);
         let token = self
             .person_github_token(
@@ -3356,34 +3612,6 @@ impl App {
                 &format!("Releasing to {}", profile.production_branch),
             )
             .await?;
-        self.dlv_promote(
-            &sandbox,
-            &profile,
-            Initiator::User,
-            &ctx.user,
-            &token,
-            false,
-        )
-        .await
-    }
-
-    /// [`App::promote_sandbox`] for `task`'s agent (`delivery_promote`) under its owner's
-    /// authority `ctx`: GitHub sees the owner promote, or the App when the owner has no
-    /// usable GitHub token (F 2026-10-11).
-    ///
-    /// # Errors
-    /// As [`App::promote_sandbox`], without the refusal for an account with no GitHub identity.
-    pub(crate) async fn promote_sandbox_for_task(
-        &self,
-        ctx: &AuthContext,
-        task: &TaskRecord,
-    ) -> AppResult<PromoteResult> {
-        let sandbox = self
-            .dlv_require_sandbox(ctx, task.sandbox_id.as_str(), Action::Work)
-            .await?;
-        crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
-        let profile = delivery_profile(&sandbox);
-        let token = self.task_github_token(task, &sandbox).await?;
         self.dlv_promote(
             &sandbox,
             &profile,
@@ -4101,7 +4329,7 @@ impl App {
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "profile": profile_to_contract(&profile),
-            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, run each command-verified environment with delivery_deploy, and promote with delivery_promote. The same checks a person's action needs apply; environments a person must verify stay with people.",
+            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask one with needs_you; CD runs are cd_status and cd_deploy.",
         }))
     }
 }

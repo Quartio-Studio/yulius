@@ -708,29 +708,18 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String
     seen
 }
 
-/// F 2026-10-11 (AC-GIT-3): the agent's Git acts as the task's creator, with their own GitHub
-/// token; without a usable one (signed out of GitHub, or no linked account at all) the App's
-/// repository token, and the task's terminal says why the App appears, once.
+/// ADR-0114 (SPEC-141 AC1): the agent's Git and `gh` hold the App's narrowed agent token, never
+/// a person's: not before its owner signs in with GitHub, not after, and not for an owner without
+/// a linked account. A task with an owner who can act says nothing about the App.
 #[tokio::test]
-async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
+async fn the_agents_git_never_holds_the_owners_token() -> TestResult {
     let f = fixture().await?;
     install_app(&f).await?;
     let mut watch = f.h.app.runtime(&f.task).hub.watch();
 
-    // Alice links GitHub but has no token Yulius may use: the App's token, said once.
-    assert_eq!(agent_credential(&f, TOKEN).await?, "inst");
-    assert_eq!(agent_credential(&f, TOKEN).await?, "inst");
-    let said = notices(&mut watch);
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(
-        said[0].contains("as the Yulius GitHub App") && said[0].contains("sign-in has expired"),
-        "{said:?}"
-    );
-
-    // Signed in with GitHub: her own token from now on.
+    assert_eq!(agent_credential(&f, TOKEN).await?, "agent-inst");
     sign_in_with_github(&f, "u1", "alice").await?;
-    assert_eq!(agent_credential(&f, TOKEN).await?, "token-alice");
-    assert!(notices(&mut watch).is_empty());
+    assert_eq!(agent_credential(&f, TOKEN).await?, "agent-inst");
     // `yulius gh-token` (the agent's `gh`) asks without a repository path: the same token.
     let gh = call(
         &f.h.internal,
@@ -741,9 +730,10 @@ async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
     )
     .await?;
     assert_eq!(gh.status, 200);
-    assert_eq!(gh.body["token"], "token-alice");
+    assert_eq!(gh.body["token"], "agent-inst");
+    assert!(notices(&mut watch).is_empty());
 
-    // A task of an owner without a linked GitHub account acts as the App.
+    // A task of an owner without a linked GitHub account gets the same token.
     let store = &f.h.app.deps.store;
     let unlinked = UserRecord {
         id: UserId::parse("u-local")?,
@@ -769,11 +759,22 @@ async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
     attempt.task_id = task.id.clone();
     attempt.token_hash = f.h.app.deps.crypto.sha256_hex(b"local-task-token");
     store.insert_attempt(&attempt).await?;
-    let mut local_watch = f.h.app.runtime(&task.id).hub.watch();
-    assert_eq!(agent_credential(&f, "local-task-token").await?, "inst");
-    let said = notices(&mut local_watch);
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(said[0].contains("no linked GitHub account"), "{said:?}");
+    assert_eq!(
+        agent_credential(&f, "local-task-token").await?,
+        "agent-inst"
+    );
+
+    // Without the App installed there is nothing to hand out: refused, never a person's token.
+    store.set_installation(None).await?;
+    let none = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/fixture.git"})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(none.status, 409, "{}", none.body);
     Ok(())
 }
 
@@ -783,7 +784,7 @@ async fn git_credentials_are_scoped_to_the_project_repository() -> TestResult {
     install_app(&f).await?;
     sign_in_with_github(&f, "u1", "alice").await?;
 
-    assert_eq!(agent_credential(&f, TOKEN).await?, "token-alice");
+    assert_eq!(agent_credential(&f, TOKEN).await?, "agent-inst");
     for (body, status) in [
         (
             json!({"protocol": "https", "host": "github.com", "path": "acme/other.git"}),
@@ -899,5 +900,73 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     assert!(body.is_null(), "the renamed spec is found: {body:?}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.spec_path.as_deref(), Some("docs/specs/renamed.md"));
+    Ok(())
+}
+
+/// SPEC-140 HKS-001 (#404): the hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
+/// (fail-open), closing its connection, and hyper then drops the request's handler. A hook Yulius
+/// received is still applied to its end, whatever becomes of its handler. Here a notice that asks a
+/// person: a layer starts its handler and never drives it further (as a dropped handler), and the
+/// client hangs up. Before, the hook's work was the handler's, so on a loaded host a Stop that took
+/// longer than the client's wait never made its task Done. (That hyper drops the handler when the
+/// client hangs up was shown with the layer resuming it after a while: SPEC-140 Evidence.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hook_whose_client_hangs_up_is_still_applied() -> TestResult {
+    use tokio::io::AsyncWriteExt;
+    let f = fixture().await?;
+    f.h.app
+        .deps
+        .store
+        .set_activity(&f.task, Some(Activity::Working), Timestamp(10))
+        .await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (started_tx, mut started) = tokio::sync::watch::channel(false);
+    let held = axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let started_tx = started_tx.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                let bytes = axum::body::to_bytes(body, 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                let request =
+                    axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+                let mut handling = std::pin::pin!(next.run(request));
+                // The handler starts, and the server takes it no further.
+                if let std::task::Poll::Ready(response) = futures::poll!(handling.as_mut()) {
+                    return response;
+                }
+                started_tx.send_replace(true);
+                std::future::pending::<()>().await;
+                handling.await
+            }
+        },
+    );
+    let internal =
+        f.h.internal
+            .clone()
+            .layer(held)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    tokio::spawn(async move { axum::serve(listener, internal).await });
+    let body = json!({"message": "Claude needs you", "notification_type": "permission_prompt"})
+        .to_string();
+    let request = format!(
+        "POST /hooks/claude/Notification HTTP/1.1\r\nHost: {addr}\r\n\
+         Authorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = tokio::net::TcpStream::connect(addr).await?;
+    client.write_all(request.as_bytes()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), started.wait_for(|s| *s)).await??;
+    drop(client);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while activity(&f).await? != Some(Activity::NeedsAttention) {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("the notice was not applied: {:?}", activity(&f).await?).into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     Ok(())
 }

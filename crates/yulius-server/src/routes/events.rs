@@ -39,6 +39,8 @@ pub async fn events(
 async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     let mut rx = app.events.subscribe();
     let mut visible: HashMap<String, bool> = HashMap::new();
+    // Sandboxes whose files this person may read (SPEC-127), decided again with `visible`.
+    let mut writable: HashMap<String, bool> = HashMap::new();
     let is_admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
@@ -53,6 +55,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                     break;
                 }
                 visible.clear();
+                writable.clear();
             }
             incoming = socket.recv() => {
                 match incoming {
@@ -65,6 +68,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                     Ok(envelope) => envelope,
                     Err(RecvError::Lagged(_)) => {
                         visible.clear();
+                        writable.clear();
                         if send(&mut socket, &UiEvent::Resync).await.is_err() { break; }
                         continue;
                     }
@@ -79,11 +83,25 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                         Some(v) => *v,
                         None => {
                             let ok = app.can_view(&ctx.user, sandbox).await;
-                            visible.insert(key, ok);
+                            visible.insert(key.clone(), ok);
                             ok
                         }
                     };
                     if !allowed { continue; }
+                    // What the editor shows (who has which file open) is for those who may open it.
+                    if envelope.writers_only {
+                        let allowed = match writable.get(&key) {
+                            Some(v) => *v,
+                            None => {
+                                let ok = app.can_work_in(&ctx.user, sandbox).await;
+                                writable.insert(key, ok);
+                                ok
+                            }
+                        };
+                        if !allowed { continue; }
+                    }
+                } else if envelope.writers_only {
+                    continue;
                 }
                 if send(&mut socket, &envelope.event).await.is_err() { break; }
             }

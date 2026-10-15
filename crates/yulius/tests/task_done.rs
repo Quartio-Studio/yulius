@@ -352,11 +352,7 @@ async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
 }
 
 async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
-    app.stop_task_now(id).await?;
-    wait_for("the stop", Duration::from_secs(30), || async {
-        task(app, id).await.is_ok_and(|t| !t.status.is_live())
-    })
-    .await
+    support::stop_tasks(app, &[id]).await
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
@@ -1237,7 +1233,8 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
 
 /// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
 /// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
-/// Claude Code attaches a pasted image) and the other files mentioned.
+/// Claude Code attaches a pasted image) and the other files mentioned. An older prompt's files
+/// follow its text, so the image is pasted after it (SPEC-124 INL-007).
 #[test]
 fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1271,15 +1268,68 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
             .await?
             .id;
         wait_for("the first message", Duration::from_secs(90), || {
-            screen_contains(&app, &id, "ECHO: [Image #1] Make it blue")
+            screen_contains(&app, &id, "ECHO: Make it blue")
         })
         .await?;
         let launch = first_launch(&app, &id).await?;
         assert!(launch.contains("prompt: None"), "{launch}");
         let screen = app.runtime(&id).hub.screen_text();
+        assert!(screen.contains("[Image #1] "), "{screen}");
         assert!(screen.contains("@\"/srv/notes.txt\""), "{screen}");
         assert!(!screen.contains("@\"/srv/shot.png\""), "{screen}");
-        assert_eq!(screen.matches("ECHO: [Image #1]").count(), 1, "{screen}");
+        assert_eq!(screen.matches("ECHO: ").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-124 INL-007: an image written inside the text (`@'path'`, as the composer writes it) is
+/// pasted where it sits: one first message with `[Image #1]` between the words around it.
+#[test]
+fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "This part @'/srv/my shot.png' looks wrong, see @'/srv/notes.txt'".into(),
+                harness: Harness::ClaudeCode,
+                title: None,
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the first message", Duration::from_secs(90), || {
+            screen_contains(
+                &app,
+                &id,
+                "ECHO: This part [Image #1] looks wrong, see @\"/srv/notes.txt\"",
+            )
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        assert_eq!(screen.matches("ECHO: ").count(), 1, "one message: {screen}");
+        let task = app.deps.store.task(&id).await?.ok_or("no task")?;
+        assert_eq!(task.title, "This part looks wrong, see");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1654,6 +1704,153 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
         })
         .await?;
         stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-140 STP-001 (#464): a stop that comes while the task's run is launching (spawned, Yulius
+/// not attached yet) finds no run to ask. The run is asked once it is attached, so it ends at once
+/// as stopped, not when the escalation terminates it (here 60 s, beyond the wait).
+#[test]
+fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        host.arm();
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            FakeAgentOptions::default(),
+            0,
+            Some(host.clone()),
+            Some(60_000),
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        app.stop_task_now(&id).await?;
+        host.release();
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+        );
+        let attempts = app.deps.store.attempts(&id).await?;
+        let run = attempts.last().ok_or("no run")?;
+        assert_ne!(run.state, AttemptState::Lost, "{run:?}");
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-140 STP-002 (review): a stop that ended no run leaves no intent for the next run. Here a
+/// switch's old run has ended and its new run waits for the launch (another task's launch holds
+/// it), the task is stopped then, its launch is refused, and a second stop ends it. Continued, the
+/// task's resumed run is not shut down when it attaches: its goal is typed and it stays live.
+#[test]
+fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            agent,
+            0,
+            Some(host.clone()),
+            None,
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the launch goal", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        // Another task's launch holds the launch lock while its attach is held.
+        host.arm();
+        let holder = goal_task(&app, &sandbox, &user, "Hold the launch").await?;
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        let switch = {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move { app.switch_task_now(&id, None, "manual", None).await })
+        };
+        wait_for("the old run's end", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Switching)
+                && app
+                    .deps
+                    .store
+                    .live_attempt(&id)
+                    .await
+                    .is_ok_and(|a| a.is_none())
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
+        host.release();
+        let refused = tokio::time::timeout(Duration::from_secs(60), switch).await??;
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Stopping);
+        app.stop_task_now(&id).await?;
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+        );
+        let runs = app.deps.store.attempts(&id).await?.len();
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+        )
+        .await?;
+        // The resumed run gets its goal typed; ending first is the failure.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let attempts = app.deps.store.attempts(&id).await?;
+            if let Some(resumed) = attempts.get(runs) {
+                if resumed.state.is_terminal() {
+                    return Err(format!("the resumed run ended: {resumed:?}").into());
+                }
+                if screen_contains(&app, &id, "ECHO: /goal Tidy the parser").await {
+                    break;
+                }
+            }
+            if Instant::now() > deadline {
+                return Err("timed out waiting for the resumed run's goal".into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        support::stop_tasks(&app, &[&id, &holder]).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())

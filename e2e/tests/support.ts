@@ -1,23 +1,14 @@
 // Shared helpers for the suites. Tests run the UI in mock mode: a static file server and
 // assets/mock.js stand in for `yulius serve`, so no server, account or model is needed.
 import { createRequire } from 'node:module';
-import { afterEach, beforeEach, type Browser } from '@e2e-dev/web';
-import { expect } from 'e2e';
+import { afterEach, beforeEach, type Browser, type Screen } from '@e2e-dev/web';
+import { expect, type App } from 'e2e';
 
 /**
  * A UI path in mock mode (`?mock=1`, hash routing). `options` are further mock switches, such as
  * `&signedout=1` (see crates/yulius-server/web/README.md, "Run the mock locally").
  */
 export const mock = (path: string, options = '') => `/?mock=1${options}#${path}`;
-
-/**
- * Waits until the mock is installed (`window.__yuliusMock`). The app loads mock.js with a dynamic
- * import, so the page's load event can come first; a test that touches the mock right after
- * `app.open` calls this.
- */
-export async function mockReady(browser: Browser): Promise<void> {
-  await expect.poll(() => browser.evaluate(() => Boolean((window as { __yuliusMock?: unknown }).__yuliusMock))).toBe(true);
-}
 
 const axeScript = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
 
@@ -43,12 +34,31 @@ export async function instrument(browser: Browser): Promise<void> {
 }
 
 /**
+ * Makes `app.open` and `browser.reload` of a mock page return only once the mock is installed, so
+ * a test may touch `window.__yuliusMock` right after either (#446, #455): the page's load event
+ * does not wait for the app's dynamic import of mock.js, which a busy machine delays.
+ */
+function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
+  // The app's own test for mock mode (app.js): `?mock=1`.
+  const ready = () => expect.poll(() => browser.evaluate(() => new URLSearchParams(location.search).get('mock') !== '1'
+    || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock)), {
+    message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
+  }).toBe(true);
+  const open = app.open.bind(app);
+  const reload = browser.reload.bind(browser);
+  Object.assign(app, { open: async (path?: string) => { await open(path); await ready(); } });
+  Object.assign(browser, { reload: async (...args: Parameters<Browser['reload']>) => { await reload(...args); await ready(); } });
+}
+
+/**
  * Registers hooks for the calling test file: every test loads axe-core and fails when the page
- * reported an error (uncaught exception, unhandled rejection or `console.error`).
+ * reported an error (uncaught exception, unhandled rejection or `console.error`). Opening or
+ * reloading a mock page also waits for the mock (`waitForTheMockOnEveryLoad`).
  */
 export function failOnPageErrors(): void {
-  beforeEach(async ({ browser }) => {
+  beforeEach(async ({ app, browser }) => {
     await instrument(browser);
+    waitForTheMockOnEveryLoad(app, browser);
   });
   afterEach(async ({ browser }) => {
     expect(await pageErrors(browser)).toEqual([]);
@@ -93,7 +103,43 @@ export async function terminalShown(browser: Browser): Promise<void> {
     && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null)).toBe(true);
 }
 
+/**
+ * Opens the Superagent where it lives (SPEC-132): first in the tools rail, under the tools toggle,
+ * which shows the rail first when it is hidden. The rail's Superagent button closes it again.
+ */
+export async function openSuperagent(browser: Browser, screen: Screen): Promise<void> {
+  if (await browser.locator('.rail:not([hidden])').count() === 0) await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
+}
+
 export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
   return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
+}
+
+/**
+ * The new-task prompt's text as it shows (SPEC-124), each file in it as `[name]`: the prompt is a
+ * text box with files inside its text, not a textarea, so it has no value to read.
+ */
+export function promptText(browser: Browser): Promise<string> {
+  return browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt');
+    if (!input) return '';
+    const copy = input.cloneNode(true) as HTMLElement;
+    for (const atom of copy.querySelectorAll('.pi-atom')) atom.replaceWith(`[${atom.getAttribute('title') ?? ''}]`);
+    return copy.textContent || '';
+  });
+}
+
+/** Selects characters `start` to `end` of the new-task prompt's first line of text. */
+export async function selectPromptText(browser: Browser, start: number, end: number): Promise<void> {
+  await browser.evaluate(([from, to]) => {
+    const text = [...document.querySelector('.composer-prompt')!.childNodes].find((n) => n.nodeType === 3)!;
+    const range = document.createRange();
+    range.setStart(text, from);
+    range.setEnd(text, to);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, [start, end]);
 }

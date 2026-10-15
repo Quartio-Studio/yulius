@@ -15,11 +15,14 @@ flowchart LR
     APP["Application services"]
     SUP["Session supervisor"]
     CI["Yulius CI runner"]
+    CD["Yulius CD runner"]
     DB[("SQLite WAL")]
   end
   API --- APP --- DB
   APP --- SUP
   APP --- CI
+  APP --- CD
+  CD -->|"deploy + verify, allowed secrets"| SB
   APP -->|"prune caches, quota"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
@@ -45,7 +48,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`) |
+| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
@@ -202,7 +205,12 @@ a violation is refused with the rule in words, also for promotion pull requests
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
 it. A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
-(merge the pushed head, never force). A goal task whose evaluator keeps every turn going therefore still gets its pull request
+(merge the pushed head, never force): only a note that same call wrote replaces its error. A head
+is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
+(end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) goes through one helper
+that asks the remote (`git ls-remote`) when Git reports a failure, and the wait drops a failed-push
+note once the branch is at its head ([SPEC-139](../.ai/specs/SPEC-139-fix-366-448-yulius-wait-and-delivery-mer.md),
+[decision 0113](decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md)). A goal task whose evaluator keeps every turn going therefore still gets its pull request
 ([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid
@@ -212,7 +220,7 @@ sequenceDiagram
     participant Y as Yulius (internal API)
     A->>Y: delivery_merge (head pushed and pull request opened if missing; policy checked; checks running: armed)
     A->>W: start, end the turn
-    W->>Y: POST /internal/agent/wait (long poll)
+    W->>Y: POST /internal/agent/wait (long poll; a failed-push note goes once GitHub has the head)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```
@@ -222,16 +230,23 @@ sequenceDiagram
 A task's agent is a native Claude Code session, and its first message is in before a person can
 type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
 [decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
-attached on the new-task composer are uploaded to the sandbox's drafts folder. A goal task (the
+attached on the new-task composer are uploaded to the sandbox's drafts folder, and each sits in
+the prompt's text where it was pasted or dropped: the prompt is stored with it there as the
+mention `@'<path>'` (an older prompt has its files after the text, a line `@path` each), and
+`Request::parse` keeps that order everywhere the prompt goes
+([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
+[decision 0101](decisions/0101-attached-files-keep-their-place-in-the-prompt.md)). A goal task (the
 default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
 typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
 condition names the request file in the sandbox home, which keeps the whole request, and the
 attached files, which the agent opens with its Read tool (a `/goal` carries no image
-block). A prompt task's first message is its request. Without an image it is the CLI prompt
-argument, each file mentioned there (`@path`). With an image the session starts with no prompt
-and Yulius types the message into the TUI. Each image's path is pasted on its own, and Claude Code
-shows it as `[Image #N]` and sends an image block; the text follows with the other files
-mentioned, then Enter (an `@` mention of an image would only be a Read tool call). Until that
+block); the request file writes each file inside the text where it sits (`[file N: <path>]`). A
+prompt task's first message is its request. Without an image it is the CLI prompt argument, each
+file mentioned where it sits (`@"<path>"`). With an image the session starts with no prompt and
+Yulius types the message into the TUI, in order: the text, each image's path pasted on its own
+where it sits (Claude Code shows `[Image #N]` at the cursor and sends an image block), the other
+files mentioned in the text, then Enter (an `@` mention of an image would only be a Read tool
+call). Until that
 Enter a person's keys are not written into the session; the first one is answered with a notice.
 A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
@@ -265,9 +280,9 @@ sequenceDiagram
     participant S as Yulius server
     participant C as Claude Code (PTY)
     UI->>S: upload each file (drafts folder)
-    UI->>S: create task (prompt + @path lines)
+    UI->>S: create task (prompt, each file in place as @'path')
     alt goal mode
-        S->>S: write the request file (request, attached files, definition of done)
+        S->>S: write the request file (request with [file N: path] in place, attached files, definition of done)
         S->>C: launch with prompt /goal <condition naming the request file and attached files>
         opt Claude Code shows its folder-trust prompt
             S-->>UI: notice: answer it in the terminal (flagged if unanswered)
@@ -275,16 +290,20 @@ sequenceDiagram
         end
         C-->>C: sets the goal and runs its turn
     else prompt mode, no attached image
-        S->>C: launch with prompt: the request + @path mentions
+        S->>C: launch with prompt: the request, each file mentioned in place
         C-->>C: attaches each mentioned file
     else prompt mode, attached images
         S->>C: launch with no prompt (a person's keys now wait)
         C->>S: SessionStart hook, then quiet output
-        loop each image
-            S->>C: bracketed paste of its path
-            C-->>S: screen shows [Image #N]
+        loop each piece, in order
+            alt an image
+                S->>C: bracketed paste of its path
+                C-->>S: screen shows [Image #N] at the cursor
+            else text (other files mentioned in it)
+                S->>C: bracketed paste of the text
+            end
         end
-        S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
+        S->>C: Enter
         C->>S: UserPromptSubmit: the first message is no longer pending
     end
 ```
@@ -363,6 +382,26 @@ flowchart LR
     Q --> R[start_run: supertask hold, session limit, capacity]
 ```
 
+### Changing how a waiting task starts
+
+A `chained` or `prepared` task takes another start choice before its first run
+(`yulius-app/src/start_change.rs`, `PUT /api/tasks/{tid}/start`,
+[SPEC-126](../.ai/specs/SPEC-126-we-d-like-to-be-able-to-change-task-runn.md),
+[decision 0102](decisions/0102-a-waiting-task-changes-how-it-starts.md)). The choice is checked
+as at creation, a wait on itself is refused, and the store replaces the status, chain row and
+start time in one transaction guarded by the status read. A chain evaluation releases a task only
+while its chain still names what was evaluated, and a rule judges the tasks that existed when it
+was written (the chain row's time).
+
+```mermaid
+flowchart LR
+    W[chained or prepared] -->|PUT start: after a task or a rule| C[chained]
+    W -->|PUT start: When I decide / At a time| P[prepared]
+    W -->|PUT start: Start now / Supertask| Q[queued]
+    C -->|evaluation of the same chain| Q
+    X[queued, running, ended] -->|PUT start| N[409: keeps its start]
+```
+
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
@@ -375,9 +414,10 @@ conversation resumed whenever it starts again. Its start, like a terminal's, run
 the request, so a client that goes away mid-start never leaves a second or half-started session
 ([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
 [decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
-the page, under a notice that it is for quick work only
-([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
-[decision 0036](decisions/0036-agent-in-the-right-panel.md)).
+the page, under a notice that it is for quick work only, opened from the first button of the tools
+rail ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
+[decision 0036](decisions/0036-agent-in-the-right-panel.md),
+[decision 0106](decisions/0106-the-superagent-is-opened-from-the-tools-rail-only.md)).
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
@@ -454,6 +494,121 @@ sequenceDiagram
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
+## Agent secrets in CI jobs
+
+A CI job runs a pull request's code, so it gets an agent secret only the way an agent does, and
+only when the integration branch grants it
+([SPEC-142](../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md), ADR-0116). When a
+job starts, `App::ci_job_secrets` (`crates/yulius-app/src/ci/exec.rs`) looks up the `secrets` of
+the integration branch's `[[ci.jobs]]` entry of the same name in the integration head GitHub
+reports, taken into the CD mirror only Yulius writes (`App::ci_verified_gate`): CI jobs can write the
+sandbox clone, so its copy only says whether to look. A pull request's own `yulius.toml` is never
+asked. A granted job gets the placeholders, the CA bundle and a proxy
+credential of its own, held in memory until its process ended. The proxy's `EgressClient` is then a
+CI caller, `ci:<run>`, that may use only the granted secrets toward their bound hosts; each use is
+audited under that actor.
+
+```mermaid
+flowchart LR
+  GH["GitHub: integration head"] -->|"exact commit, objects checked"| MIR["CD mirror (Yulius only)"]
+  MIR -->|"yulius.toml, e.g. security: secrets = VIDOC_API_KEY; grant by job name"| EXEC["CI job start (ci_job_secrets)"]
+  CLONE["sandbox clone (CI jobs can write it)"] -.->|"only whether to look"| EXEC
+  PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
+  EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]
+  JOB -->|"request with yulius-secret-VIDOC_API_KEY"| X["Egress proxy: client ci:run"]
+  X -->|"value only toward bound hosts"| V["api.vidoc.dev"]
+  X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
+```
+
+## CD (deployment)
+
+CD runs a project's deploy and verify scripts like CI runs its checks
+([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
+ADR-0110, ADR-0111). `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the
+heads of the protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree
+never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
+person with write access or an agent (`cd_deploy`), production only an administrator who typed the
+project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
+(`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
+own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
+the sandbox's containment, production in the sandbox's network only on the host's read-only system (the launch spec's `host_system` join mode), each with the
+secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
+before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
+restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
+you until a person writes to it.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent or person
+    participant App as Yulius (CD)
+    participant G as Git clone
+    participant V as Vault
+    participant S as Sandbox (process host)
+    A->>App: deploy dev (cd_deploy / CD page)
+    App->>App: authorize (production: administrator + typed slug)
+    App->>G: fetch; GitHub's dev head into the private mirror (objects checked), read [cd.dev]
+    App->>V: values of the named secrets (allowed for this environment)
+    V-->>App: values, or "nothing ran: a person allows …"
+    App->>App: record the run (cd_runs) and audit cd.deploy
+    App->>S: the commit's tree in the run's own directory, run deploy then verify
+    S-->>App: output (redacted), exit status
+    App->>App: passed / failed / error, audit cd.finished
+```
+
+```mermaid
+flowchart LR
+  M["merge into dev"] -->|"deploys nothing"| DEV
+  DEV["dev: [cd.dev] at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod: [cd.prod] at the main head"] --> RUN2["CD run"]
+  AG["agent"] -.->|"refused"| P
+```
+
+Outside Yulius, GitHub keeps the production branch a person's
+([ADR-0114](decisions/0114-agents-hold-a-token-github-refuses-on-production.md)). The agent's Git
+and `gh` get `App::agent_git_credential`: an installation token restricted to the repository and
+to the agent permissions (`AGENT_TOKEN_PERMISSIONS`, no Administration or Workflows), never a
+person's. The production ruleset (`rulesets_for`: restrict updates and deletions, block force
+pushes, repository admins the only bypass) makes GitHub refuse that token on the branch.
+`App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
+production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
+onboarding reports a branch the agents could write.
+
+```mermaid
+flowchart LR
+  AG["agent's git / gh"] -->|"credential helper"| TOK["narrowed App token"]
+  TOK -->|"push, merge, fast-forward main"| GH{"GitHub ruleset on main"}
+  GH -->|"not a bypass actor"| NO["refused"]
+  PERSON["repository admin (promotion)"] -->|"own token, bypass"| GH
+  GH --> OK["main moves"]
+  ONB["onboarding"] -->|"branch_guard with an agent token"| GH
+```
+
+## Keys in .env
+
+A project keeps its keys in a `.env` that Git ignores, beside a tracked `.env.example` that names
+them without values ([SPEC-129](../.ai/specs/SPEC-129-default-place-for-keys-should-be-env-tha.md),
+ADR-0105). Code that runs outside the egress proxy (a deployed app, a deploy script of Yulius CD)
+reads them there. The agent never holds a value, so Yulius writes it: `secret_copy_to_env` checks
+with Git that the file is ignored and untracked, then writes the file whole (mode 0600). A value in
+a file leaves the secret's bound hosts, so a person allows each secret once (`env_files`).
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant App as Yulius (vault)
+    participant G as Git
+    participant W as Task worktree
+    participant P as Person
+    A->>App: secret_copy_to_env(STRIPE_KEY)
+    App-->>A: nothing written, waiting for a person (task needs attention)
+    P->>App: Secrets page: Allow (POST agent-secrets/{id}/env)
+    A->>App: secret_copy_to_env(STRIPE_KEY)
+    App->>G: check-ignore .env, ls-files .env
+    G-->>App: ignored, untracked
+    App->>W: .env gets STRIPE_KEY=value, .env.example gets STRIPE_KEY=
+    App-->>A: copied (no value in the result)
+```
+
 ## Terminal input
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
@@ -504,7 +659,7 @@ flowchart LR
   A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
   A -->|"DELETE: decline"| REQ
   PASS --> OWN[("tasks.owner_id = Bob")]
-  OWN --> TOK["Git, gh, PRs, merges as Bob"]
+  OWN --> TOK["Yulius's pushes, PRs, merges as Bob"]
   OWN --> ID["worktree commit identity: Bob"]
   OWN --> GATE["load_task: only Bob writes"]
 ```
@@ -559,13 +714,16 @@ column widths, model and effort), the notification history, the new-task compose
 ([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
-that read fails; SPEC-104). The overview is read every minute while the tab is in view, and at once
+that read fails, while a later failed read keeps the chips an earlier read on the page showed;
+SPEC-104). The overview is read every minute while the tab is in view, and at once
 when the server announces a change of the sandbox's pull requests (`pulls.updated`: a delivery
 stage moved, a Yulius CI run was queued, started or ended), at least 3 s after the start of the
 last read, or when a hidden tab that missed one is shown again. Reads of a sandbox never overlap,
 also across views that stop and start watching it; an announcement during a read brings one more
 read after it. A pull request Yulius recorded as merged reads merged even while GitHub still lists
-it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
+it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)). These reads are
+planned on a clock the transport may give: the real one, or in mock mode with `pullclock=manual` a
+clock only a test's `advanceClock` moves ([decision 0118](decisions/0118-the-mock-drives-the-pull-request-read-clock.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
@@ -588,6 +746,7 @@ continues past with a "↓ N more" line under it ([decision 0083](decisions/0083
 
 ```mermaid
 flowchart LR
+  PI["promptinput.js (files inside the text)"] -->|"value with @'path' in place"| C
   C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
   C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
   D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
@@ -596,6 +755,7 @@ flowchart LR
   SO["Sign-out"] -->|"forget"| LS
   G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
   EV["pulls.updated (stage moved, CI run changed)"] -->|"read again"| G
+  CL["read clock (real; mock: pullclock=manual)"] -->|"gap, 15 s, every minute"| P
   P -->|"write"| LP[("localStorage yulius.pulls.*")]
   LP -->|"after a reload, until the read answers"| P
   SO -->|"forget"| LP
@@ -614,6 +774,13 @@ is counted from three sources:
 - background shells, from the process probe;
 - background agents, from the turn record;
 - Monitor streams and agents launched in the turn that ends, from the transcript.
+
+The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
+namespace's init adopted is not one, even though it still carries Claude Code's wrapper command
+line (a server started as `(server &)`)
+([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). An idle agent
+that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
+merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
@@ -641,14 +808,25 @@ again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-trans
 recorded before that rule are counted again once: migration 23 queues every run recorded so far,
 and after start, once reconciliation has ended the lost runs, a background job counts each ended
 run's window of its transcript and records the outcome with the figures it replaced
-([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)):
+([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)); no recount starts
+after a failed reconciliation (`App::recover`). A run that ends before a watcher of this process
+read its transcript to its end (its agent exited while Yulius was down: reconciliation finds the
+exit, or a reattach gets it at once) is counted the same way when it is ended; its row changes only
+when the count finds figures
+([ADR-0117](decisions/0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md)):
 
 ```mermaid
 flowchart LR
     mig["migration 23:
 queue every run so far"] --> queue[("metrics_recounts")]
-    start["start: reconcile"] --> job["recount_old_metrics
+    start["start: reconcile"] -->|"succeeded"| job["recount_old_metrics
 (background)"]
+    ended["run ended before its watcher
+read its transcript to the end
+(exited while Yulius was down)"] --> rcount["harness.recount
+of its window"]
+    rcount -->|"figures found"| rput[("metrics replaced")]
+    rcount -->|"nothing / failed"| rkeep[("metrics kept")]
     queue --> job
     job -->|"ended run, transcript exists"| count["harness.recount
 (spawn_blocking): its window
@@ -659,6 +837,34 @@ before/after recorded")]
     job -->|"no transcript / no lines /
 live / gone"| keep[("metrics kept;
 outcome recorded")]
+```
+
+## Stages
+
+Every stage of a task, a CI run and a CD run is one row of `spans`
+([SPEC-137](../.ai/specs/SPEC-137-rich-measurements-of-every-stage-tasks-c.md),
+[decision 0112](decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)). Spans that
+follow a state are written by SQLite triggers in the same transaction as the state change, with the
+time the application wrote; the rest by Yulius as it happens (`yulius-app/src/stages.rs`): a CI
+run's preparation, job-slot waits and checkouts, a CD run's checks, promotion and confirmation, a
+task's armed-merge waits and updates onto the integration branch, and the stages job or deploy
+output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). Nothing
+outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
+task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
+
+```mermaid
+flowchart LR
+  subgraph States["state tables"]
+    T["tasks, step_events, attempts, metrics, capacity_pauses, delivery"]
+    C["ci_runs, ci_jobs, cd_runs"]
+  end
+  T -->|"triggers, same transaction"| S[("spans")]
+  C -->|"triggers, same transaction"| S
+  LOG["job / deploy log (read every 0.5 s)"] -->|"::yulius-stage, test summaries"| SC["OutputScanner + OutputStages"]
+  SC -->|"Yulius's clock"| S
+  APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
+  S --> API["GET …/stages/timeline, summary, spans"]
+  API --> UI["Pipeline page, run dialogs, task overview, Dashboard"]
 ```
 
 ## Notes
@@ -692,6 +898,26 @@ sequenceDiagram
     S-->>A: note.presence
     Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
     A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
+```
+
+The Editor shows the same presence for files
+([SPEC-127](../.ai/specs/SPEC-127-the-editor-gets-the-notepad-s-smooth-sel.md),
+[decision 0103](decisions/0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md)): the
+browser loop is shared (`presence.js`), `App::file_presence` checks the path like the files API
+and shares the notepads' limiter, and the event goes through a third envelope audience,
+`Envelope.writers_only`, which `WS /api/events` delivers only to people with write access to the
+sandbox (cached and re-checked like sandbox visibility). The drawing copies what Monaco renders:
+its selection boxes and teammates' decorations become the notepads' gliding shapes in a layer
+inside Monaco's scrolled content (`editorlayer.js`).
+
+```mermaid
+flowchart LR
+    A[Alice's Editor<br/>presence.js] -->|PUT files/presence<br/>root, path, sha256, selection| S[App::file_presence<br/>file_target + limiter]
+    S -->|publish_to_writers| BUS[(event bus<br/>writers_only)]
+    BUS -->|WS /api/events<br/>can_work_in| B[Bob's Editor<br/>writer]
+    BUS -.->|dropped| R[Reader of the sandbox]
+    B --> M[Monaco decoration<br/>+ caret position]
+    M --> L[editorlayer.js<br/>rounded gliding shapes]
 ```
 
 ```mermaid
@@ -733,7 +959,13 @@ flowchart LR
 ## Runtime
 
 - Each task run is owned by a detached `ptyhost`; the server reattaches after restart.
-- Agents reach Yulius only through the internal loopback listener with per-run tokens.
+- Agents reach Yulius only through the internal loopback listener with per-run tokens. A hook runs
+  in its own task: the hook client fails open after 5 s and closes its connection, which drops the
+  HTTP handler, and the hook is still applied to its end
+  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)).
+- A stop or close asks the attached run to shut down; one that comes while the run is launching
+  (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
+  escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
   are in SPEC-002 section 6; runtime contracts in section 7 and

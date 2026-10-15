@@ -745,6 +745,9 @@ fn show_onboarding(ui: &mut dyn Ui, status: &OnboardingStatus) -> io::Result<()>
     if !status.ready {
         ui.detail("New tasks wait for it and start by themselves once onboarding is ready.")?;
     }
+    for warning in &status.warnings {
+        ui.warn(warning)?;
+    }
     Ok(())
 }
 

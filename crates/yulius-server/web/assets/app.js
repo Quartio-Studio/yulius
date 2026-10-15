@@ -20,6 +20,7 @@ import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
 import { mountCiPage } from './pages/ci.js';
+import { mountCdPage } from './pages/cd.js';
 import { mountGitTaskView } from './pages/gittask.js';
 import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountSkillEditor } from './pages/skilledit.js';
@@ -33,10 +34,11 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
+import { mountPipelinePage } from './pages/pipeline.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
-import { createUpdateBanner } from './updates.js';
+import { createUpdateBanner, createUpdateButton } from './updates.js';
 import { mountSecretsPage } from './pages/secrets.js';
 import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
@@ -60,7 +62,9 @@ const SANDBOX_PAGES = {
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
   secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
+  cd: (ctx, sandbox, route) => mountCdPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox, route) => mountDashboardPage(ctx, sandbox, route),
+  pipeline: (ctx, sandbox, route) => mountPipelinePage(ctx, sandbox, route),
 };
 
 const ADMIN_PAGES = {
@@ -73,7 +77,7 @@ const ADMIN_PAGES = {
 function createApp(root, transport) {
   let expiredHandled = false;
   const api = createApi(transport, { onUnauthenticated: () => sessionExpired() });
-  const store = createStore(api, { pullGapMs: transport.pullGapMs });
+  const store = createStore(api, { pullGapMs: transport.pullGapMs, clock: transport.pullClock });
   let shell = null;
   let centerView = null;
   let currentRoute = null;
@@ -260,13 +264,15 @@ function createApp(root, transport) {
     const tabRight = tabRow.el.querySelector('.tabrow-right');
     if (tabRight) tabRight.prepend(updates.el);
     else root.append(updates.el);
+    // The superadmin's Update button, beside the account button (SPEC-133).
+    const sidebarFoot = sidebar.el.querySelector('.sidebar-foot');
+    if (sidebarFoot) sidebarFoot.append(createUpdateButton(ctx, updates).el);
     new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
     ctx.openNewTask = (sandbox) => openNewTask(sandbox);
     ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
-    ctx.toggleAgent = () => panels.toggle('agent', { persistRail: false });
     ctx.closePanel = () => panels.close();
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);

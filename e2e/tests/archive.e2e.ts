@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady, terminalShown } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -19,7 +19,6 @@ type WithMock = { __yuliusMock: {
 
 /** Holds the mock's archive answers until the returned function is called. */
 const holdArchives = async (browser: Browser) => {
-  await mockReady(browser);
   await browser.evaluate(() => {
     const mock = (window as unknown as WithMock & { __release?: () => void }).__yuliusMock;
     mock.holdArchive = new Promise((resolve) => { (window as unknown as { __release?: () => void }).__release = resolve; });
@@ -151,7 +150,6 @@ test('Archive all stays focused and disabled while it runs; a row cannot archive
 
 test('read access shows neither the quick Archive nor Archive all', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3'));
-  await mockReady(browser);
   // A stopped task in a sandbox the user can only read.
   await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_three', 1, { status: 'stopped_cancelled', activity: null }));
   const row = screen.getByRole('region', 'Stopped').getByRole('listitem').filter({ hasText: 'Explore data model' });
@@ -166,7 +164,6 @@ test('read access shows neither the quick Archive nor Archive all', async ({ app
 
 test('the keyboard stays on its control when the sidebar list is rebuilt', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await mockReady(browser);
   // The task's terminal takes the keyboard when it shows: the keyboard moves on after that.
   await terminalShown(browser);
   // The Stopped toggle keeps the keyboard: Enter folds it, Enter again unfolds it, no task opens.

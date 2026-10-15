@@ -4,8 +4,8 @@
 //! pre-parsed map, so the domain stays dependency-free and every problem carries a line
 //! number for the agent prompt. Supported:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]` and `[resources.env]`
-//!   tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]`, `[resources.env]`,
+//!   `[cd.dev]` and `[cd.prod]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
 //!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
 //!   `environments = []`;
@@ -34,6 +34,8 @@
 //! matrix = "1/2 2/2"                     # one job per value, in $YULIUS_CI_MATRIX
 //! cpus = 4                               # its CPU and memory budget (SPEC-082); without them
 //! memory_gb = 8                          # the run's jobs share the sandbox equally
+//! secrets = "VIDOC_API_KEY"              # agent secrets it uses through the egress proxy
+//!                                        # (SPEC-142; the integration branch's list counts)
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -41,6 +43,15 @@
 //!
 //! [branch_policy]                      # the merge gate's rules (SPEC-069)
 //! preset = "standard"                    # or "none"; types = "feat fix …" replaces the types
+//!
+//! [cd.dev]                              # CD (deployment, SPEC-134): both may be empty
+//! deploy = "scripts/cd/deploy.sh dev"    # run by Yulius from the integration branch head
+//! verify = "scripts/cd/verify.sh dev"    # a smoke test, after a successful deploy
+//! secrets = "DEV_SSH_KEY DEV_HOST"       # agent secrets a person allowed outside the proxy
+//!
+//! [cd.prod]
+//! about = "the instances update themselves from main"
+//! promote = true                         # a person's deploy promotes the integration branch first
 //!
 //! [[delivery.environments]]
 //! name = "dev-vm"
@@ -50,12 +61,13 @@
 //! ```
 
 use crate::branch_policy::BranchPolicy;
+use crate::cd::{CdConfig, CdEnv, CdTarget, MAX_ABOUT_CHARS, MAX_CD_SECRETS, valid_secret_name};
 use crate::delivery::{
     DeliveryProfile, Environment, MergeMethod, Preset, ProfileError, PromoteMethod, Stage, Verify,
 };
 
 use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
-use crate::ci::{CiConfigError, JobDef, parse_matrix, project_jobs};
+use crate::ci::{CiConfigError, JobDef, parse_matrix, parse_secrets, project_jobs};
 use crate::resources::{
     EnvTemplate, EnvTemplateError, MAX_DECLARED_CPUS, MAX_DECLARED_MEMORY_GB, MAX_ENV_ENTRIES,
     Need, check_env_template,
@@ -184,6 +196,9 @@ pub enum ConfigProblem {
     /// Invalid CI jobs (`[[ci.jobs]]`, `[commands] gate`).
     #[error("{0}")]
     Ci(CiConfigError),
+    /// A `[cd.<name>]` table other than dev and prod.
+    #[error("CD has two environments, [cd.dev] and [cd.prod]; '[{0}]' is neither")]
+    UnknownCdEnvironment(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +232,8 @@ struct Document {
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
     resources_env: Option<Table>,
+    cd_dev: Option<Table>,
+    cd_prod: Option<Table>,
 }
 
 enum Target {
@@ -229,6 +246,7 @@ enum Target {
     Environment,
     CiJob,
     ResourcesEnv,
+    Cd(CdEnv),
 }
 
 const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, agents";
@@ -238,7 +256,11 @@ const DISK_KEYS: &str = "caches";
 const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
-const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb";
+const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
+const CD_DEV_KEYS: &str = "deploy, verify, secrets, about";
+const CD_PROD_KEYS: &str = "deploy, verify, secrets, about, promote";
+const CD_SECRETS: &str = "at most 16 space-separated agent-secret names like DEV_SSH_KEY";
+const CD_ABOUT: &str = "one line of at most 300 characters";
 
 fn err(line: usize, problem: ConfigProblem) -> FormatError {
     FormatError { line, problem }
@@ -408,6 +430,24 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                 ) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
                 }
+                ("cd.dev" | "cd.prod", true) => {
+                    return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
+                }
+                ("cd.dev" | "cd.prod", false) => {
+                    let (slot, env) = if name == "cd.dev" {
+                        (&mut document.cd_dev, CdEnv::Dev)
+                    } else {
+                        (&mut document.cd_prod, CdEnv::Prod)
+                    };
+                    if slot.is_some() {
+                        return Err(err(line, ConfigProblem::DuplicateTable(name)));
+                    }
+                    *slot = Some(fresh);
+                    Target::Cd(env)
+                }
+                (other, _) if other == "cd" || other.starts_with("cd.") => {
+                    return Err(err(line, ConfigProblem::UnknownCdEnvironment(name)));
+                }
                 ("resources.env", false) => {
                     if document.resources_env.is_some() {
                         return Err(err(line, ConfigProblem::DuplicateTable(name)));
@@ -457,6 +497,8 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
             Target::ResourcesEnv => document.resources_env.as_mut(),
+            Target::Cd(CdEnv::Dev) => document.cd_dev.as_mut(),
+            Target::Cd(CdEnv::Prod) => document.cd_prod.as_mut(),
         };
         let Some(table) = table else { continue };
         let entry = parse_entry(trimmed, line)?;
@@ -647,7 +689,7 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
-    let mut need = Need::default();
+    let (mut need, mut secrets) = (Need::default(), Vec::new());
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -664,6 +706,11 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
             "memory_gb" => {
                 need.memory_mb = Some(number_value(entry, MAX_DECLARED_MEMORY_GB)? * 1024);
             }
+            "secrets" => {
+                let job = name.as_deref().unwrap_or("?");
+                secrets = parse_secrets(job, string_value(entry)?)
+                    .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
+            }
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
@@ -673,6 +720,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
             .ok_or_else(|| err(table.line, ConfigProblem::MissingKey("command")))?,
         matrix,
         need,
+        secrets,
     })
 }
 
@@ -818,12 +866,99 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     let ci = ci_jobs(&document, &commands)?;
     branch_policy_of(&document)?;
     resources_env(&document)?;
+    cd_of(&document)?;
     Ok(ProjectConfig {
         docs: docs_layout(document.docs.as_ref())?,
         commands,
         ci,
         delivery: delivery(&document)?,
     })
+}
+
+fn cd_target(table: &Table, env: CdEnv) -> Result<CdTarget, FormatError> {
+    let (name, known) = match env {
+        CdEnv::Dev => ("cd.dev", CD_DEV_KEYS),
+        CdEnv::Prod => ("cd.prod", CD_PROD_KEYS),
+    };
+    let invalid = |entry: &Entry, value: &str, allowed| {
+        err(
+            entry.line,
+            ConfigProblem::InvalidValue {
+                key: entry.key.clone(),
+                value: clip(value),
+                allowed,
+            },
+        )
+    };
+    let mut target = CdTarget::default();
+    for entry in &table.entries {
+        match entry.key.as_str() {
+            "deploy" => target.deploy = Some(command(entry)?),
+            "verify" => target.verify = Some(command(entry)?),
+            "secrets" => {
+                let text = string_value(entry)?;
+                let names: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+                if names.len() > MAX_CD_SECRETS {
+                    return Err(invalid(entry, text, CD_SECRETS));
+                }
+                for secret in &names {
+                    if !valid_secret_name(secret) {
+                        return Err(invalid(entry, secret, CD_SECRETS));
+                    }
+                }
+                target.secrets = Vec::new();
+                for secret in names {
+                    if !target.secrets.contains(&secret) {
+                        target.secrets.push(secret);
+                    }
+                }
+            }
+            "about" => {
+                let text = string_value(entry)?.trim();
+                if text.chars().count() > MAX_ABOUT_CHARS || text.contains(['\n', '\r']) {
+                    return Err(invalid(entry, text, CD_ABOUT));
+                }
+                target.about = (!text.is_empty()).then(|| text.to_owned());
+            }
+            "promote" if env == CdEnv::Prod => target.promote = bool_value(entry)?,
+            _ => return Err(unknown(name, entry, known)),
+        }
+    }
+    Ok(target)
+}
+
+fn cd_of(document: &Document) -> Result<CdConfig, FormatError> {
+    Ok(CdConfig {
+        dev: document
+            .cd_dev
+            .as_ref()
+            .map(|table| cd_target(table, CdEnv::Dev))
+            .transpose()?,
+        prod: document
+            .cd_prod
+            .as_ref()
+            .map(|table| cd_target(table, CdEnv::Prod))
+            .transpose()?,
+    })
+}
+
+/// The project's CD (deployment, SPEC-134): `[cd.dev]` and `[cd.prod]`, each `None` when its
+/// table is missing. Only these tables are checked, so a mistake elsewhere does not hide CD.
+///
+/// # Errors
+/// A syntax error of the file or an invalid CD table.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::cd::{CdEnv, CdState};
+/// use yulius_domain::spec_format::parse_yulius_toml_cd;
+/// let cd = parse_yulius_toml_cd("[cd.dev]\n[cd.prod]\npromote = true\n")?;
+/// assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
+/// assert_eq!(cd.state(CdEnv::Prod), CdState::Ready);
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_cd(text: &str) -> Result<CdConfig, FormatError> {
+    parse_document(text).and_then(|document| cd_of(&document))
 }
 
 /// Parses only the `[docs]` layout of `yulius.toml` (the whole file is still validated).
@@ -1025,6 +1160,9 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         if let Some(memory_mb) = job.need.memory_mb {
             out.push_str(&format!("memory_gb = {}\n", memory_mb / 1024));
         }
+        if !job.secrets.is_empty() {
+            out.push_str(&format!("secrets = {}\n", quote(&job.secrets.join(" "))));
+        }
     }
     let profile = &config.delivery;
     let base = DeliveryProfile::for_preset(profile.preset);
@@ -1094,11 +1232,107 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cd::CdState;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn problem(text: &str) -> Option<(usize, ConfigProblem)> {
         parse_yulius_toml(text).err().map(|e| (e.line, e.problem))
+    }
+
+    /// SPEC-134 CDC-001/002: both tables, an empty one, a missing one.
+    #[test]
+    fn cd_tables_define_dev_and_production() -> TestResult {
+        let cd = parse_yulius_toml_cd(
+            "[cd.dev]\nabout = \"no dev machine yet\"\n\n[cd.prod]\npromote = true\n\
+             deploy = \"scripts/cd/deploy.sh prod\"\nverify = 'scripts/cd/verify.sh prod'\n\
+             secrets = \"PROD_SSH_KEY  PROD_HOST\"\n",
+        )?;
+        let dev = cd.dev.as_ref().ok_or("dev")?;
+        assert_eq!(dev.about.as_deref(), Some("no dev machine yet"));
+        assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
+        let prod = cd.prod.as_ref().ok_or("prod")?;
+        assert!(prod.promote);
+        assert_eq!(prod.deploy.as_deref(), Some("scripts/cd/deploy.sh prod"));
+        assert_eq!(prod.verify.as_deref(), Some("scripts/cd/verify.sh prod"));
+        assert_eq!(prod.secrets, ["PROD_SSH_KEY", "PROD_HOST"]);
+        assert!(cd.is_defined());
+        let none = parse_yulius_toml_cd("[commands]\ntest = \"x\"\n")?;
+        assert_eq!(none, CdConfig::default());
+        assert_eq!(none.state(CdEnv::Prod), CdState::NotDefined);
+        // The whole file is validated with them.
+        assert!(parse_yulius_toml("[cd.dev]\n[cd.prod]\n").is_ok());
+        Ok(())
+    }
+
+    /// SPEC-134 CDK-004: Yulius defines its own CD: dev explicitly empty, production a promotion.
+    #[test]
+    fn the_repositorys_own_cd_is_defined() -> TestResult {
+        let cd = parse_yulius_toml_cd(include_str!("../../../../yulius.toml"))?;
+        assert!(cd.is_defined());
+        assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
+        let prod = cd.prod.as_ref().ok_or("prod")?;
+        assert!(prod.promote && prod.deploy.is_none());
+        Ok(())
+    }
+
+    /// SPEC-142 CSE-007: Yulius's own CI has its `security` job, and grants no secret until the
+    /// running instance knows `secrets` (an older one rejects the whole file).
+    #[test]
+    fn the_repositorys_own_ci_has_a_security_job_and_no_grant_yet() -> TestResult {
+        let config = parse_yulius_toml(include_str!("../../../../yulius.toml"))?;
+        let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        assert!(jobs.iter().any(|j| j.name == "security"), "{jobs:?}");
+        assert!(jobs.iter().all(|j| j.secrets.is_empty()), "{jobs:?}");
+        Ok(())
+    }
+
+    /// SPEC-134 CDC-001: every invalid form names its line.
+    #[test]
+    fn cd_tables_refuse_what_cannot_run() {
+        let cases: [(&str, usize, &str); 9] = [
+            (
+                "[cd.dev]\npromote = true\n",
+                2,
+                "unknown key 'promote' in [cd.dev]",
+            ),
+            (
+                "[cd.prod]\nrun = \"x\"\n",
+                2,
+                "unknown key 'run' in [cd.prod]",
+            ),
+            (
+                "[cd.dev]\ndeploy = \"\"\n",
+                2,
+                "'deploy' must be a non-empty",
+            ),
+            (
+                "[cd.dev]\ndeploy = \"a\\nb\"\n",
+                2,
+                "'deploy' must be a non-empty",
+            ),
+            ("[cd.dev]\nsecrets = \"ssh_key\"\n", 2, "'secrets'"),
+            ("[cd.staging]\n", 1, "[cd.dev] and [cd.prod]"),
+            ("[[cd.dev]]\n", 1, "[cd.dev] must be a single table"),
+            ("[cd.dev]\n[cd.dev]\n", 2, "appears more than once"),
+            (
+                "[cd.prod]\npromote = \"yes\"\n",
+                2,
+                "'promote' must be true or false",
+            ),
+        ];
+        for (text, line, message) in cases {
+            let error = parse_yulius_toml_cd(text).err();
+            assert_eq!(error.as_ref().map(|e| e.line), Some(line), "{text}");
+            let shown = error.map(|e| e.to_string()).unwrap_or_default();
+            assert!(shown.contains(message), "{text}: {shown}");
+            assert!(parse_yulius_toml(text).is_err(), "{text}");
+        }
+        let many: Vec<String> = (0..17).map(|n| format!("KEY_{n}")).collect();
+        let text = format!("[cd.dev]\nsecrets = \"{}\"\n", many.join(" "));
+        assert!(parse_yulius_toml_cd(&text).is_err_and(|e| e.to_string().contains("'secrets'")));
+        let text = format!("[cd.dev]\nabout = \"{}\"\n", "a".repeat(301));
+        assert!(parse_yulius_toml_cd(&text).is_err_and(|e| e.to_string().contains("'about'")));
     }
 
     #[test]
@@ -1333,6 +1567,7 @@ mod tests {
                         command: "cargo clippy -- -D warnings".to_owned(),
                         matrix: Vec::new(),
                         need: Need::default(),
+                        secrets: Vec::new(),
                     },
                     JobDef {
                         name: "test".to_owned(),
@@ -1342,6 +1577,7 @@ mod tests {
                             cpus: Some(6),
                             memory_mb: Some(12 * 1024),
                         },
+                        secrets: vec!["VIDOC_API_KEY".to_owned()],
                     },
                 ],
                 ..ProjectConfig::default()
@@ -1395,6 +1631,52 @@ mod tests {
             problem("[[ci.jobs]]\nname = \"X\"\ncommand = \"y\"\n"),
             Some((1, ConfigProblem::Ci(CiConfigError::InvalidJobName(_))))
         ));
+        Ok(())
+    }
+
+    /// SPEC-142 CSE-001: a job names the agent secrets it may use, like `[cd.<env>] secrets`;
+    /// its matrix jobs inherit them, and a bad list names the job.
+    #[test]
+    fn ci_jobs_name_their_agent_secrets() -> TestResult {
+        let config = parse_yulius_toml(
+            "[[ci.jobs]]\nname = \"scan\"\ncommand = \"make scan\"\nsecrets = \"VIDOC_API_KEY  OTHER\"\n\
+             matrix = \"a b\"\n\n[[ci.jobs]]\nname = \"lint\"\ncommand = \"make lint\"\n",
+        )?;
+        assert_eq!(config.ci[0].secrets, ["VIDOC_API_KEY", "OTHER"]);
+        assert!(config.ci[1].secrets.is_empty());
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        assert_eq!(
+            jobs[1].secrets,
+            ["VIDOC_API_KEY", "OTHER"],
+            "matrix jobs inherit"
+        );
+        assert!(jobs[2].secrets.is_empty());
+        assert!(
+            render_yulius_toml(&config).contains("secrets = \"VIDOC_API_KEY OTHER\"\n"),
+            "{}",
+            render_yulius_toml(&config)
+        );
+        let many: Vec<String> = (0..=crate::ci::MAX_JOB_SECRETS)
+            .map(|i| format!("S{i}"))
+            .collect();
+        for bad in [
+            "\"lower\"".to_owned(),
+            "\"A A\"".to_owned(),
+            "\"  \"".to_owned(),
+            "\"A $(B)\"".to_owned(),
+            "true".to_owned(),
+            format!("\"{}\"", many.join(" ")),
+        ] {
+            let text = format!("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nsecrets = {bad}\n");
+            assert!(
+                matches!(
+                    problem(&text),
+                    Some((4, ConfigProblem::Ci(CiConfigError::InvalidSecrets(ref job)))) if job == "x"
+                ) || (bad == "true" && problem(&text).is_some_and(|(line, _)| line == 4)),
+                "{bad}: {:?}",
+                problem(&text)
+            );
+        }
         Ok(())
     }
 

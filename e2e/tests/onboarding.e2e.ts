@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -22,7 +22,6 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
  */
 async function importRepository({ app, browser, screen }: { app: { open(url: string): Promise<unknown> }; browser: Browser; screen: any }, name: string) {
   await app.open(mock('/'));
-  await mockReady(browser);
   await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.manualOnboarding = true; });
   await screen.getByRole('button', 'Import repository').click();
   const dialog = screen.getByRole('dialog', 'Add sandbox');

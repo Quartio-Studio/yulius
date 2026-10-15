@@ -44,7 +44,7 @@ as writing code, belongs in a task.
 | AGT-002 | The Agent panel shows a distinct notice above the session: it is for quick work (setting up automations, quick questions); anything more complex, such as writing code, should be done in a task. The notice offers "New task", which opens the new-task composer. | `agent-panel.e2e.ts` |
 | AGT-003 | No "Cockpit" remains in the UI: the panel, its messages and errors say "Agent". | `agent-panel.e2e.ts` |
 | AGT-004 | The left sidebar's navigation no longer lists the Cockpit. | `navigation.e2e.ts`, `agent-panel.e2e.ts` |
-| AGT-005 | The top bar has an **Agent** button (sandbox pages only) that opens or closes the Agent panel, whether the rail is shown or not. | `agent-panel.e2e.ts` |
+| AGT-005 | ~~The top bar has an **Agent** button (sandbox pages only) that opens or closes the Agent panel, whether the rail is shown or not.~~ Removed by SPEC-132 (ADR-0106): the rail's first tool is the way in. | `agent-panel.e2e.ts` |
 | AGT-006 | `/s/<slug>/agent` and the old `/s/<slug>/cockpit` open the sandbox with the Agent panel open, and the address becomes `/s/<slug>`. | `agent-panel.e2e.ts` |
 
 ## Design

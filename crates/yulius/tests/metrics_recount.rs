@@ -270,3 +270,54 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     assert_eq!(recounts(&db)?, after);
     Ok(())
 }
+
+/// SPEC-143 RDM-003 (#389, SPEC-091 RCT-004): the start's recovery recounts nothing while
+/// reconciliation fails — a run it did not end would be recorded `live` and never counted — and the
+/// next start that reconciles recounts the queue. Reconciliation fails here on a running task whose
+/// row the store cannot read; the recount never reads that task.
+#[tokio::test]
+async fn the_recount_waits_for_a_reconciliation_that_succeeds() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let data = dir.path().canonicalize()?;
+    let db = data.join("yulius.db");
+    yulius_store::create_at_version(&db, 22)?;
+    rusqlite::Connection::open(&db)?.execute_batch(
+        "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u', 'U', 0, 0, 1);
+         INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u', 'not_needed', 1);
+         INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, owner_id, created_at, updated_at, worktree_path, mode) VALUES
+           ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u', 'u', 1, 1, '/work/demo', 'prompt'),
+           ('t2', 's1', 2, 'T', 'p', 'claude', 'running', 'ui', 'u', 'u', 2, 2, '/work/other', 'unreadable');
+         INSERT INTO attempts (id, task_id, seq, harness, provider_session_id, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
+           ('a1', 't1', 1, 'claude', 'gone-session', 'new', 'exited', '/r/a1', 'h1', x'00', 1, 2);",
+    )?;
+    let store = SqliteStore::open(&db)?;
+    let h = support::harness_with(HarnessOptions {
+        dir: Some(dir),
+        store: Some(store),
+        ..HarnessOptions::default()
+    })?;
+
+    assert!(
+        h.app.recover().await.is_none(),
+        "no recount after a failed reconciliation"
+    );
+    assert_eq!(
+        recounts(&db)?,
+        [("a1".to_owned(), None, None, None)],
+        "the queued run is not recorded"
+    );
+
+    // The next start: the row is readable, reconciliation succeeds and the queue is recounted.
+    rusqlite::Connection::open(&db)?
+        .execute("UPDATE tasks SET mode = 'prompt' WHERE id = 't2'", [])?;
+    let recount = h
+        .app
+        .recover()
+        .await
+        .ok_or("a recount after reconciliation")?;
+    let tally = recount.await??;
+    assert_eq!(tally.no_transcript, 1);
+    let rows = recounts(&db)?;
+    assert_eq!(rows[0].1.as_deref(), Some("no_transcript"), "{rows:?}");
+    Ok(())
+}

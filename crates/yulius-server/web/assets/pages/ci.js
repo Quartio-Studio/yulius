@@ -7,9 +7,11 @@ import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural } from '../format.js';
 import { allows } from '../status.js';
-import { replaceQuietly } from '../router.js';
+import { replaceQuietly, href } from '../router.js';
 import { pageFrame, loader } from './common.js';
 import { BRAND } from '../brand.js';
+import { loadWaterfall } from '../stages.js';
+import { pipelineHref } from './pipeline.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -184,7 +186,10 @@ export function mountCiPage(ctx, sandbox, route) {
     const tabs = h('div', { class: 'ci-tabs', role: 'tablist', 'aria-label': 'Jobs' });
     const head = h('div', { class: 'row-wrap' });
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
-    const body = h('div', { class: 'stack' }, head, tabs, output);
+    // Its stages (SPEC-137): queue, preparation, jobs and what their output names, as a waterfall.
+    const stages = h('div', { class: 'run-stages' });
+    const pipeline = h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `ci_run:${id}`)), dataset: { route: pipelineHref(sandbox, `ci_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline');
+    const body = h('div', { class: 'stack' }, head, stages, tabs, output);
     const modal = openModal({
       title: 'CI run', wide: true, body: placeholder('Loading the CI run…', 'loading'),
       actions: [{ label: 'Close' }],
@@ -204,6 +209,8 @@ export function mountCiPage(ctx, sandbox, route) {
           first = false;
         }
         render(run);
+        head.append(h('span', { class: 'spacer' }), pipeline);
+        await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
         if (ACTIVE.has(run.state) && modal.dialog.isConnected) poll = setTimeout(load, POLL_ACTIVE_MS);
       } catch (error) {
         if (first) setChildren(modal.body, placeholder(`Couldn’t load the run: ${error.message}`, 'error'));

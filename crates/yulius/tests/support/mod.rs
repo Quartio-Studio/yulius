@@ -20,8 +20,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::Clock;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
-    GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    BranchGuard, ChecksReport, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken,
+    GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
     STATUS_PERMISSION_MISSING,
 };
 use yulius_domain::permission::GitHubPermissions;
@@ -50,12 +50,17 @@ pub struct FakeGitHub {
     pub hang_permissions: std::sync::atomic::AtomicBool,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
+    /// other branch is writable by them.
+    pub guarded_branches: Mutex<Vec<String>>,
     /// Checks per commit SHA (default: `None`, every source read).
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
     pub checks_error: Mutex<Option<AppError>>,
     /// The next retitles of pull requests fail with these errors, one each, in order.
     pub retitle_errors: Mutex<Vec<AppError>>,
+    /// While set, opening a pull request fails with this message (SPEC-139).
+    pub create_pull_error: Mutex<Option<String>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
@@ -182,6 +187,9 @@ impl GitHubPort for FakeGitHub {
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         Ok(Secret("inst".into()))
     }
+    async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
+        Ok(Secret("agent-inst".into()))
+    }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(Vec::new())
     }
@@ -194,6 +202,24 @@ impl GitHubPort for FakeGitHub {
         _: &str,
     ) -> AppResult<GhRepo> {
         Err(AppError::Upstream("n/a".into()))
+    }
+    async fn branch_guard(
+        &self,
+        _: &Secret,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> AppResult<BranchGuard> {
+        let wanted = format!("{owner}/{name}:{branch}");
+        let guarded = self
+            .guarded_branches
+            .lock()
+            .map_err(AppError::internal)?
+            .contains(&wanted);
+        Ok(BranchGuard {
+            updates_restricted: guarded,
+            deletion_restricted: guarded,
+        })
     }
     async fn create_ruleset(
         &self,
@@ -247,6 +273,9 @@ impl GitHubPort for FakeGitHub {
         repo: &str,
         pull: &NewPull,
     ) -> AppResult<GhPull> {
+        if let Some(message) = self.create_pull_error.lock().ok().and_then(|e| e.clone()) {
+            return Err(AppError::Upstream(message));
+        }
         let head_sha = self
             .remote()
             .and_then(|r| r.branch_sha(&pull.head))
@@ -804,6 +833,67 @@ pub async fn insert_sandbox(
         })
         .await?;
     Ok(())
+}
+
+/// What a stop may take beyond its escalation: terminating the run's host and recording its end,
+/// on a starved runner (SPEC-140 TWT-001). That takes under a second measured at load 79. With the
+/// default 20 s escalation a stop may take 60 s, which suits a test that is short before its stop
+/// (nextest kills at 120 s).
+pub const STOP_SETTLE: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// Stops `tasks` and waits until none is live (see [`wait_stopped`]).
+pub async fn stop_tasks(app: &Arc<App>, tasks: &[&yulius_domain::ids::TaskId]) -> TestResult {
+    for id in tasks {
+        app.stop_task_now(id).await?;
+    }
+    wait_stopped(app, tasks).await
+}
+
+/// Waits until none of `tasks` is live, all together, within the product's own bound for a stop:
+/// after `stop_escalation_ms` the run's host is terminated and the run recorded as lost (SPEC-065
+/// END-001), plus [`STOP_SETTLE`]. A miss says each live task's status and its runs' states; a
+/// deleted task counts as stopped.
+pub async fn wait_stopped(app: &App, tasks: &[&yulius_domain::ids::TaskId]) -> TestResult {
+    let bound = std::time::Duration::from_millis(app.config.stop_escalation_ms) + STOP_SETTLE;
+    let deadline = tokio::time::Instant::now() + bound;
+    loop {
+        let mut live = Vec::new();
+        for id in tasks {
+            if let Some(task) = app.deps.store.task(id).await?
+                && task.status.is_live()
+            {
+                live.push(task);
+            }
+        }
+        if live.is_empty() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            let mut seen = Vec::new();
+            for task in live {
+                let runs: Vec<String> = app
+                    .deps
+                    .store
+                    .attempts(&task.id)
+                    .await?
+                    .iter()
+                    .map(|a| format!("{} {:?} {:?}", a.id, a.state, a.exit_reason))
+                    .collect();
+                seen.push(format!(
+                    "{} {} (runs: {})",
+                    task.id,
+                    task.status.as_str(),
+                    runs.join(", ")
+                ));
+            }
+            return Err(format!(
+                "timed out waiting for the stop after {bound:?}: {}",
+                seen.join("; ")
+            )
+            .into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// The real harness planning with the fake agent executable.

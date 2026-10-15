@@ -12,9 +12,11 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500).
+// failpost=<path> (POSTs of that path answer 500), as=<login> (signed in as another member, a
+// teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
 import { counter, taskInfo } from './status.js';
+import { parsePrompt } from './promptparts.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -23,6 +25,8 @@ const ORIGIN = window.location.origin;
 // Where the mock's sandboxes live, and its composer attachments as an upload reports them
 // (SPEC-043).
 const MOCK_SANDBOXES = '/srv/yulius/sandboxes';
+// Where the mock's own upload routes put files (as the server reports them).
+const MOCK_UPLOADS = '/var/lib/yulius/sandboxes';
 const MOCK_ATTACHMENTS = `${MOCK_SANDBOXES}/sb_studio/attachments/drafts/usr_mkarp`;
 // A file gone since (drafts are removed after a week).
 const MOCK_GONE = new Set([`${MOCK_ATTACHMENTS}/old-mockup.png`]);
@@ -149,8 +153,10 @@ function seed(params) {
     },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
-    // failed (in place, naming what failed, with Try again; #147).
+    // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
+    // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
+    failedReads: 0,
     holdPath: params.get('hold') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed.
     failPostPath: params.get('failpost') || null,
@@ -278,11 +284,17 @@ function seed(params) {
   ];
   db.runs = []; // EnvironmentRun records, newest last
   db.ci = seedCi();
+  db.cd = seedCd();
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
   // `sandboxes=0`: a fresh instance with no sandbox yet; the home screen shows its first steps
   // (import a repository, create one from a template).
+  // `as=<login>`: a teammate with write access, for a second window (SPEC-127).
+  if (params.get('as')) {
+    const login = params.get('as').replace(/[^A-Za-z0-9-]/g, '');
+    Object.assign(db.me.user, { id: `usr_${login}`, login, display_name: login, is_superadmin: false, is_instance_admin: false });
+  }
   if ((!linked && role !== 'superadmin') || params.get('sandboxes') === '0') {
     db.sandboxes = [];
     db.tasks = [];
@@ -324,6 +336,8 @@ function summary(task) {
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
     // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
+    // What the agent asked a person to do (`needs_you`, SPEC-134).
+    needs_you: task.needs_you ? { ...task.needs_you } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
@@ -526,6 +540,44 @@ function emit(db, event) {
  */
 function announcePulls(db, sandboxId) {
   emit(db, { type: 'pulls.updated', sandbox_id: sandboxId });
+}
+
+/**
+ * A clock that moves only when a test says (`pullclock=manual`, SPEC-144): the store plans its pull
+ * request reads on it, and `advanceClock(ms)` runs the timers that come due on the way, in order.
+ */
+function manualClock(start) {
+  let now = start;
+  let nextId = 1;
+  const timers = new Map(); // id → { at, fn, every }
+  const add = (fn, ms, every) => {
+    const id = nextId;
+    nextId += 1;
+    timers.set(id, { at: now + (Number(ms) > 0 ? Number(ms) : 0), fn, every }); // like setTimeout: NaN or less is 0
+    return id;
+  };
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => add(fn, ms, 0),
+    clearTimeout: (id) => { timers.delete(id); },
+    setInterval: (fn, ms) => add(fn, ms, Number(ms) > 1 ? Number(ms) : 1),
+    clearInterval: (id) => { timers.delete(id); },
+    advance(ms) {
+      if (!(ms >= 0)) throw new Error(`advanceClock takes a time to move forward, not ${ms}`);
+      const end = now + ms;
+      for (;;) {
+        let next = null;
+        for (const [id, timer] of timers) if (timer.at <= end && (!next || timer.at < next[1].at)) next = [id, timer];
+        if (!next) break;
+        const [id, timer] = next;
+        now = timer.at;
+        if (timer.every) timer.at += timer.every;
+        else timers.delete(id);
+        try { timer.fn(); } catch (error) { now = end; throw error; }
+      }
+      now = end;
+    },
+  };
 }
 
 /** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
@@ -943,18 +995,19 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const preparation = () => (sandbox.onboarding === 'pending' ? preparationTask(db, sandbox)
     : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null);
   const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
-  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  // A waiting task may be run after, prepared ones too (SPEC-105 PRP-005).
+  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained' || before.status === 'prepared'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   // A prepared task waits for onboarding when it is started instead (SPEC-105): it creates no
   // preparation task, as on the server.
   const waitsFor = prepared ? null : before || preparation();
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
-  const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
+  const title = body.title || (parsePrompt(body.prompt).text.split('\n')[0] || 'Untitled task').trim().slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
-    origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
@@ -1050,6 +1103,65 @@ route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
   touch(db, task, { start_at: body.start_at ? mockStartAt(body.start_at) : null });
   return summary(task);
 });
+// How a task that waits to start starts instead (SPEC-126): New task's choices and checks, a wait
+// on itself refused; a started task keeps its start.
+route('PUT', `/api/tasks/${ID}/start`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task has started (it is ${task.status}): only a task waiting to start changes how it starts`);
+  const rule = body.start_rule && body.start_rule.trim() ? body.start_rule.trim().replace(/\s+/g, ' ') : null;
+  if (body.after_task_id && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+  if (body.supertask && (body.after_task_id || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  const prepared = body.prepared === true || Boolean(body.start_at);
+  if (prepared && (body.after_task_id || body.supertask || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
+  const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  const tasks = db.tasks.filter((x) => x.sandbox_id === task.sandbox_id);
+  const numbersOf = (text) => [...text.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+  let before = null;
+  if (rule) {
+    if (!/^[#\w\s()!&|]+$/.test(rule) || !/#\d/.test(rule)) fail(422, 'invalid', 'the rule must name tasks like #12');
+    const missing = numbersOf(rule).find((n) => !tasks.some((x) => x.number === n));
+    if (missing) fail(422, 'invalid', `the rule names #${missing}, which does not exist in this sandbox`);
+    before = tasks.find((x) => x.number === numbersOf(rule)[0]);
+  } else if (body.after_task_id) {
+    before = tasks.find((x) => x.id === body.after_task_id);
+    if (!before || !(LIVE.has(before.status) || before.status === 'chained' || before.status === 'prepared')) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  }
+  if (before) {
+    // Through the predecessors and rules of the chained tasks it would wait for.
+    const pending = rule ? numbersOf(rule).map((n) => tasks.find((x) => x.number === n)) : [before];
+    const seen = new Set();
+    while (pending.length) {
+      const next = pending.pop();
+      if (!next || seen.has(next.id)) continue;
+      if (next.id === task.id) fail(422, 'invalid', `#${task.number} cannot wait for itself: what it would wait for already waits for it`);
+      seen.add(next.id);
+      const link = next.status === 'chained' && next.afterLink;
+      if (link) pending.push(...(link.rule ? numbersOf(link.rule).map((n) => tasks.find((x) => x.number === n)) : [tasks.find((x) => x.id === link.task_id)]));
+    }
+  }
+  // A chained task started now keeps its chain, as Start now does; otherwise the old
+  // predecessor no longer lists it.
+  const keeps = !before && !prepared && task.status === 'chained';
+  const old = !keeps && task.afterLink && db.tasks.find((x) => x.id === task.afterLink.task_id);
+  if (old) {
+    old.nextLinks = (old.nextLinks || []).filter((l) => l.task_id !== task.id);
+    emit(db, { type: 'task.updated', task: summary(old) });
+  }
+  if (!keeps) task.afterLink = null;
+  if (before) {
+    chainAfter(task, before, rule);
+    touch(db, task, { status: 'chained', start_at: null, supertask: false });
+    emit(db, { type: 'task.updated', task: summary(before) });
+  } else if (prepared) {
+    touch(db, task, { status: 'prepared', start_at: startAt, supertask: false });
+  } else {
+    touch(db, task, { status: 'queued', start_at: null, supertask: body.supertask === true });
+    later(() => touch(db, task, { status: 'starting' }), 700);
+    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  }
+  return summary(task);
+});
 /** A prepared task's start time (SPEC-105) checked like the server: at most a minute past, 366 days ahead. */
 function mockStartAt(text) {
   const at = Date.parse(text);
@@ -1107,25 +1219,28 @@ route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.heldDetailAnswered = true;
   return answer;
 });
-// The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
-// from the task's own attachment folders, named directly (SPEC-080).
-function promptParts(task) {
-  const lines = String(task.prompt ?? task.title).split('\n');
-  const paths = lines.map((line) => line.trim().match(/^@'?(\/[^']+)'?$/)).filter(Boolean).map((m) => m[1]);
-  const text = lines.filter((line) => !/^@'?\//.test(line.trim())).join('\n').trim();
-  return { text, paths };
-}
+// The prompt a task started with (SPEC-043): its `@'path'` mentions and `@path` lines are its
+// attached files, in order (SPEC-124), served only from the task's own attachment folders, named
+// directly (SPEC-080).
+const promptParts = (task) => parsePrompt(task.prompt ?? task.title);
 function promptFileServed(task, path) {
   const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
+  const uploads = `${MOCK_UPLOADS}/${task.sandbox_id}/attachments`;
   const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
+  // A task created in this page: its creator's composer uploads, where the upload route put them.
+  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`, `${uploads}/tasks/${task.id}`);
   const slash = path.lastIndexOf('/');
   const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
   return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);
 }
 route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
-  const { text, paths } = promptParts(task);
-  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(task, path) })) };
+  const { text, paths, parts } = promptParts(task);
+  return {
+    text,
+    attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(task, path) })),
+    parts: parts.map((part) => ('file' in part ? { attachment: part.file } : { text: part.text })),
+  };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
@@ -1528,6 +1643,115 @@ route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/rerun`, ({ db, p }) => {
   ci.runs.unshift(fresh);
   return ciSummary(fresh);
 });
+// ---- CD (deployment), SPEC-134: studio defines dev (a script with a secret) and production
+// (promotion, then a script); product has dev empty and production not defined yet.
+function cdRun(id, environment, branch, sha, state, minutesAgo, by, extra = {}) {
+  const started = Date.now() - minutesAgo * 60000;
+  const ended = state === 'running' ? null : started + 95000;
+  return {
+    run_id: id, environment, state, branch, commit: sha, requested_by: by,
+    deploy: environment === 'dev' ? 'scripts/cd/deploy.sh dev' : 'scripts/cd/deploy.sh prod',
+    verify: environment === 'dev' ? 'scripts/cd/verify.sh dev' : 'scripts/cd/verify.sh prod',
+    note: extra.note || null, reason: extra.reason || null, exit_code: state === 'passed' ? 0 : (state === 'failed' ? 3 : null),
+    started_at: new Date(started).toISOString(), ended_at: ended ? new Date(ended).toISOString() : null, created: Date.now(),
+    output: extra.output || `[yulius] deploying ${branch} at ${sha} to ${environment === 'dev' ? 'dev' : 'production'}\n[yulius] deploy: scripts/cd/deploy.sh ${environment}\nrsync to app-dev… done\n[yulius] verify: scripts/cd/verify.sh ${environment}\nGET /health 200\n[yulius] done\n`,
+  };
+}
+
+function seedCd() {
+  return {
+    sb_studio: {
+      environments: [
+        { name: 'dev', label: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }] },
+        { name: 'prod', label: 'production', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [] },
+      ],
+      runs: [
+        cdRun('cd_s2', 'dev', 'quartio', '7d1e0c9b8a7f6e5d', 'failed', 90, 'task #12', { reason: null, output: '[yulius] deploy: scripts/cd/deploy.sh dev\nssh: connect to host [secret:DEV_HOST] port 22: timed out\n[yulius] deploy failed with status 3; verify skipped\n' }),
+        cdRun('cd_s1', 'prod', 'main', '4be81c0d2a9f1e2d', 'passed', 26 * 60, 'mkarp', { note: "promoted 'quartio' to 'main' at 4be81c0d2a9f1e2d" }),
+      ],
+    },
+    sb_product: {
+      environments: [
+        { name: 'dev', label: 'dev', state: 'empty', branch: 'quartio', head: 'b7e9f01c2d3e4f5a', problem: null, about: 'no dev machine yet', deploy: null, verify: null, promote: false, secrets: [] },
+        { name: 'prod', label: 'production', state: 'not_defined', branch: 'main', head: 'a0b1c2d3e4f5a6b7', problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] },
+      ],
+      runs: [],
+    },
+  };
+}
+
+function cdOf(db, sid) {
+  sandboxOf(db, sid);
+  if (!db.cd[sid]) {
+    db.cd[sid] = { environments: ['dev', 'prod'].map((name) => ({ name, label: name === 'dev' ? 'dev' : 'production', state: 'not_defined', branch: name === 'dev' ? 'dev' : 'main', head: null, problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] })), runs: [] };
+  }
+  return db.cd[sid];
+}
+
+/** A running mock deploy finishes about 15 s after it started. */
+function progressCd(run) {
+  if (run.state === 'running' && Date.now() - run.created > 15000) {
+    run.state = 'passed';
+    run.exit_code = 0;
+    run.ended_at = new Date().toISOString();
+  }
+  return run;
+}
+
+const cdSummary = (run) => ({ ...run, created: undefined, output: undefined });
+
+function cdOverview(db, sid) {
+  const sandbox = sandboxOf(db, sid);
+  const cd = cdOf(db, sid);
+  const runs = cd.runs.map(progressCd);
+  return {
+    slug: sandbox.slug,
+    environments: cd.environments.map((env) => {
+      const mine = runs.filter((r) => r.environment === env.name);
+      const deployed = mine.find((r) => r.state === 'passed');
+      return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null };
+    }),
+    runs: runs.map(cdSummary),
+    can_deploy_dev: (RANK[sandbox.access] || 0) >= RANK.write,
+    can_deploy_prod: (RANK[sandbox.access] || 0) >= RANK.admin,
+  };
+}
+
+route('GET', `/api/sandboxes/${ID}/cd`, ({ db, p }) => cdOverview(db, p[0]));
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const cd = cdOf(db, p[0]);
+  const name = p[1] === 'production' ? 'prod' : p[1];
+  const env = cd.environments.find((e) => e.name === name);
+  if (!env) fail(422, 'invalid', 'the environment is dev or prod');
+  need(sandbox, name === 'prod' ? 'admin' : 'write');
+  db.lastCdDeploy = body || {}; // what the page sent (SPEC-137: `confirm_ms` of a production deploy)
+  if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
+  if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
+  if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
+  if (cd.runs.some((r) => r.environment === name && progressCd(r).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
+  db.nextId += 1;
+  const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, name === 'prod' && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {});
+  cd.runs.unshift(run);
+  return cdSummary(run);
+});
+route('GET', `/api/sandboxes/${ID}/cd/runs/${ID}`, ({ db, p }) => {
+  const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  return { ...progressCd(run), created: undefined };
+});
+route('POST', `/api/sandboxes/${ID}/cd/runs/${ID}/cancel`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
+  if (!run) fail(404, 'not_found', 'not found');
+  need(sandbox, run.environment === 'prod' ? 'admin' : 'write');
+  if (progressCd(run).state !== 'running') fail(409, 'conflict', 'the run already ended');
+  run.state = 'cancelled';
+  run.reason = `cancelled by ${db.me.user.login}`;
+  run.ended_at = new Date().toISOString();
+  return cdSummary(run);
+});
+
 route('GET', `/api/sandboxes/${ID}/hygiene`, ({ db, p }) => clone(ciOf(db, p[0]).hygiene));
 route('POST', `/api/sandboxes/${ID}/hygiene/scan`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1830,7 +2054,7 @@ function storeAttachment(db, sid, folder, query, body) {
   for (let n = 2; names.has(name); n += 1) name = `${stem}-${n}${ext}`;
   names.add(name);
   db.attachments.set(folder, names);
-  return json(201, { path: `/var/lib/yulius/sandboxes/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
+  return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
 route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);
@@ -1839,8 +2063,10 @@ route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
 });
 route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
-  // A test can hold the answer (`__yuliusMock.holdUpload = promise`) to leave the composer meanwhile.
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`) to leave the composer meanwhile,
+  // and make it fail then (`__yuliusMock.failUpload = true`).
   if (db.holdUpload) await db.holdUpload;
+  if (db.failUpload) fail(500, 'internal', 'The upload failed on purpose.');
   return storeAttachment(db, p[0], `drafts/${db.me.user.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, body }) => {
@@ -2012,9 +2238,9 @@ function vaultOf(db) {
       unlockAt: 0,
       twoFactor: 'missing',
       team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
-      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null },
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#111' },
         // SPEC-121: added with a name, a value and a description; an agent asked for its host.
-        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107' }],
+        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
@@ -2029,7 +2255,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2174,6 +2400,29 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   secret.requested_hosts = [];
   secret.requested_by = null;
   audit(db, body.allow ? 'vault.agent.allow' : 'vault.agent.dismiss', secret.id, `${secret.name} → ${asked.join(', ')}`);
+  return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
+  const state = secret.env_files || 'no';
+  if (body.env_files !== state || (body.env_requested_by || null) !== (secret.env_requested_by || null)) fail(409, 'conflict', 'the secret changed since you looked: reload and answer again');
+  if (state === 'no') fail(409, 'conflict', 'no agent asks to copy this secret into .env files');
+  if (state === 'allowed' && body.allow) return agentView(db, secret, sandbox);
+  audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);
+  secret.env_files = body.allow ? 'allowed' : 'no';
+  secret.env_requested_by = null;
+  return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret allow it for production deploys');
+  if (Boolean(secret.cd_prod) !== Boolean(body.allow)) {
+    audit(db, body.allow ? 'vault.agent.cd_prod_allow' : 'vault.agent.cd_prod_revoke', secret.id, `${secret.name} → production CD runs`);
+    secret.cd_prod = Boolean(body.allow);
+  }
   return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
@@ -2383,6 +2632,39 @@ function relayPresence(db, scope, sandboxId, body) {
 }
 
 route('PUT', '/api/notes/presence', ({ db, body }) => relayPresence(db, 'team', null, body));
+
+// File presence (SPEC-127): recorded (`filePresenceSent`) and relayed like the server does, to this
+// page and to the other mock pages of this origin (a teammate's window, `as=<login>`); tests act
+// as a teammate with `filePresence(event)`.
+route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.sha256 !== undefined && !/^([0-9a-f]{64})?$/.test(body.sha256)) fail(422, 'invalid', 'sha256 is 64 lowercase hex digits');
+  if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
+  const path = repoPath(body.path);
+  const selection = body.selection;
+  const offset = (n) => Number.isInteger(n) && n >= 0 && n <= 2 << 20;
+  if (!path || selection === undefined
+    || (selection !== null && (typeof selection !== 'object' || Object.keys(selection).some((k) => k !== 'anchor' && k !== 'head') || !offset(selection.anchor) || !offset(selection.head)))) {
+    fail(422, 'invalid', 'path and selection are required');
+  }
+  const root = body.root || 'sandbox';
+  if (String(body.path).length > 4096) fail(422, 'invalid', 'a path is at most 4096 bytes');
+  // Someone is in a file that is there; leaving one may come after it was deleted.
+  if (selection !== null && !repoTree(db, sandbox.id, root).files.has(path)) fail(404, 'not_found', 'not found');
+  const client = body.client || '';
+  const sha256 = body.sha256 || '';
+  (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client });
+  const user = db.me.user;
+  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello) };
+  emit(db, event);
+  if (db.presenceChannel) db.presenceChannel.postMessage(event);
+  // `holdPresence = true`: answers wait for `releasePresence()` (an update still on its way).
+  if (db.holdPresence) return new Promise((resolve) => { (db.presenceHolds = db.presenceHolds || []).push(() => resolve(json(204))); });
+  return json(204);
+});
 route('PUT', `/api/sandboxes/${ID}/notes/presence`, ({ db, p, body }) => relayPresence(db, 'sandbox', sandboxOf(db, p[0]).id, body));
 
 // ---- Administration
@@ -2531,6 +2813,145 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     truncated: false,
   };
 });
+// ---- Stages (SPEC-137): the Pipeline page, waterfalls and the Dashboard's overview.
+
+// One stage row: subject, kind, name, job, environment, ended, failed, p50 and p90 minutes.
+const STAGE_ROWS = [
+  ['ci_run', 'run', 'run', null, null, 46, 5, 14, 23],
+  ['ci_run', 'queue', 'queue', null, null, 49, 0, 1.5, 9],
+  ['ci_run', 'queue', 'queue · waiting for a lane', null, null, 12, 0, 4, 11],
+  ['ci_run', 'queue', 'queue · waiting for disk', null, null, 3, 0, 7, 12],
+  ['ci_run', 'job', 'quality', null, null, 46, 3, 12, 19],
+  ['ci_run', 'stage', 'lint', 'quality', null, 44, 1, 2.5, 3.5],
+  ['ci_run', 'stage', 'unit', 'quality', null, 43, 2, 6, 9],
+  ['ci_run', 'job', 'e2e', null, null, 46, 2, 9, 13],
+  ['task', 'state', 'queued', null, null, 31, 0, 6, 48],
+  ['task', 'state', 'needs_you', null, null, 18, 0, 22, 190],
+  ['task', 'step', 'step', null, null, 212, 4, 18, 55],
+  ['task', 'delivery', 'pr_open', null, null, 27, 0, 52, 240],
+  ['task', 'wait', 'merge_armed', null, null, 24, 2, 19, 41],
+  ['cd_run', 'run', 'run', null, 'dev', 14, 3, 3.2, 6],
+  ['cd_run', 'deploy', 'deploy', null, 'dev', 14, 2, 2.4, 4.5],
+  ['cd_run', 'verify', 'verify', null, 'dev', 12, 1, 0.4, 0.9],
+  ['cd_run', 'run', 'run', null, 'prod', 4, 0, 5, 7],
+  ['cd_run', 'wait', 'confirmation', null, 'prod', 4, 0, 0.3, 0.8],
+];
+
+function stageRows(query) {
+  const want = (key, value) => !query.get(key) || query.get(key) === value;
+  return STAGE_ROWS
+    .filter(([subject, , , job, env]) => want('subject', subject) && want('environment', env) && want('job', job))
+    .map(([subject, kind, name, job, env, count, failed, p50, p90]) => ({
+      subject_kind: subject, kind, name, job, environment: env, count, failed, running: name === 'run' && subject === 'ci_run' ? 1 : 0,
+      backfilled: subject === 'ci_run' ? 6 : 0, p50_ms: Math.round(p50 * MIN), p90_ms: Math.round(p90 * MIN), max_ms: Math.round(p90 * 1.6 * MIN), total_ms: Math.round(count * p50 * 1.2 * MIN),
+    }))
+    .sort((a, b) => b.total_ms - a.total_ms);
+}
+
+function stageDays(query) {
+  const to = Date.parse(query.get('to') || new Date().toISOString().slice(0, 10));
+  const from = Date.parse(query.get('from') || new Date(to - 29 * DAY).toISOString().slice(0, 10));
+  const days = [];
+  for (let at = from; at <= to; at += DAY) days.push(new Date(at).toISOString().slice(0, 10));
+  return days;
+}
+
+route('GET', `/api/sandboxes/${ID}/stages/summary`, ({ db, p, query }) => {
+  if (!db.sandboxes.some((s) => s.id === p[0])) fail(404, 'not_found', 'not found');
+  const stages = stageRows(query);
+  const [subject, kind, ...rest] = (query.get('trend') || 'ci_run:run:run').split(':');
+  const name = rest.join(':');
+  const row = STAGE_ROWS.find((r) => r[0] === subject && r[1] === kind && r[2] === name) || STAGE_ROWS[0];
+  const days = stageDays(query).map((date) => {
+    const weekday = new Date(date).getUTCDay();
+    if (weekday === 0 || weekday === 6) return { date, count: 0, p50_ms: null, p90_ms: null };
+    const vary = (hashString(date + name) % 9) / 10 + 0.6;
+    return { date, count: 1 + (hashString(date) % 4), p50_ms: Math.round(row[7] * vary * MIN), p90_ms: Math.round(row[8] * vary * MIN) };
+  });
+  const delivery = [
+    { environment: 'dev', deployments: 14, passed: 11, per_week: 2.6, lead_time_p50_ms: 5.5 * HOUR, lead_time_p90_ms: 19 * HOUR, lead_time_count: 23, change_failure_rate: 3 / 14, time_to_restore_p50_ms: 47 * MIN, restores: 3 },
+    { environment: 'prod', deployments: 4, passed: 4, per_week: 0.9, lead_time_p50_ms: 2.1 * DAY, lead_time_p90_ms: 4.5 * DAY, lead_time_count: 23, change_failure_rate: 0, time_to_restore_p50_ms: null, restores: 0 },
+  ];
+  return {
+    from: days[0], to: days[days.length - 1], stages, trend: { subject_kind: subject, kind, name, days }, delivery,
+    options: { jobs: ['e2e', 'quality'], environments: ['dev', 'prod'], kinds: ['delivery', 'deploy', 'job', 'queue', 'run', 'stage', 'state', 'step', 'verify', 'wait'] },
+    reused_runs: 3, truncated: false,
+  };
+});
+
+function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, extra = {}) {
+  const start = Date.now() - startMin * MIN;
+  const ended = tookMin === null ? null : start + tookMin * MIN;
+  return {
+    subject_kind: subjectKind, subject_id: subjectId, key, parent_key: null, kind, name, environment: null, job: null,
+    started_at: new Date(start).toISOString(), ended_at: ended === null ? null : new Date(ended).toISOString(),
+    duration_ms: ended === null ? null : Math.round(tookMin * MIN), outcome: ended === null ? null : 'passed', source: 'recorded', detail: {}, ...extra,
+  };
+}
+
+function mockTimeline(kind, id) {
+  const s = (...args) => stageSpan(kind, id, ...args);
+  if (kind === 'ci_run') {
+    const failed = id === 'ci_s2';
+    return { spans: [
+      s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
+      s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
+      s('prepare@1', 'prepare', 'commit', 45, 0.2),
+      s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality' }),
+      s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
+      s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
+      s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
+      s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+    ], related: [] };
+  }
+  if (kind === 'cd_run') {
+    const e = { environment: 'dev' };
+    return { spans: [
+      s('prepare', 'prepare', 'checks', 92, 0.4, e),
+      s('run', 'run', 'run', 91.6, 3.4, { ...e, outcome: 'failed', detail: { branch: 'quartio', sha: '7d1e0c9b8a7f', requested_by: 'task #12' } }),
+      s('run/deploy', 'deploy', 'deploy', 91.5, 3.2, { ...e, parent_key: 'run', outcome: 'failed' }),
+      s('run/deploy/stage:1', 'stage', 'build', 91.5, 2.1, { ...e, parent_key: 'run/deploy' }),
+      s('run/deploy/stage:2', 'stage', 'upload', 89.4, 1.1, { ...e, parent_key: 'run/deploy', outcome: 'failed' }),
+    ], related: [] };
+  }
+  return { spans: [
+    s('state@1', 'state', 'queued', 300, 12),
+    s('state@2', 'state', 'working', 288, 40),
+    s('step:a', 'step', 'Spec written and validated', 285, 20, { detail: { output_tokens: 18400, input_tokens: 220000, active_ms: 17 * MIN } }),
+    s('state@3', 'state', 'needs_you', 248, 22, { outcome: null }),
+    s('state@4', 'state', 'working', 226, null),
+    s('step:b', 'step', 'Spans stored for tasks, CI and CD', 224, 60),
+    s('delivery@1', 'delivery', 'pr_open', 150, 52, { outcome: 'merged_integration', detail: { pr: 221 } }),
+    s('wait@1', 'wait', 'merge_armed', 120, 22, { outcome: 'merged' }),
+  ], related: [
+    stageSpan('ci_run', 'ci_s3', 'queue@1', 'queue', 'queue', 140, 4),
+    stageSpan('ci_run', 'ci_s3', 'run@1', 'run', 'run', 136, 16, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),
+  ] };
+}
+
+route('GET', `/api/sandboxes/${ID}/stages/timeline`, ({ db, p, query }) => {
+  if (!db.sandboxes.some((s) => s.id === p[0])) fail(404, 'not_found', 'not found');
+  const [kind, ...rest] = (query.get('subject') || '').split(':');
+  const id = rest.join(':');
+  if (!['task', 'ci_run', 'cd_run'].includes(kind) || !id) fail(422, 'invalid', 'subject must be task:<id>, ci_run:<id> or cd_run:<id>');
+  return { subject_kind: kind, subject_id: id, ...mockTimeline(kind, id) };
+});
+
+const SPAN_COLUMNS = ['subject_kind', 'subject_id', 'key', 'parent_key', 'kind', 'name', 'environment', 'job', 'started_at', 'ended_at', 'duration_ms', 'outcome', 'source', 'detail'];
+route('GET', `/api/sandboxes/${ID}/stages/spans`, ({ db, p, query }) => {
+  if (!db.sandboxes.some((s) => s.id === p[0])) fail(404, 'not_found', 'not found');
+  const format = query.get('format') || 'json';
+  if (format !== 'json' && format !== 'csv') fail(422, 'invalid', 'format must be json or csv');
+  const rows = [...mockTimeline('ci_run', 'ci_s2').spans, ...mockTimeline('cd_run', 'cd_s2').spans];
+  if (format === 'json') return rows;
+  const cell = (v) => {
+    const text = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const csv = [SPAN_COLUMNS.join(','), ...rows.map((r) => SPAN_COLUMNS.map((c) => cell(r[c])).join(','))].join('\r\n');
+  return new Response(`${csv}\r\n`, { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="yulius-stages-${query.get('from') || 'start'}-${query.get('to') || 'now'}.csv"` } });
+});
+
 const TASK_ROW_COLUMNS = ['task_id', 'sandbox', 'number', 'title', 'status', 'origin', 'harness', 'harnesses', 'models', 'accounts', 'created_at', 'closed_at', 'attempts', 'wall_ms', 'active_ms', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'unknown_usage_runs', 'switches', 'feedback', 'feedback_correct', 'feedback_incorrect'];
 route('GET', '/api/analytics/tasks', ({ db, query }) => {
   const format = query.get('format') || 'json';
@@ -2974,7 +3395,10 @@ async function handleFetch(db, url, init = {}) {
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
-  if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
+    db.failedReads += 1;
+    return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  }
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
   if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
   if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
@@ -3989,6 +4413,9 @@ export function createMockTransport(params) {
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for
+  // `pullclock=manual`: the store's pull request reads run on a clock only `advanceClock(ms)` moves.
+  const pullClock = params.get('pullclock') === 'manual' ? manualClock(Date.now()) : undefined;
+  db.advanceClock = (ms) => { if (!pullClock) throw new Error('advanceClock needs pullclock=manual'); pullClock.advance(ms); };
   // Releases the held Git overview reads, the newest first (an older read answering last).
   db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
@@ -4025,6 +4452,13 @@ export function createMockTransport(params) {
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
   db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, ...event });
+  db.releasePresence = () => { db.holdPresence = false; for (const resolve of (db.presenceHolds || []).splice(0)) resolve(); };
+  db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, ...event });
+  // The other mock windows of this origin are teammates on the same server (SPEC-127).
+  db.presenceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('yulius-mock-presence') : null;
+  if (db.presenceChannel) db.presenceChannel.onmessage = (message) => emit(db, message.data);
+  // A file's text in the mock repository (`repoFile('sb_studio', 'long.md', text)`), before it is opened.
+  db.repoFile = (sandboxId, path, text, root = 'sandbox') => { repoTree(db, sandboxId, root).files.set(path, text); };
   db.resyncNow = () => resync(db);
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
@@ -4034,6 +4468,7 @@ export function createMockTransport(params) {
     kind: 'mock',
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
+    pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);

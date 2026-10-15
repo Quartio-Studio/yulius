@@ -432,6 +432,20 @@ impl GitPort for GitAdapter {
         blocking(move || git.push(&repo, "origin", &refspec)).await
     }
 
+    async fn remote_branch_head(
+        &self,
+        repo: &Path,
+        branch: &str,
+        token: &Secret,
+    ) -> AppResult<Option<String>> {
+        let (git, repo, branch) = (
+            self.git_with_token(token),
+            repo.to_path_buf(),
+            branch.to_owned(),
+        );
+        blocking(move || git.remote_branch_head(&repo, "origin", &branch)).await
+    }
+
     async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
         let (git, repo, a, b) = (self.git(), repo.to_path_buf(), a.to_owned(), b.to_owned());
         blocking(move || Ok(git.merge_base(&repo, &a, &b).ok())).await
@@ -593,6 +607,33 @@ impl GitPort for GitAdapter {
             dir.to_owned(),
         );
         blocking(move || git.list_dir(&repo, &rev, &dir)).await
+    }
+
+    async fn cd_mirror_fetch(
+        &self,
+        mirror: &Path,
+        from: &Path,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let (git, mirror, from, branch, sha) = (
+            self.git(),
+            mirror.to_path_buf(),
+            from.to_path_buf(),
+            branch.to_owned(),
+            sha.to_owned(),
+        );
+        blocking(move || git.cd_mirror_fetch(&mirror, &from, &branch, &sha)).await
+    }
+
+    async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
+        let (git, mirror, sha, dest) = (
+            self.git(),
+            mirror.to_path_buf(),
+            sha.to_owned(),
+            dest.to_path_buf(),
+        );
+        blocking(move || git.export_tree(&mirror, &sha, &dest)).await
     }
 
     async fn ci_checkout(

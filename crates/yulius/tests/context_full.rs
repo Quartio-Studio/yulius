@@ -60,6 +60,24 @@ fn audited(data: &Path, id: &TaskId) -> Result<Vec<String>, Box<dyn std::error::
     Ok(rows.filter_map(Result::ok).flatten().collect())
 }
 
+/// Waits until the task's recovery audit satisfies `done`, then returns it. A row is written a
+/// moment after the flag or the notice it goes with, so a test reading the audit right after
+/// those can see the row before (#430).
+async fn audit_when(
+    data: &Path,
+    id: &TaskId,
+    done: impl Fn(&[String]) -> bool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rows = || audited(data, id).unwrap_or_default();
+    // A timeout is reported by the caller's assertion on what the audit then holds.
+    let _ = wait_for("the audit", Duration::from_secs(30), || {
+        let ready = done(&rows());
+        async move { ready }
+    })
+    .await;
+    audited(data, id)
+}
+
 /// The fake agent's context fills after `full_after` echoed messages; `/compact` fails with
 /// `compact_fails`. Every launch answers its first message.
 fn agent(full_after: u32, compact_fails: bool) -> FakeAgentOptions {
@@ -155,7 +173,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
                 .any(|n| n.contains("compacted the conversation"))
         );
         assert_eq!(
-            audited(&data, &id)?,
+            audit_when(&data, &id, |rows| rows.len() >= 2).await?,
             ["context full: compacting", "compacted"],
             "the log says it"
         );
@@ -496,7 +514,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
                 .any(|n| n.contains("continues in a fresh session"))
         );
         assert_eq!(
-            audited(&data, &id)?,
+            audit_when(&data, &id, |rows| rows.len() >= 2).await?,
             [
                 "context full: compacting",
                 "the compaction failed: fresh session"
@@ -550,7 +568,12 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
             "the reason in the terminal: {said:?}"
         );
         assert_eq!(
-            audited(&data, &id)?.last().map(String::as_str),
+            audit_when(&data, &id, |rows| rows
+                .last()
+                .is_some_and(|r| r.starts_with("needs attention")))
+            .await?
+            .last()
+            .map(String::as_str),
             Some("needs attention: the context is still full after compacting and a fresh session")
         );
         stop(&app, &id).await?;

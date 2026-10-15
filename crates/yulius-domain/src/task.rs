@@ -141,6 +141,12 @@ pub enum TaskEvent {
     ChainReleased,
     /// A prepared task's time came, or a person started it now (SPEC-105).
     PreparedReleased,
+    /// Before its first run a person changed how a waiting task starts: it now waits for a task
+    /// or a rule (SPEC-126).
+    ChainChosen,
+    /// Before its first run a person changed how a waiting task starts: it now waits for them or
+    /// a time (SPEC-126).
+    PreparedChosen,
 }
 
 /// An event that is not valid in the current state.
@@ -194,6 +200,8 @@ impl TaskStatus {
                 S::Stopped(StopReason::Cancelled)
             }
             (S::Chained, E::ChainReleased) | (S::Prepared, E::PreparedReleased) => S::Queued,
+            (S::Chained | S::Prepared, E::ChainChosen) => S::Chained,
+            (S::Chained | S::Prepared, E::PreparedChosen) => S::Prepared,
             (S::Starting, E::Spawned) => S::Running,
             (S::Starting, E::StartFailed(reason)) => S::Failed(reason),
             (S::Starting | S::Running | S::Switching, E::CancelRequested) => S::Stopping,
@@ -373,8 +381,8 @@ pub struct AttentionFacts {
     pub activity: Option<Activity>,
     /// A prompt typed into the session is held for a person's decision (TSK-013).
     pub held_prompt: bool,
-    /// The task asked a person to act in the sandbox browser and the request is pending
-    /// (BRW-004).
+    /// The task asked a person to act and the request is pending: in the sandbox browser
+    /// (BRW-004) or through `needs_you` (SPEC-134 CDT-004).
     pub browser_request: bool,
     /// A chained task whose predecessor ended other than Done (TSK-012).
     pub chain_blocked: bool,
@@ -415,8 +423,9 @@ impl AttentionFacts {
     /// need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
     /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
     /// could not run keeps it Working (In review); with the plan complete, background shells
-    /// keep it Working, an achieved goal or a tested or merged pull request makes it Done, and
-    /// checks still running keep it Working (In review). Otherwise the task's own state: a
+    /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
+    /// armed merge) or checks still running (In review) keep it Working, and otherwise a tested or
+    /// merged pull request makes it Done. Otherwise the task's own state: a
     /// permission prompt or "Your turn" needs you (unless the agent's background shells still
     /// run or it waits in `yulius wait`: it goes on by itself), an achieved goal is Done, a
     /// queued, chained or prepared task is Queued (a chain whose predecessor ended otherwise needs you), and
@@ -445,10 +454,13 @@ impl AttentionFacts {
             if !self.plan_open {
                 return if self.background_shells {
                     G::Working
-                } else if self.activity == Some(Activity::Done) || pull != PullSignal::InReview {
+                } else if self.activity == Some(Activity::Done) {
                     G::Done
-                } else {
+                } else if self.yulius_wait || pull == PullSignal::InReview {
+                    // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003).
                     G::Working
+                } else {
+                    G::Done
                 };
             }
         }
@@ -698,6 +710,28 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_task_changes_how_it_starts() -> Result<(), TransitionError> {
+        // SPEC-126 CHS-001: chained and prepared tasks swap waits; started ones keep theirs.
+        for from in [TaskStatus::Chained, TaskStatus::Prepared] {
+            assert_eq!(from.apply(TaskEvent::ChainChosen)?, TaskStatus::Chained);
+            assert_eq!(from.apply(TaskEvent::PreparedChosen)?, TaskStatus::Prepared);
+        }
+        for from in [
+            TaskStatus::Queued,
+            TaskStatus::WaitingCapacity,
+            TaskStatus::Starting,
+            TaskStatus::Running,
+            TaskStatus::Closed,
+            TaskStatus::Stopped(StopReason::Cancelled),
+        ] {
+            for event in [TaskEvent::ChainChosen, TaskEvent::PreparedChosen] {
+                assert!(from.apply(event).is_err(), "{from:?} {event:?}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn prepared_tasks_wait_for_a_person_or_their_time() -> Result<(), TransitionError> {
         // SPEC-105 PRP-003/PRP-004: Start now or the time releases it; Cancel ends it.
         assert_eq!(
@@ -813,6 +847,40 @@ mod tests {
             waits(idle(A::NeedsAttention, Some(P::Failing), false)).group(),
             G::NeedsYou
         );
+    }
+
+    /// #474 (task #109 on 2026-10-14: Done while its agent waited in `yulius wait` for the merge
+    /// it had armed, its pull request open with green checks): a complete plan and a tested pull
+    /// request do not make the task Done while its agent goes on by itself. Only an achieved goal
+    /// does.
+    #[test]
+    fn a_wait_for_the_merge_is_not_done_before_it() {
+        use Activity as A;
+        use PullSignal as P;
+        use TaskGroup as G;
+        for pull in [P::Tested, P::InReview, P::Merged] {
+            let waiting = AttentionFacts {
+                pull: Some(pull),
+                yulius_wait: true,
+                ..facts(TaskStatus::Running, Some(A::Waiting))
+            };
+            assert_eq!(waiting.group(), G::Working, "{pull:?}");
+            let achieved = AttentionFacts {
+                activity: Some(A::Done),
+                ..waiting
+            };
+            assert_eq!(achieved.group(), G::Done, "{pull:?}: the goal is achieved");
+            let stopped = AttentionFacts {
+                yulius_wait: false,
+                ..waiting
+            };
+            let expected = if pull == P::InReview {
+                G::Working
+            } else {
+                G::Done
+            };
+            assert_eq!(stopped.group(), expected, "{pull:?}: no wait");
+        }
     }
 
     /// The sidebar's "Needs you" rule (UI-005, #147): the counts on Home and the tabs use it.

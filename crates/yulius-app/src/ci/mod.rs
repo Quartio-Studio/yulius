@@ -17,7 +17,8 @@
 //!   job checkouts);
 //! - a run's jobs run in parallel, each holding one of [`CiSettings::max_jobs`] instance-wide
 //!   slots; a job runs through the process host ([`crate::ports::session::SessionHost`]) inside
-//!   the sandbox's containment, with no secret in its environment, for at most
+//!   the sandbox's containment, with no secret in its environment (only the placeholders and
+//!   egress proxy of the agent secrets its integration branch entry grants, SPEC-142), for at most
 //!   [`CiSettings::job_timeout`]; cancellation and timeouts kill the job's process group, and
 //!   the host is terminated when the exit is not seen within [`KILL_GRACE`];
 //! - output is the job's log file, read while it runs, kept as the last [`OUTPUT_BYTES`]
@@ -28,6 +29,7 @@
 //! Restart: runs recorded as running lose their executor; their hosts are terminated and they
 //! go back to the queue (a run is repeatable).
 
+pub mod cd;
 mod disk_wait;
 mod exec;
 pub mod hygiene;
@@ -1056,6 +1058,8 @@ impl App {
             Ok(n) => tracing::info!(runs = n, "old CI runs deleted"),
             Err(err) => tracing::warn!(error = %err, "pruning CI runs failed"),
         }
+        self.cd_prune().await;
+        self.prune_spans(Timestamp(now)).await;
     }
 
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
@@ -1122,7 +1126,11 @@ impl App {
             match self
                 .deps
                 .store
-                .requeue_ci_run(&run.id, "[yulius] queued again after a restart of Yulius\n")
+                .requeue_ci_run(
+                    &run.id,
+                    "[yulius] queued again after a restart of Yulius\n",
+                    self.now(),
+                )
                 .await
             {
                 Ok(true) => tracing::info!(run = %run.id, "CI run queued again after a restart"),

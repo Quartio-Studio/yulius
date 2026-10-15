@@ -317,6 +317,26 @@ pub trait IntakeStore: Send + Sync {
     /// its stored time is at or before `now` (a time moved or cleared meanwhile wins). `false`
     /// when either no longer holds.
     async fn release_scheduled(&self, task: &TaskId, now: Timestamp) -> AppResult<bool>;
+    /// Replaces how a waiting task starts (SPEC-126), in one transaction: only while the task is
+    /// still `change.from`, it takes `change.to` (with `queued`: in line from `change.at`), its
+    /// chain becomes `change.chain` and its start time `change.start_at`. `false` when the task
+    /// left `change.from`.
+    async fn change_start(&self, change: &crate::intake::StartChange) -> AppResult<bool>;
+    /// `chained → queued` for an evaluation of `evaluated` (SPEC-126 CHS-005), in one statement:
+    /// only while the task is chained and its stored chain is still the one evaluated (the same
+    /// predecessor, rule and time). `false` when either no longer holds.
+    async fn release_chain(
+        &self,
+        evaluated: &crate::intake::ChainRecord,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Marks the chain `evaluated` as needing a person, only while it is still the task's stored
+    /// chain (as [`IntakeStore::release_chain`] checks it). `false` when it was replaced.
+    async fn block_chain(
+        &self,
+        evaluated: &crate::intake::ChainRecord,
+        reason: &str,
+    ) -> AppResult<bool>;
     /// Inserts a pending held prompt; earlier pending holds of the task become `superseded`.
     async fn insert_hold(&self, hold: &crate::intake::HoldRecord) -> AppResult<()>;
     /// A held prompt by id.
@@ -435,7 +455,7 @@ pub trait CiStore: Send + Sync {
     /// Puts a `running` run and all its jobs back to `queued` (after a server restart, or a job
     /// refused over the disk quota), clearing times and replacing outputs with `note`; `false`
     /// when the run was not running.
-    async fn requeue_ci_run(&self, id: &str, note: &str) -> AppResult<bool>;
+    async fn requeue_ci_run(&self, id: &str, note: &str, at: Timestamp) -> AppResult<bool>;
     /// Records a commit status publication: `published` is the run state GitHub accepted the
     /// status of, `None` on failure with `note`; counts the attempt.
     async fn record_ci_status(
@@ -457,6 +477,68 @@ pub trait CiStore: Send + Sync {
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
 }
 
+/// CD (deployment) runs (SPEC-134, table `cd_runs`).
+#[async_trait]
+pub trait CdStore: Send + Sync {
+    /// Inserts a running run. `Conflict` while another run of the same environment of the
+    /// sandbox is running.
+    async fn insert_cd_run(&self, run: &crate::ci::cd::CdRunRecord) -> AppResult<()>;
+    /// One run; its output only when `with_output`.
+    async fn cd_run(
+        &self,
+        id: &str,
+        with_output: bool,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// Most recent runs of a sandbox, newest first, at most `limit`, without output.
+    async fn cd_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// The newest passed run of an environment of a sandbox (what is deployed), without output.
+    async fn last_passed_cd_run(
+        &self,
+        sandbox: &SandboxId,
+        environment: yulius_domain::cd::CdEnv,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// The newest run a task's agent started, without output.
+    async fn latest_cd_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// Running runs of every sandbox, without output.
+    async fn running_cd_runs(&self) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// Replaces the output of a running run.
+    async fn set_cd_run_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Records that the task's `yulius wait` reported the ended run `id`; `true` the first time.
+    async fn mark_cd_run_reported(&self, id: &str) -> AppResult<bool>;
+    /// Ends a running run; `false` when it was not running.
+    async fn finish_cd_run(&self, id: &str, end: &crate::ci::cd::CdRunEnd) -> AppResult<bool>;
+    /// Deletes ended runs beyond the newest `keep` of each sandbox and environment and those
+    /// started before `before`, keeping each environment's newest passed run (what is deployed);
+    /// returns how many were deleted.
+    async fn prune_cd_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
+}
+
+/// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
+#[async_trait]
+pub trait NeedsYouStore: Send + Sync {
+    /// The open request of a task.
+    async fn task_needs_you(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::needs_you::NeedsYouRecord>>;
+    /// Records (`Some`) or ends (`None`) the request at `at`; `true` when something changed.
+    async fn set_task_needs_you(
+        &self,
+        task: &TaskId,
+        request: Option<&crate::needs_you::NeedsYouRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Tasks of a sandbox with an open request.
+    async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
+}
+
 /// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).
 #[async_trait]
 pub trait NoteStore: Send + Sync {
@@ -475,6 +557,55 @@ pub trait NoteStore: Send + Sync {
     ) -> AppResult<Option<NoteRecord>>;
 }
 
+/// Spans: the measured stages of tasks, CI runs and CD runs (SPEC-137, table `spans`). The
+/// store's triggers write the spans that follow a state; these methods write the rest.
+#[async_trait]
+pub trait SpanStore: Send + Sync {
+    /// Starts (or records ended) a span; `false` when the subject already has its key.
+    async fn insert_span(&self, span: &crate::stages::NewSpan) -> AppResult<bool>;
+    /// Ends an open span of a subject at `at` (not before its start); `outcome` when known.
+    async fn end_span(
+        &self,
+        sandbox: &SandboxId,
+        kind: yulius_domain::stages::SubjectKind,
+        subject: &str,
+        key: &str,
+        at: Timestamp,
+        outcome: Option<&str>,
+    ) -> AppResult<bool>;
+    /// Sets figures of a span, or adds them to what it has (`add`).
+    async fn span_figures(
+        &self,
+        sandbox: &SandboxId,
+        kind: yulius_domain::stages::SubjectKind,
+        subject: &str,
+        key: &str,
+        figures: &[(String, f64)],
+        add: bool,
+    ) -> AppResult<()>;
+    /// A subject's newest `limit` spans, in start order.
+    async fn subject_spans(
+        &self,
+        sandbox: &SandboxId,
+        kind: yulius_domain::stages::SubjectKind,
+        subject: &str,
+        limit: u32,
+    ) -> AppResult<Vec<crate::stages::SpanRecord>>;
+    /// The queue and run spans of the CI runs of pull request `number` (alone or in a train).
+    async fn ci_reference_spans(
+        &self,
+        sandbox: &SandboxId,
+        number: u64,
+    ) -> AppResult<Vec<crate::stages::SpanRecord>>;
+    /// Spans that match `filter`, the newest `filter.limit`, in start order.
+    async fn spans_between(
+        &self,
+        filter: &crate::stages::SpanFilter,
+    ) -> AppResult<Vec<crate::stages::SpanRecord>>;
+    /// Deletes spans that started before `before`; returns how many.
+    async fn prune_spans(&self, before: Timestamp) -> AppResult<u64>;
+}
+
 /// All extension areas.
 pub trait ExtensionStores:
     WorkflowStore
@@ -489,8 +620,11 @@ pub trait ExtensionStores:
     + UpdateStore
     + crate::ports::vault::VaultStore
     + CiStore
+    + CdStore
+    + NeedsYouStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
+    + SpanStore
 {
 }
 
@@ -507,7 +641,10 @@ impl<T> ExtensionStores for T where
         + UpdateStore
         + crate::ports::vault::VaultStore
         + CiStore
+        + CdStore
+        + NeedsYouStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
+        + SpanStore
 {
 }

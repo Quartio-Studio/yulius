@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -201,6 +202,19 @@ pub struct WaitState {
     /// Informative: a change shows in the wait's progress but does not end it.
     #[serde(default)]
     pub merge_train: Option<String>,
+    /// The latest CD run this task's agent started (SPEC-134 CDT-003): its id.
+    #[serde(default)]
+    pub cd_run: Option<String>,
+    /// Its state (`running`, `passed`, `failed`, `error`, `cancelled`); the wait ends when it
+    /// ends.
+    #[serde(default)]
+    pub cd_state: Option<String>,
+    /// Its environment and why it ended without passing, when it says.
+    #[serde(default)]
+    pub cd_detail: Option<String>,
+    /// It ended and no wait reported it yet (a run that ended before the wait began, review M4).
+    #[serde(default)]
+    pub cd_unreported: bool,
 }
 
 impl WaitState {
@@ -338,12 +352,55 @@ impl App {
     }
 
     /// Ends a decision of [`App::take_armed`] in one step, as [`App::merge_armed`] does.
-    pub(crate) fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
-        let runtime = self.runtime(task);
-        let mut slot = lock_slot(&runtime);
-        if slot.finish(deciding, verdict) {
-            self.save_armed(task, slot.merge.as_ref());
+    pub(crate) async fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
+        let decided = matches!(verdict, Verdict::Decided(_));
+        {
+            let runtime = self.runtime(task);
+            let mut slot = lock_slot(&runtime);
+            if slot.finish(deciding, verdict) {
+                self.save_armed(task, slot.merge.as_ref());
+            }
         }
+        if decided {
+            self.armed_wait_ended(task, &deciding.merge).await;
+        }
+    }
+
+    /// Records an update of a task's branch onto the integration branch Yulius made (SPEC-137
+    /// STG-104): `merged`, or `conflict` (aborted, left to the agent).
+    pub(crate) async fn integration_update_span(
+        &self,
+        task: &TaskId,
+        integration: &str,
+        started: Timestamp,
+        outcome: &str,
+    ) {
+        self.record_task_span(
+            task,
+            ("update", &format!("onto {integration}")),
+            (started, self.now()),
+            outcome,
+            serde_json::json!({ "branch": integration }),
+        )
+        .await;
+    }
+
+    /// Records how long an armed merge waited for its checks, from arming to its decision
+    /// (SPEC-137 STG-104): `merged` when the task's pull request is merged now, else `dropped`.
+    async fn armed_wait_ended(&self, task: &TaskId, armed: &ArmedMerge) {
+        use yulius_domain::delivery::DeliveryStage;
+        let merged = matches!(
+            self.deps.store.delivery(task).await,
+            Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
+        );
+        self.record_task_span(
+            task,
+            ("wait", "merge_armed"),
+            (Timestamp(armed.armed_at), self.now()),
+            if merged { "merged" } else { "dropped" },
+            serde_json::json!({ "head": armed.head }),
+        )
+        .await;
     }
 
     /// Performs the armed merges of a sandbox whose checks passed (after every CI run and from
@@ -375,9 +432,15 @@ impl App {
                 continue;
             };
             let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
-            let mut slot = lock_slot(&runtime);
-            if slot.finish(&deciding, verdict) {
-                self.save_armed(&task.id, slot.merge.as_ref());
+            let decided = matches!(verdict, Verdict::Decided(_));
+            {
+                let mut slot = lock_slot(&runtime);
+                if slot.finish(&deciding, verdict) {
+                    self.save_armed(&task.id, slot.merge.as_ref());
+                }
+            }
+            if decided {
+                self.armed_wait_ended(&task.id, &deciding.merge).await;
             }
         }
     }
@@ -564,12 +627,24 @@ impl App {
         let Ok(token) = self.task_github_token(task, sandbox).await else {
             return Current::Unchanged;
         };
-        match self
+        let updating = self.now();
+        let merged = self
             .deps
             .git
             .merge_integration(worktree, &integration, &token)
-            .await
-        {
+            .await;
+        match &merged {
+            Ok(MergeIntegration::Merged(_)) => {
+                self.integration_update_span(&task.id, &integration, updating, "merged")
+                    .await;
+            }
+            Ok(MergeIntegration::Conflict(_)) => {
+                self.integration_update_span(&task.id, &integration, updating, "conflict")
+                    .await;
+            }
+            _ => {}
+        }
+        match merged {
             Ok(MergeIntegration::UpToDate) => Current::Unchanged,
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "an armed pull request could not be brought up to date");
@@ -587,7 +662,10 @@ impl App {
                 ))
             }
             Ok(MergeIntegration::Merged(head)) => {
-                match self.deps.git.push(worktree, branch, branch, &token).await {
+                match self
+                    .dlv_push_head(&task.id, worktree, branch, &head, &token)
+                    .await
+                {
                     Ok(()) => {
                         let detail = format!(
                             "merged {integration} into {branch} at {head} for the armed merge"
@@ -672,9 +750,27 @@ impl App {
             .lock()
             .ok()
             .and_then(|problem| problem.clone())
-            .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
-            .map(|(_, text)| text);
+            .filter(|note| {
+                !head.is_empty() && (note.head.starts_with(&head) || head.starts_with(&note.head))
+            })
+            .map(|note| note.text);
+        let cd = self.cd_latest_run_of_task(task).await?;
+        // A run that ended is reported once, recorded with the run (a restart keeps it): the
+        // state that shows it marks it, and the wait that gets it ends on it.
+        let cd_unreported = match &cd {
+            Some(run) if run.state != yulius_domain::ci::RunState::Running => {
+                self.deps.store.mark_cd_run_reported(&run.id).await?
+            }
+            _ => false,
+        };
         Ok(WaitState {
+            cd_unreported,
+            cd_run: cd.as_ref().map(|run| run.id.clone()),
+            cd_state: cd.as_ref().map(|run| run.state.as_str().to_owned()),
+            cd_detail: cd.map(|run| match run.reason {
+                Some(reason) => format!("{}: {reason}", run.environment.label()),
+                None => run.environment.label().to_owned(),
+            }),
             head,
             checks,
             checks_detail,
@@ -693,7 +789,8 @@ impl App {
 
     /// `POST /internal/agent/wait`: the state now when `since` is absent or already differs,
     /// else the first state that differs from it within `timeout` (at most [`WAIT_MAX`]), else
-    /// the unchanged state.
+    /// the unchanged state. A note that a push of `head` failed is dropped first when GitHub's
+    /// branch is at `head`.
     ///
     /// # Errors
     /// As [`App::agent_wait_state`].
@@ -705,6 +802,17 @@ impl App {
         timeout: Duration,
     ) -> AppResult<WaitState> {
         let deadline = tokio::time::Instant::now() + timeout.min(WAIT_MAX);
+        // A failed push of this head that GitHub's branch has since reached is old news: the
+        // wait goes on to the checks and the armed merge (SPEC-139 PSH-002, #366). Once per
+        // request: a note written during the wait comes from a push that just asked GitHub.
+        if let Some(head) = head
+            .map(str::trim)
+            .filter(|h| h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            let ctx = self.agent_context(token).await?;
+            self.forget_push_problem_if_pushed(&ctx.task, &head.to_ascii_lowercase())
+                .await;
+        }
         loop {
             let state = self.agent_wait_state(token, head).await?;
             if since.is_none_or(|since| *since != state) || tokio::time::Instant::now() >= deadline
