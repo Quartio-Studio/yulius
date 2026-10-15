@@ -582,6 +582,16 @@ const KILLED_EXIT_CODES: [i32; 4] = [129, 130, 137, 143];
 /// SIGHUP, SIGINT, SIGKILL and SIGTERM.
 const KILL_SIGNALS: [i32; 4] = [1, 2, 9, 15];
 
+/// How the figures of a run that ended are known (SPEC-143 RDM-001, RDM-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Figures {
+    /// A watcher of this process read the run: its usage snapshot holds them.
+    Watched,
+    /// The run ended while Yulius was down: nothing read it here, so its snapshot is empty and
+    /// only its transcript knows them.
+    Unwatched,
+}
+
 /// The task event of a run that ended without Yulius ending it (F 2026-10-10: the task follows
 /// its session). The person left the session — `/exit`, Ctrl+C twice, Ctrl+D or `/logout`, which
 /// Claude Code reports through its `SessionEnd` hook — or the process exited cleanly: `closed`.
@@ -1925,7 +1935,8 @@ impl App {
                         app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
-                        app.finalize_attempt(&tid, &aid, exit).await;
+                        app.finalize_attempt(&tid, &aid, exit, Figures::Watched)
+                            .await;
                         return;
                     }
                     Ok(None) | Err(_) => {
@@ -1990,7 +2001,10 @@ impl App {
             return;
         }
         match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
-            RunInspection::Exited(exit) => self.finalize_attempt(task_id, attempt_id, exit).await,
+            RunInspection::Exited(exit) => {
+                self.finalize_attempt(task_id, attempt_id, exit, Figures::Watched)
+                    .await
+            }
             // The host or the agent may still run (an agent that outlived its killed host).
             RunInspection::Recorded {
                 host_alive,
@@ -2098,6 +2112,7 @@ impl App {
         task_id: &TaskId,
         attempt_id: &AttemptId,
         exit: RunExit,
+        figures: Figures,
     ) {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
@@ -2141,7 +2156,10 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        self.save_metrics(task_id, attempt_id, &runtime).await;
+        match figures {
+            Figures::Watched => self.save_metrics(task_id, attempt_id, &runtime).await,
+            Figures::Unwatched => self.save_counted_metrics(attempt_id).await,
+        }
         {
             let mut run = runtime.run.lock().await;
             if run.as_ref().is_some_and(|r| &r.attempt_id == attempt_id) {
@@ -3030,8 +3048,9 @@ impl App {
                 continue;
             }
             match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
+                // It ended while Yulius was down: no watcher of this process read it.
                 RunInspection::Exited(exit) => {
-                    self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
+                    self.finalize_attempt(&attempt.task_id, &attempt.id, exit, Figures::Unwatched)
                         .await
                 }
                 RunInspection::Recorded {
