@@ -16,6 +16,7 @@ use super::{
     DeliveryRecord, default_pr_title, delivery_profile, max_title_chars, past_merge, sent_title,
 };
 use crate::ci::playground::TaskChecks;
+use crate::ci::short;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{TaskRecord, UserRecord};
@@ -50,7 +51,8 @@ fn conflict_refusal(branch: &str, integration: &str, files: &[String]) -> AppErr
 
 impl App {
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
-    /// it is a `Conflict` saying so (SPEC-163 PCI-004).
+    /// it is a `Conflict` saying so, unless the profile requires no checks (SPEC-163 PCI-004, as
+    /// on GitHub). A merge the task's agent armed is then over.
     ///
     /// # Errors
     /// As [`App::playground_merge`].
@@ -60,20 +62,24 @@ impl App {
         task: &TaskRecord,
     ) -> AppResult<Delivery> {
         let sandbox = self.dlv_sandbox_of(task).await?;
+        let checks = delivery_profile(&sandbox).require_checks;
         let pass = self.armed_pass(&sandbox.id);
         let _pass = pass.lock().await;
-        match self.playground_merge(user, task, None).await? {
-            PlaygroundMerge::Merged(view) => Ok(*view),
+        match self.playground_merge(user, task, None, checks).await? {
+            PlaygroundMerge::Merged(view) => {
+                self.clear_armed(task);
+                Ok(*view)
+            }
             PlaygroundMerge::Testing(_, note) => Err(AppError::Conflict(format!(
                 "not merged yet: {note}; merge again once it passed"
             ))),
         }
     }
 
-    /// Squashes `task`'s branch onto its playground's integration branch as `user` (PLY-007), once
-    /// Yulius CI passed on its head merged into the integration branch (SPEC-163): while that run
-    /// goes, nothing lands and it says so. Callers hold the sandbox's armed-merge pass
-    /// ([`App::armed_pass`]).
+    /// Squashes `task`'s branch onto its playground's integration branch as `user` (PLY-007), with
+    /// `checks` once Yulius CI passed on its head merged into the integration branch (SPEC-163):
+    /// while that run goes, nothing lands and it says so; once it passed, the tree it tested lands.
+    /// Callers hold the sandbox's armed-merge pass ([`App::armed_pass`]).
     ///
     /// # Errors
     /// `Conflict` with what to do when the task is not ready, already merged, has nothing to
@@ -83,6 +89,7 @@ impl App {
         user: &UserRecord,
         task: &TaskRecord,
         reviewed: Option<&str>,
+        checks: bool,
     ) -> AppResult<PlaygroundMerge> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
@@ -141,20 +148,36 @@ impl App {
             return Err(nothing());
         }
         // Merge on green (SPEC-163 PCI-003): the head merged into the integration branch as it
-        // is now, tested by Yulius CI when the playground has CI.
-        match self.playground_task_checks(&sandbox, task, &head).await? {
-            TaskChecks::Clear => {}
-            TaskChecks::Testing(state) => {
-                return Ok(PlaygroundMerge::Testing(
-                    state,
+        // is now, tested by Yulius CI when the playground has CI. What lands is the tree it
+        // tested: Git's own squash of the head can order a `merge=union` file the other way.
+        let checks = if checks {
+            self.playground_task_checks(&sandbox, task, &head).await?
+        } else {
+            TaskChecks::Clear
+        };
+        let tested = match checks {
+            TaskChecks::Clear => None,
+            TaskChecks::Passed(commit) => Some(commit),
+            TaskChecks::Testing(run) => {
+                let note = if run.state == RunState::Error {
+                    format!(
+                        "Yulius CI could not run the checks of `{branch}` at {} merged into \
+                         `{integration}` (run {}: {}): not the code; run them again with \
+                         `ci_rerun`",
+                        short(&head),
+                        run.id,
+                        run.reason.as_deref().unwrap_or("error")
+                    )
+                } else {
                     format!(
                         "Yulius CI is testing `{branch}` at {} merged into `{integration}` (Task \
                          #{}: {})",
                         short(&head),
                         task.number,
-                        state.as_str()
-                    ),
-                ));
+                        run.state.as_str()
+                    )
+                };
+                return Ok(PlaygroundMerge::Testing(run.state, note));
             }
             TaskChecks::Failed(run) => {
                 return Err(AppError::Conflict(format!(
@@ -169,7 +192,7 @@ impl App {
             TaskChecks::Conflict(files) => {
                 return Err(conflict_refusal(branch, integration, &files));
             }
-        }
+        };
         let subjects: Vec<String> = git
             .review_commits(Path::new(worktree), &base, &head, MAX_SUBJECTS)
             .await
@@ -193,7 +216,9 @@ impl App {
                 &repo,
                 &SquashRequest {
                     base: &base,
-                    head: &head,
+                    // The tested merge has the integration head as its first parent, so its
+                    // squash onto it is exactly its tree.
+                    head: tested.as_deref().unwrap_or(&head),
                     message: &message,
                     name: &name,
                     email: &email,
@@ -217,8 +242,6 @@ impl App {
             })?;
         let commit = match landed {
             SquashLanding::Landed(commit) => commit,
-            // The branch's changes are already in the integration branch (a squash that landed
-            // before its stage was recorded): it is merged.
             // The branch changes something, and the integration branch already has it all (a
             // squash that landed before its stage was recorded): it is merged. A branch whose
             // commits cancel out delivers nothing.
@@ -272,8 +295,4 @@ impl App {
             self.delivery_view(&task, Some(user)).await?,
         )))
     }
-}
-
-fn short(sha: &str) -> &str {
-    sha.get(..9).unwrap_or(sha)
 }

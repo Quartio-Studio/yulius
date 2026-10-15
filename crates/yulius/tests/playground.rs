@@ -1716,3 +1716,149 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     nothing_on_github(&h)?;
     Ok(())
 }
+
+/// Review round 1, major 1 (PCI-002): where both sides changed a `merge=union` file, the squash
+/// lands exactly the tree Yulius CI tested (Git orders a union by which side is "ours"), so the
+/// merged `dev` reuses the task's run.
+#[tokio::test]
+async fn a_union_merged_file_lands_the_tested_tree() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let repo = sandbox_dir(&h, &body).join("repo");
+    std::fs::create_dir_all(repo.join(".git/info"))?;
+    std::fs::write(repo.join(".git/info/attributes"), "/notes.md merge=union\n")?;
+    push_to_dev(&h, &body, &[("notes.md", "base\n")])?;
+    let worktree = playground_task(
+        &h,
+        &body,
+        "t1",
+        &[("notes.md", "base\ntask entry\n")],
+        &["done"],
+    )
+    .await?;
+    let dev = push_to_dev(&h, &body, &[("notes.md", "dev entry\n")])?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    let candidate = task_run(&ci_overview(&h, &owner, &body).await?)?["sha"]
+        .as_str()
+        .ok_or("sha")?
+        .to_owned();
+
+    ci_settle(&h, &owner, &body).await?;
+    dev_moves(&h, &body, &dev).await?;
+    let notes = file_at(&origin, "dev", "notes.md")?;
+    assert!(
+        notes.contains("task entry") && notes.contains("dev entry"),
+        "{notes}"
+    );
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev^{tree}"])?.trim(),
+        git(&repo, &["rev-parse", &format!("{candidate}^{{tree}}")])?.trim(),
+        "the tested tree lands: {notes}"
+    );
+    nothing_on_github(&h)?;
+    Ok(())
+}
+
+/// Commits `files` in `worktree`; its new head.
+fn commit_in(worktree: &Path, files: &[(&str, Option<&str>)]) -> BoxResult<String> {
+    for (path, text) in files {
+        match text {
+            Some(text) => std::fs::write(worktree.join(path), text)?,
+            None => std::fs::remove_file(worktree.join(path))?,
+        }
+    }
+    git(worktree, &["add", "-A"])?;
+    git(worktree, &["commit", "-q", "-m", "more"])?;
+    Ok(git(worktree, &["rev-parse", "HEAD"])?.trim().to_owned())
+}
+
+/// Review round 1, major 2 (PCI-002): a head reset to an older commit never takes the verdict of
+/// the head it came from. A passed run of a later commit that removed `broken` does not let the
+/// older commit with `broken` land, and a failed run of a later commit does not refuse the older
+/// one that passes.
+#[tokio::test]
+async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+    let worktree = playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let red = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+    // False green: B (which removes `broken`) passes; reset to A, A must be tested itself.
+    let green = commit_in(&worktree, &[("broken", None), ("fine.txt", Some("ok\n"))])?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &green).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    // The run passes and Yulius lands nothing yet: the agent resets first.
+    git(&worktree, &["reset", "-q", "--hard", &red])?;
+    ci_settle(&h, &owner, &body).await?;
+    h.app.merge_armed(&sid).await;
+    assert_eq!(git(&origin, &["rev-parse", "dev"])?.trim(), dev);
+    let again = answer(&agent_merge(&h, "tok-t1", &red).await?);
+    assert!(
+        again.contains("armed: true"),
+        "A is tested, not merged on B's verdict: {again}"
+    );
+    let overview = ci_settle(&h, &owner, &body).await?;
+    assert_eq!(task_run(&overview)?["state"], "failed", "{overview}");
+    h.app.merge_armed(&sid).await;
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?.trim(),
+        dev,
+        "nothing landed"
+    );
+
+    // False red: B (with `broken` again) failed; reset to a commit without it, which passes.
+    let fixed = commit_in(&worktree, &[("broken", None)])?;
+    let broken = commit_in(&worktree, &[("broken", Some("again\n"))])?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &broken).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    ci_settle(&h, &owner, &body).await?;
+    h.app.merge_armed(&sid).await;
+    git(&worktree, &["reset", "-q", "--hard", &fixed])?;
+    let retried = answer(&agent_merge(&h, "tok-t1", &fixed).await?);
+    assert!(
+        retried.contains("armed: true"),
+        "the fixed head is tested, not refused on B's verdict: {retried}"
+    );
+    ci_settle(&h, &owner, &body).await?;
+    dev_moves(&h, &body, &dev).await?;
+    assert!(file_at(&origin, "dev", "broken").is_err(), "no broken file");
+    nothing_on_github(&h)?;
+    Ok(())
+}
+
+/// Review round 1 (PCI-004): a person's merge follows the profile's `require_checks` as on
+/// GitHub: without required checks it squashes at once.
+#[tokio::test]
+async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let sid = body["id"].as_str().ok_or("id")?;
+    let patched = call(
+        &h.router,
+        Method::PATCH,
+        &format!("/api/sandboxes/{sid}"),
+        Some(json!({"profile": {
+            "preset": "standard", "integration_branch": "dev", "production_branch": "main",
+            "merge": "squash", "promote": "merge_commit", "auto_promote": false,
+            "require_checks": false, "environments": []
+        }})),
+        &owner,
+    )
+    .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{:?}", patched.body);
+    playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
+    let merged = merge(&h, &owner, "t1").await?;
+    assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
+    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    Ok(())
+}

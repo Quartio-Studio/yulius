@@ -187,7 +187,7 @@ impl App {
             let _pass = pass.lock().await;
             let target = format!("{}#{}", sandbox.slug, ctx.task.number);
             return match self
-                .playground_merge(&auth.user, &task, Some(&head))
+                .playground_merge(&auth.user, &task, Some(&head), true)
                 .await?
             {
                 crate::delivery::playground::PlaygroundMerge::Merged(view) => {

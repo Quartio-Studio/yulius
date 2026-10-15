@@ -621,9 +621,20 @@ impl App {
         armed: ArmedMerge,
     ) -> Verdict {
         use crate::delivery::playground::PlaygroundMerge;
+        use yulius_domain::delivery::DeliveryStage;
         let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        // Merged meanwhile (a person's merge): nothing is left to decide.
+        if matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
+        ) {
+            return Verdict::Decided(format!(
+                "Your branch is already merged into `{integration}`: nothing is left armed. End \
+                 with your summary."
+            ));
+        }
         match self
-            .playground_merge(&auth.user, task, Some(&armed.head))
+            .playground_merge(&auth.user, task, Some(&armed.head), true)
             .await
         {
             Ok(PlaygroundMerge::Testing(..)) => Verdict::Keep(armed),
@@ -658,10 +669,16 @@ impl App {
                     short(&armed.head)
                 ))
             }
-            Err(err) => Verdict::Decided(format!(
+            // A refusal (red checks, a conflict, an unready task) ends it; a failure of Git or the
+            // store is tried again on the next pass, as on GitHub.
+            Err(err @ crate::error::AppError::Conflict(_)) => Verdict::Decided(format!(
                 "The merge you armed was refused: {}. Fix that and call `delivery_merge` again.",
                 err.public_message()
             )),
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "deciding a playground's armed merge failed; kept");
+                Verdict::Keep(armed)
+            }
         }
     }
 
@@ -801,10 +818,10 @@ impl App {
         } else {
             let runs = store.ci_runs(&task.sandbox_id, 50).await?;
             // A playground task's run tests its head merged into the integration branch (SPEC-163
-            // PCI-006): the newest one that contains the head.
+            // PCI-006): the newest that tested it.
             let run = match runs.iter().find(|run| run.sha.starts_with(&head)) {
                 Some(run) => Some(run),
-                None => self.task_run_containing(task, &runs, &head).await,
+                None => self.task_run_of_head(task, &runs, &head).await,
             };
             match run {
                 Some(run) => (run.state.as_str().to_owned(), run.reason.clone()),

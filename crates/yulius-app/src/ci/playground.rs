@@ -1,8 +1,13 @@
 //! Yulius CI of a playground's task (SPEC-163 PCI-002): a playground has no pull request, so its
 //! task's head merged into the integration branch is built in Yulius's clone, as a merge train
 //! builds its commit (SPEC-084), and tested as `task/<n>` before `delivery_merge` squashes it.
-//! The build is a merge commit, so the commit contains the head (the run of a head is found by
-//! ancestry) and has the tree the squash lands (the integration head after it reuses the result).
+//! The build is a merge commit whose parents name what it tests: the integration head first, then
+//! the head itself or Yulius's merge of the integration head into it (whose parents are the head
+//! and the integration head). A head's run is the newest whose commit has exactly those parents, never one of a later
+//! commit that contains it (review round 1). Once it passed, the squash lands that commit's tree,
+//! so the integration head after it reuses the result.
+
+use std::path::Path;
 
 use yulius_domain::ci::{CiRef, Gate, GateSource, RunState};
 
@@ -19,19 +24,21 @@ const SCRATCH: &str = "candidate";
 /// What the CI says of a playground task's head merged into the integration branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskChecks {
-    /// Nothing to wait for: it passed, or the playground has no CI (or CI is off here).
+    /// Nothing to wait for: the playground has no CI (or CI is off here).
     Clear,
+    /// Its run passed at this commit, whose tree the squash lands.
+    Passed(String),
     /// Its run failed or was cancelled: merge on green only.
     Failed(CiRunRecord),
-    /// Its run is queued, running or could not run (not the code: run it again).
-    Testing(RunState),
+    /// Its run is queued, running or could not run (`Error`: not the code, run it again).
+    Testing(CiRunRecord),
     /// The head conflicts with the integration branch in these paths.
     Conflict(Vec<String>),
 }
 
 impl App {
     /// The checks of `task`'s `head` merged into its playground's integration branch as Yulius's
-    /// clone has it now: the newest run of the task whose commit contains both, else a new merge
+    /// clone has it now: the newest run of the task that tested exactly them, else a new merge
     /// built and queued (older active runs of the task cancelled as superseded). Callers hold the
     /// sandbox's armed-merge pass ([`App::armed_pass`]), so builds never share the scratch
     /// checkout.
@@ -65,19 +72,11 @@ impl App {
             .collect();
         // Newest first: a run again of the same commit is its verdict.
         for run in &runs {
-            if git
-                .is_ancestor(&repo, head, &run.sha)
-                .await
-                .unwrap_or(false)
-                && git
-                    .is_ancestor(&repo, &base, &run.sha)
-                    .await
-                    .unwrap_or(false)
-            {
+            if self.tests_exactly(&repo, &run.sha, head, &base).await {
                 return Ok(match run.state {
-                    RunState::Passed => TaskChecks::Clear,
+                    RunState::Passed => TaskChecks::Passed(run.sha.clone()),
                     RunState::Failed | RunState::Cancelled => TaskChecks::Failed(run.clone()),
-                    state => TaskChecks::Testing(state),
+                    _ => TaskChecks::Testing(run.clone()),
                 });
             }
         }
@@ -142,27 +141,55 @@ impl App {
                 &format!("task:{}", task.number),
             )
             .await?;
-        Ok(TaskChecks::Testing(run.state))
+        Ok(TaskChecks::Testing(run))
     }
 
-    /// The newest run of a playground `task` whose commit contains `head` (its head merged into
-    /// the integration branch), among `runs`.
-    pub(crate) async fn task_run_containing<'r>(
+    /// Whether `commit` (a merge this module built) tests exactly `head` merged into `base`: its
+    /// parents are `base` and either `head` (it contained `base`) or Yulius's merge of `base` into
+    /// `head`, whose parents are exactly `head` and `base` (a later commit of the branch has one
+    /// parent, or other ones).
+    async fn tests_exactly(&self, repo: &Path, commit: &str, head: &str, base: &str) -> bool {
+        let git = &self.deps.git;
+        let Ok(Some(head)) = git.resolve_commit(repo, head).await else {
+            return false;
+        };
+        let parents = git.parents(repo, commit).await.unwrap_or_default();
+        let [first, merged] = parents.as_slice() else {
+            return false;
+        };
+        if first != base {
+            return false;
+        }
+        *merged == head
+            || git
+                .parents(repo, merged)
+                .await
+                .is_ok_and(|p| p.as_slice() == [head.clone(), base.to_owned()])
+    }
+
+    /// The newest run of a playground `task` among `runs` that tests `head` merged into its
+    /// integration branch as Yulius's clone has it now (`yulius wait`, SPEC-163 PCI-006).
+    pub(crate) async fn task_run_of_head<'r>(
         &self,
         task: &TaskRecord,
         runs: &'r [CiRunRecord],
         head: &str,
     ) -> Option<&'r CiRunRecord> {
-        let repo = self.sandbox_repo(&task.sandbox_id);
         let reference = CiRef::Task(u64::from(task.number));
+        if !runs.iter().any(|run| run.reference == reference) {
+            return None;
+        }
+        let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
+        let repo = self.sandbox_repo(&sandbox.id);
+        let integration = format!("origin/{}", delivery_profile(&sandbox).integration_branch);
+        let base = self
+            .deps
+            .git
+            .resolve_commit(&repo, &integration)
+            .await
+            .ok()??;
         for run in runs.iter().filter(|run| run.reference == reference) {
-            if self
-                .deps
-                .git
-                .is_ancestor(&repo, head, &run.sha)
-                .await
-                .unwrap_or(false)
-            {
+            if self.tests_exactly(&repo, &run.sha, head, &base).await {
                 return Some(run);
             }
         }

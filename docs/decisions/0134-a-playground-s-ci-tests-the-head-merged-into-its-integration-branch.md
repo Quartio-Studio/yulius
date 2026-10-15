@@ -22,15 +22,18 @@ it lives in the sandbox clone's worktree, and only the squash reaches the playgr
 2. **`delivery_merge` tests the task head merged into the integration branch as it is now.**
    Yulius builds that merge in its clone with the merge train's builder (SPEC-084; merge drivers
    apply, nothing is pushed) as a merge commit, and queues a run of it with the reference
-   `task/<n>`. The commit contains the head, so the run of a head is found by ancestry (the newest
-   `task/<n>` run whose commit contains both the head and the integration head), and its tree is
-   the one the squash lands, so the integration head after the merge reuses the result
+   `task/<n>`. Its parents name what it tests (the integration head, then the head or Yulius's merge
+   of the integration head into it), so the run of a head is matched exactly, never by ancestry
+   (a branch reset to an older commit would take a later commit's verdict). Once it passed, the
+   squash lands exactly the tested commit's tree (Git's squash of the head can order a
+   `merge=union` file the other way), so the integration head after the merge reuses the result
    (`ci_reuse_tree`).
 3. **The verdict decides as on GitHub.** Passed: squashed now. Failed or cancelled: refused (merge
    on green only). Queued, running or errored: armed, and Yulius decides it when a run of the
    sandbox ends: it squashes once the run passed, drops it with why when it failed or conflicts,
    and builds and tests a new merge when the integration branch moved. A person's merge applies the
-   same verdict without arming. A playground with no CI squashes at once: nothing will ever report.
+   same verdict without arming, unless the profile requires no checks (as GitHub's merge gate). A
+   playground with no CI squashes at once: nothing will ever report.
 4. **Nothing is published:** a playground's run records "not published: a playground has no
    GitHub repository".
 5. **One decision of a playground's merges at a time:** the agent's call, a person's merge and the
@@ -57,5 +60,5 @@ it lives in the sandbox clone's worktree, and only the squash reaches the playgr
 - Each delivery costs one CI run plus none for the integration head after it (same tree), as on
   GitHub.
 - The candidate commit exists only in Yulius's clone; a restart keeps the run (the store) and the
-  armed merge (`armed-merges.json`), and the next pass finds the run again by ancestry.
+  armed merge (`armed-merges.json`), and the next pass finds the run again by its parents.
 - The scratch checkout `ci/candidate` costs one checkout of the repository per playground with CI.

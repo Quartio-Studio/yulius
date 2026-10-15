@@ -2898,14 +2898,12 @@ impl App {
     ) -> Result<Delivery, MergeFailure> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
-        // Never armed from here, and without the armed-merge pass: callers may hold it.
+        // A playground merges through `playground_merge` under the armed-merge pass, which its
+        // callers hold (SPEC-163): never from here.
         if sandbox.is_playground() {
-            return match self.playground_merge(&ctx.user, &task, None).await? {
-                playground::PlaygroundMerge::Merged(view) => Ok(*view),
-                playground::PlaygroundMerge::Testing(_, note) => Err(MergeFailure::Refused(
-                    AppError::Conflict(format!("not merged yet: {note}")),
-                )),
-            };
+            return Err(MergeFailure::Refused(AppError::internal(
+                "a playground's merge does not go through its pull request",
+            )));
         }
         let token = self.task_github_token(&task, &sandbox).await?;
         self.dlv_merge(ctx, task, &token).await

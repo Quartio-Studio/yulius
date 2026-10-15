@@ -253,7 +253,7 @@ pub struct CiState {
     pub(crate) armed_passes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
-fn short(sha: &str) -> &str {
+pub(crate) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
