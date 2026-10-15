@@ -16,24 +16,30 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db};
 
 const COLS: &str = "id, sandbox_id, name, cron, utc_offset_minutes, prompt, workflow_id, harness, \
-    enabled, created_by, created_via, created_at, last_scheduled, supertask, after_task_id, start_rule";
+    enabled, created_by, created_via, created_at, last_scheduled, supertask, after_task_id, start_rule, prepared";
 
 const RUN_COLS: &str = "automation_id, scheduled_for, state, task_id, error, created_at";
 
-/// The start choice as its three columns: `supertask`, `after_task_id`, `start_rule`.
-fn start_columns(start: &AutomationStart) -> (bool, Option<String>, Option<String>) {
+/// The start choice as its four columns: `supertask`, `after_task_id`, `start_rule` and
+/// `prepared` (SPEC-155).
+type StartColumns = (bool, Option<String>, Option<String>, bool);
+
+fn start_columns(start: &AutomationStart) -> StartColumns {
     match start {
-        AutomationStart::Now => (false, None, None),
-        AutomationStart::Supertask => (true, None, None),
-        AutomationStart::After(task) => (false, Some(task.as_str().to_owned()), None),
-        AutomationStart::Rule(rule) => (false, None, Some(rule.clone())),
+        AutomationStart::Now => (false, None, None, false),
+        AutomationStart::Supertask => (true, None, None, false),
+        AutomationStart::After(task) => (false, Some(task.as_str().to_owned()), None, false),
+        AutomationStart::Rule(rule) => (false, None, Some(rule.clone()), false),
+        AutomationStart::Prepared => (false, None, None, true),
     }
 }
 
 fn start_from_row(row: &Row<'_>) -> rusqlite::Result<AutomationStart> {
     let after: Option<String> = row.get("after_task_id")?;
     let rule: Option<String> = row.get("start_rule")?;
-    Ok(if row.get("supertask")? {
+    Ok(if row.get("prepared")? {
+        AutomationStart::Prepared
+    } else if row.get("supertask")? {
         AutomationStart::Supertask
     } else if let Some(task) = after {
         AutomationStart::After(TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?)
@@ -129,7 +135,7 @@ impl AutomationStore for SqliteStore {
         max_per_sandbox: u32,
     ) -> AppResult<()> {
         let a = automation.clone();
-        let (supertask, after_task_id, start_rule) = start_columns(&a.start);
+        let (supertask, after_task_id, start_rule, prepared) = start_columns(&a.start);
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let count: i64 = tx
@@ -146,7 +152,7 @@ impl AutomationStore for SqliteStore {
             }
             tx.execute(
                 &format!(
-                    "INSERT INTO automations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+                    "INSERT INTO automations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
                 ),
                 params![
                     a.id,
@@ -165,6 +171,7 @@ impl AutomationStore for SqliteStore {
                     supertask,
                     after_task_id,
                     start_rule,
+                    prepared,
                 ],
             )
             .map_err(db)?;
@@ -215,13 +222,13 @@ impl AutomationStore for SqliteStore {
 
     async fn update_automation(&self, automation: &AutomationRecord) -> AppResult<bool> {
         let a = automation.clone();
-        let (supertask, after_task_id, start_rule) = start_columns(&a.start);
+        let (supertask, after_task_id, start_rule, prepared) = start_columns(&a.start);
         self.call(move |c| {
             let n = c
                 .execute(
                     "UPDATE automations SET name = ?2, cron = ?3, utc_offset_minutes = ?4, \
                      prompt = ?5, workflow_id = ?6, harness = ?7, enabled = ?8, supertask = ?9, \
-                     after_task_id = ?10, start_rule = ?11 WHERE id = ?1",
+                     after_task_id = ?10, start_rule = ?11, prepared = ?12 WHERE id = ?1",
                     params![
                         a.id,
                         a.name,
@@ -234,6 +241,7 @@ impl AutomationStore for SqliteStore {
                         supertask,
                         after_task_id,
                         start_rule,
+                        prepared,
                     ],
                 )
                 .map_err(db)?;

@@ -600,7 +600,11 @@ person's. The production ruleset (`rulesets_for`: restrict updates and deletions
 pushes, repository admins the only bypass) makes GitHub refuse that token on the branch.
 `App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
 production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
-onboarding reports a branch the agents could write.
+onboarding reports a branch the agents could write. The preparation agent then calls
+`production_protect` ([ADR-0129](decisions/0129-onboarding-agents-protect-production-as-the-onboarding-person.md)):
+`App::tool_production_protect` adds `people_only_ruleset` (the same rules, no pull-request rule)
+with the task owner's own token after `repo_access` says they are a repository admin, and only
+when the branch is not already guarded; the agent's token never gains Administration.
 
 ```mermaid
 flowchart LR
@@ -610,6 +614,7 @@ flowchart LR
   PERSON["repository admin (promotion)"] -->|"own token, bypass"| GH
   GH --> OK["main moves"]
   ONB["onboarding"] -->|"branch_guard with an agent token"| GH
+  ONB -->|"production_protect: owner's admin token adds the ruleset"| GH
 ```
 
 ## Keys in .env
@@ -723,7 +728,10 @@ finished. The editor shows the choice as New task's start chip in its action bar
 sends the choice the chip shows for that run only
 ([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
 [decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
-run uses the stored choice.
+run uses the stored choice. "When I decide" creates the task through `create_task_held` as a
+prepared task without a time, which waits for Start now and keeps the next runs skipped while it
+waits ([SPEC-155](../.ai/specs/SPEC-155-fix-416-automations-can-create-prepared.md),
+[decision 0128](decisions/0128-an-automation-can-prepare-its-tasks.md)).
 
 ```mermaid
 flowchart LR
@@ -733,6 +741,7 @@ flowchart LR
   START -->|"After #N, not ended"| CH["chained after #N"]
   START -->|"After #N, ended"| RD["chained on rule #N done"]
   START -->|"Rule"| RL["chained on the rule"]
+  START -->|"When I decide"| PR["prepared until Start now (SPEC-105)"]
 ```
 
 ## Web UI state

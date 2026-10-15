@@ -2154,10 +2154,11 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
-/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014). */
+/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014, SPEC-155). */
 function automationStart(db, sandbox, body) {
   const after = body.after_task_id || null;
   const rule = (body.start_rule || '').trim() || null;
+  if (body.prepared && (body.supertask || after || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   if (body.supertask && (after || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
   if (after && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
   const task = after ? db.tasks.find((t) => t.id === after && t.sandbox_id === sandbox) : null;
@@ -2172,7 +2173,7 @@ function automationStart(db, sandbox, body) {
     }
     canonical = words;
   }
-  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
+  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical, prepared: Boolean(body.prepared) };
 }
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
@@ -2188,8 +2189,8 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
-  const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null);
-  const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null } : automationStart(db, a.sandbox, body);
+  const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
+  const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
   Object.assign(a, body, start, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
@@ -2201,11 +2202,11 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   need(sandboxOf(db, a.sandbox), 'write');
-  const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
-  const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule);
+  const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) };
+  const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule && Boolean(body.prepared) === stored.prepared);
   const start = same ? stored : automationStart(db, a.sandbox, body);
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
-  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
+  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained' || previous.status === 'prepared')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
     : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: automationTask(db, a, start).id, error: null };
   a.last_run = run;
@@ -2221,14 +2222,14 @@ function automationTask(db, a, start) {
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
   const task = {
-    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
     archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
   };
   db.tasks.push(task);
   if (before) chainAfter(task, before, rule);
-  else task.heldBy = mockHeldBy(db, task);
+  else if (!start.prepared) task.heldBy = mockHeldBy(db, task);
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });
   return task;

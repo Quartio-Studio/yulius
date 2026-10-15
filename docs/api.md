@@ -805,9 +805,10 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
             "builtin":false,"when_to_use":""}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
               "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
-              "after_task_number":12|null,"start_rule":"#12 done|null","created_via":"ui|agent",
+              "after_task_number":12|null,"start_rule":"#12 done|null","prepared":false,
+              "created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
-RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null"}
+RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null","prepared":false}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
                       "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
@@ -830,13 +831,15 @@ kept as the instance workflow "Feature (custom)". The file format is SPEC-002 §
 catalog format". Automation `cron` is a five-field
 expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
 automations exist per sandbox. A run whose automation's previous task is still active (also
-waiting `chained` or `queued`) is recorded as `skipped_previous_active`. `supertask`,
-`after_task_id` and `start_rule` say how each created task starts, as in `CreateTask` (SPEC-078):
-none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
+waiting `chained`, `queued` or `prepared`) is recorded as `skipped_previous_active`. `supertask`,
+`after_task_id`, `start_rule` and `prepared` say how each created task starts, as in `CreateTask`
+(SPEC-078; `prepared`, "When I decide": each task waits `prepared` until Start now, with no start
+time, SPEC-155): none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
 task of the sandbox and the rule names only its task numbers (422 otherwise; the rule is stored
 canonically). A PUT replaces them like the other fields; the stored choice sent back unchanged is
 kept without that check (its task may have been deleted since). A run after a task that has ended waits
-for the rule `#N done` instead; a run whose task to run after was deleted is `failed`.
+for the rule `#N done` instead; a run whose task to run after was deleted, or that would prepare a
+33rd prepared task of the sandbox, is `failed`.
 `after_task_number` is read-only. The ready-made automations are one file each in
 `catalog/automations/` of the running release; `automation_id` is the sandbox's automation with
 the same name (case-insensitive), which counts as the template's: a template is never linked or

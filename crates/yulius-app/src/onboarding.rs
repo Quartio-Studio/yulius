@@ -445,7 +445,7 @@ fn planned(report: &ProjectReport) -> (&'static str, Vec<String>) {
 }
 
 /// The ruleset a repository admin adds so only people move the production branch (ADR-0114).
-fn production_ruleset_fix(repo: &str, branch: &str) -> String {
+pub(crate) fn production_ruleset_fix(repo: &str, branch: &str) -> String {
     format!(
         "A repository admin must add a branch ruleset on GitHub (https://github.com/{repo}/settings/rules): \
          target `{branch}`, enforcement Active, rules Restrict updates, Restrict deletions and Block \
@@ -517,9 +517,11 @@ impl App {
         };
         if let Some(warning) = self.production_branch_warning(sandbox).await {
             prompt.push_str(&format!(
-                "\n\n{warning} Only a person can apply it: ask one with `needs_you`, quoting that \
-                 setting, and carry on with the rest; never change the repository's protection \
-                 yourself."
+                "\n\n{warning} Protect it with the `production_protect` tool: Yulius adds that \
+                 ruleset as the person who owns this task when GitHub says they are a repository \
+                 admin (SPEC-157). Only if the tool refuses, ask a person with `needs_you`, quoting \
+                 that setting, and carry on with the rest; never change the repository's protection \
+                 from your shell."
             ));
         }
         let task = self
