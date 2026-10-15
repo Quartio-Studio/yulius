@@ -44,7 +44,9 @@ watching, steering and unblocking.
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
-  them or a command prints shows there as `[secret:NAME]` (SPEC-147).
+  them or a command prints shows there as `[secret:NAME]` (SPEC-147). A server taken from
+  `.mcp.json` whose key is an agent secret's placeholder needs the egress proxy, which the
+  Superagent does not have yet; one whose value is `${secret:NAME}` works.
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
   task run on every subscription and to the Superagent, their secrets taken from the agent
   secrets. A repository's

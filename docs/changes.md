@@ -12,8 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   secret environment. Its Bash commands, hooks and stdio servers run through `yulius --scrub-exec`
   and its tool results pass the `PostToolUse` redaction hook, its only hook, as in task runs: an
   agent secret prints as `[secret:NAME]`. Both load their fingerprints with the person's workspace
-  token, which the scrub endpoints now accept while the person may work in the sandbox. Literal
-  values typed into a server's form are not agent secrets and stay unredacted, as in task runs.
+  token, which the scrub endpoints now accept while the person may work in the sandbox, and its
+  screen is redacted on the server as a task's terminal is. Literal values typed into a server's
+  form are not agent secrets and stay unredacted, as in task runs; servers imported from
+  `.mcp.json` with agent-secret placeholders need the egress proxy, which the Superagent does not
+  have yet.
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame

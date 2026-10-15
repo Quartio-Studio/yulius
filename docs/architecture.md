@@ -453,9 +453,11 @@ variable name, which may hold an agent secret's placeholder.
 The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
 in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
 redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
-hooks and stdio servers, and the `PostToolUse` hook, its only hook. Both load their fingerprints with
-the workspace token the person's environment holds, answered while the person may work in the
-sandbox ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
+server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
+token the person's environment holds, answered while the person may work in the sandbox (by an
+access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
+proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
 ```mermaid

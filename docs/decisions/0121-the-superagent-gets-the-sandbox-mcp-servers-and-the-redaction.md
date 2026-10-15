@@ -32,11 +32,17 @@ person who manages one reveals it only after a two-factor unlock.
 - **The same redaction as a task run.** The Superagent's `--settings` holds the `PostToolUse`
   redaction hook (matcher `*`), and its environment `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`.
   It is the only hook: CKP-002 excluded the task lifecycle (briefing, `Stop`, status line, the
-  `pgrep` guard), which the Superagent still does not get.
+  `pgrep` guard), which the Superagent still does not get. Its screen is redacted on the server
+  as a task's terminal is (VLT-007): what passes the in-session layers (an MCP tool error, which
+  `PostToolUse` cannot rewrite, a result the hook could not read, what Claude Code shows of the
+  raw result) reaches the person's screen as `[secret:NAME]`.
 - **Fingerprints with the workspace token.** The wrapper and the hook load the fingerprints with
   `YULIUS_TASK_TOKEN`, which in a person's environment is their workspace token (`ws_…`, already
   there for the Git credential helper). The fingerprint and report endpoints accept it while its
-  person is enabled and may work in its sandbox; redactions are audited with the person's login.
+  person is enabled and may work in its sandbox, by an access decision within the staleness bound
+  (30 minutes), so that every command and tool result is answered without waiting on GitHub;
+  redactions are audited with the person's login, once per person, sandbox, secret and channel
+  while Yulius runs.
   The Superagent has no fingerprint file: while Yulius is unreachable its commands do not run and
   tool results are withheld (fail closed), as a task run's would without its file.
 - **Literal MCP values are not redacted**, in the Superagent as in task runs: they are not agent
@@ -44,6 +50,14 @@ person who manages one reveals it only after a two-factor unlock.
   sandbox's servers (and so set those values) anyway. An instance server's literal value is
   readable to them, as it already is through any task run they start. A value meant to be hidden
   from people is an agent secret referenced as `${secret:NAME}`.
+
+- **Servers imported from `.mcp.json` keep their placeholders.** The import stores a file's
+  `${VAR}` as the agent secret's placeholder (`yulius-secret-VAR`), which only the egress proxy
+  replaces, on the secret's bound hosts. The Superagent is not behind the proxy: such a server
+  starts in it with the placeholder and its calls are refused until the person's session is put
+  behind the proxy, a decision of its own (all of the person's traffic through Yulius, and agent
+  secrets usable by placeholder from their session). A server whose value is `${secret:NAME}`,
+  set on the MCP page, works in the Superagent today.
 
 ## Alternatives
 
@@ -69,7 +83,12 @@ person who manages one reveals it only after a two-factor unlock.
   the redaction is exact-value and in-session (a command that transforms a value beyond the known
   encodings is not caught), and it adds a hook process per tool call.
 - While Yulius is down or restarting, the Superagent's Bash commands do not run and its tool
-  results are withheld.
+  results are withheld. Its Bash commands run 10 nice levels below it, as an agent's do (the
+  wrapper's `nice`).
+- A loss of write access stops the Superagent's commands within the staleness bound, or at once
+  when another check (its own Yulius MCP calls, an open terminal) asked GitHub meanwhile.
+- A process with the person's workspace token can also report redactions, which writes at most
+  one audit entry per person, sandbox, secret and channel while Yulius runs.
 - Any process with a person's workspace token (their terminals too) can read the fingerprints of
   their sandbox's agent secrets: salted hashes a task agent started by the same person gets anyway.
 - Literal MCP values remain readable in the session (`echo $YULIUS_MCP_…`), as in task runs; a

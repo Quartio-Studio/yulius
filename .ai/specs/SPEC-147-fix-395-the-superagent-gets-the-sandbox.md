@@ -57,15 +57,19 @@ there as it is in a task run.
   `PostToolUse` hook (`'<yulius>' hook claude PostToolUse`, matcher `*`, the tool-hook timeout) and
   its environment has `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`, so Bash commands, hooks and
   stdio MCP servers run through the wrapper. No other hook, status line, briefing or setting is
-  added; `disabledMcpjsonServers` stays (PMC-004).
+  added; `disabledMcpjsonServers` stays (PMC-004). The Superagent's screen (output and snapshots)
+  is redacted on the server as a task's terminal is (VLT-007).
 - SAM-003: `POST /internal/scrub/fingerprints` accepts a person's workspace token: it answers the
   fingerprints of the agent secrets of that workspace's sandbox while the person is enabled and may
-  work there, and refuses otherwise as an invalid token. `POST /internal/scrub/report` accepts it
+  work there, and refuses otherwise as an invalid token. The access decision is the cached one
+  while it is younger than the staleness bound, so that a slow or unreachable GitHub does not
+  refuse every command. `POST /internal/scrub/report` accepts it
   too and audits `vault.agent.redacted` with the person's login as actor, once per person,
   sandbox, secret and channel.
 - SAM-004: A value of an agent secret that a Bash command prints in the Superagent, or that a tool
   result (a stdio or HTTP MCP server's included) holds, reaches neither the model nor the screen
-  through those channels: it is replaced by `[secret:NAME]`. Without fingerprints (Yulius
+  through those channels: it is replaced by `[secret:NAME]`; whatever else reaches the screen is
+  redacted there. Without fingerprints (Yulius
   unreachable, the person no longer allowed) a command does not run and a tool result is withheld,
   as in task runs.
 - SAM-005: ADR-0121 amends SPEC-037 MGT-004 and SPEC-021 CKP-002 and records why literal MCP
@@ -122,3 +126,11 @@ there as it is in a task run.
 - Literal MCP values stay unredacted, as in task runs (recorded in ADR-0121); a value meant to be
   hidden from people is an agent secret referenced as `${secret:NAME}`.
 - A failure to build the MCP attachments fails the Superagent start, as it fails a task run start.
+- Not in this change (recorded in ADR-0121): servers imported from `.mcp.json` hold agent secret
+  placeholders that only the egress proxy fills in, and the Superagent is not behind the proxy;
+  they start without working credentials there. `${secret:NAME}` values work.
+- Independent review round 1 (REQUEST CHANGES): the Superagent's screen had no server-side
+  redaction (fixed: Cockpit shells redact output and snapshots), every command waited on GitHub
+  once the access cache was older than 5 minutes (fixed: the staleness bound, a test with a
+  hanging GitHub), imported servers need the proxy (recorded, above), and missing tests for a
+  disabled person and a refused report (added).
