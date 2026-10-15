@@ -93,3 +93,9 @@ lets an agent defer a finding in its own change's code to an issue:
   a pre-existing one without the reviewer's prose classification (ADR-0141 Alternatives).
 - **Each location restates the rule briefly** rather than only linking, because the task asks every
   location to state the three points and agents often load only one skill.
+- **The briefing stays inside its 9,500-byte budget** (SPEC-002 §7.5, Claude Code's 10,000-char
+  hook limit). A first wording added 532 bytes and cut optional sections in
+  `huge_inputs_respect_the_budget_and_keep_mandatory_parts`, then one decision line in
+  `short_parts_donate_budget_to_long_ones`. Rather than relax either test, the issue rule is folded
+  into the existing "Report a bug you confirm" sentence and the review line is terse; the full
+  wording lives in the skills and `docs/engineering/workflow.md`.
