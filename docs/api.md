@@ -1437,3 +1437,10 @@ task; other hooks answer as usual.
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
   for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
   redacted.
+- MCP `secret_verify {secret, sha256}` (SPEC-178, task agents and the Superagent) →
+  `{secret, match: exact|trailing_newline|escaped_newlines|different, lines, meaning}`: whether the
+  candidate whose SHA-256 is given is the secret's value, without a final line break, or with its
+  line breaks as the literal `\n` the vault holds; never the value or its hash. Production secrets
+  are refused; audited once per caller, secret and candidate (`vault.agent.verify`). The
+  Superagent (`ck_` token) is served `secrets_list` and `secret_verify`, not the other secret
+  tools.

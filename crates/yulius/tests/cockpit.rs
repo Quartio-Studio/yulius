@@ -328,6 +328,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     );
     let allowed = std::fs::read_to_string(config.join("launch-allowed-tools"))?;
     assert!(allowed.contains("mcp__yulius__tasks_list"), "{allowed}");
+    assert!(allowed.contains("mcp__yulius__secret_verify"), "{allowed}");
     assert!(
         !allowed.contains("task_create"),
         "creating asks first: {allowed}"

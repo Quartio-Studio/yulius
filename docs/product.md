@@ -48,7 +48,10 @@ watching, steering and unblocking.
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). A server taken from
   `.mcp.json` whose key is an agent secret's placeholder needs the egress proxy, which the
-  Superagent does not have yet; one whose value is `${secret:NAME}` works.
+  Superagent does not have yet; one whose value is `${secret:NAME}` works. It reads the agent
+  vault as a task does, never a value: it names the project's agent secrets and tells whether a
+  key the person holds in a file is the one in the vault, from the file's SHA-256, also when the
+  vault holds a multi-line key with literal `\n` (SPEC-178).
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
   task run on every subscription and to the Superagent, their secrets taken from the agent
   secrets. A repository's

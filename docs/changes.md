@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Superagent reads the agent vault (SPEC-178, ADR-0144, task #165): `secrets_list` names its
+  project's agent secrets (never values) with guidance for a session outside the proxy, and the
+  new `secret_verify {secret, sha256}`, for task agents too, tells whether a value someone holds
+  is a secret's value from its SHA-256: exactly, without a final line break, or with its line
+  breaks as the literal `\n` a multi-line key is stored with. Both run without asking; each
+  distinct check is audited (`vault.agent.verify`).
 - Review findings in a change's own code are fixed before merge, never deferred to an issue
   (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
   report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and

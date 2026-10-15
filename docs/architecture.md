@@ -524,6 +524,14 @@ access decision within the staleness bound, never waiting on GitHub). It is not 
 proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
+The Superagent reads the agent vault too: `secrets_list` names its sandbox's agent secrets (never
+a value), and `secret_verify`, served to task agents as well, compares the SHA-256 of a value the
+person holds with the stored value and its variants (a final line break; literal `\n` as line
+breaks, since an agent secret never spans lines), answering only the kind of match and the line
+count. Both run without asking; the proxy, `.env` copies, host requests and the browser stay a
+task's ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
+[decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
