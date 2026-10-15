@@ -211,6 +211,17 @@ the request is kept in `playground_purges`, and its `origin` and sandbox directo
 only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
 once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
 
+A playground moves to GitHub
+([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
+[decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
+repository of the instance owner that its mover could import (`admin` or `maintain` there; the
+superadmin: one the App can access). While no task of it is live or queued, and holding the
+sandbox's merge pass, Yulius pushes every branch and tag of `origin` to it in one atomic push with
+the installation token, points the clone's `origin` at it and fetches, then writes the GitHub owner,
+name and repository id into the record in one compare-and-set (the commit point; a failure before
+it points the clone back). It then deletes the bare `origin`. From then on every playground test
+(`is_playground`) answers no, so access, credentials, delivery and CI take their GitHub paths.
+
 ```mermaid
 flowchart LR
   B["Browser: folder → tar.gz"] -->|"POST /api/playgrounds"| S["Server: unpack files/ and the history of git/"]
@@ -222,6 +233,8 @@ flowchart LR
   R -->|"dev head"| D["branch/dev run (Yulius CI)"]
   C -->|"passed: Yulius squashes, pushes by path"| O
   P["Purge of a removed playground"] -.->|"once nothing of the sandbox runs: delete"| O
+  O -->|"Move to GitHub: atomic push of every branch and tag"| G[("GitHub: empty repository of the owner")]
+  G -.->|"then origin of sandbox/repo; data/playgrounds/id.git deleted"| R
 ```
 
 ## Parallel tasks at merge

@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A playground moves to GitHub (SPEC-176, ADR-0142, task #132, fixes #410). Once GitHub is
+  connected, an admin of a playground picks "Move to GitHub…" in its sandbox menu and names an empty
+  repository of the instance owner that they could import (`admin` or `maintain` on it; the
+  superadmin: one the App can access). Yulius pushes every branch and tag there in one atomic push,
+  points the sandbox's clone at it, records it (same slug, tasks, sessions and steps) and deletes
+  the server's copy; access then mirrors GitHub. A repository with anything else in it, a live or
+  queued task, or a failed push leaves the playground as it was
+  (`POST /api/sandboxes/{sid}/move-to-github`).
+
 - A playground's lifecycle at its ends (SPEC-171, ADR-0139, task #131, fixes #409 and #420).
   `yulius onboard --playground [path] [--name <name>]` brings a local checkout without GitHub into a
   new or existing playground of yours: every branch and tag, the uncommitted work (one commit on the
