@@ -8,17 +8,66 @@ use async_trait::async_trait;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::vault::redact::PlainMatcher;
 
-/// The agent run behind a proxy credential.
+/// The run behind a proxy credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressClient {
-    /// The run (attempt) id.
-    pub attempt_id: String,
-    /// Its task.
-    pub task_id: TaskId,
-    /// Task number (audit actor `task:<n>`).
-    pub task_number: u32,
-    /// The task's sandbox: its secrets and the instance-wide ones apply.
+    /// An agent run or a CI job.
+    pub caller: EgressCaller,
+    /// Its sandbox: the sandbox's secrets and the instance-wide ones apply.
     pub sandbox_id: SandboxId,
+}
+
+/// Who holds a proxy credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressCaller {
+    /// An agent run: every agent secret of its sandbox applies.
+    Agent {
+        /// The run (attempt) id.
+        attempt_id: String,
+        /// Its task.
+        task_id: TaskId,
+        /// Task number (audit actor `task:<n>`).
+        task_number: u32,
+    },
+    /// A CI job (SPEC-142): only the secrets its integration branch's `[[ci.jobs]]` entry
+    /// granted apply, never a production-deploy one.
+    Ci {
+        /// The CI run (audit actor `ci:<run>`).
+        run_id: String,
+        /// The job.
+        job_id: String,
+        /// The granted secret names.
+        secrets: Vec<String>,
+    },
+}
+
+impl EgressClient {
+    /// The audit actor: `task:<n>` or `ci:<run>`.
+    #[must_use]
+    pub fn actor(&self) -> String {
+        match &self.caller {
+            EgressCaller::Agent { task_number, .. } => format!("task:{task_number}"),
+            EgressCaller::Ci { run_id, .. } => format!("ci:{run_id}"),
+        }
+    }
+
+    /// What its uses are audited once per: the agent run or the CI job.
+    #[must_use]
+    pub fn use_key(&self) -> &str {
+        match &self.caller {
+            EgressCaller::Agent { attempt_id, .. } => attempt_id,
+            EgressCaller::Ci { job_id, .. } => job_id,
+        }
+    }
+
+    /// Whether agent secret `name` (`cd_prod`: allowed for production deploys) applies to it.
+    #[must_use]
+    pub fn may_use(&self, name: &str, cd_prod: bool) -> bool {
+        match &self.caller {
+            EgressCaller::Agent { .. } => true,
+            EgressCaller::Ci { secrets, .. } => !cd_prod && secrets.iter().any(|s| s == name),
+        }
+    }
 }
 
 /// A request to a bound host, as the proxy received it (lowercase header names).

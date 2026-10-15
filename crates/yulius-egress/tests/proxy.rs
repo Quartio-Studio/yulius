@@ -15,7 +15,9 @@ use hyper_util::rt::TokioIo;
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, DnType, IsCa, KeyPair, KeyUsagePurpose,
 };
-use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
+use yulius_app::ports::egress::{
+    EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
+};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::vault::encode::needles;
 use yulius_domain::vault::redact::PlainMatcher;
@@ -38,9 +40,11 @@ impl EgressPolicy for Policy {
             return None;
         }
         Some(EgressClient {
-            attempt_id: "a1".into(),
-            task_id: TaskId::parse("t1").ok()?,
-            task_number: 1,
+            caller: EgressCaller::Agent {
+                attempt_id: "a1".into(),
+                task_id: TaskId::parse("t1").ok()?,
+                task_number: 1,
+            },
             sandbox_id: SandboxId::parse("s1").ok()?,
         })
     }

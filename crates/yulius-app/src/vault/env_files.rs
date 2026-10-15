@@ -481,8 +481,7 @@ impl App {
         let (example_added, warning) = self.add_example_names(&worktree, &folder, &names).await;
         for record in &records {
             self.note_agent_use(
-                ctx.attempt.id.as_str(),
-                ctx.task.number,
+                (ctx.attempt.id.as_str(), &ctx.actor()),
                 record,
                 "vault.agent.env",
                 &target,

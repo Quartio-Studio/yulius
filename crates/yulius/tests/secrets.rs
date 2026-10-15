@@ -1617,6 +1617,125 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     Ok(())
 }
 
+/// SPEC-142 CSE-004, CSE-005: a CI job's proxy client (`ci:<run>`) uses only the secrets its job
+/// was granted, only toward their bound hosts, audited under the run; its credential ends with the
+/// job.
+#[tokio::test]
+async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResult {
+    let w = world().await?;
+    for body in [
+        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
+        json!({"name": "HDR_KEY", "hosts": ["*.hdr.test", "api.stripe.test"], "injection": "header", "header_name": "X-Api-Key", "value": "hdr-value-12345"}),
+    ] {
+        let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let token = w
+        .h
+        .app
+        .ci_egress_open(&s1, "run-7", "job-7a", &["STRIPE_KEY".to_owned()])
+        .ok_or("no CI credential")?;
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let ci = app.egress_client(&token).await.ok_or("ci client")?;
+    assert_eq!(ci.actor(), "ci:run-7");
+    assert_eq!(ci.sandbox_id.as_str(), "s1");
+    assert!(app.egress_intercepts(&ci, "api.stripe.test", 443).await);
+    assert!(
+        !app.egress_intercepts(&ci, "eu.hdr.test", 443).await,
+        "a host bound only to a secret the job was not granted is a plain tunnel"
+    );
+
+    // The granted secret is injected and substituted; the other one, bound to the same host,
+    // is neither injected nor substituted, and naming it is refused.
+    let applied = app
+        .egress_apply(
+            &ci,
+            request(
+                "api.stripe.test",
+                "/v1/x?key=yulius-secret-STRIPE_KEY&other=yulius-secret-HDR_KEY",
+                &[],
+            ),
+        )
+        .await;
+    match &applied {
+        EgressDecision::Forward {
+            path_and_query,
+            used,
+            ..
+        } => {
+            assert_eq!(
+                path_and_query,
+                &format!("/v1/x?key={STRIPE}&other=yulius-secret-HDR_KEY")
+            );
+            assert_eq!(used, &vec!["STRIPE_KEY".to_owned()]);
+        }
+        EgressDecision::Refuse { .. } => return Err("refused".into()),
+    }
+    assert_eq!(
+        header(&applied, "authorization"),
+        Some(format!("Bearer {STRIPE}").as_str())
+    );
+    assert_eq!(header(&applied, "x-api-key"), None);
+    let named = app
+        .egress_apply(
+            &ci,
+            request("api.stripe.test", "/", &[("x-yulius-secret", "HDR_KEY")]),
+        )
+        .await;
+    assert!(matches!(named, EgressDecision::Refuse { status: 403, .. }));
+    let elsewhere = app
+        .egress_apply(&ci, request("eu.hdr.test", "/?k=yulius-secret-HDR_KEY", &[]))
+        .await;
+    assert_eq!(header(&elsewhere, "x-api-key"), None);
+    match &elsewhere {
+        EgressDecision::Forward { used, .. } => assert!(used.is_empty(), "{used:?}"),
+        EgressDecision::Refuse { .. } => return Err("refused".into()),
+    }
+
+    // The use is audited under the run, never with the value.
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert!(
+        activity.body.as_array().is_some_and(|a| a.iter().any(|e| {
+            e["action"] == "vault.agent.use"
+                && e["actor"] == "ci:run-7"
+                && e["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("STRIPE_KEY") && d.contains("api.stripe.test"))
+        })),
+        "{}",
+        activity.body
+    );
+    assert!(
+        activity.body.as_array().is_some_and(|a| a
+            .iter()
+            .all(|e| !(e["actor"] == "ci:run-7" && e["detail"].to_string().contains("HDR_KEY")))),
+        "{}",
+        activity.body
+    );
+    assert_hidden(&activity.body, &[STRIPE, "hdr-value-12345"]);
+
+    // The job ended: its credential names no client any more, and it never was a task's.
+    w.h.app.ci_egress_close(&token);
+    assert!(app.egress_client(&token).await.is_none());
+    let empty = w
+        .h
+        .app
+        .ci_egress_open(&s1, "run-8", "job-8a", &[])
+        .ok_or("no CI credential")?;
+    let none = app.egress_client(&empty).await.ok_or("ci client")?;
+    assert!(!app.egress_intercepts(&none, "api.stripe.test", 443).await);
+    w.h.app.ci_egress_close(&empty);
+    Ok(())
+}
+
 /// VLT-005, VLT-007: `secrets_list` gives names only, every MCP result is redacted, the
 /// fingerprints endpoint gives no value but finds one.
 #[tokio::test]
