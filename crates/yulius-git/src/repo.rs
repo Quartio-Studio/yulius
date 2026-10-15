@@ -169,10 +169,10 @@ impl Git {
     /// Removes from `repo`'s own configuration (`.git/config` and `.git/config.worktree`) every
     /// setting that steers transport, runs a command during a fetch or loads more configuration:
     /// `http.*`, `url.*`, `include*`, `credential.*`, SSH, proxy and alternate-refs commands,
-    /// submodule recursion and `origin`'s proxy and push or pack overrides. A `.git` that is not
-    /// a directory, or a configuration file that is a link, is refused before any write. Yulius's Git then carries a token in a clone whose configuration a sandbox
-    /// could write without handing it elsewhere (SPEC-176). Every other setting stays. A
-    /// configuration file that is a link is refused: Git would write to the file it points at.
+    /// submodule recursion (`submodule.recurse`, `fetch.` and `push.recurseSubmodules`) and
+    /// `origin`'s proxy and push or pack overrides. Every other setting stays. A `.git` that is not
+    /// a directory, or a configuration file that is a link, is refused before any write: Git would
+    /// read or write configuration elsewhere (SPEC-176).
     pub fn scrub_transport_config(&self, repo: &Path) -> Result<(), GitError> {
         const PREFIXES: &[&str] = &[
             "http.",
@@ -186,7 +186,8 @@ impl Git {
             "core.askpass",
             "core.alternaterefscommand",
             "fetch.recursesubmodules",
-            "submodule.",
+            "push.recursesubmodules",
+            "submodule.recurse",
             "remote.origin.proxy",
             "remote.origin.pushurl",
             "remote.origin.uploadpack",

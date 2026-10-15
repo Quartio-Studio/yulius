@@ -1514,8 +1514,10 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
         ("remote.origin.pushurl", "/tmp/evil.git"),
         ("core.alternateRefsCommand", "evil"),
         ("fetch.recurseSubmodules", "true"),
-        ("submodule.evil.url", "/tmp/evil.git"),
+        ("submodule.recurse", "true"),
+        ("push.recurseSubmodules", "on-demand"),
         ("user.name", "Kept Name"),
+        ("submodule.lib.url", "https://example.invalid/lib.git"),
     ];
     // The same key twice, apart.
     fx.raw(
@@ -1534,13 +1536,17 @@ fn transport_settings_of_a_clone_are_scrubbed() -> TestResult {
     fx.git.scrub_transport_config(&repo)?;
     let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
     let left: Vec<&str> = left.lines().collect();
-    for (key, _) in &planted[..12] {
+    for (key, _) in &planted[..13] {
         assert!(
             !left.iter().any(|k| k.eq_ignore_ascii_case(key)),
             "{key} is left: {left:?}"
         );
     }
     assert!(left.contains(&"user.name"), "{left:?}");
+    assert!(
+        left.contains(&"submodule.lib.url"),
+        "an initialised submodule stays: {left:?}"
+    );
     assert!(left.contains(&"remote.origin.url"), "{left:?}");
     Ok(())
 }

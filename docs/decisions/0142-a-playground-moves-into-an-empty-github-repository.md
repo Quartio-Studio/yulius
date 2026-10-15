@@ -29,8 +29,10 @@ the App creates in an organisation gives nobody but the organisation's owners a 
    commits or behind them: a move that failed after its push is retried, and the non-forcing push
    fast-forwards what merged since.
 3. **The move runs in this order:** an atomic, non-forcing push of every branch and tag of the
-   bare `origin`, with the installation token (after the default branch, decision 5). Then the clone's `origin` is repointed to the
-   repository and fetched. Then a compare-and-set on the sandbox record writes the owner, name and
+   bare `origin`, with the installation token (after the default branch, decision 5). Then the
+   clone's own transport settings are removed, its `origin` is repointed to the repository, and
+   its `origin/*` refs are refreshed from the bare `origin` by path, which GitHub now matches, so
+   no token passes through the clone. Then a compare-and-set on the sandbox record writes the owner, name and
    repository id, and holds only while it is still a playground. That write is the commit point:
    when it fails, the clone's `origin` is pointed back. Only after it is the bare `origin`
    deleted. The move is audited as `sandbox.moved_to_github`.

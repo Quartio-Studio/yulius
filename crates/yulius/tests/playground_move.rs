@@ -736,3 +736,35 @@ async fn a_planted_transport_setting_never_steers_the_move() -> TestResult {
     assert!(!refs(&github)?.is_empty());
     Ok(())
 }
+
+/// MPG-003 (review of the delivered head): the move refreshes the clone from the playground's own
+/// `origin` by path, never by fetching GitHub through the clone's configuration with the token: a
+/// refspec planted there (which no scrub removes) changes nothing.
+#[tokio::test]
+async fn the_move_never_fetches_github_through_the_clone() -> TestResult {
+    let w = world().await?;
+    let (sandbox, _origin) = w.playground(&w.alice, "alices-lab").await?;
+    w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    let clone = w.clone_of(&sandbox)?;
+    // A fetch of the configured `origin` would ask for this missing ref and fail.
+    git(
+        &clone,
+        &[
+            "config",
+            "--local",
+            "--add",
+            "remote.origin.fetch",
+            "refs/heads/nope:refs/remotes/origin/nope",
+        ],
+    )?;
+
+    let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
+    git(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
+    Ok(())
+}
