@@ -14,6 +14,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
   shortens at its narrowest instead of pushing the Refresh button over the first file tab.
   Co-editing of unsaved text is #566.
+- The original prompt reads as written (SPEC-180, fixes #565, task #167). An image inside the
+  text was a thumbnail up to 160 px high, so its line grew to the picture's height. It is now the
+  composer's one-line `Image N` placeholder, which opens the image. The "Attached files" list
+  below the text holds every file once, each image's thumbnail carrying its number.
+- A playground moves to GitHub (SPEC-176, ADR-0142, task #132, fixes #410). Once GitHub is
+  connected, an admin of a playground picks "Move to GitHub…" in its sandbox menu and names an empty
+  repository of the instance owner that they could import (`admin` or `maintain` on it; the
+  superadmin: one the App can access). Yulius pushes every branch and tag there in one atomic push,
+  points the sandbox's clone at it, records it (same slug, tasks, sessions and steps) and deletes
+  the server's copy; access then mirrors GitHub. A repository with anything else in it, a live or
+  queued task, or a failed push leaves the playground as it was
+  (`POST /api/sandboxes/{sid}/move-to-github`).
+
 - The session view says when the server cut a diff or a context, and every scroller is reachable
   (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
   `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the

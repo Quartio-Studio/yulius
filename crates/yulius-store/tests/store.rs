@@ -1425,3 +1425,61 @@ async fn writes_that_change_access_grow_the_access_epoch() -> R {
     grew(&mut last, "removing a sandbox", store.access_epoch())?;
     Ok(())
 }
+
+/// SPEC-176 MPG-003: a playground's record becomes a GitHub repository's only while it is still a
+/// playground; a repository another sandbox holds is a conflict; access may change, so the access
+/// epoch grows.
+#[tokio::test]
+async fn a_playground_record_moves_to_github_once() -> R {
+    use yulius_app::ports::store::PermissionStore;
+    let store = SqliteStore::open_in_memory()?;
+    let (studio, alice) = seed(&store).await?;
+    let lab = SandboxId::parse("s2")?;
+    let mut playground = store.sandbox(&studio).await?.ok_or("seeded")?;
+    playground.id = lab.clone();
+    playground.slug = "lab".into();
+    playground.repo_owner = String::new();
+    playground.repo_name = "lab".into();
+    playground.github_repo_id = None;
+    playground.port_base = 20020;
+    playground.created_by = alice;
+    store.insert_sandbox(&playground).await?;
+
+    assert!(matches!(
+        store
+            .move_to_github(&lab, "Quartio-Studio", "studio", Some(6))
+            .await,
+        Err(AppError::Conflict(_))
+    ));
+    assert!(store.sandbox(&lab).await?.ok_or("lab")?.is_playground());
+
+    let before = store.access_epoch();
+    assert!(
+        store
+            .move_to_github(&lab, "Quartio-Studio", "lab", Some(7))
+            .await?
+    );
+    assert!(store.access_epoch() > before, "access follows GitHub now");
+    let moved = store.sandbox(&lab).await?.ok_or("lab")?;
+    assert_eq!(
+        (
+            moved.repo_owner.as_str(),
+            moved.repo_name.as_str(),
+            moved.github_repo_id
+        ),
+        ("Quartio-Studio", "lab", Some(7))
+    );
+    assert_eq!(moved.slug, "lab", "the slug stays");
+    assert!(
+        !store
+            .move_to_github(&lab, "Quartio-Studio", "other", Some(8))
+            .await?,
+        "a GitHub sandbox is never moved again"
+    );
+    assert!(
+        !store
+            .move_to_github(&studio, "Quartio-Studio", "x", None)
+            .await?
+    );
+    Ok(())
+}
