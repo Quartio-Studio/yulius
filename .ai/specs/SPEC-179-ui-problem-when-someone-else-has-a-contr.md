@@ -169,8 +169,8 @@ reference face crawls along the top between the corners.
 ## Evidence
 
 - `scripts/dev ci` (doctor, repository check, script unit tests, check, fmt, clippy `-D warnings`,
-  nextest, doctests, deny, shear, doc) passed on the round-1 head `24e20ac1`: 1877 tests passed, 18
-  skipped. An earlier run on `23e048f5` failed only in
+  nextest, doctests, deny, shear, doc) passed on the reviewed head `f5375e0a` (after the last merge
+  of `dev`): 1908 tests passed, 18 skipped; and before on the round-1 head `24e20ac1` (1877 passed). An earlier run on `23e048f5` failed only in
   `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn`, the supervisor race of
   open issue #527 (this change touches no supervisor code; the occurrence is noted on #527); its
   doctests, deps and docs steps were then run on their own and passed.
@@ -180,9 +180,9 @@ reference face crawls along the top between the corners.
   token and of an agent secret on a tail and a paged read (fails with `redact_page_secrets`
   removed), reader allowed, outsider 404, anonymous 401, task without a session. Unit tests in
   `transcripts.rs` for `read_tail` and `Page.end`.
-- e2e, full suite: 533 passed, 1 skipped (`agent.e2e.ts` needs a model key) before review; after the
-  review fixes `watching.e2e.ts` (20 tests: AC-WAT-2..6 and the review's cases), `sessions.e2e.ts`
-  and `ownership.e2e.ts`: 48/48 passed. Each review fix's test was seen failing without the fix.
+- e2e, full suite on `f5375e0a`: 554 passed, 1 skipped (`agent.e2e.ts` needs a model key), including
+  `watching.e2e.ts` (20 tests: AC-WAT-2..6 and the review's cases). Each review fix's test was seen
+  failing without the fix.
 - Visual check in Chromium (desktop dark and light, phone width): the transcript in the terminal's
   colours, the control card above it, the owner's initials in the sidebar, the octopus resting in
   the top-right corner and waving; its ten frames rendered enlarged in both themes.
@@ -190,4 +190,5 @@ reference face crawls along the top between the corners.
   unrun, not passed.
 - Independent review (`om-code-review`, fresh session): round 1 requested changes (a failed first
   read stopping the polling, an untested agent-secret redaction, several minors), all fixed
-  test-first; round 2 found one minor (a reprint copying untouched fold states), fixed test-first.
+  test-first; round 2 found one minor (a reprint copying untouched fold states), fixed test-first;
+  round 3 approved `f5375e0a`.
