@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   needs. The briefing now has a `## Containers` section: no engine here, in Yulius CI or in CD; use
   an engine on another machine (`DOCKER_HOST=ssh://…`), keep rollback images there or in a
   registry, and install test services with `apt`. An engine per sandbox is #551.
+- A folded subscription shows both its 5-hour and its weekly usage, without opening it (SPEC-172,
+  task #162). The Status panel's and the Dashboard's rows showed only the 5-hour bar; each now has
+  two lines, "5 h" and "Week", with a bar and the percent used. Where the list is narrower than
+  360 px (the Status panel on a phone), the lines keep their percents and drop the bars; in the
+  Status panel a row's state ("Limit reached") shows as its icon, so the name keeps its room.
 - The sandbox tabs show that they drag (SPEC-167, task #157). Each sandbox tab in the top row has
   the six-dot grip the Notes tabs have (SPEC-136) before its name, and its tooltip adds "Click to
   open, drag to reorder" under the repository and access. The grip is faint until the tab is

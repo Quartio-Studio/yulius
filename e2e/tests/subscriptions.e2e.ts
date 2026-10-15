@@ -1,4 +1,4 @@
-import { test } from '@e2e-dev/web';
+import { type Browser, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
@@ -73,4 +73,93 @@ test('an unknown cost reads as unknown, never as $0 (unit, in the page)', async 
   expect(text).toContain('≈ $1.50');
   expect(text).toContain('last 24 h: —');
   expect(text).not.toContain('$0.00');
+});
+
+/**
+ * Each folded subscription under `root`: its name and how much of it shows, its state badge's text,
+ * the glance's lines and whether its bars show.
+ */
+const glances = (browser: Browser, root: string) => browser.evaluate((css) =>
+  [...document.querySelectorAll(`${css} .account-fold`)].map((fold) => ({
+    label: fold.querySelector('.account-name strong')?.textContent ?? null,
+    nameShown: fold.querySelector('.account-name strong')!.getBoundingClientRect().width,
+    nameFull: fold.querySelector('.account-name strong')!.scrollWidth,
+    nameTitle: fold.querySelector('.account-name strong')!.getAttribute('title'),
+    state: fold.querySelector('.account-state')?.textContent ?? null,
+    open: (fold as HTMLDetailsElement).open,
+    lines: [...fold.querySelectorAll('summary .account-glance .glance-line')].map((line) => {
+      const meter = line.querySelector('[role="meter"]') as HTMLElement | null;
+      return {
+        name: line.querySelector('.glance-name')?.textContent ?? null,
+        pct: line.querySelector('.usage-pct')?.textContent ?? null,
+        meter: meter?.getAttribute('aria-label') ?? null,
+        bar: Boolean(meter && meter.getClientRects().length),
+      };
+    }),
+    overflows: fold.scrollWidth > fold.clientWidth,
+  })), root);
+
+test('a folded subscription shows its 5-hour and weekly usage without opening (SPEC-172)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard'));
+  await expect(screen.getByRole('heading', 'Subscriptions')).toBeVisible();
+  await expect(browser.locator('.db-card .account-fold').first()).toBeVisible();
+  const rows = await glances(browser, '.db-card');
+  expect(rows.length).toBeGreaterThan(3);
+  // GLN-001, GLN-002: both windows, named, with the percent and a named meter, every row.
+  for (const row of rows) {
+    expect(row.lines.map((l) => [l.name, l.meter, l.bar])).toEqual([['5 h', '5-hour window', true], ['Week', 'This week', true]]);
+  }
+  expect(rows.find((r) => r.label === 'Claude #1')!.lines.map((l) => l.pct)).toEqual(['42%', '19%']);
+  // A subscription without a weekly reading says so, never 0 %.
+  expect(rows.find((r) => r.label === 'Claude spare')!.lines.map((l) => l.pct)).toEqual(['1%', '—']);
+  // GLN-003: opened, the rows below say it with reset times and the glance hides.
+  await browser.locator('.db-card .account-fold:has-text("Claude #1") > summary').click();
+  await expect(browser.locator('.db-card .account-fold:has-text("Claude #1") .account-glance')).toBeHidden();
+  await expect(browser.locator('.db-card .account-fold:has-text("Claude #1") .usage-row:has-text("This week")')).toBeVisible();
+
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+/** GLN-004: the name keeps at least 64 px (or all of itself), with its full text on hover. */
+const expectNameRoom = (row: { label: string | null; nameShown: number; nameFull: number; nameTitle: string | null }) => {
+  expect(row.nameShown, `${row.label} shows ${row.nameShown} of ${row.nameFull} px`).toBeGreaterThanOrEqual(Math.min(row.nameFull, 64) - 0.5);
+  expect(row.nameTitle).toBe(row.label);
+};
+
+test('the desktop Status panel shows both windows with their bars, and names keep room beside a state (SPEC-172)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git'));
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  const rows = await glances(browser, '.status-pop');
+  expect(rows.length).toBeGreaterThan(3);
+  // A subscription that needs attention opens by itself, its rows instead of the glance (GLN-003).
+  for (const row of rows) {
+    expect(row.lines.map((l) => [l.name, l.meter, l.bar])).toEqual([['5 h', '5-hour window', !row.open], ['Week', 'This week', !row.open]]);
+    expectNameRoom(row);
+  }
+  // The state still reads in full, also where only its icon shows.
+  expect(rows.find((r) => r.label === 'Claude #5')!.state).toBe('Limit reached');
+
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('at phone width the Status panel and the Dashboard keep both percents and drop the glance bars (SPEC-172)', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/dashboard'));
+  await expect(browser.locator('.db-card .account-fold').first()).toBeVisible();
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  for (const root of ['.status-pop', '.db-card']) {
+    const rows = await glances(browser, root);
+    expect(rows.length).toBeGreaterThan(3);
+    // GLN-004: names and percents stay, bars go, nothing wider than its row.
+    for (const row of rows) {
+      expect(row.lines.map((l) => [l.name, l.bar])).toEqual([['5 h', false], ['Week', false]]);
+      expect(row.lines.every((l) => l.pct === '—' || /^\d+%$/.test(l.pct ?? ''))).toBe(true);
+      expect(row.overflows).toBe(false);
+      expectNameRoom(row);
+    }
+  }
+
+  expect(await axeViolations(browser)).toEqual([]);
 });

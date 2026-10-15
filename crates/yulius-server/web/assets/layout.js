@@ -454,14 +454,20 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
-  const primary = usage.primary;
+  // Folded, both windows show at a glance: a short name, a bar named in full and the percent (SPEC-172).
+  const glanceWindows = [[usage.primary, '5 h', '5-hour window'], [usage.secondary, 'Week', 'This week']].map(([w, short, name]) => ({ used: w ? w.used_percent : null, short, name }));
+  const glance = () => h('span', { class: 'account-glance', title: glanceWindows.map((g) => `${g.name}: ${Number.isFinite(g.used) ? `${Math.round(g.used)}% used` : 'not known yet'}`).join(' · ') },
+    glanceWindows.map((g) => h('span', { class: 'glance-line' },
+      h('span', { class: 'glance-name' }, g.short),
+      usageBar(g.used, g.name),
+      h('span', { class: ['usage-pct', `tone-${toneOf(g.used)}`] }, percentText(g.used)))));
   const head = [
     h('span', { class: 'avatar account-avatar', 'aria-hidden': 'true' }, accountInitials(account)),
     h('span', { class: 'account-who' },
-      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis' }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
+      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis', title: account.label || account.id }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
       h('span', { class: 'account-sub' }, account.email || provider)),
-    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label) : null,
-    foldable ? h('span', { class: 'account-glance', title: '5-hour window' }, usageBar(primary ? primary.used_percent : null, '5-hour window'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
+    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null,
+    foldable ? glance() : null,
     foldable ? icon('down', { size: 14 }) : null,
   ];
   // A usage reading that failed for now ("usage: …", one plain sentence) is a quiet note, not a
