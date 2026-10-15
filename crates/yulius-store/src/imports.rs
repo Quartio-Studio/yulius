@@ -107,6 +107,23 @@ impl ImportStore for SqliteStore {
         .await
     }
 
+    async fn user_import_jobs(&self, user: &UserId, limit: u32) -> AppResult<Vec<ImportJobRecord>> {
+        let user = user.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLS} FROM import_jobs WHERE user_id = ?1 \
+                     ORDER BY created_at DESC, rowid DESC LIMIT ?2"
+                ))
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![user, i64::from(limit)], from_row)
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn advance_import_file(
         &self,
         id: &str,
@@ -213,6 +230,17 @@ mod tests {
         assert_eq!(loaded, job("j1", 1)?);
         assert!(store.import_job("nope").await?.is_none());
 
+        let mine = store.user_import_jobs(&UserId::parse("u1")?, 10).await?;
+        assert_eq!(
+            mine.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(),
+            ["j2", "j1"]
+        );
+        assert!(
+            store
+                .user_import_jobs(&UserId::parse("u2")?, 10)
+                .await?
+                .is_empty()
+        );
         let listed = store.import_jobs(&SandboxId::parse("s1")?, 10).await?;
         assert_eq!(
             listed.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(),

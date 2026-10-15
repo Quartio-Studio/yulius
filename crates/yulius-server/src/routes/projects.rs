@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use yulius_contracts::api::sandboxes::{
-    AvailableRepo, CreateSandbox, OnboardingPlan, Sandbox, Template,
+    AvailableRepo, CreateSandbox, OnboardingPlan, PurgeState, Sandbox, Template,
 };
 
 use crate::AppState;
@@ -41,6 +41,16 @@ pub async fn remove(
 ) -> ApiResult<StatusCode> {
     app.delete_sandbox(&ctx, &sid).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes a playground (when still live) and deletes its code for good once nothing of it runs
+/// (SPEC-171).
+pub async fn purge(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<PurgeState>> {
+    Ok(Json(app.purge_playground(&ctx, &sid).await?))
 }
 
 pub async fn skip_onboarding(

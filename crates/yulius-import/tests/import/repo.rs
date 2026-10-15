@@ -2,7 +2,10 @@
 
 use std::fs;
 
-use yulius_import::{RepoError, UnpublishedRef, create_bundle, discover_repo, unpublished_refs};
+use yulius_import::{
+    RepoError, UnpublishedRef, create_bundle, create_full_bundle, discover_playground_checkout,
+    discover_repo, unpublished_refs,
+};
 
 use crate::support::{RepoFixture, TestResult, git, write};
 
@@ -224,5 +227,110 @@ fn nothing_to_bundle_when_everything_is_pushed() -> TestResult {
     let out = fixture.temp.path().join("repo.bundle");
     assert_eq!(create_bundle(&fixture.repo, &[], &out)?, None);
     assert!(!out.exists());
+    Ok(())
+}
+
+/// SPEC-171 PGL-001: a playground needs no remote and reads none: a checkout without one, and
+/// one whose only remote is not GitHub, are found; the name is `--name` or the directory's; a
+/// detached `HEAD` is refused (the uncommitted work lands on its branch).
+#[test]
+fn playground_discovery_needs_no_remote() -> TestResult {
+    let fixture = RepoFixture::new()?;
+    // A non-GitHub remote: the local bare repository by its path.
+    git(
+        &fixture.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &fixture.bare.to_string_lossy(),
+        ],
+    )?;
+    let subdir = fixture.repo.join("dir");
+    assert!(matches!(
+        discover_repo(&subdir),
+        Err(RepoError::NotGitHub { .. })
+    ));
+    let info = discover_playground_checkout(&subdir, None)?;
+    assert_eq!(info.root, fixture.root()?);
+    assert_eq!(info.name, "demo");
+    assert_eq!(info.owner, "");
+    assert_eq!(info.remote_url, "");
+    assert_eq!(info.head_branch.as_deref(), Some("main"));
+    assert_eq!(info.head_sha, git(&fixture.repo, &["rev-parse", "HEAD"])?);
+
+    git(&fixture.repo, &["remote", "remove", "origin"])?;
+    assert!(matches!(
+        discover_repo(&fixture.repo),
+        Err(RepoError::NoRemote)
+    ));
+    let named = discover_playground_checkout(&fixture.repo, Some(" My Shop "))?;
+    assert_eq!(named.name, "My Shop");
+    assert_eq!(named.descriptor().owner, "");
+
+    git(&fixture.repo, &["checkout", "-q", "--detach", "HEAD"])?;
+    assert!(matches!(
+        discover_playground_checkout(&fixture.repo, None),
+        Err(RepoError::DetachedHead)
+    ));
+    // A repository without a commit is told to make one, not to push to GitHub.
+    let empty = tempfile::tempdir()?;
+    git(empty.path(), &["init", "-q", "-b", "main"])?;
+    let refused = discover_playground_checkout(empty.path(), None);
+    assert!(
+        matches!(refused, Err(RepoError::NoFirstCommit)),
+        "{refused:?}"
+    );
+    let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("make a first commit") && !message.contains("GitHub"),
+        "{message}"
+    );
+    Ok(())
+}
+
+/// SPEC-171 PGL-001: a playground's bundle holds every local branch and tag, pushed or not, and
+/// an unchanged repository gives the same bytes (a re-run uploads nothing).
+#[test]
+fn a_playground_bundle_holds_every_branch_and_tag() -> TestResult {
+    let fixture = RepoFixture::new()?;
+    git(&fixture.repo, &["checkout", "-q", "-b", "feature"])?;
+    let feature = fixture.commit_file("f.txt", "f", "feature")?;
+    git(&fixture.repo, &["tag", "v1"])?;
+    git(&fixture.repo, &["checkout", "-q", "main"])?;
+    let main = git(&fixture.repo, &["rev-parse", "main"])?;
+
+    let out = fixture.temp.path().join("repo.bundle");
+    let (bundle, branches) = create_full_bundle(&fixture.repo, &out)?;
+    assert_eq!(bundle.name, "repo.bundle");
+    let names: Vec<&str> = branches.iter().map(|b| b.branch.as_str()).collect();
+    assert_eq!(names, ["feature", "main"]);
+    let heads = git(
+        &fixture.repo,
+        &["bundle", "list-heads", &out.to_string_lossy()],
+    )?;
+    for expected in [
+        format!("{feature} refs/heads/feature"),
+        format!("{main} refs/heads/main"),
+        format!("{feature} refs/tags/v1"),
+    ] {
+        assert!(
+            heads.lines().any(|line| line == expected),
+            "{expected} in {heads}"
+        );
+    }
+    // A repository with nothing in it verifies the bundle: it needs no prerequisite.
+    let empty = fixture.temp.path().join("empty");
+    git(
+        fixture.temp.path(),
+        &["init", "-q", "--bare", &empty.to_string_lossy()],
+    )?;
+    git(&empty, &["bundle", "verify", "-q", &out.to_string_lossy()])?;
+
+    let again = fixture.temp.path().join("again.bundle");
+    assert_eq!(
+        create_full_bundle(&fixture.repo, &again)?.0.sha256,
+        bundle.sha256
+    );
     Ok(())
 }

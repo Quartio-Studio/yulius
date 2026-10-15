@@ -19,6 +19,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task's workflow instructions lower the budget, and a 600-byte goal used to cut `## Architecture`
   and every optional part. The goal quote now shrinks first (down to 40 bytes; the whole request is
   in the task's prompt or request file), and no bundled workflow is larger than 1,444 bytes.
+- A playground's lifecycle at its ends (SPEC-171, ADR-0139, task #131, fixes #409 and #420).
+  `yulius onboard --playground [path] [--name <name>]` brings a local checkout without GitHub into a
+  new or existing playground of yours: every branch and tag, the uncommitted work (one commit on the
+  checked-out branch of a new playground) and the chosen sessions (on its Sessions page), through
+  the import upload; nothing is pushed anywhere and GitHub is never called. Removing a playground
+  can delete its code for good ("Also delete its code from this server for good" in the dialog,
+  `POST /api/sandboxes/{sid}/purge`): its `origin` and sandbox directory go once nothing of its
+  sandbox runs, its place among its maker's 10 is freed, and task records and the audit stay.
 - Tools and the keyboard stay where the person left them, and presence leaves arrive last
   (SPEC-170, ADR-0138, task #135, fixes #489, #439, #463). A sandbox left while its page still
   loads comes back with no tool open, not the other sandbox's; the Shell shown again for another
