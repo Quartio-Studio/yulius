@@ -834,6 +834,35 @@ async fn briefing_includes_the_task_workflow_instructions() -> TestResult {
     Ok(())
 }
 
+/// An isolation adapter that joins nothing: only its presence matters here.
+struct Isolated;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for Isolated {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+}
+
+/// SPEC-173 CTR-001 (task #163, #550): the briefing says there is no container engine exactly
+/// when the server runs sandboxes isolated (an isolation adapter is installed).
+#[tokio::test]
+async fn an_isolated_sandboxs_briefing_names_the_missing_container_engine() -> TestResult {
+    let f = fixture().await?;
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    let plain = f.h.app.briefing(&task, Agent::ClaudeCode).await?;
+    assert!(!plain.contains("## Containers"), "{plain}");
+    assert!(f.h.app.set_isolation(Arc::new(Isolated)));
+    let isolated = f.h.app.briefing(&task, Agent::ClaudeCode).await?;
+    assert!(isolated.contains("## Containers"), "{isolated}");
+    assert!(isolated.contains("`DOCKER_HOST=ssh://"), "{isolated}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     let f = fixture().await?;
