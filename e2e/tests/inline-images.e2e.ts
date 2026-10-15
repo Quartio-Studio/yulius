@@ -405,6 +405,11 @@ test('an uploaded image shows in the tray, opens large from there, and sits in t
   expect(await promptText(browser)).toBe('This part [shot.png] looks wrong, and [other.png]\nnext');
   expect(await axeViolations(browser)).toEqual([]);
 
+  // A double-click on the placeholder opens the file.
+  await browser.evaluate(() => document.querySelector('.composer-prompt .pi-atom')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 })));
+  await expect(screen.getByRole('dialog', 'shot.png').getByRole('img', 'shot.png')).toBeVisible();
+  await browser.locator('dialog.modal').press('Escape');
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
   // A click on the thumbnail opens it large; its name says which placeholder it is.
   await screen.getByRole('button', 'Open Image 1, shot.png').click();
   await expect(screen.getByRole('dialog', 'shot.png').getByRole('img', 'shot.png')).toBeVisible();
@@ -532,6 +537,8 @@ test('the tray is part of undo: × on a file not in the text comes back, undo ke
   await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png', 'c.png']);
   await screen.getByRole('button', 'Remove c.png').click();
   await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png']);
+  // The keyboard stays in the tray, on the tile now in that place (the last one here).
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Open Image 2, b.png');
   await prompt.click();
   await browser.keyboard.press('ControlOrMeta+z');
   await expect.poll(() => trayNames(browser)).toEqual(['a.png', 'b.png', 'c.png']);
@@ -551,6 +558,32 @@ test('the tray is part of undo: × on a file not in the text comes back, undo ke
   await prompt.press('ControlOrMeta+Enter');
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   expect(await lastPrompt(browser)).toBe(`See @'${DRAFTS}/b.png'\n\n@${DRAFTS}/c.png`);
+});
+
+// SPEC-150 review round 2: an upload that ends after its paste was undone is not attached.
+test('an upload ending after its paste was undone stays out of the tray until the paste is redone', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('One ');
+  await holdUploads(browser);
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  // The upload has ended: its status says so.
+  await expect(browser.locator('.composer-box .upload-status-float')).toHaveText(/Added b\.png/);
+  expect(await trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('One ');
+  // Redo brings the paste back, the file with it; undo takes both again, and nothing is sent.
+  await browser.keyboard.press('ControlOrMeta+Shift+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['b.png']);
+  expect(await promptText(browser)).toBe('One [b.png]');
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual([]);
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  expect(await lastPrompt(browser)).toBe('One');
 });
 
 test('undoing a paste takes its upload out of the tray, and an upload whose placeholder went first stays in the tray only', async ({ app, browser, screen }) => {

@@ -660,10 +660,16 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       return {
         /**
          * The files take the placeholder's place (nowhere when it was taken out); `items`, now
-         * attached, are attached in every step from the paste on.
+         * attached, are attached in every step from the paste on. When the box no longer holds the
+         * placeholder, the attached files are the current step's: an undone paste brings no file
+         * until it is redone.
          */
         insert(paths, items = []) {
-          swapPending(id, paths.map((path) => ({ path })), items, step);
+          if (swapPending(id, paths.map((path) => ({ path })), items, step)) return;
+          const current = history.states[history.index];
+          if (!current || sameList(current.files, attached.read())) return;
+          attached.write([...current.files]);
+          if (el.isConnected) onChange();
         },
         cancel() {
           swapPending(id, []);

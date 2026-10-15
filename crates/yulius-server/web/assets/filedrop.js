@@ -541,7 +541,6 @@ export function openAttachment(item, { image, url }) {
     zoom.addEventListener('click', () => {
       const on = zoom.getAttribute('aria-pressed') !== 'true';
       zoom.setAttribute('aria-pressed', String(on));
-      zoom.title = on ? 'Fit to the window' : 'Actual size';
     });
     openModal({ title: item.name, wide: true, className: 'attachment-modal', body: zoom });
     return;

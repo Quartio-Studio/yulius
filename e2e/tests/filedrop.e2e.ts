@@ -297,7 +297,11 @@ test('an image opened from the tray fits the window and zooms to its actual size
   const size = () => browser.evaluate(() => {
     const img = document.querySelector('dialog.modal img') as HTMLImageElement;
     const body = document.querySelector('dialog.modal .modal-body')!;
-    return { width: Math.round(img.getBoundingClientRect().width), natural: img.naturalWidth, scrolls: body.scrollWidth > body.clientWidth };
+    // At the scroll's start the image's left edge is in view: none of it is out of reach.
+    return {
+      width: Math.round(img.getBoundingClientRect().width), natural: img.naturalWidth, scrolls: body.scrollWidth > body.clientWidth,
+      reachable: body.scrollLeft > 0 || img.getBoundingClientRect().left >= body.getBoundingClientRect().left,
+    };
   });
   await expect.poll(async () => (await size()).natural).toBe(3000);
   const fitted = await size();
@@ -307,7 +311,7 @@ test('an image opened from the tray fits the window and zooms to its actual size
 
   await screen.getByRole('button', 'Actual size').click();
   await expect(browser.locator('dialog.modal button[aria-pressed="true"]')).toHaveCount(1);
-  await expect.poll(size).toEqual({ width: 3000, natural: 3000, scrolls: true });
+  await expect.poll(size).toEqual({ width: 3000, natural: 3000, scrolls: true, reachable: true });
   // The keyboard way back: the same toggle.
   await screen.getByRole('button', 'Actual size').press('Enter');
   await expect.poll(size).toEqual(fitted);
