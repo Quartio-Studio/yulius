@@ -1720,7 +1720,8 @@ task is created then; continuing a `pending` sandbox's onboarding task and impor
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
 `→ skipped` by an admin. Every change is a compare-and-set from the state it was decided on, so a
-start or a refresh running during a skip never writes over it (SPEC-153, ADR-0126); the resting
+start or a refresh running during a skip never writes over it (attaching a new onboarding task
+writes `pending` under the lock a skip takes; SPEC-153, ADR-0126); the resting
 onboarding task of a `pending` sandbox is summarised `not_started` and `awaits_start_onboarding`,
 not Closed. Failure: a start failure leaves `pending` (shown with what is pending);
 no subscription with capacity leaves the task paused and the sandbox `preparing` (ADR-17). While

@@ -2467,6 +2467,74 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
     Ok(())
 }
 
+/// SPEC-153 OLC-001 (review): a refresh that sees the onboarding task start writes `preparing`
+/// (as `system`) before Start onboarding does; the start's own write then loses, and the person
+/// who pressed Start onboarding is still in the audit log.
+#[test]
+fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            FakeAgentOptions::default(),
+            0,
+            Some(host.clone()),
+            None,
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        app.deps
+            .store
+            .set_onboarding(&sandbox, "pending", None)
+            .await?;
+        let browser = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: Some("session".into()),
+        };
+        host.arm();
+        let starter = Arc::clone(&app);
+        let sid = sandbox.to_string();
+        let start = tokio::spawn(async move { starter.approve_onboarding(&browser, &sid).await });
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        // The task runs (its attach is held): a read refreshes onboarding first.
+        assert_eq!(app.refresh_onboarding(&sandbox).await?, "preparing");
+        host.release();
+        tokio::time::timeout(Duration::from_secs(60), start).await???;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let mut query = db.prepare(
+            "SELECT actor FROM audit_log WHERE action LIKE 'sandbox.onboarding%' AND target = ?1 \
+             ORDER BY id",
+        )?;
+        let actors: Vec<String> = query
+            .query_map([sandbox.as_str()], |row| row.get::<_, String>(0))?
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            actors.iter().any(|actor| actor == "admin"),
+            "who started onboarding is not audited: {actors:?}"
+        );
+        let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
+        assert_eq!(record.onboarding_state, "preparing");
+        stop(
+            &app,
+            &record.onboarding_task_id.ok_or("no onboarding task")?,
+        )
+        .await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-039 (DDL-001): a Done task can be deleted like an ended one: its idle session is closed
 /// first, and the deletion returns only once the run has ended, so nothing of it is left behind.
 #[test]

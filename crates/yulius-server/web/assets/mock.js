@@ -608,6 +608,8 @@ function workingSince(task) {
 function touch(db, task, changes = {}) {
   const [status, activity] = [task.status, task.activity];
   Object.assign(task, changes, { updated_at: new Date().toISOString() });
+  // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
+  if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
   if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
   task.working_since = workingSince(task);
   recount(db);
@@ -933,7 +935,6 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   // then is the sandbox `preparing`. A test can hold the start in between
   // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
   const task = preparationTask(db, sandbox);
-  Object.assign(task, { neverRan: false, awaitsStart: false });
   touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
   if (db.holdApprove) await db.holdApprove;
   // …and make the run's start fail then (`__yuliusMock.failApprove = true`), as `start_run` can.
@@ -4409,8 +4410,7 @@ export function createMockTransport(params) {
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {
     const sandbox = db.sandboxes.find((s) => s.slug === slug);
-    const task = Object.assign(preparationTask(db, sandbox), { neverRan: false, awaitsStart: false });
-    touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+    touch(db, preparationTask(db, sandbox), { status: 'starting', branch: 'yulius/prepare-repository' });
     sandbox.onboarding = 'preparing';
     resync(db);
   };

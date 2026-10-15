@@ -824,6 +824,23 @@ impl App {
                     break;
                 }
             }
+            if skipped.is_none() {
+                let record = self
+                    .deps
+                    .store
+                    .sandbox(&id)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+                if OnboardingState::parse(&record.onboarding_state)
+                    .is_some_and(OnboardingState::blocks_tasks)
+                {
+                    // Not reached while the state only moves forward; never a silent non-skip.
+                    tracing::warn!(sandbox = %id, state = record.onboarding_state, "skip kept losing to onboarding writes");
+                    return Err(AppError::Conflict(
+                        "onboarding is changing state; try again".into(),
+                    ));
+                }
+            }
             skipped
         };
         if let Some(task) = &skipped {
@@ -939,9 +956,22 @@ impl App {
         }
         // Only from the `pending` read before the start: an admin's skip landing while the task
         // started stays (#406). A refresh that saw the task start may have written `preparing`
-        // already.
-        self.set_onboarding_state(&record, OnboardingState::Preparing, actor)
-            .await?;
+        // already, as `system`: the person who started it is audited all the same.
+        if !self
+            .set_onboarding_state(&record, OnboardingState::Preparing, actor)
+            .await?
+            && self.onboarding_state_of(sandbox).await? == OnboardingState::Preparing.as_str()
+        {
+            store
+                .audit(
+                    self.now(),
+                    actor,
+                    "sandbox.onboarding.start",
+                    Some(sandbox.as_str()),
+                    Some("Start onboarding (already preparing)"),
+                )
+                .await?;
+        }
         Ok(true)
     }
 

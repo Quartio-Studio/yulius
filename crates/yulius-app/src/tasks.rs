@@ -128,7 +128,7 @@ impl App {
         let (after, next) = self.chain_links(task).await;
         let times = store.task_times(&task.id).await?;
         let not_started =
-            task.status == TaskStatus::Closed && store.attempts(&task.id).await?.is_empty();
+            task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
         let awaits_start_onboarding = not_started
             && task.origin == TaskOrigin::Onboarding
             && store

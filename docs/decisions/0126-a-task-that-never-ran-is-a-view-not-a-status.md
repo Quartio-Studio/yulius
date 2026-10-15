@@ -28,8 +28,13 @@ meanwhile was overwritten, the banner came back and new tasks waited again (#406
 - Every onboarding state change is a compare-and-set from the state it was decided on
   (`SandboxStore::transition_onboarding`); a write whose state moved meanwhile does nothing.
   Start onboarding writes `preparing` only from the `pending` it read before starting; a skip
-  reads again and retries (bounded) when a start or a refresh moved the state between its read
-  and its write.
+  reads again and retries (bounded; a skip that still cannot land answers 409) when a start or a
+  refresh moved the state between its read and its write. A start whose write lost to a refresh
+  that already wrote `preparing` still audits its person (`sandbox.onboarding.start`).
+- One write stays unconditional on purpose: attaching a newly created onboarding task writes
+  `pending` under `onboarding_task_lock`, right after reading `pending` there. A skip takes the
+  same lock, so nothing can land in between, and the write is what returns a sandbox whose task was
+  deleted mid-start to `pending`.
 
 ## Alternatives
 
@@ -44,8 +49,9 @@ meanwhile was overwritten, the banner came back and new tasks waited again (#406
 
 ## Consequences
 
-- A `closed` summary costs one attempts read (and, for a never-run onboarding task, one sandbox
-  read); other statuses cost nothing more.
-- The sidebar still leaves `closed` tasks out, so neither kind shows there.
+- A `closed` summary costs one `EXISTS` query on its attempts (and, for a never-run onboarding
+  task, one sandbox read); other statuses cost nothing more.
+- The sidebar, Home and the sandbox tabs still leave `closed` tasks out of their counts, so
+  "Waits for Start onboarding" counts under Working on the Tasks page only.
 - An older server sends neither field; the UI then reads `closed` as before.
 - A lost onboarding write is not audited: the audit log has only the changes that happened.

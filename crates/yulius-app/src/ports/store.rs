@@ -359,6 +359,8 @@ pub trait TaskStore: Send + Sync {
     async fn attempt_by_token(&self, token_hash: &str) -> AppResult<Option<AttemptRecord>>;
     /// Attempts of a task in order.
     async fn attempts(&self, task: &TaskId) -> AppResult<Vec<AttemptRecord>>;
+    /// Whether the task ever had an attempt (cheaper than [`Self::attempts`]).
+    async fn has_attempts(&self, task: &TaskId) -> AppResult<bool>;
     /// The spawning/live attempt of a task.
     async fn live_attempt(&self, task: &TaskId) -> AppResult<Option<AttemptRecord>>;
     /// All spawning/live attempts.

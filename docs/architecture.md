@@ -321,7 +321,8 @@ repairs, and the server makes them once for every sandbox at start, which heals 
 before the fix ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
 [decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)).
 Every state change below is a compare-and-set from the state it was decided on, so a Start
-onboarding or a refresh running while an admin skips never writes over the skip. Until it runs,
+onboarding or a refresh running while an admin skips never writes over the skip (attaching a new
+onboarding task writes `pending` under the lock a skip takes, so it needs no condition). Until it runs,
 the onboarding task reads "Waits for Start onboarding" (or "Not started" after a skip), not Closed
 ([SPEC-153](../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
 [decision 0126](decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
