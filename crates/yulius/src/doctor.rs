@@ -255,7 +255,7 @@ fn github_cli_check(version: Option<&str>) -> Check {
 }
 
 /// Sandbox isolation (SPEC-002 ADR-22): the namespace holder's prerequisites, the base, the
-/// identity module and the cgroup delegation. Missing pieces are warnings: contained runs then
+/// identity module, the cgroup delegation and the sandboxes' Docker engine (SPEC-187). Missing pieces are warnings: contained runs then
 /// keep the previous containment.
 fn isolation_checks(data_dir: &Path) -> Vec<Check> {
     use crate::wiring::sandbox::{IsolationArgs, resolve};
@@ -308,8 +308,95 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
             "none yet: the server builds it in the background, or run `yulius sandbox-base build` as the service user",
         )),
     }
-    checks.push(delegation_check());
+    let delegation = delegation_check();
+    let delegated = delegation.level == Level::Ok;
+    checks.push(delegation);
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    checks.push(docker_check(
+        std::env::var("YULIUS_SANDBOX_DOCKER").as_deref() != Ok("off"),
+        which("dockerd"),
+        delegated,
+        &std::fs::read_to_string("/proc/modules").unwrap_or_default(),
+        &std::fs::read_to_string(format!("/lib/modules/{}/modules.builtin", release.trim()))
+            .unwrap_or_default(),
+    ));
     checks
+}
+
+/// Kernel modules a sandbox's Docker engine needs and cannot load itself (bridges, veths,
+/// overlay layers, NAT through `iptables-nft`).
+const ENGINE_MODULES: [&str; 11] = [
+    "overlay",
+    "bridge",
+    "veth",
+    "nf_tables",
+    "nft_compat",
+    "nft_chain_nat",
+    "nf_nat",
+    "nf_conntrack",
+    "xt_MASQUERADE",
+    "xt_addrtype",
+    "xt_conntrack",
+];
+
+/// Whether isolated sandboxes get a Docker engine of their own (SPEC-187 DKR-011), from the
+/// setting, the host's `dockerd`, the cgroup delegation and the kernel's modules (the text of
+/// `/proc/modules` and of `modules.builtin`).
+fn docker_check(
+    on: bool,
+    dockerd: Option<PathBuf>,
+    delegated: bool,
+    loaded: &str,
+    builtin: &str,
+) -> Check {
+    const NAME: &str = "sandbox Docker";
+    if !on {
+        return check(NAME, Level::Ok, "off (YULIUS_SANDBOX_DOCKER=off)");
+    }
+    if dockerd.is_none() {
+        return check(
+            NAME,
+            Level::Warn,
+            "no engine in sandboxes: install Docker (`dockerd`, containerd, runc) on the host;              the sandboxes' base copies it",
+        );
+    }
+    if !delegated {
+        return check(
+            NAME,
+            Level::Warn,
+            "no engine in sandboxes: it needs the cgroup delegation (Delegate=yes,              DelegateSubgroup=server on yulius.service)",
+        );
+    }
+    let mut present: Vec<String> = loaded
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect();
+    present.extend(builtin.lines().filter_map(|line| {
+        let name = line.rsplit('/').next()?.strip_suffix(".ko")?;
+        Some(name.replace('-', "_"))
+    }));
+    let missing: Vec<&str> = ENGINE_MODULES
+        .into_iter()
+        .filter(|module| !present.iter().any(|p| p == module))
+        .collect();
+    if missing.is_empty() {
+        check(
+            NAME,
+            Level::Ok,
+            "each isolated sandbox gets its own engine at /run/docker.sock on first use",
+        )
+    } else {
+        let list = missing.join(" ");
+        check(
+            NAME,
+            Level::Warn,
+            format!(
+                "kernel modules a sandbox cannot load are missing: {list}; run `sudo modprobe -a \
+                 {list}` and list them in /etc/modules-load.d/yulius-docker.conf"
+            ),
+        )
+    }
 }
 
 fn delegation_check() -> Check {
@@ -471,8 +558,8 @@ pub fn doctor(
 #[cfg(test)]
 mod tests {
     use super::{
-        GH_INSTALL_URL, Level, github_cli_check, proxy_secret_check, run_checks, version_of,
-        visible_when_contained,
+        GH_INSTALL_URL, Level, docker_check, github_cli_check, proxy_secret_check, run_checks,
+        version_of, visible_when_contained,
     };
     use std::path::{Path, PathBuf};
 
@@ -525,6 +612,65 @@ mod tests {
         );
         assert!(checks.iter().any(|c| c.name == "git"));
         assert!(checks.iter().any(|c| c.name == "GitHub CLI"));
+    }
+
+    /// SPEC-187 DKR-011: whether sandboxes get Docker, and if not why; the kernel modules a
+    /// sandbox cannot load itself that are neither loaded nor built in.
+    #[test]
+    fn the_docker_check_names_what_sandboxes_lack() {
+        let all = "overlay 1 0 - Live 0\nbridge 1 0 - Live 0\nveth 1 0 - Live 0\n\
+                   nf_tables 1 0 - Live 0\nnft_compat 1 0 - Live 0\nnft_chain_nat 1 0 - Live 0\n\
+                   nf_nat 1 0 - Live 0\nnf_conntrack 1 0 - Live 0\nxt_MASQUERADE 1 0 - Live 0\n\
+                   xt_addrtype 1 0 - Live 0\nxt_conntrack 1 0 - Live 0\n";
+        let dockerd = Some(PathBuf::from("/usr/bin/dockerd"));
+        let ok = docker_check(true, dockerd.clone(), true, all, "");
+        assert_eq!(ok.level, Level::Ok, "{}", ok.detail);
+        assert_eq!(ok.name, "sandbox Docker");
+
+        let off = docker_check(false, dockerd.clone(), true, all, "");
+        assert_eq!(off.level, Level::Ok);
+        assert!(
+            off.detail.contains("YULIUS_SANDBOX_DOCKER=off"),
+            "{}",
+            off.detail
+        );
+
+        let none = docker_check(true, None, true, all, "");
+        assert_eq!(none.level, Level::Warn);
+        assert!(none.detail.contains("dockerd"), "{}", none.detail);
+
+        let undelegated = docker_check(true, dockerd.clone(), false, all, "");
+        assert_eq!(undelegated.level, Level::Warn);
+        assert!(
+            undelegated.detail.contains("Delegate=yes"),
+            "{}",
+            undelegated.detail
+        );
+
+        // `bridge` built into the kernel counts; `veth` and `overlay` missing are named.
+        let loaded: String = all
+            .lines()
+            .filter(|l| {
+                !["bridge", "veth", "overlay"]
+                    .iter()
+                    .any(|m| l.starts_with(&format!("{m} ")))
+            })
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let builtin = "kernel/net/bridge/bridge.ko\nkernel/fs/ext4/ext4.ko\n";
+        let missing = docker_check(true, dockerd, true, &loaded, builtin);
+        assert_eq!(missing.level, Level::Warn);
+        assert!(
+            missing.detail.contains("overlay veth"),
+            "{}",
+            missing.detail
+        );
+        assert!(!missing.detail.contains("bridge"), "{}", missing.detail);
+        assert!(
+            missing.detail.contains("/etc/modules-load.d/"),
+            "{}",
+            missing.detail
+        );
     }
 
     #[test]

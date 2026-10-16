@@ -407,6 +407,10 @@ impl App {
             now: self.now(),
             playground: sandbox.is_playground(),
             isolated: self.isolation.get().is_some(),
+            docker: self
+                .isolation
+                .get()
+                .is_some_and(|isolation| isolation.docker()),
         };
         let workflow = self.workflow_instructions(task).await.map(|text| {
             let clipped: String = text.chars().take(3_000).collect();
