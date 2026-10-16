@@ -16,6 +16,7 @@ mod runtime;
 mod team;
 mod terminal;
 mod two_factor;
+mod users;
 mod verify;
 
 use std::collections::{HashMap, HashSet};
@@ -32,6 +33,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub use runtime::{EGRESS_CA_FILE, FINGERPRINTS_FILE, SCRUB_EXEC_FLAG, SCRUB_FILE_ENV};
 pub use team::Revealed;
 pub use terminal::TerminalScrub;
+pub(crate) use users::SecretUser;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -321,6 +323,10 @@ impl App {
         for record in &records {
             let payload: AgentPayload = self.open_payload(record)?;
             let mut forms = needles(&payload.value);
+            // A key copied into a file (`.env`) shows as its lines (SPEC-186 SAV-005).
+            for line in yulius_domain::vault::dotenv::key_lines(&payload.value) {
+                forms.extend(needles(&line));
+            }
             if let Some(seed) = &payload.totp {
                 forms.extend(needles(seed));
             }
@@ -348,6 +354,11 @@ impl App {
                 "[withheld: Yulius could not check this text for agent secrets]".into()
             }
         }
+    }
+
+    /// Whether the egress proxy is wired: runs get the proxy environment.
+    pub(crate) fn egress_wired(&self) -> bool {
+        self.vault.egress.load(Ordering::SeqCst)
     }
 
     /// Wires the egress proxy (composition): agent runs get the proxy environment and, when

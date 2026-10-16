@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The Superagent uses agent secrets as a task's agent does, and sees new tools without a restart
+  (SPEC-186, ADR-0150, task #171). It runs behind the egress proxy with its own bearer, so its
+  requests to a secret's bound hosts carry it (`$NAME` holds the placeholder); it copies allowed
+  secrets into the repository's git-ignored `.env` and asks for hosts, each asked as "alice's
+  Superagent"; production secrets stay out. Multi-line keys stored with literal `\n` (PEM,
+  OpenSSH) now land in a `.env` as their files, byte for byte, for tasks too, and copying again
+  replaces the whole key. A Superagent started before an update that changed its tools restarts by
+  itself once idle, resuming its conversation; the panel follows it.
 - A watched task follows its newest lines, with no octopus and less padding (SPEC-185, ADR-0149,
   task #170, fixes #575). The live transcript of someone else's task stopped scrolling down once
   "✻ Working…" showed, the card above changed or the window resized, and then sat behind "New

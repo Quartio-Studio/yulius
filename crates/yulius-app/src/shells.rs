@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -146,6 +146,12 @@ pub struct ShellRuntime {
     /// When the last usage limit a Cockpit acted on was recorded (ms; 0 for none): limits up to
     /// it are history, also after `/clear` and back or a server restart (SPEC-074 SUP-002).
     pub(crate) limit_handled_ms: AtomicI64,
+    /// The launch digest a Cockpit was started with (SPEC-186 SAV-006); unknown for records
+    /// written before it was kept.
+    pub(crate) launch: OnceLock<String>,
+    /// Whether an adopted Cockpit is to start again to get what this Yulius serves:
+    /// [`crate::cockpit::REFRESH_NONE`], `REFRESH_DUE` or `REFRESH_WAITING` (for its turn).
+    pub(crate) refresh: AtomicU8,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -156,7 +162,7 @@ pub struct ShellRuntime {
     created_at: Timestamp,
     /// Creation number, persisted with the shell (stable tab order).
     seq: u64,
-    run_dir: PathBuf,
+    pub(crate) run_dir: PathBuf,
     token: [u8; 32],
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
@@ -213,6 +219,9 @@ struct ShellFile {
     /// When the last usage limit a Cockpit acted on was recorded (ms), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_handled_at: Option<i64>,
+    /// The launch digest a Cockpit was started with (absent in older records, SPEC-186).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<String>,
     /// Sealed host token, lowercase hex.
     token: String,
 }
@@ -424,7 +433,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/bin/sh"))
     }
 
-    fn shell(&self, id: &str) -> Option<Arc<ShellRuntime>> {
+    pub(crate) fn shell(&self, id: &str) -> Option<Arc<ShellRuntime>> {
         self.shells
             .shells
             .lock()
@@ -749,6 +758,7 @@ impl App {
             account: runtime.account.get().map(|a| a.as_str().to_owned()),
             limit_handled_at: Some(runtime.limit_handled_ms.load(Ordering::SeqCst))
                 .filter(|ms| *ms > 0),
+            launch: runtime.launch.get().cloned(),
             token: hex_token(&sealed.0),
         };
         write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
@@ -779,6 +789,8 @@ impl App {
             account: OnceLock::new(),
             switching: AtomicBool::new(false),
             limit_handled_ms: AtomicI64::new(0),
+            launch: OnceLock::new(),
+            refresh: AtomicU8::new(crate::cockpit::REFRESH_NONE),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -1349,6 +1361,19 @@ impl App {
         {
             let _ = account.set(id);
         }
+        let launch = OnceLock::new();
+        // A Cockpit started with another launch than this Yulius serves (an update, or a record
+        // from before the digest) starts again once idle (SPEC-186 SAV-006).
+        let refresh = if file.kind == ShellKind::Cockpit
+            && file.launch.as_deref() != Some(self.cockpit_launch_digest().as_str())
+        {
+            crate::cockpit::REFRESH_DUE
+        } else {
+            crate::cockpit::REFRESH_NONE
+        };
+        if let Some(digest) = file.launch.clone() {
+            let _ = launch.set(digest);
+        }
         let runtime = Arc::new(ShellRuntime {
             id: file.id.clone(),
             kind: file.kind,
@@ -1356,6 +1381,8 @@ impl App {
             account,
             switching: AtomicBool::new(false),
             limit_handled_ms: AtomicI64::new(file.limit_handled_at.unwrap_or(0)),
+            launch,
+            refresh: AtomicU8::new(refresh),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
             task,

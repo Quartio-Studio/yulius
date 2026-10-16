@@ -531,13 +531,14 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         Err(err) => tracing::error!(error = %err, "cannot retire the legacy workflows"),
     }
     let scheduler = app.start_automation_scheduler();
+    // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-20). Wired before the
+    // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).
+    let egress =
+        crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
-    // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-20).
-    let egress =
-        crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
     let internal_router = crate::wiring::egress::with_egress(
         yulius_server::internal_router(app.clone()),
         egress,

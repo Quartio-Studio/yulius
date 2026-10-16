@@ -6,15 +6,13 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::api::secrets::{AgentSecretView, HostRequestAnswer};
-use yulius_domain::task::Activity;
 use yulius_domain::vault::VaultError;
 use yulius_domain::vault::hosts::{HostPattern, MAX_HOSTS, parse_hosts};
 
-use super::invalid;
+use super::{SecretUser, invalid};
 use crate::auth::AuthContext;
 use crate::browser::percent_encode;
 use crate::context::App;
-use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
 
 /// Longest reason an agent gives (audited).
@@ -104,11 +102,12 @@ impl App {
         )
     }
 
-    /// `secret_request_hosts`: stores the hosts an agent proposes for an agent secret of its
-    /// project as a request (never a binding), audits it and flags the task as needing a person.
+    /// `secret_request_hosts`: stores the hosts an agent or a Superagent proposes for an agent
+    /// secret of its project as a request (never a binding), audits it and flags a task as needing
+    /// a person (SPEC-121, SPEC-186 SAV-003).
     pub(crate) async fn tool_secret_request_hosts(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let args: RequestArgs = serde_json::from_value(args.clone())
@@ -121,7 +120,7 @@ impl App {
         }
         let store = &self.deps.store;
         let record = store
-            .vault_agent(Some(&ctx.task.sandbox_id))
+            .vault_agent(Some(user.sandbox()))
             .await?
             .into_iter()
             .find(|r| r.name == args.secret.trim())
@@ -136,7 +135,7 @@ impl App {
         }
         let merged = merge(&record.hosts, &record.requested_hosts, &asked).map_err(invalid)?;
         let sandbox = store
-            .sandbox(&ctx.task.sandbox_id)
+            .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
         let link = self.agent_secrets_link(&sandbox.slug);
@@ -156,7 +155,7 @@ impl App {
         let by = requester(
             record.requested_by.as_deref(),
             !record.requested_hosts.is_empty(),
-            ctx.task.number,
+            &user.asker(),
             record.sandbox_id.is_none().then_some(sandbox.slug.as_str()),
         );
         if !store
@@ -174,7 +173,7 @@ impl App {
         }
         let why = reason(args.reason.as_deref());
         self.vault_audit(
-            &format!("task:{}", ctx.task.number),
+            &user.actor(),
             "vault.agent.request",
             Some(&record.id),
             &format!(
@@ -189,13 +188,7 @@ impl App {
             ),
         )
         .await?;
-        if let Some(task) = store.task(&ctx.task.id).await?
-            && let Err(err) = self
-                .set_task_activity(&task, Activity::NeedsAttention)
-                .await
-        {
-            tracing::warn!(task = %task.id, error = %err, "could not flag a host request");
-        }
+        self.flag_secret_wait(user, "a host request").await?;
         Ok(json!({
             "requested": merged.fresh,
             "already_bound": merged.already_bound,
@@ -288,17 +281,18 @@ fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
     a.len() == b.len() && a.iter().all(|h| b.contains(h))
 }
 
-/// Who asks: `#N`, with the sandbox for a secret of every sandbox (shown on every sandbox's
-/// page); added to the earlier askers of a request that still waits.
+/// Who asks: `asker` (`#N`, `<login>'s Superagent`), with the sandbox for a secret of every
+/// sandbox (shown on every sandbox's page); added to the earlier askers of a request that still
+/// waits.
 pub(super) fn requester(
     earlier: Option<&str>,
     waiting: bool,
-    number: u32,
+    asker: &str,
     slug: Option<&str>,
 ) -> String {
     let me = match slug {
-        Some(slug) => format!("#{number} in {slug}"),
-        None => format!("#{number}"),
+        Some(slug) => format!("{asker} in {slug}"),
+        None => asker.to_owned(),
     };
     match earlier {
         Some(earlier) if waiting && earlier.split(", ").any(|e| e == me) => earlier.to_owned(),
@@ -345,15 +339,20 @@ mod tests {
 
     #[test]
     fn requesters_name_each_task_once() {
-        assert_eq!(requester(None, false, 7, None), "#7");
-        assert_eq!(requester(Some("#3"), true, 7, None), "#3, #7");
-        assert_eq!(requester(Some("#3, #7"), true, 7, None), "#3, #7");
+        assert_eq!(requester(None, false, "#7", None), "#7");
+        assert_eq!(requester(Some("#3"), true, "#7", None), "#3, #7");
+        assert_eq!(requester(Some("#3, #7"), true, "#7", None), "#3, #7");
         assert_eq!(
-            requester(Some("#3"), false, 7, None),
+            requester(Some("#3"), false, "#7", None),
             "#7",
             "an answered request is forgotten"
         );
-        assert_eq!(requester(None, false, 7, Some("app")), "#7 in app");
+        assert_eq!(requester(None, false, "#7", Some("app")), "#7 in app");
+        // SPEC-186 SAV-003: a Superagent asks under its person's name.
+        assert_eq!(
+            requester(Some("#3"), true, "alice's Superagent", Some("app")),
+            "#3, alice's Superagent in app"
+        );
         assert!(same_hosts(
             &parse_hosts(&hosts(&["b.test", "a.test"])).unwrap_or_default(),
             &parse_hosts(&hosts(&["A.test", "b.test"])).unwrap_or_default()
