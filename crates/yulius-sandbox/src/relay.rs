@@ -154,8 +154,27 @@ pub async fn serve_forward(
     out_sock: PathBuf,
     containers: bool,
 ) -> io::Result<JoinHandle<()>> {
-    let v4 = TcpListener::bind((forward_address(containers), port)).await?;
-    let v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok();
+    serve_forward_at(forward_address(containers), port, out_sock, true).await
+}
+
+/// Listens on `address:port` (and `[::1]:port` with `loopback_v6`) and relays every connection
+/// to `out_sock`, announcing `port`. The Docker front serves a holder's forwards on the engine's
+/// bridge gateway this way when the holder's own listen on loopback only (ADR-0158).
+///
+/// # Errors
+/// The IPv4 listener cannot be bound.
+pub async fn serve_forward_at(
+    address: Ipv4Addr,
+    port: u16,
+    out_sock: PathBuf,
+    loopback_v6: bool,
+) -> io::Result<JoinHandle<()>> {
+    let v4 = TcpListener::bind((address, port)).await?;
+    let v6 = if loopback_v6 {
+        TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok()
+    } else {
+        None
+    };
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     Ok(tokio::spawn(async move {
         loop {

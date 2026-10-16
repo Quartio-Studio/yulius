@@ -824,7 +824,8 @@ const DOCKER_SECTION_END: &str = "host-gateway`.";
 
 /// Containers in an isolated sandbox: with its own Docker engine (SPEC-187 DKR-010), how to use
 /// it; without one (SPEC-173 CTR-001: the containment of SPEC-002 ADR-22 alone leaves none,
-/// whatever `docker` client its base copied from the host), what works instead. The last
+/// whatever `docker` client its base copied from the host), what works instead; either way
+/// `docker info` tells the agent what it has (SPEC-196 DKL-006). The last
 /// mandatory part, so a tight budget cuts it before the task or the architecture pointer
 /// (CTR-002).
 fn containers(input: &BriefingInput<'_>) -> String {
@@ -832,14 +833,14 @@ fn containers(input: &BriefingInput<'_>) -> String {
         return String::new();
     }
     if input.docker {
-        return "## Containers\n\nDocker works here and in CI: this sandbox's own engine, images in \
-                its disk quota. Mount paths in the sandbox directory, publish ports in your range. \
-                Egress proxy: `host.docker.internal` with \
+        return "## Containers\n\nDocker works here and in CI (own engine, disk quota; `docker info` \
+                checks). Mount paths in the sandbox directory, publish ports in your range. Egress \
+                proxy: `host.docker.internal` with \
                 `--add-host=host.docker.internal:host-gateway`.\n\n"
             .to_owned();
     }
-    "## Containers\n\nNo container engine here, in Yulius CI or CD, whatever `docker` says: use one \
-     on another machine (`DOCKER_HOST=ssh://…`), keeping images and rollback images there or in a \
+    "## Containers\n\nNo container engine here, in Yulius CI or CD (`docker info` says why): use one \
+     elsewhere (`DOCKER_HOST=ssh://…`), keeping images and rollback images there or in a \
      registry. Install test services with `apt` and start them yourself.\n\n"
         .to_owned()
 }
@@ -2038,6 +2039,8 @@ mod tests {
             "## Containers",
             "No container engine",
             "Yulius CI",
+            // SPEC-196 DKL-006: how the agent learns why.
+            "`docker info` says why",
             "`DOCKER_HOST=ssh://",
             "rollback",
             "`apt`",
@@ -2101,6 +2104,7 @@ mod tests {
             "## Containers",
             "Docker works here and in CI",
             "own engine",
+            "`docker info` checks",
             "disk quota",
             "sandbox directory",
             "ports in your range",

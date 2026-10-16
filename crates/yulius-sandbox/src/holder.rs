@@ -8,9 +8,11 @@
 //! - `bwrap` (the namespace creator; it exits when its child does);
 //! - `yulius sandbox-host inner` ([`inner`]) in the new user, network and mount namespaces, as
 //!   root of the sandbox with every capability there. It mounts the system layer, serves
-//!   `in.sock`, the forwarded ports and, when the sandbox has an engine, its Docker socket
-//!   ([`crate::engine_supervisor`]; the engine is its child), and waits for `SIGTERM`;
+//!   `in.sock` and the forwarded ports, and waits for `SIGTERM`;
 //! - `slirp4netns`, when the sandbox has egress.
+//!
+//! The sandbox's Docker socket is the Docker front's, a process the server starts beside every
+//! live holder ([`crate::docker_front`], ADR-0158); stopping a holder stops its front first.
 //!
 //! Runs join the namespaces through `/proc/<inner pid>/ns/*` after checking the recorded inodes
 //! ([`crate::enter`]); the server stops the holder ([`stop`]) when the sandbox has been idle.
@@ -25,12 +27,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use yulius_contracts::sandbox::{
-    ENGINE_CONTROL_DIR, ENGINE_LOG_FILE, ENGINE_SOCKET, ENGINE_SYSFS_DIR, EngineSpec,
-    HOLDER_LOG_FILE, HOLDER_RECORD_FILE, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec,
-    INBOUND_SOCKET, OUTBOUND_SOCKET, SYSTEM_ROOT_DIR,
+    ENGINE_CONTROL_DIR, ENGINE_LOG_FILE, ENGINE_SOCKET, ENGINE_SYSFS_DIR, HOLDER_LOG_FILE,
+    HOLDER_RECORD_FILE, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, INBOUND_SOCKET,
+    OUTBOUND_SOCKET, SYSTEM_ROOT_DIR,
 };
-
-use crate::engine_supervisor::Supervisor;
 
 use crate::userns::{Mapper, cloexec_pipe, inheritable};
 
@@ -42,19 +42,8 @@ pub const SLIRP_TIMEOUT: Duration = Duration::from_secs(10);
 pub const STOP_GRACE: Duration = Duration::from_secs(3);
 /// Largest record read.
 const MAX_RECORD_BYTES: u64 = 1 << 20;
-/// The holder's readiness report when it serves everything asked of it.
+/// The holder's readiness report.
 const READY: &str = "ready";
-/// The report when it serves all but the sandbox's Docker socket (the sandbox still works).
-const READY_WITHOUT_DOCKER: &str = "ready without docker.sock";
-
-/// Whether a readiness report means ready, and whether the Docker socket is served then.
-fn readiness(line: &str) -> Option<bool> {
-    match line {
-        READY => Some(true),
-        READY_WITHOUT_DOCKER => Some(false),
-        _ => None,
-    }
-}
 
 /// Reads a JSON record (bounded).
 ///
@@ -176,7 +165,7 @@ impl StatePaths {
     pub fn root(&self) -> PathBuf {
         self.dir.join(SYSTEM_ROOT_DIR)
     }
-    /// `docker.sock`, the sandbox's Docker socket (ADR-0151).
+    /// `docker.sock`, the Docker socket a SPEC-187 holder serves itself (its front relays to it).
     #[must_use]
     pub fn engine_socket(&self) -> PathBuf {
         self.dir.join(ENGINE_SOCKET)
@@ -284,11 +273,11 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         let _ = child.wait();
         Err(format!("{message} ({})", log_tail(&paths.log())))
     };
-    let docker = match read_line_with_timeout(ready_read, READY_TIMEOUT) {
-        Ok(line) if readiness(&line).is_some() => readiness(&line) == Some(true),
+    match read_line_with_timeout(ready_read, READY_TIMEOUT) {
+        Ok(line) if line == READY => {}
         Ok(line) => return fail(&mut child, format!("holder failed: {line}")),
         Err(e) => return fail(&mut child, format!("holder: {e}")),
-    };
+    }
     let slirp_pid = match &spec.slirp4netns {
         None => None,
         Some(program) => match start_slirp(program, inner_pid, &log) {
@@ -310,7 +299,8 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         boot_id: boot_id(),
         started_at_ms: now_ms(),
         system_root: paths.root().to_string_lossy().into_owned(),
-        engine: spec.engine.is_some() && docker,
+        // The engine is the Docker front's (ADR-0158).
+        engine: false,
     };
     write_json(&paths.record(), &record).map_err(|e| format!("host.json: {e}"))?;
     Ok(record)
@@ -420,86 +410,19 @@ pub fn inner(spec_path: &Path, ready_fd: i32) -> Result<(), String> {
         let ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync> =
             Arc::new(move || crate::procnet::listening_ports(first, last));
         tokio::spawn(crate::relay::serve_inbound(listener, first, last, ports));
-        let containers = spec.engine.is_some();
         for port in &spec.forwards {
-            if let Err(e) = crate::relay::serve_forward(*port, paths.outbound(), containers).await {
+            if let Err(e) =
+                crate::relay::serve_forward(*port, paths.outbound(), spec.containers).await
+            {
                 let _ = writeln!(ready, "forward {port}: {e}");
                 return Err(format!("forward {port}: {e}"));
             }
         }
-        // Without its Docker socket the sandbox still works: runs get no socket (`host.json`
-        // says so) and the error stays in the holder's log.
-        let engine = spec.engine.as_ref().and_then(|engine| {
-            serve_engine(engine, &paths)
-                .map_err(|e| eprintln!("yulius: no Docker socket in this sandbox: {e}"))
-                .ok()
-        });
-        let report = if spec.engine.is_some() && engine.is_none() {
-            READY_WITHOUT_DOCKER
-        } else {
-            READY
-        };
-        let _ = writeln!(ready, "{report}");
+        let _ = writeln!(ready, "{READY}");
         drop(ready);
         wait_for_termination().await;
-        if let Some(engine) = engine {
-            // `stop` kills the holder after STOP_GRACE; the engine dies with it anyway.
-            engine.stop(Duration::from_secs(2)).await;
-        }
         Ok(())
     })
-}
-
-/// Serves the sandbox's Docker socket (runs and the engine bind it, so it exists before the
-/// holder is ready); the engine starts on its first connection.
-fn serve_engine(engine: &EngineSpec, paths: &StatePaths) -> io::Result<Arc<Supervisor>> {
-    use std::os::unix::fs::PermissionsExt as _;
-    for dir in [paths.engine_control(), paths.engine_sysfs()] {
-        std::fs::create_dir_all(dir)?;
-    }
-    let socket = paths.engine_socket();
-    let _ = std::fs::remove_file(&socket);
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
-    let (state, sysfs) = (paths.dir.clone(), paths.engine_sysfs());
-    let supervisor = Supervisor::new(
-        engine.command.clone(),
-        paths.engine_control().join(ENGINE_SOCKET),
-        paths.engine_log(),
-        PathBuf::from(&engine.cgroup),
-        Duration::from_secs(engine.idle_secs),
-        Box::new(move || prepare_engine(&state, &sysfs)),
-    );
-    tokio::spawn(Arc::clone(&supervisor).serve(listener));
-    tokio::spawn(Arc::clone(&supervisor).watch_idle());
-    Ok(supervisor)
-}
-
-/// Before each engine start: a fresh read-only sysfs of the sandbox's network at `sysfs` (the
-/// engine's `/sys`; `runc` may mount a sysfs only where one is fully visible, and the host's
-/// carries the host's cgroup tree), and IPv4 forwarding in the sandbox's network, which
-/// containers' traffic crosses.
-#[cfg(target_os = "linux")]
-fn prepare_engine(state: &Path, sysfs: &Path) -> Result<(), String> {
-    use nix::mount::{MsFlags, mount};
-    let device = |path: &Path| std::fs::metadata(path).map(|m| m.dev()).ok();
-    if device(sysfs).is_none() || device(sysfs) == device(state) {
-        mount(
-            Some("sysfs"),
-            sysfs,
-            Some("sysfs"),
-            MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
-            None::<&str>,
-        )
-        .map_err(|e| format!("cannot mount the engine's sysfs: {e}"))?;
-    }
-    std::fs::write("/proc/sys/net/ipv4/ip_forward", "1")
-        .map_err(|e| format!("cannot turn on forwarding in the sandbox's network: {e}"))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn prepare_engine(_state: &Path, _sysfs: &Path) -> Result<(), String> {
-    Err("sandbox namespaces are Linux-only".into())
 }
 
 fn owned_fd(fd: i32) -> Result<OwnedFd, String> {
@@ -555,7 +478,7 @@ fn mount_system_layer(_spec: &HolderSpec, _target: &Path) -> Result<(), String> 
     Err("sandbox namespaces are Linux-only".into())
 }
 
-async fn wait_for_termination() {
+pub(crate) async fn wait_for_termination() {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut term), Ok(mut int)) = (
         signal(SignalKind::terminate()),
@@ -570,7 +493,7 @@ async fn wait_for_termination() {
     }
 }
 
-fn signal(pid: u32, signal: nix::sys::signal::Signal) {
+pub(crate) fn signal(pid: u32, signal: nix::sys::signal::Signal) {
     if let Ok(raw) = i32::try_from(pid)
         && raw > 1
     {
@@ -578,7 +501,7 @@ fn signal(pid: u32, signal: nix::sys::signal::Signal) {
     }
 }
 
-fn exists(pid: u32) -> bool {
+pub(crate) fn exists(pid: u32) -> bool {
     i32::try_from(pid).is_ok_and(|raw| {
         raw > 1
             && nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None).is_ok()
@@ -592,16 +515,18 @@ fn exists(pid: u32) -> bool {
     })
 }
 
-fn command_line(pid: u32) -> String {
+pub(crate) fn command_line(pid: u32) -> String {
     std::fs::read(format!("/proc/{pid}/cmdline"))
         .map(|b| String::from_utf8_lossy(&b).replace('\0', " "))
         .unwrap_or_default()
 }
 
-/// Stops the holder of `record` (`SIGTERM`, then `SIGKILL` after [`STOP_GRACE`]) and its
-/// `slirp4netns`, and removes `host.json`. Processes are signalled only while they are still
-/// the recorded ones (namespace inodes, command lines).
+/// Stops the holder of `record` (`SIGTERM`, then `SIGKILL` after [`STOP_GRACE`]), its Docker
+/// front first (which would keep the namespaces alive) and its `slirp4netns`, and removes
+/// `host.json`. Processes are signalled only while they are still the recorded ones (namespace
+/// inodes, command lines).
 pub fn stop(state: &StatePaths, record: &HolderRecord) {
+    crate::docker_front::stop(state, record.net_ns);
     let holder_ours = alive(record);
     if holder_ours {
         signal(record.inner_pid, nix::sys::signal::Signal::SIGTERM);
@@ -625,6 +550,7 @@ pub fn stop(state: &StatePaths, record: &HolderRecord) {
     let _ = std::fs::remove_file(state.record());
     let _ = std::fs::remove_file(state.inbound());
     let _ = std::fs::remove_file(state.engine_socket());
+    let _ = std::fs::remove_file(state.docker_socket());
 }
 
 /// `slirp4netns` of `record` still runs (egress works).
@@ -667,16 +593,6 @@ pub fn restart_egress(
 mod tests {
     use super::*;
 
-    /// Review of SPEC-187 (low): whether the holder serves the Docker socket comes from the
-    /// holder's own readiness report, never from a socket file a crashed holder may have left.
-    #[test]
-    fn the_readiness_line_says_whether_the_docker_socket_is_served() {
-        assert_eq!(readiness(READY), Some(true));
-        assert_eq!(readiness(READY_WITHOUT_DOCKER), Some(false));
-        assert_eq!(readiness("mount the system layer: EPERM"), None);
-        assert_ne!(READY, READY_WITHOUT_DOCKER);
-    }
-
     #[test]
     fn layer_paths_must_fit_overlay_options() {
         let mut spec = HolderSpec {
@@ -707,7 +623,7 @@ mod tests {
             port_first: 1,
             port_last: 2,
             forwards: vec![],
-            engine: None,
+            containers: false,
         };
         assert_eq!(
             overlay_options(&spec).as_deref(),

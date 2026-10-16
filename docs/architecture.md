@@ -28,7 +28,8 @@ flowchart LR
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
     CH["Chrome on Xvfb"]
-    AG -->|"/run/docker.sock"| DE["Docker engine (on demand)"]
+    AG -->|"/run/yulius/docker"| DF["Docker front"]
+    DF --> DE["Docker engine (on demand)"]
   end
   AG -->|"MCP + hooks"| INT
   APP <--> GH["GitHub App + REST"]
@@ -88,11 +89,18 @@ Each isolated sandbox has its own Docker engine
 [decision 0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md),
 superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)).
 
-- **The socket.** The namespace holder serves the sandbox's `docker.sock`, which agents, the
-  Superagent, Shells and CI jobs see at `/run/docker.sock`.
+- **The socket** ([decision 0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
+  A Docker front (`yulius sandbox-host docker`), a process the server starts beside every live
+  holder, adopted ones included, serves `<state>/docker/docker.sock`. Agents, the Superagent,
+  Shells and CI jobs bind that directory at `/run/yulius/docker`, with `DOCKER_HOST` and a
+  `/run/docker.sock` link, so a recreated socket reaches them. Runs started without it get the
+  directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
+  bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
+  engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine` and execs `bwrap`, then `yulius sandbox-host engine`
-  supervises `dockerd`. The holder splices each connection to the engine's own socket.
+  supervises `dockerd`. The front splices each connection to the engine's own socket (for a
+  holder of SPEC-187, to that holder's own engine).
 - **The engine's process.** `dockerd` is root of the sandbox's user namespace, in the sandbox's
   network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
@@ -102,12 +110,14 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   and build cache are pruned through its own control socket; a stopped engine is never started
   for that.
 - **When the prerequisites are missing** (`dockerd` on the host, the cgroup delegation), the
-  briefing's `## Containers` section keeps saying there is no engine.
+  briefing's `## Containers` section says there is no engine and `docker info` says why.
+- **Proof on a host.** `yulius doctor --docker-smoke` walks a throwaway sandbox through an
+  upgrade (a run older than the engine, adoption with Docker on, a recreated socket).
 
 ```mermaid
 flowchart LR
   subgraph NS["Sandbox user + network namespace"]
-    R["run: agent, Superagent, Shell, CI job"] -->|"/run/docker.sock"| H["holder: docker.sock"]
+    R["run: agent, Superagent, Shell, CI job"] -->|"/run/yulius/docker/docker.sock"| H["Docker front (beside the holder)"]
     H -->|"first connection: sandbox-exec --engine → bwrap"| E["sandbox-host engine → dockerd"]
     H -->|"splice"| E
     E --> C["containers (engine seccomp, engine/ cgroup)"]
@@ -115,6 +125,8 @@ flowchart LR
   end
   T --> S["slirp4netns (host loopback off)"] --> I["Internet"]
   M["server: disk upkeep"] -->|"running engine only: prune build cache, unused images"| E
+  K["server: upkeep tick"] -->|"start / restart the front"| H
+  K -->|"bind-docker: move the directory into runs without it"| R
 ```
 
 ## Disk
@@ -1141,7 +1153,11 @@ limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` m
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs
 ([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
-[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)).
+[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). It is published
+when the run is queued and when it starts. It is published again each time a job passes or ends
+skipped while other jobs still run (one at a time, so its count never goes back), and last when
+the run ends, after every job's task. A published status resets the run's retry attempts
+([SPEC-198](../.ai/specs/SPEC-198-it-isn-t-true-because-i-saw-that-some-ci.md)).
 
 ```mermaid
 flowchart LR

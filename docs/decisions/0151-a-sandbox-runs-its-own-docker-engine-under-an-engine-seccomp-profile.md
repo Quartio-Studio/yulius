@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-187](../../.ai/specs/SPEC-187-docker-works-inside-sandboxes-for-tasks.md);
 task #172, #551. Amends [0003](0003-sandbox-isolation.md) (SPEC-002 ADR-22). Supersedes
-[0140](0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md).
+[0140](0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md). Amended by
+[0158](0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md): the
+socket is a Docker front's beside every holder, runs bind its directory, and live runs get it.
 
 ## Context
 

@@ -35,6 +35,22 @@ pub enum HostAction {
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
+    /// The sandbox's Docker front beside its holder: serves `docker/docker.sock` until stopped
+    /// (ADR-0158).
+    Docker {
+        /// The front spec (`runtime/sandboxes/<sandbox>/docker.json`).
+        #[arg(long)]
+        spec: PathBuf,
+    },
+    /// Move the sandbox's Docker directory into running runs' mount namespaces (ADR-0158).
+    BindDocker {
+        /// The front spec.
+        #[arg(long)]
+        spec: PathBuf,
+        /// A process of each run.
+        #[arg(long = "pid", required = true)]
+        pids: Vec<u32>,
+    },
     /// Remove a tree as root of a mapped namespace (files owned by mapped ids).
     RemoveTree {
         /// The tree.
@@ -109,6 +125,29 @@ pub fn host(action: HostAction) -> ExitCode {
             Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
             Err(error) => fail(&error),
         },
+        HostAction::Docker { spec } => match yulius_sandbox::docker_front::run(&spec) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(&error),
+        },
+        HostAction::BindDocker { spec, pids } => {
+            let spec: yulius_contracts::sandbox::DockerFrontSpec =
+                match yulius_sandbox::holder::read_json(&spec) {
+                    Ok(spec) => spec,
+                    Err(error) => return fail(&format!("{}: {error}", spec.display())),
+                };
+            if let Err(error) = spec.validate() {
+                return fail(&error.to_string());
+            }
+            match yulius_sandbox::docker_bind::bind(&spec, &pids) {
+                Ok(outcomes) => {
+                    for (pid, outcome) in outcomes {
+                        println!("{}", outcome.line(pid));
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => fail(&error),
+            }
+        }
         HostAction::RemoveTree { path } => {
             yulius_sandbox::base::make_writable(&path);
             match std::fs::remove_dir_all(&path) {
@@ -120,10 +159,25 @@ pub fn host(action: HostAction) -> ExitCode {
     }
 }
 
-/// `yulius sandbox-exec [--engine] [--cgroup DIR] -- bwrap …`: joins `cgroup`, then execs `bwrap`
-/// with the run's seccomp filter, or the engine's (ADR-0151).
+/// `yulius sandbox-exec [--engine] [--cgroup DIR] [--join FILE] -- bwrap …`: joins `cgroup` and
+/// the sandbox of `join` (still single-threaded), then execs `bwrap` with the run's seccomp
+/// filter, or the engine's (ADR-0151).
 #[must_use]
-pub fn exec(engine: bool, cgroup: Option<&Path>, argv: &[OsString]) -> ExitCode {
+pub fn exec(
+    engine: bool,
+    cgroup: Option<&Path>,
+    join: Option<&Path>,
+    argv: &[OsString],
+) -> ExitCode {
+    if let Some(path) = join {
+        let joined =
+            yulius_sandbox::holder::read_json::<yulius_contracts::ptyhost::SandboxJoin>(path)
+                .map_err(|e| e.to_string())
+                .and_then(|join| yulius_sandbox::enter::join(&join).map_err(|e| e.to_string()));
+        if let Err(error) = joined {
+            return fail(&format!("cannot join the sandbox: {error}"));
+        }
+    }
     if let Some(cgroup) = cgroup
         && let Err(error) = yulius_sandbox::cgroup::join(cgroup)
     {

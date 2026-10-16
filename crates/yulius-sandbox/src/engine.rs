@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use yulius_contracts::sandbox::{
-    ENGINE_CONTROL_DIR, ENGINE_CONTROL_IN_ENGINE, ENGINE_SOCKET, ENGINE_SOCKET_IN_RUNS,
-    ENGINE_SYSFS_DIR, ROOT_LINKS, SYSTEM_LAYER_DIRS,
+    DOCKER_DIR, DOCKER_DIR_IN_RUNS, DOCKER_SOCKET_LINK, ENGINE_CONTROL_DIR,
+    ENGINE_CONTROL_IN_ENGINE, ENGINE_SOCKET_IN_RUNS, ENGINE_SYSFS_DIR, ROOT_LINKS,
+    SYSTEM_LAYER_DIRS,
 };
 
 /// `PATH` inside the engine.
@@ -48,7 +49,7 @@ pub struct EngineView {
 }
 
 /// `dockerd` and its arguments inside the engine: its control socket in the control directory
-/// (the sandbox's socket at [`ENGINE_SOCKET_IN_RUNS`] is the holder's), cgroupfs (no systemd
+/// (the sandbox's socket at [`ENGINE_SOCKET_IN_RUNS`] is the Docker front's), cgroupfs (no systemd
 /// inside), no IPv6 NAT (sandboxes have no IPv6 egress).
 #[must_use]
 pub fn dockerd_argv() -> Vec<String> {
@@ -139,16 +140,22 @@ pub fn bwrap_argv(view: &EngineView) -> Vec<String> {
             format!("{state}/{ENGINE_CONTROL_DIR}"),
             ENGINE_CONTROL_IN_ENGINE,
         ),
+        // The sandbox's Docker directory, as runs see it (ADR-0158), for `-v /var/run/docker.sock`.
         (
-            "--bind",
-            format!("{state}/{ENGINE_SOCKET}"),
-            ENGINE_SOCKET_IN_RUNS,
+            "--ro-bind",
+            format!("{state}/{DOCKER_DIR}"),
+            DOCKER_DIR_IN_RUNS,
         ),
         ("--ro-bind", view.exe.clone(), &view.exe),
     ];
     for (option, source, dest) in pairs {
         argv.extend([option.to_owned(), source, dest.to_owned()]);
     }
+    argv.extend([
+        "--symlink".into(),
+        DOCKER_SOCKET_LINK.into(),
+        ENGINE_SOCKET_IN_RUNS.into(),
+    ]);
     argv.extend(["--chdir".into(), "/".into(), "--".into()]);
     argv.extend([view.exe.clone(), "sandbox-host".into(), "engine".into()]);
     argv.push("--".into());
@@ -608,9 +615,9 @@ mod tests {
                 "/run/yulius-engine",
             ),
             (
-                "--bind",
-                "/data/runtime/sandboxes/s1/docker.sock",
-                "/run/docker.sock",
+                "--ro-bind",
+                "/data/runtime/sandboxes/s1/docker",
+                "/run/yulius/docker",
             ),
             (
                 "--ro-bind",
@@ -651,7 +658,12 @@ mod tests {
         let storage = position(&argv, &["--bind", "/data/sysroots/s1/docker"]);
         let sys = position(&argv, &["--ro-bind", &format!("{state}/sys"), "/sys"]);
         let cgroup = position(&argv, &["--bind", &view().cgroup, "/sys/fs/cgroup"]);
-        let socket = position(&argv, &["--bind", &format!("{state}/docker.sock")]);
+        let socket = position(&argv, &["--ro-bind", &format!("{state}/docker")]);
+        let link = position(
+            &argv,
+            &["--symlink", "yulius/docker/docker.sock", "/run/docker.sock"],
+        );
+        assert!(socket < link, "{argv:?}");
         let exe = position(&argv, &["--ro-bind", "/usr/local/bin/yulius"]);
         assert!(run < var && var < private && private < sandbox, "{argv:?}");
         assert!(var < storage && sys < cgroup && run < socket, "{argv:?}");
