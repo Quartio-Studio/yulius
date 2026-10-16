@@ -244,6 +244,17 @@ pub(crate) struct WireId {
     pub(crate) id: u64,
 }
 
+/// A Git reference (`GET /repos/{o}/{r}/git/ref/{ref}`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireGitRef {
+    pub(crate) object: WireGitObject,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireGitObject {
+    pub(crate) sha: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireCompare {
     pub(crate) status: String,
