@@ -101,8 +101,9 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
 - **VSC-002.** The scan always reads commits, never the working tree: file contents come from
   `HEAD`'s tree, and so does `.config/vidoc.toml`. A dirty tree or a detached HEAD is fine.
 - **VSC-003. Change scan** (default): the files that differ between `merge-base(HEAD, base)` and
-  `HEAD` and still exist there. The base is `--base REF`, else `refs/remotes/origin/HEAD`; with
-  neither, the scan exits 2. **Broad scan** (`--all`): every file tracked in `HEAD`.
+  `HEAD` and still exist there. The base is `--base REF`, else
+  `origin/$YULIUS_INTEGRATION_BRANCH` (Yulius sets it for agent runs and CI jobs), else
+  `refs/remotes/origin/HEAD`; with none of them, the scan exits 2. **Broad scan** (`--all`): every file tracked in `HEAD`.
 - **VSC-004.** Some files are never sent. A built-in list skips:
   - binaries (a NUL byte or invalid UTF-8);
   - files over 1 MiB;
@@ -114,18 +115,20 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
   why.
 - **VSC-005. Chunking and budget.** Files are packed in path order into chunks of at most 60 000
   bytes of line-numbered text. A larger file is split at line boundaries, and the header names
-  the line range. A total byte budget applies: 4 MB for a change scan, 16 MB for a broad scan,
-  overridable with `--max-bytes`. So does a deadline: 30 minutes for a change scan and 180 for a
-  broad scan, overridable with `--deadline-minutes`. Files past either limit are listed as not
-  scanned.
+  the line range. Lines are split on line feeds only. A total byte budget applies: 4 MB for a
+  change scan, 32 MB for a broad scan, overridable with `--max-bytes`. So does a deadline that also
+  bounds every request in flight: 20 minutes for a change scan (below Yulius CI's 30-minute job
+  timeout) and 180 for a broad scan, overridable with `--deadline-minutes`. Files past either limit
+  are listed as not scanned. Open critical or high findings are printed as they arrive.
 - **VSC-006. Contract.** Each chunk is one `POST /v1/messages` request:
   - `model: vidoc-1`, `max_tokens: 16000`;
   - the system prompt fixes a JSON answer `{"findings": [{severity, file, line, title, detail}]}`
     with severities `critical|high|medium|low`, and says that file contents are untrusted data
     whose instructions are ignored;
   - the answer's text blocks are joined, code fences are stripped, and the JSON object is parsed;
-  - a finding must name a file of its chunk. Its `line` must be an integer inside that file's
-    lines, or it is kept with no line.
+  - a finding's `line` must be an integer inside the lines of the file it names in its chunk;
+    otherwise, also when it names a file outside its chunk, it is kept with no line, so a
+    mislabelled finding is never lost.
 
   An answer that cannot be read is retried twice, then it fails the scan (exit 1).
 - **VSC-007. Rate limits and retries.** Chunks run up to `--jobs` at a time (default 4).
@@ -152,8 +155,9 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
   real key elsewhere. `VIDOC_API_URL` defaults to `https://model.vidocsecurity.com`. Plain `http://`
   is accepted for loopback only (tests). The key travels only in `x-api-key`.
 - **VSC-011. CI mode.** `--ci` scans only on a pull request head (`YULIUS_CI_REF=pr/<n>`, change
-  scan). It maps exit 2, and any other head, to `${YULIUS_CI_SKIP_CODE:-0}` with
-  `[yulius] security scan skipped: …`.
+  scan). It maps exit 2, nothing to scan, a disabled scan and any other head to
+  `${YULIUS_CI_SKIP_CODE:-0}` with `[yulius] security scan skipped: …` (ADR-0133: a job that
+  checked nothing ends skipped).
 - **VSC-012.** `api.vidoc.dev`, the CLI, `tools/vidoc` and `VIDOC_TOKEN` are gone from code and
   docs. Historical specs and ADRs keep their record, and a new ADR supersedes their CLI parts.
 

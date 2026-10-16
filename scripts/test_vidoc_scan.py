@@ -10,7 +10,9 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
+import urllib.error
 
 import vidoc_scan
 from vidoc_scan import Failed, Usage
@@ -206,6 +208,25 @@ class ChangeScan(Scanning):
         self.assertEqual(server.requests, [])
         self.assertIn("nothing to scan", output)
 
+    def test_the_integration_branch_yulius_names_is_the_base(self):
+        # Review minor 3: origin's default branch (main) is not where the project integrates.
+        repo = Repo(self, {"a.py": CLEAN}, origin_head=False)
+        git(repo.root, "update-ref", "refs/remotes/origin/main", "refs/remotes/origin/dev~0")
+        git(repo.root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(repo.root, "checkout", "-q", "dev")
+        repo.commit({"on_dev.py": CLEAN}, "dev moves on")
+        git(repo.root, "update-ref", "refs/remotes/origin/dev", "HEAD")
+        git(repo.root, "checkout", "-q", "-b", "feat/y")
+        repo.commit({"mine.py": CLEAN})
+        server = self.fake()
+        code, output = self.run_scan(repo, server, env={"YULIUS_INTEGRATION_BRANCH": "dev"})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(server.scanned(), ["mine.py"])
+        self.assertIn("origin/dev", output)
+        server = self.fake()
+        self.assertEqual(self.run_scan(repo, server)[0], 0)
+        self.assertEqual(server.scanned(), ["mine.py", "on_dev.py"], "origin/HEAD without it")
+
     def test_an_explicit_base_wins_and_no_base_is_not_run(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN}, origin_head=False)
         server = self.fake()
@@ -259,6 +280,23 @@ class BroadScan(Scanning):
         code, output = self.run_scan(repo, self.fake(), "--all", "--max-bytes", "90000",
                                      "--jobs", "1")
         self.assertEqual(code, 1, output)
+
+    def test_an_unwritable_report_keeps_the_verdict(self):
+        repo = Repo(self, {"a.py": PLANTED})
+        code, output = self.run_scan(repo, self.fake(), "--all", "--report",
+                                     str(repo.root / "no" / "such" / "dir" / "r.json"))
+        self.assertEqual(code, 1, output)
+        self.assertIn("could not write the report", output)
+
+    def test_a_file_name_with_a_line_break_keeps_its_own_content(self):
+        # Review minor 5: `git cat-file --batch` reads names line by line.
+        repo = Repo(self, {"a.py": CLEAN, "b\nc.py": PLANTED, "z.py": CLEAN})
+        server = self.fake()
+        code, output = self.run_scan(repo, server, "--all")
+        self.assertEqual(code, 1, output)
+        contents = "".join(body["messages"][0]["content"] for _, _, body in server.requests)
+        self.assertIn('os.system("ls " + name)', contents)
+        self.assertEqual(contents.count("os.system"), 1, "no content under another path")
 
     def test_a_report_file_holds_findings_and_unscanned_files(self):
         repo = Repo(self, {"a.py": PLANTED, "b.md": "x\n"})
@@ -319,6 +357,45 @@ class Service(Scanning):
         code, output = self.run_scan(repo, None, env={"VIDOC_API_URL": url})
         self.assertEqual(code, 2, output)
         self.assertIn("cannot be reached", output)
+
+    def test_the_deadline_bounds_a_stalled_request(self):
+        # Review M1: a request already in flight cannot outlive the deadline (each request's
+        # timeout is what is left of it, and nothing is retried past it).
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stall(body, headers):
+            release.wait(30)
+            return judge(body)
+
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        started = time.monotonic()
+        code, output = self.run_scan(repo, self.fake(stall), "--deadline-minutes", "0.02")
+        self.assertLess(time.monotonic() - started, 15, "bounded by the deadline")
+        self.assertEqual(code, 2, output)
+        self.assertIn("deadline", output)
+        self.assertIn("not scanned: b.py", output)
+
+    def test_findings_are_printed_as_they_arrive(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        code, output = self.run_scan(repo, self.fake())
+        self.assertEqual(code, 1, output)
+        first = output.index("found [critical] b.py:5")
+        self.assertLess(first, output.index("chunk 1/1 reviewed"), output)
+
+    def test_an_error_body_that_cannot_be_read_still_maps_the_status(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+
+        class Broken:
+            def read(self, n=-1):
+                raise OSError("connection reset")
+
+        error = urllib.error.HTTPError("http://x", 401, "no", {}, Broken())
+        client = vidoc_scan.Client("http://127.0.0.1:9", KEY, lambda s: None)
+        client.opener = type("O", (), {"open": lambda self, *a, **k: (_ for _ in ()).throw(error)})()
+        with self.assertRaises(Usage):
+            client.post({"model": "vidoc-1"}, time.monotonic() + 60)
+        del repo
 
     def test_an_unreadable_answer_is_retried_then_fails(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
@@ -433,6 +510,12 @@ class Selection(unittest.TestCase):
 
 
 class Chunking(unittest.TestCase):
+    def test_lines_are_split_on_line_feeds_only(self):
+        # Review nit: a form feed or U+2028 inside a line must not shift the line numbers.
+        chunk = vidoc_scan.make_chunks([("a.py", "x = 1\fy\ns = '\u2028'\nz = 3\n")], 1000)[0]
+        self.assertEqual((chunk.parts[0].first, chunk.parts[0].last), (1, 3))
+        self.assertIn("3| z = 3", chunk.text)
+
     def test_files_are_packed_in_order_and_numbered(self):
         chunks = vidoc_scan.make_chunks([("a.py", "x = 1\ny = 2\n"), ("b.py", "z = 3\n")], 1000)
         self.assertEqual(len(chunks), 1)
@@ -517,6 +600,16 @@ class CiMode(Scanning):
                     env["YULIUS_CI_SKIP_CODE"] = skip
                 code, output = self.run_scan(repo, self.fake(), "--ci", env=env)
                 self.assertEqual(code, expected, output)
+                self.assertIn("[yulius] security scan skipped", output)
+
+    def test_nothing_to_scan_or_disabled_ends_skipped(self):
+        # Review minor 2 (ADR-0133): a job that checked nothing ends skipped, not passed.
+        for change in ({"notes.md": "# x\n"}, {".config/vidoc.toml": "enabled = false\n"}):
+            with self.subTest(change=change):
+                repo = Repo(self, {"a.py": CLEAN}, change)
+                code, output = self.run_scan(repo, self.fake(), "--ci",
+                                             env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
+                self.assertEqual(code, 78, output)
                 self.assertIn("[yulius] security scan skipped", output)
 
     def test_other_heads_are_not_scanned(self):

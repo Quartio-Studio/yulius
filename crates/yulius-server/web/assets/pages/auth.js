@@ -120,7 +120,7 @@ export function mountSetup(ctx, { onDone }) {
       if (me) delete me.recovery_code;
       // The session exists now: the optional key steps save through the superadmin's API.
       if (me && me.csrf_token) ctx.api.setCsrf(me.csrf_token);
-      const vidocStep = () => setChildren(root, keySetupCard(ctx, 'vidoc', { header: brandLockup(), step: 'Optional · last step', onDone: () => onDone(me) }));
+      const vidocStep = () => setChildren(root, keySetupCard(ctx, 'vidoc', { header: brandLockup(), step: 'Optional · 2 of 2', onDone: () => onDone(me) }));
       const jevStep = () => setChildren(root, keySetupCard(ctx, 'jev', { header: brandLockup(), step: 'Optional · 1 of 2', onDone: vidocStep }));
       if (code) {
         setChildren(root, recoveryCodeCard(code, { onContinue: jevStep }));

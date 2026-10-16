@@ -16,7 +16,7 @@ use support::{
 };
 use yulius_app::model::Secret;
 use yulius_app::ports::egress::{EgressDecision, EgressPolicy, EgressRequest};
-use yulius_app::ports::store::UserStore as _;
+use yulius_app::ports::store::{SandboxStore as _, UserStore as _};
 use yulius_app::ports::store_ext::UpdateStore as _;
 use yulius_app::ports::vidoc::{VidocCheck, VidocConnector};
 use yulius_app::vidoc_key::VIDOC_HOST;
@@ -93,6 +93,19 @@ async fn api(
         assert!(!text.contains(key), "a response carried a key: {text}");
     }
     Ok(r)
+}
+
+/// The audit entries of the instance Vidoc key, by action.
+async fn audited(i: &Instance, action: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store_ext::AutomationStore as _;
+    Ok(i.h
+        .store
+        .automation_audit("instance:vidoc", 100)
+        .await?
+        .into_iter()
+        .filter(|e| e.action == action)
+        .map(|e| e.actor)
+        .collect())
 }
 
 fn in_use(i: &Instance) -> Option<String> {
@@ -202,6 +215,12 @@ async fn the_superadmin_manages_the_optional_key() -> TestResult {
     assert_eq!(r.body["configured"], false);
     assert!(i.h.store.vidoc_key().await?.is_none());
     assert_eq!(in_use(&i), None);
+
+    // Audited, by who changed it; removing nothing records nothing.
+    assert_eq!(audited(&i, "vidoc.key_set").await?.len(), 3);
+    assert_eq!(audited(&i, "vidoc.key_removed").await?, ["superadmin"]);
+    api(&i, Method::DELETE, "/api/admin/vidoc", None, &i.admin).await?;
+    assert_eq!(audited(&i, "vidoc.key_removed").await?.len(), 1);
     Ok(())
 }
 
@@ -393,6 +412,11 @@ async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
         None,
         "nothing is added: the key replaces its placeholder only"
     );
+    assert_eq!(
+        audited(&i, "vault.agent.use").await?,
+        ["task:1"],
+        "each use is audited under the instance key"
+    );
     let redactor = app.egress_redactor(&s1).await;
     let (redacted, _) = redact_text(redactor.as_ref(), &format!("echo {SAVED}"));
     assert_eq!(redacted, "echo [secret:VIDOC_API_KEY]");
@@ -460,8 +484,8 @@ async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
     Ok(())
 }
 
-/// VDK-005: the instance key is never handed out in clear: no `.env` copy, and the Secrets page
-/// does not list it.
+/// VDK-005: the instance key is never handed out in clear: no `.env` copy, no MCP reference, no
+/// browser filling, and the Secrets page does not list it.
 #[tokio::test]
 async fn the_instance_key_is_never_handed_out_in_clear() -> TestResult {
     let i = instance(Ok(Some(Secret(CONFIG.into())))).await?;
@@ -475,6 +499,28 @@ async fn the_instance_key_is_never_handed_out_in_clear() -> TestResult {
     .await?;
     let text = tool_text(&copied).to_string();
     assert!(!text.contains(CONFIG), "{text}");
+    let s1 =
+        i.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    assert_eq!(
+        i.h.app.resolve_secret_ref(&s1, "VIDOC_API_KEY").await?,
+        None,
+        "no MCP ${{secret:…}} reference resolves to it"
+    );
+    let filled = tool_text(
+        &mcp_tool(
+            &i.h,
+            TOKEN_A,
+            "browser_fill_secret",
+            json!({"tab_id": "tab-1", "secret": "VIDOC_API_KEY"}),
+        )
+        .await?,
+    )
+    .to_string();
+    assert!(filled.contains("no agent secret named"), "{filled}");
+    assert!(!filled.contains(CONFIG), "{filled}");
     let page = call(
         &i.h.router,
         Method::GET,

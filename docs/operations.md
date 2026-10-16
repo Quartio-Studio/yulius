@@ -588,7 +588,9 @@ egress proxy replaces it toward `model.vidocsecurity.com` only. CI jobs get it o
 `yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). A project's own agent secret named
 `VIDOC_API_KEY` wins over the instance key. Each use is in the secrets audit (`instance:vidoc`).
 Projects onboarded with a key get a `security` CI job, `yulius security-scan --ci`. The scan needs
-`python3` 3.11 or later in the sandboxes; `YULIUS_PYTHON` names another interpreter.
+`python3` 3.11 or later in the sandboxes. Agents and CI jobs start with an environment of their own,
+so `YULIUS_PYTHON`, which names another interpreter, is set in the job's command or in the session,
+not on the service.
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |

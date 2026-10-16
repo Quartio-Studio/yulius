@@ -57,14 +57,16 @@ The person asked for three things:
   their containment. This repository's `security` job runs the in-tree file, so a pull request tests
   its own scanner.
 - **The scan reads commits.**
-  - The **change scan** sends the files that differ between `merge-base(HEAD, origin/HEAD)` (or
-    `--base`) and `HEAD`.
+  - The **change scan** sends the files that differ between the merge base with the integration
+    branch (`--base`, else `origin/$YULIUS_INTEGRATION_BRANCH`, which Yulius sets, else
+    `origin/HEAD`) and `HEAD`.
   - The **broad scan** (`--all`) sends every tracked file.
   - Files come from `HEAD`'s tree, line-numbered, in chunks of 60 kB or less.
   - Binaries, vendored and built directories, lockfiles, minified files, prose, media and
     `exclude` globs are skipped.
-  - Each scan has a byte budget (4 MB for a change scan, 16 MB for a broad scan) and a deadline
-    (30 minutes and 180 minutes).
+  - Each scan has a byte budget (4 MB for a change scan, 32 MB for a broad scan) and a deadline
+    that also bounds every request in flight (20 minutes, below CI's 30-minute job timeout, and
+    180 minutes).
   - Up to 4 requests run at once.
 - **The contract.** Each chunk is one `POST /v1/messages` with `model: vidoc-1`. The system prompt
   asks for one JSON object, `{"findings": [{severity, file, line, title, detail}]}`, and says that
@@ -84,7 +86,8 @@ The person asked for three things:
   - the briefing has a short `## Security scan` section;
   - the onboarding prompt, skill `infra-bootstrap` and its workflow add the `security` job
     (`secrets = "VIDOC_API_KEY"`, `command = "yulius security-scan --ci"`) and the AGENTS.md rule;
-  - `--ci` scans pull request heads only and ends the job skipped on exit 2 (ADR-0133).
+  - `--ci` scans pull request heads only, and ends the job skipped on exit 2 and when it checked
+    nothing (ADR-0133).
 
   Without a key, they say "no Vidoc key on this instance" and add nothing.
 
@@ -113,7 +116,7 @@ The person asked for three things:
 - A prompt injection in the scanned code could make the model report nothing. The verdict is a
   model's judgement, not a proof.
 - Each scan uses the key's quota. A change scan of this repository's typical PR is one to three
-  chunks, and a broad scan of it is about 150 chunks.
+  chunks, and a broad scan of it is about 260 chunks (15 MB).
 - The running instance is built from `main`. Until a person promotes `dev`, only a project's own
   `VIDOC_API_KEY` reaches its jobs. This repository has one, so its PR jobs scan now.
 - Exit 2 still covers causes a pull request controls (a malformed `.config/vidoc.toml`, a missing

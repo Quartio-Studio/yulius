@@ -71,8 +71,9 @@ high findings. **The code it scans is sent to Vidoc.** It is standard-library Py
 The `yulius` binary embeds the same file as `yulius security-scan`, which is how every other
 project runs it.
 
-- **Change scan** (the default): the files that differ between `merge-base(HEAD, origin/HEAD)` and
-  `HEAD`. `--base REF` names another base.
+- **Change scan** (the default): the files that differ between the merge base with the integration
+  branch and `HEAD`. The base is `--base REF`, else `origin/$YULIUS_INTEGRATION_BRANCH` (Yulius
+  sets it for agents and CI jobs), else `origin/HEAD`.
 - **Broad scan** (`--all`): every file tracked in `HEAD`, for an audit task. Run it in the background
   or with a long tool timeout, and keep the result with `--report FILE`:
 
@@ -92,9 +93,13 @@ names its line range. Some files are never sent:
 - prose (`.md`, `.txt`, `.rst`) and media;
 - the `exclude` globs of `.config/vidoc.toml` (fnmatch style: `*` also crosses `/`).
 
-A budget bounds every scan: 4 MB and 30 minutes for a change scan, 16 MB and 180 minutes for a broad
-scan (`--max-bytes`, `--deadline-minutes`). Up to 4 requests run at once (`--jobs`). Files past the
-budget are listed as not scanned, and the scan is then incomplete.
+A budget bounds every scan: 4 MB and 20 minutes for a change scan (below Yulius CI's 30-minute job
+timeout), 32 MB and 180 minutes for a broad scan (`--max-bytes`, `--deadline-minutes`). The deadline
+bounds every request in flight too. Up to 4 requests run at once (`--jobs`). Files past the budget
+are listed as not scanned, and the scan is then incomplete (exit 2): rerun with a larger
+`--max-bytes`. This repository's broad scan sends about 15 MB in some 260 chunks. Each open critical
+or high finding is printed as soon as it arrives (`found [high] …`), so even a scan that is killed
+shows what it found.
 
 **The contract.** Each chunk is one request (`model: vidoc-1`). The system prompt asks for one JSON
 object, `{"findings": [{"severity", "file", "line", "title", "detail"}]}`, with severities `critical`,
@@ -139,7 +144,8 @@ scanned.` and exits 0. Agents report such a run as disabled, never as passed. Tu
 reviewed pull request that says why. Exit codes:
 
 - 0: passed (no open critical or high finding in a complete scan), nothing to scan, or disabled.
-  Its message says which. Medium and low findings are printed but do not fail the scan.
+  Its message says which; with `--ci`, nothing to scan and disabled end skipped, since nothing was
+  checked. Medium and low findings are printed but do not fail the scan.
 - 1: failed. The causes: an open critical or high finding (each one is printed with severity,
   `file:line`, title and detail); an answer that could not be read; a request Vidoc refused with
   another 4xx.
@@ -155,7 +161,7 @@ Yulius CI runs the change scan as the `security` job of `yulius.toml` on every p
 (`python3 scripts/vidoc_scan.py --ci`; other projects run `yulius security-scan --ci`).
 
 - **It runs the pull request's own scanner.** `--ci` scans only when `YULIUS_CI_REF` is `pr/<n>`.
-  `dev` and `main` heads and merge trains end skipped.
+  `dev` and `main` heads, merge trains, and pull requests with nothing to scan end skipped.
 - **It gets the key through the proxy.** The `secrets = "VIDOC_API_KEY"` line on the job is read
   from `dev`'s `yulius.toml` only
   ([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md),

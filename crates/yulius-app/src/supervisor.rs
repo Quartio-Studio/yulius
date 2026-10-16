@@ -1854,6 +1854,11 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
+            // The base of `yulius security-scan`'s change scan (SPEC-195).
+            (
+                "YULIUS_INTEGRATION_BRANCH".into(),
+                self.profile_of(sandbox).integration_branch,
+            ),
         ];
         // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by
         // default), in YULIUS_CPUS and the repository's own variables (SPEC-082 RES-005). It

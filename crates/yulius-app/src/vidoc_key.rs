@@ -205,11 +205,12 @@ impl App {
             .set_vidoc_key(Some((&sealed, &login)), now)
             .await?;
         self.set_active_vidoc(Some((key, VidocSource::Settings)));
+        // Redaction knows the new key before any request can carry it.
+        self.bump_vault_generation();
         self.deps
             .store
-            .audit(now, &login, "vidoc.key_set", None, None)
+            .audit(now, &login, "vidoc.key_set", Some(VIDOC_SECRET_ID), None)
             .await?;
-        self.bump_vault_generation();
         tracing::info!("Vidoc is on (instance key saved in settings)");
         self.vidoc_key_view(ctx).await
     }
@@ -241,14 +242,23 @@ impl App {
         self.require_superadmin(ctx)?;
         self.vidoc_services()?;
         let now = self.now();
+        let saved = self.deps.store.vidoc_key().await?.is_some();
         self.deps.store.set_vidoc_key(None, now).await?;
         self.set_active_vidoc(self.config_vidoc());
-        let login = self.login_of(&ctx.user.id).await;
-        self.deps
-            .store
-            .audit(now, &login, "vidoc.key_removed", None, None)
-            .await?;
         self.bump_vault_generation();
+        if saved {
+            let login = self.login_of(&ctx.user.id).await;
+            self.deps
+                .store
+                .audit(
+                    now,
+                    &login,
+                    "vidoc.key_removed",
+                    Some(VIDOC_SECRET_ID),
+                    None,
+                )
+                .await?;
+        }
         self.vidoc_key_view(ctx).await
     }
 

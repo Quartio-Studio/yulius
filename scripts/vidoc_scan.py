@@ -50,8 +50,9 @@ ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 16000
 CHUNK_BYTES = 60_000
 MAX_FILE_BYTES = 1 << 20
-BUDGET = {"change": 4_000_000, "broad": 16_000_000}
-DEADLINE_MINUTES = {"change": 30, "broad": 180}
+# A change scan ends well before Yulius CI's default 30-minute job timeout.
+BUDGET = {"change": 4_000_000, "broad": 32_000_000}
+DEADLINE_MINUTES = {"change": 20, "broad": 180}
 JOBS = 4
 ATTEMPTS = 5
 BACKOFF_S = (2, 4, 8, 16)
@@ -99,12 +100,21 @@ with a plausible but limited attack; low = hardening. Report only issues you can
 line, each once. When there is none, answer {"findings": []}."""
 
 
+# What `run` returns when it checked nothing (disabled, or no file Vidoc reviews): exit 0, or
+# the skip code in CI mode (ADR-0133).
+NOTHING_CHECKED = -1
+
+
 class Usage(Exception):
     """The scan could not run: exit 2."""
 
 
 class Failed(Exception):
     """The scan ran and failed: exit 1."""
+
+
+class Deadline(Usage):
+    """The scan's deadline passed before a chunk was reviewed."""
 
 
 class Unreadable(Exception):
@@ -209,17 +219,27 @@ class Git:
 
     def blobs(self, paths):
         """The bytes of each path in `HEAD`'s tree (`git cat-file --batch`), in order."""
+        blobs = {}
+        # `--batch` reads one name per line: a name with a line break is read on its own.
+        unusual = [p for p in paths if "\n" in p or "\r" in p]
+        for path in unusual:
+            result = self.run("cat-file", "blob", f"HEAD:{path}", check=False)
+            if result.returncode == 0:
+                blobs[path] = result.stdout
+        paths = [p for p in paths if p not in unusual]
         if not paths:
-            return {}
+            return blobs
         request = b"".join(f"HEAD:{p}\n".encode() for p in paths)
         try:
             result = subprocess.run(["git", "cat-file", "--batch"], cwd=self.root, input=request,
                                     capture_output=True, timeout=GIT_TIMEOUT_S)
         except (OSError, subprocess.TimeoutExpired) as err:
             raise Usage(f"git cat-file failed: {err}") from err
-        out, pos, blobs = result.stdout, 0, {}
+        out, pos = result.stdout, 0
         for path in paths:
-            end = out.index(b"\n", pos)
+            end = out.find(b"\n", pos)
+            if end < 0:
+                raise Usage("git cat-file --batch ended early")
             header = out[pos:end].split()
             pos = end + 1
             if len(header) == 3 and header[1] == b"blob":
@@ -258,9 +278,15 @@ def settings(env):
     return key, api
 
 
-def base_ref(git, given):
+def base_ref(git, given, env):
+    """`--base`, else the integration branch Yulius names (`YULIUS_INTEGRATION_BRANCH`, as
+    `origin/<branch>`), else origin's default branch."""
     if given:
         return given
+    branch = (env.get("YULIUS_INTEGRATION_BRANCH") or "").strip()
+    if branch and git.text("rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}",
+                           check=False):
+        return f"origin/{branch}"
     head = git.text("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False)
     if not head or not head.strip():
         raise Usage("cannot tell the integration branch (refs/remotes/origin/HEAD is not set): "
@@ -307,9 +333,17 @@ def skip_reason(path, data, config):
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return "binary"
-    if any(len(line) > CHUNK_BYTES for line in text.splitlines()):
+    if any(len(line) > CHUNK_BYTES for line in split_lines(text)):
         return "minified"
     return None
+
+
+def split_lines(text):
+    """Lines as editors and Git count them: split on line feeds only."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
 
 
 def _numbered(lines, first, width):
@@ -328,7 +362,7 @@ def make_chunks(files, limit):
         parts, pieces, size = [], [], 0
 
     for path, text in files:
-        lines = text.splitlines()
+        lines = split_lines(text)
         total, width = len(lines), len(str(len(lines)))
         start = 0
         while start < total:
@@ -433,17 +467,23 @@ class Client:
         self.url, self.key, self.sleep = api + "/v1/messages", key, sleep
         self.opener = urllib.request.build_opener(_NoRedirect)
 
-    def post(self, body):
+    def post(self, body, deadline):
+        """The answer to `body`; no request outlives `deadline` (`time.monotonic()`): each one's
+        timeout is what is left of it, and nothing is retried past it."""
         data = json.dumps(body).encode()
         last = ""
         for attempt in range(ATTEMPTS):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise Deadline("the deadline passed before Vidoc answered (--deadline-minutes "
+                               f"raises it; last problem: {last or 'none'})")
             request = urllib.request.Request(self.url, data=data, method="POST", headers={
                 "x-api-key": self.key, "anthropic-version": ANTHROPIC_VERSION,
                 "content-type": "application/json", "accept": "application/json",
                 "user-agent": "yulius-security-scan"})
             retry_after = None
             try:
-                with self.opener.open(request, timeout=HTTP_TIMEOUT_S) as answer:
+                with self.opener.open(request, timeout=max(1.0, min(HTTP_TIMEOUT_S, left))) as answer:
                     raw = answer.read(MAX_ANSWER_BYTES + 1)
                 if len(raw) > MAX_ANSWER_BYTES:
                     raise Failed(f"Vidoc's answer is larger than {MAX_ANSWER_BYTES} bytes")
@@ -452,7 +492,10 @@ class Client:
                 except ValueError:
                     last = "the answer is not JSON"
             except urllib.error.HTTPError as err:
-                message = _message(err.read(4096))
+                try:
+                    message = _message(err.read(4096))
+                except (OSError, ValueError, http.client.HTTPException):
+                    message = "no readable body"
                 if err.code in (401, 403):
                     raise Usage(f"Vidoc refused the key (HTTP {err.code}: {message}). "
                                 f"{HOW_TO_GET_A_KEY}") from None
@@ -468,7 +511,10 @@ class Client:
                 # The message could quote the header, that is the key.
                 raise Usage("the request to Vidoc could not be sent") from None
             if attempt + 1 < ATTEMPTS:
-                self.sleep(_delay(retry_after, attempt))
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    continue
+                self.sleep(min(_delay(retry_after, attempt), left))
         raise Usage(f"Vidoc cannot be reached at {self.url} after {ATTEMPTS} attempts ({last})")
 
 
@@ -482,12 +528,12 @@ def _delay(retry_after, attempt):
     return BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
 
 
-def review(client, chunk, label):
+def review(client, chunk, label, deadline):
     """One chunk's findings; an unreadable answer is asked again, then fails the scan."""
     problem = ""
     for _ in range(READ_ATTEMPTS):
         try:
-            return parse_answer(client.post(request_body(chunk, label)), chunk)
+            return parse_answer(client.post(request_body(chunk, label), deadline), chunk)
         except Unreadable as err:
             problem = str(err)
     paths = ", ".join(sorted({p.path for p in chunk.parts}))
@@ -502,9 +548,10 @@ class Outcome:
     failed: object = None
 
 
-def scan_chunks(client, chunks, jobs, deadline, label, out):
+def scan_chunks(client, chunks, jobs, deadline, label, out, config):
     """Reviews every chunk, `jobs` at a time, until the deadline or a stop (refusal, outage,
-    failure); what was not reviewed is listed as unscanned."""
+    failure); what was not reviewed is listed as unscanned. An open critical or high finding is
+    printed as soon as it arrives, so a scan killed later still shows it."""
     outcome, lock, stop = Outcome(), threading.Lock(), threading.Event()
     done = [0]
 
@@ -515,7 +562,8 @@ def scan_chunks(client, chunks, jobs, deadline, label, out):
                 outcome.unscanned.extend(p.path for p in chunk.parts)
             return
         try:
-            findings = review(client, chunk, f"{label} Chunk {index + 1} of {len(chunks)}.")
+            findings = review(client, chunk, f"{label} Chunk {index + 1} of {len(chunks)}.",
+                              deadline)
         except Usage as err:
             stop.set()
             with lock:
@@ -528,7 +576,12 @@ def scan_chunks(client, chunks, jobs, deadline, label, out):
                 outcome.failed = outcome.failed or str(err)
                 outcome.unscanned.extend(p.path for p in chunk.parts)
             return
+        apply_ignores(findings, config)
         with lock:
+            for finding in findings:
+                if finding.severity in FAILING and not finding.ignored:
+                    print(f"  found [{finding.severity}] {finding.where()} {finding.title}",
+                          file=out, flush=True)
             outcome.findings.extend(findings)
             done[0] += 1
             print(f"  chunk {done[0]}/{len(chunks)} reviewed", file=out, flush=True)
@@ -561,8 +614,9 @@ def arguments(argv):
     parser.add_argument("--ci", action="store_true",
                         help="Yulius CI: scan pull request heads only, not run ends skipped")
     parser.add_argument("--report", help="write the result as JSON to this file")
-    parser.add_argument("--max-bytes", type=int, help="total bytes sent (default 4 MB, 16 MB with --all)")
-    parser.add_argument("--deadline-minutes", type=int, help="stop after (default 30, 180 with --all)")
+    parser.add_argument("--max-bytes", type=int, help="total bytes sent (default 4 MB, 32 MB with --all)")
+    parser.add_argument("--deadline-minutes", type=float,
+                        help="stop after (default 20, 180 with --all)")
     parser.add_argument("--jobs", type=int, default=JOBS, help=f"requests at a time (default {JOBS})")
     return parser.parse_args(argv)
 
@@ -578,14 +632,14 @@ def run(args, env, root, sleep, out):
     config = committed_config(git, toplevel.strip())
     if not config.enabled:
         print(f"Security scan disabled: {SWITCH} sets enabled = false; nothing was scanned.", file=out)
-        return 0
+        return NOTHING_CHECKED
     key, api = settings(env)
     mode = "broad" if args.all else "change"
     head = git.text("rev-parse", "--short", "HEAD").strip()
     if args.all:
         paths, scope = all_paths(git), f"every file tracked at {head}"
     else:
-        base = base_ref(git, args.base)
+        base = base_ref(git, args.base, env)
         paths, scope = changed_paths(git, base), f"the files changed since {base} at {head}"
     blobs = git.blobs(paths)
     skipped, files = [], []
@@ -615,12 +669,11 @@ def run(args, env, root, sleep, out):
     if not paths or (not chunks and not unsent):
         print(f"Vidoc: nothing to scan: none of the {len(paths)} file(s) is one Vidoc reviews.", file=out)
         write_report(args.report, mode, [], skipped, [])
-        return 0
+        return NOTHING_CHECKED
     deadline = time.monotonic() + 60 * (args.deadline_minutes or DEADLINE_MINUTES[mode])
     label = f"Repository {Path(toplevel.strip()).name}, {mode} scan at {head}."
-    outcome = scan_chunks(Client(api, key, sleep), chunks, args.jobs, deadline, label, out)
+    outcome = scan_chunks(Client(api, key, sleep), chunks, args.jobs, deadline, label, out, config)
     unscanned = sorted(set(outcome.unscanned) | set(unsent))
-    apply_ignores(outcome.findings, config)
     order = {s: i for i, s in enumerate(SEVERITIES)}
     outcome.findings.sort(key=lambda f: (order[f.severity], f.file, f.line or 0))
     write_report(args.report, mode, outcome.findings, skipped, unscanned)
@@ -655,11 +708,16 @@ def run(args, env, root, sleep, out):
 
 
 def write_report(path, mode, findings, skipped, unscanned):
+    """Writes the result as JSON; a report that cannot be written is said, and the verdict
+    stands."""
     if not path:
         return
-    Path(path).write_text(json.dumps({
-        "mode": mode, "findings": [f.as_json() for f in findings], "skipped": skipped,
-        "unscanned": unscanned}, indent=2) + "\n")
+    try:
+        Path(path).write_text(json.dumps({
+            "mode": mode, "findings": [f.as_json() for f in findings], "skipped": skipped,
+            "unscanned": unscanned}, indent=2) + "\n")
+    except OSError as err:
+        print(f"Vidoc: could not write the report {path}: {err}", file=sys.stderr)
 
 
 def main(argv=None, env=None, root=None, sleep=time.sleep):
@@ -679,12 +737,20 @@ def main(argv=None, env=None, root=None, sleep=time.sleep):
         args.all = False
     try:
         code = run(args, env, root, sleep, sys.stdout)
+    except OSError as err:
+        print(f"Security scan not run: {err}", file=sys.stderr)
+        code = 2
     except Usage as err:
         print(f"Security scan not run: {err}", file=sys.stderr)
         code = 2
     except Failed as err:
         print(f"Security scan failed: {err}", file=sys.stderr)
         code = 1
+    if code == NOTHING_CHECKED:
+        if skip_code is not None:
+            print("[yulius] security scan skipped: there was nothing to scan (reason above)")
+            return skip_code
+        return 0
     if skip_code is not None and code == 2:
         print("[yulius] security scan skipped: it could not run (exit 2, reason above), so "
               "nothing was scanned")

@@ -793,7 +793,7 @@ fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
     rt.block_on(async {
         let agent = FakeAgentOptions {
             transcript: true,
-            report_env: vec!["VIDOC_API_KEY".into()],
+            report_env: vec!["VIDOC_API_KEY".into(), "YULIUS_INTEGRATION_BRANCH".into()],
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
@@ -816,6 +816,11 @@ fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
             "{shown}"
         );
         assert!(!shown.contains(KEY), "{shown}");
+        // The scan's base (review round 1): the integration branch, "dev" here.
+        assert!(
+            shown.contains("ENV YULIUS_INTEGRATION_BRANCH=set len=3"),
+            "{shown}"
+        );
         Ok(())
     })
 }

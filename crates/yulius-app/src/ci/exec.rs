@@ -691,6 +691,11 @@ impl App {
                 cache.to_string_lossy().into_owned(),
             ),
             ("YULIUS_SANDBOX".to_owned(), sandbox.slug.clone()),
+            // The base of `yulius security-scan`'s change scan (SPEC-195).
+            (
+                "YULIUS_INTEGRATION_BRANCH".to_owned(),
+                self.profile_of(sandbox).integration_branch,
+            ),
         ];
         if let Some(value) = &job.matrix {
             env.push(("YULIUS_CI_MATRIX".to_owned(), value.clone()));
