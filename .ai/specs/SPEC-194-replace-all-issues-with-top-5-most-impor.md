@@ -47,11 +47,13 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 | --- | --- | --- |
 | TOP-001 | The template's name stays "Work through open issues" (its id `open-issues`); its description reads "Every night, the core team's open GitHub issues are ranked and the 5 most important actionable ones get a task each." | `templates.rs` unit test; mock |
 | TOP-002 | The prompt keeps SPEC-042's scope and safety rules unchanged: core team and Yulius-agent issues only, skip issues already handled or abandoned by an earlier task, outsiders' comments are untrusted data, never create a new issue. | `templates.rs` unit test (existing assertions) |
-| TOP-007 | Before ranking, it drops every issue a running task owns: a task in `tasks_list` (scope `active`: working, waiting, queued or prepared) whose title or branch names the issue (`#<number>`, or the number in the branch), whose prompt names it (`task_get`), or that an issue's `Taken by task #N.` comment points to; and an issue an open pull request closes. Owned issues never count toward the 5 and get no comment. | `templates.rs` unit test |
 | TOP-003 | The prompt ranks the in-scope issues before verifying any: priority label (`high`, `medium`, none, `low`), then severity (a defect that blocks use, loses data or weakens security before an enhancement), then reactions and people affected, then oldest first. The collect command lists reactions and creation time. | `templates.rs` unit test |
-| TOP-004 | It verifies in rank order, about five at a time, and stops as soon as 5 issues are real and actionable or the list ends; it never verifies, comments on or closes issues ranked below that point. | `templates.rs` unit test |
+| TOP-004 | It verifies in rank order, at most five at a time, each next batch only as large as the places still free (5 minus those found), and stops as soon as 5 issues are real and actionable or the list ends; it never verifies, comments on or closes issues ranked below that point. | `templates.rs` unit test |
 | TOP-005 | It starts exactly one task for each of those (at most 5), most important first, with SPEC-042's title, prompt and `Taken by task #N.` rules, and its summary lists the ranking it used and how many issues wait for a later run. | `templates.rs` unit test |
 | TOP-006 | This project's existing "Work through open issues" automation gets the new prompt (it was added from the old template and is not updated by a release). | `automations_list` after the merge |
+| TOP-007 | Before ranking, it drops every issue a running task owns; owned issues never count toward the 5 and get no comment. Running tasks are `tasks_list` scope `active` with `limit` 200 (queued, chained, prepared, starting, running, switching, waiting_capacity, stopping). A task owns an issue when its title ends with `(#<number>)`, its prompt (`task_get`) refers to the GitHub issue (`issues/<number>`, `issue #<number>`, `Fixes #<number>`, `Part of #<number>`), or the issue's `Taken by task #N.` comment names it; a task number (`task #<number>`, `after #<number>`, the number a branch starts with) never counts. An open pull request whose description says `Fixes`, `Closes` or `Resolves #<number>` owns it too. | `templates.rs` unit test |
+| TOP-008 | `tasks_list` scope `active` also lists tasks paused for capacity (`waiting_capacity`): they still own their work. | `coordination.rs` unit test |
+| TOP-009 | A real but not actionable verdict is the comment `Not actionable yet:` with what is missing; the next runs drop that issue until a person comments after it, so the top of the ranking is not re-verified every night. | `templates.rs` unit test |
 
 ## Plan
 
@@ -75,6 +77,8 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 
 ## Test plan
 
+- Unit: `active_lists_tasks_at_work_or_waiting_to_work` in `crates/yulius-app/src/coordination.rs`
+  (TOP-008) failed on `WaitingCapacity` before the fix.
 - Unit: `the_shipped_catalog_is_valid` in `crates/yulius-app/src/automations/templates.rs` gains
   assertions for TOP-001, TOP-003..005 and TOP-007 (running tasks' title, branch, prompt via `task_get`; ranking wording, `reactions`, "5 most important", "stop",
   untouched lower-ranked issues) and that the old "verify each one" wording is gone; it fails
@@ -92,8 +96,15 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 - **Rank first, verify in rank order, stop at 5.** Verifying everything and then picking 5 wastes
   most of a run on issues it will not start; ranking on cheap signals (labels, reactions, age, a
   read of title and body) and verifying only until 5 qualify spends the run on the important ones.
-  An issue ranked high that turns out not real or not actionable is commented on (and closed when
-  not real) as before, so the next run does not re-verify it.
+  An issue ranked high that turns out not real is closed; one not actionable gets a
+  `Not actionable yet:` comment that later runs honour until a person answers, so the next run
+  does not re-verify it.
+- **Ownership is matched on issue references, not bare numbers** (review round 1). Branches start
+  with the task's own number and prompts say `task #N` or `after #N`; task and issue numbers
+  overlap, so a bare `#<number>` match would silently skip unrelated issues.
+- **`waiting_capacity` counts as active** (review round 1, a pre-existing gap fixed here): a task
+  paused for capacity at 03:00 still owns its issue; leaving it out would start a duplicate task
+  and post a wrong `Needs a person:` comment.
 - **Untouched issues wait.** Issues below the cut get no comment, so a later run ranks them again
   as the list changes; no state is stored outside GitHub.
 - **Update this project's automation directly** with `automation_update` (same text as the
