@@ -6,6 +6,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- Docker works inside isolated sandboxes (SPEC-187, ADR-0151, task #172, fixes #551). Each sandbox
+  gets its own engine at `/run/docker.sock`, started by its namespace holder on first use, so
+  agents, the Superagent, Shells and CI jobs run `docker build`, `docker run` and `docker compose`
+  unchanged.
+  - The engine is root of the sandbox's user namespace, never the host's, in the sandbox's network.
+    It sees a run's files plus its own storage, a fresh sysfs and its own cgroup namespace.
+  - A seccomp profile of its own (the run profile plus mounts, `setns` and `pivot_root`) bounds
+    every container, `--privileged` included.
+  - Images count toward the disk quota and are pruned under pressure. Containers count against the
+    sandbox's limits.
+  - The briefing now says Docker works (reverting SPEC-173 where an engine exists).
+    `YULIUS_SANDBOX_DOCKER=off` turns it off, and `yulius doctor` checks `dockerd`, the cgroup
+    delegation and the kernel modules.
+  - Not verified on a real host yet: the opt-in host test `isolation_docker` cannot run in a
+    sandbox or in Yulius CI.
+
 - Supertask names one-shotting the product, and Jev proposes it for broad work (SPEC-188,
   ADR-0152, task #173). The start menu's Supertask now reads "Runs alone once this project’s
   running tasks end; the rest wait. For broad work: security hardening, one-shotting the

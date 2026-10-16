@@ -83,6 +83,10 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                         .host_system
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
+                    engine_socket: j
+                        .engine_socket
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
                 })
             }),
         }),
@@ -402,6 +406,51 @@ impl RunWriter for Writer {
 mod tests {
     use super::*;
 
+    /// SPEC-187 DKR-001: the sandbox's Docker socket reaches a joined run's `bwrap` argv.
+    #[test]
+    fn a_joined_run_gets_the_sandboxs_docker_socket() -> Result<(), Box<dyn std::error::Error>> {
+        let join = yulius_app::ports::isolation::SandboxJoin {
+            holder_pid: 4242,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: None,
+            ci_cgroup: None,
+            system_root: "/data/runtime/sandboxes/s1/root".into(),
+            hostname: "app".into(),
+            exec_shim: Some("/usr/local/bin/yulius".into()),
+            extra_readonly: Vec::new(),
+            private_dirs: vec!["/data".into()],
+            system_passwd: None,
+            system_group: None,
+            host_system: None,
+            engine_socket: Some("/data/runtime/sandboxes/s1/docker.sock".into()),
+        };
+        let containment = Containment::Bubblewrap {
+            sandbox_root: "/data/sandboxes/s1".into(),
+            home: "/data/sandboxes/s1/home".into(),
+            writable: Vec::new(),
+            readonly: Vec::new(),
+            binds: Vec::new(),
+            identity: None,
+            join: Some(Box::new(join)),
+        };
+        let wire::Containment::Bubblewrap(spec) = wire_containment(&containment) else {
+            return Err("a bubblewrap containment".into());
+        };
+        let argv = yulius_ptyhost::bwrap_argv(&spec, &["sh".into()], "/data/sandboxes/s1");
+        assert!(
+            argv.windows(3).any(|w| w
+                == [
+                    "--bind",
+                    "/data/runtime/sandboxes/s1/docker.sock",
+                    "/run/docker.sock"
+                ]),
+            "{argv:?}"
+        );
+        Ok(())
+    }
+
     /// SPEC-134 (review round 3, H1): a production CD run's containment passes the process
     /// host's launch validation and becomes a joined `bwrap` run on the host's read-only system.
     #[test]
@@ -422,6 +471,8 @@ mod tests {
             system_passwd: None,
             system_group: None,
             host_system: None,
+            // The sandbox has an engine; a production CD run still gets none (SPEC-187).
+            engine_socket: Some("/data/runtime/sandboxes/s1/docker.sock".into()),
         };
         let containment = yulius_app::ci::cd::production_containment(
             std::path::Path::new("/data/runs/cd-r/work"),
@@ -460,6 +511,7 @@ mod tests {
             argv.windows(2).any(|w| w == ["--tmpfs", "/var"]),
             "{argv:?}"
         );
+        assert!(!argv.iter().any(|a| a == "/run/docker.sock"), "{argv:?}");
         assert!(
             !argv.iter().any(|a| a.contains("/data/runtime/sandboxes")),
             "{argv:?}"

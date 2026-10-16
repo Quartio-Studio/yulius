@@ -135,24 +135,14 @@ pub const RUN_CAPABILITIES: [&str; 13] = [
     "CAP_AUDIT_WRITE",
 ];
 
-/// System directories bound writable from the sandbox's system layer.
-pub const SYSTEM_LAYER_DIRS: [&str; 9] = [
-    "/usr", "/etc", "/var", "/opt", "/root", "/home", "/srv", "/mnt", "/media",
-];
-
-/// The merged-`/usr` links of the root.
-const ROOT_LINKS: [(&str, &str); 4] = [
-    ("usr/bin", "/bin"),
-    ("usr/sbin", "/sbin"),
-    ("usr/lib", "/lib"),
-    ("usr/lib64", "/lib64"),
-];
+pub use yulius_contracts::sandbox::SYSTEM_LAYER_DIRS;
+use yulius_contracts::sandbox::{ENGINE_SOCKET_IN_RUNS, ROOT_LINKS};
 
 /// `bwrap` argv of a run that joined its sandbox's holder (SPEC-002 ADR-22 §2): the user,
 /// network and mount namespaces are the holder's (entered before `bwrap` starts); the run gets
 /// its own PID, IPC, UTS and cgroup namespaces, the reduced capability set, a fresh `/proc`,
-/// `/dev`, `/tmp` and `/run`, the system layer's directories writable, then the sandbox
-/// directory and the same extra mounts as before.
+/// `/dev`, `/tmp` and `/run`, the system layer's directories writable, the sandbox's Docker socket
+/// when it has an engine, then the sandbox directory and the same extra mounts as before.
 fn joined_argv(
     c: &BubblewrapSpec,
     join: &yulius_contracts::ptyhost::SandboxJoin,
@@ -234,6 +224,18 @@ fn joined_argv(
     }
     for dir in &join.private_dirs {
         argv.extend(["--tmpfs".into(), dir.clone()]);
+    }
+    // The sandbox's own Docker engine (ADR-0151); a production CD run has none.
+    if let Some(socket) = join
+        .engine_socket
+        .as_ref()
+        .filter(|_| join.host_system.is_none())
+    {
+        argv.extend([
+            "--bind".into(),
+            socket.clone(),
+            ENGINE_SOCKET_IN_RUNS.into(),
+        ]);
     }
     push_bind(&mut argv, "--bind", &c.sandbox_root);
     let home_mounted = c.binds.iter().any(|b| b.dest == c.home);
@@ -436,6 +438,7 @@ mod tests {
             exec_shim: None,
             private_dirs: vec!["/data".into()],
             host_system: None,
+            engine_socket: None,
         }));
         let argv = bwrap_argv(&c, &["bash".into()], "/data/sandboxes/s1/repo");
         for flag in ["--unshare-user", "--unshare-net", "--share-net", "--uid"] {
@@ -497,6 +500,7 @@ mod tests {
             exec_shim: None,
             private_dirs: vec!["/data".into()],
             host_system: Some("/data/runs/cd-r/work/resolv.conf".into()),
+            engine_socket: None,
         }));
         let argv = bwrap_argv(&c, &["sh".into()], "/data/runs/cd-r/work/src");
         assert!(
@@ -534,6 +538,52 @@ mod tests {
             !argv.contains(&"--share-net".to_owned())
                 && !argv.contains(&"--unshare-net".to_owned())
         );
+    }
+
+    fn joined(engine_socket: Option<&str>, host_system: Option<&str>) -> BubblewrapSpec {
+        let mut c = spec();
+        c.join = Some(Box::new(yulius_contracts::ptyhost::SandboxJoin {
+            holder_pid: 4242,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: None,
+            system_root: "/data/runtime/sandboxes/s1/root".into(),
+            hostname: "fixture".into(),
+            exec_shim: None,
+            private_dirs: vec!["/data".into()],
+            host_system: host_system.map(str::to_owned),
+            engine_socket: engine_socket.map(str::to_owned),
+        }));
+        c
+    }
+
+    /// SPEC-187 DKR-001: a joined run sees its sandbox's Docker socket at `/run/docker.sock`
+    /// (`/var/run/docker.sock`), over its private `/run` and the system layer.
+    #[test]
+    fn a_joined_run_sees_the_sandboxs_docker_socket() {
+        let socket = "/data/runtime/sandboxes/s1/docker.sock";
+        let argv = bwrap_argv(&joined(Some(socket), None), &["sh".into()], "/");
+        let bind = position(&argv, &["--bind", socket, "/run/docker.sock"]);
+        let run = position(&argv, &["--tmpfs", "/run"]);
+        let var = position(
+            &argv,
+            &["--bind-try", "/data/runtime/sandboxes/s1/root/var", "/var"],
+        );
+        let private = position(&argv, &["--tmpfs", "/data"]);
+        assert!(
+            bind.is_some() && run < bind && var < bind && private < bind,
+            "{argv:?}"
+        );
+
+        let none = bwrap_argv(&joined(None, None), &["sh".into()], "/");
+        assert!(!none.iter().any(|a| a == "/run/docker.sock"), "{none:?}");
+        let cd = bwrap_argv(
+            &joined(Some(socket), Some("/data/runs/cd-r/work/resolv.conf")),
+            &["sh".into()],
+            "/",
+        );
+        assert!(!cd.iter().any(|a| a == "/run/docker.sock"), "{cd:?}");
     }
 
     #[test]

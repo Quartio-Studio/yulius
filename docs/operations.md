@@ -407,7 +407,10 @@ shells and CI jobs join it. A sandbox gets:
 - limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
   a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
   CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md));
-- a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls.
+- a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
+- its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
+  started on the first use of `/run/docker.sock` (= `/var/run/docker.sock`) by an agent, the
+  Superagent, a Shell or a CI job, and stopped once idle. See "Docker in sandboxes" below.
 
 **Install once** (as root):
 
@@ -436,12 +439,13 @@ systemctl restart yulius
 | `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
-| `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. |
+| `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
+| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when the host has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine). |
 
 **Where things live.**
 - `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
-- `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer).
-- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets.
+- `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer, `upper/`) and its Docker engine's images, containers and volumes (`docker/`).
+- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker socket (`docker.sock`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`).
 
 `yulius sandbox-base status` tells whether the base matches the host.
 
@@ -456,6 +460,61 @@ stay private to the sandbox. Two sandboxes can both use 3000 inside.
 
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
+
+### Docker in sandboxes
+
+Each isolated sandbox has its own Docker engine (SPEC-187,
+[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)).
+`docker`, `docker compose`, buildx and testcontainers work unchanged in agents' sessions, the
+Superagent, Shells and CI jobs (not in a production CD run). The host's Docker is never reachable
+from a sandbox, and no daemon needs to run on the host.
+
+- **What it is.** On the first connection to the sandbox's socket, the holder starts `dockerd` as
+  root of the sandbox's user namespace (not the host's): in the sandbox's network, with a run's
+  view of the files plus its storage, a cgroup namespace rooted at `sandboxes/<sandbox>/engine`,
+  and a seccomp profile of its own that every container inherits, `--privileged` included.
+  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves through
+  the sandbox's egress, and they reach the egress proxy at `host.docker.internal:<internal port>`
+  (with `--add-host=host.docker.internal:host-gateway`). A port published in the sandbox's port
+  range is relayed like a dev server's.
+- **Prerequisites.**
+  - Docker installed on the host (`docker-ce` or `docker.io`). The base copies `dockerd`,
+    `containerd`, `runc`, `docker-proxy` and the CLI plugins.
+  - The cgroup delegation (§3).
+  - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
+    nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
+  - The `yulius` executable owned by root and writable by no group or other, as §2 installs it.
+    The engine's read-only binds are not locked, so an executable the service user owns or may
+    write could be remounted and rewritten. With one, sandboxes get no engine.
+
+  `yulius doctor` checks the first three ("sandbox Docker"):
+
+  ```sh
+  printf '%s\n' overlay bridge veth nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack \
+    xt_MASQUERADE xt_addrtype xt_conntrack > /etc/modules-load.d/yulius-docker.conf
+  systemctl restart systemd-modules-load
+  ```
+
+- **Disk.** Images, containers and volumes live in `<data>/sysroots/<sandbox>/docker` and count
+  toward the sandbox's soft quota as "containers". This is a lower bound: directories that a
+  container's own users keep private (mode 0700, a database's data, for example) are not entered.
+  From 90 % of the quota, while the engine runs, Yulius prunes its build cache and the images no
+  container uses, before the caches of idle tasks. A stopped engine is never started for that,
+  so it keeps its images until the next use. Containers and volumes are never pruned.
+- **Lifetime.** The engine stops after `YULIUS_SANDBOX_IDLE_MINUTES` without a client and without
+  a running container. While it runs, the holder stays. It survives Yulius restarts and updates
+  with the holder. Containers stop when the holder stops; those with a restart policy come back
+  when the engine starts again.
+- **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
+  capabilities do not raise privileges inside containers (`no_new_privs`).
+  - Per-container resource flags (`docker run -m`, `--cpus`, compose `mem_limit` or `cpus`) are
+    not supported; leave them out. The engine lives in its own group, so cgroup v2 passes no
+    controller below it: memory flags are discarded, and CPU flags may make the container fail
+    to start. The sandbox's own limits still bound every container.
+  - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
+    engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
+- **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
+  last lines of `<data>/runtime/sandboxes/<sandbox>/engine.log`.
 
 ### Task intake (Jev)
 

@@ -10,6 +10,11 @@
 //! Nested user namespaces: `unshare`/`clone` with `CLONE_NEWUSER` are refused, and `clone3`
 //! (whose flags a filter cannot read) answers `ENOSYS`, so libc falls back to `clone`.
 //! Everything else is allowed: capabilities already limit what root inside can do.
+//!
+//! The sandbox's Docker engine ([`Profile::Engine`], ADR-0151) is filtered the same way except
+//! that it may mount, `pivot_root` and `setns` ([`ENGINE_ALLOWED`]), which `runc` and `dockerd`
+//! need, and that keyrings answer `ENOSYS` ([`ENGINE_NOSYS`]), which `runc` takes as "no
+//! keyrings". A filter is inherited and cannot be removed, so every container stays within it.
 
 /// `AUDIT_ARCH_X86_64`.
 const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
@@ -87,6 +92,33 @@ pub const DENIED_X86_64: &[(u32, &str)] = &[
     (442, "mount_setattr"),
 ];
 
+/// Calls the engine profile allows that runs are refused.
+pub const ENGINE_ALLOWED: &[&str] = &[
+    "pivot_root",
+    "mount",
+    "umount2",
+    "setns",
+    "open_tree",
+    "move_mount",
+    "fsopen",
+    "fsconfig",
+    "fsmount",
+    "fspick",
+    "mount_setattr",
+];
+
+/// Calls the engine profile answers with `ENOSYS` instead of `EPERM`.
+pub const ENGINE_NOSYS: &[&str] = &["add_key", "request_key", "keyctl"];
+
+/// Which filter a process starts under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// Agent runs, shells, CI jobs (SPEC-002 ADR-22 §6).
+    Run,
+    /// The sandbox's container engine and its containers (ADR-0151).
+    Engine,
+}
+
 #[derive(Clone, Copy)]
 enum Target {
     Next,
@@ -122,7 +154,7 @@ pub struct Insn {
     pub k: u32,
 }
 
-fn program() -> Vec<Op> {
+fn program(profile: Profile) -> Vec<Op> {
     let mut ops = vec![
         Op::Load(OFFSET_ARCH),
         Op::Jump {
@@ -139,11 +171,16 @@ fn program() -> Vec<Op> {
             no: Target::Next,
         },
     ];
-    for (nr, _) in DENIED_X86_64 {
+    for (nr, name) in DENIED_X86_64 {
+        let yes = match profile {
+            Profile::Engine if ENGINE_ALLOWED.contains(name) => continue,
+            Profile::Engine if ENGINE_NOSYS.contains(name) => Target::NoSys,
+            _ => Target::Deny,
+        };
         ops.push(Op::Jump {
             code: JMP_JEQ_K,
             k: *nr,
-            yes: Target::Deny,
+            yes,
             no: Target::Next,
         });
     }
@@ -185,12 +222,20 @@ fn program() -> Vec<Op> {
     ops
 }
 
-/// The filter as instructions, jumps resolved.
+/// The run filter as instructions, jumps resolved.
 ///
 /// # Errors
 /// A jump that does not fit the 8-bit offset (a programming error caught by the tests).
 pub fn instructions() -> Result<Vec<Insn>, String> {
-    let ops = program();
+    instructions_for(Profile::Run)
+}
+
+/// `profile`'s filter as instructions, jumps resolved.
+///
+/// # Errors
+/// As [`instructions`].
+pub fn instructions_for(profile: Profile) -> Result<Vec<Insn>, String> {
+    let ops = program(profile);
     // Index of each label's following instruction.
     let mut index = 0usize;
     let mut labels: Vec<(u8, usize)> = Vec::new();
@@ -261,14 +306,20 @@ fn target_id(target: Target) -> u8 {
     }
 }
 
-/// The program bytes for `bwrap --seccomp` (native-endian `struct sock_filter` array), or `None`
-/// on architectures without a table.
+/// The run filter's bytes for `bwrap --seccomp` (native-endian `struct sock_filter` array), or
+/// `None` on architectures without a table.
 #[must_use]
 pub fn program_bytes() -> Option<Vec<u8>> {
+    program_bytes_for(Profile::Run)
+}
+
+/// `profile`'s filter bytes, as [`program_bytes`].
+#[must_use]
+pub fn program_bytes_for(profile: Profile) -> Option<Vec<u8>> {
     if !cfg!(target_arch = "x86_64") {
         return None;
     }
-    let insns = instructions().ok()?;
+    let insns = instructions_for(profile).ok()?;
     let mut bytes = Vec::with_capacity(insns.len() * 8);
     for insn in insns {
         bytes.extend_from_slice(&insn.code.to_ne_bytes());
@@ -350,6 +401,102 @@ mod tests {
         let insns = instructions()?;
         // AUDIT_ARCH_I386
         assert_eq!(evaluate(&insns, 0x4000_0003, 1, 0), Some(RET_ERRNO | EPERM));
+        Ok(())
+    }
+
+    fn run_engine(nr: u32, arg0: u32) -> Option<u32> {
+        let insns = instructions_for(Profile::Engine).ok()?;
+        evaluate(&insns, AUDIT_ARCH_X86_64, nr, arg0)
+    }
+
+    fn number(name: &str) -> Option<u32> {
+        DENIED_X86_64
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(nr, _)| *nr)
+    }
+
+    #[test]
+    fn the_engine_profile_allows_what_runc_and_dockerd_need() -> Result<(), String> {
+        for name in ENGINE_ALLOWED {
+            let nr = number(name).ok_or(format!("{name} is not refused to runs"))?;
+            assert_eq!(run(nr, 0), Some(RET_ERRNO | EPERM), "run: {name}");
+            assert_eq!(run_engine(nr, 0), Some(RET_ALLOW), "engine: {name}");
+        }
+        for name in [
+            "mount",
+            "umount2",
+            "pivot_root",
+            "setns",
+            "fsopen",
+            "move_mount",
+        ] {
+            assert!(ENGINE_ALLOWED.contains(&name), "{name}");
+        }
+        // Namespaces other than a user namespace, as `runc` creates them.
+        assert_eq!(run_engine(SYS_UNSHARE, 0x6c02_0000), Some(RET_ALLOW));
+        assert_eq!(run_engine(SYS_CLONE, 0x6c02_0011), Some(RET_ALLOW));
+        Ok(())
+    }
+
+    #[test]
+    fn the_engine_profile_answers_enosys_for_keyrings() -> Result<(), String> {
+        for name in ENGINE_NOSYS {
+            let nr = number(name).ok_or(format!("{name} is not refused to runs"))?;
+            assert_eq!(run(nr, 0), Some(RET_ERRNO | EPERM), "run: {name}");
+            assert_eq!(
+                run_engine(nr, 0),
+                Some(RET_ERRNO | ENOSYS),
+                "engine: {name}"
+            );
+        }
+        assert_eq!(ENGINE_NOSYS, &["add_key", "request_key", "keyctl"]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_engine_profile_keeps_every_other_refusal() -> Result<(), String> {
+        let insns = instructions_for(Profile::Engine)?;
+        for (nr, name) in DENIED_X86_64 {
+            if ENGINE_ALLOWED.contains(name) || ENGINE_NOSYS.contains(name) {
+                continue;
+            }
+            assert_eq!(run_engine(*nr, 0), Some(RET_ERRNO | EPERM), "{name}");
+        }
+        for name in [
+            "bpf",
+            "io_uring_setup",
+            "perf_event_open",
+            "init_module",
+            "kexec_load",
+            "userfaultfd",
+            "open_by_handle_at",
+        ] {
+            let nr = number(name).ok_or(name)?;
+            assert_eq!(run_engine(nr, 0), Some(RET_ERRNO | EPERM), "{name}");
+        }
+        assert_eq!(
+            run_engine(SYS_UNSHARE, CLONE_NEWUSER),
+            Some(RET_ERRNO | EPERM)
+        );
+        assert_eq!(
+            run_engine(SYS_CLONE, CLONE_NEWUSER | 0x11),
+            Some(RET_ERRNO | EPERM)
+        );
+        assert_eq!(run_engine(SYS_CLONE3, 0), Some(RET_ERRNO | ENOSYS));
+        assert_eq!(evaluate(&insns, 0x4000_0003, 1, 0), Some(RET_ERRNO | EPERM));
+        assert_eq!(run_engine(0, 0), Some(RET_ALLOW));
+        Ok(())
+    }
+
+    #[test]
+    fn the_run_profile_is_the_default_program() -> Result<(), String> {
+        assert_eq!(instructions()?, instructions_for(Profile::Run)?);
+        assert_ne!(instructions()?, instructions_for(Profile::Engine)?);
+        if let (Some(run), Some(engine)) = (program_bytes(), program_bytes_for(Profile::Engine)) {
+            assert_ne!(run, engine);
+            assert_eq!(engine.len() % 8, 0);
+        }
         Ok(())
     }
 
