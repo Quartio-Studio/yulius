@@ -2359,7 +2359,9 @@ function vaultOf(db) {
       team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
       agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#111' },
         // SPEC-121: added with a name, a value and a description; an agent asked for its host.
-        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null }],
+        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null },
+        // SPEC-193 MLK-003: a key pasted before #591 was fixed, its line breaks turned into spaces.
+        { id: 'as_olddeploy', sandbox: 'sb_studio', scope: 'sandbox', name: 'OLD_DEPLOY_KEY', description: 'Deploy key for the staging server', hosts: [], injection: 'none', header_name: null, username: null, value: '-----BEGIN MOCK OPENSSH PRIVATE KEY----- bW9jay1mbGF0LTAx bW9jay1mbGF0LTAy -----END MOCK OPENSSH PRIVATE KEY-----', created_by: 'mkarp', updated_at: iso(2 * DAY), value_updated_at: iso(2 * DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
@@ -2374,7 +2376,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2407,10 +2409,17 @@ function teamSecret(db, id) {
 }
 
 const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** A key whose line breaks were lost: `dotenv::flattened_key` (SPEC-193 MLK-002). */
+function flattenedKey(value) {
+  const match = /^-----BEGIN ([^-]+)-----(.*)-----END ([^-]+)-----$/s.exec(String(value || '').trim());
+  return Boolean(match) && !value.includes('\\n') && match[2].trim() !== '';
+}
+
 function validateAgent(body, creating) {
   if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
   if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length > 16)) fail(422, 'invalid', 'at most 16 hosts');
   if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
+  if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
 }
 
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));

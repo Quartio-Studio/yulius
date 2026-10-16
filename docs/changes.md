@@ -23,6 +23,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     has a key.
   - **This project.** The `security` job runs `python3 scripts/vidoc_scan.py --ci`, so pull
     requests are really scanned again.
+- A multi-line key pasted as an agent secret keeps its line breaks (SPEC-193, ADR-0156, task #179,
+  fixes #591). The value field is one line, and the browser turned a pasted PEM or OpenSSH key's
+  line breaks into spaces without a word.
+  - The field now writes a pasted key's line breaks as literal `\n`, the vault's form for a
+    multi-line key, so `secret_verify` answers `escaped_newlines` for the key file and
+    `secret_copy_to_env` writes it back. Other text pastes as before. Checked with real
+    `ssh-keygen` and `openssl` keys, LF and CRLF.
+  - The server refuses a key flattened onto one line. One saved before the fix is not rewritten:
+    its card says "Paste again" to the people who manage it.
+  - Team secret values have the same one-line field (#592, not changed here).
 
 - Task lists stay live, a task an update holds reads Paused, and a person can pause a task
   (SPEC-191, ADR-0154, task #176). The event stream had no heartbeat, so a connection that died

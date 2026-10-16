@@ -606,7 +606,12 @@ final line break; literal `\n` as line breaks, since an agent secret never spans
 ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
 [decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
 A key block stored that way is written to a `.env` as its file (`dotenv::key_block`), and its
-lines are redaction needles.
+lines are redaction needles. The Secrets page's value field is one line, so it writes a pasted
+key block's line breaks as literal `\n`; `check_agent_value` refuses a key flattened onto one line
+(`dotenv::flattened_key`), and the agent secrets list marks one stored before that `flattened`
+for the people who manage it
+([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
+[decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
 
 Claude Code reads the Yulius tools once per connection, so each Cockpit's `shell.json` keeps the
 launch digest it started with (`App::cockpit_launch_digest`: its MCP instructions, tool

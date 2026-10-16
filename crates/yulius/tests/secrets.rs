@@ -1173,6 +1173,155 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
     Ok(())
 }
 
+/// SPEC-193 MLK-002, MLK-003: a key whose line breaks a single-line field lost is refused on
+/// create and on update; one stored that way before is kept as it is and listed `flattened` to
+/// the people who manage it, and to nobody else.
+#[tokio::test]
+async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers() -> TestResult {
+    use yulius_app::ports::vault::{VaultSecretRecord, VaultSection};
+    let w = world().await?;
+    let (begin, end) = (
+        format!("-----BEGIN {}-----", "SYNTHETIC KEY"),
+        format!("-----END {}-----", "SYNTHETIC KEY"),
+    );
+    let flat = format!("{begin} c3ludGhldGljLWZsYXQtMDE= c3ludGhldGljLWZsYXQtMDI= {end}");
+    let escaped = format!("{begin}\\nc3ludGhldGljLWZsYXQtMDE=\\nc3ludGhldGljLWZsYXQtMDI=\\n{end}");
+
+    let refused = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "DEPLOY_KEY", "value": flat}),
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert!(
+        refused.body.to_string().contains("line breaks were lost"),
+        "{}",
+        refused.body
+    );
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "DEPLOY_KEY", "value": escaped}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["flattened"], false, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let patched = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": flat})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(
+        patched.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        patched.body
+    );
+
+    // Stored flattened before the fix: kept, and marked for its managers.
+    let old = json!({"value": flat});
+    let envelope =
+        w.h.app
+            .deps
+            .crypto
+            .envelope_seal(b"old-key|agent", old.to_string().as_bytes())?;
+    let now = w.h.app.now();
+    w.h.app
+        .deps
+        .store
+        .vault_insert(&VaultSecretRecord {
+            id: "old-key".into(),
+            section: VaultSection::Agent,
+            sandbox_id: Some(yulius_domain::ids::SandboxId::parse("s1")?),
+            name: "OLD_DEPLOY_KEY".into(),
+            description: "Deploy key".into(),
+            hosts: Vec::new(),
+            injection: "none".into(),
+            header_name: None,
+            fields: vec!["value".into()],
+            envelope,
+            created_by: "u-alice".into(),
+            created_at: now,
+            updated_by: "u-alice".into(),
+            updated_at: now,
+            value_updated_at: now,
+            last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
+            env_files: yulius_app::ports::vault::EnvFiles::No,
+            env_requested_by: None,
+            cd_prod: false,
+        })
+        .await?;
+    let flags = |body: &Value| -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = body
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| (s["name"].to_string(), s["flattened"].to_string()))
+            .collect();
+        out.sort();
+        out
+    };
+    let managed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(managed.status, StatusCode::OK);
+    assert_eq!(
+        flags(&managed.body),
+        vec![
+            ("\"DEPLOY_KEY\"".to_owned(), "false".to_owned()),
+            ("\"OLD_DEPLOY_KEY\"".to_owned(), "true".to_owned()),
+        ]
+    );
+    assert_hidden(&managed.body, &[&flat, "c3ludGhldGljLWZsYXQtMDE="]);
+    let read = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.reader,
+    )
+    .await?;
+    assert!(
+        flags(&read.body).iter().all(|(_, flag)| flag == "false"),
+        "{}",
+        read.body
+    );
+
+    // Not rewritten: its manager reads it back as it was stored.
+    let alice = browser_session(&w.h, "u-alice").await?;
+    enroll(&w.h, &alice).await?;
+    let shown = call(
+        &w.h.router,
+        Method::POST,
+        "/api/agent-secrets/old-key/reveal",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert_eq!(shown.body["value"], flat);
+    Ok(())
+}
+
 /// AC-VLT-5, SPEC-040 AC5: who may see, manage and read agent secrets; values come back only
 /// from a reveal by someone who manages the secret, after a two-factor unlock.
 #[tokio::test]
