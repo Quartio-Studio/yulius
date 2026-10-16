@@ -8,6 +8,7 @@ use yulius_app::jev_key::StoredJevKey;
 use yulius_app::model::Sealed;
 use yulius_app::ports::store_ext::UpdateStore;
 use yulius_app::updates::UpdateRunRecord;
+use yulius_app::vidoc_key::StoredVidocKey;
 use yulius_domain::time::Timestamp;
 use yulius_domain::update::RunState;
 
@@ -165,6 +166,55 @@ impl UpdateStore for SqliteStore {
                 None => c.execute(
                     "UPDATE instance SET jev_key = NULL, jev_key_set_at = NULL, \
                      jev_key_set_by = NULL WHERE singleton = 1",
+                    [],
+                ),
+            }
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn vidoc_key(&self) -> AppResult<Option<StoredVidocKey>> {
+        self.call(|c| {
+            let row = c
+                .query_row(
+                    "SELECT vidoc_key, vidoc_key_set_at, vidoc_key_set_by FROM instance \
+                     WHERE singleton = 1",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<Vec<u8>>>(0)?,
+                            r.get::<_, Option<i64>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(row.and_then(|(key, at, by)| {
+                key.map(|bytes| StoredVidocKey {
+                    sealed: Sealed(bytes),
+                    set_at: Timestamp(at.unwrap_or(0)),
+                    set_by: by,
+                })
+            }))
+        })
+        .await
+    }
+
+    async fn set_vidoc_key(&self, key: Option<(&Sealed, &str)>, at: Timestamp) -> AppResult<()> {
+        let key = key.map(|(sealed, by)| (sealed.0.clone(), by.to_owned()));
+        self.call(move |c| {
+            match key {
+                Some((bytes, by)) => c.execute(
+                    "UPDATE instance SET vidoc_key = ?1, vidoc_key_set_at = ?2, \
+                     vidoc_key_set_by = ?3 WHERE singleton = 1",
+                    params![bytes, at.0, by],
+                ),
+                None => c.execute(
+                    "UPDATE instance SET vidoc_key = NULL, vidoc_key_set_at = NULL, \
+                     vidoc_key_set_by = NULL WHERE singleton = 1",
                     [],
                 ),
             }

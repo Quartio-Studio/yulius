@@ -305,6 +305,12 @@ impl App {
             .unwrap_or_else(|| "superadmin".into())
     }
 
+    /// Marks agent secrets as changed: redaction caches reload (also when the instance Vidoc key,
+    /// a virtual agent secret, changes; SPEC-195 VDK-005).
+    pub(crate) fn bump_vault_generation(&self) {
+        self.vault.bump();
+    }
+
     /// The redaction matcher of every agent secret that applies to `sandbox` (values, TOTP
     /// seeds and their encodings), cached until an agent secret changes.
     ///

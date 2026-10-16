@@ -207,6 +207,15 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
+        // The instance Vidoc key (SPEC-195 VDK-002).
+        .route(
+            "/api/admin/vidoc",
+            get(updates::vidoc)
+                .put(updates::set_vidoc)
+                .delete(updates::remove_vidoc),
+        )
+        .route("/api/admin/vidoc/adopt", post(updates::adopt_vidoc))
+        .route("/api/admin/vidoc/test", post(updates::test_vidoc))
         .route("/api/github/repositories", get(projects::repositories))
         .route("/api/templates", get(projects::templates))
         .route("/api/sandboxes", post(projects::create))

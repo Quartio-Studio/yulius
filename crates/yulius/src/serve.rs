@@ -117,6 +117,11 @@ pub struct ServeArgs {
     /// ADR-16). Unset or unreadable: intake checks nothing and blocks nothing.
     #[arg(long, env = "YULIUS_JEV_API_KEY_FILE")]
     pub jev_api_key_file: Option<PathBuf>,
+    /// File holding the instance's Vidoc API key (owner-only, mode 0600; SPEC-195), used while
+    /// no key is saved in Settings: agents and granted CI jobs scan code with Vidoc's vidoc-1
+    /// through the egress proxy. Unset or unusable: Vidoc is off, and the scan says "not run".
+    #[arg(long, env = "YULIUS_VIDOC_API_KEY_FILE")]
+    pub vidoc_api_key_file: Option<PathBuf>,
     /// Probability of "several workstreams" Jev must give before a split is proposed (0.5–1).
     #[arg(long, env = "YULIUS_JEV_SPLIT_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SPLIT_THRESHOLD, value_parser = parse_threshold)]
     pub jev_split_threshold: f64,
@@ -177,6 +182,19 @@ pub fn parse_threshold(text: &str) -> Result<f64, String> {
         .ok()
         .filter(|t| (0.5..=1.0).contains(t))
         .ok_or_else(|| format!("invalid threshold {text:?}: expected a number from 0.5 to 1"))
+}
+
+/// The Vidoc services (SPEC-195): the key a superadmin saved or the one in
+/// `YULIUS_VIDOC_API_KEY_FILE` (picked by `App::load_vidoc_key`), tested against Vidoc's API.
+fn vidoc_services(args: &ServeArgs) -> yulius_app::vidoc_key::VidocServices {
+    let config_key = crate::wiring::vidoc::config_key(args.vidoc_api_key_file.as_deref());
+    if let (Err(err), Some(path)) = (&config_key, &args.vidoc_api_key_file) {
+        tracing::warn!(key_file = %path.display(), "the Vidoc key file is not usable: {err}");
+    }
+    yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(crate::wiring::vidoc::VidocHttp::default()),
+        config_key,
+    )
 }
 
 /// The task-intake services (SPEC-002 ADR-16): Jev with the key a superadmin saved or the one in
@@ -453,6 +471,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     };
     let app = App::new(config, deps);
     app.set_intake(intake_services(args));
+    app.set_vidoc(vidoc_services(args));
     app.set_updates(update_services(args)?);
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
@@ -475,6 +494,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     app.load_jev_key().await;
+    app.load_vidoc_key().await;
     let isolation =
         crate::wiring::sandbox::install(&app, &args.isolation, args.internal_bind.port()).await?;
     app.cleanup_stale_logins().await;

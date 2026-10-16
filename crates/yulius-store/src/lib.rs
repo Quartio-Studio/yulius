@@ -81,6 +81,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0030_job_resource_use.sql"),
     // Schema version 32 (SPEC-171).
     include_str!("migrations/0032_playground_purges.sql"),
+    // Schema version 33 (SPEC-195).
+    include_str!("migrations/0034_instance_vidoc_key.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

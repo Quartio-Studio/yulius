@@ -75,5 +75,6 @@ pub mod updates;
 pub mod uploads;
 pub mod usage_json;
 pub mod vault;
+pub mod vidoc_key;
 pub mod workflows;
 pub mod write_grant;
