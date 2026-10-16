@@ -1139,8 +1139,9 @@ state, where skipped counts like passed, so a run is never skipped and the merge
 rule; the commit status counts the skipped jobs
 ([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
 [decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). It is published
-when the run starts, again each time a job passes or ends skipped while the run goes on (one at a
-time, so its count never goes back), and last when the run ends, after every job's task
+when the run is queued and when it starts. It is published again each time a job passes or ends
+skipped while other jobs still run (one at a time, so its count never goes back), and last when
+the run ends, after every job's task. A published status resets the run's retry attempts
 ([SPEC-198](../.ai/specs/SPEC-198-it-isn-t-true-because-i-saw-that-some-ci.md)).
 
 ```mermaid

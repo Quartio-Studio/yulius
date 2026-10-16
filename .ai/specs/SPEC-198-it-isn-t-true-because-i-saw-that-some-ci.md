@@ -50,23 +50,32 @@ longer report a job that already ended, such as PR #600's real Vidoc scan, as st
 - **RCS-002.** A job-end publish never lands after the run's final status. Each job publishes
   inside its own job task, and the run awaits every job task before it records its end and
   publishes the final status.
-- **RCS-003.** A job that failed, errored or was cancelled, or a run being stopped (a sibling
-  failed, the run was superseded, the disk quota was crossed), publishes nothing extra. The run's
-  end publishes the outcome, as before.
+- **RCS-003.** Some job ends publish nothing extra, and the run's end publishes the outcome, as
+  before:
+  - a job that failed, errored or was cancelled;
+  - a run being stopped: a sibling failed, the run was superseded or stopped (its own cancel
+    signal is checked too), or the disk quota was crossed;
+  - the last job to end, because the run's end follows at once.
+- **RCS-004.** The statuses published as jobs end use none of the final status's retries.
+  `status_attempts` counts the failures since the last status GitHub took: a published status
+  resets it to 0. A final status that GitHub refused is then retried by `ci_retry_statuses`
+  (up to `STATUS_MAX_ATTEMPTS`), as before this change.
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
 - On a run with a passing job `check`, a skipped job `scan` and a job `held` that waits for a
   file, GitHub gets `pending | Running on Yulius: 1 of 3 jobs passed, 1 skipped` while `held` is
   still running.
-- After `held` ends, the last status is `success | Passed: 3 jobs, 1 skipped …`.
+- After `held` ends, the last status is `success | Passed: 3 jobs, 1 skipped …`, and no
+  `2 of 3` status was published before it.
+- If GitHub refuses that final status, one `ci_retry_statuses` call later publishes it.
 - The existing `local_ci` tests still pass, including those for failure, timeout, disk wait and
   supersede.
 
@@ -79,6 +88,11 @@ longer report a job that already ended, such as PR #600's real Vidoc scan, as st
     the release file.
   - It then checks the final status.
   - On dev it fails: the only pending status is `0 of 3 jobs passed`.
+- Regression test `local_ci::a_refused_final_status_is_retried_after_the_job_statuses`:
+  - Same jobs. Once the count is published, the fake GitHub refuses statuses, `held` is
+    released and the run settles, so its final status is refused.
+  - Statuses are then allowed again, and `ci_retry_statuses` must publish `success`.
+  - Before RCS-004 this fails: the job-end publishes had used up the 5 attempts.
 - Gates: `scripts/dev ci`, plus `scripts/dev security`, which runs the change scan on vidoc-1.
 
 ## Decisions
@@ -96,7 +110,18 @@ longer report a job that already ended, such as PR #600's real Vidoc scan, as st
   makes the job-end publishes take turns, so the count on GitHub never goes back.
   - Rejected: no lock. The count could show 1 of 3 although 2 had ended.
   - Rejected: a lock in `ci_publish` for every caller. It is wider than this fix needs.
-- **Volume.** At most one extra status per job. GitHub allows 1000 statuses per commit and
-  context. The retry loop (`ci_retry_statuses`) already republishes a status that failed.
+- **Volume and retries.** A run publishes at most one extra status per job, and none for its last
+  job. GitHub allows 1000 statuses per commit and context.
+  - Every publish used to add an attempt, successful ones included. With job-end publishes, a
+    3-job run reached the limit of 5 before its final status, so a refused final status was
+    never retried (review round 1).
+  - Chosen: reset the count on every published status. It now bounds failures in a row, which
+    is what a retry limit is for. A merge train or a playground records a note and never a
+    published status, so its bound is unchanged.
+  - Rejected: not counting job-end publishes. A job-end publish that fails must still count.
+- **A known race, pre-existing.** The retry loop shares no lock with the executor (review
+  finding 4). A retried pending status can still land after the final status. It no longer
+  sticks, though: the stale `status_for` makes the next retry tick publish the final status
+  again, and since RCS-004 that retry has attempts left.
 - No ADR: this makes the existing commit-status contract (SPEC-162, ADR-0133) true while a run
   is going, and does not change it.

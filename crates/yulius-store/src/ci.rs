@@ -376,9 +376,12 @@ impl CiStore for SqliteStore {
         let (id, note) = (id.to_owned(), note.map(str::to_owned));
         self.call(move |c| {
             match published {
+                // Attempts count the failures since the last status GitHub took: the statuses
+                // a running run publishes as its jobs end leave its final one every retry
+                // (SPEC-198 RCS-004).
                 Some(state) => c.execute(
                     "UPDATE ci_runs SET status_for = ?2, status_note = NULL, \
-                     status_attempts = status_attempts + 1 WHERE id = ?1",
+                     status_attempts = 0 WHERE id = ?1",
                     params![id, state.as_str()],
                 ),
                 None => c.execute(
