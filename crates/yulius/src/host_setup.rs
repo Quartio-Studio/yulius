@@ -172,8 +172,10 @@ pub const DOCKER_CE: [&str; 5] = [
 ];
 /// Ubuntu's plugins for its `docker.io` (SPEC-201).
 pub const UBUNTU_PLUGINS: [&str; 2] = ["docker-buildx", "docker-compose-v2"];
-/// The packages of sandbox isolation (`newuidmap`, egress, `bwrap`).
-pub const ISOLATION_PACKAGES: [&str; 3] = ["uidmap", "slirp4netns", "bubblewrap"];
+/// The packages Yulius and sandbox isolation need from the distribution (Git; `newuidmap`,
+/// egress, `bwrap`). Claude Code, `gh` and the browser's packages come from elsewhere and are
+/// the doctor's to report (docs/operations.md §1).
+pub const HOST_PACKAGES: [&str; 4] = ["git", "uidmap", "slirp4netns", "bubblewrap"];
 /// The host's own Docker units, which Yulius never needs (HST-004).
 pub const HOST_DOCKER_UNITS: [&str; 3] = ["docker.socket", "docker.service", "containerd.service"];
 /// Docker's apt source written by the setup.
@@ -387,7 +389,7 @@ impl<'a> Run<'a> {
     pub fn all(mut self) -> Vec<HostLine> {
         self.docker_off = self.unit_env("YULIUS_SANDBOX_DOCKER").as_deref() == Some("off");
         self.needrestart();
-        self.isolation_packages();
+        self.host_packages();
         self.docker_engine();
         self.host_docker_units();
         self.kernel_modules();
@@ -456,15 +458,15 @@ impl<'a> Run<'a> {
         );
     }
 
-    /// The packages sandbox isolation needs.
-    fn isolation_packages(&mut self) {
-        const ITEM: &str = "isolation packages";
-        let missing: Vec<&str> = ISOLATION_PACKAGES
+    /// The distribution's packages Yulius and sandbox isolation need.
+    fn host_packages(&mut self) {
+        const ITEM: &str = "host packages";
+        let missing: Vec<&str> = HOST_PACKAGES
             .into_iter()
             .filter(|p| !self.installed(p))
             .collect();
         if missing.is_empty() {
-            return self.ok(ITEM, ISOLATION_PACKAGES.join(", "));
+            return self.ok(ITEM, HOST_PACKAGES.join(", "));
         }
         let list = missing.join(" ");
         if self.mode == Mode::Check {
@@ -614,7 +616,11 @@ impl<'a> Run<'a> {
              Types: deb\nURIs: https://download.docker.com/linux/{id}\nSuites: {codename}\n\
              Components: stable\nArchitectures: {arch}\nSigned-By: {DOCKER_KEY}\n"
         );
-        self.host.write(Path::new(DOCKER_SOURCE), &source, 0o644)
+        self.host.write(Path::new(DOCKER_SOURCE), &source, 0o644)?;
+        // apt's lists were read before the source existed: the next install reads them again
+        // (a fresh host's first install already ran `apt-get update`).
+        self.apt_updated = false;
+        Ok(())
     }
 
     /// HST-004: the host's own Docker units are disabled and stopped, unless they run
@@ -631,6 +637,12 @@ impl<'a> Run<'a> {
                 unit,
                 "--property=LoadState,UnitFileState,ActiveState",
             ]));
+            if !out.ok() {
+                return self.failed(
+                    ITEM,
+                    format!("systemd does not answer about {unit}: {}", out.why()),
+                );
+            }
             let prop = |key: &str| {
                 out.stdout
                     .lines()
@@ -907,13 +919,17 @@ impl<'a> Run<'a> {
         );
     }
 
-    fn read_unit(&mut self) -> UnitState {
+    /// What systemd says about `yulius.service`; `Err` when it does not answer.
+    fn read_unit(&mut self) -> Result<UnitState, String> {
         let out = self.run_cmd(&Cmd::new(&[
             "systemctl",
             "show",
             "yulius.service",
             "--property=LoadState,Delegate,DelegateSubgroup,KillMode,ActiveState,ExecStart",
         ]));
+        if !out.ok() {
+            return Err(out.why());
+        }
         let prop = |key: &str| {
             out.stdout
                 .lines()
@@ -922,7 +938,7 @@ impl<'a> Run<'a> {
                 .trim()
                 .to_owned()
         };
-        UnitState {
+        Ok(UnitState {
             loaded: prop("LoadState") == "loaded",
             delegated: prop("Delegate") == "yes"
                 && prop("DelegateSubgroup") == "server"
@@ -933,18 +949,36 @@ impl<'a> Run<'a> {
                 .and_then(|(_, rest)| rest.split_whitespace().next())
                 .map(PathBuf::from),
             written: false,
-        }
+        })
     }
 
     /// `yulius.service`: written when missing (with `--public-url`), else given the delegation
     /// by a drop-in (HST-008).
     fn service_unit(&mut self) {
         const ITEM: &str = "yulius.service";
-        let state = self.read_unit();
+        let state = match self.read_unit() {
+            Ok(state) => state,
+            Err(why) => {
+                return self.failed(
+                    ITEM,
+                    format!("systemd does not answer ({why}); nothing was written"),
+                );
+            }
+        };
         if !state.loaded {
             self.unit = state;
             if self.mode == Mode::Check {
                 return self.needs_setup(ITEM, "not installed");
+            }
+            // A unit file systemd has not loaded is the operator's: never overwritten.
+            if self.host.is_file(Path::new(UNIT_FILE)) {
+                return self.failed(
+                    ITEM,
+                    format!(
+                        "{UNIT_FILE} exists but systemd has not loaded it: `sudo systemctl \
+                         daemon-reload`, then run the setup again"
+                    ),
+                );
             }
             let Some(url) = self.opts.public_url.clone() else {
                 return self.manual(
@@ -1068,6 +1102,9 @@ impl<'a> Run<'a> {
             "yulius-update.service",
             "--property=LoadState,ReadWritePaths",
         ]));
+        if !out.ok() {
+            return self.failed(ITEM, format!("systemd does not answer: {}", out.why()));
+        }
         let loaded = out.stdout.lines().any(|l| l.trim() == "LoadState=loaded");
         if !loaded {
             return self.manual(

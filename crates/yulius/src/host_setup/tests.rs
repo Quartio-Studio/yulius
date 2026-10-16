@@ -43,6 +43,10 @@ struct Fake {
     service_active: bool,
     /// The smoke test fails.
     smoke_fails: bool,
+    /// apt's package lists know Docker's repository (an `apt-get update` after its source).
+    docker_lists: bool,
+    /// systemd does not answer (`systemctl` cannot reach its manager).
+    systemd_down: bool,
 }
 
 impl Fake {
@@ -60,6 +64,8 @@ impl Fake {
             helper: true,
             service_active: false,
             smoke_fails: false,
+            docker_lists: false,
+            systemd_down: false,
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -158,12 +164,15 @@ impl Fake {
         self.log.iter().any(|c| c.starts_with(prefix))
     }
 
-    fn installable(&self, package: &str) -> bool {
-        let docker_repo = self
-            .files
+    fn docker_source(&self) -> bool {
+        self.files
             .iter()
-            .any(|(p, (t, _, _))| p.starts_with("/etc/apt") && t.contains("download.docker.com"));
-        !DOCKER_CE.contains(&package) || docker_repo
+            .any(|(p, (t, _, _))| p.starts_with("/etc/apt") && t.contains("download.docker.com"))
+    }
+
+    /// Docker's packages need its source and package lists read after it was added.
+    fn installable(&self, package: &str) -> bool {
+        !DOCKER_CE.contains(&package) || self.docker_lists
     }
 }
 
@@ -221,6 +230,13 @@ impl Host for Fake {
         let line = cmd.argv.join(" ");
         self.log.push(line.clone());
         let argv: Vec<&str> = cmd.argv.iter().map(String::as_str).collect();
+        if self.systemd_down && argv.first() == Some(&"systemctl") {
+            return Ok(Out {
+                code: 1,
+                stdout: String::new(),
+                stderr: "Failed to connect to bus: Host is down".into(),
+            });
+        }
         let ok = |stdout: &str| Out {
             code: 0,
             stdout: stdout.to_owned(),
@@ -242,6 +258,7 @@ impl Host for Fake {
             ["dpkg-query", "-W", "-f=${Version}", _] => ok("5:29.9.1-1~ubuntu.24.04~noble"),
             ["dpkg", "--print-architecture"] => ok("amd64\n"),
             ["apt-get", "update"] => {
+                self.docker_lists = self.docker_source();
                 if self.broken_source {
                     fail(
                         100,
@@ -504,7 +521,7 @@ fn a_fresh_host_gets_every_change_in_order() {
     assert!(passed(&lines), "{lines:#?}");
     for name in [
         "needrestart",
-        "isolation packages",
+        "host packages",
         "Docker Engine",
         "host Docker units",
         "kernel modules",
@@ -581,7 +598,7 @@ fn a_partly_set_up_host_changes_only_what_is_missing() {
     );
     for package in DOCKER_CE
         .iter()
-        .chain(["uidmap", "slirp4netns", "bubblewrap"].iter())
+        .chain(["git", "uidmap", "slirp4netns", "bubblewrap"].iter())
     {
         fake.install(package);
     }
@@ -591,7 +608,7 @@ fn a_partly_set_up_host_changes_only_what_is_missing() {
     let lines = run(&mut fake, Mode::Setup);
     assert_eq!(outcome(&lines, "Docker Engine"), HostOutcome::Ok);
     assert_eq!(outcome(&lines, "kernel modules"), HostOutcome::Ok);
-    assert_eq!(outcome(&lines, "isolation packages"), HostOutcome::Ok);
+    assert_eq!(outcome(&lines, "host packages"), HostOutcome::Ok);
     assert_eq!(outcome(&lines, "needrestart"), HostOutcome::Changed);
     assert_eq!(outcome(&lines, "host Docker units"), HostOutcome::Changed);
     assert!(!fake.has(DOCKER_SOURCE), "no second Docker source");
@@ -667,7 +684,7 @@ fn missing_modules_are_written_and_loaded() {
 #[test]
 fn ubuntus_docker_io_is_kept_with_its_plugins() {
     let mut fake = Fake::fresh();
-    for package in ["docker.io", "uidmap", "slirp4netns", "bubblewrap"] {
+    for package in ["docker.io", "git", "uidmap", "slirp4netns", "bubblewrap"] {
         fake.install(package);
     }
     fake.broken_source = true;
@@ -718,7 +735,7 @@ fn a_check_applies_only_safe_fixes() {
     assert!(!fake.ran("apt-get"), "{:#?}", fake.log);
     assert_eq!(outcome(&lines, "needrestart"), HostOutcome::Changed);
     assert_eq!(outcome(&lines, "kernel modules"), HostOutcome::Changed);
-    for name in ["isolation packages", "Docker Engine"] {
+    for name in ["host packages", "Docker Engine"] {
         let l = line(&lines, name);
         assert_eq!(l.outcome, HostOutcome::Failed, "{name}");
         assert!(l.detail.contains("sudo yulius host setup"), "{}", l.detail);
@@ -1033,4 +1050,26 @@ fn a_failed_smoke_fails_the_setup_and_a_missing_helper_is_manual() {
     let helper = line(&lines, "update helper");
     assert_eq!(helper.outcome, HostOutcome::Manual);
     assert!(helper.detail.contains("§8"), "{}", helper.detail);
+}
+
+/// A unit file systemd does not report (it does not answer, or was never reloaded) is never
+/// overwritten, and units it cannot report are not "none installed" (found by the real run in an
+/// Ubuntu 24.04 container without a systemd manager).
+#[test]
+fn an_unanswering_systemd_never_gets_its_units_rewritten() {
+    let mut fake = Fake::set_up();
+    let unit = fake.text(UNIT_FILE).unwrap_or_default().to_owned();
+    fake.systemd_down = true;
+    let lines = run(&mut fake, Mode::Setup);
+    assert!(
+        !fake.log.iter().any(|c| c == &format!("write {UNIT_FILE}")),
+        "{:#?}",
+        fake.log
+    );
+    assert_eq!(fake.text(UNIT_FILE), Some(unit.as_str()));
+    for name in ["yulius.service", "host Docker units"] {
+        let l = line(&lines, name);
+        assert_eq!(l.outcome, HostOutcome::Failed, "{name}: {lines:#?}");
+        assert!(l.detail.contains("systemd"), "{name}: {}", l.detail);
+    }
 }

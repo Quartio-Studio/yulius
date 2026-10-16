@@ -61,7 +61,7 @@ Code today:
 ### Host setup (`yulius host setup`, root)
 
 - **HST-001** `yulius host setup` (root only; non-root is refused with why) checks, in this order,
-  and fixes where it is safe: the needrestart rule; the isolation packages (`uidmap`,
+  and fixes where it is safe: the needrestart rule; the host packages (`git`, `uidmap`,
   `slirp4netns`, `bubblewrap`); Docker Engine with buildx and compose; the host's own Docker units;
   the kernel modules; the service user and data directory; its subordinate id range; the
   `yulius.service` unit; the update helper unit's write access; the binary's owner and mode; the
