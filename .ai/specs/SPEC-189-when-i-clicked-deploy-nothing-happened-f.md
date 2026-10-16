@@ -1,11 +1,11 @@
 ---
 yulius-task: 0b870c27-5ea0-4fbf-8e74-add86fbc9ed1
-status: in-progress
+status: done
 ---
 
 # SPEC-189: a confirmed deploy answers at once and says what it is doing
 
-Status: in progress
+Status: implemented
 Date: 2026-10-16
 Owner: Yulius task #174
 Scope authorization: task #174 ("when I clicked deploy nothing happened for a while and I though it
@@ -66,11 +66,11 @@ nothing about what the page shows meanwhile.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] The Deploy dialog opens at once and says what is starting
-- [ ] A refused or left deploy reads right in the dialog
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green on the branch merged with current dev
+- [x] Write the fix spec and the regression test that fails
+- [x] The Deploy dialog opens at once and says what is starting
+- [x] A refused or left deploy reads right in the dialog
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
 
@@ -121,3 +121,22 @@ nothing about what the page shows meanwhile.
   is shown.
 - **Elapsed seconds, not a fake progress bar.** The duration is unknown (a GitHub merge); a counter
   that moves proves the page is alive without promising an end.
+
+## Evidence
+
+- Root cause read in the code: `pages/cd.js` `start()` awaited `POST …/cd/{env}/deploy` with no
+  visible state; `App::cd_start` answers after `cd_prepare` (checks and production's promotion).
+- Red first: `npx e2e run tests/cd.e2e.ts` at 76de6a0e (tests only) = 5 failed, 7 passed ("Starting"
+  never shown; the dev refusal not in a dialog). Review round 1's tests at e7b3e7a1 = 2 failed
+  (who asked; Open from the CI tab), 11 passed.
+- Green: `npx e2e run tests/cd.e2e.ts` at 58be9015 = 13 passed.
+- Gates at 58be9015 (the reviewed head): `scripts/dev ci` exit 0 (nextest 1920 passed, 18
+  skipped); the whole e2e suite `npx e2e run` exit 0 (571 passed, 1 skipped: `agent.e2e.ts`, which
+  needs a real model). `scripts/dev security` exit 2, **unrun**: Vidoc answered HTTP 401 for the key
+  (#470, ADR-0104); Yulius CI's `security` job runs it on the pull request.
+- Seen in the mock UI (dark theme, 1280 px and 390 px): the Starting dialog with "Checking, then
+  promoting quartio at 9f3c2a1 into main…" and the seconds so far; the run view in the same dialog
+  after the answer; a refusal as a banner in it.
+- Not testable here: a real promotion on GitHub (the mock holds the answer instead).
+- Independent review in a fresh session: round 1 request changes (answered above), round 2 approve
+  at 58be9015.
