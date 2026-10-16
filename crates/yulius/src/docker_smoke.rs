@@ -1,8 +1,8 @@
 //! `yulius doctor --docker-smoke` (SPEC-196 DKL-007): proves on this host that sandboxes get
 //! Docker, end to end, the way an update meets them.
 //!
-//! It needs the service user and a delegated cgroup. Started as root outside one, it runs itself
-//! again through `systemd-run --uid=<the data directory's owner> -p Delegate=yes -p
+//! It needs the service user and a delegated cgroup. Started as root, wherever, it runs itself
+//! again (SPEC-202 RSB-001) through `systemd-run --uid=<the data directory's owner> -p Delegate=yes -p
 //! DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone else outside one it
 //! says so. Inside, with the current base, it creates a throwaway sandbox (`docker-smoke-<pid>`,
 //! next to the real ones but adopted by nobody else) and:
@@ -106,20 +106,66 @@ pub fn systemd_run_argv(exe: &Path, data_dir: &Path, uid: u32) -> Vec<OsString> 
     argv
 }
 
+/// How the smoke starts, by who runs it.
+#[derive(Debug, PartialEq, Eq)]
+enum Start<D> {
+    /// The checks run here, in the delegation `D`.
+    Here(D),
+    /// The smoke runs again as this uid in a delegated transient unit.
+    AsOwner(u32),
+    /// It cannot run: why.
+    Refused(String),
+}
+
+/// Decides how the smoke starts. `owner` is the data directory's owner, `delegation` this
+/// process's delegated cgroup, prepared for sandboxes.
+///
+/// Root always runs it again as the owner, without looking at its own cgroup: root can write
+/// any cgroup's files, so a root login slice would pass as delegated, get a `sandboxes/` group
+/// and run the checks as uid 0, which has no subordinate ids (SPEC-202 RSB-001, #617).
+fn start<D>(
+    root: bool,
+    owner: impl FnOnce() -> Result<u32, String>,
+    delegation: impl FnOnce() -> Result<D, String>,
+) -> Start<D> {
+    if root {
+        return match owner() {
+            Ok(0) => Start::Refused(
+                "the data directory is owned by root: sandboxes run as the service user that \
+                 owns it, with a subordinate id range (docs/operations.md)"
+                    .into(),
+            ),
+            Ok(uid) => Start::AsOwner(uid),
+            Err(why) => Start::Refused(why),
+        };
+    }
+    match delegation() {
+        Ok(delegation) => Start::Here(delegation),
+        Err(why) => Start::Refused(format!(
+            "the smoke test needs a delegated cgroup ({why}); run it as root \
+             (`sudo yulius doctor --docker-smoke`), which starts it as the service user in a \
+             transient unit"
+        )),
+    }
+}
+
 /// Body of `yulius doctor --docker-smoke`.
 #[must_use]
 pub fn main(data_dir: &Path) -> ExitCode {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yulius"));
-    let delegation = match crate::wiring::sandbox::delegation() {
-        Ok(delegation) => delegation,
-        Err(why) if nix::unistd::geteuid().is_root() => {
-            let Ok(owner) = std::fs::metadata(data_dir).map(|m| m.uid()) else {
-                eprintln!("yulius: {} is not readable", data_dir.display());
-                return ExitCode::from(2);
-            };
-            eprintln!(
-                "not in a delegated cgroup ({why}): running in a transient unit as uid {owner}"
-            );
+    let owner = || {
+        std::fs::metadata(data_dir)
+            .map(|m| m.uid())
+            .map_err(|e| format!("{}: {e}", data_dir.display()))
+    };
+    let delegation = match start(
+        nix::unistd::geteuid().is_root(),
+        owner,
+        crate::wiring::sandbox::delegation,
+    ) {
+        Start::Here(delegation) => delegation,
+        Start::AsOwner(owner) => {
+            eprintln!("running in a delegated transient unit as uid {owner}");
             let argv = systemd_run_argv(&exe, data_dir, owner);
             return match std::process::Command::new(&argv[0])
                 .args(&argv[1..])
@@ -132,12 +178,8 @@ pub fn main(data_dir: &Path) -> ExitCode {
                 }
             };
         }
-        Err(why) => {
-            eprintln!(
-                "yulius: the smoke test needs a delegated cgroup ({why}); run it as root \
-                 (`sudo yulius doctor --docker-smoke`), which starts it as the service user in a \
-                 transient unit"
-            );
+        Start::Refused(why) => {
+            eprintln!("yulius: {why}");
             return ExitCode::from(2);
         }
     };
@@ -549,6 +591,49 @@ mod tests {
                 "/var/lib/yulius"
             ]
         );
+    }
+
+    /// SPEC-202 RSB-001 (#617): root runs the smoke as the data directory's owner even when its
+    /// own cgroup (a root login slice, whose files root can always write) would pass as
+    /// delegated, and never prepares that cgroup.
+    #[test]
+    fn root_always_runs_the_smoke_as_the_owner_without_touching_its_own_cgroup() {
+        let looked = std::cell::Cell::new(false);
+        let started = start(
+            true,
+            || Ok(999),
+            || {
+                looked.set(true);
+                Ok("user.slice/user-0.slice")
+            },
+        );
+        assert_eq!(started, Start::AsOwner(999));
+        assert!(!looked.get(), "root prepared its own cgroup");
+    }
+
+    /// SPEC-202 RSB-001: a root-owned data directory is refused, not run again as root (which
+    /// has no subordinate ids, and would start itself again forever).
+    #[test]
+    fn root_refuses_a_data_directory_owned_by_root() {
+        let started = start(true, || Ok(0), || Ok(()));
+        let Start::Refused(why) = started else {
+            panic!("{started:?}");
+        };
+        assert!(why.contains("owned by root"), "{why}");
+    }
+
+    /// A user other than root runs the checks in its delegated cgroup, or is asked for root.
+    #[test]
+    fn a_service_user_runs_here_or_is_asked_for_root() {
+        assert_eq!(
+            start(false, || Ok(999), || Ok("unit")),
+            Start::Here("unit")
+        );
+        let started = start::<()>(false, || Ok(999), || Err("not delegated".into()));
+        let Start::Refused(why) = started else {
+            panic!("{started:?}");
+        };
+        assert!(why.contains("not delegated") && why.contains("sudo"), "{why}");
     }
 
     /// An interrupted smoke test's sandbox is found by name and dead process; a live one, this
