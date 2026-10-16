@@ -337,6 +337,8 @@
   --duration-ripple: 0.7s;    /* the agent's click ripple in the browser view */
   --duration-spider: 8s;      /* one loop of the session web's spider: hang, climb, hang, drop */
   --duration-scurry: 160ms;   /* one stride of the cockroach that runs across a session */
+  --duration-turn: 1.44s;     /* the Working mark's 12 frames of 120 ms, as Claude Code's spinner */
+  --duration-sweep: 2s;       /* the light running once through the Working words */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Layout */

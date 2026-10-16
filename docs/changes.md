@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   does ("Checking, then promoting quartio at 9f3c2a1 into main…") and the seconds so far, then
   shows the run in place; a refusal is said there. Closed meanwhile, the deploy goes on and a toast
   with "Open" announces it.
+- The watched task's Working line moves as Claude Code's spinner (SPEC-190, ADR-0153, task #175).
+  Under someone else's task, `✻ Working…` stood still: the mark never moved and the shimmer
+  flashed over the whole line for a fraction of each cycle. Now the mark turns through
+  `· ✢ ✳ ✶ ✻ ✽`, a light runs through the words, and the time worked follows, as in
+  `✻ Working… (1m 23s)`. Under reduced motion the mark stays on `✻` and the words don't shimmer.
 - Docker works inside isolated sandboxes (SPEC-187, ADR-0151, task #172, fixes #551). Each sandbox
   gets its own engine at `/run/docker.sock`, started by its namespace holder on first use, so
   agents, the Superagent, Shells and CI jobs run `docker build`, `docker run` and `docker compose`
