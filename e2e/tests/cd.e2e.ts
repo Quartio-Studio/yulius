@@ -187,6 +187,9 @@ test('a confirmed deploy opens its dialog at once and says what is starting', as
   await expect(dialog.getByText('Starting')).toBeVisible();
   await expect(dialog.getByText(/Checking, then promoting quartio at 9f3c2a1 into main/)).toBeVisible();
   await expect(dialog.getByText(/stages and output appear here/)).toBeVisible();
+  await expect(dialog.getByText('main · by mkarp')).toBeVisible();
+  // Its state is said in a live region filled after it exists, so a screen reader hears it.
+  expect(await browser.evaluate(() => document.querySelector('dialog[open] [role="status"]')?.textContent || '')).toMatch(/^Starting: Checking, then promoting/);
   expect(await elapsedSeconds(browser)).not.toBeNull();
   const first = (await elapsedSeconds(browser))!;
   await expect.poll(() => elapsedSeconds(browser), { timeout: 5000 }).toBeGreaterThan(first);
@@ -229,6 +232,57 @@ test('a starting deploy closed meanwhile goes on, and its toast opens it', async
   await browser.locator('.toast:has-text("Deploying production.") button:has-text("Open")').click();
   await expect(dialog.getByText('Deploying')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_\d+$/);
+
+  // The toast's Open still opens the run once the person went to the CI tab.
+  await app.open(mock('/s/studio/cd'));
+  await holdDeploy(browser);
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  await expect(dialog.getByText('Starting')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await releaseDeploy(browser);
+  await expect(screen.getByText('Deploying production.')).toBeVisible();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await browser.locator('.toast:has-text("Deploying production.") button:has-text("Open")').click();
+  await expect(dialog.getByText('Deploying')).toBeVisible();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_\d+$/);
+});
+
+test('a refusal after its dialog closed is a toast; a page left with it open draws nothing', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/cd'));
+  // Dev is refused for a secret nobody allowed, after the server's checks took their time.
+  await holdDeploy(browser);
+  await screen.getByRole('region', 'Dev environment').getByRole('button', 'Deploy dev').click();
+  await screen.getByRole('dialog', 'Deploy dev?').getByRole('button', 'Deploy dev').click();
+  const dialog = screen.getByRole('dialog', 'Deploy');
+  await expect(dialog.getByText(/Checking quartio at 9f3c2a1/)).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await releaseDeploy(browser);
+  await expect(screen.getByText(/Couldn’t deploy dev: nothing ran: a person who manages DEV_HOST/)).toBeVisible();
+  await expect(dialog).toBeHidden();
+
+  // Another page while production starts: its dialog goes with the CD tab, and nothing comes back.
+  await holdDeploy(browser);
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  await expect(dialog.getByText('Starting')).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/s/studio/git'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  await expect(dialog).toBeHidden();
+  expect(await browser.evaluate(() => document.querySelector('.cd-starting-elapsed') === null)).toBe(true);
+  await releaseDeploy(browser);
+  await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'CI/CD').click();
+  await expect(browser.locator('.item-card:has-text("Production")').first()).toContainText('Deploying');
+  await expect(dialog).toBeHidden();
+  await expect(screen.getByText('Deploying production.')).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
 });
 
 test('members deploy dev but never production, and an empty dev says so', async ({ app, screen }) => {
