@@ -49,6 +49,9 @@ pub const COCKPIT_TOOLS: [&str; 19] = [
     "secret_request_hosts",
 ];
 
+/// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, and secret_verify tells whether a value the person holds is one of them, from its SHA-256; secrets_list names them and says how. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.";
+
 /// Who calls the MCP server.
 enum McpCaller {
     /// A task's agent (task token): every tool.
@@ -452,7 +455,7 @@ impl App {
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": match caller {
                         McpCaller::Agent(_) => "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
-                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, and secret_verify tells whether a value the person holds is one of them, from its SHA-256; secrets_list names them and says how. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.",
+                        McpCaller::Cockpit(_) => COCKPIT_INSTRUCTIONS,
                     },
                 }))
             }

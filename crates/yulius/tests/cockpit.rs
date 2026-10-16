@@ -543,6 +543,11 @@ async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestRe
         token,
         "its Yulius MCP token survives the restart (SPEC-037 MGT-005)"
     );
+    assert_eq!(
+        g.h.app.cockpit_refresh_state(&id),
+        "none",
+        "started by this Yulius: nothing to refresh (SPEC-186 SAV-006)"
+    );
     let tools = mcp(
         &g,
         token.as_deref().ok_or("token")?,
@@ -3013,5 +3018,126 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     // Ended, its bearer is refused at once.
     f.h.app.end_all_shells().await;
     assert!(f.h.app.egress_client(&token).await.is_none());
+    Ok(())
+}
+
+/// The project directory of alice's Superagent conversations in the fixture's repository.
+fn alice_project(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let config = f.data.join("users/u-alice/home/.claude");
+    let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
+    Ok(yulius_harness::paths::claude_project_dir(&config, &repo))
+}
+
+/// Makes the record of shell `id` look written by a Yulius from before SPEC-186 (no launch
+/// digest).
+fn predate_launch_digest(f: &Fixture, id: &str) -> TestResult {
+    let path = f.data.join("shells").join(id).join("shell.json");
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    assert!(record.get("launch").is_some(), "{record}");
+    record.as_object_mut().ok_or("record")?.remove("launch");
+    std::fs::write(&path, serde_json::to_vec(&record)?)?;
+    Ok(())
+}
+
+/// SPEC-186 SAV-006 (ADR-0150): a Superagent started by a Yulius before an update that changed
+/// what it is served is adopted, then started again resuming its conversation once it is idle,
+/// and the new one has the new tools and the proxy; its old bearer ends with it.
+#[tokio::test]
+async fn a_superagent_started_before_an_update_restarts_resuming_its_conversation() -> TestResult {
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let old_token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let project = alice_project(&f)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    predate_launch_digest(&f, &id)?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    g.h.app.enable_egress(None);
+    add_apify_key(&g).await?;
+    let served = serve(g.h.router.clone()).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    let again = other_cockpit(&g, &id).await?;
+    let mut socket = attach(served.addr, &again, &g.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation, nothing typed"
+    );
+    assert_eq!(
+        printed(&screen, "interrupted")?,
+        "none",
+        "no turn is redone"
+    );
+    let token = g.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    assert_ne!(token, old_token);
+    assert!(printed(&screen, "proxy")?.contains(&format!("yulius:{token}@")));
+    assert_eq!(printed(&screen, "placeholder")?, "yulius-secret-APIFY_KEY");
+    let tools = mcp(&g, &token, "tools/list", json!({})).await?;
+    assert!(
+        tools.to_string().contains("\"secret_copy_to_env\""),
+        "{tools}"
+    );
+    let (listed, is_error) = cockpit_tool(&g, &token, "secrets_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["secrets"][0]["name"], "APIFY_KEY", "{listed}");
+    let refused = mcp(&g, &old_token, "tools/list", json!({})).await?;
+    assert!(refused.get("error").is_some(), "{refused}");
+    let record = std::fs::read_to_string(g.data.join("shells").join(&again).join("shell.json"))?;
+    assert!(record.contains("\"launch\":"), "{record}");
+    assert_eq!(g.h.app.cockpit_refresh_state(&again), "none");
+    assert_eq!(cockpit_id(&g, &g.alice).await?, again, "the panel finds it");
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-186 SAV-006: a Superagent to restart that is in the middle of a turn waits for it to end.
+#[tokio::test]
+async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult {
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let project = alice_project(&f)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    let mut text = [
+        prompt_record("u0", None, -60),
+        answer_record("a0", "u0", -59),
+        prompt_record("u1", Some("a0"), -10),
+    ]
+    .concat();
+    std::fs::write(&transcript, &text)?;
+    predate_launch_digest(&f, &id)?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    assert_eq!(g.h.app.cockpit_refresh_state(&id), "due");
+    wait_for("the Superagent to wait for its turn", || {
+        g.h.app.cockpit_refresh_state(&id) == "waiting"
+    })
+    .await?;
+    let live: Vec<String> =
+        g.h.app
+            .sandbox_shells(&sid())
+            .iter()
+            .map(|s| s.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![id.clone()], "not restarted mid-turn");
+
+    text.push_str(&answer_record("a1", "u1", -5));
+    std::fs::write(&transcript, &text)?;
+    other_cockpit(&g, &id).await?;
+    g.h.app.end_all_shells().await;
     Ok(())
 }
