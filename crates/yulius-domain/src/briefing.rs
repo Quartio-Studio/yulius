@@ -307,6 +307,9 @@ pub struct BriefingInput<'a> {
     pub isolated: bool,
     /// The isolated sandbox has a Docker engine of its own (SPEC-187, ADR-0151).
     pub docker: bool,
+    /// The instance has a Vidoc key: `yulius security-scan` works here and infra bootstrap adds
+    /// the scan (SPEC-195 VIB-001).
+    pub vidoc: bool,
 }
 
 fn floor_boundary(text: &str, max: usize) -> usize {
@@ -838,6 +841,20 @@ fn containers(input: &BriefingInput<'_>) -> String {
         .to_owned()
 }
 
+/// The security scan, when the instance has a Vidoc key (SPEC-195 VIB-001): what it does, how to
+/// run it, and that infra bootstrap adds it; nothing without a key.
+fn security_scan(input: &BriefingInput<'_>) -> String {
+    if !input.vidoc {
+        return String::new();
+    }
+    "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
+     branch changed (`--all`: the whole repository) to Vidoc's vidoc-1 and exits 1 on open \
+     critical or high findings, 2 when it could not run (never a pass). Run it before delivery \
+     when the project's rules or CI ask; infra bootstrap adds it as the `security` CI job \
+     (`yulius security-scan --ci`, `secrets = \"VIDOC_API_KEY\"`).\n\n"
+        .to_owned()
+}
+
 /// The goal quote's length, before a tight budget shrinks it (#555).
 const GOAL_QUOTE_BYTES: usize = 600;
 /// The least a shrunk goal quote keeps.
@@ -1167,7 +1184,7 @@ fn fitted_parts(
     input: &BriefingInput<'_>,
     source_cap: usize,
     budget_bytes: usize,
-) -> ([Part; 15], usize) {
+) -> ([Part; 16], usize) {
     let mut goal_bytes = GOAL_QUOTE_BYTES.min(input.task.goal.trim().len());
     let mut passes = 0;
     loop {
@@ -1201,7 +1218,7 @@ fn mandatory_len(parts: &[Part]) -> usize {
 }
 
 /// The briefing's parts in order, with the goal quoted in at most `goal_bytes`.
-fn briefing_parts(input: &BriefingInput<'_>, source_cap: usize, goal_bytes: usize) -> [Part; 15] {
+fn briefing_parts(input: &BriefingInput<'_>, source_cap: usize, goal_bytes: usize) -> [Part; 16] {
     [
         Part::Mandatory(header(input)),
         Part::Mandatory(discipline(input)),
@@ -1221,6 +1238,7 @@ fn briefing_parts(input: &BriefingInput<'_>, source_cap: usize, goal_bytes: usiz
         },
         Part::Mandatory(architecture(input)),
         Part::Mandatory(containers(input)),
+        Part::Mandatory(security_scan(input)),
         Part::Optional {
             text: decisions(input),
             weight: 2,
@@ -1307,6 +1325,7 @@ mod tests {
             playground: false,
             isolated: false,
             docker: false,
+            vidoc: false,
         })
     }
 
@@ -1643,6 +1662,23 @@ mod tests {
         );
         for heading in MANDATORY_HEADINGS.into_iter().chain(["## Containers"]) {
             assert!(docker.contains(heading), "docker: missing {heading}");
+        }
+        // SPEC-195 VIB-001: and with the security scan's section.
+        let scan = build_briefing(
+            &BriefingInput {
+                isolated: true,
+                docker: true,
+                vidoc: true,
+                ..input.clone()
+            },
+            DEFAULT_BUDGET_BYTES,
+        );
+        assert!(scan.len() <= DEFAULT_BUDGET_BYTES, "{} bytes", scan.len());
+        for heading in MANDATORY_HEADINGS
+            .into_iter()
+            .chain(["## Containers", "## Security scan"])
+        {
+            assert!(scan.contains(heading), "vidoc: missing {heading}");
         }
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(text.len() <= DEFAULT_BUDGET_BYTES, "{} bytes", text.len());
@@ -2015,6 +2051,39 @@ mod tests {
     /// works and how: the engine, bind mounts, the disk quota, previews and the egress proxy, in
     /// no more room than the no-engine section took (CTR-002). Without isolation an engine flag
     /// claims nothing.
+    /// SPEC-195 VIB-001: only a sandbox whose instance has a Vidoc key is told about the scan.
+    #[test]
+    fn the_security_scan_is_briefed_only_with_an_instance_vidoc_key() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let with = build_briefing(
+            &BriefingInput {
+                vidoc: true,
+                ..base(&profile, &layout)?
+            },
+            DEFAULT_BUDGET_BYTES,
+        );
+        for present in [
+            "## Security scan",
+            "`yulius security-scan`",
+            "`--all`: the whole repository",
+            "exits 1 on open critical or high findings",
+            "`yulius security-scan --ci`",
+            "secrets = \"VIDOC_API_KEY\"",
+        ] {
+            assert!(with.contains(present), "{present} not in {with}");
+        }
+        let section = security_scan(&BriefingInput {
+            vidoc: true,
+            ..base(&profile, &layout)?
+        });
+        assert!(section.len() <= 480, "{} bytes: {section}", section.len());
+        let without = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
+        assert!(!without.contains("## Security scan"), "{without}");
+        assert!(!without.contains("security-scan"), "{without}");
+        Ok(())
+    }
+
     #[test]
     fn a_sandbox_with_an_engine_is_told_docker_works_and_how() -> TestResult {
         let profile = DeliveryProfile::standard();

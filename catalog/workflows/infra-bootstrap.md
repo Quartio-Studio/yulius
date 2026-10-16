@@ -26,11 +26,12 @@ Follow `infra-bootstrap` for the content and `delivery-pipeline` for the deliver
   `.github/workflows/*` job into it (`ci_setup` lists them), run it, then delete the workflows in
   the same pull request. Never add GitHub Actions or anything that needs a paid GitHub plan.
 - CD is `[cd.dev]` and `[cd.prod]` in `yulius.toml`, both explicit (empty with an `about` when
-  nothing deploys yet), each with an idempotent deploy script and a verify smoke test under
-  `scripts/cd/`; secrets come from the project's agent secrets, named in `secrets`. Find how the
-  project deploys today first and move it there. Ask a person with `needs_you` for what only they
-  can give (a machine's credentials). A merge deploys nothing; production is a person's. Keys the
-  app reads live in a git-ignored `.env` beside a committed `.env.example`; agent secrets get there
-  through `secret_copy_to_env`.
-- Keep each step a small pull request when it grows (chain the next task). Afterwards the
-  foundations stay stable: change them only when the product needs it, with a new ADR.
+  nothing deploys yet), with idempotent deploy and verify scripts under `scripts/cd/` and secrets
+  named in `secrets`. Move what deploys today there; ask with `needs_you` for what only a person
+  gives. A merge deploys nothing; production is a person's. App keys live in an ignored `.env`
+  (`secret_copy_to_env`).
+- Security scan: with a `## Security scan` briefing section, add the `security` job
+  (`yulius security-scan --ci`) and the rule to scan before delivery; else note: no Vidoc key on
+  this instance.
+- Keep each step a small pull request (chain the next task). Afterwards the foundations stay
+  stable: change them only when the product needs it, with a new ADR.

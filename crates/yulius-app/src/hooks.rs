@@ -413,6 +413,7 @@ impl App {
             playground: sandbox.is_playground(),
             isolated: self.isolation.get().is_some(),
             docker,
+            vidoc: self.vidoc_key().is_some(),
         };
         let workflow = self.workflow_instructions(task).await.map(|text| {
             let clipped: String = text.chars().take(3_000).collect();
