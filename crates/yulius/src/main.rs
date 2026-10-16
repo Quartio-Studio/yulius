@@ -62,6 +62,13 @@ enum Command {
         #[arg(long, default_value_t = 90)]
         minutes: u64,
     },
+    /// In a task's session: remove files this task created (untracked or ignored paths of its
+    /// worktree, paths of the session's own `/` and `/tmp`), refusing anything else.
+    Remove {
+        /// Files or directories to remove; a link is removed, not what it points to.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
     /// Internal: a sandbox's namespace holder (SPEC-002 ADR-22).
     #[command(name = "sandbox-host", hide = true)]
     SandboxHost {
@@ -205,6 +212,11 @@ fn main() -> ExitCode {
         Command::Wait { minutes } => {
             let code =
                 yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Command::Remove { paths } => {
+            let code =
+                yulius::remove_cli::run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::GhToken => {

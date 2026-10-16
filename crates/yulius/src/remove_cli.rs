@@ -5,6 +5,7 @@
 //! when its location proves it is the task's: an untracked or ignored path of the task's worktree,
 //! or a path on the run's own tmpfs (`/`, `/tmp`, `/run`, `/dev/shm` of a contained run).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Where the run's own tmpfs is mounted in a contained run (SPEC-002 ADR-22: `bwrap` makes a
@@ -131,9 +132,147 @@ pub fn decide(
     Err("not this task's: other tasks or people share it".to_owned())
 }
 
+/// What a refusal adds once: where Yulius removes, and what to do with the rest.
+const REFUSED_NOTE: &str = "Yulius removes only what this task created: untracked or ignored \
+    paths of its worktree, and paths of this session's own `/`, `/tmp`, `/run` and `/dev/shm`, \
+    which nobody else sees and which go when the session ends. Leave the rest and name it in your \
+    summary; never ask a person to remove it.";
+
+/// Runs `yulius remove <paths>` in the agent's run; returns the exit code.
+pub fn run(out: &mut dyn Write, paths: &[PathBuf], env: &dyn Fn(&str) -> Option<String>) -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            let _ = writeln!(out, "yulius remove: no working directory: {err}");
+            return 1;
+        }
+    };
+    let worktree = env(yulius_harness::launch::TASK_WORKTREE_ENV)
+        .filter(|path| !path.is_empty())
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo")
+        .map(|text| parse_mountinfo(&text))
+        .unwrap_or_default();
+    remove(out, paths, &cwd, worktree.as_deref(), &mounts, &git_tracked)
+}
+
+/// Removes each of `paths` (relative ones from `cwd`) that belongs to the task, one line per
+/// path; 0 when every path is gone, 1 when any was refused or failed, 2 without paths.
+pub fn remove(
+    out: &mut dyn Write,
+    paths: &[PathBuf],
+    cwd: &Path,
+    worktree: Option<&Path>,
+    mounts: &[Mount],
+    tracked: &dyn Fn(&Path, &Path) -> Result<bool, String>,
+) -> i32 {
+    if paths.is_empty() {
+        let _ = writeln!(out, "usage: yulius remove <path>…");
+        return 2;
+    }
+    let mut refused = false;
+    for path in paths {
+        let line = match remove_one(path, cwd, worktree, mounts, tracked) {
+            Ok(Removed::Removed(target)) => format!("removed {}", target.display()),
+            Ok(Removed::Gone) => format!("already gone: {}", path.display()),
+            Err(reason) => {
+                refused = true;
+                format!("not removed: {}: {reason}", path.display())
+            }
+        };
+        let _ = writeln!(out, "{line}");
+    }
+    if refused {
+        if worktree.is_none() {
+            let _ = writeln!(
+                out,
+                "This session names no task worktree (`{}`).",
+                yulius_harness::launch::TASK_WORKTREE_ENV
+            );
+        }
+        let _ = writeln!(out, "{REFUSED_NOTE}");
+        return 1;
+    }
+    0
+}
+
+/// What became of a path.
+enum Removed {
+    /// It was the task's and is removed (its resolved path).
+    Removed(PathBuf),
+    /// Nothing was there.
+    Gone,
+}
+
+fn remove_one(
+    path: &Path,
+    cwd: &Path,
+    worktree: Option<&Path>,
+    mounts: &[Mount],
+    tracked: &dyn Fn(&Path, &Path) -> Result<bool, String>,
+) -> Result<Removed, String> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let raw = path.as_os_str().as_bytes();
+    let trimmed = raw.strip_suffix(b"/").unwrap_or(raw);
+    let last = trimmed
+        .rsplit(|byte| *byte == b'/')
+        .next()
+        .unwrap_or_default();
+    if matches!(last, b"" | b"." | b"..") {
+        return Err("name a file or a directory".to_owned());
+    }
+    let absolute = cwd.join(path);
+    let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name()) else {
+        return Err("name a file or a directory".to_owned());
+    };
+    // The directory is resolved (links followed), the last component never is.
+    let parent = match std::fs::canonicalize(parent) {
+        Ok(parent) => parent,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Removed::Gone),
+        Err(err) => return Err(format!("its directory cannot be resolved: {err}")),
+    };
+    let target = parent.join(name);
+    let metadata = match std::fs::symlink_metadata(&target) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Removed::Gone),
+        Err(err) => return Err(format!("cannot be read: {err}")),
+    };
+    decide(&target, worktree, mounts, tracked)?;
+    let removed = if metadata.is_dir() {
+        std::fs::remove_dir_all(&target)
+    } else {
+        std::fs::remove_file(&target)
+    };
+    removed.map_err(|err| format!("could not be removed: {err}"))?;
+    Ok(Removed::Removed(target))
+}
+
+/// Whether git tracks anything at or under `relative` in `worktree`.
+pub fn git_tracked(worktree: &Path, relative: &Path) -> Result<bool, String> {
+    let mut pathspec = std::ffi::OsString::from(":(literal)");
+    pathspec.push(relative);
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["ls-files", "-z", "--cached", "--"])
+        .arg(pathspec)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("git could not run: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git could not tell whether it is tracked: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(!output.stdout.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     /// The mount table of a contained task run (taken from one, 2026-10-16).
     const CONTAINED: &str = "\
@@ -193,7 +332,13 @@ mod tests {
     /// AC-3: the run's own tmpfs is the task's.
     #[test]
     fn paths_on_the_runs_own_tmpfs_belong_to_the_task() {
-        for target in ["/ci6.log", "/tmp/a/b", "/run/x", "/dev/shm/x", "/yulius/notes"] {
+        for target in [
+            "/ci6.log",
+            "/tmp/a/b",
+            "/run/x",
+            "/dev/shm/x",
+            "/yulius/notes",
+        ] {
             assert_eq!(
                 decide_in(CONTAINED, target),
                 Ok(Owner::RunPrivate),
@@ -232,8 +377,11 @@ mod tests {
             "/var/lib/yulius/sandboxes/s1/worktrees/t2/x",
             "/var/lib/yulius/sandboxes/s1/worktrees/t10/x",
         ] {
-            let reason = decide_in(CONTAINED, target).expect_err(target);
-            assert!(reason.contains("not this task's"), "{target}: {reason}");
+            let decision = decide_in(CONTAINED, target);
+            assert!(
+                matches!(&decision, Err(reason) if reason.contains("not this task's")),
+                "{target}: {decision:?}"
+            );
         }
     }
 
@@ -263,22 +411,35 @@ mod tests {
         };
         assert_eq!(decide_wt("target"), Ok(Owner::Worktree));
         assert_eq!(decide_wt("notes/scratch.txt"), Ok(Owner::Worktree));
-        let reason = decide_wt("src/main.rs").expect_err("tracked");
-        assert!(reason.contains("git rm"), "{reason}");
+        let decision = decide_wt("src/main.rs");
+        assert!(
+            matches!(&decision, Err(reason) if reason.contains("git rm")),
+            "{decision:?}"
+        );
         assert!(decide_wt("src").is_err());
         assert!(decide_wt(".git").is_err());
         assert!(decide_wt(".git/config").is_err());
-        assert!(decide(Path::new(WORKTREE), Some(Path::new(WORKTREE)), &mounts, &tracked).is_err());
+        assert!(
+            decide(
+                Path::new(WORKTREE),
+                Some(Path::new(WORKTREE)),
+                &mounts,
+                &tracked
+            )
+            .is_err()
+        );
         // A failing git refuses rather than guesses.
         let broken = |_: &Path, _: &Path| -> Result<bool, String> { Err("no git".into()) };
-        let reason = decide(
+        let decision = decide(
             &Path::new(WORKTREE).join("target"),
             Some(Path::new(WORKTREE)),
             &mounts,
             &broken,
-        )
-        .expect_err("git failed");
-        assert!(reason.contains("no git"), "{reason}");
+        );
+        assert!(
+            matches!(&decision, Err(reason) if reason.contains("no git")),
+            "{decision:?}"
+        );
         // Without a known worktree, a worktree path is just a shared path.
         assert!(
             decide(
@@ -289,5 +450,120 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> TestResult {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .status()?;
+        assert!(status.success(), "git {args:?}");
+        Ok(())
+    }
+
+    /// A git worktree with a tracked `src/main.rs` and `README`, an ignored `target/`, an
+    /// untracked `scratch.txt` and a link `link` to `README`.
+    fn worktree() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        git(root, &["init", "-q"])?;
+        std::fs::create_dir_all(root.join("src"))?;
+        std::fs::write(root.join("src/main.rs"), "fn main() {}")?;
+        std::fs::write(root.join("README"), "read me")?;
+        std::fs::write(root.join(".gitignore"), "target/\n")?;
+        git(root, &["add", "-A"])?;
+        git(root, &["commit", "-qm", "init"])?;
+        std::fs::create_dir_all(root.join("target/debug"))?;
+        std::fs::write(root.join("target/debug/out"), "built")?;
+        std::fs::write(root.join("scratch.txt"), "notes")?;
+        std::os::unix::fs::symlink(root.join("README"), root.join("link"))?;
+        Ok(dir)
+    }
+
+    fn remove_in(root: &Path, paths: &[&str]) -> Result<(i32, String), Box<dyn std::error::Error>> {
+        let root = std::fs::canonicalize(root)?;
+        let mut out = Vec::new();
+        let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        let code = remove(
+            &mut out,
+            &paths,
+            &root,
+            Some(&root),
+            &parse_mountinfo(HOST),
+            &git_tracked,
+        );
+        Ok((code, String::from_utf8(out)?))
+    }
+
+    /// AC-2, AC-5: the task's paths go, links as links; the rest stays, each with its line.
+    #[test]
+    fn it_removes_the_tasks_paths_and_refuses_the_rest() -> TestResult {
+        let dir = worktree()?;
+        let root = dir.path();
+        // A file outside the worktree, in a run that is not contained.
+        let elsewhere = tempfile::tempdir()?;
+        let outside = elsewhere.path().join("x");
+        std::fs::write(&outside, "not the task's")?;
+        let outside_text = outside.to_str().ok_or("utf-8")?;
+        let (code, out) = remove_in(
+            root,
+            &[
+                "scratch.txt",
+                "target",
+                "link",
+                "README",
+                "src",
+                ".git",
+                ".",
+                outside_text,
+            ],
+        )?;
+        assert!(outside.exists());
+        assert_eq!(code, 1, "{out}");
+        assert!(!root.join("scratch.txt").exists());
+        assert!(!root.join("target").exists());
+        assert!(std::fs::symlink_metadata(root.join("link")).is_err());
+        assert_eq!(std::fs::read_to_string(root.join("README"))?, "read me");
+        assert!(root.join("src/main.rs").exists());
+        assert!(root.join(".git").exists());
+        assert_eq!(
+            out.lines().filter(|l| l.starts_with("removed ")).count(),
+            3,
+            "{out}"
+        );
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.starts_with("not removed: "))
+                .count(),
+            5,
+            "{out}"
+        );
+        assert!(out.contains("git rm"), "{out}");
+        // The refusal says where Yulius removes and not to hand the removal to a person.
+        assert!(out.contains("never ask a person"), "{out}");
+        Ok(())
+    }
+
+    /// AC-5: only the task's or missing paths: exit 0; nothing to remove: exit 2.
+    #[test]
+    fn it_exits_zero_when_every_path_is_gone_and_two_without_paths() -> TestResult {
+        let dir = worktree()?;
+        let root = dir.path();
+        let absolute = std::fs::canonicalize(root)?.join("scratch.txt");
+        let absolute = absolute.to_str().ok_or("utf-8")?;
+        let (code, out) = remove_in(root, &[absolute, "missing.txt", "gone/deeper"])?;
+        assert_eq!(code, 0, "{out}");
+        assert!(!root.join("scratch.txt").exists());
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.starts_with("already gone: "))
+                .count(),
+            2,
+            "{out}"
+        );
+        assert_eq!(remove_in(root, &[])?.0, 2);
+        Ok(())
     }
 }
