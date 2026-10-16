@@ -2210,7 +2210,7 @@ route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0
 // Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
 const AUTOMATION_TEMPLATES = [
   { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
-  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are ranked and the 5 most important actionable ones get a task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Get the 5 most important actionable open GitHub issues of this repository solved, among those written by the core team or their agents that no running task owns.', workflow_id: null },
 ];
 const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {

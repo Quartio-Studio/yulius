@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The ready-made automation "Work through open issues" no longer works through all of the core
+  team's open issues (SPEC-194, task #180). It first drops the issues a running task owns: named
+  by an active task's title, branch or prompt, taken by it, or closed by an open pull request.
+  It ranks the rest (priority label, severity, reactions, age) and verifies them in that order
+  until it has the 5 most important actionable ones, then starts a task for each. Issues below the
+  cut are left untouched for a later run. This project's automation was updated to the new prompt.
+  Automations other projects already added from the template keep their prompt.
 - Docker works inside isolated sandboxes (SPEC-187, ADR-0151, task #172, fixes #551). Each sandbox
   gets its own engine at `/run/docker.sock`, started by its namespace holder on first use, so
   agents, the Superagent, Shells and CI jobs run `docker build`, `docker run` and `docker compose`
