@@ -31,10 +31,10 @@ sandbox; the task's worktree is its own.
   `worktrees`; not the worktree, not `.git`, git tracks nothing at or under it, asked without the
   caller's git environment), or a path on the run's own tmpfs mounted at `/`, `/tmp`, `/run` or
   `/dev/shm` when `/` is `bwrap`'s own tmpfs (mounted from its `/newroot`: a contained run). The
-  root's links containment makes (`/bin`, `/sbin`, `/lib`, `/lib64`), mount points and
-  directories holding one are refused, so a removal never empties another filesystem. Everything else is refused with the reason and
-  where Yulius removes; the agent leaves it and names it in its summary. Without a readable mount
-  table nothing is removed.
+  root's links containment makes (`/bin`, `/sbin`, `/lib`, `/lib64`), mount points and directories
+  holding one are refused, so a removal never empties another filesystem. Everything else is refused
+  with the reason and where Yulius removes; the agent leaves it and names it in its summary. Without
+  a readable mount table nothing is removed.
 - **No following.** The path's directory is resolved, its last component never: a link goes as a
   link.
 - **`TMPDIR=/tmp`** for every task run, so `$TMPDIR/x` is no longer `/x`.

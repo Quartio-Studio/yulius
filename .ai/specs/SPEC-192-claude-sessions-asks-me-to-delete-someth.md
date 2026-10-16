@@ -1,11 +1,11 @@
 ---
 yulius-task: c56a3715-1dcd-455d-8e70-cc45a6249e26
-status: in-progress
+status: done
 ---
 
 # SPEC-192: A task removes the files it created itself, with `yulius remove`
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #177
 Scope authorization: task #177, requested by MrFishPL: "Claude sessions asks me to delete
@@ -83,16 +83,16 @@ else is refused with the reason, and nothing is removed. Agent runs also get `TM
 - [x] `yulius remove` decides which paths belong to the task
 - [x] `yulius remove` removes them and reports each path
 - [x] The briefing and docs tell agents to remove their own files with it
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
 - AC-1: A run's launch environment holds `YULIUS_TASK_WORKTREE=<worktree>` and `TMPDIR=/tmp`.
-- AC-2: In a git worktree, `yulius remove` removes an untracked file, an ignored directory (not
-  what links inside it point to) and a link (not its target, also given with a trailing slash),
-  refuses a path reached through a link or `..` out of the worktree, and refuses a tracked file, a directory holding one, `.git` and the
-  worktree itself, leaving them in place.
+- AC-2: In a git worktree, `yulius remove` removes an untracked file, an ignored directory (not what
+  links inside it point to) and a link (not its target, also given with a trailing slash), refuses a
+  path reached through a link or `..` out of the worktree, and refuses a tracked file, a directory
+  holding one, `.git` and the worktree itself, leaving them in place.
 - AC-3: With a contained mount table, a file at `/x`, `/tmp/a/b` or `/run/x` is the task's; `/`,
   `/tmp`, `/bin`, `/usr/x`, `/home/x`, a directory holding a mount point and a path in another
   task's worktree are refused.
@@ -124,3 +124,27 @@ else is refused with the reason, and nothing is removed. Agent runs also get `TM
   Claude Code's prompt; it has no worktree.
 - Claude Code flagging `sh -c` scripts that hold no removal (#118, #134) is Claude Code's check;
   agents already work around it with a script file. Out of scope.
+
+## Evidence
+
+- Test-first: the launch environment test failed (`YULIUS_TASK_WORKTREE`, `TMPDIR` missing), the
+  ownership and removal tests failed against stubs, the briefing test failed before the line; all
+  pass after. A mutation check of the review fixes (dropping the `/newroot` condition and the
+  empty-mount-table refusal, keeping `GIT_*`, counting a failed removal as refused) failed 3 of the
+  11 `remove_cli` tests.
+- `cargo nextest run -p yulius --lib -E 'test(/remove_cli::/)'`: 11 passed.
+- `scripts/dev ci` at `a21fa2c1` (the review fixes with `origin/dev` merged): exit 0; nextest 1937
+  passed, 18 skipped; doc build, lint and deps passed (the `thiserror` 1/2 duplicate warnings were
+  there before).
+- `scripts/dev security`: exit 2, not run: Vidoc answered 401 for `VIDOC_API_KEY` (known since
+  2026-10-14, #470; ADR-0104 counts this as unrun, not passed).
+- Manual, in this task's own contained session (Claude Code 2.1.x, approvals bypassed), with the
+  built binary: `yulius remove /stray-177.log /tmp/rm177/ untracked-177.txt /usr/share/doc
+  README.md` removed the first three with no prompt, refused `/usr/share/doc` (shared) and
+  `README.md` (tracked, "use `git rm`") and exited 1; `/home`, `/tmp` (mount points) and `/bin`
+  (containment link) were refused; with `YULIUS_TASK_WORKTREE=/etc` it refused `README.md` and said
+  the worktree is unknown.
+- Independent review (fresh session, `om-code-review`): round 1 asked for changes (13 findings, own
+  code, all fixed in `31fac097`); round 2 approved conditional on a green gate.
+- Not testable here: a new task run getting the two variables end to end (needs a Yulius restart
+  with this build); the unit test covers the launch plan that sets them.

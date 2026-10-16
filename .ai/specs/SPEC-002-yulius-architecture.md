@@ -1845,8 +1845,9 @@ home), `TERM=xterm-256color`, `COLORTERM=truecolor`, git author identity of the 
 and `PORT` (first port of the range). A task's Claude Code run also gets `YULIUS_TASK_WORKTREE`
 (its worktree, for `yulius remove`) and `TMPDIR=/tmp` (SPEC-192). Provider secrets are
 environment-only. Agent secrets (ADR-20): `NAME=yulius-secret-NAME` placeholders,
-`CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` and `YULIUS_SCRUB_FILE`, and, with the egress proxy, `HTTP(S)_PROXY` (secret: it carries the task
-token), `NO_PROXY`, `NODE_USE_ENV_PROXY` and the CA bundle variables.
+`CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` and `YULIUS_SCRUB_FILE`, and, with the egress
+proxy, `HTTP(S)_PROXY` (secret: it carries the task token), `NO_PROXY`, `NODE_USE_ENV_PROXY` and the
+CA bundle variables.
 
 Sandbox shell sessions (SPEC-001 UI-015, UI-016) reuse the same ptyhost machinery with the user's
 login shell in the contained sandbox; they are not tasks, have no harness hooks or MCP token, are
