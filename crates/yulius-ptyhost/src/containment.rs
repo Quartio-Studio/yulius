@@ -574,7 +574,8 @@ mod tests {
     fn a_joined_run_binds_the_docker_directory_and_sets_docker_host() {
         let dir = "/data/runtime/sandboxes/s1/docker";
         let argv = bwrap_argv(&joined(Some(dir), None), &["sh".into()], "/");
-        let bind = position(&argv, &["--bind", dir, "/run/yulius/docker"]);
+        // Read-only (review round 1): the directory holds only the socket, outside the quota.
+        let bind = position(&argv, &["--ro-bind", dir, "/run/yulius/docker"]);
         let link = position(
             &argv,
             &["--symlink", "yulius/docker/docker.sock", "/run/docker.sock"],

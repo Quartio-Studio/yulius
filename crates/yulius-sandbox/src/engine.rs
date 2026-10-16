@@ -615,7 +615,7 @@ mod tests {
                 "/run/yulius-engine",
             ),
             (
-                "--bind",
+                "--ro-bind",
                 "/data/runtime/sandboxes/s1/docker",
                 "/run/yulius/docker",
             ),
@@ -658,7 +658,7 @@ mod tests {
         let storage = position(&argv, &["--bind", "/data/sysroots/s1/docker"]);
         let sys = position(&argv, &["--ro-bind", &format!("{state}/sys"), "/sys"]);
         let cgroup = position(&argv, &["--bind", &view().cgroup, "/sys/fs/cgroup"]);
-        let socket = position(&argv, &["--bind", &format!("{state}/docker")]);
+        let socket = position(&argv, &["--ro-bind", &format!("{state}/docker")]);
         let link = position(
             &argv,
             &["--symlink", "yulius/docker/docker.sock", "/run/docker.sock"],

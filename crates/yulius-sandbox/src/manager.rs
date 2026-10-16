@@ -1514,6 +1514,9 @@ while True:
         let manager = Manager::new(config);
         let state = StatePaths::new(manager.state_dir("s1"));
         std::fs::create_dir_all(&state.dir)?;
+        let dockerd = manager.bases.path("base-1").join("usr/bin");
+        std::fs::create_dir_all(&dockerd)?;
+        std::fs::write(dockerd.join("dockerd"), "")?;
         let me = std::process::id();
         let ns = |kind| crate::holder::ns_inode(me, kind).ok_or("no namespace");
         let record = HolderRecord {
@@ -1567,6 +1570,12 @@ while True:
         let front = front_of(&manager).await.ok_or("no front")?;
         assert_eq!(front.mode, "engine");
         assert_eq!(ask_front(&manager).await?, "mode:engine:");
+        // Review round 1 (high): a holder from before #583 has no engine storage; its engine's
+        // bwrap would refuse the missing bind source.
+        assert!(
+            data.path().join("sysroots/s1/docker").is_dir(),
+            "the engine's storage exists"
+        );
         let state = StatePaths::new(manager.state_dir("s1"));
         let spec: DockerFrontSpec = read_json(&state.docker_spec())?;
         assert_eq!(spec.holder_pid, std::process::id());
@@ -1625,6 +1634,13 @@ while True:
         assert!(matches!(
             on.front_mode(&request, &live_record(false)),
             DockerServe::Engine { .. }
+        ));
+        // Review round 1 (low): a base copied before Docker was installed has no `dockerd`.
+        let mut older = live_record(false);
+        older.base_id = "base-0".into();
+        assert!(matches!(
+            on.front_mode(&request, &older),
+            DockerServe::Refuse { reason } if reason.contains("before Docker was installed")
         ));
         let off = adopting(data.path(), Err(DOCKER_OFF.into()), true)?;
         assert_eq!(
