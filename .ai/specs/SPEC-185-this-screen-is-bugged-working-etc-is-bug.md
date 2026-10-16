@@ -78,6 +78,10 @@ closer to the view's sides.
   bottom of an idle task, the Working line appearing keeps the view at the bottom; a shorter view
   keeps it at the bottom; the next entries are followed with no "New messages". Fails before the
   fix (36 px above the bottom).
+- **AC-FOL-3.** e2e (review): at the bottom, the Working line hiding (the end pulls the view up)
+  keeps it following; scrolled up and back down by hand, it follows again; a reader 50 px up whom
+  the Working line going leaves within the slack is followed by the next lines. The last fails
+  without the observer taking up a reader at the bottom (54 px above it).
 - **AC-FOL-2.** The existing AC-WAT-3 tests pass: scrolled up, new entries do not move the view
   and "New messages" jumps down; a late result alone shows no button.
 - **AC-OCT-1.** e2e: a watched task has no `.octo` and no `.watch-lane`; its first line is at the
