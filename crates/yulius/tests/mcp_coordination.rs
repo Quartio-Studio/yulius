@@ -675,3 +675,31 @@ async fn step_tools_answer_with_short_text_not_records() -> TestResult {
     assert!(!tasks.contains('{'), "{tasks}");
     Ok(())
 }
+
+/// SPEC-194 TOP-008: `tasks_list` scope `active` lists a task paused for capacity (it still owns
+/// its work, so the open-issues automation must not start a second task for its issue), and
+/// leaves out a closed one.
+#[tokio::test]
+async fn active_tasks_include_those_paused_for_capacity() -> TestResult {
+    let (h, internal) = project().await?;
+    support::seed_task(&h, "paused", "s1", "u1", TaskStatus::WaitingCapacity, None).await?;
+    support::seed_task(&h, "ended", "s1", "u1", TaskStatus::Closed, None).await?;
+    let (listed, err) = tool(
+        &internal,
+        "tok-claude",
+        "tasks_list",
+        json!({"scope": "active", "limit": 200}),
+    )
+    .await?;
+    assert!(!err, "{listed}");
+    let titles: Vec<&str> = listed["tasks"]
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter_map(|t| t["title"].as_str())
+        .collect();
+    assert!(titles.contains(&"task paused"), "{titles:?}");
+    assert!(titles.contains(&"task claude2"), "{titles:?}");
+    assert!(!titles.contains(&"task ended"), "{titles:?}");
+    Ok(())
+}

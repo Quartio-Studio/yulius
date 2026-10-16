@@ -154,7 +154,8 @@ watching, steering and unblocking.
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ready-made ones, off until a person enables them in
   one click on the Automations page: "Keep the docs up to date", "Work through open issues" (the
-  core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
+  core team's issues ranked, and the 5 most important actionable ones that no running task owns
+  verified in parallel and given a task each, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When

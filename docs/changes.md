@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The ready-made automation "Work through open issues" no longer works through all of the core
+  team's open issues (SPEC-194, task #180). It first drops the issues a running task owns: an
+  active task whose title ends with `(#N)` or whose prompt refers to the issue, a `Taken by` task
+  still running, or an open pull request that closes it. It also drops those it marked
+  `Not actionable yet:` until a person answers.
+  It ranks the rest (priority label, severity, reactions, age) and verifies them in that order
+  until it has the 5 most important actionable ones, then starts a task for each. Issues below the
+  cut are left untouched for a later run. `tasks_list` scope `active` now also lists tasks
+  paused for capacity. This project's automation was updated to the new prompt.
+  Automations other projects already added from the template keep their prompt.
 - A task removes the files it created itself, instead of asking a person (SPEC-192, ADR-0155,
   task #177). Claude Code stops some `rm` commands for a person's approval even with approvals
   bypassed (a file at `/`, a path in a variable); the session terminal asked and the agent then

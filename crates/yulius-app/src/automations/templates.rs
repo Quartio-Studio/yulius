@@ -108,6 +108,12 @@ mod tests {
         assert!(docs.prompt.contains("`limit` 200"));
         assert!(!docs.prompt.contains("automations_list"));
         let issues = template("open-issues").ok_or("issues template")?;
+        // Wording is matched on one line, so a reflowed prompt keeps it.
+        let one_line = issues
+            .prompt
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(issues.prompt.contains("Never create a new issue"));
         for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
             assert!(issues.prompt.contains(association), "{association}");
@@ -119,8 +125,48 @@ mod tests {
         assert!(issues.prompt.contains("untrusted"));
         // Its own and its tasks' comments do not make an abandoned issue new again.
         assert!(issues.prompt.contains("Needs a person:"));
-        assert!(issues.prompt.contains("not this automation or its tasks"));
-        assert!(issues.prompt.contains("--search \"Fixes #<number>\""));
+        assert!(one_line.contains("not this automation or its tasks"));
+        // SPEC-194: only the 5 most important actionable issues no running task owns, ranked
+        // before any is verified; the rest wait untouched for a later run.
+        assert_eq!(
+            issues.description,
+            "Every night, the core team's open GitHub issues are ranked and the 5 most important actionable ones get a task each."
+        );
+        for wording in [
+            "5 most important actionable",
+            "no running task owns",
+            // Running tasks, also those paused for capacity, from a busy project's whole list.
+            "`tasks_list` (scope `active`, `limit` 200",
+            "waiting_capacity",
+            // An issue is named by its own reference, never by a task number.
+            "title ends with `(#<number>)`",
+            "`task #<number>`",
+            "`task_get`",
+            "never count toward the 5",
+            "`Closes`",
+            "`issues/<number>`",
+            "`issue #<number>`",
+            "`Part of #<number>`",
+            // Every open pull request, not gh's default 30, and every closing keyword.
+            "gh pr list --state open --limit 1000 --json number,body",
+            "closing keywords, in any case",
+            // The comments the drop rules read: open issues only, never the whole history.
+            "gh issue list --state open --limit 1000 --json number,comments",
+            "whose latest verdict is a `Not actionable yet:` comment",
+            // A high-ranked issue that needs a person is not re-verified every night.
+            "`Not actionable yet:`",
+            "Rank the rest",
+            "`priority: high`",
+            "reactions: .reactions.total_count, created_at",
+            "`gh issue view <number> --json body,comments`",
+            "in rank order",
+            "only as many as there are free places",
+            "stay untouched: no verification, no comment",
+        ] {
+            assert!(one_line.contains(wording), "{wording}");
+        }
+        assert!(!issues.prompt.contains("verify each one"));
+        assert!(!issues.prompt.contains("Give each remaining issue"));
         // SPEC-134 CDK-003: dev is deployed and tested every night, never production.
         let deploy = template("nightly-dev-deploy").ok_or("deploy template")?;
         for wording in [
