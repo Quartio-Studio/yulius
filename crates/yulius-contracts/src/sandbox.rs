@@ -38,6 +38,33 @@ pub const OUTBOUND_SOCKET: &str = "out.sock";
 /// Mount point of the merged system layer inside the holder's mount namespace.
 pub const SYSTEM_ROOT_DIR: &str = "root";
 
+/// System directories a joined run (and the engine) gets writable from the sandbox's system
+/// layer.
+pub const SYSTEM_LAYER_DIRS: [&str; 9] = [
+    "/usr", "/etc", "/var", "/opt", "/root", "/home", "/srv", "/mnt", "/media",
+];
+
+/// The merged-`/usr` links of a joined run's root: (target, link).
+pub const ROOT_LINKS: [(&str, &str); 4] = [
+    ("usr/bin", "/bin"),
+    ("usr/sbin", "/sbin"),
+    ("usr/lib", "/lib"),
+    ("usr/lib64", "/lib64"),
+];
+
+/// The sandbox's Docker socket in the state directory, served by the holder (ADR-0151).
+pub const ENGINE_SOCKET: &str = "docker.sock";
+/// The engine's own control directory in the state directory (its `docker.sock`).
+pub const ENGINE_CONTROL_DIR: &str = "engine";
+/// Mount point of the engine's sysfs in the state directory (holder's mount namespace).
+pub const ENGINE_SYSFS_DIR: &str = "sys";
+/// The engine's output.
+pub const ENGINE_LOG_FILE: &str = "engine.log";
+/// Where runs and the engine see the sandbox's Docker socket (`/var/run` links to `/run`).
+pub const ENGINE_SOCKET_IN_RUNS: &str = "/run/docker.sock";
+/// Where the engine sees its control directory.
+pub const ENGINE_CONTROL_IN_ENGINE: &str = "/run/yulius-engine";
+
 /// `in.sock` request: connect to a port inside the sandbox.
 pub const INBOUND_CONNECT: u8 = b'C';
 /// `in.sock` request: the ports listening inside the sandbox within its range.

@@ -348,6 +348,7 @@ impl Manager {
                 exec_shim: Some(self.config.exe.to_string_lossy().into_owned()),
                 private_dirs: vec![self.config.data_dir.to_string_lossy().into_owned()],
                 host_system: None,
+                engine_socket: None,
             },
         }))
     }

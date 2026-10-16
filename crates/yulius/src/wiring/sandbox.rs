@@ -281,6 +281,7 @@ impl SandboxIsolation for NamespaceIsolation {
                     system_passwd: joined.system_passwd,
                     system_group: joined.system_group,
                     host_system: None,
+                    engine_socket: None,
                 }))
             }
             Ok(None) if self.strict => Err(AppError::Conflict(

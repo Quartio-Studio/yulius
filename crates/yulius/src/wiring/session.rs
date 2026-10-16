@@ -83,6 +83,10 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                         .host_system
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
+                    engine_socket: j
+                        .engine_socket
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
                 })
             }),
         }),
@@ -422,6 +426,7 @@ mod tests {
             system_passwd: None,
             system_group: None,
             host_system: None,
+            engine_socket: None,
         };
         let containment = yulius_app::ci::cd::production_containment(
             std::path::Path::new("/data/runs/cd-r/work"),
