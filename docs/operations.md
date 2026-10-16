@@ -516,8 +516,8 @@ from a sandbox, and no daemon needs to run on the host.
   - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
     in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
     and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
-    leaf again under the sandbox's group, and so does the server's upkeep tick (30 s) for a front
-    it keeps (SPEC-201, #614). Before that fix, `docker` answered "cannot join
+    leaf again under the sandbox's group, and so does the server's upkeep tick (30 s) for an engine
+    or relay front it keeps (SPEC-201, #614). Before that fix, `docker` answered "cannot join
     …/sandboxes/<sandbox>/engine: No such file or directory" after every update, until a new run
     prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth

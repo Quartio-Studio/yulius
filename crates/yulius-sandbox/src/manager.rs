@@ -484,8 +484,12 @@ impl Manager {
         let serve = match front_action(current, self.front_mode(&request, &live.record)) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
-                // from an older binary does not make it again (SPEC-201 DBX-006).
-                if live.front.as_ref().is_some_and(|f| f.mode == "engine")
+                // from an older binary does not make it again (SPEC-201 DBX-006); a SPEC-187
+                // holder's own engine, behind a relay front, uses the same leaf.
+                if live
+                    .front
+                    .as_ref()
+                    .is_some_and(|f| f.mode == "engine" || f.mode == "relay")
                     && let Some(groups) = self.group_paths(sandbox)
                 {
                     match crate::cgroup::restore_leaf(&groups.engine) {

@@ -352,8 +352,14 @@ impl Delegation {
 /// engine's (`LEAVES`).
 ///
 /// # Errors
-/// The parent is gone, or the group cannot be created.
+/// `dir` has a `..`, the parent is gone, or the group cannot be created.
 pub fn restore_leaf(dir: &Path) -> io::Result<bool> {
+    if dir.components().any(|c| c.as_os_str() == "..") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a cgroup directory",
+        ));
+    }
     match std::fs::create_dir(dir) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),

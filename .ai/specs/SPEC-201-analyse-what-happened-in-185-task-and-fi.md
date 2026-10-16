@@ -82,7 +82,7 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
 | DBX-003 | The briefing's `## Containers` section with an engine names the install for missing parts in this sandbox (`missing parts: sudo apt-get install -y docker.io docker-buildx docker-compose-v2 here`). The section stays within its 270 bytes, so the tight-budget renderings keep it whole: "own engine" goes, and the egress proxy is named by its `--add-host` flag alone. |
 | DBX-004 | ADR-0160, `docs/operations.md`, `docs/architecture.md` and `docs/changes.md` name the full install. |
 | DBX-005 | Before each engine start, the front recreates the engine's cgroup leaf when it is gone: that leaf only, under its existing parent (`cgroup::restore_leaf`). A missing parent is an error naming the group, not a recreated sandbox group without limits. |
-| DBX-006 | At every upkeep tick, a kept engine front gets its engine leaf recreated when it is gone. This heals fronts that run an older binary, which a server update never replaces. |
+| DBX-006 | At adoption and every upkeep tick, a kept engine front gets its engine leaf recreated when it is gone, and so does a relay front, whose SPEC-187 holder runs its own engine in the same leaf. This heals fronts and holders that run an older binary, which a server update never replaces. `restore_leaf` refuses a path with `..`, as `join` does. |
 | DBX-007 | `docs/operations.md` names the prune on restart and the recovery. |
 
 ## Plan
@@ -224,4 +224,20 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
 - **Part 2 gate:** `scripts/dev ci` exit 0 at `771f9dc4` (2040 passed, 18 skipped). An earlier
   run at `21fe1657` passed every test but failed `cargo doc`: the new doc comment linked the
   private `LEAVES`. The link became plain code.
-- **Part 2 review:** the verdict on the final head is recorded in the pull request.
+- **Part 2 review round 1** (fresh session, at `d143d10f`): REQUEST CHANGES, all findings in own
+  code and fixed test first:
+  - Major: holders of SPEC-187, which run their own engine behind a relay front, use the same
+    leaf, and the tick only restored it for engine fronts. The test now covers both modes; the
+    relay case failed before (`"relay: the engine's leaf is back"`). The tick now restores it for
+    relay fronts too.
+  - Low: the missing-parent assertion could not tell the refusal from the fake join's own error.
+    It now requires the start's "the engine's cgroup " prefix.
+  - Nit: `restore_leaf` refuses a path with `..`, as `join` does (test first).
+  - Nit: the review box had been ticked early; it is ticked again only on approval.
+  - Nit left: a failure that persists warns at every tick. A live holder keeps the parent, so this
+    is unlikely.
+
+  The reviewer confirmed the systemd prune (`unit_prune_cgroup` → `cg_trim`, delegated units
+  included). It also found that `adopt()` at startup calls `keep_front`, so the leaf comes back
+  right after a restart. The front can write the delegated tree (`--dev-bind / /`, the service
+  uid). Both tests at `9168d8cb` fail without the fix.
