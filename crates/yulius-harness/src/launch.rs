@@ -24,6 +24,12 @@ pub const CLAUDE_PROGRAM: &str = "claude";
 pub const TASK_TOKEN_ENV: &str = "YULIUS_TASK_TOKEN";
 /// Environment variable holding the internal Yulius listener URL.
 pub const YULIUS_URL_ENV: &str = "YULIUS_URL";
+/// Environment variable holding the task's worktree: `yulius remove` removes the task's own files
+/// there (SPEC-192 RMV-001).
+pub const TASK_WORKTREE_ENV: &str = "YULIUS_TASK_WORKTREE";
+/// A run's temporary directory: unset, `$TMPDIR/x` is `/x`, which Claude Code's removal check
+/// refuses to remove without a person (SPEC-192). In a contained run `/tmp` is the run's own.
+pub const TMPDIR_ENV: (&str, &str) = ("TMPDIR", "/tmp");
 /// Turns off Claude Code's background self-update: the operator installs and updates the CLI
 /// on the host, and a contained session cannot write there, so the update could only fail
 /// (#45). Manual `claude update` is unaffected.
@@ -588,6 +594,11 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         // commands into the background mid-run, and agents then polled them (F 2026-10-12).
         (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
         (BASH_TIMEOUT_ENV[1].0.into(), BASH_TIMEOUT_ENV[1].1.into()),
+        (
+            TASK_WORKTREE_ENV.into(),
+            utf8(&request.worktree, "worktree")?.to_owned(),
+        ),
+        (TMPDIR_ENV.0.into(), TMPDIR_ENV.1.into()),
     ];
     if continue_interrupted {
         env.push((

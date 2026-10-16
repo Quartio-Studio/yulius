@@ -17,6 +17,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     its card says "Paste again" to the people who manage it.
   - Team secret values have the same one-line field (#592, not changed here).
 
+- A task removes the files it created itself, instead of asking a person (SPEC-192, ADR-0155,
+  task #177). Claude Code stops some `rm` commands for a person's approval even with approvals
+  bypassed (a file at `/`, a path in a variable); the session terminal asked and the agent then
+  left the removal to the person. `yulius remove <path>…` removes what is provably the task's:
+  untracked or ignored paths of its worktree and paths of its session's own `/`, `/tmp`, `/run`
+  and `/dev/shm`; anything shared is refused with the reason. Task runs also get `TMPDIR=/tmp`,
+  so `$TMPDIR/x` no longer lands at `/x`.
+- A confirmed deploy answers at once (SPEC-189, task #174, fixes #585). After "Deploy production…"
+  the page showed nothing while the server checked and promoted (13 s on Yulius's own instance), so
+  the click looked broken. The Deploy dialog now opens on confirmation, "Starting", with what it
+  does ("Checking, then promoting quartio at 9f3c2a1 into main…") and the seconds so far, then
+  shows the run in place; a refusal is said there. Closed meanwhile, the deploy goes on and a toast
+  with "Open" announces it.
 - The watched task's Working line moves as Claude Code's spinner (SPEC-190, ADR-0153, task #175).
   Under someone else's task, `✻ Working…` stood still: the mark never moved and the shimmer
   flashed over the whole line for a fraction of each cycle. Now the mark turns through
