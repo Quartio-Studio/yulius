@@ -1,11 +1,11 @@
 ---
 yulius-task: 18858dea-d13c-42ea-94be-1972a84a9669
-status: in-progress
+status: done
 ---
 
 # SPEC-190: The watched task's Working line moves like Claude Code's
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #175
 Scope authorization: task #175: "this animation on request-control should be better", with a
@@ -61,11 +61,11 @@ standing still.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Working mark turns through Claude Code's spinner frames
-- [ ] The Working shimmer sweeps across the words the whole cycle
-- [ ] The Working line counts how long the agent has worked
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The Working mark turns through Claude Code's spinner frames
+- [x] The Working shimmer sweeps across the words the whole cycle
+- [x] The Working line counts how long the agent has worked
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -109,4 +109,32 @@ standing still.
 
 ## Evidence
 
-To be filled in when the work is done.
+- Measured before the change (e2e mock, Chromium 1440 px): the shimmering box was 1076 px wide for
+  the words' ~70 px; with the old keyframes on a box the words' width the light was over them in
+  0.125 of the cycle (AC-WRK-2's share check, run against the old CSS).
+- Test-first, each seen failing before its change: AC-WRK-1 (`expected 0 to be 1`: no animation)
+  before `77db9907`; AC-WRK-4 (no reduced-motion rule for the mark) before its rule; AC-WRK-2
+  (1076 px box; 0.125 share) before `66d1ba98`; AC-WRK-3 (`workingFor is not a function`, no time)
+  before `13a25d8e`; the review's tick check failed against `ticker.set(showTime, 0)` (`expected 0
+  to be 700`) and passes with the code (`e3fea87c`).
+- `e2e/tests/watching.e2e.ts`: 24 passed (the 18 earlier tests unchanged, AC-WRK-5); with
+  `intake.e2e.ts` after merging `origin/dev` (#586): 41 passed.
+- Full e2e suite on `3d13e3c3`: 573 passed, 1 skipped (`agent.e2e.ts` needs a model key).
+- `scripts/dev ci` (doctor, repository check, script tests, check, fmt, clippy `-D warnings`,
+  nextest, doctests, deny, shear, doc) on `3d13e3c3`: exit 0, 1920 tests passed, 18 skipped. The
+  first run failed on the repository check (raw `1.44s`/`2s` durations); fixed with the
+  `--duration-turn` and `--duration-sweep` tokens. `python3 scripts/check_repository.py` passes
+  on the merged head.
+- Visual check in Chromium (dark and light, animations paused at 300 and 700 ms): the frames change
+  (`✳`, `✽`), the light sits inside the words, `(1m 23s)` follows dim; the line under the
+  transcript of a watched task with "Request control" above.
+- `scripts/dev security`: not run. Vidoc rejects the key (HTTP 401, #470); per ADR-0104 this is
+  unrun, not passed.
+- Independent review (`om-code-review`, fresh session), round 1 on `3d13e3c3`: request changes for
+  one minor (the tick's delay untested: a `0` delay would have passed every test) and two nits
+  (`update()`'s local `now` shadowing the new option; this spec's Plan and Evidence unfilled), all
+  own code, all fixed (the minor test-first, `e3fea87c`). Checked without findings: timer lifetime,
+  formatting and scheduling, following the bottom (the clock changes width only), the CSS geometry,
+  accessibility (frames `aria-hidden`, no live region), reduced motion, docs.
+- Not testable here: Safari and Firefox (the suite runs Chromium); `1lh` (Firefox 120+, Safari
+  16.4+) was already used in `styles.css`.
