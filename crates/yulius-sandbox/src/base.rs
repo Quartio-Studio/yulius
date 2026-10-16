@@ -1004,7 +1004,12 @@ mod tests {
                 count: 65_536,
             },
         };
-        collect(&bases, &["base-4".into()], &mapper, Path::new("/nonexistent/yulius"));
+        collect(
+            &bases,
+            &["base-4".into()],
+            &mapper,
+            Path::new("/nonexistent/yulius"),
+        );
         let left: Vec<bool> = ["base-1", "base-2", "base-3", "base-4", "base-5"]
             .iter()
             .map(|id| bases.path(id).is_dir())

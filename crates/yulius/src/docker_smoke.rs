@@ -332,6 +332,7 @@ async fn phases(
     report: &mut dyn FnMut(&Check),
 ) -> Result<(), String> {
     let mut check = |name, ok, detail: String| {
+        let detail = printable(&detail);
         let check = Check { name, ok, detail };
         report(&check);
         checks.push(check);
@@ -412,23 +413,30 @@ async fn phases(
     std::fs::write(probe.join("go-engine"), "").map_err(|e| e.to_string())?;
     let done = wait_line(&out, "engine-done", PULL_WAIT).await.is_ok();
     let log = read(&out);
-    for (name, word, file) in [
+    for (name, word, file, detail) in [
         (
             "docker run --rm hello-world in the old run",
             "hello-ok",
             "hello.txt",
+            last_line as fn(&str) -> String,
         ),
-        ("docker build in the old run", "build-ok", "build.txt"),
+        (
+            "docker build in the old run",
+            "build-ok",
+            "build.txt",
+            last_line,
+        ),
         (
             "docker compose up (two services) in the old run",
             "compose-ok",
             "compose.txt",
+            compose_detail,
         ),
     ] {
         check(
             name,
             done && log.contains(word),
-            last_line(&read(&probe.join(file))),
+            detail(&read(&probe.join(file))),
         );
     }
 
@@ -514,6 +522,72 @@ fn spawn_run(
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("cannot start a run: {e}"))
+}
+
+/// Longest detail printed.
+const DETAIL_CHARS: usize = 200;
+
+/// `text` as one line a terminal prints as it is (SPEC-202 RSB-003): escape sequences and
+/// control characters removed, line breaks and tabs as spaces, and of a line rewritten with
+/// carriage returns only its last text, as a terminal would show it.
+fn printable(text: &str) -> String {
+    let mut segments: Vec<String> = Vec::new();
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters up to a final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ESC \.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || (c == '\u{1b}' && chars.next().is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\r' => segments.push(std::mem::take(&mut out)),
+            '\n' | '\t' => out.push(' '),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    segments.push(out);
+    segments
+        .into_iter()
+        .rev()
+        .map(|segment| segment.trim().to_owned())
+        .find(|segment| !segment.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(DETAIL_CHARS)
+        .collect()
+}
+
+/// The compose check's detail (SPEC-202 RSB-004): the probe service's last line (`probe-1 …`),
+/// which says whether it reached the web service; compose's own last line is the web
+/// container's expected stop by `--abort-on-container-exit`. Without one, the last line.
+fn compose_detail(text: &str) -> String {
+    let lines: Vec<String> = text.lines().map(printable).collect();
+    let probe = lines.iter().rev().find(|line| {
+        line.split_whitespace()
+            .next()
+            .and_then(|word| word.strip_prefix("probe-"))
+            .is_some_and(|replica| replica.chars().all(|c| c.is_ascii_digit()))
+    });
+    probe
+        .or_else(|| lines.iter().rev().find(|line| !line.is_empty()))
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn read(path: &Path) -> String {
@@ -625,15 +699,15 @@ mod tests {
     /// A user other than root runs the checks in its delegated cgroup, or is asked for root.
     #[test]
     fn a_service_user_runs_here_or_is_asked_for_root() {
-        assert_eq!(
-            start(false, || Ok(999), || Ok("unit")),
-            Start::Here("unit")
-        );
+        assert_eq!(start(false, || Ok(999), || Ok("unit")), Start::Here("unit"));
         let started = start::<()>(false, || Ok(999), || Err("not delegated".into()));
         let Start::Refused(why) = started else {
             panic!("{started:?}");
         };
-        assert!(why.contains("not delegated") && why.contains("sudo"), "{why}");
+        assert!(
+            why.contains("not delegated") && why.contains("sudo"),
+            "{why}"
+        );
     }
 
     /// An interrupted smoke test's sandbox is found by name and dead process; a live one, this
@@ -676,6 +750,43 @@ mod tests {
         assert!(
             !NO_DOCKERD_IN_BASE.contains("docker.io"),
             "{NO_DOCKERD_IN_BASE}"
+        );
+    }
+
+    /// SPEC-202 RSB-003: a detail never moves the terminal's cursor: escapes and control
+    /// characters go, and a line rewritten with carriage returns keeps its last text.
+    #[test]
+    fn details_are_one_printable_line() {
+        assert_eq!(
+            printable("\u{1b}[36mprobe-1  |\u{1b}[0m compose-web"),
+            "probe-1  | compose-web"
+        );
+        assert_eq!(printable("Pulling 10%\rPulling 100%\r"), "Pulling 100%");
+        assert_eq!(
+            printable("\u{1b}]0;title\u{7}a\u{1b}[2K\u{1b}[1Ab\u{8}c\td\u{7f}"),
+            "abc d"
+        );
+        assert_eq!(printable(&"x".repeat(500)).len(), 200);
+    }
+
+    /// SPEC-202 RSB-004: the compose check shows the probe's result, not the web container's
+    /// expected stop by `--abort-on-container-exit`, even when compose colours and rewrites
+    /// its lines.
+    #[test]
+    fn the_compose_detail_is_the_probes_result() {
+        let output = " Network probe_default  Creating\r Network probe_default  Created\n\
+             \u{1b}[1A\u{1b}[2K Container probe-web-1  Started\n\
+             Attaching to probe-1, web-1\n\
+             \u{1b}[36mprobe-1  |\u{1b}[0m compose-web\n\
+             \u{1b}[36mprobe-1 exited with code 0\u{1b}[0m\n\
+             Aborting on container exit...\n \
+             Container probe-probe-1  Stopped\n\
+             \u{1b}[33mweb-1 exited with code 137\u{1b}[0m\n";
+        assert_eq!(compose_detail(output), "probe-1 exited with code 0");
+        // Without the probe (compose failed before it ran): the last line, printable.
+        assert_eq!(
+            compose_detail("no configuration file provided: not found\r\n"),
+            "no configuration file provided: not found"
         );
     }
 
