@@ -687,6 +687,30 @@ impl Manager {
         self.maybe_build(in_use);
     }
 
+    /// Prunes `sandbox`'s Docker engine through its live holder's socket (the engine starts if
+    /// it was stopped): build cache and unused images (SPEC-187 DKR-006). `None` without a live
+    /// holder that serves one, or when the engine could not prune.
+    pub async fn prune_engine(&self, sandbox: &str) -> Option<u64> {
+        let socket = {
+            let entry = self.entry(sandbox);
+            let state = entry.lock().await;
+            if !state.live.as_ref()?.record.engine {
+                return None;
+            }
+            StatePaths::new(self.state_dir(sandbox)).engine_socket()
+        };
+        match crate::engine::prune(&socket).await {
+            Ok(bytes) => {
+                tracing::info!(sandbox, freed = %human(bytes), "pruned the sandbox's Docker engine");
+                Some(bytes)
+            }
+            Err(error) => {
+                tracing::warn!(sandbox, %error, "cannot prune the sandbox's Docker engine");
+                None
+            }
+        }
+    }
+
     /// The refusal when the sandbox is over its quota. A reading older than [`QUOTA_RECHECK`]
     /// that says "over" is replaced by a fresh measurement first (space may have been freed).
     async fn quota_refusal(
@@ -700,8 +724,8 @@ impl Manager {
             return None;
         }
         if at.elapsed() >= QUOTA_RECHECK {
-            let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
-            let fresh = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &upper))
+            let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
+            let fresh = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot))
                 .await
                 .ok()?;
             state.usage = Some((fresh, Instant::now()));
@@ -732,11 +756,10 @@ impl Manager {
         let sandbox = sandbox.to_owned();
         let sysroot = self.sysroot(&sandbox);
         tokio::spawn(async move {
-            let usage = tokio::task::spawn_blocking(move || {
-                measure_sandbox(&request.dir, &sysroot.join("upper"))
-            })
-            .await
-            .unwrap_or_default();
+            let usage =
+                tokio::task::spawn_blocking(move || measure_sandbox(&request.dir, &sysroot))
+                    .await
+                    .unwrap_or_default();
             let entry = manager.entry(&sandbox);
             let mut state = entry.lock().await;
             state.measuring = false;
@@ -884,8 +907,8 @@ impl Manager {
     /// Measures a sandbox now and keeps the reading (after space was freed).
     pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
         let limit = self.config.disk_max?;
-        let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
-        let usage = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &upper))
+        let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
+        let usage = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot))
             .await
             .ok()?;
         let bytes = usage.bytes;
@@ -912,9 +935,14 @@ impl Manager {
     }
 }
 
-/// A sandbox's usage: its directory, split by consumer, and its system layer as one.
-fn measure_sandbox(dir: &Path, upper: &Path) -> Usage {
-    crate::usage::measure(&[(dir, None), (upper, Some("system"))])
+/// A sandbox's usage: its directory, split by consumer, its system layer (`sysroot/upper`) and
+/// its Docker engine's storage (`sysroot/docker`, SPEC-187 DKR-006) as one each.
+fn measure_sandbox(dir: &Path, sysroot: &Path) -> Usage {
+    crate::usage::measure(&[
+        (dir, None),
+        (&sysroot.join("upper"), Some("system")),
+        (&sysroot.join("docker"), Some("containers")),
+    ])
 }
 
 #[cfg(test)]
@@ -995,6 +1023,89 @@ mod tests {
             auto_build: false,
             docker: false,
         })
+    }
+
+    /// SPEC-187 DKR-006: pruning goes through a live holder's Docker socket, and only when
+    /// that holder serves one.
+    #[tokio::test]
+    async fn the_engine_is_pruned_through_a_live_holders_socket()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        assert_eq!(manager.prune_engine("s1").await, None, "no holder");
+        let state = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(&state.dir)?;
+        let listener = tokio::net::UnixListener::bind(state.engine_socket())?;
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.0 200 OK\r\n\r\n{\"SpaceReclaimed\":500}")
+                    .await;
+            }
+        });
+        let record = |engine| HolderRecord {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: "s1".into(),
+            base_id: "base-1".into(),
+            inner_pid: 4242,
+            bwrap_pid: 4241,
+            slirp_pid: None,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            boot_id: "b".into(),
+            started_at_ms: 0,
+            system_root: "/r".into(),
+            engine,
+        };
+        let entry = manager.entry("s1");
+        entry.lock().await.live = Some(Live {
+            record: record(false),
+            relays: Vec::new(),
+        });
+        assert_eq!(
+            manager.prune_engine("s1").await,
+            None,
+            "a holder without an engine"
+        );
+        entry.lock().await.live = Some(Live {
+            record: record(true),
+            relays: Vec::new(),
+        });
+        assert_eq!(manager.prune_engine("s1").await, Some(1000));
+        server.abort();
+        Ok(())
+    }
+
+    /// SPEC-187 DKR-006: the engine's storage counts toward the quota as one consumer.
+    #[test]
+    fn engine_storage_counts_as_containers() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let dir = data.path().join("sandboxes/s1");
+        let sysroot = data.path().join("sysroots/s1");
+        std::fs::create_dir_all(dir.join("worktrees/t1"))?;
+        std::fs::create_dir_all(sysroot.join("upper/usr"))?;
+        std::fs::create_dir_all(sysroot.join("docker/overlay2/l1"))?;
+        std::fs::write(dir.join("worktrees/t1/a"), vec![1u8; 64 * 1024])?;
+        std::fs::write(sysroot.join("upper/usr/b"), vec![1u8; 128 * 1024])?;
+        std::fs::write(sysroot.join("docker/overlay2/l1/c"), vec![1u8; 512 * 1024])?;
+        let usage = measure_sandbox(&dir, &sysroot);
+        assert_eq!(
+            usage.largest.first().map(|(name, _)| name.as_str()),
+            Some("containers"),
+            "{:?}",
+            usage.largest
+        );
+        let names: Vec<&str> = usage.largest.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"system") && names.contains(&"worktrees/t1"),
+            "{names:?}"
+        );
+        assert!(usage.bytes >= (64 + 128 + 512) * 1024, "{}", usage.bytes);
+        Ok(())
     }
 
     /// SPEC-187 DKR-001/003/005: the engine the holder starts is `sandbox-exec --engine`, which

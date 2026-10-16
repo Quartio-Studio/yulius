@@ -119,6 +119,13 @@ pub trait SandboxIsolation: Send + Sync {
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 
+    /// Prunes `sandbox`'s Docker engine: build cache and images no container uses (never
+    /// containers or volumes). Returns the bytes freed; `None` without an engine or a live holder
+    /// (SPEC-187 DKR-006).
+    async fn prune_engine(&self, _sandbox: &SandboxRef) -> Option<u64> {
+        None
+    }
+
     /// Whether isolated sandboxes have a Docker engine of their own (ADR-0151).
     fn docker(&self) -> bool {
         false

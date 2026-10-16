@@ -221,6 +221,70 @@ pub fn supervise_with(
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }
 
+/// Bound on one prune call (a large build cache takes a while).
+pub const PRUNE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Longest prune answer read.
+const PRUNE_ANSWER_MAX: u64 = 16 << 20;
+
+/// Prunes the engine behind `socket` (SPEC-187 DKR-006): the build cache, then images no
+/// container uses. Containers and volumes are never touched. Returns the bytes the engine
+/// reclaimed (each call's `SpaceReclaimed`).
+///
+/// # Errors
+/// Both calls failed (the engine is not reachable or refused).
+pub async fn prune(socket: &std::path::Path) -> std::io::Result<u64> {
+    let calls = [
+        "/build/prune?all=1",
+        // `{"dangling":["false"]}`: every unused image, not only untagged ones.
+        "/images/prune?filters=%7B%22dangling%22%3A%5B%22false%22%5D%7D",
+    ];
+    let mut freed = 0u64;
+    let mut last_error = None;
+    let mut succeeded = false;
+    for path in calls {
+        match tokio::time::timeout(PRUNE_TIMEOUT, post(socket, path)).await {
+            Ok(Ok(bytes)) => {
+                succeeded = true;
+                freed = freed.saturating_add(bytes);
+            }
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => last_error = Some(std::io::Error::other(format!("{path} timed out"))),
+        }
+    }
+    match (succeeded, last_error) {
+        (false, Some(error)) => Err(error),
+        _ => Ok(freed),
+    }
+}
+
+/// `POST path` over HTTP/1.0 (the engine closes the connection after its answer); the
+/// `SpaceReclaimed` of a 200 answer.
+async fn post(socket: &std::path::Path, path: &str) -> std::io::Result<u64> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    let request = format!("POST {path} HTTP/1.0\r\nHost: docker\r\nContent-Length: 0\r\n\r\n");
+    stream.write_all(request.as_bytes()).await?;
+    let mut answer = Vec::new();
+    stream
+        .take(PRUNE_ANSWER_MAX)
+        .read_to_end(&mut answer)
+        .await?;
+    let text = String::from_utf8_lossy(&answer);
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| std::io::Error::other("no answer from the engine"))?;
+    let status = head.split_whitespace().nth(1).unwrap_or_default();
+    if status != "200" {
+        return Err(std::io::Error::other(format!(
+            "{path}: {status} {}",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(body.trim()).map_err(std::io::Error::other)?;
+    Ok(json["SpaceReclaimed"].as_u64().unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +344,110 @@ mod tests {
         drop(write);
         assert_eq!(code, 3);
         assert!(supervise_with(&[], std::io::empty(), Duration::ZERO).is_err());
+        Ok(())
+    }
+
+    /// A fake engine API answering each prune with `answers[path]` (status, body) and recording
+    /// the request heads.
+    async fn fake_api(
+        socket: std::path::PathBuf,
+        answers: Vec<(&'static str, u16, &'static str)>,
+    ) -> std::io::Result<(
+        tokio::task::JoinHandle<()>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    )> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&heads);
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut head = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&head).into_owned();
+                let path = head
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                if let Ok(mut heads) = seen.lock() {
+                    heads.push(head);
+                }
+                let (status, body) = answers
+                    .iter()
+                    .find(|(p, _, _)| *p == path)
+                    .map_or((404, "{}"), |(_, s, b)| (*s, *b));
+                let response =
+                    format!("HTTP/1.0 {status} X\r\nContent-Type: application/json\r\n\r\n{body}");
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        Ok((server, heads))
+    }
+
+    const BUILD_PRUNE: &str = "/build/prune?all=1";
+    const IMAGE_PRUNE: &str = "/images/prune?filters=%7B%22dangling%22%3A%5B%22false%22%5D%7D";
+
+    #[tokio::test]
+    async fn pruning_frees_the_build_cache_and_images_no_container_uses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let (server, heads) = fake_api(
+            socket.clone(),
+            vec![
+                (
+                    BUILD_PRUNE,
+                    200,
+                    r#"{"CachesDeleted":["a","b"],"SpaceReclaimed":1000}"#,
+                ),
+                (
+                    IMAGE_PRUNE,
+                    200,
+                    r#"{"ImagesDeleted":[{"Untagged":"x"}],"SpaceReclaimed":234}"#,
+                ),
+            ],
+        )
+        .await?;
+        assert_eq!(prune(&socket).await?, 1234);
+        let heads = heads.lock().map_err(|_| "poisoned")?.clone();
+        assert_eq!(heads.len(), 2, "{heads:?}");
+        for head in &heads {
+            assert!(head.starts_with("POST "), "{head}");
+        }
+        // Never containers or volumes.
+        assert!(
+            heads
+                .iter()
+                .all(|h| !h.contains("/containers/") && !h.contains("/volumes/"))
+        );
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn one_failed_prune_keeps_the_other_and_two_are_an_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let (server, _) = fake_api(
+            socket.clone(),
+            vec![
+                (BUILD_PRUNE, 500, r#"{"message":"boom"}"#),
+                (IMAGE_PRUNE, 200, r#"{"SpaceReclaimed":234}"#),
+            ],
+        )
+        .await?;
+        assert_eq!(prune(&socket).await?, 234);
+        server.abort();
+        let none = dir.path().join("none.sock");
+        assert!(prune(&none).await.is_err());
         Ok(())
     }
 
