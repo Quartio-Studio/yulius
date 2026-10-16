@@ -110,7 +110,7 @@ pub struct UpdateRunView {
     /// `cancelled`.
     pub state: String,
     /// The helper's current step: `fetching`, `verifying`, `compiling`, `built`, `stopping`,
-    /// `backing_up`, `installing`, `starting`, `checking`, `rolling_back`, …
+    /// `backing_up`, `installing`, `starting`, `checking`, `checking_host`, `rolling_back`, …
     pub step: Option<String>,
     /// One calm sentence for the current step.
     pub message: Option<String>,
@@ -122,6 +122,10 @@ pub struct UpdateRunView {
     pub error: Option<String>,
     /// The last lines of the helper's output when it failed (no credentials).
     pub log_tail: Vec<String>,
+    /// After the install: the new version's re-check of the host for sandboxes' Docker (SPEC-203
+    /// HST-012); not `ok` is a regression, said with its reasons.
+    #[serde(default)]
+    pub docker: Option<crate::update::HostCheckReport>,
     /// Login of the superadmin who started it.
     pub requested_by: String,
     /// When it started (RFC 3339).

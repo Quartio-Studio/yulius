@@ -218,6 +218,7 @@ fn step_message(step: &str) -> Option<&'static str> {
         "installing" => "Installing the new version.",
         "starting" => "Starting the new version.",
         "checking" => "Checking the new version.",
+        "checking_host" => "Checking that sandboxes still get Docker.",
         "succeeded" => "The new version runs.",
         "rolling_back" => "The new version failed its check. Restoring the previous one.",
         _ => return None,
@@ -1576,6 +1577,7 @@ impl App {
             RunState::Cancelled => message = Some("Cancelled; nothing was installed.".into()),
             RunState::Building | RunState::Installing => {}
         }
+        let docker = status.as_ref().and_then(|s| s.host_check.clone());
         let ended_badly = matches!(run.state, RunState::Failed | RunState::RolledBack)
             || matches!(run.outcome, Some(RunState::Failed | RunState::RolledBack));
         let log_tail = if ended_badly {
@@ -1595,6 +1597,7 @@ impl App {
             tasks,
             error: run.error.clone(),
             log_tail,
+            docker,
             requested_by: run.requested_by.clone(),
             started_at: rfc3339(run.created_at),
             state_since: rfc3339(run.state_since),

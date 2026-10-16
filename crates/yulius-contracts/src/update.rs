@@ -111,7 +111,7 @@ pub struct HelperStatus {
     /// Running, done, failed or rolled back.
     pub state: HelperState,
     /// Current step: `fetching`, `verifying`, `compiling`, `built`, `stopping`, `backing_up`,
-    /// `installing`, `starting`, `checking`, `succeeded`, `rolling_back`, `rolled_back`,
+    /// `installing`, `starting`, `checking`, `checking_host`, `succeeded`, `rolling_back`, `rolled_back`,
     /// `failed`.
     pub step: String,
     /// Compilation progress.

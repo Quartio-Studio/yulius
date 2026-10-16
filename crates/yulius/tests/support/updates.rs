@@ -127,6 +127,17 @@ impl FakeHelper {
     }
 }
 
+impl FakeHelper {
+    /// Adds the new version's host re-check to the current status (SPEC-203 HST-012).
+    pub fn report_host_check(&self, report: yulius_contracts::update::HostCheckReport) {
+        if let Ok(mut status) = self.status.lock()
+            && let Some(status) = status.as_mut()
+        {
+            status.host_check = Some(report);
+        }
+    }
+}
+
 impl UpdateHelper for FakeHelper {
     fn installed(&self) -> bool {
         self.installed.load(Ordering::SeqCst)
