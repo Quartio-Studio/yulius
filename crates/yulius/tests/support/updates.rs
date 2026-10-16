@@ -120,6 +120,7 @@ impl FakeHelper {
                 error: error.map(str::to_owned),
                 previous: None,
                 log_tail: vec!["error: example".into()],
+                host_check: None,
                 updated_at: 0,
             });
         }

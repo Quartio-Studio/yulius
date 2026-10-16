@@ -486,6 +486,7 @@ impl Helper {
             error: Some(format!("The request was refused: {reason}.")),
             previous: None,
             log_tail: Vec::new(),
+            host_check: None,
             updated_at: now_ms(),
         };
         self.write_status(&status);
@@ -524,6 +525,7 @@ impl Helper {
             error: None,
             previous: None,
             log_tail: Vec::new(),
+            host_check: None,
             updated_at: 0,
         });
         if status.id != request.id {
@@ -535,6 +537,7 @@ impl Helper {
                 error: None,
                 previous: None,
                 log_tail: Vec::new(),
+                host_check: None,
                 ..status.clone()
             };
         }

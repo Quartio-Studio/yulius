@@ -163,6 +163,7 @@ mod tests {
             error: None,
             previous: None,
             log_tail: Vec::new(),
+            host_check: None,
             updated_at: 5,
         };
         std::fs::write(state.join(STATUS_FILE), serde_json::to_vec(&status)?)?;
