@@ -45,8 +45,18 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
     recheck.tick().await;
+    // A quiet stream still says it is alive, so the page can tell a dead connection from a quiet
+    // one and reconnect (SPEC-191 LIV-001).
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(
+        app.config.events_heartbeat_ms.max(100),
+    ));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if send(&mut socket, &UiEvent::Heartbeat).await.is_err() { break; }
+            }
             _ = recheck.tick() => {
                 // Like the terminal viewers (ACC-008): an ended session closes the stream, and
                 // sandbox visibility is decided again from the current permissions (#66).

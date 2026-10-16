@@ -184,6 +184,24 @@ pub async fn stop(
     Ok(Json(app.stop_task(&ctx, &tid).await?))
 }
 
+/// `POST /api/tasks/{tid}/pause` (SPEC-191 PER-001).
+pub async fn pause(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.pause_task_for_person(&ctx, &tid).await?))
+}
+
+/// `POST /api/tasks/{tid}/resume` (SPEC-191 PER-002): ends a person's pause.
+pub async fn unpause(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.resume_task_for_person(&ctx, &tid).await?))
+}
+
 pub async fn resume(
     State(app): State<AppState>,
     Auth(ctx): Auth,

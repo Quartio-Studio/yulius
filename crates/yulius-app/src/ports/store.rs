@@ -13,7 +13,7 @@ use crate::error::AppResult;
 use crate::model::{
     AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, ControlRequest,
     DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord, GitHubTokenRecord,
-    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord,
+    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, PersonPause, ProviderSessionRecord,
     RecordReservation, RecountOutcome, SandboxRecord, ScopeClaimRecord, Sealed, StepRecord,
     SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord, WebSessionRecord,
 };
@@ -312,6 +312,21 @@ pub trait TaskStore: Send + Sync {
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
     /// TIM-002). The task's other times stay.
     async fn set_working_since(&self, task: &TaskId, since: Option<Timestamp>) -> AppResult<()>;
+    /// A person's pause of `task` (SPEC-191 PER-001), if any.
+    async fn person_pause(&self, task: &TaskId) -> AppResult<Option<PersonPause>>;
+    /// Records `by`'s pause of `task`'s run `attempt` unless a pause is recorded; returns the
+    /// pause in force.
+    async fn set_person_pause(
+        &self,
+        task: &TaskId,
+        by: &UserId,
+        attempt: &AttemptId,
+        at: Timestamp,
+    ) -> AppResult<PersonPause>;
+    /// Clears the pause of `task`; whether one was recorded.
+    async fn clear_person_pause(&self, task: &TaskId, at: Timestamp) -> AppResult<bool>;
+    /// The tasks a person paused, with their pauses (at most 1000).
+    async fn person_paused_tasks(&self) -> AppResult<Vec<(TaskId, PersonPause)>>;
     /// The request for control of `task` that waits for its owner (SPEC-070), if any.
     async fn control_request(&self, task: &TaskId) -> AppResult<Option<ControlRequest>>;
     /// Records `by`'s request for control of `task` unless another person's request waits (one

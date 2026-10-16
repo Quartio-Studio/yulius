@@ -76,7 +76,10 @@ switch on.
   subagents (real, still present, actionable), comments the evidence on each, closes one only
   when it is shown to be already fixed or not reproducible, and starts one Fix task per
   actionable issue (`task_create`, at most 5 per run, the issue number in the title and
-  "Fixes #N" in the pull request). Neither it nor the tasks it starts call `issue_create`.
+  "Fixes #N" in the pull request). Neither it nor the tasks it starts call `issue_create`. (Amended
+  by SPEC-194, 2026-10-16: it drops issues a running task owns, ranks the rest and verifies them
+  in rank order only until it has the 5 most important actionable ones; the rest wait untouched,
+  and a `Not actionable yet:` verdict waits for a person.)
 - DSC-016: The briefing tells every task: when it confirms a bug (the one it was asked about or one
   found on the way), it reports it with `issue_create` unless an open issue already tracks it (then
   it references that issue); a task told not to create issues never does, and comments on an

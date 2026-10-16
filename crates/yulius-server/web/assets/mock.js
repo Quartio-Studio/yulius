@@ -397,6 +397,8 @@ function summary(task) {
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
+    // Why its live run is paused (SPEC-191 PAU-001): an update holds it, or a person paused it.
+    pause: (task.status === 'running' || task.status === 'switching') && task.pause ? { ...task.pause } : null,
   };
 }
 
@@ -1175,6 +1177,22 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  return summary(task);
+});
+// A person pauses a running task and resumes it (SPEC-191 PER-001/002): its run is frozen.
+route('POST', `/api/tasks/${ID}/pause`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'running') fail(409, 'conflict', 'Only a running task can be paused.');
+  if (!task.pause || task.pause.by !== 'person') {
+    touch(db, task, { pause: { by: 'person', user: { login: db.me.user.login }, since: new Date().toISOString(), pending: false } });
+  }
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/resume`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.pause && task.pause.by === 'person') touch(db, task, { pause: null });
   return summary(task);
 });
 route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
@@ -2211,7 +2229,7 @@ route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0
 // Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
 const AUTOMATION_TEMPLATES = [
   { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
-  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are ranked and the 5 most important actionable ones get a task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Get the 5 most important actionable open GitHub issues of this repository solved, among those written by the core team or their agents that no running task owns.', workflow_id: null },
 ];
 const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {
@@ -4574,9 +4592,13 @@ function openSocket(db, path) {
   // Terminal sockets may carry the viewer's size (`?cols=&rows=`), applied on hello here.
   const route_ = path.split('?')[0];
   if (route_ === '/api/events') {
+    // Like the server, the stream beats every heartbeat (`heartbeat=<ms>`, SPEC-191 LIV-001).
     ws.server = {
-      open: () => db.eventSockets.add(ws),
-      closed: () => db.eventSockets.delete(ws),
+      open: () => {
+        db.eventSockets.add(ws);
+        ws.beat = setInterval(() => { db.heartbeats += 1; ws.push(JSON.stringify({ type: 'heartbeat' })); }, db.heartbeatMs);
+      },
+      closed: () => { db.eventSockets.delete(ws); clearInterval(ws.beat); },
     };
     startAmbient(db);
   } else if ((m = route_.match(/^\/api\/tasks\/([^/]+)\/terminal$/))) {
@@ -4713,6 +4735,13 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // The event streams die without a close (a laptop asleep, a dropped proxy connection): nothing
+  // more reaches them, heartbeats included; a new connection works (SPEC-191 LIV-002).
+  db.silenceEvents = () => {
+    for (const ws of [...db.eventSockets]) { db.eventSockets.delete(ws); clearInterval(ws.beat); }
+  };
+  db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
+  db.heartbeats = 0; // beats sent, so a test can silence the stream right after one
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {
     for (const shell of [...db.shells.values()]) {
@@ -4756,6 +4785,8 @@ export function createMockTransport(params) {
   notesOf(db);
   return {
     kind: 'mock',
+    // How often the event stream beats (`heartbeat=<ms>`); the page's watchdog follows it.
+    eventsHeartbeatMs: db.heartbeatMs,
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
     pullClock,
