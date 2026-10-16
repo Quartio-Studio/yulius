@@ -309,6 +309,40 @@ const ACTIONS = {
 // ---------------------------------------------------------------- agent secrets
 
 /**
+ * A pasted key block (PEM, OpenSSH: `-----BEGIN X-----` on its first line, `-----END Y-----`
+ * on its last, Y being X or, for a key and its certificate in one file, another label) on one
+ * line, its line breaks written as literal `\n`: an agent secret never spans
+ * lines, and the vault reads that form back as the key file (SPEC-193 MLK-001). Spaces around
+ * each line and blank lines around the key are dropped (a key file's final line break comes back
+ * when it is copied). `null` for any other text: its `\n` would mean nothing to its readers.
+ */
+function escapedKey(text) {
+  const lines = text.split(/\r\n|\r|\n/).map((line) => line.trim());
+  while (lines.length && !lines[0]) lines.shift();
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  const begin = /^-----BEGIN ([^-]+)-----$/.exec(lines[0] || '');
+  const ok = lines.length >= 3 && begin && /^-----END [^-]+-----$/.test(lines[lines.length - 1]);
+  return ok ? lines.join('\\n') : null;
+}
+
+/**
+ * Keeps the line breaks of a key pasted into a one-line `input` as `\n`: the browser would turn
+ * them into spaces or drop them (#591). Any other text pastes as usual. The paste can be undone
+ * where the browser can insert text as typed.
+ */
+function pasteKeysEscaped(input) {
+  input.addEventListener('paste', (event) => {
+    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+    const key = /[\r\n]/.test(text) ? escapedKey(text) : null;
+    if (key === null) return;
+    event.preventDefault();
+    if (document.execCommand('insertText', false, key)) return;
+    input.setRangeText(key, input.selectionStart, input.selectionEnd, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/**
  * The add dialog asks for a name, a value and a description (SPEC-121): agents find the hosts and
  * how to send it, and a person allows the hosts they ask for. An instance administrator picks the
  * scope under More options. Editing keeps the hosts, and the request style of an older secret
@@ -317,11 +351,12 @@ const ACTIONS = {
 function agentForm(ctx, secret) {
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
   const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
+  pasteKeysEscaped(value);
   const notes = h('textarea', { class: 'textarea', rows: 2, 'aria-label': 'Description', placeholder: 'API key for Vidoc, the video platform' });
   notes.value = secret ? secret.description : '';
   const parts = [
     field('Name', name, 'Agents refer to it by this name; their code reads $NAME, which holds a placeholder.'),
-    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
+    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Paste a key (PEM, OpenSSH) as it is: its line breaks are kept as \\n. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
     field('Description', notes, 'Which service it is for (a login’s user name goes here, never the value). Agents find the service’s address from it and ask you to allow it.'),
   ];
   const form = { name, value };
@@ -484,9 +519,13 @@ function mountAgents(ctx, sandbox, host, actions) {
       badges: [
         secret.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet') : iconBadge('folder', 'This sandbox', ''),
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
+        secret.flattened ? badge('Paste again', 'warn', 'Its line breaks were lost') : null,
       ].filter(Boolean),
       description: secret.description || h('span', { class: 'muted' }, 'No description'),
       extra: h('div', { class: 'stack-tight' },
+        // SPEC-193 MLK-003: saved before #591, a key whose line breaks became spaces; it is not
+        // rewritten, since the spaces cannot all be told from the key's own.
+        secret.flattened ? h('span', { class: 'small' }, 'Its line breaks were lost when it was saved, so it no longer works as a key file. Edit it and paste the key again: they are kept now.') : null,
         ...agentHosts(ctx, secret, reload),
         ...agentEnvFiles(ctx, secret, reload),
         ...agentCdProd(ctx, secret, reload),

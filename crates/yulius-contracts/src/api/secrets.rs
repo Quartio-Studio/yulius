@@ -181,6 +181,10 @@ pub struct AgentSecretView {
     pub last_used_at: Option<String>,
     /// The value is older than 180 days.
     pub rotate_due: bool,
+    /// The value is a key whose line breaks were lost before SPEC-193 (a one-line field turned
+    /// them into spaces): it must be pasted again. Told only to people who manage it.
+    #[serde(default)]
+    pub flattened: bool,
     /// Whether the caller may change or delete it.
     pub can_manage: bool,
 }

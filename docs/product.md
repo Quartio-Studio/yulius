@@ -192,8 +192,10 @@ watching, steering and unblocking.
   and a description: agents find the service's host and ask for it, and a person allows it with
   one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
   `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
-  there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH),
-  stored with literal `\n`, lands there as its file, byte for byte (SPEC-186).
+  there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
+  pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands
+  in the `.env` as its file, byte for byte (SPEC-186, SPEC-193). A key saved before that, its line
+  breaks lost, is marked "Paste again" for the people who manage it.
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
