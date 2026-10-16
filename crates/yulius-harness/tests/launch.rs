@@ -123,6 +123,13 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             ("DISABLE_AUTOUPDATER".to_owned(), "1".to_owned()),
             ("BASH_DEFAULT_TIMEOUT_MS".to_owned(), "600000".to_owned()),
             ("BASH_MAX_TIMEOUT_MS".to_owned(), "1800000".to_owned()),
+            // SPEC-192 RMV-001: `yulius remove` knows the task's worktree, and `$TMPDIR/x` is
+            // not `/x`.
+            (
+                "YULIUS_TASK_WORKTREE".to_owned(),
+                "/data/sandboxes/s1/worktrees/t1".to_owned()
+            ),
+            ("TMPDIR".to_owned(), "/tmp".to_owned()),
         ]
     );
     assert_eq!(
