@@ -149,18 +149,24 @@ test('following survives "Working…" hiding, comes back by scrolling down, and 
   await expect.poll(async () => (await box()).below, { message: 'still following after the Working line went' }).toBeLessThan(4);
   await expect(screen.getByRole('button', 'New messages')).toBeHidden();
 
-  // Scrolled up, then back down by hand: it follows again.
+  // Scrolled up, then back down by hand (each scroll handled, a frame apart): the next lines, taller
+  // than the slack together, are followed.
+  const frame = () => browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   await browser.evaluate(() => { document.querySelector('.watch .watch-scroll')!.scrollTop = 0; });
+  await frame();
   await browser.evaluate(() => { const el = document.querySelector('.watch .watch-scroll')!; el.scrollTop = el.scrollHeight; });
-  await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await frame();
+  await append(browser, Array.from({ length: 4 }, (_, i) => ({ role: 'assistant', text: `Back at the bottom, line ${i + 1}.` })));
+  await expect(browser.locator('.watch .ss-entry:has-text("Back at the bottom, line 4.")')).toBeVisible();
+  await expect.poll(async () => (await box()).below, { message: 'back at the bottom, it follows' }).toBeLessThan(4);
+  await expect(screen.getByRole('button', 'New messages')).toBeHidden();
   await touchTask(browser, 'sb_studio', 12, { activity: 'working' });
   await expect(browser.locator('.watch .watch-working')).toBeVisible();
-  await expect.poll(async () => (await box()).below, { message: 'back at the bottom, it follows' }).toBeLessThan(4);
+  await expect.poll(async () => (await box()).below).toBeLessThan(4);
 
   // 50 px up is reading; the Working line going leaves the reader 14 px from the bottom, at it.
   await browser.evaluate(() => { document.querySelector('.watch .watch-scroll')!.scrollTop -= 50; });
-  // Its scroll event is handled (a frame) before the line goes.
-  await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await frame(); // its scroll event is handled before the line goes
   expect((await box()).below).toBeGreaterThan(40);
   await touchTask(browser, 'sb_studio', 12, { activity: 'idle' });
   await expect(browser.locator('.watch .watch-working')).toBeHidden();
