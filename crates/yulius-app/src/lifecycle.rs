@@ -510,6 +510,10 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let account = parse_account(req)?;
+        // A paused run would be ended by the switch (SPEC-191 PER-005).
+        if self.is_paused_by_person(&task.id).await {
+            return Err(AppError::Conflict("Resume the task first.".into()));
+        }
         // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034): at a
         // `limit` pause, or left at the limit by a refused automatic switch (SPEC-072 LRS-002).
         let at_limit = matches!(
