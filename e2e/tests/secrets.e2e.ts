@@ -189,19 +189,26 @@ test('a pasted multi-line key keeps its line breaks as \\n, and a flattened one 
     await expect(shown).toBeHidden();
   }
 
-  // Text without line breaks (a value already escaped) pastes as the browser pastes it; CR alone
-  // is a line break too, and blank lines around the key are dropped.
+  // Only a key keeps its line breaks: other text (a value already escaped, pretty-printed JSON,
+  // whose \n would break it) pastes as the browser pastes it (review round 1).
   await screen.getByRole('button', 'Add agent secret').first().click();
-  const defaulted = await browser.evaluate((t: string) => {
+  const browserPastes = (text: string) => browser.evaluate((t: string) => {
     const input = document.querySelector('dialog.modal input[aria-label="Value"]') as HTMLInputElement;
     const data = new DataTransfer();
     data.setData('text/plain', t);
     const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
     input.dispatchEvent(event);
     return !event.defaultPrevented;
-  }, pemStored);
-  expect(defaulted).toBe(true);
-  expect(await pasteValue(browser, `\r\n${keyFile('MOCK PRIVATE KEY', pemBody, '\r')}\r\r\n`)).toBe(pemStored);
+  }, text);
+  expect(await browserPastes(pemStored)).toBe(true);
+  expect(await browserPastes('{\n  "type": "service_account",\n  "project_id": "mock-project"\n}\n')).toBe(true);
+  expect(await browserPastes(`${keyFile('MOCK PRIVATE KEY', pemBody, '\n')} trailing words\n`)).toBe(true);
+  // CR alone is a line break too; blank lines around the key and spaces around each line (a key
+  // indented in YAML or Markdown) are dropped, and the paste is one step to undo.
+  const indented = `\n    ${keyFile('MOCK PRIVATE KEY', pemBody, '\r    ')}\t\r\n \n`;
+  expect(await pasteValue(browser, indented)).toBe(pemStored);
+  await screen.getByLabel('Value').press('Control+z');
+  expect(await browser.evaluate(() => (document.querySelector('dialog.modal input[aria-label="Value"]') as HTMLInputElement).value)).toBe('');
 });
 
 // SPEC-121 ASH-005: the hosts an agent asked for wait on the Secrets page for a person to allow.
