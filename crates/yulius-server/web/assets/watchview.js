@@ -9,7 +9,6 @@ import { h, icon, setChildren, loadError } from './dom.js';
 import { href } from './router.js';
 import { isLive } from './status.js';
 import { transcriptEntries } from './pages/sessions.js';
-import { createOctopus } from './octopus.js';
 
 /** How often a watcher asks for new lines while the task is live (WAT-003). */
 export const WATCH_POLL_MS = 1500;
@@ -34,8 +33,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   const lockedText = h('span', { class: 'ss-line-body' });
   // Where the TUI's prompt box was: who types, and that this person watches (not a control).
   const locked = h('div', { class: 'ss-locked' }, h('span', { class: 'ss-mark ss-mark-prompt', 'aria-hidden': 'true' }, '>'), lockedText, icon('lock', { size: 14 }));
-  const lane = h('div', { class: 'watch-lane', 'aria-hidden': 'true' });
-  const tui = h('div', { class: 'ss-tui ss-live' }, lane, earlier, transcript.el, empty, working, locked);
+  const tui = h('div', { class: 'ss-tui ss-live' }, earlier, transcript.el, empty, working, locked);
   const scroller = h('div', { class: 'watch-scroll', tabindex: 0, role: 'region', 'aria-label': 'Live transcript' }, tui);
   // Jumping down hides the button: the keyboard stays in the transcript, not on the page.
   const jump = h('button', { type: 'button', class: 'btn btn-sm watch-jump', hidden: true, onClick: () => { toBottom(); scroller.focus({ preventScroll: true }); } }, icon('down', { size: 14 }), 'New messages');
@@ -47,15 +45,31 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   let reading = null; // the AbortController of the read in flight
   let failed = false;
   let again = false; // the task changed during a read: read once more after it
-  let octopus = null; // the octopus crawling along the top (WAT-006), once the view shows
   let seen = { session: null, end: 0, bytes: 0, loaded: false };
 
   const atBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= FOLLOW_SLACK;
+  // Following the latest lines is a state (SPEC-185): only the reader scrolling up away from the
+  // bottom ends it, and while it lasts a height that changes (the Working line, the card above, a
+  // block laid out late, the window) keeps the view at the bottom. Measured at each read instead,
+  // such a change left the view above the bottom for good, behind "New messages" (#575).
+  let following = true;
+  let lastTop = 0;
   function toBottom() {
     scroller.scrollTop = scroller.scrollHeight;
+    lastTop = scroller.scrollTop;
+    following = true;
     jump.hidden = true;
   }
-  scroller.addEventListener('scroll', () => { if (atBottom()) jump.hidden = true; }, { passive: true });
+  scroller.addEventListener('scroll', () => {
+    const top = scroller.scrollTop;
+    if (atBottom()) {
+      following = true;
+      jump.hidden = true;
+    } else if (top < lastTop) following = false;
+    lastTop = top;
+  }, { passive: true });
+  // A change that leaves a reader who scrolled up within the slack puts them at the bottom: following.
+  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (following || atBottom()) toBottom(); }) : null;
 
   function render() {
     const current = task();
@@ -84,7 +98,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   }
 
   function apply(page) {
-    const follow = !seen.loaded || atBottom();
+    const follow = !seen.loaded || following;
     const entries = page.entries || [];
     if (!seen.loaded) {
       const path = page.doc_id && sessionPath(page.doc_id);
@@ -162,7 +176,10 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     start() {
       if (started) return;
       started = true;
-      octopus = createOctopus(lane);
+      if (sizes) {
+        sizes.observe(scroller);
+        sizes.observe(tui);
+      }
       read();
     },
     /** The task changed: say so, and read once more when it ended or started again. */
@@ -184,7 +201,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       alive = false;
       clock.clear(timer);
       if (reading) reading.abort();
-      if (octopus) octopus.stop();
+      if (sizes) sizes.disconnect();
       transcript.destroy();
       document.removeEventListener('visibilitychange', visibility);
     },
