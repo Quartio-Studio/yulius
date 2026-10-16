@@ -222,6 +222,17 @@ test('onboarding started elsewhere takes the open gate to its task and says so',
 test('leaving and coming back while Start onboarding runs still shows it loading', async ({ app, browser, screen }) => {
   await importRepository({ app, browser, screen }, 'website');
   await browser.evaluate(() => { location.hash = '#/s/website'; });
+  // Every toast is recorded as it shows: one lives 5 s, and a loaded runner can take longer than
+  // that from the start's ending to the last check (#525).
+  await browser.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { __toasts: string[] }).__toasts = seen;
+    new MutationObserver(() => {
+      for (const el of document.querySelectorAll<HTMLElement>('.toast .toast-msg')) {
+        if (!el.dataset.recorded) { el.dataset.recorded = '1'; seen.push(el.textContent ?? ''); }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
   await browser.evaluate(() => {
     const w = window as unknown as Mocked;
     w.__yuliusMock.holdApprove = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -257,7 +268,7 @@ test('leaving and coming back while Start onboarding runs still shows it loading
   await expect.poll(() => browser.evaluate(() => document.title)).toMatch(/Read again/);
   // One start, one toast: the page that opened the task says so, the composer left says nothing
   // (#436).
-  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.toast .toast-msg')].map((el) => el.textContent).filter((text) => text?.startsWith('Onboarding')))).toEqual(['Onboarding started: opened #1.']);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __toasts: string[] }).__toasts.filter((text) => text.startsWith('Onboarding')))).toEqual(['Onboarding started: opened #1.']);
 });
 
 test('New task on a sandbox being onboarded stays on its onboarding task', async ({ app, browser, screen }) => {

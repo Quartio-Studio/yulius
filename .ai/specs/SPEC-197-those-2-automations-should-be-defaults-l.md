@@ -153,5 +153,13 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   checks: without the re-entry guard, "expected 2 to be 1"; without the `isConnected` check,
   "expected 1 to be 0"; both pass with the code. The head that carries this is reviewed before
   delivery.
+- CI at 0be46bac (run 9680d24a): quality passed, and e2e failed one test outside this change,
+  `onboarding.e2e.ts` "leaving and coming back while Start onboarding runs still shows it
+  loading" (#525, flaky under load). It also failed in the local full run at that head (gate
+  there: 2015 passed). Cause: the test read its toast after the held tasks read was released and
+  the title updated, but the toast is raised at the navigation before that and lives 5 s. A probe
+  delay of 5.5 s before the release reproduced it exactly ("expected [] to equal ['Onboarding
+  started: opened #1.']"). Fix: the test records every toast as it is added (a MutationObserver)
+  and checks that record. With the probe still in, the file passed (13/13), and again without it.
 - Not testable here: the live instance's Automations page (it runs `main`; this reaches it at the
   next promotion).
