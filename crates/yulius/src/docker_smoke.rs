@@ -577,6 +577,19 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-201 DBX-002 (#610): the smoke builds and composes, so the host install it asks for
+    /// brings buildx and compose to the base.
+    #[test]
+    fn the_host_install_it_asks_for_brings_buildx_and_compose() {
+        for needle in [
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
+            "docker.io docker-buildx docker-compose-v2",
+        ] {
+            assert!(NO_DOCKERD_IN_BASE.contains(needle), "{needle}");
+        }
+    }
+
     /// The scripts end each phase with a line the smoke waits for.
     #[test]
     fn every_phase_ends_with_a_line_the_smoke_waits_for() {

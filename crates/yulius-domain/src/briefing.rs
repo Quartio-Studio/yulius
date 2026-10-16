@@ -2105,8 +2105,11 @@ mod tests {
             "Docker works here and in CI",
             "own engine",
             "`docker info` checks",
-            // SPEC-199 (review round 1, low): a sandbox whose system lacks `dockerd` installs it.
-            "`sudo apt install docker.io` adds it",
+            // SPEC-199 (review round 1, low): a sandbox whose system lacks `dockerd` installs it;
+            // SPEC-201 DBX-003 (#610): with buildx and compose, in the sandbox, not on the host.
+            "`sudo apt install docker.io docker-buildx docker-compose-v2`",
+            "No engine, buildx or compose?",
+            "no host change",
             "disk quota",
             "the sandbox directory",
             "ports in your range",

@@ -649,10 +649,13 @@ mod tests {
         // install it itself, and the delegation and modules still count.
         let none = docker_check(true, None, true, all, "");
         assert_eq!(none.level, Level::Warn);
+        // SPEC-201 DBX-001/002 (#610): both installs bring buildx and compose.
         for needle in [
             "`dockerd`",
-            "sudo apt-get install -y docker.io",
+            "sudo apt-get install -y docker.io docker-buildx docker-compose-v2",
             "on the host",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
         ] {
             assert!(none.detail.contains(needle), "{needle}: {}", none.detail);
         }

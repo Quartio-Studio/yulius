@@ -1797,9 +1797,13 @@ while True:
                 reason: DOCKER_NO_DOCKERD.into()
             }
         );
+        // SPEC-201 DBX-001/002 (#610): Ubuntu's `docker.io` only suggests buildx and compose, so
+        // the in-sandbox and host installs name the plugins too.
         for needle in [
-            "sudo apt-get install -y docker.io",
+            "sudo apt-get install -y docker.io docker-buildx docker-compose-v2",
             "on the host",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
             "newer base",
         ] {
             assert!(DOCKER_NO_DOCKERD.contains(needle), "{needle}");
