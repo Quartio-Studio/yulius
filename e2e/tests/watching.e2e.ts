@@ -75,6 +75,43 @@ test('the watched transcript follows the bottom, and stays put with "New message
   await expect(screen.getByRole('button', 'New messages')).toBeHidden();
 });
 
+// Task #170: the view scrolled down only when lines came, and took "at the bottom" from where it
+// was then. "✻ Working…" showing below the last line (its margin and a line, more than the slack
+// once lines are taller than 20 px) or a shorter view left it above the bottom, and the next lines
+// came with "New messages" instead of the view scrolling down.
+test('at the bottom the view keeps following when "Working…" shows, the view gets shorter or lines come after', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await browser.evaluate(() => { document.documentElement.style.setProperty('--lh', '24px'); });
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
+  // As in Safari, which has no scroll anchoring: Chromium's sometimes moved the view down with what
+  // grew below it, and hid the defect.
+  await browser.evaluate(() => { (document.querySelector('.watch .watch-scroll') as HTMLElement).style.overflowAnchor = 'none'; });
+  // Idle: the control card keeps its height, so only the transcript changes below.
+  await touchTask(browser, 'sb_studio', 12, { status: 'running', activity: 'idle' });
+  await expect(browser.locator('.watch .watch-working')).toBeHidden();
+  await append(browser, Array.from({ length: 30 }, (_, i) => ({ role: 'assistant', text: `Step ${i + 1} of 30.` })));
+  await expect(screen.getByText('Step 30 of 30.')).toBeVisible();
+  const below = () => browser.evaluate(() => {
+    const box = document.querySelector('.watch .watch-scroll')!;
+    return Math.round(box.scrollHeight - box.scrollTop - box.clientHeight);
+  });
+  await expect.poll(below).toBeLessThan(4);
+
+  await touchTask(browser, 'sb_studio', 12, { activity: 'working' });
+  await expect(browser.locator('.watch .watch-working')).toBeVisible();
+  await expect.poll(below, { message: '"Working…" appearing keeps the view at the bottom' }).toBeLessThan(4);
+
+  await browser.evaluate(() => { (document.querySelector('.watch') as HTMLElement).style.maxHeight = '240px'; });
+  await expect.poll(below, { message: 'a shorter view stays at the bottom' }).toBeLessThan(4);
+
+  await append(browser, [{ role: 'assistant', text: 'Step 31, after the agent went on working.' }]);
+  await expect(browser.locator('.watch .ss-entry:has-text("Step 31, after the agent went on working.")')).toBeVisible();
+  await expect.poll(below, { message: 'new lines are followed' }).toBeLessThan(4);
+  await expect(screen.getByRole('button', 'New messages')).toBeHidden();
+});
+
 test('a burst longer than a page is read to its end', async ({ app, browser, screen }) => {
   await watchStudio12(app, browser);
   await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
