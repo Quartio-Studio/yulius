@@ -1,11 +1,11 @@
 ---
 yulius-task: 0196e6fe-dde5-4f5e-be8e-d998c6a45912
-status: in-progress
+status: done
 ---
 
 # SPEC-195: Vidoc is built into Yulius: an optional instance key, and a security scan on vidoc-1
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #181
 Scope authorization: task #181 (requested by MrFishPL): "Integrate Vidoc into Yulius as an
@@ -256,4 +256,54 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
 
 ## Evidence
 
-Filled in as steps finish.
+- **Red, then green.** Each new test was run before its change and failed for the stated reason:
+  - `scripts/test_vidoc_scan.py` (43 tests) against the old CLI scanner: 3 failures, 47 errors.
+    The round-1 tests (deadline, streaming, `--ci` skip of nothing checked, integration base,
+    names with a line break, `\n`-only lines, error body, unwritable report) were each red
+    before their fix.
+  - The `vidoc_key::` tests did not compile without `VidocServices` and the routes. The proxy
+    test then failed at `egress_intercepts(model.vidocsecurity.com)` until the virtual secret
+    existed.
+  - Each of these failed with the change reverted on its own:
+    - `local_ci::a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret` (the CI
+      lookup through `applied_agent_secrets`);
+    - `pool_supervision::an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder`
+      (`vault_run_setup`);
+    - `local_ci::a_ci_job_runs_the_embedded_security_scan` (`ci_path`).
+
+    The `YULIUS_INTEGRATION_BRANCH` assertions failed before the environment was set.
+  - `projects::…security_scan…`, `briefing::…security_scan…` and `onboarding::…vidoc_key` failed
+    before the onboarding and briefing texts.
+- **`scripts/dev ci` on 9b26895a** (after merging `dev`) exited 0: nextest 1993 passed, 18
+  skipped; Python 77 OK; lint, deps, rustdoc and the repository check passed.
+- **`scripts/dev ci` on 6753b646** (the round-1 fixes) exited 0: nextest 1994 passed, 18
+  skipped; Python 85 OK.
+- **e2e:** `npx e2e run` on 9b26895a passed 585 tests, 1 skipped (56 files). `update.e2e.ts`
+  covers the Vidoc setup step, saved and skipped, and the Instance card.
+  `a_contained_ci_job_runs_the_embedded_security_scan` skips in this sandbox (bubblewrap cannot
+  run here, like its sibling `a_contained_granted_job_reads_its_ca_bundle`); Yulius CI hosts run it.
+- **Live, against `model.vidocsecurity.com` (2026-10-16).** Every run went through the egress
+  proxy, with this project's agent secret `VIDOC_API_KEY` as a placeholder:
+  - `GET /v1/models` answered `{"data":[{"id":"vidoc-1",…}]}`, the shape the key test expects.
+  - A scratch repository, base `origin/dev` plus a branch adding `app/run.py` with
+    `os.system("ls " + name)`:
+    - `python3 -I scripts/vidoc_scan.py`: `[high] app/run.py:5 OS command injection`, exit 1.
+    - The built `yulius security-scan`: `[critical] app/run.py:5 …`, exit 1.
+    - `--all`: one chunk, the same finding, exit 1.
+  - With `VIDOC_API_KEY=not-a-real-key-123`: `Security scan not run: Vidoc refused the key
+    (HTTP 401 …)`, exit 2.
+  - This branch's own change scan at 1486e773: 7 files in 2 chunks (76 kB), no open critical or
+    high finding, exit 0. The reviewer's dry count at 9b26895a was 44 files in 24 chunks, 1.4 MB.
+  - Not run: a live broad scan of this repository. It is about 15 MB and 260 chunks, which is task
+    #160's audit.
+- **This PR's `security` CI job** runs this branch's scanner with the project's agent secret (the
+  grant is read from `dev`). Its result is in the pull request's checks and the closing summary.
+- **Review.** Round 1 (9b26895a) requested changes: 2 medium findings (the deadline bound, this
+  empty Evidence), 8 minor ones and nits, all in this change's own code. All were fixed test-first
+  in 6753b646. Two choices were explained and accepted rather than changed: findings that name
+  another file are kept (VSC-006), and CI jobs get no extra shim. Round 2 (6753b646) found every
+  code finding fixed and asked only for this Evidence.
+- **Not testable here.** The running instance is built from `main`, so the instance key, its
+  Instance card and `yulius security-scan` for other projects reach this instance after a person
+  promotes `dev`. Until then this project's PR jobs scan with its own agent secret.
+- **Ignores:** none were needed.

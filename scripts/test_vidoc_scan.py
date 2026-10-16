@@ -384,8 +384,6 @@ class Service(Scanning):
         self.assertLess(first, output.index("chunk 1/1 reviewed"), output)
 
     def test_an_error_body_that_cannot_be_read_still_maps_the_status(self):
-        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
-
         class Broken:
             def read(self, n=-1):
                 raise OSError("connection reset")
@@ -395,7 +393,6 @@ class Service(Scanning):
         client.opener = type("O", (), {"open": lambda self, *a, **k: (_ for _ in ()).throw(error)})()
         with self.assertRaises(Usage):
             client.post({"model": "vidoc-1"}, time.monotonic() + 60)
-        del repo
 
     def test_an_unreadable_answer_is_retried_then_fails(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
