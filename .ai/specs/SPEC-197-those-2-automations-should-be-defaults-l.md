@@ -1,11 +1,11 @@
 ---
 yulius-task: 8dcb47b3-4dfd-49ae-b9bd-7b1410e844d5
-status: in-progress
+status: done
 ---
 
 # SPEC-197: The shipped automations are the Automations page's defaults
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #183
 Scope authorization: task #183 (MrFishPL): "those 2 automations should be defaults, like default
@@ -69,11 +69,11 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Defaults and Custom sections with the Default badge on the Automations page
-- [ ] A default is switched on in place and deleting it resets it
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Defaults and Custom sections with the Default badge on the Automations page
+- [x] A default is switched on in place and deleting it resets it
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -111,3 +111,31 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   shipped automations are shown as the page's Defaults, switched on in place, recognised by name;
   their content stays an editable copy (ADR-0034), so "Default" does not mean read-only as for
   workflows, and delete is their reset.
+
+## Evidence
+
+- Test first: the two new e2e tests failed on the unchanged page (no Defaults heading), then
+  passed. Review fixes were also test-first: focus after switching on failed (`toBeFocused`) and
+  passed once fixed; the builder's Delete wording and `keepFocus` by label failed, then passed; the
+  double-press assertion fails with the guard removed (mutation check) and passes with it.
+- `cd e2e && npx e2e run tests/automations.e2e.ts`: 11 passed (11).
+- `scripts/dev ci` on the merged head (origin/dev 4835317d merged): 1992 tests run, 1992 passed,
+  18 skipped; exit 0. Earlier heads 753b52c1 and 56244b9b: 1975 passed each.
+- Full e2e suite (`npx e2e run`): 583 passed, 1 skipped on 753b52c1. On the merged head while
+  the Rust gate ran beside it, 2 timed out under load (`queued-messages` "the request shows its
+  files as placeholders", tracked by #525; `responsive` automation editor heading). Both files
+  passed alone (27/27, 21/21). Run again with nothing beside it, the full suite on the merged
+  head passed: 592 passed, 1 skipped (59 files), exit 0. The load timeouts are outside this change:
+  they are page-load timeouts at a CPU the gate saturated, and `queued-messages` does not touch
+  automations.
+- `scripts/dev security`: not run, exit 2. Vidoc answered HTTP 401 "Invalid or expired token"
+  (#470). Under ADR-0104 that is reported as unrun, not passed.
+- Visual check: a screenshot of the mock Automations page (dark theme, 1440 px) shows Defaults
+  (three shipped automations, the agent-made one badged "Default", the two not added off) above
+  Custom.
+- Reviews: round 1 (753b52c1) requested changes (fallback untested, focus lost, weak assertions,
+  stale MCP text, SPEC-042 pointer), all fixed in 56244b9b. Round 2 approved 56244b9b with two
+  minors (builder Delete, double-press test) and a focus nit, fixed in b5e6ad1d. Final review on
+  the merged head.
+- Not testable here: the live instance's Automations page (it runs `main`; this reaches it at the
+  next promotion).
