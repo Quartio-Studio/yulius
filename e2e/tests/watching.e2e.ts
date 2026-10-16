@@ -122,6 +122,54 @@ test('at the bottom the view keeps following when "Working…" shows, the view g
   expect(await browser.evaluate(() => document.querySelector('.watch .watch-scroll')!.scrollTop)).toBe(0);
 });
 
+// The review of #575's fix: the Working line hiding at the end of each turn (the end clamps the view
+// up) keeps it following; scrolling back down by hand follows again; and a reader left within the
+// slack of the bottom by a shrink is at the bottom, so the next lines are followed.
+test('following survives "Working…" hiding, comes back by scrolling down, and takes up a reader a shrink left at the bottom', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await browser.evaluate(() => { document.documentElement.style.setProperty('--lh', '24px'); });
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' }, status: 'running', activity: 'working' });
+  await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
+  await browser.evaluate(() => { (document.querySelector('.watch .watch-scroll') as HTMLElement).style.overflowAnchor = 'none'; });
+  await append(browser, Array.from({ length: 30 }, (_, i) => ({ role: 'assistant', text: `Turn ${i + 1} of 30.` })));
+  await expect(browser.locator('.watch .ss-entry:has-text("Turn 30 of 30.")')).toBeVisible();
+  await expect(browser.locator('.watch .watch-working')).toBeVisible();
+  const box = () => browser.evaluate(() => {
+    const el = document.querySelector('.watch .watch-scroll')!;
+    return { top: Math.round(el.scrollTop), below: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) };
+  });
+  await expect.poll(async () => (await box()).below).toBeLessThan(4);
+
+  // The turn ends: the Working line goes, and the end pulls the view up with it.
+  await touchTask(browser, 'sb_studio', 12, { activity: 'idle' });
+  await expect(browser.locator('.watch .watch-working')).toBeHidden();
+  await append(browser, [{ role: 'assistant', text: 'Turn 31, after a turn ended.' }]);
+  await expect(browser.locator('.watch .ss-entry:has-text("Turn 31, after a turn ended.")')).toBeVisible();
+  await expect.poll(async () => (await box()).below, { message: 'still following after the Working line went' }).toBeLessThan(4);
+  await expect(screen.getByRole('button', 'New messages')).toBeHidden();
+
+  // Scrolled up, then back down by hand: it follows again.
+  await browser.evaluate(() => { document.querySelector('.watch .watch-scroll')!.scrollTop = 0; });
+  await browser.evaluate(() => { const el = document.querySelector('.watch .watch-scroll')!; el.scrollTop = el.scrollHeight; });
+  await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await touchTask(browser, 'sb_studio', 12, { activity: 'working' });
+  await expect(browser.locator('.watch .watch-working')).toBeVisible();
+  await expect.poll(async () => (await box()).below, { message: 'back at the bottom, it follows' }).toBeLessThan(4);
+
+  // 50 px up is reading; the Working line going leaves the reader 14 px from the bottom, at it.
+  await browser.evaluate(() => { document.querySelector('.watch .watch-scroll')!.scrollTop -= 50; });
+  // Its scroll event is handled (a frame) before the line goes.
+  await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  expect((await box()).below).toBeGreaterThan(40);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'idle' });
+  await expect(browser.locator('.watch .watch-working')).toBeHidden();
+  await append(browser, [{ role: 'assistant', text: 'Turn 32, seen from near the bottom.' }]);
+  await expect(browser.locator('.watch .ss-entry:has-text("Turn 32, seen from near the bottom.")')).toBeVisible();
+  await expect.poll(async () => (await box()).below, { message: 'a reader at the bottom again is followed' }).toBeLessThan(4);
+  await expect(screen.getByRole('button', 'New messages')).toBeHidden();
+});
+
 test('a burst longer than a page is read to its end', async ({ app, browser, screen }) => {
   await watchStudio12(app, browser);
   await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
@@ -217,11 +265,12 @@ test('a watched transcript has 16 px at its sides, as the card above it; a past 
     return [style.paddingLeft, style.paddingRight];
   });
   expect(await sides()).toEqual(['16px', '16px']);
+  await expect(browser.locator('.watch .ss-entry').first()).toBeVisible();
   expect(await browser.evaluate(() => {
     const card = document.querySelector('.taskview-term.watching > .attention-bar')!.getBoundingClientRect();
-    const tui = document.querySelector('.watch .ss-tui')!;
-    return Math.round(card.left - tui.getBoundingClientRect().left);
-  }), 'the transcript lines up with the card').toBe(16);
+    const entry = document.querySelector('.watch .ss-entry')!.getBoundingClientRect();
+    return Math.round(entry.left - card.left);
+  }), 'the transcript’s entries start where the card does').toBe(0);
   await browser.setViewport({ width: 390, height: 844 });
   await expect.poll(sides).toEqual(['12px', '12px']);
   await browser.setViewport({ width: 1440, height: 900 });
