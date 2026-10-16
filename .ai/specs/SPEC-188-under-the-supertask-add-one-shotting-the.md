@@ -60,7 +60,7 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The Supertask description names one-shotting the product, in the menu, the tool and the docs
-- [ ] Jev answers whether a new task is broad work, in the intake check
+- [x] Jev answers whether a new task is broad work, in the intake check
 - [ ] The composer stops a broad task started another way and offers Supertask
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

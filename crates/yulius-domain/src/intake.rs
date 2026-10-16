@@ -60,6 +60,32 @@ pub const SPLIT_QUESTION: ChoiceQuestion<'static> = ChoiceQuestion {
     ],
 };
 
+/// "Focused" or "broad" for a new task's prompt: broad work runs best as a supertask, alone in
+/// its project (SPEC-188, ADR-0152). A list of separate items is focused: it splits instead.
+pub const BREADTH_QUESTION: ChoiceQuestion<'static> = ChoiceQuestion {
+    id: "breadth",
+    instructions: "A person asks a coding agent for the work below, as one task in a project where \
+        other agents work in parallel on their own branches. Is it focused work, or broad work \
+        that changes most of the product at once, so it should run alone while the project's \
+        other tasks wait? Examples of broad work: security hardening of the whole product, \
+        one-shotting the product (building all of it in one go), a project-wide refactor, \
+        migration or dependency upgrade. A list of separate items, bugs or issues (for example \
+        \"fix all open GitHub issues\") is not broad: it is split into separate tasks.",
+    options: &[
+        ChoiceOption {
+            key: "focused",
+            description: "Focused: a feature, fix or change in some areas of the product, or a \
+                list of separate items, bugs or issues that can be done as separate tasks",
+        },
+        ChoiceOption {
+            key: "broad",
+            description: "Broad: one piece of work across most of the product at once, such as \
+                security hardening or one-shotting the product, that would collide with any \
+                parallel work",
+        },
+    ],
+};
+
 /// How a prompt typed into a running task relates to the task's scope (TSK-013).
 pub const SCOPE_QUESTION: ChoiceQuestion<'static> = ChoiceQuestion {
     id: "scope",
@@ -137,8 +163,13 @@ impl ChoiceAnswer {
 /// Default probability of "several" needed to propose a split: conservative (one task wins
 /// unless Jev is sure the request mixes separate workstreams).
 pub const DEFAULT_SPLIT_THRESHOLD: f64 = 0.9;
+/// Probability of "broad" needed to propose a supertask (fixed, between the scope and split
+/// thresholds: the proposal stops a start, but really broad work should still be caught).
+pub const BROAD_THRESHOLD: f64 = 0.85;
 /// Default probability needed to hold a prompt as anything but context.
 pub const DEFAULT_SCOPE_THRESHOLD: f64 = 0.8;
+/// Prompts with fewer words are never proposed as a supertask without asking Jev.
+pub const BREADTH_MIN_WORDS: usize = 3;
 /// Prompts with fewer words are one task without asking Jev.
 pub const SPLIT_MIN_WORDS: usize = 40;
 /// Prompts of at most this many words pass into a running task without asking Jev ("yes",
@@ -186,6 +217,19 @@ pub fn split_verdict(answer: &ChoiceAnswer, threshold: f64) -> SplitVerdict {
 #[must_use]
 pub fn needs_split_check(prompt: &str) -> bool {
     prompt.split_whitespace().count() >= SPLIT_MIN_WORDS
+}
+
+/// Whether a new task's prompt is long enough to be checked for breadth.
+#[must_use]
+pub fn needs_breadth_check(prompt: &str) -> bool {
+    prompt.split_whitespace().count() >= BREADTH_MIN_WORDS
+}
+
+/// Whether to propose running a new task as a supertask: Jev is confident it is broad work, and
+/// it does not split (work the split card divides is never supertask work).
+#[must_use]
+pub fn supertask_proposed(breadth: &ChoiceAnswer, threshold: f64, split: SplitVerdict) -> bool {
+    split == SplitVerdict::One && breadth.confident(threshold) == Some("broad")
 }
 
 /// The class of a prompt typed into a running task.
@@ -583,6 +627,48 @@ mod tests {
         ] {
             assert_eq!(bypass(prompt), expected, "{prompt:?}");
         }
+    }
+
+    /// SPEC-188 OSP-003/004: broad work is proposed as a supertask only when Jev is sure and
+    /// the request does not split.
+    #[test]
+    fn a_supertask_is_proposed_for_confident_broad_work_that_does_not_split() {
+        let broad = answer("broad", &[("focused", 0.08), ("broad", 0.92)]);
+        assert!(supertask_proposed(&broad, 0.85, SplitVerdict::One));
+        // A request that splits ("fix all GitHub issues") is never a supertask.
+        assert!(!supertask_proposed(&broad, 0.85, SplitVerdict::Several));
+        let unsure = answer("broad", &[("focused", 0.2), ("broad", 0.8)]);
+        assert!(!supertask_proposed(&unsure, 0.85, SplitVerdict::One));
+        let disagree = answer("focused", &[("focused", 0.05), ("broad", 0.95)]);
+        assert!(!supertask_proposed(&disagree, 0.85, SplitVerdict::One));
+        let focused = answer("focused", &[("focused", 0.97), ("broad", 0.03)]);
+        assert!(!supertask_proposed(&focused, 0.85, SplitVerdict::One));
+    }
+
+    #[test]
+    fn the_breadth_question_counts_lists_of_separate_items_as_focused() {
+        assert!(BREADTH_QUESTION.has_option("focused"));
+        assert!(BREADTH_QUESTION.has_option("broad"));
+        assert_eq!(BREADTH_QUESTION.options.len(), 2);
+        let text = format!(
+            "{} {}",
+            BREADTH_QUESTION.instructions,
+            BREADTH_QUESTION
+                .options
+                .iter()
+                .map(|o| o.description)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for named in [
+            "security hardening",
+            "one-shotting the product",
+            "fix all open GitHub issues",
+        ] {
+            assert!(text.contains(named), "missing {named:?}: {text}");
+        }
+        assert!(!needs_breadth_check("harden everything"));
+        assert!(needs_breadth_check("harden the whole product"));
     }
 
     #[test]
