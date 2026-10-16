@@ -133,6 +133,45 @@ pub struct HolderSpec {
     /// operator's extra forwards).
     #[serde(default)]
     pub forwards: Vec<u16>,
+    /// The sandbox's Docker engine (ADR-0151); `None`: no engine and no Docker socket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSpec>,
+}
+
+/// How the holder starts the sandbox's Docker engine on demand (ADR-0151).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineSpec {
+    /// Program (absolute) and arguments: `yulius sandbox-exec --engine --cgroup … -- bwrap …`.
+    pub command: Vec<String>,
+    /// The engine's cgroup directory; a process in a group below it is a running container.
+    pub cgroup: String,
+    /// Seconds without a client and without a container before the engine stops.
+    pub idle_secs: u64,
+}
+
+impl EngineSpec {
+    fn validate(&self) -> Result<(), LaunchSpecError> {
+        let program_ok = self.command.first().is_some_and(|p| abs(p));
+        if !program_ok
+            || self.command.len() > 512
+            || self
+                .command
+                .iter()
+                .any(|a| a.contains('\0') || a.len() > 4096)
+        {
+            return Err(spec_err(
+                "engine.command",
+                "an absolute program and at most 512 arguments",
+            ));
+        }
+        if !abs(&self.cgroup) {
+            return Err(spec_err("engine.cgroup", "must be absolute and not /"));
+        }
+        if !(60..=86_400).contains(&self.idle_secs) {
+            return Err(spec_err("engine.idle_secs", "between 60 and 86400"));
+        }
+        Ok(())
+    }
 }
 
 fn spec_err(field: &'static str, reason: &'static str) -> LaunchSpecError {
@@ -208,6 +247,9 @@ impl HolderSpec {
         if self.forwards.len() > 16 || self.forwards.contains(&0) {
             return Err(spec_err("forwards", "at most 16 ports, none 0"));
         }
+        if let Some(engine) = &self.engine {
+            engine.validate()?;
+        }
         Ok(())
     }
 }
@@ -282,7 +324,60 @@ mod tests {
             port_first: 20_000,
             port_last: 20_019,
             forwards: vec![8081],
+            engine: None,
         }
+    }
+
+    fn engine() -> EngineSpec {
+        EngineSpec {
+            command: vec![
+                "/usr/local/bin/yulius".into(),
+                "sandbox-exec".into(),
+                "--engine".into(),
+            ],
+            cgroup: "/sys/fs/cgroup/yulius.service/sandboxes/s1/engine".into(),
+            idle_secs: 300,
+        }
+    }
+
+    /// SPEC-187: a spec with an engine round-trips, and a holder record written before engines
+    /// (no `engine` field) still reads, as no engine.
+    #[test]
+    fn an_engine_is_optional_and_validated() -> Result<(), Box<dyn std::error::Error>> {
+        let mut with = spec();
+        with.engine = Some(engine());
+        with.validate()?;
+        let json = serde_json::to_string(&with)?;
+        assert_eq!(serde_json::from_str::<HolderSpec>(&json)?, with);
+        let without = serde_json::to_string(&spec())?;
+        assert!(!without.contains("engine"), "{without}");
+        assert_eq!(serde_json::from_str::<HolderSpec>(&without)?.engine, None);
+
+        for (field, change) in [
+            (
+                "engine.command",
+                Box::new(|e: &mut EngineSpec| e.command.clear()) as Box<dyn Fn(&mut EngineSpec)>,
+            ),
+            (
+                "engine.command",
+                Box::new(|e: &mut EngineSpec| e.command[0] = "yulius".into()),
+            ),
+            (
+                "engine.cgroup",
+                Box::new(|e: &mut EngineSpec| e.cgroup = "relative".into()),
+            ),
+            (
+                "engine.idle_secs",
+                Box::new(|e: &mut EngineSpec| e.idle_secs = 5),
+            ),
+        ] {
+            let mut s = spec();
+            let mut e = engine();
+            change(&mut e);
+            s.engine = Some(e);
+            assert_eq!(s.validate().map_err(|e| e.field), Err(field));
+        }
+        Ok(())
     }
 
     #[test]

@@ -434,6 +434,7 @@ impl Manager {
             port_first: request.port_first,
             port_last: request.port_last,
             forwards: self.config.forwards.keys().copied().collect(),
+            engine: None,
         };
         spec.validate().map_err(|e| e.to_string())?;
         write_json(&state.spec(), &spec).map_err(|e| e.to_string())?;

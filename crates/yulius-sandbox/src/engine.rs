@@ -1,8 +1,18 @@
 //! The sandbox's Docker engine (ADR-0151, SPEC-187).
 //!
-//! The server describes the engine in the holder spec ([`EngineSpec`]): the `bwrap` argv of its
-//! file view ([`bwrap_argv`]) and its cgroup. The holder serves the sandbox's Docker socket and
-//! starts the engine on the first connection.
+//! The server describes the engine in the holder spec
+//! ([`EngineSpec`](yulius_contracts::sandbox::EngineSpec)): the `bwrap` argv of its file view
+//! ([`bwrap_argv`]) and its cgroup. The holder serves the sandbox's Docker socket and starts the
+//! engine on the first connection ([`crate::engine_supervisor`]). Inside, `yulius sandbox-host
+//! engine` ([`supervise`]) uncovers `/proc/sys` and runs `dockerd` until it exits or the holder
+//! closes its stdin.
+
+use std::io::Read;
+use std::os::unix::process::ExitStatusExt as _;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use yulius_contracts::sandbox::{
     ENGINE_CONTROL_DIR, ENGINE_CONTROL_IN_ENGINE, ENGINE_SOCKET, ENGINE_SOCKET_IN_RUNS,
@@ -146,9 +156,132 @@ pub fn bwrap_argv(view: &EngineView) -> Vec<String> {
     argv
 }
 
+/// Body of `yulius sandbox-host engine -- <command>` inside the engine's namespaces: uncovers
+/// `/proc/sys` (bwrap covers it read-only; root of the sandbox's user namespace can write only its
+/// own network's settings there, which `dockerd` needs), then [`supervise_with`] stdin.
+///
+/// # Errors
+/// The command cannot be started.
+pub fn supervise(argv: &[String]) -> Result<i32, String> {
+    uncover_proc_sys();
+    supervise_with(argv, std::io::stdin(), crate::engine_supervisor::STOP_GRACE)
+}
+
+#[cfg(target_os = "linux")]
+fn uncover_proc_sys() {
+    use nix::mount::{MntFlags, umount2};
+    if let Err(error) = umount2("/proc/sys", MntFlags::MNT_DETACH) {
+        eprintln!("yulius: /proc/sys stays read-only: {error}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn uncover_proc_sys() {}
+
+/// Runs `argv` until it exits or `stop` reaches its end; then the command gets `SIGTERM` and,
+/// after `grace`, `SIGKILL`. Returns its exit code (128 + the signal when a signal ended it).
+///
+/// # Errors
+/// The command cannot be started or waited for.
+pub fn supervise_with(
+    argv: &[String],
+    stop: impl Read + Send + 'static,
+    grace: Duration,
+) -> Result<i32, String> {
+    let (program, args) = argv.split_first().ok_or("nothing to run")?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot start {program}: {e}"))?;
+    let pid = i32::try_from(child.id()).map_err(|e| e.to_string())?;
+    let exited = Arc::new(AtomicBool::new(false));
+    let watching = Arc::clone(&exited);
+    std::thread::spawn(move || {
+        let mut stop = stop;
+        let mut buf = [0u8; 256];
+        while matches!(stop.read(&mut buf), Ok(n) if n > 0) {}
+        let signal = |signal| {
+            if !watching.load(Ordering::SeqCst) {
+                let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal);
+            }
+        };
+        signal(nix::sys::signal::Signal::SIGTERM);
+        let deadline = Instant::now() + grace;
+        while !watching.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        signal(nix::sys::signal::Signal::SIGKILL);
+    });
+    let status = child.wait().map_err(|e| e.to_string());
+    exited.store(true, Ordering::SeqCst);
+    let status = status?;
+    Ok(status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["/bin/sh".into(), "-c".into(), script.into()]
+    }
+
+    #[test]
+    fn closing_stdin_stops_the_command_gracefully() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let marker = dir.path().join("term");
+        let (read, write) = crate::userns::cloexec_pipe()?;
+        let script = format!(
+            "trap 'echo term > {}; exit 0' TERM; while :; do sleep 0.05; done",
+            marker.display()
+        );
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(write);
+        });
+        let code = supervise_with(
+            &sh(&script),
+            std::fs::File::from(read),
+            Duration::from_secs(20),
+        )?;
+        closer.join().map_err(|_| "closer panicked")?;
+        assert_eq!(code, 0);
+        assert_eq!(std::fs::read_to_string(&marker)?.trim(), "term");
+        Ok(())
+    }
+
+    #[test]
+    fn a_command_that_ignores_term_is_killed_after_the_grace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (read, write) = crate::userns::cloexec_pipe()?;
+        drop(write);
+        let started = Instant::now();
+        let code = supervise_with(
+            &sh("trap '' TERM; while :; do sleep 0.05; done"),
+            std::fs::File::from(read),
+            Duration::from_millis(300),
+        )?;
+        assert_eq!(code, 128 + 9);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        Ok(())
+    }
+
+    #[test]
+    fn the_commands_own_exit_ends_the_supervision() -> Result<(), Box<dyn std::error::Error>> {
+        let (read, write) = crate::userns::cloexec_pipe()?;
+        let code = supervise_with(
+            &sh("exit 3"),
+            std::fs::File::from(read),
+            Duration::from_secs(20),
+        )?;
+        drop(write);
+        assert_eq!(code, 3);
+        assert!(supervise_with(&[], std::io::empty(), Duration::ZERO).is_err());
+        Ok(())
+    }
 
     fn view() -> EngineView {
         EngineView {

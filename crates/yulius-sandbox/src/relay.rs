@@ -61,7 +61,7 @@ pub async fn connect_loopback(port: u16) -> io::Result<TcpStream> {
     }
 }
 
-async fn splice<A, B>(mut a: A, mut b: B)
+pub(crate) async fn splice<A, B>(mut a: A, mut b: B)
 where
     A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -131,13 +131,30 @@ async fn inbound_connection(
     }
 }
 
-/// Listens on `127.0.0.1:port` (and `[::1]:port` when available) inside the sandbox and relays
-/// every connection to `out_sock` (the server), announcing `port`.
+/// The IPv4 address a forward listens on inside the sandbox: its loopback, or every address when
+/// the sandbox has a Docker engine, whose containers reach the forwards through their bridge's
+/// gateway (`host.docker.internal`, ADR-0151). `slirp4netns` forwards no port inward, so nothing
+/// outside the sandbox reaches them either way.
+#[must_use]
+pub fn forward_address(containers: bool) -> Ipv4Addr {
+    if containers {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    }
+}
+
+/// Listens on `port` at [`forward_address`] (and `[::1]:port` when available) inside the sandbox
+/// and relays every connection to `out_sock` (the server), announcing `port`.
 ///
 /// # Errors
 /// The IPv4 listener cannot be bound.
-pub async fn serve_forward(port: u16, out_sock: PathBuf) -> io::Result<JoinHandle<()>> {
-    let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+pub async fn serve_forward(
+    port: u16,
+    out_sock: PathBuf,
+    containers: bool,
+) -> io::Result<JoinHandle<()>> {
+    let v4 = TcpListener::bind((forward_address(containers), port)).await?;
     let v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok();
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     Ok(tokio::spawn(async move {
@@ -434,14 +451,49 @@ mod tests {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
         )]));
         let server = tokio::spawn(serve_outbound(UnixListener::bind(&out_sock)?, targets));
-        let forward = serve_forward(inside_port, out_sock.clone()).await?;
+        let forward = serve_forward(inside_port, out_sock.clone(), false).await?;
 
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, inside_port)).await?;
         assert_eq!(round_trip(&mut client, b"hello").await?, b"hello");
+        // Only the loopback address without an engine.
+        assert!(
+            TcpStream::connect((Ipv4Addr::new(127, 0, 0, 2), inside_port))
+                .await
+                .is_err()
+        );
 
         let mut raw = UnixStream::connect(&out_sock).await?;
         raw.write_u16(inside_port.wrapping_add(1)).await?;
         assert_eq!(raw.read_u8().await?, RELAY_FORBIDDEN);
+        forward.abort();
+        server.abort();
+        Ok(())
+    }
+
+    /// SPEC-187 DKR-007: with a Docker engine the forwards listen on every address of the
+    /// sandbox's network, so containers reach them through their bridge's gateway (here another
+    /// address than `127.0.0.1`).
+    #[tokio::test]
+    async fn with_an_engine_forwards_listen_on_every_address() -> TestResult {
+        assert_eq!(forward_address(false), Ipv4Addr::LOCALHOST);
+        assert_eq!(forward_address(true), Ipv4Addr::UNSPECIFIED);
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        let (target, _echo) = echo_server().await?;
+        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let inside_port = free.local_addr()?.port();
+        drop(free);
+        let targets = Arc::new(BTreeMap::from([(
+            inside_port,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
+        )]));
+        let server = tokio::spawn(serve_outbound(UnixListener::bind(&out_sock)?, targets));
+        let forward = serve_forward(inside_port, out_sock.clone(), true).await?;
+        let mut client = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 2), inside_port)).await?;
+        assert_eq!(
+            round_trip(&mut client, b"from a bridge").await?,
+            b"from a bridge"
+        );
         forward.abort();
         server.abort();
         Ok(())

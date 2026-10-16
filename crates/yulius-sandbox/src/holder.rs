@@ -8,7 +8,8 @@
 //! - `bwrap` (the namespace creator; it exits when its child does);
 //! - `yulius sandbox-host inner` ([`inner`]) in the new user, network and mount namespaces, as
 //!   root of the sandbox with every capability there. It mounts the system layer, serves
-//!   `in.sock` and the forwarded ports, and waits for `SIGTERM`;
+//!   `in.sock`, the forwarded ports and, when the sandbox has an engine, its Docker socket
+//!   ([`crate::engine_supervisor`]; the engine is its child), and waits for `SIGTERM`;
 //! - `slirp4netns`, when the sandbox has egress.
 //!
 //! Runs join the namespaces through `/proc/<inner pid>/ns/*` after checking the recorded inodes
@@ -24,9 +25,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use yulius_contracts::sandbox::{
+    ENGINE_CONTROL_DIR, ENGINE_LOG_FILE, ENGINE_SOCKET, ENGINE_SYSFS_DIR, EngineSpec,
     HOLDER_LOG_FILE, HOLDER_RECORD_FILE, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec,
     INBOUND_SOCKET, OUTBOUND_SOCKET, SYSTEM_ROOT_DIR,
 };
+
+use crate::engine_supervisor::Supervisor;
 
 use crate::userns::{Mapper, cloexec_pipe, inheritable};
 
@@ -158,6 +162,26 @@ impl StatePaths {
     #[must_use]
     pub fn root(&self) -> PathBuf {
         self.dir.join(SYSTEM_ROOT_DIR)
+    }
+    /// `docker.sock`, the sandbox's Docker socket (ADR-0151).
+    #[must_use]
+    pub fn engine_socket(&self) -> PathBuf {
+        self.dir.join(ENGINE_SOCKET)
+    }
+    /// `engine/`, the engine's control directory.
+    #[must_use]
+    pub fn engine_control(&self) -> PathBuf {
+        self.dir.join(ENGINE_CONTROL_DIR)
+    }
+    /// `sys/`, where the holder mounts the engine's sysfs.
+    #[must_use]
+    pub fn engine_sysfs(&self) -> PathBuf {
+        self.dir.join(ENGINE_SYSFS_DIR)
+    }
+    /// `engine.log`.
+    #[must_use]
+    pub fn engine_log(&self) -> PathBuf {
+        self.dir.join(ENGINE_LOG_FILE)
     }
 }
 
@@ -382,17 +406,84 @@ pub fn inner(spec_path: &Path, ready_fd: i32) -> Result<(), String> {
         let ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync> =
             Arc::new(move || crate::procnet::listening_ports(first, last));
         tokio::spawn(crate::relay::serve_inbound(listener, first, last, ports));
+        let containers = spec.engine.is_some();
         for port in &spec.forwards {
-            if let Err(e) = crate::relay::serve_forward(*port, paths.outbound()).await {
+            if let Err(e) = crate::relay::serve_forward(*port, paths.outbound(), containers).await {
                 let _ = writeln!(ready, "forward {port}: {e}");
                 return Err(format!("forward {port}: {e}"));
             }
         }
+        let engine = match &spec.engine {
+            Some(engine) => match serve_engine(engine, &paths) {
+                Ok(supervisor) => Some(supervisor),
+                Err(e) => {
+                    let _ = writeln!(ready, "docker.sock: {e}");
+                    return Err(format!("docker.sock: {e}"));
+                }
+            },
+            None => None,
+        };
         let _ = writeln!(ready, "ready");
         drop(ready);
         wait_for_termination().await;
+        if let Some(engine) = engine {
+            // `stop` kills the holder after STOP_GRACE; the engine dies with it anyway.
+            engine.stop(Duration::from_secs(2)).await;
+        }
         Ok(())
     })
+}
+
+/// Serves the sandbox's Docker socket (runs and the engine bind it, so it exists before the
+/// holder is ready); the engine starts on its first connection.
+fn serve_engine(engine: &EngineSpec, paths: &StatePaths) -> io::Result<Arc<Supervisor>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    for dir in [paths.engine_control(), paths.engine_sysfs()] {
+        std::fs::create_dir_all(dir)?;
+    }
+    let socket = paths.engine_socket();
+    let _ = std::fs::remove_file(&socket);
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+    let (state, sysfs) = (paths.dir.clone(), paths.engine_sysfs());
+    let supervisor = Supervisor::new(
+        engine.command.clone(),
+        paths.engine_control().join(ENGINE_SOCKET),
+        paths.engine_log(),
+        PathBuf::from(&engine.cgroup),
+        Duration::from_secs(engine.idle_secs),
+        Box::new(move || prepare_engine(&state, &sysfs)),
+    );
+    tokio::spawn(Arc::clone(&supervisor).serve(listener));
+    tokio::spawn(Arc::clone(&supervisor).watch_idle());
+    Ok(supervisor)
+}
+
+/// Before each engine start: a fresh read-only sysfs of the sandbox's network at `sysfs` (the
+/// engine's `/sys`; `runc` may mount a sysfs only where one is fully visible, and the host's
+/// carries the host's cgroup tree), and IPv4 forwarding in the sandbox's network, which
+/// containers' traffic crosses.
+#[cfg(target_os = "linux")]
+fn prepare_engine(state: &Path, sysfs: &Path) -> Result<(), String> {
+    use nix::mount::{MsFlags, mount};
+    let device = |path: &Path| std::fs::metadata(path).map(|m| m.dev()).ok();
+    if device(sysfs).is_none() || device(sysfs) == device(state) {
+        mount(
+            Some("sysfs"),
+            sysfs,
+            Some("sysfs"),
+            MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+            None::<&str>,
+        )
+        .map_err(|e| format!("cannot mount the engine's sysfs: {e}"))?;
+    }
+    std::fs::write("/proc/sys/net/ipv4/ip_forward", "1")
+        .map_err(|e| format!("cannot turn on forwarding in the sandbox's network: {e}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prepare_engine(_state: &Path, _sysfs: &Path) -> Result<(), String> {
+    Err("sandbox namespaces are Linux-only".into())
 }
 
 fn owned_fd(fd: i32) -> Result<OwnedFd, String> {
@@ -589,6 +680,7 @@ mod tests {
             port_first: 1,
             port_last: 2,
             forwards: vec![],
+            engine: None,
         };
         assert_eq!(
             overlay_options(&spec).as_deref(),
