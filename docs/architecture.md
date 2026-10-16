@@ -1224,6 +1224,25 @@ sequenceDiagram
   H->>K: cgroup.freeze=0
 ```
 
+A task's summary says when its live run is paused (`pause`, ADR-0154): by an update, or by a
+person. A person's pause (`pause.rs`) freezes the run with the same host call under the update's
+freeze lock, or holds its turn boundary when it cannot be frozen, and is stored with its attempt;
+the update's thaws and sweeps keep those runs frozen and a starting server freezes them again.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: running
+  Working --> PausedByPerson: POST /pause (freeze, or hold at turn end)
+  Working --> PausedByUpdate: update drains (freeze)
+  PausedByUpdate --> Working: update releases (thaw)
+  PausedByPerson --> PausedByPerson: update drains, installs, releases (kept frozen)
+  PausedByPerson --> Working: POST /resume (thaw)
+  PausedByPerson --> Ending: stop, close, switch (thaw first)
+```
+
+The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a stream silent for
+50 s, so a connection that died without a close is noticed and the lists resync (SPEC-191).
+
 ## Agent primitives
 
 Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),

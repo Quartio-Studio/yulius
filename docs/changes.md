@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- Task lists stay live, a task an update holds reads Paused, and a person can pause a task
+  (SPEC-191, ADR-0154, task #176). The event stream had no heartbeat, so a connection that died
+  without a close (a laptop asleep, a network change, a dropped proxy connection) stayed open in
+  the page and the lists froze until a reload; the server now beats every 20 s and the page
+  replaces a stream silent for 50 s (or one beat when shown again or back online) and resyncs.
+  `TaskSummary.pause` says why a live run is paused (an update, or a person) and the lists show
+  Paused with why. A task's owner pauses it from the task menu (`POST /api/tasks/{tid}/pause`):
+  its run is frozen as an update freezes it, or held at its turn boundary; Resume
+  (`…/resume`) thaws it. Updates, restarts and their sweeps never wake it; stop, close and a
+  switch thaw it first. Migration 0033.
 - The Superagent uses agent secrets as a task's agent does, and sees new tools without a restart
   (SPEC-186, ADR-0150, task #171). It runs behind the egress proxy with its own bearer, so its
   requests to a secret's bound hosts carry it (`$NAME` holds the placeholder); it copies allowed
