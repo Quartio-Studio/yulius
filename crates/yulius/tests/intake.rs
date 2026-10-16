@@ -45,7 +45,8 @@ const TEN_ITEMS: &str = "Make it the final state, everything below has to land.\
     10. Usage refresh must honour Retry-After.";
 
 /// A fake Jev: the split question says "several" for requests mixing UI and backend work; the
-/// scope question answers by keywords of the new message. Counts calls; can be "down".
+/// breadth question says "broad" for the whole product; the scope question answers by keywords
+/// of the new message. Counts calls; can be "down".
 #[derive(Default)]
 struct FakeJev {
     calls: AtomicUsize,
@@ -80,6 +81,9 @@ impl ChoiceEvaluator for FakeJev {
         Ok(match question.id {
             "split" if state.contains("Subscription pool") => answer(question, "several", 0.96),
             "split" => answer(question, "one", 0.97),
+            "breadth" if state.contains("whole product") => answer(question, "broad", 0.93),
+            "breadth" if state.contains("maybe broad") => answer(question, "broad", 0.7),
+            "breadth" => answer(question, "focused", 0.95),
             _ => {
                 let message = state.split("NEW MESSAGE").nth(1).unwrap_or_default();
                 if message.contains("dark mode") {
@@ -197,21 +201,30 @@ async fn split_check_proposes_workstreams_and_defaults_to_one_task() -> TestResu
     let single = "Add a nickname field.\n1. add the column\n2. migrate the table\n3. show it in the profile UI";
     let r = post(&i, check, json!({"prompt": single})).await?;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!(r.body, json!({"verdict": "one", "checked": false}));
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": true, "supertask": false})
+    );
     assert_eq!(
         i.jev.calls.load(Ordering::SeqCst),
-        0,
-        "short prompts are never sent"
+        1,
+        "a short prompt is asked about breadth only, never about a split"
     );
 
     let r = post(&i, check, json!({"prompt": TEN_ITEMS})).await?;
-    assert_eq!(r.body, json!({"verdict": "several", "checked": true}));
+    assert_eq!(
+        r.body,
+        json!({"verdict": "several", "checked": true, "supertask": false})
+    );
     let long_one = format!(
         "Polish the checkout page. {}",
         "Keep the same thread of work. ".repeat(10)
     );
     let r = post(&i, check, json!({"prompt": long_one})).await?;
-    assert_eq!(r.body, json!({"verdict": "one", "checked": true}));
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": true, "supertask": false})
+    );
 
     let proposal = "/api/sandboxes/s1/intake/proposal";
     let r = post(&i, proposal, json!({"prompt": TEN_ITEMS})).await?;
@@ -254,7 +267,10 @@ async fn split_check_proposes_workstreams_and_defaults_to_one_task() -> TestResu
     // Jev down: one task, unchecked.
     i.jev.down.store(true, Ordering::SeqCst);
     let r = post(&i, check, json!({"prompt": TEN_ITEMS})).await?;
-    assert_eq!(r.body, json!({"verdict": "one", "checked": false}));
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": false, "supertask": false})
+    );
 
     // Read users cannot ask; an instance without intake checks nothing and proposes nothing.
     let bob = seed_github_user(&i.h, "u-bob", "bob").await?;
@@ -282,7 +298,10 @@ async fn split_check_proposes_workstreams_and_defaults_to_one_task() -> TestResu
         &carol,
     )
     .await?;
-    assert_eq!(r.body, json!({"verdict": "one", "checked": false}));
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": false, "supertask": false})
+    );
     let r = call(
         &plain.router,
         Method::POST,
@@ -292,6 +311,132 @@ async fn split_check_proposes_workstreams_and_defaults_to_one_task() -> TestResu
     )
     .await?;
     assert_eq!(r.status, StatusCode::CONFLICT);
+    Ok(())
+}
+
+/// SPEC-188 OSP-004: broad work is proposed as a supertask, also when it is short; work that
+/// splits never is; a prompt under 3 words, an unsure Jev and Jev down answer false.
+#[tokio::test]
+async fn intake_check_proposes_a_supertask_for_broad_work_that_does_not_split() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let check = "/api/sandboxes/s1/intake/check";
+    let r = post(
+        &i,
+        check,
+        json!({"prompt": "Harden the security of the whole product"}),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": true, "supertask": true})
+    );
+    // Broad, but it splits ("fix all GitHub issues" is split, not run alone).
+    let splits = format!("{TEN_ITEMS}\n11. Then harden the whole product.");
+    let r = post(&i, check, json!({"prompt": splits})).await?;
+    assert_eq!(
+        r.body,
+        json!({"verdict": "several", "checked": true, "supertask": false})
+    );
+    let r = post(&i, check, json!({"prompt": "this is maybe broad work"})).await?;
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": true, "supertask": false}),
+        "an unsure answer proposes nothing"
+    );
+    let calls = i.jev.calls.load(Ordering::SeqCst);
+    let r = post(&i, check, json!({"prompt": "whole product"})).await?;
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": false, "supertask": false})
+    );
+    assert_eq!(
+        i.jev.calls.load(Ordering::SeqCst),
+        calls,
+        "a prompt under 3 words is never sent"
+    );
+    i.jev.down.store(true, Ordering::SeqCst);
+    let r = post(
+        &i,
+        check,
+        json!({"prompt": "Harden the security of the whole product"}),
+    )
+    .await?;
+    assert_eq!(
+        r.body,
+        json!({"verdict": "one", "checked": false, "supertask": false})
+    );
+    Ok(())
+}
+
+/// A fake Jev for the check's two questions: each call waits until the other question is asked
+/// too (a sequential check would never get there and time out), then answers "several" and
+/// "broad" — or fails the split question when `split_down` is set.
+struct TogetherJev {
+    both: tokio::sync::Barrier,
+    split_down: bool,
+}
+
+#[async_trait]
+impl ChoiceEvaluator for TogetherJev {
+    async fn evaluate(
+        &self,
+        _state: &str,
+        question: &ChoiceQuestion<'_>,
+        deadline: Duration,
+    ) -> Result<ChoiceAnswer, JevFailure> {
+        tokio::time::timeout(deadline, self.both.wait())
+            .await
+            .map_err(|_| JevFailure::Timeout)?;
+        match question.id {
+            "split" if self.split_down => Err(JevFailure::Unavailable),
+            "split" => Ok(answer(question, "several", 0.96)),
+            _ => Ok(answer(question, "broad", 0.93)),
+        }
+    }
+}
+
+/// SPEC-188 OSP-004: the split and breadth questions are asked at once, within one deadline,
+/// and the check counts as checked when only one of them answers.
+#[tokio::test]
+async fn intake_check_asks_split_and_breadth_at_once() -> TestResult {
+    let long_broad = format!(
+        "Harden the whole product. {}",
+        "Review every endpoint, header and secret. ".repeat(8)
+    );
+    for (split_down, expected) in [
+        (
+            false,
+            json!({"verdict": "several", "checked": true, "supertask": false}),
+        ),
+        (
+            true,
+            json!({"verdict": "one", "checked": true, "supertask": true}),
+        ),
+    ] {
+        let jev = Arc::new(TogetherJev {
+            both: tokio::sync::Barrier::new(2),
+            split_down,
+        });
+        let h = harness()?;
+        let alice = seed_github_user(&h, "u-alice", "alice").await?;
+        seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+        h.github.set_perm("alice", "acme/fixture", perms("write"));
+        h.app.set_intake(IntakeServices::new(
+            Some(jev as Arc<dyn ChoiceEvaluator>),
+            None,
+        ));
+        let r = call(
+            &h.router,
+            Method::POST,
+            "/api/sandboxes/s1/intake/check",
+            Some(json!({"prompt": long_broad})),
+            &alice,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+        assert_eq!(r.body, expected, "split down: {split_down}");
+    }
     Ok(())
 }
 

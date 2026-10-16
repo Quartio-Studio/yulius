@@ -8,7 +8,7 @@ import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_
 import { createTerminalView } from './terminal.js';
 import { createWatchView } from './watchview.js';
 import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, pauseLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
-import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
+import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
@@ -1118,6 +1118,16 @@ export function mountComposer(ctx, sandbox) {
     ]);
   }
 
+  /**
+   * A new start choice: an open split or supertask card answered the old one (it names "After
+   * #12" and its buttons would start the task differently), so it closes (SPEC-188).
+   */
+  function startChanged() {
+    if (split) clearSplit();
+    renderChips();
+    prompt.focus();
+  }
+
   function openAfterMenu(anchor) {
     openStartMenu(anchor, ctx, sandbox, {
       kind: startKind({ supertask, afterTaskId, rule: startRule, prepare }),
@@ -1128,8 +1138,7 @@ export function mountComposer(ctx, sandbox) {
         startRule = null;
         supertask = kind === 'supertask';
         prepare = kind === 'prepared' ? { at: null } : null;
-        renderChips();
-        prompt.focus();
+        startChanged();
       },
       onRule: openRuleDialog,
       onTime: openTimeDialog,
@@ -1146,8 +1155,7 @@ export function mountComposer(ctx, sandbox) {
         afterTaskId = '';
         supertask = false;
         prepare = null;
-        renderChips();
-        prompt.focus();
+        startChanged();
       },
     });
   }
@@ -1167,8 +1175,7 @@ export function mountComposer(ctx, sandbox) {
         afterTaskId = '';
         startRule = null;
         supertask = false;
-        renderChips();
-        prompt.focus();
+        startChanged();
       },
     });
   }
@@ -1527,6 +1534,37 @@ export function mountComposer(ctx, sandbox) {
     split.el.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
   }
 
+  /** The body of the task as the person chose to start it: now, after a task, by a rule, as a supertask or prepared. */
+  function chosenBody(value) {
+    const body = bodyFor(value);
+    if (afterTaskId) body.after_task_id = afterTaskId;
+    if (startRule) body.start_rule = ruleText(startRule);
+    if (supertask) body.supertask = true;
+    if (prepare && prepare.at) body.start_at = prepare.at;
+    else if (prepare) body.prepared = true;
+    return body;
+  }
+
+  /**
+   * The supertask proposal (SPEC-188), below the box: broad work started now, after a task or by
+   * a rule. A supertask cannot also wait for a task or a rule, so it replaces that choice.
+   */
+  function showSupertask(value) {
+    const after = afterTaskId && (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
+    // The start chip's own label ("After #?" while the tasks are read).
+    const replaces = afterTaskId ? `After #${after ? after.number : '?'}` : startRule ? `When ${ruleText(startRule)}` : '';
+    split = supertaskCard({
+      replaces,
+      run: () => busyRun(autoStage(), async () => opened(await createTask({ ...bodyFor(value), supertask: true }))),
+      keep: () => busyRun(autoStage(), async () => opened(await createTask(chosenBody(value)))),
+      close: () => clearSplit(),
+    });
+    setChildren(intakeSlot, split.el);
+    const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    split.el.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
+    split.focus();
+  }
+
   // One task per press: two presses must not start two sessions (singleFlight).
   const start = singleFlight(async () => {
     const text = prompt.text().trim();
@@ -1537,24 +1575,23 @@ export function mountComposer(ctx, sandbox) {
     if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
-      // already decided how the work is scheduled, and a supertask or a prepared task is one task
-      // by intent.
-      // The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && !startRule && !supertask && !prepare && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+      // already decided how the work is scheduled. Broad work started another way gets the
+      // supertask proposal (SPEC-188); a supertask or a prepared task is one task by intent and
+      // is never stopped. The check never blocks for long (≤ 4 s).
+      if (!supertask && !prepare) {
         working('Reading your request…');
-        if (await looksSeveral(ctx, sandbox, text)) {
+        const verdict = await checkRequest(ctx, sandbox, text);
+        if (verdict.several && !afterTaskId && !startRule) {
           showSplit(text, value);
+          return;
+        }
+        if (verdict.supertask) {
+          showSupertask(value);
           return;
         }
       }
       working(autoStage());
-      const body = bodyFor(value);
-      if (afterTaskId) body.after_task_id = afterTaskId;
-      if (startRule) body.start_rule = ruleText(startRule);
-      if (supertask) body.supertask = true;
-      if (prepare && prepare.at) body.start_at = prepare.at;
-      else if (prepare) body.prepared = true;
-      opened(await createTask(body));
+      opened(await createTask(chosenBody(value)));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');
     } finally {
