@@ -13,7 +13,9 @@
 //! `YULIUS_ISOLATION_TEST_SYSTEM` reuses a built `system/` directory (a base build copies about
 //! 6 GB). The limits test needs a delegated cgroup: run it in a transient unit,
 //! `systemd-run --uid=<user> -p Delegate=yes -p DelegateSubgroup=server --wait --pipe … isolation_limits`
-//! with `YULIUS_ISOLATION_TEST_LIMITS=1`.
+//! with `YULIUS_ISOLATION_TEST_LIMITS=1`. The Docker test (SPEC-187) needs the same unit, Docker
+//! installed on the host and its kernel modules: `… isolation_docker` with
+//! `YULIUS_ISOLATION_TEST_DOCKER=1`.
 
 #![cfg(target_os = "linux")]
 
@@ -833,5 +835,259 @@ async fn isolation_disk_quota_refuses_new_runs() -> TestResult {
         text.contains("200.0 GB of its 100.0 GB disk quota"),
         "{text}"
     );
+    Ok(())
+}
+
+/// Two services, one fetching from the other by its service name (SPEC-187).
+const COMPOSE: &str = "services:\n  web:\n    image: busybox\n    command: [\"sh\", \"-c\", \"mkdir -p /w && echo compose-web > /w/index.html && httpd -f -p 8080 -h /w\"]\n  probe:\n    image: busybox\n    depends_on: [web]\n    command: [\"sh\", \"-c\", \"for i in $$(seq 30); do wget -qO- http://web:8080/ && exit 0; sleep 1; done; exit 1\"]\n";
+
+/// The sandbox's own Docker engine end to end (SPEC-187, ADR-0151): as an agent and in a user's
+/// shell, `docker run`, `docker build` and `docker compose` work; containers reach neither the
+/// host's loopback, another sandbox nor the host's Docker; `--privileged` stays inside the
+/// sandbox. Needs a delegated cgroup (like `isolation_limits`), Docker installed on the host and
+/// its kernel modules (`yulius doctor`, "sandbox Docker"), and network access to Docker Hub.
+/// `YULIUS_ISOLATION_TEST_DOCKER=1` turns a missing prerequisite into a failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolation_docker() -> TestResult {
+    if let Err(why) = enabled("isolation_docker") {
+        eprintln!("{why}");
+        return Ok(());
+    }
+    let required = std::env::var("YULIUS_ISOLATION_TEST_DOCKER").as_deref() == Ok("1");
+    let delegation = match yulius::wiring::sandbox::delegation() {
+        Ok(delegation) => delegation,
+        Err(why) if !required => {
+            eprintln!("SKIPPED isolation_docker: {why}");
+            return Ok(());
+        }
+        Err(why) => return Err(why.into()),
+    };
+    if yulius::wiring::sandbox::which("dockerd").is_none() {
+        let why = "the host has no dockerd for the sandboxes' base";
+        if required {
+            return Err(why.into());
+        }
+        eprintln!("SKIPPED isolation_docker: {why}");
+        return Ok(());
+    }
+    let (forward, _hello) = hello_server().await?;
+    let (blocked, _other) = hello_server().await?;
+    let iso = fixture(Limits::default(), Some(delegation.clone()), forward).await?;
+    assert!(iso.manager.docker(), "sandboxes get an engine");
+    guarded(&iso, docker_end_to_end(&iso, &delegation, forward, blocked)).await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn docker_end_to_end(
+    iso: &Iso,
+    delegation: &Delegation,
+    forward: u16,
+    blocked: u16,
+) -> TestResult {
+    let data = iso.data.display().to_string();
+    let probe_dir = iso.data.join("sandboxes/s1/docker-probe");
+    std::fs::create_dir_all(&probe_dir)?;
+    std::fs::write(
+        probe_dir.join("Dockerfile"),
+        "FROM busybox\nRUN echo built-in-the-sandbox > /built\nCMD [\"cat\", \"/built\"]\n",
+    )?;
+    std::fs::write(probe_dir.join("compose.yaml"), COMPOSE)?;
+    let probe = probe_dir.display().to_string();
+
+    // As an agent: hello-world (the engine starts on this first use), then a build.
+    let started = Instant::now();
+    let task = agent(iso, "s1").await?;
+    let screen = agent_sh(
+        iso,
+        &task,
+        "docker run --rm hello-world 2>&1 | grep -q 'Hello from Docker' && echo HELLO-$((1+1))-OK || echo HELLO-$((1+1))-FAIL",
+        "HELLO-2-",
+        APT_WAIT,
+    )
+    .await?;
+    assert!(screen.contains("HELLO-2-OK"), "{screen}");
+    eprintln!(
+        "docker run hello-world as an agent: {:?}",
+        started.elapsed()
+    );
+    let screen = agent_sh(
+        iso,
+        &task,
+        &format!(
+            "docker build -q -t yqa-built {probe} >/dev/null && docker run --rm yqa-built; echo BUILD-$((2+1))-done"
+        ),
+        "BUILD-3-done",
+        APT_WAIT,
+    )
+    .await?;
+    assert!(screen.contains("built-in-the-sandbox"), "{screen}");
+
+    // The engine lives in the sandbox's engine group, below its limits.
+    let engine_group = delegation.unit.join("sandboxes/s1/engine");
+    assert!(
+        !std::fs::read_to_string(engine_group.join("cgroup.procs"))?
+            .trim()
+            .is_empty(),
+        "the engine runs in sandboxes/s1/engine"
+    );
+
+    // In a user's shell: compose, one service reaching the other by its name.
+    let mut sh = shell(iso, "s1").await?;
+    let out = run(
+        &mut sh,
+        &format!(
+            "cd {probe} && docker compose up --abort-on-container-exit --exit-code-from probe >/dev/null 2>&1; echo compose-rc=$?; docker compose down >/dev/null 2>&1; cd /"
+        ),
+        APT_WAIT,
+    )
+    .await?;
+    assert!(out.contains("compose-rc=0"), "{out}");
+
+    // The socket a container mounts is this sandbox's own engine (named after the sandbox), never
+    // the host's.
+    let out = run(
+        &mut sh,
+        "docker info --format 'engine={{.Name}}'; docker run --rm -v /var/run/docker.sock:/var/run/docker.sock docker:cli docker info --format 'mounted={{.Name}}'",
+        APT_WAIT,
+    )
+    .await?;
+    assert!(out.contains("engine=fixture"), "{out}");
+    assert!(out.contains("mounted=fixture"), "{out}");
+
+    // Containers: no host loopback (through the slirp gateway or the host network), no other
+    // sandbox's dev server; the egress proxy's relay through host.docker.internal.
+    let mut other = shell(iso, "s2").await?;
+    let other_port = iso.s2.port_base;
+    let _ = run(
+        &mut other,
+        &format!(
+            "(cd /tmp && python3 -m http.server {other_port} --bind 127.0.0.1 >/dev/null 2>&1 &) ; echo other-started"
+        ),
+        WAIT,
+    )
+    .await?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while TcpStream::connect((Ipv4Addr::LOCALHOST, other_port))
+        .await
+        .is_err()
+    {
+        if Instant::now() > deadline {
+            return Err("the other sandbox's dev server is not relayed".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let nc = |host: &str, port: u16, label: &str| {
+        format!("nc -z -w 3 {host} {port} && echo {label}-open || echo {label}-closed")
+    };
+    let out = run(
+        &mut sh,
+        &format!(
+            "docker run --rm busybox sh -c '{}; {}; {}'; docker run --rm --network host busybox sh -c '{}; {}'; docker run --rm --add-host=host.docker.internal:host-gateway busybox sh -c '{}; nc -w 3 host.docker.internal {forward} </dev/null'",
+            nc("10.0.2.2", forward, "gateway"),
+            nc("10.0.2.2", blocked, "gateway-blocked"),
+            nc("10.0.2.2", other_port, "gateway-other"),
+            nc("127.0.0.1", blocked, "host-loopback"),
+            nc("127.0.0.1", other_port, "other-sandbox"),
+            // The control: the same probe sees an open port.
+            nc("host.docker.internal", forward, "proxy"),
+        ),
+        APT_WAIT,
+    )
+    .await?;
+    for closed in [
+        "gateway-closed",
+        "gateway-blocked-closed",
+        "gateway-other-closed",
+        "host-loopback-closed",
+        "other-sandbox-closed",
+    ] {
+        assert!(out.contains(closed), "{closed}: {out}");
+    }
+    assert!(out.contains("proxy-open"), "{out}");
+    assert!(
+        out.lines().any(|l| l.trim() == "hello"),
+        "the forward reaches containers: {out}"
+    );
+
+    // The engine sees a run's files: not the host's secrets or other sandboxes.
+    let out = run(
+        &mut sh,
+        &format!(
+            "docker run --rm -v {data}:/d busybox sh -c 'for p in master.key jev.key sandboxes/s2 users/u-bob runtime sysroots; do test -e /d/$p && echo seen-$p || echo hidden-$p; done'"
+        ),
+        APT_WAIT,
+    )
+    .await?;
+    assert!(!out.contains("seen-"), "{out}");
+    assert!(out.contains("hidden-master.key"), "{out}");
+
+    // `--privileged` stays inside the sandbox: its user namespace, no nested one, only its own
+    // cgroup tree.
+    let out = run(
+        &mut sh,
+        "docker run --rm --privileged busybox sh -c 'cat /proc/self/uid_map; unshare -U true 2>/dev/null && echo userns-open || echo userns-refused; mkdir -p /m && (mount -t cgroup2 none /m 2>/dev/null && (ls /m | grep -q -e sandboxes -e agents && echo cgroup-wide || echo cgroup-own) || echo cgroup-mount-refused)'",
+        APT_WAIT,
+    )
+    .await?;
+    assert!(!out.contains("4294967295"), "not the host's ids: {out}");
+    assert!(out.contains("userns-refused"), "{out}");
+    assert!(!out.contains("cgroup-wide"), "{out}");
+
+    // A port published in the sandbox's range is relayed to the host's loopback.
+    let published = iso.s1.port_base + 2;
+    let _ = run(
+        &mut sh,
+        &format!(
+            "docker run -d --name yqa-web -p {published}:8080 busybox sh -c 'mkdir -p /w && echo published > /w/index.html && httpd -f -p 8080 -h /w' >/dev/null; echo web-started"
+        ),
+        APT_WAIT,
+    )
+    .await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reply = async {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, published)).await?;
+            stream.write_all(b"GET / HTTP/1.0\r\n\r\n").await?;
+            let mut text = String::new();
+            stream.read_to_string(&mut text).await?;
+            Ok::<_, std::io::Error>(text)
+        }
+        .await;
+        if reply.as_ref().is_ok_and(|t| t.contains("published")) {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("published port {published} not relayed: {reply:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let _ = run(&mut sh, "docker rm -f yqa-web >/dev/null", WAIT).await?;
+
+    // Disk: the engine's storage counts toward the quota, and pruning frees unused images.
+    let request = yulius_sandbox::manager::SandboxRequest {
+        id: "s1".into(),
+        hostname: "fixture".into(),
+        dir: iso.data.join("sandboxes/s1"),
+        port_first: iso.s1.port_base,
+        port_last: iso.s1.port_base + iso.s1.port_count - 1,
+    };
+    iso.manager.measure_disk(&request).await;
+    let largest = iso.manager.largest("s1").await;
+    assert!(
+        largest
+            .iter()
+            .any(|(name, bytes)| name == "containers" && *bytes > 0),
+        "{largest:?}"
+    );
+    let freed = iso.manager.prune_engine("s1").await;
+    assert!(freed.is_some_and(|bytes| bytes > 0), "{freed:?}");
+    let out = run(
+        &mut sh,
+        "echo images=$(docker image ls -q yqa-built | wc -l)",
+        WAIT,
+    )
+    .await?;
+    assert!(out.contains("images=0"), "unused images pruned: {out}");
+    eprintln!("isolation_docker: {:?}", started.elapsed());
     Ok(())
 }

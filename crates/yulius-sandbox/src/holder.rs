@@ -297,7 +297,7 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         boot_id: boot_id(),
         started_at_ms: now_ms(),
         system_root: paths.root().to_string_lossy().into_owned(),
-        engine: spec.engine.is_some(),
+        engine: spec.engine.is_some() && paths.engine_socket().exists(),
     };
     write_json(&paths.record(), &record).map_err(|e| format!("host.json: {e}"))?;
     Ok(record)
@@ -414,16 +414,13 @@ pub fn inner(spec_path: &Path, ready_fd: i32) -> Result<(), String> {
                 return Err(format!("forward {port}: {e}"));
             }
         }
-        let engine = match &spec.engine {
-            Some(engine) => match serve_engine(engine, &paths) {
-                Ok(supervisor) => Some(supervisor),
-                Err(e) => {
-                    let _ = writeln!(ready, "docker.sock: {e}");
-                    return Err(format!("docker.sock: {e}"));
-                }
-            },
-            None => None,
-        };
+        // Without its Docker socket the sandbox still works: runs get no socket (`host.json`
+        // says so) and the error stays in the holder's log.
+        let engine = spec.engine.as_ref().and_then(|engine| {
+            serve_engine(engine, &paths)
+                .map_err(|e| eprintln!("yulius: no Docker socket in this sandbox: {e}"))
+                .ok()
+        });
         let _ = writeln!(ready, "ready");
         drop(ready);
         wait_for_termination().await;
