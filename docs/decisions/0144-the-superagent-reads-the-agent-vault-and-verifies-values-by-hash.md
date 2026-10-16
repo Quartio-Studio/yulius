@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-178](../../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md);
+Accepted; superseded in part by [ADR-0150](0150-the-superagent-uses-agent-secrets-as-a-task-does.md)
+(task #171): the Superagent now also gets the egress proxy, `secret_copy_to_env` and
+`secret_request_hosts` ("The rest stays a task's" and the matching alternatives no longer hold);
+`secret_verify` stands. Specified in [SPEC-178](../../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md);
 task #165. Amends SPEC-037 MGT-006 ([ADR-0029](0029-cockpit-manages-through-mcp.md)): the
 Superagent's tools are no longer the management tools alone. Builds on
 [ADR-0121](0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md).
