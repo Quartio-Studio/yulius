@@ -68,7 +68,8 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     } else if (top < lastTop) following = false;
     lastTop = top;
   }, { passive: true });
-  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (following) toBottom(); }) : null;
+  // A change that leaves a reader who scrolled up within the slack puts them at the bottom: following.
+  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (following || atBottom()) toBottom(); }) : null;
 
   function render() {
     const current = task();
