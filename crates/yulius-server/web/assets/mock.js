@@ -274,6 +274,8 @@ function seed(params) {
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
     { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
+    // A shipped automation an agent created by name (SPEC-042 OPS-010): a default all the same (SPEC-197).
+    { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
@@ -2208,10 +2210,11 @@ route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
 });
 route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
-// Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
+// Shipped (default) automations (SPEC-042, SPEC-197): the catalog, matched to a sandbox's automations by name.
 const AUTOMATION_TEMPLATES = [
   { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
   { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+  { id: 'nightly-dev-deploy', name: 'Deploy dev every night', description: 'Every night, dev is deployed from the integration branch with the project’s CD and tested; a failure becomes an issue.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Deploy dev with `cd_deploy` and test it.', workflow_id: null },
 ];
 const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {

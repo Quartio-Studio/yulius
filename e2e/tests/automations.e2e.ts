@@ -4,28 +4,72 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-// Ready-made automations (SPEC-042 AUT-009, AC-AUT-8): the Automations page offers the
-// automations Yulius ships, each enabled with one click, after which it is an ordinary automation.
+// Default automations (SPEC-042 AUT-009, SPEC-197 AUT-032..036): the automations Yulius ships come
+// first, as the default workflows do, each switched on or off in place; the project's others are
+// Custom. A shipped automation an agent created by name is a default, not "Created by an agent".
 
-test('a ready-made automation is enabled in one click and joins the list', async ({ app, browser, screen }) => {
+/** The names of the automation cards in one section, in order. */
+const namesIn = (browser, section: string) => browser.evaluate((id) => [...document.querySelectorAll(`section[aria-labelledby="${id}"] .item-card .item-name`)].map((n) => n.textContent), section);
+
+/** The badges and button labels of one automation card. */
+const cardOf = (browser, name: string) => browser.evaluate((title) => {
+  const card = [...document.querySelectorAll('.item-card')].find((c) => c.querySelector('.item-name')?.textContent === title);
+  return card ? { badges: [...card.querySelectorAll('.item-title .badge')].map((b) => b.textContent.trim()), buttons: [...card.querySelectorAll('.item-controls button')].map((b) => b.getAttribute('aria-label') || b.textContent.trim()) } : null;
+}, name);
+
+test('the shipped automations are the defaults, switched on in place, and Delete resets one (AC-AUT-31..33)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/automations'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Automations');
-  await expect(screen.getByRole('heading', /^Ready-made/)).toBeVisible();
-  await expect(screen.getByText('Keep the docs up to date')).toBeVisible();
-  await expect(screen.getByText('Work through open issues')).toBeVisible();
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Ready-made/)).toBeHidden();
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(['Daily customer feedback', 'Weekly dependency audit']);
+  // An agent created this one by name: it is a default all the same.
+  const issues = await cardOf(browser, 'Work through open issues');
+  expect(issues!.badges).toEqual(['Default']);
+  expect(issues!.buttons).toContain('Run now');
+  // Custom automations keep their own badges.
+  expect((await cardOf(browser, 'Daily customer feedback'))!.badges).toEqual(['Created by an agent']);
+  // Not added yet: off, with nothing else to press.
+  const docs = screen.getByRole('switch', 'Keep the docs up to date runs on schedule');
+  await expect(docs).not.toBeChecked();
+  expect((await cardOf(browser, 'Keep the docs up to date'))!).toEqual({ badges: ['Default'], buttons: [] });
   expect(await axeViolations(browser)).toEqual([]);
 
-  await screen.getByRole('button', 'Enable Keep the docs up to date').click();
+  // The switch turns it on: it is created, enabled, and is an ordinary automation from then on.
+  await docs.click();
   await expect(screen.getByText('Keep the docs up to date enabled.')).toBeVisible();
-  // Now an ordinary automation: its schedule switch is on and it is no longer suggested.
   await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeChecked();
-  await expect(screen.getByRole('button', 'Enable Keep the docs up to date')).toBeHidden();
-  await expect(screen.getByRole('button', 'Enable Work through open issues')).toBeVisible();
+  await expect(screen.getByRole('button', 'Run history of Keep the docs up to date')).toBeVisible();
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']);
+  await screen.getByRole('switch', 'Keep the docs up to date runs on schedule').click();
+  await expect(screen.getByText('Keep the docs up to date paused.')).toBeVisible();
 
-  await screen.getByRole('button', 'Enable Work through open issues').click();
-  await expect(screen.getByRole('switch', 'Work through open issues runs on schedule')).toBeChecked();
-  // Nothing left to suggest: the section goes away.
-  await expect(screen.getByRole('heading', /^Ready-made/)).toBeHidden();
+  // Delete resets a default: it stays listed, off, to be switched on again from the shipped version.
+  await screen.getByRole('button', 'Delete Work through open issues').click();
+  const dialog = screen.getByRole('dialog', 'Delete automation “Work through open issues”?');
+  await expect(dialog.getByText(/stays among the defaults, off/)).toBeVisible();
+  await dialog.getByRole('button', 'Delete').click();
+  await expect(screen.getByRole('button', 'Delete Work through open issues')).toBeHidden();
+  await expect(screen.getByRole('switch', 'Work through open issues runs on schedule')).not.toBeChecked();
+  expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [] });
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']);
+});
+
+test('a failed switch-on stays off and says why; read access cannot switch (AC-AUT-32, AC-AUT-34)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations', '&failpost=/api/sandboxes/sb_studio/automation-templates/nightly-dev-deploy/enable'));
+  await screen.getByRole('switch', 'Deploy dev every night runs on schedule').click();
+  await expect(screen.getByText(/Couldn’t enable automation/)).toBeVisible();
+  await expect(screen.getByRole('switch', 'Deploy dev every night runs on schedule')).not.toBeChecked();
+  await expect(screen.getByRole('switch', 'Deploy dev every night runs on schedule')).toBeEnabled();
+
+  await browser.evaluate(() => { location.hash = '#/s/sandbox-3/automations'; });
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
+  for (const name of ['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']) {
+    await expect(screen.getByRole('switch', `${name} runs on schedule`)).toBeDisabled();
+  }
+  await expect(screen.getByText('No custom automations yet')).toBeVisible();
 });
 
 // How an automation's tasks start (SPEC-078, SPEC-093 AUT-020..024): one chip in the action bar,

@@ -1,6 +1,8 @@
 // Automations page (AUT-001..005): cron schedules with UTC offset, run history, Run now. An
-// automation opens in its builder (automationedit.js, UI-039); so does New automation. Below the
-// list, the ready-made automations not added yet, each enabled with one click (SPEC-042 AUT-009).
+// automation opens in its builder (automationedit.js, UI-039); so does New automation. As on the
+// Workflows page, the automations Yulius ships come first as Defaults (SPEC-197 AUT-032..036): the
+// project's automation of a shipped one's name, or the shipped one switched off until its switch
+// enables it (SPEC-042 AUT-008); then the project's other automations, Custom.
 
 import { enc } from '../api.js';
 import { h, badge, iconBadge, itemCard, iconButton, openModal, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState } from '../dom.js';
@@ -8,6 +10,7 @@ import { relLong, dateTime, describeCron, utcOffset, startPhrase } from '../form
 import { allows } from '../status.js';
 import { href, navigate } from '../router.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
+import { BRAND } from '../brand.js';
 
 // AutomationRun.state (docs/api.md "Skills, workflows, automations, MCP").
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
@@ -35,51 +38,67 @@ export function mountAutomationsPage(ctx, sandbox) {
     return h('a', { href: href(path), dataset: { route: path } }, `#${task.number}`);
   };
 
-  // The suggestions are optional: when they cannot be read, the page still shows the list.
+  // The shipped list is optional: when it cannot be read, every automation shows under Custom.
   const fetchAll = () => Promise.all([
     ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automations`),
     ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automation-templates`).catch(() => []),
   ]);
   const reload = loader(host, 'the automations', fetchAll, ([list, templates]) => {
     const items = Array.isArray(list) ? list : [];
-    const offered = (Array.isArray(templates) ? templates : []).filter((t) => !t.automation_id);
-    return h('div', { class: 'stack' }, automationList(items), offered.length ? readyMade(offered) : null);
+    const byId = new Map(items.map((a) => [a.id, a]));
+    const defaults = (Array.isArray(templates) ? templates : []).map((t) => ({ template: t, automation: byId.get(t.automation_id) || null }));
+    const taken = new Set(defaults.map((d) => d.automation && d.automation.id));
+    const custom = items.filter((a) => !taken.has(a.id));
+    const section = (id, title, hint, body) => h('section', { class: 'stack-sm', 'aria-labelledby': id },
+      h('h2', { class: 'page-section-title', id }, title, h('span', { class: 'muted' }, hint)),
+      body);
+    return h('div', { class: 'stack' },
+      defaults.length ? section('automations-defaults', 'Defaults', `ship with ${BRAND.name}, on or off per project`, h('div', { class: 'item-list' }, defaults.map(({ template, automation }) => (automation ? automationCard(automation, template) : shippedCard(template))))) : null,
+      section('automations-custom', 'Custom', 'yours to change', custom.length
+        ? h('div', { class: 'item-list' }, custom.map((a) => automationCard(a)))
+        : emptyState({ iconName: 'zap', title: 'No custom automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? createButton('New automation', create) : null })));
   }, { shape: 'items' });
 
-  function readyMade(templates) {
-    return h('section', { class: 'stack-sm', 'aria-labelledby': 'automations-ready-made' },
-      h('h2', { class: 'page-section-title', id: 'automations-ready-made' }, 'Ready-made automations', h('span', { class: 'muted' }, 'enable in one click, edit it afterwards')),
-      h('div', { class: 'item-list' }, templates.map((t) => itemCard({
-        iconName: 'zap',
-        title: t.name,
-        description: t.description,
-        extra: h('div', { class: 'item-meta' }, `${describeCron(t.cron)} · ${utcOffset(t.utc_offset_minutes)}`),
-        controls: [h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: !write, title: write ? null : 'Requires write access', 'aria-label': `Enable ${t.name}`, onClick: (event) => enableTemplate(t, event.currentTarget) }, 'Enable')],
-      }))));
+  const defaultBadge = () => iconBadge('lock', 'Default', 'violet', `Ships with ${BRAND.name}; changes made here are kept`);
+  const schedule = (a, extra = '') => [`${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)}${extra} `, h('code', { class: 'muted' }, a.cron)];
+
+  /** A shipped automation not added to the project: off until its switch enables it. */
+  function shippedCard(t) {
+    return itemCard({
+      iconName: 'zap',
+      title: t.name,
+      badges: [defaultBadge()],
+      description: schedule(t),
+      extra: [h('div', { class: 'item-meta' }, t.description), h('div', { class: 'item-meta' }, 'Off')],
+      controls: [toggle({ checked: false, disabled: !write, label: `${t.name} runs on schedule`, onChange: (checked, input) => (checked ? enableShipped(t, input) : null) })],
+      dim: true,
+    });
   }
 
-  async function enableTemplate(t, button) {
-    button.disabled = true; // one automation per press
+  async function enableShipped(t, input) {
+    input.disabled = true; // one automation per switch
     try {
       await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automation-templates/${enc(t.id)}/enable`);
       toast(`${t.name} enabled.`, { kind: 'ok' });
       reload();
     } catch (error) {
-      button.disabled = false;
+      input.checked = false;
+      input.disabled = false;
       errorToast(error, 'Couldn’t enable automation');
     }
   }
 
-  function automationList(items) {
-    if (items.length === 0) return emptyState({ iconName: 'zap', title: 'No automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? createButton('New automation', create) : null });
-    return h('div', { class: 'item-list' }, items.map((a) => itemCard({
+  /** A project automation; `template` when it is a shipped one (a default). */
+  function automationCard(a, template = null) {
+    const meta = h('div', { class: 'item-meta' },
+      a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `Next run ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'Not scheduled' : 'Paused'),
+      a.last_run ? [' · last ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ': ', runBadge(a.last_run.state), ' ', taskLink(a.last_run.task_id)] : ' · never ran');
+    return itemCard({
       iconName: 'zap',
       title: a.name,
-      badges: [a.created_via === 'agent' ? iconBadge('tools', 'Created by an agent', 'violet', 'An agent created this automation') : null],
-      description: [`${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)}${startPhrase(a) ? ` · ${startPhrase(a)}` : ''} `, h('code', { class: 'muted' }, a.cron)],
-      extra: h('div', { class: 'item-meta' },
-        a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `Next run ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'Not scheduled' : 'Paused'),
-        a.last_run ? [' · last ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ': ', runBadge(a.last_run.state), ' ', taskLink(a.last_run.task_id)] : ' · never ran'),
+      badges: [template ? defaultBadge() : a.created_via === 'agent' ? iconBadge('tools', 'Created by an agent', 'violet', 'An agent created this automation') : null],
+      description: schedule(a, startPhrase(a) ? ` · ${startPhrase(a)}` : ''),
+      extra: template ? [h('div', { class: 'item-meta' }, template.description), meta] : meta,
       controls: [
         toggle({ checked: a.enabled, disabled: !write, label: `${a.name} runs on schedule`, onChange: async (checked, input) => {
           try {
@@ -94,12 +113,12 @@ export function mountAutomationsPage(ctx, sandbox) {
         } }),
         h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: write ? 'Create a task from this automation now' : 'Requires write access', onClick: () => runNow(a) }, 'Run now'),
         iconButton('clock', `Run history of ${a.name}`, () => history(a)),
-        iconButton('trash', `Delete ${a.name}`, () => remove(a), { class: 'btn-quiet-danger', disabled: !write }),
+        iconButton('trash', `Delete ${a.name}`, () => remove(a, template), { class: 'btn-quiet-danger', disabled: !write }),
       ],
       onOpen: () => navigate(`${base}/${encodeURIComponent(a.id)}`),
       openLabel: write ? `Edit ${a.name}` : `Open ${a.name}`,
       dim: !a.enabled,
-    })));
+    });
   }
 
   function editable(a) {
@@ -140,8 +159,11 @@ export function mountAutomationsPage(ctx, sandbox) {
     }).catch((error) => setChildren(modal.body, placeholder(error.message, 'error')));
   }
 
-  async function remove(a) {
-    if (!(await confirmDialog({ title: `Delete automation “${a.name}”?`, message: 'Future runs are cancelled. Tasks it already created stay.', confirmLabel: 'Delete', danger: true }))) return;
+  async function remove(a, template) {
+    const message = template
+      ? 'Future runs are cancelled. Tasks it already created stay. It stays among the defaults, off: switching it on again starts from the version shipped now, without your changes.'
+      : 'Future runs are cancelled. Tasks it already created stay.';
+    if (!(await confirmDialog({ title: `Delete automation “${a.name}”?`, message, confirmLabel: 'Delete', danger: true }))) return;
     try {
       await ctx.api.del(`/api/automations/${enc(a.id)}`);
       toast('Automation deleted.', { kind: 'ok' });
