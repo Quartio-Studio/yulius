@@ -1770,6 +1770,23 @@ while True:
         Ok(())
     }
 
+    /// Review round 2 (low): deciding a front's mode, at every tick, only reads the sandbox's
+    /// cgroup paths; preparing the groups (limits, the CPU split) happens once, when an engine
+    /// front starts.
+    #[tokio::test]
+    async fn deciding_a_front_prepares_no_cgroup() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        let mut request = request(data.path());
+        request.id = "s2".into();
+        let serve = manager.front_mode(&request, &live_record(false));
+        assert!(matches!(serve, Some(DockerServe::Engine { .. })), "{serve:?}");
+        let unit = manager.config.delegation.as_ref().map(|d| d.unit.clone());
+        let group = unit.ok_or("delegated")?.join("sandboxes/s2");
+        assert!(!group.exists(), "{} was prepared", group.display());
+        Ok(())
+    }
+
     fn front(mode: &str, reason: Option<&str>) -> DockerFrontRecord {
         DockerFrontRecord {
             pid: 42,
