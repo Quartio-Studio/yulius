@@ -1,11 +1,11 @@
 ---
 yulius-task: 23fb7ca3-7265-40ac-aaf9-6ab43b3e6893
-status: in-progress
+status: done
 ---
 
 # SPEC-199: A sandbox gets Docker from its own system, not from the host's
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: task #185
 Scope authorization: task #185 (requested by MrFishPL): after #602 was promoted, `docker` in a
@@ -52,12 +52,12 @@ restart.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] A sandbox's Docker front decides from its own system layer, not the host's dockerd
-- [ ] The refusal, doctor and smoke name the in-sandbox and host fixes
-- [ ] ADR-0160 and the operations and architecture docs say the engine comes from the sandbox's system
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A sandbox's Docker front decides from its own system layer, not the host's dockerd
+- [x] The refusal, doctor and smoke name the in-sandbox and host fixes
+- [x] ADR-0160 and the operations and architecture docs say the engine comes from the sandbox's system
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -91,3 +91,48 @@ restart.
   seccomp profile and the cgroup).
 - Overlay opaque directories are not read: an upper `usr/bin` made opaque with no `dockerd` would
   still count the base's; the engine then fails to start and SPEC-187's answer names it.
+
+## Evidence
+
+- **Reproduced** in this task's sandbox (server `06744993`): `docker info` → "the host has no
+  `dockerd` …" while `/usr/bin/dockerd`, `containerd` and `runc` are in the sandbox's `/usr`
+  (`base-3`, 2026-10-11). The host's purge of Docker on 2026-10-12 is in an imported operator
+  session (dpkg log: `Removing docker-ce …`).
+- **Tests that failed before the change:**
+  - `manager::tests::a_sandbox_whose_own_system_has_dockerd_gets_an_engine` failed at "a link over
+    usr hides the base's" (the upper layer was not read), then at `usr/local/sbin`;
+  - `wiring::sandbox::tests::only_the_setting_turns_sandbox_docker_off` did not compile against the
+    old signature (host `dockerd` argument);
+  - `the_front_mode_follows_the_holder_and_the_prerequisites` (the `DOCKER_NO_DOCKERD` refusal and
+    its fixes), `doctor::tests::the_docker_check_names_what_sandboxes_lack` (old text, early return
+    before delegation and modules), `a_front_is_replaced_only_when_its_mode_changed` (a running
+    engine replaced on `DOCKER_NO_DOCKERD`) and
+    `briefing::tests::a_sandbox_with_an_engine_is_told_docker_works_and_how` (no install hint) failed
+    on their new assertions.
+- **Gate:** `scripts/dev ci` exit 0 at `52bdc990` (2036 passed, 18 skipped; earlier at `93ceee70`
+  the same). An intermediate run at `cd850bbf` failed two tight-budget briefing tests (the longer
+  section was cut); the hint was shortened to fit the section's budget, and the run passed.
+- **Security:** `scripts/dev security` exit 2: Vidoc refused the key (HTTP 401), so the scan was
+  **not run** (not passed). It sent nothing for the four changed code files.
+- **Review round 1** (fresh session, at `93ceee70`): REQUEST CHANGES, three low findings in own
+  code, all fixed:
+  - L1: the docs claimed a base's `dockerd` survives the host's purge; reworded to "until the
+    holder's next base";
+  - L2: no test of an upper layer with `usr/bin` but no `dockerd`; added;
+  - L3: the briefing told sandboxes without `dockerd` that Docker works; it now names
+    `sudo apt install docker.io`.
+
+  Nits, also fixed:
+  - the walk is by directory descriptor (`O_PATH | O_NOFOLLOW`), not repeated `lstat`;
+  - `usr/local/sbin` counts;
+  - a running engine is kept when `dockerd` leaves the system;
+  - the whiteout comment is accurate.
+
+  Its pre-existing note, a base link resolved on the host, is left as is: the base is Yulius's
+  own copy of the host.
+- **Review round 2:** the verdict on the final head is recorded in the pull request.
+- **Not testable here:**
+  - a live engine (this sandbox's seccomp refuses namespaces);
+  - `sudo apt install docker.io` in a fresh sandbox on the host, which also needs the kernel
+    modules that `yulius doctor` lists;
+  - `yulius doctor --docker-smoke`, which needs a base with `dockerd`, so Docker back on the host.
