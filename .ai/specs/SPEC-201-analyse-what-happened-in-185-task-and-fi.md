@@ -1,22 +1,24 @@
 ---
 yulius-task: 64fb05de-4847-4a1e-a1af-da782f8943ba
-status: done
+status: in-progress
 ---
 
 # SPEC-201: The in-sandbox Docker install brings buildx and compose
 
-Status: done
+Status: in-progress
 Date: 2026-10-16
 Owner: task #186
 Scope authorization: task #186 (requested by MrFishPL): "Analyse what happened in #185 task and
 fix this [a product sandbox with an engine but no buildx] and pls try to fix docker finaly".
-Fixes #610. Amends SPEC-199 DSY-003, DSY-004 and DSY-006, and ADR-0160.
+Fixes #610 and #614 (part 2: the person's second screenshot, "Now it's worse than before: the
+Docker engine has stopped"). Amends SPEC-199 DSY-003, DSY-004 and DSY-006, and ADR-0160.
 
 ## Goal
 
 An agent that follows Yulius's Docker hint gets everything SPEC-187 promises (`docker`,
 `docker compose`, buildx), not just an engine. An agent missing buildx or compose knows it
-installs them in its own sandbox, without a person or a host change.
+installs them in its own sandbox, without a person or a host change. Part 2: a sandbox's engine
+starts again after `yulius.service` restarts, whatever state its cgroup leaf was left in.
 
 ## Context
 
@@ -47,6 +49,30 @@ installs them in its own sandbox, without a person or a host change.
 - In a sandbox, an `apt` install writes to the sandbox's upper layer. It is kept across sessions,
   CI jobs and dev deploys (all joined runs, ADR-0158), so `~/.docker/cli-plugins` is never needed.
 
+- **Part 2 symptom** (2026-10-16, after the instance updated at 18:10:49Z, the production
+  deploy of #611). In the product sandbox (`6b76ccc7…`) and in this task's sandbox
+  (`d62be476…`), `docker info` answered: "the engine exited (exit status: 1); engine log: …
+  yulius: cannot join /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/engine: No
+  such file or directory". Both engines had stopped as idle before the update. The container
+  "cgroup vanished" lines before it in the log are normal noise: containers that ended.
+- **Part 2 root cause.**
+  - `yulius.service` runs with `KillMode=process`, so holders, fronts and sessions survive a
+    restart (operations §3).
+  - When the unit stops, systemd prunes every *empty* group left in the unit's tree. The holder's
+    leaf has processes and stays. An idle engine's `engine` leaf is empty, so it goes.
+  - The front prepares the sandbox's groups once, when it starts (`Manager::start_front` →
+    `cgroup_of`). After the restart the server adopts the holder and keeps its running front
+    (`FrontAction::Keep`).
+  - `Supervisor::spawn` then starts `yulius sandbox-exec --engine --cgroup <leaf>` with no
+    check, so every engine start fails until a new run prepares the sandbox. A Claude session
+    already running is not a new run.
+  - Nothing in Yulius removes the leaf: `freeze::thaw_all` removes only `run-*` groups.
+- **Why the tests missed it.** The supervisor tests run with an existing cgroup directory. The
+  manager tests never take a group away from a live holder.
+- **What else the cause breaks.** The `agents` and `ci` leaves are pruned too when they are
+  empty. A run's preparation recreates them (`cgroup_of`), so only the engine, started by the
+  front without a preparation, is stuck.
+
 ## Requirements
 
 | ID | Requirement |
@@ -55,6 +81,9 @@ installs them in its own sandbox, without a person or a host change.
 | DBX-002 | Every host install hint (the refusal, doctor, the smoke test's reason) names the same install: `docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`. |
 | DBX-003 | The briefing's `## Containers` section with an engine names the install for missing parts in this sandbox (`missing parts: sudo apt-get install -y docker.io docker-buildx docker-compose-v2 here`). The section stays within its 270 bytes, so the tight-budget renderings keep it whole: "own engine" goes, and the egress proxy is named by its `--add-host` flag alone. |
 | DBX-004 | ADR-0160, `docs/operations.md`, `docs/architecture.md` and `docs/changes.md` name the full install. |
+| DBX-005 | Before each engine start, the front recreates the engine's cgroup leaf when it is gone: that leaf only, under its existing parent (`cgroup::restore_leaf`). A missing parent is an error naming the group, not a recreated sandbox group without limits. |
+| DBX-006 | At every upkeep tick, a kept engine front gets its engine leaf recreated when it is gone. This heals fronts that run an older binary, which a server update never replaces. |
+| DBX-007 | `docs/operations.md` names the prune on restart and the recovery. |
 
 ## Plan
 
@@ -62,6 +91,10 @@ installs them in its own sandbox, without a person or a host change.
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
 - [x] Independent review in a fresh session, findings fixed test-first
+- [x] Reproduce the pruned engine cgroup after a restart and find its cause
+- [ ] Regression tests: the front and the tick restore a missing engine leaf
+- [ ] The front and the tick recreate the engine leaf; docs and gate green
+- [ ] Independent review of the engine-leaf fix, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -71,6 +104,10 @@ installs them in its own sandbox, without a person or a host change.
   `docker-compose-plugin`.
 - The briefing names that install for missing parts "here" (in this sandbox). The tight-budget
   tests still find the section whole.
+- Part 2: a supervisor whose engine leaf is missing starts the engine, and the leaf exists
+  afterwards (fails before: the start fails). With the parent missing, the start fails and names
+  the group. An adopted holder whose engine leaf was removed has it back after `keep_front`
+  (fails before: still missing).
 
 ## Test plan
 

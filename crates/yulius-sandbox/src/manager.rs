@@ -1703,6 +1703,35 @@ while True:
         }
     }
 
+    /// SPEC-201 DBX-006 (#614): a restart of `yulius.service` prunes an idle engine's empty
+    /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
+    /// even for a front from an older binary, which no update replaces.
+    #[tokio::test]
+    async fn a_kept_engine_front_gets_its_pruned_leaf_back() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let front = front_of(&manager).await.ok_or("no front")?;
+        assert_eq!(front.mode, "engine");
+        let leaf = manager.group_paths("s1").ok_or("no delegation")?.engine;
+        assert!(leaf.is_dir());
+        std::fs::remove_dir(&leaf)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        assert_eq!(
+            front_of(&manager).await.map(|f| f.pid),
+            Some(front.pid),
+            "the running front is kept"
+        );
+        assert!(leaf.is_dir(), "the engine's leaf is back");
+        kill(front.pid);
+        Ok(())
+    }
+
     /// SPEC-196 DKL-003 (#597), the upgrade: a holder kept from before engines (adopted after
     /// a restart, its runs untouched) gains a front serving the engine; a dead front is started
     /// again; a server with Docker off replaces it with a refusal, and one with Docker on again

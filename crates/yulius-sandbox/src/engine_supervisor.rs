@@ -532,6 +532,56 @@ open(stopped, "w").write("stopped")
         Ok(())
     }
 
+    /// SPEC-201 DBX-005 (#614): `yulius.service` stops with `KillMode=process`, and systemd then
+    /// prunes the unit's empty groups, the leaf of an idle engine among them. The next start
+    /// recreates that leaf (only it) before the engine joins it.
+    #[tokio::test]
+    async fn a_start_recreates_the_engine_leaf_a_restart_pruned() -> io::Result<()> {
+        let f = Fixture::new()?;
+        // Stands in for `yulius sandbox-exec --cgroup <leaf>`: no group, no engine.
+        let joining = |leaf: &Path| {
+            let mut command: Vec<String> = vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                r#"test -d "$0" || { echo "cannot join $0" >&2; exit 1; }; exec "$@""#.into(),
+                leaf.to_string_lossy().into_owned(),
+            ];
+            command.extend(f.fake());
+            command
+        };
+        let sandbox = f.path("sandbox");
+        std::fs::create_dir_all(&sandbox)?;
+        let leaf = sandbox.join("engine");
+        let supervisor = Supervisor::with_start_timeout(
+            joining(&leaf),
+            f.path("control.sock"),
+            f.path("engine.log"),
+            leaf.clone(),
+            Duration::from_secs(300),
+            ok(),
+            Duration::from_secs(20),
+        );
+        supervisor.connect().await.map_err(io::Error::other)?;
+        assert!(leaf.is_dir(), "the leaf is back");
+        supervisor.stop(Duration::from_secs(10)).await;
+
+        // Without the sandbox's group, nothing is made up in its place (it would have no limits).
+        let orphan_leaf = f.path("gone/engine");
+        let orphan = Supervisor::with_start_timeout(
+            joining(&orphan_leaf),
+            f.path("control.sock"),
+            f.path("engine.log"),
+            orphan_leaf,
+            Duration::from_secs(300),
+            ok(),
+            Duration::from_secs(20),
+        );
+        let reason = orphan.connect().await.err().unwrap_or_default();
+        assert!(reason.contains("gone/engine"), "{reason}");
+        assert!(!f.path("gone").exists());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn an_engine_that_exits_answers_a_docker_error_with_its_log() -> io::Result<()> {
         let f = Fixture::new()?;
