@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   messages". Following is now a state that only scrolling up ends, kept at the bottom through every
   change of height. The pixel octopus and its lane are gone, and the transcript is inset 16 px, as
   the card above it.
+- Deploying production (and every CD deploy and promotion) works on a real instance (SPEC-184,
+  task #169, fixes #574). The GitHub adapter's branch head read was a stub that always failed with
+  "branch lookup via GitHub is not supported; read the fetched clone instead"; it now asks GitHub
+  (`GET /repos/{owner}/{repo}/git/ref/heads/{branch}`, an unknown branch is none), as ADR-0109
+  requires. The same read gates CI jobs' agent-secret grants, which it had withheld too.
 
 ## 2026-10-15
 
