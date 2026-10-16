@@ -180,3 +180,37 @@ async fn without_the_ruleset_the_agents_token_could_write_production() -> TestRe
     assert_ne!(w.main(), Some(w.root.clone()));
     Ok(())
 }
+
+/// SPEC-184 (issue #574): CD and promotion read the integration and production heads through the
+/// adapter, with the installation token and with a person's. The adapter asks GitHub for them;
+/// a branch GitHub does not have is `None`, and a nested branch name is one branch.
+#[tokio::test]
+async fn the_adapter_reads_branch_heads_from_github() -> TestResult {
+    let w = world().await?;
+    let installation = w
+        .adapter
+        .installation_token(&w.app, w.installation)
+        .await?;
+    for token in [&installation, &w.admin] {
+        let dev = w.adapter.branch_sha(token, "acme", "app", "dev").await?;
+        assert_eq!(dev, Some(w.dev.clone()));
+        let main = w.adapter.branch_sha(token, "acme", "app", "main").await?;
+        assert_eq!(main, Some(w.root.clone()));
+        let missing = w.adapter.branch_sha(token, "acme", "app", "prod").await?;
+        assert_eq!(missing, None);
+    }
+    let nested = w.fake.add_commit("acme", "app", &[&w.dev]);
+    w.fake.set_branch("acme", "app", "release/1.0", &nested);
+    let head = w
+        .adapter
+        .branch_sha(&installation, "acme", "app", "release/1.0")
+        .await?;
+    assert_eq!(head, Some(nested));
+    // `release` is only a prefix of a branch, not a branch.
+    let prefix = w
+        .adapter
+        .branch_sha(&installation, "acme", "app", "release")
+        .await?;
+    assert_eq!(prefix, None);
+    Ok(())
+}
