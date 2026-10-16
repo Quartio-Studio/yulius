@@ -349,7 +349,7 @@ impl Delegation {
 /// left in the unit, the leaf of an idle engine among them, while its holder and front run on.
 /// Only `dir` is created: without its parent (the sandbox's group, which holds the limits) it
 /// fails. A leaf made again under a split parent gets the default `cpu.weight`, 100, which is the
-/// engine's ([`LEAVES`]).
+/// engine's (`LEAVES`).
 ///
 /// # Errors
 /// The parent is gone, or the group cannot be created.
