@@ -220,9 +220,9 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       const before = el.dataset.reading;
       render();
       if (!started) return;
-      const now = state();
+      const after = state();
       // Same state: a planned read stays as planned (events must not put it off).
-      if (before === now || now === 'paused') {
+      if (before === after || after === 'paused') {
         if (!reading && !timer && !failed) schedule();
       } else if (reading) again = true;
       else read();

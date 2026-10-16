@@ -607,17 +607,23 @@ test('the Working time reads as Claude Code’s, is never negative, and ticks on
     const { createWatchView, workingFor } = await import(url);
     const formats = [0, 59_000, 61_000, 3_599_000, 4_800_000, -5_000].map((ms) => workingFor(ms));
     const page = { session_id: 's', doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
-    const pending = new Map<number, () => void>();
+    const pending = new Map<number, { fn: () => void, ms: number }>();
     let ids = 0;
-    const ticker = { set: (fn: () => void) => { ids += 1; pending.set(ids, fn); return ids; }, clear: (id: number) => { pending.delete(id); } };
+    const ticker = { set: (fn: () => void, ms: number) => { ids += 1; pending.set(ids, { fn, ms }); return ids; }, clear: (id: number) => { pending.delete(id); } };
     const quiet = { set: () => 0, clear: () => {} };
-    const now = 1_000_000;
-    const task: Record<string, unknown> = { id: 't', status: 'running', activity: 'working', working_since: new Date(now - 5_000).toISOString() };
+    let now = 1_000_000;
+    // 5.3 s worked: the next second flips in 700 ms.
+    const task: Record<string, unknown> = { id: 't', status: 'running', activity: 'working', working_since: new Date(now - 5_300).toISOString() };
     const options = { taskId: 't', task: () => task, owner: () => 'anna-q', emptyMessage: () => null, sessionPath: () => '/x', timer: quiet, ticker, now: () => now };
     const view = createWatchView({ api: { get: async () => page } }, options);
     const shown = () => view.el.querySelector('.watch-working-time')?.textContent ?? null;
     const working = shown();
     const ticking = pending.size;
+    const firstDelay = [...pending.values()][0]?.ms ?? null;
+    // The tick comes: the time reads the next second, and one tick waits for the one after.
+    now += 700;
+    [...pending.values()][0]?.fn();
+    const ticked = { shown: shown(), waiting: pending.size, delay: [...pending.values()][0]?.ms ?? null };
     // Without a time to count from: no time.
     delete task.working_since;
     view.update();
@@ -633,11 +639,13 @@ test('the Working time reads as Claude Code’s, is never negative, and ticks on
     view.update();
     const again = pending.size;
     view.destroy();
-    return { formats, working, ticking, timeless, fromState, idle, again, destroyed: pending.size };
+    return { formats, working, ticking, firstDelay, ticked, timeless, fromState, idle, again, destroyed: pending.size };
   });
   expect(result.formats).toEqual(['0s', '59s', '1m 1s', '59m 59s', '1h 20m', '0s']);
   expect(result.working).toBe(' (5s)');
   expect(result.ticking, 'one tick waits while the line shows').toBe(1);
+  expect(result.firstDelay, 'the tick comes when the next second flips').toBe(700);
+  expect(result.ticked).toEqual({ shown: ' (6s)', waiting: 1, delay: 1000 });
   expect(result.timeless).toBe('');
   expect(result.fromState, 'state_since when working_since is missing').toBe(' (2s)');
   expect(result.idle, 'a hidden line does not tick').toBe(0);
