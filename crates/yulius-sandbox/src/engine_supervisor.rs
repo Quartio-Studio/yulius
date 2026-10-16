@@ -10,8 +10,10 @@
 //! takes as "stop `dockerd`", then kills it after [`STOP_GRACE`].
 //!
 //! The holder serves at most [`crate::relay::MAX_CONNECTIONS`] clients at once; one start runs at
-//! a time and later clients wait for it.
+//! a time and later clients wait for it. The engine can write its control directory, so the
+//! holder never follows a link there (`connect_control`).
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -137,7 +139,7 @@ impl Supervisor {
         let alive = running
             .as_mut()
             .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-        if alive && let Ok(stream) = UnixStream::connect(&self.control).await {
+        if alive && let Ok(stream) = connect_control(&self.control).await {
             return Ok(stream);
         }
         if !alive {
@@ -185,7 +187,7 @@ impl Supervisor {
     async fn wait_ready(&self, child: &mut Child) -> Result<UnixStream, String> {
         let deadline = Instant::now() + self.start_timeout;
         loop {
-            if let Ok(stream) = UnixStream::connect(&self.control).await {
+            if let Ok(stream) = connect_control(&self.control).await {
                 return Ok(stream);
             }
             if let Ok(Some(status)) = child.try_wait() {
@@ -260,6 +262,28 @@ impl Supervisor {
             }
         }
     }
+}
+
+/// Connects to the engine's control socket without following a link the engine (or one of its
+/// containers, which may bind the directory) put there: the holder sees the whole host, so the
+/// name is opened with `O_PATH | O_NOFOLLOW`, must be a socket, and is connected through
+/// `/proc/self/fd`, which names exactly that inode (no second lookup to race).
+async fn connect_control(path: &Path) -> io::Result<UnixStream> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _};
+    let flags = nix::fcntl::OFlag::O_PATH | nix::fcntl::OFlag::O_NOFOLLOW;
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits())
+        .open(path)?;
+    if !handle.metadata()?.file_type().is_socket() {
+        return Err(io::Error::other(
+            "the engine's control socket is not a socket",
+        ));
+    }
+    let stream = UnixStream::connect(format!("/proc/self/fd/{}", handle.as_raw_fd())).await;
+    drop(handle);
+    stream
 }
 
 async fn stop(mut child: Child, grace: Duration) {
@@ -340,7 +364,6 @@ async fn refuse(mut client: UnixStream, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
 
     /// A fake engine: listens on `argv[1]`, answers `engine:<request>` per connection (holding
     /// a connection that sends nothing open), counts its starts in `argv[2]`, and writes
@@ -606,6 +629,53 @@ open(stopped, "w").write("stopped")
         drop(recent.connect().await.map_err(io::Error::other)?);
         assert!(!recent.stop_if_idle().await, "used within the idle time");
         recent.stop(Duration::from_secs(10)).await;
+        Ok(())
+    }
+
+    /// Review of SPEC-187 (high): the engine can write its control directory (any container
+    /// may bind it), while the holder sees the whole host. A link planted at the control socket
+    /// must never lead the holder to another socket of the host.
+    #[tokio::test]
+    async fn a_link_at_the_control_socket_is_never_followed() -> io::Result<()> {
+        let f = Fixture::new()?;
+        let decoy_path = f.path("host-secret.sock");
+        let decoy = UnixListener::bind(&decoy_path)?;
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!(
+                "ln -sf {} {}; exec sleep 30",
+                decoy_path.display(),
+                f.path("control.sock").display()
+            ),
+        ];
+        let supervisor = Supervisor::with_start_timeout(
+            command,
+            f.path("control.sock"),
+            f.path("engine.log"),
+            f.path("cg"),
+            Duration::from_secs(300),
+            ok(),
+            Duration::from_millis(800),
+        );
+        let reason = supervisor.connect().await.err().unwrap_or_default();
+        assert!(reason.contains("did not answer"), "{reason}");
+        let reached = tokio::time::timeout(Duration::from_millis(300), decoy.accept()).await;
+        assert!(
+            reached.is_err(),
+            "the holder followed the link to the decoy"
+        );
+        // A real socket at the same place is reached.
+        let _ = std::fs::remove_file(f.path("control.sock"));
+        let real = UnixListener::bind(f.path("control.sock"))?;
+        let stream = connect_control(&f.path("control.sock")).await?;
+        drop(stream);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), real.accept())
+                .await
+                .is_ok(),
+            "the real control socket is reached"
+        );
         Ok(())
     }
 
