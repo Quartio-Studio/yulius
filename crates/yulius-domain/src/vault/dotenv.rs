@@ -46,6 +46,15 @@ pub fn key_block(value: &str) -> Option<String> {
     block.then(|| format!("{text}\n"))
 }
 
+/// Whether `value` is a key flattened onto one line (SPEC-193 MLK-002): it opens with
+/// `-----BEGIN <label>-----` and closes with `-----END <label>-----`, something is between them
+/// and no literal `\n` marks its line breaks, which a single-line field replaced with spaces or
+/// dropped. A one-line key block is never a usable key file.
+#[must_use]
+pub fn flattened_key(_value: &str) -> bool {
+    false
+}
+
 /// The lines of a key block's file that hold key material (its armour excluded): a copied key
 /// file shows them one per line, so redaction looks for each (SPEC-186 SAV-005). Empty for a
 /// value that is not a key block.
@@ -279,6 +288,40 @@ mod tests {
         lines.extend(body.iter().map(|l| (*l).to_owned()));
         lines.push(armour("END", label));
         format!("{}\n", lines.join("\n"))
+    }
+
+    /// SPEC-193 MLK-002: a key whose line breaks a single-line field turned into spaces, or
+    /// dropped, is told apart from a key stored with literal `\n` and from ordinary values.
+    #[test]
+    fn a_key_flattened_onto_one_line_is_recognised() {
+        let file = key_file(
+            &format!("{} PRIVATE KEY", "OPENSSH"),
+            &["c3ludGhldGljLWZsYXQtMDE=", "c3ludGhldGljLWZsYXQtMDI="],
+        );
+        let file = file.trim_end();
+        for flat in [
+            file.replace('\n', " "),
+            file.replace('\n', ""),
+            format!(" {} ", file.replace('\n', " ")),
+            file.replace('\n', "  "),
+        ] {
+            assert!(flattened_key(&flat), "{flat}");
+        }
+        let pem = key_file("SYNTHETIC KEY", &["c3ludGhldGljLXBlbS1ib2R5"]);
+        assert!(flattened_key(&pem.trim_end().replace('\n', " ")));
+        for kept in [
+            file.replace('\n', "\\n"),
+            format!("{}\\n", file.replace('\n', "\\n")),
+            // A body with spaces is still a key once one break is kept.
+            format!("{} body with spaces\\n{}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            "sk_synthetic_value_7781".to_owned(),
+            format!("{} c3ludGhldGlj {}", armour("BEGIN", "KEY"), armour("END", "CERTIFICATE")),
+            format!("{} {}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            format!("prefix {} c3ludGhldGlj {}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            armour("BEGIN", "KEY"),
+        ] {
+            assert!(!flattened_key(&kept), "{kept}");
+        }
     }
 
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is

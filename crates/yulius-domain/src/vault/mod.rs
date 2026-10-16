@@ -286,6 +286,21 @@ mod tests {
         assert!(check_agent_value(&"x".repeat(MAX_FIELD_BYTES + 1)).is_err());
     }
 
+    /// SPEC-193 MLK-002: a key whose line breaks were lost is refused, saying how to keep them;
+    /// the same key with literal `\n` is a value.
+    #[test]
+    fn a_flattened_key_is_refused() {
+        let begin = format!("-----BEGIN {}-----", "SYNTHETIC KEY");
+        let end = format!("-----END {}-----", "SYNTHETIC KEY");
+        let flat = format!("{begin} c3ludGhldGljLWZsYXQ= {end}");
+        let Err(VaultError::Value(message)) = check_agent_value(&flat) else {
+            panic!("a flattened key is refused");
+        };
+        assert!(message.contains("line breaks were lost"), "{message}");
+        assert!(message.contains("\\n"), "{message}");
+        assert!(check_agent_value(&format!("{begin}\\nc3ludGhldGljLWZsYXQ=\\n{end}")).is_ok());
+    }
+
     #[test]
     fn injections_parse_and_render() -> Result<(), VaultError> {
         assert_eq!(Injection::parse("none", None)?, Injection::None);

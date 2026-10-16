@@ -124,6 +124,86 @@ test('an agent secret is a name, a value and a description, readable by its mana
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
 });
 
+/** A synthetic key file: armour built at run time (no scanner takes the source for a key). */
+function keyFile(label: string, body: string[], breakText: string): string {
+  return [`-----BEGIN ${label}-----`, ...body, `-----END ${label}-----`].join(breakText);
+}
+
+/** Pastes `text` into the open dialog's Value field as the clipboard would; its value after. */
+function pasteValue(browser: any, text: string) {
+  return browser.evaluate((t: string) => {
+    const input = document.querySelector('dialog.modal input[aria-label="Value"]') as HTMLInputElement;
+    input.focus();
+    const data = new DataTransfer();
+    data.setData('text/plain', t);
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    return input.value;
+  }, text);
+}
+
+// Task #179 (SPEC-193, #591): "Creating multiline keys fails. Make sure value can be multiline".
+// The Value field is one line, so a pasted key keeps its line breaks as \n (the vault's form for a
+// multi-line key); a key stored flattened before is marked for its managers to paste again.
+test('a pasted multi-line key keeps its line breaks as \\n, and a flattened one asks to be pasted again', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const pemBody = ['bW9jay1wZW0tbGluZS0wMQ==', 'bW9jay1wZW0tbGluZS0wMg=='];
+  const sshBody = ['bW9jay1zc2gtbGluZS0wMQ==', 'bW9jay1zc2gtbGluZS0wMg==', 'bW9jay1zc2gtbGluZS0wMw=='];
+  const pemStored = keyFile('MOCK PRIVATE KEY', pemBody, '\\n');
+  const sshStored = keyFile('MOCK OPENSSH PRIVATE KEY', sshBody, '\\n');
+
+  // Add: a PEM copied on Windows (CRLF, with a final line break).
+  await screen.getByRole('button', 'Add agent secret').first().click();
+  const add = screen.getByRole('dialog', 'Add agent secret');
+  await screen.getByLabel('Name').fill('DEPLOY_PEM');
+  expect(await pasteValue(browser, `${keyFile('MOCK PRIVATE KEY', pemBody, '\r\n')}\r\n`)).toBe(pemStored);
+  await add.getByRole('button', 'Add').click();
+  await expect(add).toBeHidden();
+  await expect(screen.getByText('DEPLOY_PEM')).toBeVisible();
+
+  // The older secret whose line breaks were lost is marked, not rewritten.
+  const old = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(old.getByText('Paste again')).toBeVisible();
+  await expect(old.getByText(/Its line breaks were lost/)).toBeVisible();
+  await expect(browser.locator('.item-card:has-text("DEPLOY_PEM")').getByText('Paste again')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Edit: an OpenSSH key (LF, final line break) pasted over a selection replaces it.
+  await screen.getByRole('button', 'Edit OLD_DEPLOY_KEY').click();
+  const edit = screen.getByRole('dialog', 'Edit OLD_DEPLOY_KEY');
+  await screen.getByLabel('Value').fill('selected');
+  await browser.evaluate(() => (document.querySelector('dialog.modal input[aria-label="Value"]') as HTMLInputElement).select());
+  expect(await pasteValue(browser, `${keyFile('MOCK OPENSSH PRIVATE KEY', sshBody, '\n')}\n`)).toBe(sshStored);
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  await expect(old.getByText('Paste again')).toBeHidden();
+
+  // Both read back as the vault holds them.
+  await screen.getByRole('button', 'Show DEPLOY_PEM').click();
+  await setUpTwoFactor(screen, browser);
+  for (const [name, stored] of [['DEPLOY_PEM', pemStored], ['OLD_DEPLOY_KEY', sshStored]]) {
+    if (name !== 'DEPLOY_PEM') await screen.getByRole('button', `Show ${name}`).click();
+    const shown = screen.getByRole('dialog', name);
+    await shown.getByRole('button', 'Show value').click();
+    expect(await browser.evaluate(() => document.querySelector('dialog.modal .secret-value')!.textContent)).toBe(stored);
+    await shown.getByRole('button', 'Done').click();
+    await expect(shown).toBeHidden();
+  }
+
+  // Text without line breaks (a value already escaped) pastes as the browser pastes it; CR alone
+  // is a line break too, and blank lines around the key are dropped.
+  await screen.getByRole('button', 'Add agent secret').first().click();
+  const defaulted = await browser.evaluate((t: string) => {
+    const input = document.querySelector('dialog.modal input[aria-label="Value"]') as HTMLInputElement;
+    const data = new DataTransfer();
+    data.setData('text/plain', t);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+    return !event.defaultPrevented;
+  }, pemStored);
+  expect(defaulted).toBe(true);
+  expect(await pasteValue(browser, `\r\n${keyFile('MOCK PRIVATE KEY', pemBody, '\r')}\r\r\n`)).toBe(pemStored);
+});
+
 // SPEC-121 ASH-005: the hosts an agent asked for wait on the Secrets page for a person to allow.
 test('a person allows the hosts an agent asked for', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
