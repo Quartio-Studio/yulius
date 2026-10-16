@@ -6,6 +6,36 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The watched task's Working line moves as Claude Code's spinner (SPEC-190, ADR-0153, task #175).
+  Under someone else's task, `✻ Working…` stood still: the mark never moved and the shimmer
+  flashed over the whole line for a fraction of each cycle. Now the mark turns through
+  `· ✢ ✳ ✶ ✻ ✽`, a light runs through the words, and the time worked follows, as in
+  `✻ Working… (1m 23s)`. Under reduced motion the mark stays on `✻` and the words don't shimmer.
+- Docker works inside isolated sandboxes (SPEC-187, ADR-0151, task #172, fixes #551). Each sandbox
+  gets its own engine at `/run/docker.sock`, started by its namespace holder on first use, so
+  agents, the Superagent, Shells and CI jobs run `docker build`, `docker run` and `docker compose`
+  unchanged.
+  - The engine is root of the sandbox's user namespace, never the host's, in the sandbox's network.
+    It sees a run's files plus its own storage, a fresh sysfs and its own cgroup namespace.
+  - A seccomp profile of its own (the run profile plus mounts, `setns` and `pivot_root`) bounds
+    every container, `--privileged` included.
+  - Images count toward the disk quota and are pruned under pressure. Containers count against the
+    sandbox's limits.
+  - The briefing now says Docker works (reverting SPEC-173 where an engine exists).
+    `YULIUS_SANDBOX_DOCKER=off` turns it off, and `yulius doctor` checks `dockerd`, the cgroup
+    delegation and the kernel modules.
+  - Not verified on a real host yet: the opt-in host test `isolation_docker` cannot run in a
+    sandbox or in Yulius CI.
+
+- Supertask names one-shotting the product, and Jev proposes it for broad work (SPEC-188,
+  ADR-0152, task #173). The start menu's Supertask now reads "Runs alone once this project’s
+  running tasks end; the rest wait. For broad work: security hardening, one-shotting the
+  product." (three lines, so the menu still fits a 1280 × 800 window), and the `task_create` tool
+  and the product summary name the same examples. A task started now, after a task or by a rule
+  is held when Jev is sure it is broad work: "Run it as a supertask?" offers Run as a supertask or
+  Start as chosen. A request that splits ("fix all GitHub issues") is never proposed.
+  `/intake/check` gains `supertask`, from a new fixed `breadth` question asked with the split
+  question.
 - The Superagent uses agent secrets as a task's agent does, and sees new tools without a restart
   (SPEC-186, ADR-0150, task #171). It runs behind the egress proxy with its own bearer, so its
   requests to a secret's bound hosts carry it (`$NAME` holds the placeholder); it copies allowed

@@ -57,6 +57,9 @@ pub struct SandboxJoin {
     /// Run on the host's read-only system instead of the system layer, in the holder's network
     /// (a production CD run, SPEC-134); the resolver file shown at the host's resolver path.
     pub host_system: Option<PathBuf>,
+    /// The sandbox's Docker socket on the host (ADR-0151), shown to the run at `/run/docker.sock`;
+    /// `None` without an engine and for a host-system run.
+    pub engine_socket: Option<PathBuf>,
 }
 
 /// The CPUs and memory every sandbox may use, where the adapter enforces them (SPEC-082
@@ -115,6 +118,19 @@ pub trait SandboxIsolation: Send + Sync {
 
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
+
+    /// Prunes `sandbox`'s Docker engine: build cache and images no container uses (never
+    /// containers or volumes). Returns the bytes freed; `None` without an engine or a live holder
+    /// (SPEC-187 DKR-006).
+    async fn prune_engine(&self, _sandbox: &SandboxRef) -> Option<u64> {
+        None
+    }
+
+    /// Whether `sandbox`'s runs reach a Docker engine of its own (ADR-0151): its holder serves
+    /// one.
+    async fn docker(&self, _sandbox: &SandboxRef) -> bool {
+        false
+    }
 
     /// The limits every sandbox runs under; none where nothing enforces them (no cgroup
     /// delegation).

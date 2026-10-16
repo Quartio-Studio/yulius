@@ -75,7 +75,8 @@ reference face crawls along the top between the corners.
   leaving the task cancels the read in flight. An ended task is read once more and then not again.
   The view follows the bottom while the reader is at the bottom; scrolled up, it stays where they
   read and a "New messages" button jumps down. While the agent works, a `✻ Working…` line shimmers
-  at the bottom (none under reduced motion's shimmer rules). Before the session has lines, the view
+  at the bottom (none under reduced motion's shimmer rules); SPEC-190 makes it move as Claude
+  Code's spinner and count the time worked. Before the session has lines, the view
   shows the terminal's empty message for the task's state (Queued, Starting…, Prepared…).
 - **WAT-004 Normal colours.** The live transcript uses the live terminal's palette (`--term-bg`,
   `--term-fg`, the ANSI green and red for results), not the faded `--session-*` palette of a past

@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 use yulius_contracts::ptyhost::SandboxJoin;
-use yulius_contracts::sandbox::{HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap};
+use yulius_contracts::sandbox::{
+    EngineSpec, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap,
+};
 
 use crate::base::{BaseInfo, Bases};
 use crate::cgroup::{Delegation, Limits, SandboxGroups};
@@ -93,6 +95,8 @@ pub struct IsolationConfig {
     pub idle: IdleConfig,
     /// Build bases automatically (off in tests that bring their own).
     pub auto_build: bool,
+    /// Give each sandbox a Docker engine (ADR-0151); it also needs the cgroup delegation.
+    pub docker: bool,
 }
 
 /// A sandbox asking to be entered.
@@ -247,6 +251,62 @@ impl Manager {
         self.config.data_dir.join("sysroots").join(sandbox)
     }
 
+    /// Whether sandboxes get a Docker engine: the setting, the cgroup delegation, and a `yulius`
+    /// executable the sandbox's root neither owns nor may write through its group or as anyone
+    /// (the engine's read-only binds are not locked, so an engine could remount and rewrite it;
+    /// ADR-0151).
+    #[must_use]
+    pub fn docker(&self) -> bool {
+        use std::os::unix::fs::MetadataExt as _;
+        // Owned by the sandbox's root, or writable by its group (the service group) or anyone.
+        let exe_writable = std::fs::metadata(&self.config.exe)
+            .is_ok_and(|meta| meta.uid() == self.config.uid.host || meta.mode() & 0o022 != 0);
+        self.config.docker && self.config.delegation.is_some() && !exe_writable
+    }
+
+    /// Whether `sandbox`'s runs reach a Docker engine: its live holder serves one, or, without a
+    /// live holder, the next one will (SPEC-187 DKR-010). A holder from before engines, or one
+    /// whose socket failed, serves none.
+    pub async fn docker_for(&self, sandbox: &str) -> bool {
+        if !self.docker() {
+            return false;
+        }
+        let entry = self.entry(sandbox);
+        let state = entry.lock().await;
+        state.live.as_ref().is_none_or(|live| live.record.engine)
+    }
+
+    /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
+    fn engine_spec(&self, request: &SandboxRequest, cgroup: &Path) -> EngineSpec {
+        let state = StatePaths::new(self.state_dir(&request.id));
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let view = crate::engine::EngineView {
+            bwrap: text(&self.config.bwrap),
+            exe: text(&self.config.exe),
+            hostname: request.hostname.clone(),
+            state_dir: text(&state.dir),
+            system_root: text(&state.root()),
+            data_dir: text(&self.config.data_dir),
+            sandbox_dir: text(&request.dir),
+            storage: text(&self.sysroot(&request.id).join("docker")),
+            cgroup: text(cgroup),
+        };
+        let mut command = vec![
+            text(&self.config.exe),
+            "sandbox-exec".into(),
+            "--engine".into(),
+            "--cgroup".into(),
+            text(cgroup),
+            "--".into(),
+        ];
+        command.extend(crate::engine::bwrap_argv(&view));
+        EngineSpec {
+            command,
+            cgroup: text(cgroup),
+            idle_secs: self.config.idle.stop_after.as_secs().clamp(60, 86_400),
+        }
+    }
+
     fn entry(&self, sandbox: &str) -> Arc<tokio::sync::Mutex<SandboxState>> {
         Arc::clone(lock(&self.sandboxes).entry(sandbox.to_owned()).or_default())
     }
@@ -348,6 +408,12 @@ impl Manager {
                 exec_shim: Some(self.config.exe.to_string_lossy().into_owned()),
                 private_dirs: vec![self.config.data_dir.to_string_lossy().into_owned()],
                 host_system: None,
+                engine_socket: record.engine.then(|| {
+                    StatePaths::new(self.state_dir(&request.id))
+                        .engine_socket()
+                        .to_string_lossy()
+                        .into_owned()
+                }),
             },
         }))
     }
@@ -395,11 +461,17 @@ impl Manager {
     ) -> Result<HolderRecord, String> {
         let state = StatePaths::new(self.state_dir(&request.id));
         let sysroot = self.sysroot(&request.id);
+        let groups = self.cgroup_of(&request.id);
+        let engine = groups
+            .as_ref()
+            .filter(|_| self.docker())
+            .map(|groups| self.engine_spec(request, &groups.engine));
         for dir in [
             state.dir.clone(),
             state.root(),
             sysroot.join("upper"),
             sysroot.join("work"),
+            sysroot.join("docker"),
         ] {
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
@@ -427,12 +499,11 @@ impl Manager {
                 .map(|p| p.to_string_lossy().into_owned()),
             uid: self.config.uid,
             gid: self.config.gid,
-            cgroup: self
-                .cgroup_of(&request.id)
-                .map(|g| g.system.to_string_lossy().into_owned()),
+            cgroup: groups.map(|g| g.system.to_string_lossy().into_owned()),
             port_first: request.port_first,
             port_last: request.port_last,
             forwards: self.config.forwards.keys().copied().collect(),
+            engine,
         };
         spec.validate().map_err(|e| e.to_string())?;
         write_json(&state.spec(), &spec).map_err(|e| e.to_string())?;
@@ -462,6 +533,7 @@ impl Manager {
             base = %record.base_id,
             holder = record.inner_pid,
             egress = record.slirp_pid.is_some(),
+            docker = record.engine,
             "sandbox holder started"
         );
         Ok(record)
@@ -634,6 +706,47 @@ impl Manager {
         self.maybe_build(in_use);
     }
 
+    /// Prunes `sandbox`'s Docker engine when it runs, through its own control socket: build cache
+    /// and unused images (SPEC-187 DKR-006). The bytes credited are the engine's figure, at most
+    /// the engine storage last measured (0 when unmeasured or not among the largest consumers, so
+    /// the other caches are pruned as before): the engine controls its answer. Never through the sandbox's socket, which would
+    /// start a stopped engine and reset its idle time, keeping it and the holder up for as long
+    /// as the disk is under pressure. `None` without a live holder serving one, with the engine
+    /// stopped, or when it could not prune.
+    pub async fn prune_engine(&self, sandbox: &str) -> Option<u64> {
+        let (socket, measured) = {
+            let entry = self.entry(sandbox);
+            let state = entry.lock().await;
+            if !state.live.as_ref()?.record.engine {
+                return None;
+            }
+            let measured = state.usage.as_ref().map_or(0, |(usage, _)| {
+                usage
+                    .largest
+                    .iter()
+                    .find(|(name, _)| name == "containers")
+                    .map_or(0, |(_, bytes)| *bytes)
+            });
+            (
+                StatePaths::new(self.state_dir(sandbox))
+                    .engine_control()
+                    .join(yulius_contracts::sandbox::ENGINE_SOCKET),
+                measured,
+            )
+        };
+        match crate::engine::prune(&socket).await {
+            Ok(reported) => {
+                let bytes = reported.min(measured);
+                tracing::info!(sandbox, freed = %human(bytes), "pruned the sandbox's Docker engine");
+                Some(bytes)
+            }
+            Err(error) => {
+                tracing::warn!(sandbox, %error, "cannot prune the sandbox's Docker engine");
+                None
+            }
+        }
+    }
+
     /// The refusal when the sandbox is over its quota. A reading older than [`QUOTA_RECHECK`]
     /// that says "over" is replaced by a fresh measurement first (space may have been freed).
     async fn quota_refusal(
@@ -647,8 +760,8 @@ impl Manager {
             return None;
         }
         if at.elapsed() >= QUOTA_RECHECK {
-            let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
-            let fresh = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &upper))
+            let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
+            let fresh = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot))
                 .await
                 .ok()?;
             state.usage = Some((fresh, Instant::now()));
@@ -679,11 +792,10 @@ impl Manager {
         let sandbox = sandbox.to_owned();
         let sysroot = self.sysroot(&sandbox);
         tokio::spawn(async move {
-            let usage = tokio::task::spawn_blocking(move || {
-                measure_sandbox(&request.dir, &sysroot.join("upper"))
-            })
-            .await
-            .unwrap_or_default();
+            let usage =
+                tokio::task::spawn_blocking(move || measure_sandbox(&request.dir, &sysroot))
+                    .await
+                    .unwrap_or_default();
             let entry = manager.entry(&sandbox);
             let mut state = entry.lock().await;
             state.measuring = false;
@@ -831,8 +943,8 @@ impl Manager {
     /// Measures a sandbox now and keeps the reading (after space was freed).
     pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
         let limit = self.config.disk_max?;
-        let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
-        let usage = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &upper))
+        let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
+        let usage = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot))
             .await
             .ok()?;
         let bytes = usage.bytes;
@@ -859,9 +971,14 @@ impl Manager {
     }
 }
 
-/// A sandbox's usage: its directory, split by consumer, and its system layer as one.
-fn measure_sandbox(dir: &Path, upper: &Path) -> Usage {
-    crate::usage::measure(&[(dir, None), (upper, Some("system"))])
+/// A sandbox's usage: its directory, split by consumer, its system layer (`sysroot/upper`) and
+/// its Docker engine's storage (`sysroot/docker`, SPEC-187 DKR-006) as one each.
+fn measure_sandbox(dir: &Path, sysroot: &Path) -> Usage {
+    crate::usage::measure(&[
+        (dir, None),
+        (&sysroot.join("upper"), Some("system")),
+        (&sysroot.join("docker"), Some("containers")),
+    ])
 }
 
 #[cfg(test)]
@@ -901,6 +1018,7 @@ mod tests {
                 stop_after: Duration::from_secs(300),
             },
             auto_build: false,
+            docker: false,
         });
         let request = SandboxRequest {
             id: "s1".into(),
@@ -916,12 +1034,16 @@ mod tests {
     }
 
     fn manager(data: &Path, disk_max: u64) -> Arc<Manager> {
+        Manager::new(config(data, disk_max))
+    }
+
+    fn config(data: &Path, disk_max: u64) -> IsolationConfig {
         let map = IdMap {
             host: 1000,
             sub_start: 100_000,
             count: 65_535,
         };
-        Manager::new(IsolationConfig {
+        IsolationConfig {
             data_dir: data.to_path_buf(),
             exe: PathBuf::from("/usr/local/bin/yulius"),
             bwrap: PathBuf::from("/usr/bin/bwrap"),
@@ -939,7 +1061,263 @@ mod tests {
                 stop_after: Duration::from_secs(300),
             },
             auto_build: false,
-        })
+            docker: false,
+        }
+    }
+
+    /// A delegated unit in `dir` (fake cgroup files).
+    fn delegation(dir: &Path) -> Result<Delegation, Box<dyn std::error::Error>> {
+        let unit = dir.join("unit");
+        std::fs::create_dir_all(&unit)?;
+        std::fs::write(unit.join("cgroup.procs"), "")?;
+        std::fs::write(unit.join("cgroup.controllers"), "memory pids\n")?;
+        Ok(crate::cgroup::prepare(&unit)?)
+    }
+
+    fn live_record(engine: bool) -> HolderRecord {
+        HolderRecord {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: "s1".into(),
+            base_id: "base-1".into(),
+            inner_pid: 4242,
+            bwrap_pid: 4241,
+            slirp_pid: None,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            boot_id: "b".into(),
+            started_at_ms: 0,
+            system_root: "/r".into(),
+            engine,
+        }
+    }
+
+    /// Review of SPEC-187 (medium): whether a sandbox's agents are told Docker works follows
+    /// that sandbox's holder: one adopted from before engines, or whose socket failed, serves
+    /// none, whatever the setting says.
+    #[tokio::test]
+    async fn docker_is_told_per_sandbox_from_its_holder() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let data = tempfile::tempdir()?;
+        let off = manager(data.path(), 1);
+        assert!(!off.docker_for("s1").await, "the setting is off");
+        let mut on = config(data.path(), 1);
+        on.docker = true;
+        on.delegation = Some(delegation(data.path())?);
+        let manager = Manager::new(on);
+        assert!(manager.docker(), "the setting with the delegation");
+        assert!(manager.docker_for("s1").await, "its next holder serves one");
+        let entry = manager.entry("s1");
+        entry.lock().await.live = Some(Live {
+            record: live_record(false),
+            relays: Vec::new(),
+        });
+        assert!(
+            !manager.docker_for("s1").await,
+            "a holder without an engine"
+        );
+        entry.lock().await.live = Some(Live {
+            record: live_record(true),
+            relays: Vec::new(),
+        });
+        assert!(manager.docker_for("s1").await);
+        Ok(())
+    }
+
+    /// Review of SPEC-187 (low): the engine's read-only binds are not locked (same user
+    /// namespace), so an executable the sandbox's root owns, or that its group or anyone may
+    /// write, could be remounted and rewritten. Such a host gets no engine.
+    #[test]
+    fn an_executable_the_sandbox_owns_gets_no_engine() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+        let data = tempfile::tempdir()?;
+        let exe = data.path().join("yulius");
+        std::fs::write(&exe, "")?;
+        let owner = std::fs::metadata(&exe)?.uid();
+        let mut owned = config(data.path(), 1);
+        owned.docker = true;
+        owned.delegation = Some(delegation(data.path())?);
+        owned.exe = exe;
+        owned.uid.host = owner;
+        let mut other = owned.clone();
+        other.uid.host = owner.wrapping_add(1);
+        assert!(!Manager::new(owned).docker());
+        let set_mode = |mode| {
+            std::fs::set_permissions(
+                &other.exe,
+                std::os::unix::fs::PermissionsExt::from_mode(mode),
+            )
+        };
+        set_mode(0o755)?;
+        assert!(Manager::new(other.clone()).docker());
+        // Review round 2 (low): writable by the service group (root's group inside) or anyone.
+        for mode in [0o775, 0o757] {
+            set_mode(mode)?;
+            assert!(!Manager::new(other.clone()).docker(), "{mode:o}");
+        }
+        Ok(())
+    }
+
+    /// An API answering every request with `SpaceReclaimed: 500`, counting its connections.
+    fn fake_api(
+        listener: tokio::net::UnixListener,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.0 200 OK\r\n\r\n{\"SpaceReclaimed\":500}")
+                    .await;
+            }
+        });
+        (server, count)
+    }
+
+    /// SPEC-187 DKR-006, review round 2 (medium): pruning reaches only an engine that already
+    /// runs, through its own control socket: never through the sandbox's socket, which would
+    /// start a stopped engine and keep it (and the holder) from idling; never through a link.
+    #[tokio::test]
+    async fn only_a_running_engine_is_pruned_through_its_control_socket()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        assert_eq!(manager.prune_engine("s1").await, None, "no holder");
+        let state = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(state.engine_control())?;
+        let (front, front_hits) = fake_api(tokio::net::UnixListener::bind(state.engine_socket())?);
+        let entry = manager.entry("s1");
+        entry.lock().await.live = Some(Live {
+            record: live_record(false),
+            relays: Vec::new(),
+        });
+        assert_eq!(
+            manager.prune_engine("s1").await,
+            None,
+            "a holder without an engine"
+        );
+        entry.lock().await.live = Some(Live {
+            record: live_record(true),
+            relays: Vec::new(),
+        });
+        assert_eq!(manager.prune_engine("s1").await, None, "a stopped engine");
+        // A link the engine planted at its control socket is not followed.
+        let decoy_path = data.path().join("decoy.sock");
+        let (decoy, decoy_hits) = fake_api(tokio::net::UnixListener::bind(&decoy_path)?);
+        let control = state.engine_control().join("docker.sock");
+        std::os::unix::fs::symlink(&decoy_path, &control)?;
+        assert_eq!(manager.prune_engine("s1").await, None, "a link");
+        std::fs::remove_file(&control)?;
+        let (engine, engine_hits) = fake_api(tokio::net::UnixListener::bind(&control)?);
+        let measured = |containers: u64| crate::usage::Usage {
+            bytes: containers,
+            largest: vec![("containers".into(), containers)],
+            ..crate::usage::Usage::default()
+        };
+        entry.lock().await.usage = Some((measured(5_000), Instant::now()));
+        assert_eq!(manager.prune_engine("s1").await, Some(1000));
+        assert_eq!(engine_hits.load(Ordering::SeqCst), 2);
+        // Review round 3 (low): the engine's figure is credited at most up to the storage last
+        // measured, so a forged answer cannot spare the other caches.
+        entry.lock().await.usage = Some((measured(300), Instant::now()));
+        assert_eq!(manager.prune_engine("s1").await, Some(300));
+        entry.lock().await.usage = None;
+        assert_eq!(
+            manager.prune_engine("s1").await,
+            Some(0),
+            "nothing measured"
+        );
+        assert_eq!(
+            front_hits.load(Ordering::SeqCst),
+            0,
+            "never the sandbox's socket"
+        );
+        assert_eq!(decoy_hits.load(Ordering::SeqCst), 0);
+        for server in [front, decoy, engine] {
+            server.abort();
+        }
+        Ok(())
+    }
+
+    /// SPEC-187 DKR-006: the engine's storage counts toward the quota as one consumer.
+    #[test]
+    fn engine_storage_counts_as_containers() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let dir = data.path().join("sandboxes/s1");
+        let sysroot = data.path().join("sysroots/s1");
+        std::fs::create_dir_all(dir.join("worktrees/t1"))?;
+        std::fs::create_dir_all(sysroot.join("upper/usr"))?;
+        std::fs::create_dir_all(sysroot.join("docker/overlay2/l1"))?;
+        std::fs::write(dir.join("worktrees/t1/a"), vec![1u8; 64 * 1024])?;
+        std::fs::write(sysroot.join("upper/usr/b"), vec![1u8; 128 * 1024])?;
+        std::fs::write(sysroot.join("docker/overlay2/l1/c"), vec![1u8; 512 * 1024])?;
+        let usage = measure_sandbox(&dir, &sysroot);
+        assert_eq!(
+            usage.largest.first().map(|(name, _)| name.as_str()),
+            Some("containers"),
+            "{:?}",
+            usage.largest
+        );
+        let names: Vec<&str> = usage.largest.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"system") && names.contains(&"worktrees/t1"),
+            "{names:?}"
+        );
+        assert!(usage.bytes >= (64 + 128 + 512) * 1024, "{}", usage.bytes);
+        Ok(())
+    }
+
+    /// SPEC-187 DKR-001/003/005: the engine the holder starts is `sandbox-exec --engine`, which
+    /// joins the engine's group and then execs the engine's `bwrap` (its storage under the
+    /// sandbox's sysroot, the sandbox directory, the system layer).
+    #[test]
+    fn the_engine_joins_its_group_and_keeps_its_storage_by_the_system_layer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        let cgroup = PathBuf::from("/sys/fs/cgroup/yulius.service/sandboxes/s1/engine");
+        let spec = manager.engine_spec(&request(data.path()), &cgroup);
+        let d = data.path().to_string_lossy().into_owned();
+        assert_eq!(
+            spec.command[..6],
+            [
+                "/usr/local/bin/yulius",
+                "sandbox-exec",
+                "--engine",
+                "--cgroup",
+                "/sys/fs/cgroup/yulius.service/sandboxes/s1/engine",
+                "--",
+            ]
+        );
+        assert_eq!(spec.command[6], "/usr/bin/bwrap");
+        let has = |window: &[String]| spec.command.windows(window.len()).any(|w| w == window);
+        assert!(has(&[
+            "--bind".into(),
+            format!("{d}/sysroots/s1/docker"),
+            "/var/lib/docker".into()
+        ]));
+        assert!(has(&[
+            "--bind".into(),
+            format!("{d}/sandboxes/s1"),
+            format!("{d}/sandboxes/s1")
+        ]));
+        assert!(has(&[
+            "--bind-try".into(),
+            format!("{d}/runtime/sandboxes/s1/root/usr"),
+            "/usr".into()
+        ]));
+        assert!(has(&["--tmpfs".into(), d.clone()]));
+        assert!(has(&["--hostname".into(), "s1".into()]));
+        assert_eq!(spec.cgroup, cgroup.to_string_lossy());
+        assert_eq!(spec.idle_secs, 300);
+        Ok(())
     }
 
     fn request(data: &Path) -> SandboxRequest {

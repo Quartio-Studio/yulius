@@ -1,4 +1,4 @@
-//! `yulius sandbox-host`, `sandbox-exec` and `sandbox-base` (SPEC-002 ADR-22).
+//! `yulius sandbox-host`, `sandbox-exec` and `sandbox-base` (SPEC-002 ADR-22, ADR-0151).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,13 @@ pub enum HostAction {
         /// Descriptor on which readiness is reported.
         #[arg(long)]
         ready_fd: i32,
+    },
+    /// The sandbox's Docker engine inside its namespaces: runs the command until it exits or
+    /// stdin closes (ADR-0151).
+    Engine {
+        /// `dockerd` and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        argv: Vec<String>,
     },
     /// Remove a tree as root of a mapped namespace (files owned by mapped ids).
     RemoveTree {
@@ -98,6 +105,10 @@ pub fn host(action: HostAction) -> ExitCode {
                 Err(error) => fail(&error),
             }
         }
+        HostAction::Engine { argv } => match yulius_sandbox::engine::supervise(&argv) {
+            Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+            Err(error) => fail(&error),
+        },
         HostAction::RemoveTree { path } => {
             yulius_sandbox::base::make_writable(&path);
             match std::fs::remove_dir_all(&path) {
@@ -109,10 +120,21 @@ pub fn host(action: HostAction) -> ExitCode {
     }
 }
 
-/// `yulius sandbox-exec -- bwrap …`: execs `bwrap` with the seccomp filter.
+/// `yulius sandbox-exec [--engine] [--cgroup DIR] -- bwrap …`: joins `cgroup`, then execs `bwrap`
+/// with the run's seccomp filter, or the engine's (ADR-0151).
 #[must_use]
-pub fn exec(argv: &[OsString]) -> ExitCode {
-    let error = yulius_sandbox::enter::exec_bwrap(argv);
+pub fn exec(engine: bool, cgroup: Option<&Path>, argv: &[OsString]) -> ExitCode {
+    if let Some(cgroup) = cgroup
+        && let Err(error) = yulius_sandbox::cgroup::join(cgroup)
+    {
+        return fail(&format!("cannot join {}: {error}", cgroup.display()));
+    }
+    let profile = if engine {
+        yulius_sandbox::seccomp::Profile::Engine
+    } else {
+        yulius_sandbox::seccomp::Profile::Run
+    };
+    let error = yulius_sandbox::enter::exec_bwrap_with(argv, profile);
     fail(&format!("cannot start bwrap: {error}"))
 }
 

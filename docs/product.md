@@ -18,7 +18,9 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
-  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
+  contained sandbox with its own system layer, Docker engine (SPEC-187: `docker build`, `run` and
+  `compose` work for agents, the Superagent, shells and CI jobs), home, shells per user, browser
+  and editor. The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and
@@ -76,9 +78,12 @@ watching, steering and unblocking.
   so the agent gets the correction when the task starts. The request and the message box show
   files as placeholders (`Image N`) that open on a click (a double-click in the box); images pasted or dropped into a message
   land where they are put and move like a character, as in the composer.
-  A **supertask** (the composer's start menu, for broad work such as security hardening) waits
-  for the running tasks of its project, then runs alone: the project's other tasks wait for it,
-  also those queued or chained before it, and say so.
+  A **supertask** (the composer's start menu, for broad work such as security hardening or
+  one-shotting the product) waits for the running tasks of its project, then runs alone: the project's other tasks wait for it,
+  also those queued or chained before it, and say so. When such broad work is started another way
+  (Start now, after a task, by a rule), Jev stops it and the composer offers to run it as a
+  supertask instead; a request that splits into separate tasks ("fix all GitHub issues") is not
+  stopped (SPEC-188).
   The Tasks page's **Graph** (also from the sidebar's Working group) shows that structure at a
   glance: the queue in the order tasks get a free session, the chains, start rules and supertask
   holds as arrows between tasks, the prepared tasks and those on their own (SPEC-164).
