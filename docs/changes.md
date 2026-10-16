@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The two documented Docker operator commands are safe (SPEC-202, ADR-0161, task #187, fixes #617
+  and #618). A hand-run `yulius sandbox-base build` no longer deletes the base that running
+  sandboxes have mounted: base collection reads the live holders' records itself, whoever builds,
+  instead of trusting `--keep`, which only the server filled (on the VM it emptied every
+  sandbox's `/usr/lib` until the service was restarted). `sudo yulius doctor --docker-smoke` from a
+  root SSH shell now always runs as the service user in a delegated transient unit; root's own
+  login slice passed as delegated, got a `sandboxes/` group and ran the checks as uid 0. The
+  smoke's check lines are plain text, so compose's escapes no longer overwrite them, and the
+  compose check shows the probe's result instead of the web container's expected exit 137.
 - A sandbox's Docker engine starts again after Yulius restarts (SPEC-201 part 2, task #186,
   fixes #614). After the instance updated, every sandbox whose engine had stopped as idle
   answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory". systemd

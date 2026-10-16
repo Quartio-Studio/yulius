@@ -431,6 +431,14 @@ sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained
 systemctl restart yulius
 ```
 
+**A build by hand** (`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`, for
+example after installing a package on the host) is safe while sandboxes run: it keeps the new
+current base, every base named by `--keep` and every base a live holder has mounted (read from
+`<data>/runtime/sandboxes/*/host.json`, [ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)).
+Running sandboxes stay on their base until their holder restarts (after the idle time, or a
+minute without runs once superseded); a later build removes the base once no holder uses it. Run
+it as the service user (or root), which can see the holders.
+
 **Settings** (environment of the unit):
 
 | Variable | Default | Meaning |
@@ -484,7 +492,9 @@ from a sandbox, and no daemon needs to run on the host.
   sudo yulius doctor --docker-smoke
   ```
 
-  It runs as the data directory's owner in a delegated transient unit (`systemd-run`), uses the
+  Run as root, it always runs as the data directory's owner in a delegated transient unit
+  (`systemd-run`), never in the root shell's own cgroup (SPEC-202, #617), and refuses a data
+  directory root owns. It uses the
   current base, and removes its throwaway sandbox (`docker-smoke-<pid>`) at the end. It prints
   one line per check and exits 0 only when sandboxes get Docker: a run older than the engine
   gets the socket, its refusal names the reason, then `docker run --rm hello-world`, a `docker
