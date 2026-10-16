@@ -185,8 +185,8 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
 - [x] yulius security-scan runs the embedded scanner for agents and CI jobs
 - [x] Briefing, onboarding and infra bootstrap add the scan only when the instance has a key
 - [x] This project scans with vidoc-1: security job, AGENTS.md, docs, skill and ADR-0157
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
