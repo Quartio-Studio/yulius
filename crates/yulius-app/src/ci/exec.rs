@@ -715,7 +715,7 @@ impl App {
             );
             return None;
         }
-        let records = match self.deps.store.vault_agent(Some(&sandbox.id)).await {
+        let records = match self.applied_agent_secrets(&sandbox.id).await {
             Ok(records) => records,
             Err(err) => {
                 tracing::warn!(job = %job.id, error = %err, "agent secrets could not be read for a CI job");
@@ -727,9 +727,13 @@ impl App {
             let record = records.iter().find(|r| &r.name == name);
             match (record, SecretName::parse(name)) {
                 (Some(record), _) if record.cd_prod => production.push(name.as_str()),
-                (Some(_), Ok(parsed)) => {
+                (Some(record), Ok(parsed)) => {
                     plan.env.push((name.clone(), placeholder(&parsed)));
-                    given.push(name.as_str());
+                    given.push(if record.id == crate::vidoc_key::VIDOC_SECRET_ID {
+                        "VIDOC_API_KEY (the instance's Vidoc key)"
+                    } else {
+                        name.as_str()
+                    });
                 }
                 _ => missing.push(name.as_str()),
             }

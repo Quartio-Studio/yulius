@@ -11,13 +11,19 @@ use async_trait::async_trait;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
-    Creds, Harness, TestResult, admit_and_sign_in, call, configure_github_app, harness,
-    setup_superadmin_creds,
+    Creds, Harness, TestResult, admit_and_sign_in, call, configure_github_app, harness, mcp_tool,
+    perms, seed_live_attempt, seed_sandbox, seed_task, setup_superadmin_creds, tool_text,
 };
 use yulius_app::model::Secret;
+use yulius_app::ports::egress::{EgressDecision, EgressPolicy, EgressRequest};
+use yulius_app::ports::store::UserStore as _;
 use yulius_app::ports::store_ext::UpdateStore as _;
 use yulius_app::ports::vidoc::{VidocCheck, VidocConnector};
+use yulius_app::vidoc_key::VIDOC_HOST;
 use yulius_app::vidoc_key::VidocServices;
+use yulius_domain::ids::SandboxId;
+use yulius_domain::task::TaskStatus;
+use yulius_domain::vault::redact::redact_text;
 
 const SAVED: &str = "vidoc-saved-key-0123456789";
 const REPLACED: &str = "vidoc-replaced-key-0123456789";
@@ -294,5 +300,196 @@ async fn without_vidoc_services_the_key_is_simply_off() -> TestResult {
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert_eq!(r.body["configured"], false);
     assert!(h.app.vidoc_key().is_none());
+    Ok(())
+}
+
+const TOKEN_A: &str = "vidoc-task-token-a-0123456789abcdef";
+const TOKEN_B: &str = "vidoc-task-token-b-0123456789abcdef";
+const OWN: &str = "vidoc-project-own-key-0123456789";
+
+fn request(host: &str, headers: &[(&str, &str)]) -> EgressRequest {
+    EgressRequest {
+        host: host.into(),
+        port: 443,
+        path_and_query: "/v1/messages".into(),
+        headers: headers
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), v.as_bytes().to_vec()))
+            .collect(),
+    }
+}
+
+fn forwarded(decision: &EgressDecision, name: &str) -> Option<(String, Vec<String>)> {
+    match decision {
+        EgressDecision::Forward { headers, used, .. } => headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| String::from_utf8(v.clone()).ok())
+            .map(|v| (v, used.clone())),
+        EgressDecision::Refuse { .. } => None,
+    }
+}
+
+/// Sandboxes `s1` (no Vidoc secret of its own) and `s2` (its own `VIDOC_API_KEY`), each with a
+/// running task.
+async fn proxied(i: &Instance) -> TestResult {
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    seed_sandbox(&i.h, "s1", "app", alice.as_str()).await?;
+    seed_sandbox(&i.h, "s2", "other", alice.as_str()).await?;
+    i.h.github.set_perm("alice", "acme/app", perms("write"));
+    i.h.github.set_perm("alice", "acme/other", perms("write"));
+    seed_task(&i.h, "t1", "s1", alice.as_str(), TaskStatus::Running, None).await?;
+    seed_live_attempt(&i.h, "t1", TOKEN_A).await?;
+    seed_task(&i.h, "t2", "s2", alice.as_str(), TaskStatus::Running, None).await?;
+    seed_live_attempt(&i.h, "t2", TOKEN_B).await?;
+    let own = call(
+        &i.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"name": "VIDOC_API_KEY", "hosts": ["model.vidocsecurity.com"], "value": OWN})),
+        &i.alice,
+    )
+    .await?;
+    assert_eq!(own.status, StatusCode::CREATED, "{}", own.body);
+    Ok(())
+}
+
+/// VDK-005: the instance key is the virtual agent secret `VIDOC_API_KEY`: its placeholder is
+/// replaced toward model.vidocsecurity.com only, the value is redacted, `secrets_list` names it,
+/// a project's own `VIDOC_API_KEY` wins, and a CI job gets it only when granted.
+#[tokio::test]
+async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
+    let i = instance(Ok(None)).await?;
+    proxied(&i).await?;
+    let app: Arc<dyn EgressPolicy> = i.h.app.clone();
+    let s1 = app.egress_client(TOKEN_A).await.ok_or("s1 client")?;
+    let s2 = app.egress_client(TOKEN_B).await.ok_or("s2 client")?;
+    assert!(
+        !app.egress_intercepts(&s1, VIDOC_HOST, 443).await,
+        "no key: nothing to add"
+    );
+
+    api(
+        &i,
+        Method::PUT,
+        "/api/admin/vidoc",
+        Some(json!({ "key": SAVED })),
+        &i.admin,
+    )
+    .await?;
+    assert!(app.egress_intercepts(&s1, VIDOC_HOST, 443).await);
+    assert!(!app.egress_intercepts(&s1, "api.example.test", 443).await);
+    assert!(!app.egress_intercepts(&s1, VIDOC_HOST, 8443).await);
+    let placeholder = "yulius-secret-VIDOC_API_KEY";
+    let sent = app
+        .egress_apply(&s1, request(VIDOC_HOST, &[("x-api-key", placeholder)]))
+        .await;
+    assert_eq!(
+        forwarded(&sent, "x-api-key"),
+        Some((SAVED.to_owned(), vec!["VIDOC_API_KEY".to_owned()]))
+    );
+    assert_eq!(
+        forwarded(&sent, "authorization"),
+        None,
+        "nothing is added: the key replaces its placeholder only"
+    );
+    let redactor = app.egress_redactor(&s1).await;
+    let (redacted, _) = redact_text(redactor.as_ref(), &format!("echo {SAVED}"));
+    assert_eq!(redacted, "echo [secret:VIDOC_API_KEY]");
+
+    // A project's own key wins over the instance's.
+    let own = app
+        .egress_apply(&s2, request(VIDOC_HOST, &[("x-api-key", placeholder)]))
+        .await;
+    assert_eq!(
+        forwarded(&own, "x-api-key").map(|(v, _)| v).as_deref(),
+        Some(OWN)
+    );
+
+    // Replaced: in use at once, redaction too.
+    api(
+        &i,
+        Method::PUT,
+        "/api/admin/vidoc",
+        Some(json!({ "key": REPLACED })),
+        &i.admin,
+    )
+    .await?;
+    let sent = app
+        .egress_apply(&s1, request(VIDOC_HOST, &[("x-api-key", placeholder)]))
+        .await;
+    assert_eq!(
+        forwarded(&sent, "x-api-key").map(|(v, _)| v).as_deref(),
+        Some(REPLACED)
+    );
+    let (redacted, _) = redact_text(app.egress_redactor(&s1).await.as_ref(), REPLACED);
+    assert_eq!(redacted, "[secret:VIDOC_API_KEY]");
+
+    // Agents see it listed, without a value.
+    let listed = tool_text(&mcp_tool(&i.h, TOKEN_A, "secrets_list", json!({})).await?).to_string();
+    assert!(listed.contains("VIDOC_API_KEY"), "{listed}");
+    assert!(listed.contains("model.vidocsecurity.com"), "{listed}");
+    assert!(listed.contains("instance"), "{listed}");
+    assert!(!listed.contains(REPLACED), "{listed}");
+
+    // A CI job: only when granted.
+    let sid = SandboxId::parse("s1")?;
+    let granted =
+        i.h.app
+            .ci_egress_open(&sid, "run-1", "job-1", &["VIDOC_API_KEY".to_owned()])
+            .ok_or("credential")?;
+    let ci = app.egress_client(&granted).await.ok_or("ci client")?;
+    assert!(app.egress_intercepts(&ci, VIDOC_HOST, 443).await);
+    let sent = app
+        .egress_apply(&ci, request(VIDOC_HOST, &[("x-api-key", placeholder)]))
+        .await;
+    assert_eq!(
+        forwarded(&sent, "x-api-key").map(|(v, _)| v).as_deref(),
+        Some(REPLACED)
+    );
+    let other =
+        i.h.app
+            .ci_egress_open(&sid, "run-1", "job-2", &[])
+            .ok_or("credential")?;
+    let ci = app.egress_client(&other).await.ok_or("ci client")?;
+    assert!(!app.egress_intercepts(&ci, VIDOC_HOST, 443).await);
+
+    // Removed: nothing is added any more.
+    api(&i, Method::DELETE, "/api/admin/vidoc", None, &i.admin).await?;
+    assert!(!app.egress_intercepts(&s1, VIDOC_HOST, 443).await);
+    Ok(())
+}
+
+/// VDK-005: the instance key is never handed out in clear: no `.env` copy, and the Secrets page
+/// does not list it.
+#[tokio::test]
+async fn the_instance_key_is_never_handed_out_in_clear() -> TestResult {
+    let i = instance(Ok(Some(Secret(CONFIG.into())))).await?;
+    proxied(&i).await?;
+    let copied = mcp_tool(
+        &i.h,
+        TOKEN_A,
+        "secret_copy_to_env",
+        json!({"secrets": ["VIDOC_API_KEY"], "reason": "test"}),
+    )
+    .await?;
+    let text = tool_text(&copied).to_string();
+    assert!(!text.contains(CONFIG), "{text}");
+    let page = call(
+        &i.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &i.alice,
+    )
+    .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .as_array()
+            .is_some_and(|a| a.iter().all(|s| s["name"] != "VIDOC_API_KEY")),
+        "{}",
+        page.body
+    );
     Ok(())
 }

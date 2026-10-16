@@ -767,6 +767,59 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
     Ok(())
 }
 
+/// A Vidoc connector whose tests always pass (only the key in use matters here).
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// SPEC-195 VDK-005: with an instance Vidoc key, an agent run of a sandbox without its own
+/// `VIDOC_API_KEY` gets that variable as the placeholder (the egress proxy adds the key), never
+/// the key.
+#[test]
+fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
+    const KEY: &str = "vidoc-instance-key-for-runs-0123456789";
+    const PLACEHOLDER: &str = "yulius-secret-VIDOC_API_KEY";
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            report_env: vec!["VIDOC_API_KEY".into()],
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+            Arc::new(AnyVidoc),
+            Ok(Some(yulius_app::model::Secret(KEY.into()))),
+        ));
+        app.load_vidoc_key().await;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Scan").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV VIDOC_API_KEY=") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains(&format!("ENV VIDOC_API_KEY=set len={}", PLACEHOLDER.len())),
+            "{shown}"
+        );
+        assert!(!shown.contains(KEY), "{shown}");
+        Ok(())
+    })
+}
+
 /// SPEC-095 PMC-001/002/005: the servers of the repository's `.mcp.json` join the sandbox's MCP
 /// servers before the run, audited, and reach the run like any server configured in Yulius. One
 /// already configured (here turned off) is left as it is. Agents can write the file, so a variable

@@ -1566,6 +1566,59 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     Ok(())
 }
 
+/// A Vidoc connector whose tests always pass (the CI tests need only the key in use).
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// SPEC-195 VDK-005: a job granted `VIDOC_API_KEY` gets the instance key's placeholder when the
+/// sandbox has no such agent secret of its own, its output says where the key comes from, and the
+/// value never reaches it.
+#[tokio::test]
+async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() -> TestResult {
+    const INSTANCE_KEY: &str = "vidoc-instance-key-0123456789";
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = 'echo \"key=${VIDOC_API_KEY:-none} proxy=${HTTPS_PROXY:+set}\"'\n\n[[ci.jobs]]\nname = \"plain\"\ncommand = 'echo \"key=${VIDOC_API_KEY:-none}\"'\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("key=yulius-secret-VIDOC_API_KEY proxy=set"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] agent secrets: VIDOC_API_KEY (the instance's Vidoc key)"),
+        "{security}"
+    );
+    assert!(!security.contains(INSTANCE_KEY), "{security}");
+    let plain = output_of(&outputs, "plain")?;
+    assert!(
+        plain.contains("key=none"),
+        "an ungranted job gets nothing: {plain}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]
