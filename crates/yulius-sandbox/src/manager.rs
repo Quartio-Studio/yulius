@@ -1690,6 +1690,11 @@ while True:
         assert_eq!(off.adopt().await, 1);
         let refusing = front_of(&off).await.ok_or("no front")?;
         assert_eq!(refusing.mode, "refuse");
+        // Review round 3 (low): the reason reaches whoever asks for the front (the smoke).
+        assert_eq!(
+            off.docker_front("s1").await.and_then(|f| f.reason).as_deref(),
+            Some(DOCKER_OFF)
+        );
         assert!(
             !crate::holder::exists(again.pid),
             "the engine front was stopped"
