@@ -96,12 +96,16 @@ impl Front {
         bridge_forwards: &[u16],
         prepare: Prepare,
     ) -> io::Result<Self> {
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::create_dir_all(paths.docker_dir())?;
         let socket = paths.docker_socket();
         let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket)?;
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+        // Created 0660 by the umask, never chmod'ed by name: the engine (and a container binding
+        // the directory) can write it, and could put a link there between bind and chmod.
+        let mask = nix::sys::stat::Mode::from_bits_truncate(0o117);
+        let previous = nix::sys::stat::umask(mask);
+        let listener = UnixListener::bind(&socket);
+        nix::sys::stat::umask(previous);
+        let listener = listener?;
         let inode = std::fs::symlink_metadata(&socket)?.ino();
         let mut tasks = Vec::new();
         let mut supervisor = None;
@@ -366,6 +370,35 @@ mod tests {
             .await
             .map_err(|_| io::Error::other("no answer"))??;
         Ok(out)
+    }
+
+    /// The socket is 0660, and a link planted in the directory (which the engine can write) is
+    /// replaced, never followed.
+    #[tokio::test]
+    async fn the_socket_replaces_a_planted_link_and_is_group_only() -> io::Result<()> {
+        use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+        let dir = tempfile::tempdir()?;
+        let paths = StatePaths::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(paths.docker_dir())?;
+        let target = dir.path().join("secret");
+        std::fs::write(&target, "secret")?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
+        std::os::unix::fs::symlink(&target, paths.docker_socket())?;
+        let front = Front::start(
+            &paths,
+            &DockerServe::Refuse { reason: "r".into() },
+            &[],
+            ok(),
+        )?;
+        let meta = std::fs::symlink_metadata(paths.docker_socket())?;
+        assert!(meta.file_type().is_socket());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o660);
+        assert_eq!(
+            std::fs::metadata(&target)?.permissions().mode() & 0o777,
+            0o600
+        );
+        front.stop(Duration::from_secs(1)).await;
+        Ok(())
     }
 
     /// SPEC-196 DKL-002/005: without a possible engine, `docker` gets a Docker-API error with
