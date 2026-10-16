@@ -1383,6 +1383,17 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
             .await,
         Err(GitHubError::Forbidden { .. })
     ));
+    // A branch's head is read from GitHub (SPEC-184 BRH-001), and is gone with the branch.
+    assert_eq!(
+        client
+            .branch_head(&token, "acme", "app", "task/ci")
+            .await?,
+        fake.branch_sha("acme", "app", "task/ci")
+    );
+    assert!(
+        fake.branch_sha("acme", "app", "task/ci").is_some(),
+        "the branch exists before deletion"
+    );
     // Branch deletion: true once, false when already gone.
     assert!(
         client
@@ -1395,6 +1406,12 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
             .await?
     );
     assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
+    assert_eq!(
+        client
+            .branch_head(&token, "acme", "app", "task/ci")
+            .await?,
+        None
+    );
     Ok(())
 }
 
