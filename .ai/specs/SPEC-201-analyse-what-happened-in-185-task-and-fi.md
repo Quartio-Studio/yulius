@@ -117,10 +117,10 @@ installs them in its own sandbox, without a person or a host change.
   All four failed on the missing package names. The first longer briefing text (356, then
   311 bytes) also failed the section's 270-byte bound and two tight-budget tests, so the section
   was reworded to fit (266 bytes).
-- **Gate:** `scripts/dev ci` exit 0 at `4505a9dc` and, after review round 1, at `dfac3e1e` (2037
-  passed, 18 skipped, each time). An intermediate run at `600f97d2` failed `cargo fmt --check` on
-  the new smoke test, which was then formatted. The commit after `dfac3e1e` changes only this
-  spec.
+- **Gate:** `scripts/dev ci` exit 0 (2037 passed, 18 skipped, each time) at `4505a9dc`, at
+  `dfac3e1e` after review round 1, and at `7f41c191` after review round 2. An intermediate run
+  at `600f97d2` failed `cargo fmt --check` on the new smoke test, which was then formatted. The
+  commit after `7f41c191` changes only this spec.
 - **Security:** `scripts/dev security` exit 2: Vidoc refused the key (HTTP 401). The scan was
   **not run** (not passed). It sent nothing for the four changed code files.
 - **Review round 1** (fresh session, at `4505a9dc`): APPROVE, with four low findings in own code
