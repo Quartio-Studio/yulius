@@ -537,26 +537,31 @@ impl Manager {
         let (record, front) = (live.record.clone(), live.front_pid());
         let engine = self.cgroup_of(sandbox).map(|g| g.engine);
         let known = live.bound.clone();
-        let planned = tokio::task::spawn_blocking(move || {
-            crate::docker_bind::run_namespaces(
+        let (present, planned) = tokio::task::spawn_blocking(move || {
+            let found = crate::docker_bind::run_namespaces(
                 record.net_ns,
                 &[record.inner_pid, front],
                 &[record.mnt_ns],
                 engine.as_deref(),
-            )
-            .into_iter()
-            .filter(|(_, mnt)| known.get(mnt).is_none_or(|tries| *tries < BIND_TRIES))
-            .map(|(pid, mnt)| {
-                let plan = std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
-                    .map_or(crate::docker_bind::Plan::NotARun, |t| {
-                        crate::docker_bind::plan(&t)
-                    });
-                (pid, mnt, plan)
-            })
-            .collect::<Vec<_>>()
+            );
+            let present: Vec<u64> = found.iter().map(|(_, mnt)| *mnt).collect();
+            let planned: Vec<_> = found
+                .into_iter()
+                .filter(|(_, mnt)| known.get(mnt).is_none_or(|tries| *tries < BIND_TRIES))
+                .map(|(pid, mnt)| {
+                    let plan = std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
+                        .map_or(crate::docker_bind::Plan::NotARun, |t| {
+                            crate::docker_bind::plan(&t)
+                        });
+                    (pid, mnt, plan)
+                })
+                .collect();
+            (present, planned)
         })
         .await
         .unwrap_or_default();
+        // Namespaces that ended are forgotten (their inode numbers are reused).
+        live.bound.retain(|mnt, _| present.contains(mnt));
         let mut pids = Vec::new();
         for (pid, mnt, plan) in planned {
             if plan == crate::docker_bind::Plan::Bind {
