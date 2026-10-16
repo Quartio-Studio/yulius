@@ -187,10 +187,7 @@ async fn without_the_ruleset_the_agents_token_could_write_production() -> TestRe
 #[tokio::test]
 async fn the_adapter_reads_branch_heads_from_github() -> TestResult {
     let w = world().await?;
-    let installation = w
-        .adapter
-        .installation_token(&w.app, w.installation)
-        .await?;
+    let installation = w.adapter.installation_token(&w.app, w.installation).await?;
     for token in [&installation, &w.admin] {
         let dev = w.adapter.branch_sha(token, "acme", "app", "dev").await?;
         assert_eq!(dev, Some(w.dev.clone()));

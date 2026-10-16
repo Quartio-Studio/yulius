@@ -1385,9 +1385,7 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
     ));
     // A branch's head is read from GitHub (SPEC-184 BRH-001), and is gone with the branch.
     assert_eq!(
-        client
-            .branch_head(&token, "acme", "app", "task/ci")
-            .await?,
+        client.branch_head(&token, "acme", "app", "task/ci").await?,
         fake.branch_sha("acme", "app", "task/ci")
     );
     assert!(
@@ -1407,9 +1405,7 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
     );
     assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
     assert_eq!(
-        client
-            .branch_head(&token, "acme", "app", "task/ci")
-            .await?,
+        client.branch_head(&token, "acme", "app", "task/ci").await?,
         None
     );
     Ok(())
