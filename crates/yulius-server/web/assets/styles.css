@@ -119,6 +119,8 @@ p { margin: 0; }
 .field-note { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--ok-fg); }
 .check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: var(--lh); }
 .check input { margin: 2px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+/* What a destructive choice of a dialog does, said before it happens (SPEC-171). */
+.purge-warning { color: var(--danger-fg); margin: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 
 .switch { position: relative; display: inline-flex; width: 30px; height: 17px; flex: none; }
@@ -299,6 +301,14 @@ p { margin: 0; }
 .tab:hover { color: var(--text); text-decoration: none; background: var(--surface); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); background: var(--surface); }
 .tab.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+/* The grip says a sandbox tab drags (SPEC-167, as the Notes tabs' in SPEC-136): faint at rest, the
+   tab's colour when it is hovered or current, 8 px from the edge and 4 px from the name; hidden
+   without a mouse or pen. */
+.tab-grip { display: inline-flex; flex: none; margin: 0 -2px 0 -4px; color: var(--text-faint); cursor: grab; }
+.tab:hover .tab-grip, .tab.active .tab-grip { color: currentColor; }
+@media not (any-pointer: fine) {
+  .tab-grip { display: none; }
+}
 .tab-name { overflow: hidden; text-overflow: ellipsis; }
 .tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
 .tab-running { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; }
@@ -384,6 +394,8 @@ button.task-group-head:hover { color: var(--text); }
 /* Done's "Archive all" (SPEC-062) sits after the count; it reads as a button, not a heading. */
 .task-group-action { margin-right: -8px; text-transform: none; letter-spacing: normal; font-weight: 500; }
 .task-group-action[aria-disabled="true"] { opacity: 0.4; cursor: progress; }
+/* Working's "Show as a graph" (SPEC-164): an icon after the count. */
+.task-group-graph { width: 24px; height: 24px; margin-left: 4px; color: var(--muted); }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
    the nav labels' axis, age (the kebab takes the age's place on hover). */
 .task-row { position: relative; border-radius: var(--radius); }
@@ -405,6 +417,8 @@ button.task-group-head:hover { color: var(--text); }
 .task-chips .tl-pr-chip { padding: 0 6px; }
 .task-title { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); }
 .task-group.group-ended .task-row:not(:hover):not(.active) .task-link { color: var(--muted); }
+.task-owner { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 4px; border-radius: var(--radius-full); background: var(--surface-3); color: var(--text); font-size: var(--fs-xs); line-height: 1; font-weight: 600; letter-spacing: 0.02em; }
+.task-owner[hidden] { display: none; }
 .task-age { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
 .task-kebab { position: absolute; right: 6px; top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 /* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
@@ -600,7 +614,7 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .status-count { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .status-count.live { color: var(--text); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
-.account-list { display: flex; flex-direction: column; gap: 8px; }
+.account-list { display: flex; flex-direction: column; gap: 8px; container: accounts / inline-size; }
 /* One account: avatar, who, plan and state; usage windows as horizontal rows (ROT-009). */
 .account-card, .account-fold { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); }
 /* Off or paused things dim their graphics, never their text below 4.5:1 (WCAG 1.4.3). */
@@ -625,8 +639,18 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .state-warn { background: var(--warn-soft); color: var(--warn-fg); }
 .state-danger { background: var(--danger-soft); color: var(--danger-fg); }
 .state-muted { background: var(--surface-3); color: var(--muted); }
-.account-glance { display: flex; align-items: center; gap: 8px; width: 96px; flex: none; }
-.account-glance .meter { flex: 1; }
+/* Folded, both windows at a glance (SPEC-172): one grid, so the two bars line up. */
+.account-glance { display: grid; grid-template-columns: auto 64px minmax(4ch, auto); align-items: center; column-gap: 8px; row-gap: 2px; flex: none; }
+.glance-line { display: contents; }
+.glance-name { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
+.account-glance .usage-pct { font-size: var(--fs-xs); line-height: var(--lh-xs); }
+/* Beside the glance, a folded row's state shows as its icon where the list is narrow; its name still reads it. */
+@container accounts (width < 480px) {
+  .account-fold .account-state { padding: 0 6px; }
+  .account-fold .account-state-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+/* A narrow list (the Status panel on a phone) keeps the names and percents and gives the bars' room to the name. */
+@container accounts (width < 360px) { .account-glance { grid-template-columns: auto minmax(4ch, auto); } .account-glance .meter { display: none; } }
 .account-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
 .account-card .account-body { padding-top: 0; }
 /* On the Accounts page the block already sits in a card. */
@@ -1100,8 +1124,18 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .queue-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 .queue-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .queue-request { margin: 0; padding: 8px 12px; max-height: 140px; overflow: auto; border-left: 2px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; }
-.queue-compose { display: flex; align-items: flex-end; gap: 8px; }
-.queue-input { flex: 1; min-width: 0; height: auto; min-height: var(--control-xl); padding: 6px 8px; resize: vertical; font: inherit; }
+.queue-compose { position: relative; display: flex; align-items: flex-end; gap: 8px; }
+/* A file of the request (SPEC-168): the composer's placeholder, a button that opens it. */
+.queue-request .queue-file { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
+.queue-request .queue-file:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
+/* The message box: the composer's prompt input (SPEC-168), drawn as the card's field. */
+.queue-card .queue-input {
+  flex: 1; min-width: 0; min-height: var(--control-xl); max-height: 160px; padding: 6px 8px;
+  border: 1px solid var(--border-control); border-radius: var(--radius); background: var(--bg);
+  font-size: inherit; line-height: inherit;
+}
+.queue-card .queue-input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); outline: 2px solid transparent; outline-offset: 1px; }
+.queue-compose .upload-status-float { top: auto; bottom: calc(100% + 8px); left: 0; }
 .queue-card .field-error:empty { display: none; }
 /* A waiting task has no session to send keys to: the phone's quick input gives way to the card. */
 .taskview:has(.queue-slot:not([hidden])) .quickbar { display: none; }
@@ -1211,9 +1245,12 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-chart { height: 160px; border-radius: var(--radius); }
 .skeleton-spark { border-radius: var(--radius-sm); }
 .skeleton-button { flex: none; width: 72px; height: var(--control-md); border-radius: var(--radius); }
+.skeleton-button-sm { height: var(--control-sm); }
 .skeleton-dot { display: block; flex: none; width: 16px; height: 16px; border-radius: 50%; }
 .tl-chips-loading { display: flex; gap: 8px; }
 .tl-chips-loading[hidden] { display: none; }
+/* A radio in a choice row (SHAPES.rows): about the room Chrome's radio takes with its margins. */
+.skeleton-radio { flex: none; width: 12px; height: 12px; margin: 4px; border-radius: 50%; }
 .skeleton-chip { width: 88px; height: var(--control-lg); border-radius: var(--radius-full); }
 .tl-tabs[aria-busy="true"] .tl-tab { cursor: default; }
 .tl-tabs[aria-busy="true"] .tl-tab:hover { background: transparent; color: var(--text-2); }
@@ -1249,8 +1286,10 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* A narrow centre (a tool panel open beside it): the step name, then the state and count give way,
    so the strip's parts never overlap (UI-046). */
 @container strip (max-width: 560px) {
-  .step-progress { width: 60px; }
-  .step-current, .strip-extra { display: none; }
+  /* `.stepstrip` outranks the base rules that come later (they kept the bar at 120 px and the
+     chips' box shown, #348). */
+  .stepstrip .step-progress { width: 60px; }
+  .step-current, .stepstrip .strip-extras { display: none; }
 }
 @container strip (max-width: 420px) {
   .strip-state, .step-count { display: none; }
@@ -1283,6 +1322,10 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }
 .strip-extras { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .strip-extras:empty { display: none; }
+/* Parts that gave way so the strip keeps within its edge (#348, fitStrip in taskview.js); while
+   the chips decide, the state keeps its words, so chips go first. */
+.stepstrip-main .strip-gone { display: none; }
+.strip-fitting .strip-status { flex-shrink: 0; }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; min-width: 30px; max-width: 40%; height: var(--control-sm); padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
 .strip-status .glyph { flex: none; }
 .strip-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1456,6 +1499,13 @@ span.composer-attachment-open { cursor: default; }
 .pi-pending { border-style: dashed; cursor: progress; }
 .pi-spinner { flex: none; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin var(--duration-spin) linear infinite; }
 .pi-dragging { opacity: 0.4; }
+/* A file in the selection is chosen as a whole (#535): its label is never painted as selected text,
+   the placeholder takes the selection's colour instead. */
+.pi-atom::selection, .pi-atom ::selection { background: transparent; }
+.pi-atom.pi-selected { border-color: var(--accent); background: var(--selection); color: var(--text); }
+@media (forced-colors: active) {
+  .pi-atom.pi-selected { outline: 2px solid Highlight; }
+}
 .pi-preview-image { display: block; max-width: 100%; max-height: 160px; border-radius: var(--radius); }
 .pi-preview-file { display: inline-flex; max-width: min(240px, 100%); margin: 2px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; vertical-align: middle; cursor: zoom-in; }
 .pi-preview-after { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
@@ -1477,14 +1527,14 @@ span.composer-attachment-open { cursor: default; }
 .prompt-file.image { flex-direction: column; align-items: stretch; width: 96px; }
 .prompt-file-name { overflow: hidden; font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
 .prompt-file.image .prompt-file-name { font-size: var(--fs-xs); }
-.prompt-thumb { width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
+.prompt-thumb { position: relative; width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
 .prompt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .prompt-file.gone { opacity: 0.8; }
 /* A file inside the text (SPEC-124) sits in the line, where it was put. */
 .prompt-file.inline { display: inline-flex; max-width: 100%; margin: 2px; vertical-align: middle; }
-.prompt-file.image.inline { width: auto; }
-.prompt-file.inline .prompt-thumb { width: auto; min-width: 48px; max-width: min(240px, 100%); height: auto; min-height: 36px; }
-.prompt-file.inline .prompt-thumb img { width: auto; max-width: 100%; height: auto; max-height: 160px; object-fit: contain; }
+/* An image inside the text is the composer's one-line placeholder (SPEC-180), opened by a click. */
+.prompt-text .prompt-atom { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
+.prompt-text .prompt-atom:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
 .attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 /* The box shows focus; the prompt itself draws no ring (the global :focus-visible would). */
 .composer-prompt:focus-visible { box-shadow: none; }
@@ -1685,7 +1735,8 @@ summary { cursor: pointer; }
 .tl-pr, .tl-avatar, .tl-time, .tl-actions { position: relative; z-index: var(--z-raised); }
 .tl-avatar, .tl-time { pointer-events: none; }
 .tl-pr { display: flex; justify-content: flex-end; }
-.tl-pr-chip { display: inline-flex; align-items: center; gap: 4px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; text-decoration: none; }
+/* One line at its fixed height: squeezed in a crowded strip, "PR #523" broke over its pill (#542). */
+.tl-pr-chip { display: inline-flex; align-items: center; gap: 4px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; text-decoration: none; white-space: nowrap; }
 .tl-pr-chip:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .tl-pr-chip.merged { border-color: var(--violet-border); color: var(--violet-fg); }
 .tl-pr-chip.closed { color: var(--muted); }
@@ -1712,6 +1763,47 @@ summary { cursor: pointer; }
 .tl-find { display: inline-flex; align-items: center; gap: 8px; height: var(--control-lg); padding: 0 8px; border: 0; border-radius: var(--radius); background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; }
 .tl-find:hover { background: var(--surface-2); color: var(--text); }
 .tl-find-text { display: inline-flex; align-items: center; gap: 4px; }
+/* The Tasks page's Graph (SPEC-164): sections of open tasks; the linked ones drawn as cards over
+   an SVG of arrows, in a frame that scrolls by itself so the page never scrolls sideways. */
+.tl-view label { height: var(--control-lg); }
+.tg { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.tg-section { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 12px 16px 16px; min-width: 0; }
+.tg-head { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.tg-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.tg-sub { margin: 4px 0 12px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tg-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.tg-queue-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tg-pos { flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--surface-3); color: var(--text-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.tg-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: var(--control-lg); padding: 0 8px; border-radius: var(--radius); color: var(--text); text-decoration: none; }
+.tg-item:hover { background: var(--surface-2); }
+.tg-item:focus-visible, .tg-node:focus-visible, .tg-frame:focus-visible { outline: none; box-shadow: var(--focus); }
+.tg-mark { flex: none; display: inline-flex; }
+.tg-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tg-item .tg-title { flex: 0 1 auto; }
+.tg-words { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tg-item .tg-words { margin-left: auto; padding-left: 12px; flex: 0 1 auto; }
+.tg-frame { overflow: auto; max-height: 70vh; padding: 4px; border-radius: var(--radius); }
+.tg-canvas { position: relative; }
+.tg-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.tg-edge { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.tg-edge-rule { stroke-dasharray: 6 4; }
+.tg-edge-hold { stroke-dasharray: 1.5 3.5; stroke-linecap: round; }
+.tg-arrowhead { fill: var(--muted); }
+.tg-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); color: var(--text); text-decoration: none; }
+a.tg-node:hover { border-color: var(--accent); }
+.tg-node-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tg-node[data-tone="attention"] { border-color: var(--warn-fg); }
+.tg-supertask { border-width: 2px; }
+.tg-context { opacity: 0.6; }
+.tg-ghost { border-style: dashed; background: transparent; color: var(--muted); }
+.tg-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0 0; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tg-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.tg-legend-line { overflow: visible; }
+@container (max-width: 520px) {
+  .tg-item { flex-wrap: wrap; height: auto; min-height: var(--control-lg); padding: 6px 8px; row-gap: 2px; }
+  .tg-item .tg-words { flex-basis: 100%; margin-left: 0; padding-left: 0; }
+}
+.tg-section { container-type: inline-size; }
 .kbd-on-accent { margin-left: 4px; border-color: transparent; background: var(--accent-strong); color: var(--accent-ink); }
 @media (max-width: 767px) {
   /* The Tasks toolbar's order on phones; filter tabs elsewhere (Secrets, MCP, Sessions) stay where they are. */
@@ -2119,6 +2211,8 @@ a.dl-task:hover { text-decoration: underline; }
   .task-quick-archive { display: none; }
   .task-group-head.group-done { height: var(--control-xl); }
   .task-group-action { height: var(--control-xl); padding: 0 12px; }
+  .task-group-head.group-working { height: var(--control-xl); }
+  .task-group-graph { width: var(--control-xl); padding: 0; }
   .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
   .nav-item { height: var(--control-xl); }
 
@@ -2131,7 +2225,7 @@ a.dl-task:hover { text-decoration: underline; }
   .quickbar { display: flex; }
   .step-progress { width: 60px; }
   /* Phones: the task title keeps the strip; state shows as its icon, the step as the bar (UX2-06). */
-  .strip-state, .strip-extra, .step-count { display: none; }
+  .strip-state, .strip-extras, .step-count { display: none; }
   .step-current { display: none; }
   .stepstrip-toggle { min-width: 0; }
   .composer { padding-top: 16px; }
@@ -2156,7 +2250,9 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-root { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(120px, min(var(--ed-side-w, max(160px, 22%)), calc(100% - 240px))) minmax(0, 1fr); }
 .ed-side { position: relative; z-index: var(--z-raised); display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--border); background: var(--surface); }
 .ed-tree-head { display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; font-size: var(--fs-xs); line-height: var(--lh-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--border); }
-.ed-tree-head > span { flex: 1; }
+/* The label gives way at the Explorer's narrowest (EDT-013): it shortens, the buttons never leave. */
+.ed-tree-head > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-tree-head > button { flex: none; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font-size: var(--fs); line-height: var(--lh); }
 .ed-row { display: flex; align-items: center; gap: 4px; height: var(--control-sm); padding-right: 8px; white-space: nowrap; cursor: pointer; user-select: none; }
 .ed-row:hover { background: var(--overlay-hover); }
@@ -2262,6 +2358,7 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-empty[hidden] { display: none; }
 .ed-status { display: flex; gap: 12px; align-items: center; height: 22px; padding: 0 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); border-top: 1px solid var(--border); background: var(--surface); flex: none; overflow: hidden; white-space: nowrap; }
 .ed-status > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.ed-status > .ed-disk-changed { color: var(--warn-fg); }
 /* Dropped files (EDT-006, UI-048): the drop overlay says where files go (or why they cannot),
    the explorer marks the folder under the pointer, and a batch shows its progress and errors —
    at the foot of the explorer, or floating over a terminal. */
@@ -2481,6 +2578,69 @@ button.task-group-head:hover { color: var(--text); }
   .ss-summary { margin-left: 0; }
 }
 
+/* Someone else's task, watched as its live transcript (watchview.js, SPEC-179): the session well of
+   the Sessions view in the terminal's place, scrolling on its own, the newest lines at the bottom. */
+/* The terminal's own colours, not a past session's faded ones (WAT-004). */
+.ss-live { --session-bg: var(--term-bg); --session-fg: var(--term-fg); --session-dim: var(--ansi-bright-black); --session-ok: var(--ansi-green); --session-err: var(--ansi-red); --session-border: var(--border); --session-prompt-bg: var(--live-prompt-bg); --session-add-bg: var(--live-add-bg); --session-del-bg: var(--live-del-bg); }
+/* Watching, the control card sits above the transcript, in the flow: it covers no line (WAT-005). */
+.taskview-term.watching > .attention-bar { position: relative; top: auto; right: auto; order: -1; flex: none; align-self: stretch; max-width: none; margin: 8px 16px; box-shadow: none; }
+/* A size container named as a page is, so the session well's narrow layout applies here too. */
+.watch { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; container: page / inline-size; }
+.watch-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
+.watch-scroll:focus-visible { outline: none; box-shadow: var(--focus-inset); }
+.watch .ss-tui { flex: 1 0 auto; border-top: 0; }
+.watch-earlier { position: relative; margin: 0 0 12px; font-family: var(--font); }
+.watch-earlier[hidden], .watch-empty[hidden], .watch-working[hidden], .watch-jump[hidden] { display: none; }
+.watch-empty { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 48px 24px; text-align: center; font-family: var(--font); }
+.watch-working { position: relative; margin-top: 12px; padding: 0 1ch; }
+.watch-working-text { color: transparent; background: linear-gradient(100deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; animation: shimmer var(--duration-pulse) linear infinite; }
+.watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
+/* The octopus's lane (octopus.js, WAT-006): stuck to the top of the scrolling transcript across the
+   whole well, opaque, so the octopus covers no line; text scrolling under it fades out. */
+.watch-lane { position: sticky; top: 0; z-index: var(--z-sticky); height: 80px; margin: -16px -32px 8px; background: var(--session-bg); pointer-events: none; }
+.watch-lane::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px; background: linear-gradient(var(--session-bg), transparent); }
+.octo { position: absolute; top: 6px; left: 0; width: 96px; height: 72px; padding: 0 8px; box-sizing: content-box; will-change: transform; } /* 2 px pixels */
+.octo-sprite { display: block; width: 96px; height: 72px; overflow: visible; filter: drop-shadow(0 0 6px var(--octo-aura)); }
+.octo-ink { fill: var(--octo-ink); }
+.octo-body { fill: var(--octo-body); }
+.octo-shade { fill: var(--octo-shade); }
+.octo-glow { fill: var(--octo-glow); }
+.octo-sucker { fill: var(--octo-sucker); }
+.octo-eye, .octo-mouth { fill: var(--octo-eye); }
+/* One arm frame shows at a time: crawling, four fast ones; resting, four slow ones; waving, two.
+   Frame n shows for the n-th quarter (half) of the loop: a delay shifts each into its place. */
+.octo-frame { visibility: hidden; }
+@keyframes octo-frame-4 { 0% { visibility: visible; } 25%, 100% { visibility: hidden; } }
+@keyframes octo-frame-2 { 0% { visibility: visible; } 50%, 100% { visibility: hidden; } }
+.octo.is-crawling .octo-crawl { animation: octo-frame-4 var(--duration-octo-crawl) step-end infinite; }
+.octo.is-resting:not(.is-waving) .octo-rest { animation: octo-frame-4 var(--duration-octo-rest) step-end infinite; }
+.octo.is-waving .octo-wave { animation: octo-frame-2 var(--duration-octo-wave) step-end infinite; }
+.octo.is-crawling .octo-crawl-1 { animation-delay: calc(var(--duration-octo-crawl) * -0.75); }
+.octo.is-crawling .octo-crawl-2 { animation-delay: calc(var(--duration-octo-crawl) * -0.5); }
+.octo.is-crawling .octo-crawl-3 { animation-delay: calc(var(--duration-octo-crawl) * -0.25); }
+.octo.is-resting:not(.is-waving) .octo-rest-1 { animation-delay: calc(var(--duration-octo-rest) * -0.75); }
+.octo.is-resting:not(.is-waving) .octo-rest-2 { animation-delay: calc(var(--duration-octo-rest) * -0.5); }
+.octo.is-resting:not(.is-waving) .octo-rest-3 { animation-delay: calc(var(--duration-octo-rest) * -0.25); }
+.octo.is-waving .octo-wave-1 { animation-delay: calc(var(--duration-octo-wave) * -0.5); }
+/* Crawling, its arms push on every other frame: the head rises a pixel with them. */
+.octo.is-crawling .octo-head { animation: octo-bob var(--duration-octo-crawl) step-end infinite; }
+@keyframes octo-bob { 0%, 50% { transform: none; } 25%, 75% { transform: translateY(-1px); } }
+/* Its eyes look where it goes, and blink now and then; its arms ripple the way it crawls. */
+.octo.is-left .octo-look { transform: translateX(-0.5px); }
+.octo.is-right .octo-look { transform: translateX(0.5px); }
+.octo-eyes { transform-box: fill-box; transform-origin: center; animation: octo-blink var(--duration-octo-blink) step-end infinite; }
+@keyframes octo-blink { 0%, 94% { transform: none; } 95%, 97% { transform: scaleY(0.25); } 98%, 100% { transform: none; } }
+.octo.is-left .octo-arms { transform-box: view-box; transform-origin: 50% 0; transform: scaleX(-1); }
+@media (prefers-reduced-motion: reduce) {
+  .octo .octo-frame, .octo .octo-head, .octo .octo-eyes { animation: none; }
+  .octo .octo-rest-0 { visibility: visible; }
+}
+@container page (max-width: 640px) {
+  .watch-lane { height: 62px; margin: -12px -12px 8px; }
+  .octo, .octo-sprite { width: 72px; height: 54px; } /* 1.5 px pixels */
+}
+@media (prefers-reduced-motion: reduce) { .watch-working-text { animation: none; color: var(--session-dim); background: none; } }
+
 /* instance updates (updates.js, pages/instance.js; SPEC-002 ADR-18) and the Jev key (jevkey.js) */
 .update-banner { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: min(460px, 36vw); height: var(--control-md); padding: 0 6px 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .update-banner[hidden] { display: none; }
@@ -2593,25 +2753,52 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 
 /* Stages (SPEC-137): the waterfall of one run, task or deployment, and the Pipeline page. */
-.st-waterfall { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.st-waterfall { display: flex; flex-direction: column; gap: 8px; min-width: 0; container-type: inline-size; }
 .st-head { display: flex; align-items: center; gap: 8px; }
 .st-title { margin: 0; font-size: var(--fs); line-height: var(--lh); font-weight: 600; }
 .st-plot { position: relative; }
-.st-rows { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
-.st-row { display: grid; grid-template-columns: minmax(96px, 30%) minmax(0, 1fr) 84px; align-items: center; gap: 8px; min-height: 24px; border-radius: var(--radius-sm); }
+.st-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.st-row, .st-axis { display: grid; grid-template-columns: minmax(96px, 30%) minmax(0, 1fr) 100px; align-items: center; gap: 8px; }
+.st-row { min-height: 26px; border-radius: var(--radius-sm); }
 .st-row:hover { background: var(--surface-2); }
-.st-group { margin-top: 8px; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; }
+.st-group { margin-top: 8px; padding-bottom: 2px; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; }
 .st-name { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.st-name .icon { flex: none; color: var(--danger-fg); }
+.st-name > .icon { flex: none; color: var(--muted); }
+.st-fold { width: 100%; margin: 0; border: 0; border-radius: var(--radius-sm); background: none; font: inherit; text-align: left; cursor: pointer; }
+.st-fold:hover .st-name-text { color: var(--text); }
+.st-fold:focus-visible { box-shadow: var(--focus-inset); outline: 2px solid transparent; outline-offset: -2px; }
+.st-fold-space { flex: none; width: 12px; }
+.st-mark { display: inline-flex; flex: none; color: var(--muted); }
+.st-mark-passed { color: var(--ok); }
+.st-mark-running { color: var(--accent); }
+.st-mark-failed, .st-mark-error { color: var(--danger-fg); }
+.st-mark-skipped { color: var(--warn-fg); }
 .st-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.st-track { position: relative; height: 12px; }
-.st-bar { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: var(--radius-sm); background: var(--series-1); }
+.st-count { flex: none; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
+/* Each track carries the axis's gridlines, one every tick (SPEC-165 STR-005). */
+.st-track { position: relative; align-self: stretch; min-height: 26px; background: repeating-linear-gradient(to right, var(--grid) 0 1px, transparent 1px var(--st-step, 100%)); }
+.st-bar { position: absolute; top: 50%; height: 12px; min-width: 2px; transform: translateY(-50%); border-radius: var(--radius-sm); background: var(--series-1); }
 .st-bar-wait { background: repeating-linear-gradient(135deg, var(--text-faint) 0 2px, transparent 2px 5px); box-shadow: inset 0 0 0 1px var(--text-faint); }
+.st-bar-lead { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.st-bar-tail { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .st-bar-failed { background: var(--danger); }
 .st-bar-running { background: var(--accent); opacity: 0.7; }
+/* A wait still running keeps the wait's look, which the legend names "Waiting". */
+.st-bar-wait.st-bar-running { background: repeating-linear-gradient(135deg, var(--text-faint) 0 2px, transparent 2px 5px); opacity: 1; }
+.st-bar-skipped { background: transparent; box-shadow: inset 0 0 0 1px var(--text-faint); }
 .st-bar-backfilled { opacity: 0.6; }
-.st-took { color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.st-took { display: flex; flex-direction: column; color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .st-took-failed { color: var(--danger-fg); }
+.st-waited { color: var(--muted); }
+.st-axis-ticks { position: relative; height: 16px; }
+.st-tick { position: absolute; top: 0; transform: translateX(-50%); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.st-tick:first-child { transform: none; }
+.st-tick-now { transform: translateX(-100%); color: var(--accent); }
+.st-swatch { display: inline-block; width: 16px; height: 10px; border-radius: var(--radius-sm); background: var(--series-1); }
+.st-swatch.st-bar-wait { background: repeating-linear-gradient(135deg, var(--text-faint) 0 2px, transparent 2px 5px); }
+.st-swatch.st-bar-failed { background: var(--danger); }
+.st-swatch.st-bar-running { background: var(--accent); opacity: 0.7; }
+.st-swatch.st-bar-skipped { background: transparent; box-shadow: inset 0 0 0 1px var(--text-faint); }
 .st-tip { transform: translate(-50%, calc(-100% - 8px)); }
 .st-tip span { display: block; }
 .st-chart { min-height: 220px; }
@@ -2635,4 +2822,12 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .pl-failed { color: var(--danger-fg); }
 .run-stages { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 @container (max-width: 820px) { .pl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@container (max-width: 520px) { .st-row { grid-template-columns: minmax(80px, 38%) minmax(0, 1fr) 64px; } }
+/* Narrow (a phone): the name and its figures on one line, the bar under them at full width. */
+@container (max-width: 520px) {
+  .st-row, .st-axis { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; }
+  .st-row { padding-top: 4px; }
+  .st-row > .st-took { grid-row: 1; grid-column: 2; flex-direction: row; gap: 6px; }
+  .st-row > .st-track { grid-row: 2; grid-column: 1 / -1; min-height: 18px; }
+  .st-axis > :first-child, .st-axis > :last-child { display: none; }
+  .st-axis-ticks { grid-column: 1 / -1; }
+}

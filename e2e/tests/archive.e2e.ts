@@ -207,12 +207,32 @@ test('the keyboard stays on its control when the sidebar list is rebuilt', async
   await expect(screen.getByRole('region', 'Done').getByRole('link', /Start the preview server/)).toBeVisible();
   await expect(link).toBeFocused();
 
-  // After a quick Archive the keyboard moves to the next row of the group.
+  // After a quick Archive the keyboard moves to the next row of the group: a task's link (#331).
   await browser.locator('.task-row:has-text("Start the preview server")').hover();
-  const quick = screen.getByRole('button', /Archive task #(13|14)/).first();
-  const name = await quick.getAttribute('aria-label');
+  const quick = screen.getByRole('button', 'Archive task #14');
   await quick.focus();
   await browser.keyboard.press('Enter');
-  await expect(screen.getByText(`Task ${name!.replace('Archive task ', '')} archived.`)).toBeVisible();
-  await expect.poll(() => browser.evaluate(() => document.activeElement?.closest('.task-group')?.getAttribute('aria-label'))).toBe('Done');
+  await expect(screen.getByText('Task #14 archived.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => {
+    const el = document.activeElement;
+    return el?.matches('.task-link') ? el.closest('.task-group')?.getAttribute('aria-label') ?? null : null;
+  })).toBe('Done');
+});
+
+// #331: the keyboard on a stopped row's quick Archive, and the task is continued (from another
+// tab, an agent): the button hides as its row moves to Working, and the keyboard goes to the row's
+// link instead of falling to the page.
+test('the keyboard on a quick Archive that hides moves to its row’s link', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  const stopped = screen.getByRole('region', 'Stopped');
+  await expect(stopped.getByRole('link', /Payment webhook/)).toBeVisible();
+  await browser.locator('.task-row:has-text("Payment webhook")').hover();
+  const quick = screen.getByRole('button', 'Archive task #4');
+  await quick.focus();
+  await expect(quick).toBeFocused();
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 4, { status: 'running', activity: 'working' }));
+  const link = screen.getByRole('region', 'Working').getByRole('link', /Payment webhook/);
+  await expect(link).toBeVisible();
+  await expect(link).toBeFocused();
 });

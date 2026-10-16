@@ -411,14 +411,7 @@ impl App {
         // One pass per sandbox at a time (SPEC-084 TRN-010): a pass that read a branch as up to
         // date while another merged into its base had its merge refused as behind, and the
         // armed merge was dropped.
-        let pass = {
-            let mut passes = self
-                .ci
-                .armed_passes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(passes.entry(sandbox.as_str().to_owned()).or_default())
-        };
+        let pass = self.armed_pass(sandbox);
         let _pass = pass.lock().await;
         self.run_merge_train(sandbox).await;
         let Ok(tasks) = self.deps.store.tasks(sandbox, false).await else {
@@ -443,6 +436,17 @@ impl App {
                 self.armed_wait_ended(&task.id, &deciding.merge).await;
             }
         }
+    }
+
+    /// The lock of `sandbox`'s armed-merge passes (SPEC-084 TRN-010), which a playground's merges
+    /// also hold (SPEC-163): one decision of its merges at a time. Not reentrant.
+    pub(crate) fn armed_pass(&self, sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut passes = self
+            .ci
+            .armed_passes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(passes.entry(sandbox.as_str().to_owned()).or_default())
     }
 
     /// Merges one armed task when its checks passed; says whether to keep waiting or how it
@@ -497,18 +501,25 @@ impl App {
             session_hash: None,
         };
         let id = task.id.to_string();
-        let Ok(view) = self.task_delivery(&auth, &id).await else {
-            return Verdict::Keep(armed);
-        };
-        let Some(pr) = view.pr.as_ref() else {
-            return Verdict::Keep(armed);
-        };
         let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
             return Verdict::Decided(
                 "The merge you armed was dropped: the project's sandbox could not be read. Check \
                  `delivery_status` and call `delivery_merge` again."
                     .to_owned(),
             );
+        };
+        // A playground has no pull request: its run of the head merged into the integration
+        // branch decides (SPEC-163 PCI-003).
+        if sandbox.is_playground() {
+            return self
+                .merge_armed_playground(task, &auth, &sandbox, armed)
+                .await;
+        }
+        let Ok(view) = self.task_delivery(&auth, &id).await else {
+            return Verdict::Keep(armed);
+        };
+        let Some(pr) = view.pr.as_ref() else {
+            return Verdict::Keep(armed);
         };
         // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
         // merges it itself.
@@ -595,6 +606,79 @@ impl App {
                 short(&armed.head),
                 err.public_message()
             )),
+        }
+    }
+
+    /// Decides a playground task's armed merge (SPEC-163 PCI-003), the reviewed head being its head:
+    /// squashed once Yulius CI passed on it merged into the integration branch as it is now (a new
+    /// merge is built and tested when that branch moved), kept while the run goes, dropped with
+    /// why when it failed, conflicts or is refused.
+    async fn merge_armed_playground(
+        &self,
+        task: &TaskRecord,
+        auth: &AuthContext,
+        sandbox: &crate::model::SandboxRecord,
+        armed: ArmedMerge,
+    ) -> Verdict {
+        use crate::delivery::playground::PlaygroundMerge;
+        use yulius_domain::delivery::DeliveryStage;
+        let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        // Merged meanwhile (a person's merge): nothing is left to decide.
+        if matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
+        ) {
+            return Verdict::Decided(format!(
+                "Your branch is already merged into `{integration}`: nothing is left armed. End \
+                 with your summary."
+            ));
+        }
+        match self
+            .playground_merge(&auth.user, task, Some(&armed.head), true)
+            .await
+        {
+            Ok(PlaygroundMerge::Testing(..)) => Verdict::Keep(armed),
+            Ok(PlaygroundMerge::Merged(_)) => {
+                let detail = format!(
+                    "playground: squashed at head {} reviewed independently ({}); armed while the \
+                     checks ran",
+                    armed.head,
+                    if armed.summary.is_empty() {
+                        "no summary"
+                    } else {
+                        armed.summary.as_str()
+                    }
+                );
+                if let Err(err) = self
+                    .deps
+                    .store
+                    .audit(
+                        self.now(),
+                        &format!("task:{}", task.number),
+                        "delivery.agent.merge",
+                        Some(&format!("{}#{}", sandbox.slug, task.number)),
+                        Some(&detail),
+                    )
+                    .await
+                {
+                    tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
+                }
+                Verdict::Decided(format!(
+                    "Yulius squashed your branch into `{integration}` at {}: its checks passed on \
+                     it merged into `{integration}`. End with your summary.",
+                    short(&armed.head)
+                ))
+            }
+            // A refusal (red checks, a conflict, an unready task) ends it; a failure of Git or the
+            // store is tried again on the next pass, as on GitHub.
+            Err(err @ crate::error::AppError::Conflict(_)) => Verdict::Decided(format!(
+                "The merge you armed was refused: {}. Fix that and call `delivery_merge` again.",
+                err.public_message()
+            )),
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "deciding a playground's armed merge failed; kept");
+                Verdict::Keep(armed)
+            }
         }
     }
 
@@ -733,7 +817,13 @@ impl App {
             ("none".to_owned(), None)
         } else {
             let runs = store.ci_runs(&task.sandbox_id, 50).await?;
-            match runs.iter().find(|run| run.sha.starts_with(&head)) {
+            // A playground task's run tests its head merged into the integration branch (SPEC-163
+            // PCI-006): the newest that tested it.
+            let run = match runs.iter().find(|run| run.sha.starts_with(&head)) {
+                Some(run) => Some(run),
+                None => self.task_run_of_head(task, &runs, &head).await,
+            };
+            match run {
                 Some(run) => (run.state.as_str().to_owned(), run.reason.clone()),
                 None => ("none".to_owned(), None),
             }

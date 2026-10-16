@@ -243,6 +243,57 @@ async fn write_users_edit_files_inside_the_folder_only() -> TestResult {
     Ok(())
 }
 
+/// The Editor looks at the file in front every 2 s with the `sha256` it has (SPEC-181 EDT-014): an
+/// unchanged file answers 204 with no body, a changed one answers the file, with a read's rules.
+#[tokio::test]
+async fn a_read_with_the_known_sha256_answers_no_content_while_unchanged() -> TestResult {
+    let (h, alice, bob, _carol) = presence_fixture().await?;
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    let read = |query: String, who: support::Creds| {
+        let router = h.router.clone();
+        async move {
+            call(
+                &router,
+                Method::GET,
+                &format!("/api/sandboxes/s1/files/content?path=src/main.rs{query}"),
+                None,
+                &who,
+            )
+            .await
+        }
+    };
+    let first = read(String::new(), alice.clone()).await?;
+    let sha = first.body["sha256"].as_str().ok_or("sha")?.to_owned();
+
+    let unchanged = read(format!("&known={sha}"), alice.clone()).await?;
+    assert_eq!(
+        unchanged.status,
+        StatusCode::NO_CONTENT,
+        "{:?}",
+        unchanged.body
+    );
+    assert!(unchanged.body.is_null());
+
+    // An agent writes the file: the same `known` now gets the new text and its hash.
+    std::fs::write(repo.join("src/main.rs"), "fn main() { agent(); }\n")?;
+    let changed = read(format!("&known={sha}"), alice.clone()).await?;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert_eq!(changed.body["content"], "fn main() { agent(); }\n");
+    assert_ne!(changed.body["sha256"], sha.as_str());
+
+    // Malformed: not 64 lowercase hex digits.
+    for bad in ["abc", &sha.to_uppercase(), &format!("{sha}0")] {
+        let refused = read(format!("&known={bad}"), alice.clone()).await?;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    }
+    // A reader of the sandbox is refused as for a read, whatever the hash, malformed too.
+    for known in [sha.as_str(), "abc"] {
+        let reader = read(format!("&known={known}"), bob.clone()).await?;
+        assert_eq!(reader.status, StatusCode::FORBIDDEN, "{known}");
+    }
+    Ok(())
+}
+
 /// A repository with one file for the presence tests; alice writes, bob reads, carol has nothing.
 async fn presence_fixture() -> Result<
     (
@@ -290,7 +341,7 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
         &h.router,
         Method::PUT,
         "/api/sandboxes/s1/files/presence",
-        Some(json!({"path": "./src/main.rs", "sha256": SHA, "selection": {"anchor": 3, "head": 7}, "hello": true, "client": "tab1"})),
+        Some(json!({"path": "./src/main.rs", "sha256": SHA, "selection": {"anchor": 3, "head": 7}, "hello": true, "client": "tab1", "seq": 4})),
         &alice,
     )
     .await?;
@@ -317,6 +368,7 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
             sha256: SHA.into(),
             selection: Some(NoteSelection { anchor: 3, head: 7 }),
             hello: true,
+            seq: 4,
         }
     );
 
@@ -523,7 +575,11 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     )
     .await?;
     assert_eq!(missing.status, StatusCode::NOT_FOUND, "{:?}", missing.body);
-    for path in ["src", "src/nothing.rs"] {
+    // A link to a folder is not followed to tell what it is (it may lead outside): leaving it is
+    // relayed like leaving a file that is gone (#477).
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::os::unix::fs::symlink(repo.join("src"), repo.join("src-link"))?;
+    for path in ["src", "src/nothing.rs", "src-link"] {
         let left = call(
             &h.router,
             Method::PUT,
@@ -549,8 +605,8 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     )
     .await?;
     assert_eq!(edge.status, StatusCode::NO_CONTENT, "{:?}", edge.body);
-    // Leaving a deleted file, and the largest offset.
-    assert_eq!(published(&mut events).len(), 2);
+    // Leaving a deleted file and a link to a folder, and the largest offset.
+    assert_eq!(published(&mut events).len(), 3);
     Ok(())
 }
 

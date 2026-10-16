@@ -26,17 +26,17 @@ an observed fact from an inference or something not checked.}
 ## Findings
 
 ### Blocker
-- `{file:line}` — {trigger → wrong behavior or broken rule → concrete fix}.
+- `{file:line}` ({own code | pre-existing}) — {trigger → wrong behavior or broken rule → concrete fix}.
   {Evidence or repo rule link when needed to establish the claim.}
 
 ### Major
-- `{file:line}` — {trigger → consequence → concrete fix}.
+- `{file:line}` ({own code | pre-existing}) — {trigger → consequence → concrete fix}.
 
 ### Minor
-- `{file:line}` — {specific improvement and its benefit}.
+- `{file:line}` ({own code | pre-existing}) — {specific improvement and its benefit}.
 
 ### Nit
-- `{file:line}` — {optional suggestion and its reason}.
+- `{file:line}` ({own code | pre-existing}) — {optional suggestion and its reason}.
 
 ## Validation Gate
 
@@ -53,6 +53,9 @@ who consumes it, and any migration/deprecation path or uncovered risk.}
 Link evidence; do not repeat a missing-test finding already listed above.}
 ```
 
+- Mark each finding own code (code or tests the change added or modified) or
+  pre-existing (on the integration branch before it, with the evidence). An
+  own-code finding is fixed in the pull request, never deferred to an issue.
 - Keep Verdict, Summary, and Validation Gate. Omit empty findings, optional
   sections, passing checklists, and routine praise. Per-command results remain
   mandatory; NOT RUN is a limitation, never evidence of a pass. Any unexecuted

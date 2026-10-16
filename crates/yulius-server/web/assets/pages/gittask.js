@@ -6,7 +6,7 @@
 // Git overview (GET /api/sandboxes/{sid}/git) and the comparison on GitHub.
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, statusMark, prChip, keepFocus, loadError } from '../dom.js';
+import { h, icon, setChildren, placeholder, statusMark, prChip, keepFocus, loadError, bar } from '../dom.js';
 import { href, replaceQuietly } from '../router.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { taskInfo } from '../status.js';
@@ -228,6 +228,21 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
     return h('nav', { class: 'gt-tree', 'aria-label': 'Changed files' }, h('ul', { class: 'gt-tree-list' }, children(fileTree(files), 0)));
   }
 
+  /**
+   * The changes while they load (SPEC-120, #449): the toolbar with its controls' room, the file
+   * tree beside the files' summary line and file cards.
+   */
+  function changesLoading() {
+    return [
+      h('div', { class: 'gt-toolbar' }, h('span', { class: 'gt-summary' }, bar('xl')), h('span', { class: 'spacer' }),
+        h('span', { class: 'btn-icon skeleton-tile' }), h('span', { class: 'seg' }, h('label', null, bar('md')), h('label', null, bar('sm'))), h('span', { class: 'btn-icon skeleton-tile' })),
+      h('div', { class: 'gt-changes' },
+        h('div', { class: 'gt-tree' }, [[0, 50], [1, 64], [1, 48], [0, 56]].map(([depth, width]) => h('div', { class: 'gt-tree-row', style: { '--gt-depth': String(depth) } }, bar(width)))),
+        h('div', { class: 'gt-files' }, h('p', { class: 'gt-files-summary' }, bar('xl')),
+          [40, 52].map((width) => h('div', { class: 'gt-file' }, h('div', { class: 'gt-file-head' }, bar(width)), h('div', { class: 'gt-note stack-sm' }, bar(70), bar(55), bar(62)))))),
+    ];
+  }
+
   function changesPanel() {
     if (!task.branch) return h('p', { class: 'gt-empty-note' }, 'No changes yet: the agent has not created its branch.');
     if (changesError) {
@@ -236,7 +251,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
         ? `This server cannot show a task's changes yet (it needs GET /api/tasks/{id}/changes, docs/api.md). ${changesError.message}`
         : `Couldn’t load the changes: ${changesError.message}`, () => { changesError = null; render(); loadChanges(); });
     }
-    if (!changes) return placeholder('Loading changes…', 'loading');
+    if (!changes) return placeholder('Loading changes…', 'loading', changesLoading);
     if (!changes.files.length) return [toolbar(), h('p', { class: 'gt-empty-note' }, `No differences from ${integration()}.`)];
     return [
       toolbar(),
@@ -250,9 +265,14 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
   }
 
   // ---- Commits
+  /** The commits while they load (SPEC-120, #449): rows of the list, a bar per column. */
+  function commitsLoading() {
+    return h('div', { class: 'gt-commits' }, [60, 45, 70].map((width) => h('div', { class: 'gt-commit' }, bar('sm'), bar(width), bar('sm'), bar('md'), bar('sm'))));
+  }
+
   function commitsPanel() {
     if (commitsError) return loadError(`Couldn’t load the commits: ${commitsError.message}`, () => { commitsError = null; render(); loadCommits(); });
-    if (!commits) return placeholder('Loading commits…', 'loading');
+    if (!commits) return placeholder('Loading commits…', 'loading', commitsLoading);
     if (!commits.length) return h('p', { class: 'gt-empty-note' }, `No commits on ${task.branch || 'the task branch'} yet${changes && changes.uncommitted ? '; its changes are not committed' : ''}.`);
     const repoUrl = sandbox.repo && sandbox.repo.url;
     return h('ol', { class: 'gt-commits' }, commits.map((c) => h('li', { class: 'gt-commit' },

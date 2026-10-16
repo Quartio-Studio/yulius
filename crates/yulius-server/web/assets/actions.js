@@ -5,7 +5,7 @@
 // itself, so no action chooses one.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js';
 import { BRAND } from './brand.js';
@@ -434,7 +434,11 @@ export function actionLabel(action) {
  * next and what blocks it. Read-only: the agent delivers the task through its workflow.
  */
 export function openDeliveryDialog(ctx, task) {
-  const modal = openModal({ title: `Delivery · #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading'), wide: true, actions: [{ label: 'Close' }] });
+  // While it loads (SPEC-120, #449): the stage track over the Pull request, Task spec and Next cards.
+  const loading = () => h('div', { class: 'stack' },
+    h('div', { class: 'stage-track' }, STAGES.map(([, label]) => h('span', { class: 'stage' }, bar(label.length > 8 ? 'md' : 'sm')))),
+    [0, 1, 2].map(() => h('div', { class: 'card card-pad stack-sm' }, h('div', { class: 'row' }, bar('lg')), bar(60))));
+  const modal = openModal({ title: `Delivery · #${task.number} ${task.title}`, body: placeholder('Loading delivery…', 'loading', loading), wide: true, actions: [{ label: 'Close' }] });
   const load = async () => {
     try {
       const delivery = await ctx.api.get(`/api/tasks/${enc(task.id)}/delivery`);
@@ -478,8 +482,9 @@ export function openDeliveryDialog(ctx, task) {
 
 /**
  * The prompt a task started with (SPEC-043): its text formatted as written, each file attached
- * inside the text shown where it sits (SPEC-124), the files after all the text listed below it.
- * An image shows as a thumbnail that opens full size, another file downloads, a file that is gone
+ * inside the text shown where it sits (SPEC-124), every file listed once below it. In the text an
+ * image is a one-line `Image N` placeholder, as in the composer (SPEC-180, SPEC-150); in the list a
+ * thumbnail with its number. Both open it full size; another file downloads; a file that is gone
  * (drafts are removed after a week) is named. Read when the dialog opens.
  */
 export function openPromptDialog(ctx, task) {
@@ -511,9 +516,55 @@ export function openPromptDialog(ctx, task) {
   const fileUrl = (index) => `/api/tasks/${enc(task.id)}/prompt/attachments/${index}`;
   // An attached file can be as large as an upload (25 MiB by default): longer than a JSON read.
   const FILE_TIMEOUT_MS = 120000;
+  // Each file is read once, for its thumbnail or its first opening, whichever comes first; a
+  // failed read is tried again at the next opening.
+  const reads = new Map(); // index → Promise of an object URL
+  const read = (index) => {
+    if (!reads.has(index)) {
+      reads.set(index, ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
+        const url = URL.createObjectURL(blob);
+        urls.push(url);
+        return url;
+      }, (error) => {
+        reads.delete(index);
+        throw error;
+      }));
+    }
+    return reads.get(index);
+  };
+  // An image's number among the prompt's images in order, gone ones too, as the queue card counts
+  // (SPEC-168); one number per name (SPEC-180).
+  let numbers = new Map();
+  // A file named twice is one file: each mention reads and opens the one the list shows.
+  let same = (index) => index;
+  // The list's thumbnails, to show a picture its own read could not load once a later read does.
+  const tiles = new Map(); // index → (url) => void
+  /** Opens image `index` full size, once however often it is asked meanwhile. */
+  const opening = new Set();
+  const openImage = async (file, mention) => {
+    const index = same(mention);
+    if (opening.has(index)) return;
+    opening.add(index);
+    try {
+      const url = await read(index);
+      tiles.get(index)?.(url);
+      openAttachment({ name: file.name }, { image: url });
+    } catch (error) {
+      if (error.code !== 'aborted') errorToast(error, `Couldn’t open ${file.name}`);
+    } finally {
+      opening.delete(index);
+    }
+  };
+  /** An image inside the text: a placeholder one line high that opens it (SPEC-180). */
+  const imagePlaceholder = (file, index) => {
+    const n = numbers.get(file.name);
+    return h('button', { type: 'button', class: 'pi-atom pi-image prompt-atom', title: file.name, 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => openImage(file, index) },
+      icon('image', { size: 14 }), h('span', { class: 'pi-file-name' }, `Image ${n}`));
+  };
   /** A file's face: `tag` is `li` in the list below the text, `span` inside it. */
   const fileItem = (file, index, tag = 'li') => {
     const inline = tag !== 'li';
+    if (inline && file.available && file.image) return imagePlaceholder(file, index);
     if (!file.available) {
       return h(tag, { class: ['prompt-file gone', inline && 'inline'] }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
     }
@@ -533,15 +584,19 @@ export function openPromptDialog(ctx, task) {
       return h(tag, { class: ['prompt-file', inline && 'inline'] }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },
         icon('download', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name)));
     }
+    const n = numbers.get(file.name);
     const img = h('img', { alt: file.name });
-    const item = h(tag, { class: ['prompt-file image', inline && 'inline'] },
-      h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open ${file.name}`, onClick: () => img.src && openAttachment({ name: file.name }, { image: img.src }) }, img),
-      inline ? null : h('span', { class: 'prompt-file-name' }, file.name));
-    ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
-      const url = URL.createObjectURL(blob);
-      urls.push(url);
+    const face = [
+      h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => openImage(file, index) },
+        img, h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(n))),
+      h('span', { class: 'prompt-file-name' }, file.name)];
+    const item = h(tag, { class: 'prompt-file image' }, face);
+    const show = (url) => {
       img.src = url;
-    }).catch((error) => {
+      if (!item.contains(img)) item.replaceChildren(...face);
+    };
+    tiles.set(index, show);
+    read(index).then(show).catch((error) => {
       if (error.code !== 'aborted') item.replaceChildren(icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'Couldn’t load it'));
     });
     return item;
@@ -556,6 +611,8 @@ export function openPromptDialog(ctx, task) {
     }
     text = prompt.text || '';
     const files = Array.isArray(prompt.attachments) ? prompt.attachments : [];
+    numbers = new Map();
+    for (const file of files) if (file.image && !numbers.has(file.name)) numbers.set(file.name, numbers.size + 1);
     // The prompt in order (SPEC-124); a server without `parts` gives the text, then its files.
     const parts = Array.isArray(prompt.parts) ? prompt.parts
       : [...(text ? [{ text }] : []), ...files.map((_, attachment) => ({ attachment }))];
@@ -568,7 +625,16 @@ export function openPromptDialog(ctx, task) {
       editor = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
       placeFiles(editor.el, (n) => (files[n] ? fileItem(files[n], n, 'span') : null));
     }
-    const below = [...new Set(asParts.slice(inside).filter((part) => 'file' in part && files[part.file]).map((part) => part.file))];
+    // Every file once, in the prompt's order: those inside the text, then those after it. A file
+    // that is gone never stands in for an available one of the same name.
+    const listed = new Map(); // name and availability → index
+    for (const part of asParts) {
+      const file = 'file' in part && files[part.file];
+      const key = file && `${file.name}\n${Boolean(file.available)}`;
+      if (file && !listed.has(key)) listed.set(key, part.file);
+    }
+    const below = [...listed.values()];
+    same = (index) => (files[index] ? listed.get(`${files[index].name}\n${Boolean(files[index].available)}`) ?? index : index);
     setChildren(modal.body, h('div', { class: 'stack' },
       editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
       below.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, below.map((n) => fileItem(files[n], n))) : null));
@@ -680,7 +746,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
 
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
-    const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading'));
+    const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading', ['rows', 4]));
     setChildren(content, search, list, h('p', { class: 'muted xs' }, `Importing needs admin or maintain permission on the repository, which must belong to the instance owner. ${BRAND.name} clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.`));
     const draw = () => {
       if (!repos) return;
@@ -716,7 +782,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
 
   /** The template list (shared by a playground and a GitHub repository). */
   const templateField = async () => {
-    const templateList = h('div', { class: 'card list' }, placeholder('Loading templates…', 'loading'));
+    const templateList = h('div', { class: 'card list' }, placeholder('Loading templates…', 'loading', ['rows', 3, true]));
     const fill = async () => {
       if (!templates) {
         try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
@@ -793,20 +859,76 @@ export function openSandboxDialog(ctx, mode = 'import') {
   switchMode();
 }
 
-/** Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). */
+/**
+ * Move a playground into an empty GitHub repository of the instance owner (SPEC-176): its branches
+ * and tags are pushed there, its access then follows GitHub, and its tasks stay. The server refuses
+ * a repository that is not empty or a live task, and the dialog says why.
+ */
+export function openMoveToGitHubDialog(ctx, sandbox) {
+  const me = ctx.store.state.me || {};
+  const owner = (me.instance && me.instance.owner_login) || 'the GitHub owner';
+  const nameInput = h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false' });
+  nameInput.value = sandbox.name;
+  openModal({
+    title: `Move ${sandbox.name} to GitHub`,
+    body: h('div', { class: 'stack' },
+      h('p', null, `Create an empty repository of ${owner} on GitHub first (no README, license or .gitignore), and give the ${BRAND.name} GitHub App access to it. You need admin or maintain permission on it.`),
+      field('Repository name', nameInput, `${owner}/${nameInput.value}`),
+      h('p', { class: 'muted small' }, `Every branch and tag is pushed there, and this sandbox works on GitHub from then on: tasks deliver by pull request. Access then follows GitHub: whoever has no permission on the repository no longer sees it. Tasks, sessions and steps stay. Stop running tasks first.`)),
+    actions: [
+      { label: 'Cancel', value: false },
+      { label: 'Move to GitHub', kind: 'primary', run: async () => {
+        const name = nameInput.value.trim();
+        if (!REPO_NAME_RE.test(name)) {
+          invalid(nameInput, 'Use letters, digits, “.”, “-” or “_”.');
+          return false;
+        }
+        const moved = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/move-to-github`, { name });
+        ctx.store.upsertSandbox(moved);
+        toast(`${sandbox.name} moved to ${moved.repo.owner}/${moved.repo.name}.`, { kind: 'ok' });
+      } },
+    ],
+  });
+  const hint = nameInput.closest('.field').querySelector('.field-hint');
+  nameInput.addEventListener('input', () => { hint.textContent = `${owner}/${nameInput.value.trim()}`; });
+}
+
+/**
+ * Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). A playground's code
+ * lives only on this server: the dialog offers to delete it for good, and says so before (SPEC-171).
+ */
 export async function confirmRemoveSandbox(ctx, sandbox) {
+  const purge = sandbox.playground ? h('input', { type: 'checkbox', id: 'purge-code' }) : null;
+  const warning = h('p', { class: 'purge-warning', role: 'alert', hidden: true },
+    'Its repository, every branch and all its files are deleted from this server for good once its processes have ended. This cannot be undone. Task records and the audit trail stay.');
+  if (purge) purge.addEventListener('change', () => { warning.hidden = !purge.checked; });
   const ok = await confirmDialog({
     title: `Remove ${sandbox.name} from ${BRAND.name}?`,
-    message: `Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from ${BRAND.name} for everyone.`,
+    message: sandbox.playground
+      ? `Live and queued tasks are stopped and the playground disappears from ${BRAND.name} for everyone. Its code stays on this server and still counts toward your playgrounds unless you delete it.`
+      : `Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from ${BRAND.name} for everyone.`,
+    details: purge
+      ? h('div', { class: 'stack' },
+        h('label', { class: 'check', for: 'purge-code' }, purge, h('span', null, 'Also delete its code from this server for good')),
+        warning)
+      : null,
     typeToConfirm: sandbox.name,
-    confirmLabel: 'Remove sandbox',
+    confirmLabel: sandbox.playground ? 'Remove playground' : 'Remove sandbox',
     danger: true,
   });
   if (!ok) return;
   try {
-    await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}`);
-    ctx.store.removeSandbox(sandbox.id);
-    toast(`Sandbox ${sandbox.name} removed.`, { kind: 'ok' });
+    if (purge && purge.checked) {
+      const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/purge`, {});
+      ctx.store.removeSandbox(sandbox.id);
+      toast(result.state === 'purged'
+        ? `Playground ${sandbox.name} removed and its code deleted.`
+        : `Playground ${sandbox.name} removed. Its code is deleted once ${(result.waiting_for || []).join(', ') || 'its processes'} ended.`, { kind: 'ok' });
+    } else {
+      await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}`);
+      ctx.store.removeSandbox(sandbox.id);
+      toast(`${sandbox.playground ? 'Playground' : 'Sandbox'} ${sandbox.name} removed.`, { kind: 'ok' });
+    }
     const current = ctx.currentSandbox();
     if (!current || current.id === sandbox.id) ctx.navigate('/');
   } catch (error) {

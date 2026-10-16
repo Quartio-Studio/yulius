@@ -1,13 +1,13 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel, compact } from './format.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
-import { taskInfo, taskActions, activityLine, allows } from './status.js';
+import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
 import { href, placeFor } from './router.js';
-import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask, archiveAll } from './actions.js';
+import { openSandboxDialog, confirmRemoveSandbox, openMoveToGitHubDialog, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
@@ -16,16 +16,21 @@ import { createSplitter, layoutPrefs } from './splitter.js';
 import { isPhone } from './theme.js';
 import { INSTANCE_ROUTE } from './updates.js';
 
+/** Whether this instance has its GitHub App (a playground can move to GitHub then, SPEC-176). */
+function githubConnected(ctx) {
+  const me = ctx.store.state.me || {};
+  return !(me.instance && me.instance.github_configured === false);
+}
+
 /** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
 
 // The sandbox pages used every day (SPEC-029); CI and CD (SPEC-134) are one page with two tabs
-// (SPEC-151), and the Pipeline's stages (SPEC-137) sit next to it.
+// (SPEC-151), and the Pipeline's stages (SPEC-137) are a tab of the Dashboard (SPEC-161).
 const NAV = [
   ['tasks', 'Tasks', 'tasks'],
   ['git', 'Git', 'branch'],
   ['ci', 'CI/CD', 'check'],
-  ['pipeline', 'Pipeline (stages)', 'clock'],
   ['secrets', 'Secrets', 'lock'],
   ['dashboard', 'Dashboard', 'chart'],
 ];
@@ -121,9 +126,11 @@ export function createTabRow(ctx) {
         // Back to the screen left in that sandbox (SPEC-113); its own tab opens the composer.
         dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}`, restore: 'sandbox', id: sandbox.id },
         draggable: 'true',
-        title: `${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name} · ${sandbox.access} access`,
+        title: `${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name} · ${sandbox.access} access\n${DRAG_TAB_HINT}`,
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
+      // The grip says the tab drags, as on the Notes tabs (SPEC-167); decorative, the name stays the tab's.
+      h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })),
       h('span', { class: 'tab-name' }, sandbox.name),
       h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} working` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} you` : ''].join('')),
       counts.running ? h('span', { class: 'tab-running', title: `${counts.running} working`, 'aria-hidden': 'true' }, String(counts.running)) : null,
@@ -140,6 +147,8 @@ export function createTabRow(ctx) {
         openMenu({ x: event.clientX, y: event.clientY }, [
           { label: 'Open', onSelect: () => ctx.navigate(placeFor(`/s/${encodeURIComponent(sandbox.slug)}`, 'sandbox')) },
           sandbox.repo && sandbox.repo.url ? { label: 'Open on GitHub', onSelect: () => window.open(sandbox.repo.url, '_blank', 'noopener,noreferrer') } : null,
+          // A playground becomes a GitHub sandbox once GitHub is connected (SPEC-176).
+          sandbox.playground && githubConnected(ctx) && allows(sandbox.access, 'admin') ? { label: 'Move to GitHub…', onSelect: () => openMoveToGitHubDialog(ctx, sandbox) } : null,
           { separator: true },
           // Reordering without dragging (WCAG 2.5.7): the menu moves a tab one place.
           { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(-1) },
@@ -453,14 +462,20 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
-  const primary = usage.primary;
+  // Folded, both windows show at a glance: a short name, a bar named in full and the percent (SPEC-172).
+  const glanceWindows = [[usage.primary, '5 h', '5-hour window'], [usage.secondary, 'Week', 'This week']].map(([w, short, name]) => ({ used: w ? w.used_percent : null, short, name }));
+  const glance = () => h('span', { class: 'account-glance', title: glanceWindows.map((g) => `${g.name}: ${Number.isFinite(g.used) ? `${Math.round(g.used)}% used` : 'not known yet'}`).join(' · ') },
+    glanceWindows.map((g) => h('span', { class: 'glance-line' },
+      h('span', { class: 'glance-name' }, g.short),
+      usageBar(g.used, g.name),
+      h('span', { class: ['usage-pct', `tone-${toneOf(g.used)}`] }, percentText(g.used)))));
   const head = [
     h('span', { class: 'avatar account-avatar', 'aria-hidden': 'true' }, accountInitials(account)),
     h('span', { class: 'account-who' },
-      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis' }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
+      h('span', { class: 'account-name' }, h('strong', { class: 'ellipsis', title: account.label || account.id }, account.label || account.id), account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
       h('span', { class: 'account-sub' }, account.email || provider)),
-    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`] }, icon(state.icon, { size: 12 }), state.label) : null,
-    foldable ? h('span', { class: 'account-glance', title: '5-hour window' }, usageBar(primary ? primary.used_percent : null, '5-hour window'), h('span', { class: ['usage-pct', `tone-${toneOf(primary ? primary.used_percent : null)}`] }, primary && Number.isFinite(primary.used_percent) ? `${Math.round(primary.used_percent)}%` : '—')) : null,
+    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null,
+    foldable ? glance() : null,
     foldable ? icon('down', { size: 14 }) : null,
   ];
   // A usage reading that failed for now ("usage: …", one plain sentence) is a quiet note, not a
@@ -736,7 +751,9 @@ export function createSidebar(ctx) {
       const title = h('span', { class: 'task-title' });
       const sub = h('span', { class: 'sr-only' });
       const age = h('span', { class: 'task-age' });
-      const link = h('a', { class: 'task-link' }, mark, num, chips, title, sub, age);
+      // Someone else's task (SPEC-070, SPEC-179): its owner's initials, the words in the tooltip.
+      const owner = h('span', { class: 'task-owner', 'aria-hidden': 'true', hidden: true });
+      const link = h('a', { class: 'task-link' }, mark, num, chips, title, sub, owner, age);
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -750,7 +767,7 @@ export function createSidebar(ctx) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, num, chips, title, age, sub, archive, task };
+      row = { el, link, mark, num, chips, title, age, sub, owner, archive, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -759,7 +776,7 @@ export function createSidebar(ctx) {
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
     row.time = taskTime(task, row.info);
-    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr]);
+    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr, ctx.store.state.me?.user?.login]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -777,19 +794,28 @@ export function createSidebar(ctx) {
     row.el.classList.toggle('active', active);
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
-    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
+    const owner = otherOwner(task, ctx.store.state.me?.user?.login);
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
+    row.owner.hidden = !owner;
+    row.owner.textContent = owner ? initials(owner).toUpperCase() : '';
+    if (owner) row.owner.title = `@${owner} owns this task`;
+    else row.owner.removeAttribute('title');
     setChildren(row.mark, statusMark(info, 16));
     setChildren(row.num, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`);
     row.num.title = `Task #${task.number}`;
     setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
-    row.sub.textContent = `, ${activityLine(task, info)}`;
+    row.sub.textContent = `, ${activityLine(task, info)}${owner ? `, owned by @${owner}` : ''}`;
     // What the time measures depends on the group, and the words say it (SPEC-087 TIM-003).
     row.age.textContent = row.time.text;
     row.age.title = row.time.title;
     const label = `Archive task #${task.number}`;
-    row.archive.hidden = !taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
+    const archivable = taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
+    // The keyboard on a quick Archive that hides (the task was continued) goes to its row's link,
+    // never to the page (#331); a rebuild after this keeps it there.
+    if (!archivable && document.activeElement === row.archive) row.link.focus({ preventScroll: true });
+    row.archive.hidden = !archivable;
     row.el.classList.toggle('can-archive', !row.archive.hidden);
     row.archive.setAttribute('aria-label', label);
     row.archive.title = label;
@@ -823,6 +849,12 @@ export function createSidebar(ctx) {
     const size = groupRows.length;
     const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
     if (group.id === 'done') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label, archiveAllButton(groupRows));
+    // How the open tasks wait for each other, on the Tasks page's Graph (SPEC-164).
+    if (group.id === 'working') {
+      const path = `/s/${encodeURIComponent(sandbox.slug)}/tasks?view=graph`;
+      return h('div', { class: ['task-group-head', `group-${group.id}`] }, label,
+        h('a', { class: ['btn-icon', 'task-group-action', 'task-group-graph'], href: href(path), dataset: { route: path }, 'aria-label': 'Show as a graph', title: 'Show as a graph: the queue, chains and rules' }, icon('workflow', { size: 14 })));
+    }
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;

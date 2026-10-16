@@ -655,14 +655,17 @@ pub struct CockpitYulius {
 
 /// Environment variable holding a Cockpit's Yulius MCP bearer.
 pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
-/// The Yulius tools a Cockpit may call without asking: they only read.
-pub const COCKPIT_READ_ONLY_TOOLS: [&str; 6] = [
+/// The Yulius tools a Cockpit may call without asking: they only read (`secret_verify` writes
+/// nothing but its audit entry; SPEC-178 VAU-003).
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 8] = [
     "tasks_list",
     "task_get",
     "automations_list",
     "workflows_list",
     "sessions_search",
     "session_read",
+    "secrets_list",
+    "secret_verify",
 ];
 
 /// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius and the

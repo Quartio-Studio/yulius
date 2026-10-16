@@ -23,8 +23,9 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
-/// MGT-006, SPEC-066 MGT-012). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 15] = [
+/// MGT-006, SPEC-066 MGT-012) and reading its agent vault (SPEC-178, ADR-0144). Everything else
+/// belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 17] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -40,6 +41,8 @@ pub const COCKPIT_TOOLS: [&str; 15] = [
     "workflows_list",
     "sessions_search",
     "session_read",
+    "secrets_list",
+    "secret_verify",
 ];
 
 /// Who calls the MCP server.
@@ -64,8 +67,25 @@ impl McpCaller {
 pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
     tool_descriptors()
         .into_iter()
+        .chain(cockpit_only_tool_descriptors())
         .filter(|tool| COCKPIT_TOOLS.contains(&tool.name.as_str()))
         .collect()
+}
+
+/// Tools only a Cockpit is served (SPEC-178, ADR-0144): `secret_verify`, whose input is, on a
+/// match, the value's SHA-256. The Superagent's conversation is its person's own; a task's
+/// transcript is read by every member who can view the project.
+fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor {
+            name: "secret_verify".into(),
+            description: "Check whether a value the person holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash (or sha256sum's line). Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and on a match the lines the value stands for. Never returns the value. Audited.".into(),
+            input_schema: schema(json!({
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "sha256": {"type": "string", "description": "The candidate value's SHA-256, 64 hexadecimal digits"}
+            }), &["secret", "sha256"]),
+        },
+    ]
 }
 
 /// Tool descriptors served to a task's agent by `tools/list`.
@@ -275,7 +295,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "issue_create".into(),
-            description: "Open a GitHub issue for follow-up work, a bug or a flaky test you found, instead of widening this task. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
             input_schema: schema(json!({
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
@@ -428,7 +448,7 @@ impl App {
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": match caller {
                         McpCaller::Agent(_) => "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
-                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.",
+                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. secrets_list names the project's agent secrets (never their values) and secret_verify tells whether a value the person holds is one of them, from its SHA-256. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.",
                     },
                 }))
             }
@@ -499,7 +519,11 @@ impl App {
                 self.tool_automation_template_enable(&project, &args).await
             }
             "workflows_list" => self.tool_workflows_list(&project).await,
+            "secrets_list" => self.tool_secrets_list(&project).await,
             _ => match caller {
+                McpCaller::Cockpit(_) if name == "secret_verify" => {
+                    self.tool_secret_verify(&project, &args).await
+                }
                 McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
                 McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {
                     TaskToolResult::Value(outcome) => outcome,
@@ -555,7 +579,6 @@ impl App {
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
-            "secrets_list" => self.tool_secrets_list(ctx).await,
             "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             "secret_request_hosts" => self.tool_secret_request_hosts(ctx, &args).await,
             "secret_copy_to_env" => self.tool_secret_copy_to_env(ctx, &args).await,
@@ -679,6 +702,28 @@ mod tests {
         for name in COCKPIT_TOOLS {
             assert!(served.iter().any(|s| s == name), "`{name}` is not served");
         }
+    }
+
+    /// SPEC-174 (ADR-0141): `issue_create` is for what lies outside the change, never for a
+    /// finding in the change's own code.
+    #[test]
+    fn issue_create_is_only_for_what_lies_outside_the_change() {
+        let tool = tool_descriptors()
+            .into_iter()
+            .find(|t| t.name == "issue_create");
+        let description = tool.map(|t| t.description).unwrap_or_default();
+        for stated in [
+            "outside this change",
+            "pre-existing",
+            "flaky test this change did not cause",
+            "Never a finding in code or tests this change added or modified",
+        ] {
+            assert!(
+                description.contains(stated),
+                "missing {stated:?}: {description}"
+            );
+        }
+        assert!(!description.contains("follow-up work"), "{description}");
     }
 
     #[test]

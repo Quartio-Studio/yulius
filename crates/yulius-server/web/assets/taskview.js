@@ -6,15 +6,15 @@ import { append, h, icon, iconButton, setChildren, toast, errorToast, skeleton, 
 import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
+import { createWatchView } from './watchview.js';
 import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
-import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
-import { mentionOf } from './promptparts.js';
+import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -30,6 +30,8 @@ const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do',
 const STRIP_KEY = 'yulius.stepsOpen';
 // Waiting states in which a task that never started takes queued messages (SPEC-052).
 const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
+// An attached file the server serves as an image (`is_image` in yulius-domain).
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i;
 // States only a task with a run is in.
 const RAN = new Set(['running', 'switching', 'stopping']);
 
@@ -96,9 +98,35 @@ export function mountTaskView(ctx, sandbox, task) {
   const toggleButton = h('button', { type: 'button', class: 'stepstrip-toggle', 'aria-expanded': String(stripOpen) }, icon('right', { size: 14 }), stripLabel);
   const kebab = iconButton('more', 'Task actions', () => openTaskMenu(ctx, kebab, current), { 'aria-haspopup': 'menu' });
   const stepList = h('div', { class: 'steplist', hidden: !stripOpen });
-  const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] },
-    h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, extrasEl, deliveryEl, kebab),
-    stepList);
+  const stripMain = h('div', { class: 'stepstrip-main' }, toggleButton, progress, statusEl, extrasEl, deliveryEl, kebab);
+  const strip = h('div', { class: ['stepstrip', stripOpen && 'open'] }, stripMain, stepList);
+  /**
+   * The strip never passes its edge (#348): parts give way whole, lowest priority first. The chain
+   * chips (the last first), Auto or Goal, then Supertask go while the state keeps its words; then
+   * the state's words shrink (SPEC-073), then the bar and the pull request chip go. The label, the
+   * state's icon and Task actions stay. Runs after every paint of the strip, when it resizes and
+   * when a web font finishes loading.
+   */
+  function fitStrip() {
+    for (const el of stripMain.querySelectorAll('.strip-gone')) el.classList.remove('strip-gone');
+    const over = () => stripMain.scrollWidth > stripMain.clientWidth;
+    const give = (el) => {
+      // The keyboard on a part that goes stays in the strip, on its label.
+      if (el.contains(document.activeElement)) toggleButton.focus({ preventScroll: true });
+      el.classList.add('strip-gone');
+    };
+    stripMain.classList.add('strip-fitting');
+    const chips = [...extrasEl.children].reverse();
+    for (const chip of chips) { if (!over()) break; give(chip); }
+    extrasEl.classList.toggle('strip-gone', chips.length > 0 && chips.every((chip) => chip.classList.contains('strip-gone')));
+    stripMain.classList.remove('strip-fitting');
+    for (const part of [progress, deliveryEl]) { if (!over()) break; give(part); }
+  }
+  const stripSize = new ResizeObserver(() => fitStrip());
+  stripSize.observe(stripMain);
+  // A web font that lands later changes the parts' widths, not the row's.
+  document.fonts.addEventListener('loadingdone', fitStrip);
+  destroyers.push(() => { stripSize.disconnect(); document.fonts.removeEventListener('loadingdone', fitStrip); });
   toggleButton.addEventListener('click', () => {
     stripOpen = !stripOpen;
     writeJson(STRIP_KEY, stripOpen);
@@ -109,41 +137,75 @@ export function mountTaskView(ctx, sandbox, task) {
     terminal.refit();
   });
 
-  // ---- terminal
-  const terminal = createTerminalView({
-    transport: ctx.transport,
-    path: `/api/tasks/${enc(task.id)}/terminal`,
-    onLink: (uri, event) => ctx.openLink(uri, event),
-    // Without write access to the sandbox that is the reason; with it, the task's owner (SPEC-070).
-    readOnlyLabel: () => {
-      const box = ctx.store.sandboxById(sandbox.id) || sandbox;
-      return owner() && allows(box.access, 'write') ? `Read-only: @${owner()} owns this task` : readOnlyText(box);
-    },
-    exitMessage: (exit) => endedMessage(exit.status || current.status),
-    emptyMessage: () => emptyTerminalMessage(current),
-    exitActions: (exit) => {
-      const message = endedMessage(exit.status || current.status);
-      const actions = [];
-      // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
-      // else sees the subscriptions' state in the Status panel (#147).
-      if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
-      // The exit can arrive before the task's new status: write access is enough, but an archived
-      // task is restored first, as in its menu (taskActions).
-      if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
-        actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
-      }
-      return actions;
-    },
-    // Paths of files in the task's worktree open in the Editor (F 2026-10-10). The files API needs
-    // write access, as the editor does.
-    fileLinks: allows(sandbox.access, 'write') ? {
-      list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(`task:${task.id}`)}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
-      roots: () => (detail && detail.worktree ? [detail.worktree] : []),
-      open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
-    } : null,
+  // ---- terminal, or the live transcript of someone else's task (SPEC-179): the owner's terminal
+  // is drawn for the owner's window, so a watcher reads the session as the Sessions view prints it.
+  // `terminal` stays a terminal's interface: while watching, one that sends nothing.
+  const makeTerminal = () => {
+    const view = createTerminalView({
+      transport: ctx.transport,
+      path: `/api/tasks/${enc(task.id)}/terminal`,
+      onLink: (uri, event) => ctx.openLink(uri, event),
+      // Without write access to the sandbox that is the reason; someone else's task is watched as
+      // its transcript, never in a terminal (SPEC-179).
+      readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
+      exitMessage: (exit) => endedMessage(exit.status || current.status),
+      emptyMessage: () => emptyTerminalMessage(current),
+      exitActions: (exit) => {
+        const message = endedMessage(exit.status || current.status);
+        const actions = [];
+        // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
+        // else sees the subscriptions' state in the Status panel (#147).
+        if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
+        // The exit can arrive before the task's new status: write access is enough, but an archived
+        // task is restored first, as in its menu (taskActions).
+        if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
+          actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
+        }
+        return actions;
+      },
+      // Paths of files in the task's worktree open in the Editor (F 2026-10-10). The files API needs
+      // write access, as the editor does.
+      fileLinks: allows(sandbox.access, 'write') ? {
+        list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=${encodeURIComponent(`task:${task.id}`)}&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
+        roots: () => (detail && detail.worktree ? [detail.worktree] : []),
+        open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
+      } : null,
+    });
+    // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
+    attachTerminalDrop(ctx, view, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
+    return view;
+  };
+  const makeWatch = () => createWatchView(ctx, {
+    taskId: task.id,
+    task: () => current,
+    owner,
+    emptyMessage: emptyTerminalMessage,
+    sessionPath: (docId) => `/s/${encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug)}/sessions/${encodeURIComponent(docId)}`,
   });
-  // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
-  attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
+  const watchingTerminal = (view) => ({
+    el: view.el, term: null, socket: { status: 'closed' }, canWrite: false, ready: true,
+    start() { view.start(); }, focus() { view.focus(); }, sendKeys: () => false,
+    reconnect() {}, refit() {}, refreshEmpty() {}, destroy() { view.destroy(); },
+  });
+  let watch = owner() ? makeWatch() : null;
+  let terminal = watch ? watchingTerminal(watch) : makeTerminal();
+  let started = false;
+  /** Control passed (SPEC-070): a watcher gets the transcript, the owner the terminal. */
+  function placeScreen() {
+    if (Boolean(owner()) === Boolean(watch)) return;
+    const previous = terminal;
+    // The keyboard in the screen that goes moves to the one that comes (not to the page).
+    const focused = previous.el.contains(document.activeElement);
+    watch = owner() ? makeWatch() : null;
+    terminal = watch ? watchingTerminal(watch) : makeTerminal();
+    previous.el.replaceWith(terminal.el);
+    previous.destroy();
+    termArea.classList.toggle('watching', Boolean(watch));
+    if (started) {
+      terminal.start();
+      if (focused || (!watch && !isPhone())) terminal.focus();
+    }
+  }
 
   // ---- phone quick input
   const quickInput = h('input', { class: 'input', type: 'text', placeholder: 'Message the agent…', autocomplete: 'off', autocapitalize: 'off', enterkeyhint: 'send', 'aria-label': 'Quick input' });
@@ -223,7 +285,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const mine = request && request.by.login === me();
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `@${owner()} owns this task: `), 'it acts on GitHub as them.', request ? ` @${request.by.login} asked for control.` : '']),
+          : [h('strong', null, `You are watching @${owner()}'s task. `), `Only @${owner()} can type in it; it acts on GitHub as them.`, request ? ` @${request.by.login} asked for control.` : '']),
       mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
         : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
@@ -327,34 +389,156 @@ export function mountTaskView(ctx, sandbox, task) {
   // the empty terminal, where a message is typed; the request shows as the agent will get it.
   const queueSlot = h('div', { class: 'queue-slot', hidden: true });
   const requestEl = h('div', { class: 'queue-request', role: 'region', 'aria-label': 'Request', tabindex: 0 });
-  const queueBox = h('textarea', { class: 'input queue-input', rows: 2, placeholder: 'Queue a message for the agent…', 'aria-label': 'Message for the agent', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 65536 });
+  // The message box is the composer's prompt input (SPEC-168): a file pasted or dropped uploads to
+  // the task's own folder and sits at the caret as a placeholder that moves and deletes like one
+  // character; double-click opens it. Its images are numbered after the request's, in the order
+  // the text holds them: the numbers the request gives them once queued.
+  const queueFiles = new Map(); // every file uploaded here: path → { name, type, file }
+  const queueUrls = new Map(); // path → the object URL a file of the box opened with
+  let queueImages = []; // the paths of the box's images not in the request, in the text's order
+  let requestNumbers = new Map(); // each image of the request (by path) → its number
+  const WAIT_UPLOAD = 'Wait for the upload to finish.';
+  // Its own callbacks read it: null until it is made.
+  let queueBox = null;
+  queueBox = createPromptInput({
+    label: 'Message for the agent',
+    placeholder: 'Queue a message for the agent… Paste or drop images where they belong.',
+    keyshortcuts: SUBMIT_ARIA,
+    maxLength: 65536,
+    face: (path) => {
+      const item = queueFiles.get(path);
+      if (!item) return null;
+      if (!IMAGE_PATH.test(path)) return { name: item.name };
+      const n = requestNumbers.get(path) || (queueImages.includes(path) ? requestNumbers.size + queueImages.indexOf(path) + 1 : 0);
+      return { name: item.name, image: true, label: n ? `Image ${n}` : 'Image' };
+    },
+    known: (path) => queueFiles.has(path),
+    onChange: () => {
+      if (!queueBox) return;
+      const images = [...new Set(queueBox.paths().filter((path) => IMAGE_PATH.test(path) && queueFiles.has(path) && !requestNumbers.has(path)))];
+      if (images.join('\n') !== queueImages.join('\n')) { queueImages = images; queueBox.refresh(); }
+      // The upload ended (or failed): the reason no longer holds.
+      if (queueError.textContent === WAIT_UPLOAD && !queueBox.el.querySelector('.pi-pending')) queueError.textContent = '';
+    },
+    onSubmit: () => queueMessage(),
+    onOpen: (path) => openQueuedFile(path),
+  });
+  queueBox.el.classList.add('queue-input');
+  function openQueuedFile(path) {
+    const item = queueFiles.get(path);
+    if (!item) return;
+    // One URL per file, however often it opens; revoked with the view.
+    const urlOf = (blob) => {
+      if (!queueUrls.has(path)) queueUrls.set(path, URL.createObjectURL(blob));
+      return queueUrls.get(path);
+    };
+    openAttachment(item, { image: IMAGE_PATH.test(path) ? urlOf(item.file) : null, url: urlOf });
+  }
   const queueButton = h('button', { type: 'button', class: 'btn btn-primary', title: `Queue (${SUBMIT_KEYS})`, onClick: () => queueMessage() }, 'Queue');
   const queueError = h('div', { class: 'field-error', role: 'alert' });
   const queueNote = h('span', { class: 'muted' });
   // A card kept after the start (below) goes once the person has their text (SPEC-056 WUI-106).
   const queueDismiss = h('button', { type: 'button', class: 'btn', hidden: true, onClick: () => {
-    queueBox.value = '';
+    queueBox.setValue('');
     queueError.textContent = '';
     renderQueue();
     if (!isPhone()) terminal.focus();
   } }, 'Dismiss');
+  // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
+  // its number among the request's images), its name otherwise; a click reads the file from the
+  // prompt endpoint (by its index among the request's files) and opens it.
+  // One read per file at a time and one URL per file (the request only grows, so an index keeps
+  // naming its file); leaving the view stops the reads (`reads`, below) and revokes the URLs.
+  const requestUrls = new Map(); // `index\npath` → object URL
+  const requestReads = new Set();
+  destroyers.push(() => {
+    for (const url of [...requestUrls.values(), ...queueUrls.values()]) URL.revokeObjectURL(url);
+    requestUrls.clear();
+    queueUrls.clear();
+  });
+  let requestShown = null;
+  async function openRequestFile(index, path, image) {
+    const name = path.split('/').pop();
+    const key = `${index}\n${path}`;
+    if (requestReads.has(key)) return;
+    let url = requestUrls.get(key);
+    if (!url) {
+      requestReads.add(key);
+      try {
+        // An attached file can be as large as an upload: longer than a JSON read.
+        const blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
+        if (!alive) return;
+        url = URL.createObjectURL(blob);
+        requestUrls.set(key, url);
+      } catch (error) {
+        if (!alive || error.code === 'aborted') return;
+        // Gone (drafts are removed after a week), or never one of this task's files.
+        if (error.status === 404) toast(`${name} is not on the server.`, { kind: 'warn' });
+        else errorToast(error, `Couldn’t open ${name}`);
+        return;
+      } finally {
+        requestReads.delete(key);
+      }
+    }
+    if (image) openAttachment({ name }, { image: url });
+    else h('a', { href: url, download: name }).click();
+  }
+  function drawRequest(text) {
+    const { parts, paths } = parsePrompt(text);
+    // One number per image, however often the request names it (the box counts the same way).
+    const images = new Map();
+    for (const path of paths) if (IMAGE_PATH.test(path) && !images.has(path)) images.set(path, images.size + 1);
+    const numbers = paths.map((path) => images.get(path) || 0);
+    // The box's images are numbered after these.
+    if ([...images.keys()].join('\n') !== [...requestNumbers.keys()].join('\n')) {
+      requestNumbers = images;
+      queueImages = queueImages.filter((path) => !images.has(path));
+      queueBox.refresh();
+    }
+    setChildren(requestEl, parts.map((part) => {
+      if ('text' in part) return part.text;
+      const path = paths[part.file];
+      const name = path.split('/').pop();
+      const n = numbers[part.file];
+      return h('button', { type: 'button', class: ['pi-atom', 'queue-file', n ? 'pi-image' : 'pi-file'], title: name, 'aria-label': n ? `Image ${n}, ${name}` : name, onClick: () => openRequestFile(part.file, path, Boolean(n)) },
+        icon(n ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, n ? `Image ${n}` : name));
+    }));
+  }
+  const queueCompose = h('div', { class: 'queue-compose' }, queueBox.el, queueButton, queueDismiss);
   setChildren(queueSlot, h('section', { class: 'queue-card', role: 'region', 'aria-label': 'Queued messages' },
     h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'), queueNote),
     requestEl,
-    h('div', { class: 'queue-compose' }, queueBox, queueButton, queueDismiss),
+    queueCompose,
     queueError));
-  attachMarkdownInput(queueBox, { onSubmit: () => queueMessage() });
+  attachPromptDrop(ctx, {
+    box: queueCompose,
+    prompt: queueBox,
+    label: 'Drop to add to the message',
+    upload: (file, options) => taskAttachments(ctx, current.id)(file, options),
+    // A task that started meanwhile takes no more queued files (its card is gone or kept read-only).
+    writable: () => alive && !queueSlot.hidden,
+    unwritable: 'The task has started: the file was not added.',
+    onAttach: (items, place) => {
+      for (const item of items) queueFiles.set(item.path, { name: item.name, type: item.file.type, file: item.file });
+      if (place) place.insert(items.map((item) => item.path));
+    },
+  });
   let queueing = false;
   async function queueMessage() {
+    if (queueing || queueBox.readOnly) return;
+    // A file still uploading is not in the text yet: queueing now would leave it out.
+    if (queueBox.el.querySelector('.pi-pending')) { queueError.textContent = WAIT_UPLOAD; return; }
     const text = queueBox.value;
-    if (queueing || !text.trim() || queueBox.readOnly) return;
+    if (!text.trim()) return;
     queueing = true;
     queueButton.disabled = true;
     queueError.textContent = '';
     try {
       const out = await ctx.api.post(`/api/tasks/${enc(current.id)}/queued-messages`, { text });
       if (!alive) return;
-      queueBox.value = '';
+      queueBox.setValue('');
+      queueImages = [];
+      queueBox.refresh();
       if (detail) detail = { ...detail, request: out.request };
       renderQueue();
     } catch (error) {
@@ -377,7 +561,7 @@ export function mountTaskView(ctx, sandbox, task) {
     // person can copy the text into the session (SPEC-052 QMS-006, SPEC-056 WUI-106). A task that
     // ended or was archived instead takes the card away.
     const started = current.status === 'starting' || RAN.has(current.status);
-    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent);
+    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent || queueBox.el.querySelector('.pi-pending'));
     // Back to waiting before it ran: a refusal from the start no longer holds.
     if (waiting && !queueDismiss.hidden) queueError.textContent = '';
     queueSlot.hidden = !waiting && !kept;
@@ -388,13 +572,16 @@ export function mountTaskView(ctx, sandbox, task) {
     queueDismiss.hidden = !kept;
     if (kept) return;
     const text = detail.request || '';
-    if (requestEl.textContent !== text) {
-      requestEl.textContent = text;
+    if (requestShown !== text) {
+      requestShown = text;
+      drawRequest(text);
       requestEl.scrollTop = requestEl.scrollHeight; // the latest message in view
     }
   }
 
-  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention, held, queueSlot), quickbar);
+  // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
+  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
     renderAttention();
@@ -454,6 +641,7 @@ export function mountTaskView(ctx, sandbox, task) {
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
       next);
+    fitStrip();
   }
 
   function renderStepList() {
@@ -500,7 +688,10 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   let delivery = null;
-  const renderDelivery = () => keepFocus(deliveryEl, () => setChildren(deliveryEl, deliveryStrip(ctx, current, delivery, { canAct: allows(sandbox.access, 'write'), reload: loadDelivery })));
+  const renderDelivery = () => {
+    keepFocus(deliveryEl, () => setChildren(deliveryEl, deliveryStrip(ctx, current, delivery, { canAct: allows(sandbox.access, 'write'), reload: loadDelivery })));
+    fitStrip();
+  };
   // Optional: the strip works without it (no GitHub, no branch yet), so a failed read stays quiet.
   const loadDelivery = singleFlight(async () => {
     try {
@@ -524,6 +715,7 @@ export function mountTaskView(ctx, sandbox, task) {
     el,
     key: `task:${task.id}`,
     start() {
+      started = true;
       terminal.start();
       // Focus lands in the terminal as soon as it shows (the keyboard is the agent's).
       if (!isPhone()) terminal.focus();
@@ -541,12 +733,17 @@ export function mountTaskView(ctx, sandbox, task) {
       if (current.status !== previousStatus || (queueOpen() && current.updated_at !== previousUpdate)) loadDetail();
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
+      if (watch) watch.update();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
-      // Control passed (SPEC-070): the terminal asks again whether this viewer may type.
-      else if (owner() !== previousOwner) terminal.reconnect();
+      // Control passed (SPEC-070): the screen changes between the terminal and the transcript, or
+      // the terminal asks again whether this viewer may type.
+      if (owner() !== previousOwner) {
+        if (Boolean(owner()) !== Boolean(watch)) placeScreen();
+        else terminal.reconnect();
+      }
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
@@ -575,6 +772,9 @@ const AUTO = 'auto';
 // mounted again meanwhile (the person left and came back) still shows it loading (SPEC-111).
 const onboardingStarts = new Set();
 const onboardingStartsChanged = new EventTarget();
+// The sandboxes whose onboarding task a page is opening and announcing ("Onboarding started:
+// opened #N."): a start then has no toast of its own, whichever composer it was pressed in (#436).
+const onboardingAnnounced = new Set();
 // Auto is the default for the mode and the workflow (TSK-015): Jev decides when the task is created.
 const MODES = [
   { id: AUTO, name: 'Auto mode', icon: 'zap', description: 'Jev decides: a goal for work to build, change or fix; a prompt for questions and research.' },
@@ -814,7 +1014,7 @@ export function mountComposer(ctx, sandbox) {
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
   // While the sandbox awaits onboarding, a centred message takes the card's place (SPEC-096).
   const gate = h('section', { class: 'onboarding-gate', hidden: true, 'aria-labelledby': `onboarding-gate-${sandbox.id}` });
-  // Says what changed when someone else starts onboarding or it lands (the gate's text is rebuilt).
+  // Says that onboarding finished and the task box is ready (the gate's text is rebuilt silently).
   // A live region without the status role: the page's own status messages stay the only ones.
   const gateNews = h('span', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
   const card = h('div', { class: 'composer-card' },
@@ -1027,7 +1227,6 @@ export function mountComposer(ctx, sandbox) {
 
   let gateKey = '';
   let opening = false;
-  let sentToTask = false; // this view sent the page to the onboarding task
   // The gate offered Start onboarding in this view: opening the task then is news to say.
   let offered = false;
   function renderBanner() {
@@ -1061,7 +1260,7 @@ export function mountComposer(ctx, sandbox) {
       const hadFocus = gate.contains(document.activeElement);
       setChildren(gate, preparing ? onboardingGate(sb, prep) : null);
       if (hadFocus && preparing) focusGate();
-      // A start from this page has its own toast: the status speaks for someone else's.
+      // Onboarding finished: said in words (a start has its toast, an opened task speaks itself).
       if (before && before !== (preparing ? sb.onboarding : null)) {
         gateNews.textContent = preparing ? '' : 'Onboarding finished: the task box is ready.';
       }
@@ -1095,12 +1294,14 @@ export function mountComposer(ctx, sandbox) {
   function openOnboarding(sb, prep) {
     if (opening) return;
     opening = true;
+    // Said by this page: a start running meanwhile (pressed here or in a composer since left) says
+    // nothing of its own.
+    if (offered) onboardingAnnounced.add(sb.id);
     setTimeout(() => {
-      if (destroyed || !el.isConnected) { opening = false; return; }
+      if (destroyed || !el.isConnected) { opening = false; if (offered) onboardingAnnounced.delete(sb.id); return; }
       // Started here or elsewhere while this page offered it: a toast outlives the page it leaves.
       if (offered) toast(`Onboarding started: opened #${prep.number}.`, { kind: 'ok' });
       ctx.navigate(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`, { replace: true });
-      sentToTask = true;
       // A view kept after the navigation (none is today) may open it again.
       if (!destroyed) opening = false;
     }, 0);
@@ -1179,18 +1380,20 @@ export function mountComposer(ctx, sandbox) {
     if (onboardingStarts.has(sandbox.id)) return;
     const changed = () => onboardingStartsChanged.dispatchEvent(new Event('change'));
     onboardingStarts.add(sandbox.id);
+    onboardingAnnounced.delete(sandbox.id);
     changed();
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
-      // Opening the task says so itself; otherwise (the task could not be read, or the person went
-      // elsewhere meanwhile) this does.
-      if (!opening && !sentToTask) toast('Onboarding started.', { kind: 'ok' });
+      // A page opening the task (this one, or the one mounted again since) says so itself;
+      // otherwise (the task could not be read, or no page offered it) this does.
+      if (!onboardingAnnounced.has(sandbox.id)) toast('Onboarding started.', { kind: 'ok' });
     } catch (error) {
       errorToast(error, 'Couldn’t start onboarding');
     } finally {
       onboardingStarts.delete(sandbox.id);
+      onboardingAnnounced.delete(sandbox.id);
       changed();
     }
     // Back as it was (a failure), or a task that could not be read: the keyboard goes back to the

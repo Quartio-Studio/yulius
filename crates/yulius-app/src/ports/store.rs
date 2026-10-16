@@ -209,10 +209,27 @@ pub trait SandboxStore: Send + Sync {
     async fn transition_onboarding(&self, id: &SandboxId, from: &str, to: &str) -> AppResult<bool>;
     /// Marks removed.
     async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
+    /// Records the live playground `id` as the GitHub repository `owner/name` (SPEC-176), only
+    /// while it is still a playground; `false` (nothing written) otherwise. `Conflict` when
+    /// another sandbox holds that repository. Access changes, so the access epoch grows.
+    async fn move_to_github(
+        &self,
+        id: &SandboxId,
+        owner: &str,
+        name: &str,
+        github_repo_id: Option<u64>,
+    ) -> AppResult<bool>;
     /// Renames the slug of a removed sandbox of `owner/name` holding `slug` to
     /// `<slug>-removed-<removed_at ms>`, freeing it for the same repository added again; `false`
     /// when no such removed sandbox holds it.
     async fn release_removed_slug(&self, slug: &str, owner: &str, name: &str) -> AppResult<bool>;
+    /// Records `by`'s request to purge the playground `id`'s code (SPEC-171); `false` when one
+    /// is already recorded.
+    async fn request_purge(&self, id: &SandboxId, by: &UserId, at: Timestamp) -> AppResult<bool>;
+    /// Sandboxes whose purge was requested and is not done yet, oldest request first.
+    async fn pending_purges(&self) -> AppResult<Vec<SandboxId>>;
+    /// Marks the purge of `id` done; `false` when it was done already.
+    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<bool>;
 }
 
 /// Field updates for a task (only `Some` fields change).

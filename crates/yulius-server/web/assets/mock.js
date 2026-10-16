@@ -235,7 +235,9 @@ function seed(params) {
     // Waits for #4 to be Done (TSK-012).
     t('sb_product', 7, 'Invoice emails', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
-    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q', working: 7 * MIN }),
+    // anna-q's request, owned by mkarp, who can only read the project now: their own task's terminal
+    // stays read-only for want of write access (someone else's is watched as its transcript, SPEC-179).
+    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q', owner: 'mkarp', working: 7 * MIN }),
   ];
   {
     const invoices = db.tasks.find((x) => x.id === 'tsk_product_4');
@@ -311,6 +313,35 @@ function seed(params) {
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
+  }
+  // `tasks=graph`: studio's tasks form a structure (SPEC-164): a chain #12 → #15 → #16, a rule
+  // #17 over #12 and #16, a supertask #20 holding #8 and #21 in the queue, prepared #18 and #19,
+  // and a rule #22 naming the archived #1. `graph=cycle` adds two tasks waiting for each other.
+  if (params.get('tasks') === 'graph') {
+    const find = (number) => db.tasks.find((x) => x.sandbox_id === 'sb_studio' && x.number === number);
+    const add = (...args) => { const task = t('sb_studio', ...args); db.tasks.push(task); return task; };
+    const cart = add(15, 'Cart totals', 'claude', 'chained', null, { noSteps: true, updated: 40 * MIN });
+    const receipts = add(16, 'Receipt emails', 'claude', 'chained', null, { noSteps: true, updated: 35 * MIN });
+    const release = add(17, 'Release checklist', 'claude', 'chained', null, { noSteps: true, updated: 30 * MIN });
+    chainAfter(cart, find(12));
+    chainAfter(receipts, cart);
+    chainAfter(release, find(12), '#12 done and #16 done');
+    // #14 ran after #13 and has started: its link is history, not a wait.
+    chainAfter(find(14), find(13));
+    add(18, 'Weekly cleanup', 'claude', 'prepared', null, { noSteps: true, updated: 25 * MIN }).start_at = isoIn(2 * DAY);
+    add(19, 'Pricing experiment', 'claude', 'prepared', null, { noSteps: true, updated: 20 * MIN });
+    const hardening = add(20, 'Security hardening', 'claude', 'queued', null, { noSteps: true, updated: 15 * MIN });
+    hardening.supertask = true;
+    hardening.heldBy = mockHeldBy(db, hardening);
+    find(8).heldBy = [20];
+    add(21, 'Translate the docs', 'claude', 'queued', null, { noSteps: true, updated: 10 * MIN }).heldBy = [20];
+    chainAfter(add(22, 'Restore the old landing', 'claude', 'chained', null, { noSteps: true, updated: 5 * MIN }), find(15), '#1 done or #15 ended');
+    if (params.get('graph') === 'cycle') {
+      const a = add(23, 'Loop A', 'claude', 'chained', null, { noSteps: true, updated: 4 * MIN });
+      const b = add(24, 'Loop B', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN });
+      chainAfter(a, b);
+      chainAfter(b, a);
+    }
   }
   recount(db);
   return db;
@@ -957,6 +988,38 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   resync(db);
   return json(204);
 });
+// Purging a playground (SPEC-171): removes it and deletes its code once nothing of it runs; the
+// mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
+route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'admin');
+  if (!sandbox.playground) fail(409, 'conflict', "only a playground's code can be purged");
+  db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
+  (db.purges = db.purges || []).push(sandbox.slug);
+  resync(db);
+  const waiting = db.purgeWaitsFor || [];
+  return { state: waiting.length ? 'waiting' : 'purged', waiting_for: waiting };
+});
+
+// Moving a playground to GitHub (SPEC-176): the mock keeps the moves (`__yuliusMock.moves`), and
+// `moveRefusal` makes the server refuse with that sentence.
+route('POST', `/api/sandboxes/${ID}/move-to-github`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'admin');
+  if (!sandbox.playground) fail(409, 'conflict', 'only a playground moves to GitHub');
+  if (!db.me.instance.github_configured) fail(409, 'conflict', 'connect this instance to GitHub first');
+  const name = String((body && body.name) || '');
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) fail(422, 'invalid', `${name} is not a GitHub repository name`);
+  if (db.moveRefusal) fail(409, 'conflict', db.moveRefusal);
+  const owner = db.me.instance.owner_login;
+  sandbox.playground = false;
+  // The view names a GitHub sandbox by its repository; its slug stays.
+  sandbox.name = name;
+  sandbox.repo = { owner, name, url: `https://github.com/${owner}/${name}` };
+  (db.moves = db.moves || []).push({ slug: sandbox.slug, name });
+  resync(db);
+  return sandbox;
+});
 
 // Live previews (ADR-14, "Open live in a new window"): the mock has no preview proxy, so a
 // live page is a small data: page.
@@ -1243,8 +1306,10 @@ function promptFileServed(task, path) {
   const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
   const uploads = `${MOCK_UPLOADS}/${task.sandbox_id}/attachments`;
   const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
-  // A task created in this page: its creator's composer uploads, where the upload route put them.
-  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`, `${uploads}/tasks/${task.id}`);
+  // The task's own folder, where the upload route puts a file dropped on its terminal or queued
+  // with a message (SPEC-168), and for a task created in this page its creator's composer uploads.
+  owned.push(`${uploads}/tasks/${task.id}`);
+  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`);
   const slash = path.lastIndexOf('/');
   const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
   return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);
@@ -1259,6 +1324,9 @@ route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
   };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  // Reads per `task/index`, so a test can tell a file was read once.
+  db.promptFileReads = db.promptFileReads || {};
+  db.promptFileReads[`${p[0]}/${p[1]}`] = (db.promptFileReads[`${p[0]}/${p[1]}`] || 0) + 1;
   const task = taskOf(db, p[0]);
   const path = promptParts(task).paths[Number(p[1])];
   if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');
@@ -2003,15 +2071,20 @@ route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   const path = repoPath(query.get('path'));
   if (!tree.files.has(path)) fail(404, 'not_found', 'not found');
   const content = tree.files.get(path);
+  const known = query.get('known');
+  if (known !== null && !/^[0-9a-f]{64}$/.test(known)) fail(422, 'invalid', 'known is 64 lowercase hex digits');
+  if (known === mockSha(content)) return json(204);
   if (tree.binary && tree.binary.has(path)) return { path, content: null, binary: true, too_large: false, size: content.length, sha256: mockSha(content) };
   return { path, content, binary: false, too_large: false, size: content.length, sha256: mockSha(content) };
 });
-route('PUT', `/api/sandboxes/${ID}/files/content`, ({ db, p, body }) => {
+route('PUT', `/api/sandboxes/${ID}/files/content`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const tree = repoTree(db, p[0], body.root || 'sandbox');
   const path = repoPath(body.path);
   if (typeof body.content !== 'string') fail(422, 'invalid', 'content is required');
   if (!isDir(tree, parentOf(path))) fail(404, 'not_found', 'the folder does not exist');
+  // `holdSave = promise`: the save waits there, the file still as it was (SPEC-181).
+  if (db.holdSave) await db.holdSave;
   const exists = tree.files.has(path);
   if (body.base_sha256 ? !exists || mockSha(tree.files.get(path)) !== body.base_sha256 : exists) fail(409, 'conflict', exists ? 'the file changed since it was read' : 'the file no longer exists');
   tree.files.set(path, body.content);
@@ -2076,9 +2149,11 @@ function storeAttachment(db, sid, folder, query, body) {
   db.attachments.set(folder, names);
   return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
-route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
+route('POST', `/api/tasks/${ID}/attachments`, async ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`), as for the composer's uploads.
+  if (db.holdUpload) await db.holdUpload;
   return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {
@@ -2635,8 +2710,9 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
 // the server does (its own echo included, which the page leaves out); tests act as a teammate with
 // `notePresence(event)`, refuse updates (`failPresence`) and lose events (`resyncNow()`).
 function relayPresence(db, scope, sandboxId, body) {
-  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello', 'client', 'seq'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
   if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.seq !== undefined && !(Number.isInteger(body.seq) && body.seq >= 0)) fail(422, 'invalid', 'seq is a number from 0');
   // `failPresence`: the server refuses it as too many (429).
   if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
   const selection = body.selection;
@@ -2646,9 +2722,10 @@ function relayPresence(db, scope, sandboxId, body) {
     fail(422, 'invalid', 'revision and selection are required');
   }
   const client = body.client || '';
-  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello), client });
+  const seq = body.seq || 0;
+  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello), client, seq });
   const user = db.me.user;
-  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello) });
+  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello), seq });
   return json(204);
 }
 
@@ -2660,8 +2737,9 @@ route('PUT', '/api/notes/presence', ({ db, body }) => relayPresence(db, 'team', 
 route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
-  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client', 'seq'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
   if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.seq !== undefined && !(Number.isInteger(body.seq) && body.seq >= 0)) fail(422, 'invalid', 'seq is a number from 0');
   if (body.sha256 !== undefined && !/^([0-9a-f]{64})?$/.test(body.sha256)) fail(422, 'invalid', 'sha256 is 64 lowercase hex digits');
   if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
   const path = repoPath(body.path);
@@ -2677,9 +2755,10 @@ route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   if (selection !== null && !repoTree(db, sandbox.id, root).files.has(path)) fail(404, 'not_found', 'not found');
   const client = body.client || '';
   const sha256 = body.sha256 || '';
-  (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client });
+  const seq = body.seq || 0;
+  (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client, seq });
   const user = db.me.user;
-  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello) };
+  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello), seq };
   emit(db, event);
   if (db.presenceChannel) db.presenceChannel.postMessage(event);
   // `holdPresence = true`: answers wait for `releasePresence()` (an update still on its way).
@@ -2912,19 +2991,75 @@ function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, e
   };
 }
 
+// A busy running run (SPEC-165, the screenshot of task #155): eight jobs waited 6 to 9 min for a
+// job slot (9.1 min in, so the 8 min tick would crowd "now"), as `ci::exec` records it (`wait:<job id>@…` beside the job's `job:<job id>@…`), each
+// with its checkout; four are still running, one of them with a failed stage.
+// Jobs are listed in the order they began waiting: prototypes began before gateway, started after.
+const BUSY_JOBS = [
+  ['shared', 6, 0.5], ['engine', 6, null], ['prototypes', 6.5, 0.15], ['package (gateway)', 6.2, null],
+  ['package (broker)', 6.8, 0.7], ['package (deployer)', 7.5, null], ['package (mcp/browser)', 8.2, 0.7], ['package (mcp/email)', 8.6, null],
+];
+
+function busyTimeline(id) {
+  const s = (...args) => stageSpan('ci_run', id, ...args);
+  const spans = [
+    s('queue@1', 'queue', 'queue', 9.1, 0.02, { detail: { reference: 'branch/quartio', reason: null } }),
+    s('run@1', 'run', 'run', 9.08, null, { detail: { reference: 'branch/quartio', sha: '9f3c2a1b7e4d', requested_by: 'yulius' } }),
+    s('prepare@1', 'prepare', 'commit', 9.08, 0.005),
+  ];
+  BUSY_JOBS.forEach(([name, waited, ran], i) => {
+    const asked = 9.05 - i * 0.01;
+    const at = asked - waited;
+    const job = `job:j${i}@1`;
+    spans.push(s(`wait:j${i}@1`, 'wait', 'job slot', asked, waited, { job: name, outcome: 'started', detail: { cpus: 4, memory_mb: 8192 } }));
+    spans.push(s(job, 'job', name, at, ran, { job: name, detail: ran === null ? {} : { cpu_ms: Math.round(ran * 3 * MIN), memory_peak_mb: 900 } }));
+    spans.push(s(`${job}/checkout`, 'prepare', 'checkout', at, 0.01, { parent_key: job, job: name }));
+    if (name === 'engine') spans.push(s(`${job}/stage:1`, 'stage', 'build', at - 0.01, null, { parent_key: job, job: name }));
+    // Still running, but a stage of it already failed.
+    if (name === 'package (deployer)') spans.push(s(`${job}/stage:1`, 'stage', 'lint', at - 0.01, 0.5, { parent_key: job, job: name, outcome: 'failed' }));
+  });
+  return { spans, related: [] };
+}
+
+// A short run (about 2 min, SPEC-165 review): its axis steps by 30 s, "quality" was requeued after
+// its process host was lost (two waits, two job spans), "e2e"'s wait has no job span and
+// "security" was skipped.
+function shortTimeline(id) {
+  const s = (...args) => stageSpan('ci_run', id, ...args);
+  return { spans: [
+    s('queue@1', 'queue', 'queue', 2, 0.05, { detail: { reference: 'pr/221', reason: null } }),
+    s('run@1', 'run', 'run', 1.95, 1.9, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),
+    s('prepare@1', 'prepare', 'commit', 1.95, 0.01),
+    s('wait:j0@1', 'wait', 'job slot', 1.94, 0.1, { job: 'quality', outcome: 'started' }),
+    s('job:j0@1', 'job', 'quality', 1.84, 0.3, { job: 'quality', outcome: 'error', detail: { reason: 'the job’s process host was lost' } }),
+    s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'started' }),
+    // Checked nothing (exit 78, ADR-0133): skipped, not passed.
+    s('wait:j5@1', 'wait', 'job slot', 1.9, 0.05, { job: 'security', outcome: 'started' }),
+    s('job:j5@1', 'job', 'security', 1.85, 0.1, { job: 'security', outcome: 'skipped', detail: { exit_code: 78 } }),
+    s('wait:j0@2', 'wait', 'job slot', 1.54, 0.3, { job: 'quality', outcome: 'started' }),
+    s('job:j0@2', 'job', 'quality', 1.24, 1.1, { job: 'quality' }),
+  ], related: [] };
+}
+
 function mockTimeline(kind, id) {
   const s = (...args) => stageSpan(kind, id, ...args);
+  if (kind === 'ci_run' && id === 'ci_s4') return busyTimeline(id);
+  if (kind === 'ci_run' && id === 'ci_s3') return shortTimeline(id);
   if (kind === 'ci_run') {
     const failed = id === 'ci_s2';
     return { spans: [
       s('queue@1', 'queue', 'queue', 47, 2, { detail: { reference: 'pr/218', reason: null } }),
       s('run@1', 'run', 'run', 45, 14, { outcome: failed ? 'failed' : 'passed', detail: { reference: 'pr/218', sha: '0d7e5f3a1c2b', requested_by: 'yulius' } }),
       s('prepare@1', 'prepare', 'commit', 45, 0.2),
+      // A slot free at once: `ci::exec` still records the (0 ms) wait, which says nothing.
+      s('wait:j1@1', 'wait', 'job slot', 44.8, 0, { job: 'quality', outcome: 'started' }),
+      s('wait:j2@1', 'wait', 'job slot', 44.8, 0, { job: 'test', outcome: 'started' }),
       s('job:j1@1', 'job', 'quality', 44.8, 12, { job: 'quality', detail: { cpu_ms: 31 * MIN, memory_peak_mb: 2048, disk_written_mb: 640 } }),
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
       s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+      s('job:j2@1/stage:1', 'stage', 'integration', 44.6, 13.6, { parent_key: 'job:j2@1', job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 310, tests_failed: 1 } : {} }),
     ], related: [] };
   }
   if (kind === 'cd_run') {
@@ -2946,6 +3081,7 @@ function mockTimeline(kind, id) {
     s('step:b', 'step', 'Spans stored for tasks, CI and CD', 224, 60),
     s('delivery@1', 'delivery', 'pr_open', 150, 52, { outcome: 'merged_integration', detail: { pr: 221 } }),
     s('wait@1', 'wait', 'merge_armed', 120, 22, { outcome: 'merged' }),
+    s('wait@2', 'wait', 'merge_armed', 10, null, { outcome: null }),
   ], related: [
     stageSpan('ci_run', 'ci_s3', 'queue@1', 'queue', 'queue', 140, 4),
     stageSpan('ci_run', 'ci_s3', 'run@1', 'run', 'run', 136, 16, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),
@@ -3252,6 +3388,28 @@ function sessionDocs(db) {
     entry(9, 'assistant', [call('w1', 'Write', 'e2e/wait.ts', { file_path: 'e2e/wait.ts' }, { path: 'e2e/wait.ts', hunks: [{ old: '', new: 'export async function signedIn(page) {\n  await page.waitForURL(/dashboard/);\n}' }] })]),
     entry(10, 'user', [result('w1', 'File created successfully at: e2e/wait.ts')]),
     entry(11, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
+    // A write the server cut at its bound (#350): no line count is claimed.
+    entry(12, 'assistant', [call('w2', 'Write', 'e2e/fixtures/users.json', { file_path: 'e2e/fixtures/users.json' }, { path: 'e2e/fixtures/users.json', hunks: [{ old: '', new: Array.from({ length: 400 }, (_, i) => `  { "id": ${i}, "email": "user${i}@example.test" },`).join('\n') }], truncated: true })]),
+    entry(13, 'user', [result('w2', 'File created successfully at: e2e/fixtures/users.json')]),
+    // 16 lines of 60 characters: it scrolls on a phone only (#363).
+    entry(14, 'assistant', [call('b2', 'Bash', 'npx playwright test --list', { command: 'npx playwright test --list' })]),
+    entry(15, 'user', [result('b2', Array.from({ length: 16 }, (_, i) => `[chromium] › e2e/login.spec.ts:${String(i + 1).padStart(2, '0')} › signs in with a link`.padEnd(60, '.')).join('\n'))]),
+    // Hook context the server cut at its bound (#380).
+    entry(16, 'user', [{ type: 'meta', text: ['Hook context: flaky test history', '', ...Array.from({ length: 400 }, (_, i) => `- run ${i + 1}: e2e/login.spec.ts timed out after 5000ms`)].join('\n').slice(0, 16384), truncated: true }]),
+    // Review round 1 of SPEC-177: hunks, a result whose call is not on the page, a cut command
+    // output and a command run twice are told apart.
+    entry(17, 'assistant', [call('m1', 'MultiEdit', 'e2e/login.spec.ts', { file_path: 'e2e/login.spec.ts' }, { path: 'e2e/login.spec.ts', hunks: [1, 2].map((n) => ({ old: Array.from({ length: 30 }, (_, i) => `  await page.waitForTimeout(${n}${i});`).join('\n'), new: Array.from({ length: 30 }, (_, i) => `  await expect(page.getByRole('heading', { name: 'Step ${n}${i}' })).toBeVisible();`).join('\n') })) })]),
+    entry(18, 'user', [result('m1', 'Applied 2 edits to e2e/login.spec.ts')]),
+    entry(19, 'user', [result('gone1', Array.from({ length: 40 }, (_, i) => `e2e/report-${i}.json`).join('\n')), result('gone2', Array.from({ length: 40 }, (_, i) => `e2e/trace-${i}.zip`).join('\n'))]),
+    entry(20, 'user', [{ type: 'meta', text: `<local-command-stdout>${Array.from({ length: 40 }, (_, i) => `Usage line ${i}`).join('\n')}`, truncated: true }]),
+    entry(21, 'assistant', [call('b3', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
+    entry(22, 'user', [result('b3', Array.from({ length: 40 }, (_, i) => `  ✓ ${i + 1} [chromium] › e2e/login.spec.ts:${i + 1}`).join('\n'))]),
+    // Long code blocks: one, then two in one message (review round 2).
+    entry(23, 'assistant', [text(`Before:\n\`\`\`ts\n${Array.from({ length: 40 }, (_, i) => `await page.waitForTimeout(${i});`).join('\n')}\n\`\`\``)]),
+    entry(24, 'assistant', [text(['After:', '```ts', ...Array.from({ length: 40 }, (_, i) => `await expect(page.getByText('${i}')).toBeVisible();`), '```', 'And the helper:', '```ts', ...Array.from({ length: 40 }, (_, i) => `export const step${i} = ${i};`), '```'].join('\n'))]),
+    // A MultiEdit cut past its hunks names what it shows (review round 2).
+    entry(25, 'assistant', [call('m2', 'MultiEdit', 'e2e/steps.ts', { file_path: 'e2e/steps.ts' }, { path: 'e2e/steps.ts', hunks: [{ old: 'a', new: 'b' }, { old: 'c', new: 'd' }], truncated: true })]),
+    entry(26, 'user', [result('m2', 'Applied 21 edits to e2e/steps.ts')]),
   ];
   // Claude Code's wrappers as recorded (a slash command, its output, a `!` command, reminders).
   const meta = (t) => ({ type: 'meta', text: t });
@@ -3366,6 +3524,31 @@ route('GET', `/api/sessions/${ID}/transcript`, ({ db, p, query }) => {
   const more = doc.transcript.some((e) => e.line > last) && entries.length === limit;
   return { session: sessionView(db, doc), entries, next: more ? last + 1 : null, skipped_lines: 0 };
 });
+// A task's live session for the people watching it (SPEC-179 WAT-001): its session document's
+// entries, grown by `appendTranscript` as the session writes. The size is the entries' JSON.
+route('GET', `/api/tasks/${ID}/transcript`, ({ db, p, query }) => {
+  const task = taskOf(db, p[0]);
+  db.transcriptReads = (db.transcriptReads || 0) + 1;
+  (db.transcriptQueries = db.transcriptQueries || []).push(query.toString());
+  // Tests make the next reads fail as a server restarting would (`failTranscriptReads = 1`).
+  if (db.failTranscriptReads > 0) {
+    db.failTranscriptReads -= 1;
+    fail(502, 'unavailable', 'The server is restarting.');
+  }
+  const doc = sessionDocs(db).find((d) => d.kind === 'task' && d.task_id === task.id);
+  if (!doc) return { session_id: null, doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
+  const lines = doc.transcript;
+  const end = lines.length ? lines[lines.length - 1].line + 1 : 0;
+  const bytes = JSON.stringify(lines).length;
+  const from = query.has('from') ? Number(query.get('from')) : null;
+  const limit = Math.min(500, Math.max(1, Number(query.get('limit') || 200)));
+  const base = { session_id: doc.session_id, doc_id: null, next: null, bytes, earlier: false, skipped_lines: 0 };
+  if (from !== null && Number(query.get('seen')) === bytes && query.get('session') === doc.session_id) return { ...base, entries: [], end: from };
+  if (from === null) return { ...base, doc_id: doc.id, entries: lines.slice(-limit), end, earlier: lines.length > limit };
+  const entries = lines.filter((e) => e.line >= from).slice(0, limit);
+  const more = entries.length === limit && lines.some((e) => e.line > entries[entries.length - 1].line);
+  return { ...base, entries, next: more ? entries[entries.length - 1].line + 1 : null, end: more ? entries[entries.length - 1].line + 1 : end };
+});
 route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
   const doc = sessionDocOf(db, p[0]);
   const sandbox = sandboxOf(db, doc.sandbox_id);
@@ -3403,6 +3586,20 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 async function handleFetch(db, url, init = {}) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests).
   if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
+  // The Editor's file reads, as asked, and whether a save of a file was on its way (SPEC-181).
+  const fileContent = /^\/api\/sandboxes\/[^/]+\/files\/content$/.test(new URL(url, ORIGIN).pathname);
+  if (fileContent && (init.method || 'GET') === 'GET') {
+    const asked = new URL(url, ORIGIN).searchParams;
+    (db.fileReads = db.fileReads || []).push({ path: asked.get('path'), known: asked.get('known'), whileSaving: (db.savesOnTheirWay || 0) > 0 });
+  }
+  if (fileContent && init.method === 'PUT') {
+    db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
+    try { return await handleFetchAfterLatency(db, url, init); } finally { db.savesOnTheirWay -= 1; }
+  }
+  return handleFetchAfterLatency(db, url, init);
+}
+
+async function handleFetchAfterLatency(db, url, init) {
   await delay(50 + Math.random() * 150);
   if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   const u = new URL(url, ORIGIN);
@@ -4418,7 +4615,8 @@ function startAmbient(db) {
   setInterval(() => {
     if (db.eventSockets.size === 0) return;
     tick += 1;
-    const queued = db.tasks.find((t) => t.status === 'queued' && t.sandbox_id === 'sb_studio' && !t.archived && t.number === 8);
+    // A task a supertask holds does not start (`tasks=graph`).
+    const queued = db.tasks.find((t) => t.status === 'queued' && t.sandbox_id === 'sb_studio' && !t.archived && t.number === 8 && !(t.heldBy && t.heldBy.length));
     if (tick === 3 && queued) touch(db, queued, { status: 'starting' });
     if (tick === 5 && queued) touch(db, queued, { status: 'running', activity: 'working', account_label: 'Claude #1' });
     const switching = db.tasks.find((t) => t.id === 'tsk_studio_9');
@@ -4451,6 +4649,31 @@ export function createMockTransport(params) {
     const response = await handleFetch(db, path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'X-Yulius-CSRF': db.me.csrf_token } });
     resync(db);
     return response.status;
+  };
+  // The session of a task writes more (SPEC-179): `appendTranscript('sb_studio', 12, [{ role,
+  // text } | { role, blocks }])`, numbered on from its last line; a task without one gets one.
+  db.appendTranscript = (sandboxId, number, items) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    const docs = sessionDocs(db);
+    let doc = docs.find((d) => d.kind === 'task' && d.task_id === task.id);
+    if (!doc) {
+      doc = { id: `ses_task_${number}`, sandbox_id: sandboxId, kind: 'task', task_id: task.id, session_id: `live-${number}`, title: task.title, author: task.created_by, git_branch: task.branch, started_at: new Date().toISOString(), ended_at: null, imported_at: null, bytes: 0, redactions: 0, continued_in: null, transcript: [] };
+      docs.push(doc);
+    }
+    let line = doc.transcript.length ? doc.transcript[doc.transcript.length - 1].line + 1 : 0;
+    for (const item of items) {
+      const blocks = item.blocks || [{ type: 'text', text: item.text, truncated: false }];
+      doc.transcript.push({ line, role: item.role, at: item.at || (item.role === 'user' ? new Date().toISOString() : null), sidechain: false, blocks });
+      line += 1;
+    }
+  };
+  // The task's session is another one now (a continue started it): its own lines from 0.
+  db.newTranscriptSession = (sandboxId, number, sessionId, items) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    const doc = sessionDocs(db).find((d) => d.kind === 'task' && d.task_id === task.id);
+    doc.session_id = sessionId;
+    doc.transcript = [];
+    db.appendTranscript(sandboxId, number, items);
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
@@ -4504,9 +4727,9 @@ export function createMockTransport(params) {
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
-  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, ...event });
+  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, seq: 0, ...event });
   db.releasePresence = () => { db.holdPresence = false; for (const resolve of (db.presenceHolds || []).splice(0)) resolve(); };
-  db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, ...event });
+  db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, seq: 0, ...event });
   // The other mock windows of this origin are teammates on the same server (SPEC-127).
   db.presenceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('yulius-mock-presence') : null;
   if (db.presenceChannel) db.presenceChannel.onmessage = (message) => emit(db, message.data);

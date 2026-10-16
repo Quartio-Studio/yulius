@@ -6,6 +6,146 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Someone else's task is watched as its live transcript, not a broken terminal (SPEC-179,
+  ADR-0145, task #166). The owner's terminal is drawn for the owner's window, so a watcher saw it
+  wrapped and overlapping. Now they read the session as the Sessions view prints it, in the
+  terminal's normal colours, as it writes (new messages, tool calls and prompts every 1.5 s; the
+  tail of a long session first). "You are watching @owner's task" sits above it with Request
+  control, the sidebar shows the owner's initials on their tasks, and an electro-blue pixel octopus
+  with dot eyes and an ε mouth crawls between the top corners. New `GET /api/tasks/{tid}/transcript`.
+- The step strip never overflows, the keyboard survives a hidden Archive, and the last loading
+  states take their final shape (SPEC-182, ADR-0147, task #138, fixes #348, #331, #407, #449). The
+  task step strip gives way whole parts by priority (chain chips, Auto, Supertask, then the bar and
+  the pull request chip) so it never passes its edge and Task actions stays clickable beside a
+  panel; its bar is 60 px in narrow strips as SPEC-073 meant. The keyboard on a quick Archive that
+  hides moves to its row's link. The automation editor's loading start chip is a skeleton bar and
+  its Supertask tooltip reads as New task's. The New sandbox lists, the delivery and CI run dialogs,
+  a task's changes, commits and overview, and the CI hygiene and GitHub connection cards load in
+  their final layout.
+- The Editor's file in front follows the disk, and the Explorer's buttons stay in the Explorer
+  (SPEC-181, ADR-0146, task #168). While the Editor is shown, the file in front is looked at every
+  2 s (and at once when the Editor or the page comes back) with `known=<sha256>`; the files API
+  answers 204 while the file is unchanged. What teammates, agents or shells wrote replaces unedited
+  text as one undoable edit of the changed part, so the cursor stays with its text and no toast
+  repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
+  shortens at its narrowest instead of pushing the Refresh button over the first file tab.
+  Co-editing of unsaved text is #566.
+- The Superagent reads the agent vault (SPEC-178, ADR-0144, task #165): `secrets_list` names its
+  project's agent secrets (never values) with guidance for a session outside the proxy, and the
+  new `secret_verify {secret, sha256}`, the Superagent's only, tells whether a value the person holds
+  is a secret's value from its SHA-256: exactly, without a final line break, or with its line
+  breaks as the literal `\n` a multi-line key is stored with. Both run without asking; each
+  distinct check is audited (`vault.agent.verify`).
+- The original prompt reads as written (SPEC-180, fixes #565, task #167). An image inside the
+  text was a thumbnail up to 160 px high, so its line grew to the picture's height. It is now the
+  composer's one-line `Image N` placeholder, which opens the image. The "Attached files" list
+  below the text holds every file once, each image's thumbnail carrying its number.
+- A playground moves to GitHub (SPEC-176, ADR-0142, task #132, fixes #410). Once GitHub is
+  connected, an admin of a playground picks "Move to GitHub…" in its sandbox menu and names an empty
+  repository of the instance owner that they could import (`admin` or `maintain` on it; the
+  superadmin: one the App can access). Yulius pushes every branch and tag there in one atomic push,
+  points the sandbox's clone at it, records it (same slug, tasks, sessions and steps) and deletes
+  the server's copy; access then mirrors GitHub. A repository with anything else in it, a live or
+  queued task, or a failed push leaves the playground as it was
+  (`POST /api/sandboxes/{sid}/move-to-github`).
+
+- The session view says when the server cut a diff or a context, and every scroller is reachable
+  (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
+  `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the
+  change is longer.", and a cut context reads "Context added (at least 16 KiB)" and says it was cut
+  when opened. Code, results, diffs and context are keyboard regions when they scroll as laid out
+  (also on a phone), named after their call, such as `Result of Bash(npm test)`.
+- Review findings in a change's own code are fixed before merge, never deferred to an issue
+  (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
+  report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and
+  `yulius-git` primitives, the engineering workflow, the briefing and the `issue_create` tool now
+  say the same: an own-code finding is fixed test-first in the same pull request whatever the
+  round (keep fixing, split, or ask a person); only pre-existing bugs, flaky tests the change did
+  not cause and nits left at the round limit become issues, saying why; the reviewer marks each
+  finding own code or pre-existing, and deferring an own-code one is "request changes". A unit
+  test keeps every location stating the rule.
+- A long goal no longer pushes mandatory parts out of the briefing (SPEC-174, fixes #555). A Fix
+  task's workflow instructions lower the budget, and a 600-byte goal used to cut `## Architecture`
+  and every optional part. The goal quote now shrinks first (down to 40 bytes; the whole request is
+  in the task's prompt or request file), and no bundled workflow is larger than 1,444 bytes.
+- A held redraw never eats a click or a drag, and one Start onboarding shows one toast (SPEC-175,
+  task #136, fixes #477, #478, #436). A plain click on an Editor tab while a strip redraw waited
+  activates the tab (the redraw runs after the click; the browser dropped the click before); a
+  drag from the new-task prompt that a thumbnail's redraw interrupted is refused on drop instead
+  of pasting a copy of itself; and leaving the sandbox's page and coming back while onboarding
+  starts no longer shows two toasts. New tests cover a presence leave naming a link to a folder,
+  a destroyed presence's waiting leave and which refusals are retried.
+- Queued messages show and take files as placeholders (SPEC-168, ADR-0137, task #158). The
+  "Queued messages" card no longer shows a request's files as raw `@'/path'` mentions: each is a
+  placeholder (`Image N`, or the file's name) that opens the image, or downloads the file, on a
+  click. The message box is the composer's prompt input: an image pasted or dropped there uploads
+  to the task and sits at the caret as a placeholder that moves and deletes like a character, and
+  is queued at its place. Queue waits for an upload still running.
+- A playground's lifecycle at its ends (SPEC-171, ADR-0139, task #131, fixes #409 and #420).
+  `yulius onboard --playground [path] [--name <name>]` brings a local checkout without GitHub into a
+  new or existing playground of yours: every branch and tag, the uncommitted work (one commit on the
+  checked-out branch of a new playground) and the chosen sessions (on its Sessions page), through
+  the import upload; nothing is pushed anywhere and GitHub is never called. Removing a playground
+  can delete its code for good ("Also delete its code from this server for good" in the dialog,
+  `POST /api/sandboxes/{sid}/purge`): its `origin` and sandbox directory go once nothing of its
+  sandbox runs, its place among its maker's 10 is freed, and task records and the audit stay.
+- Tools and the keyboard stay where the person left them, and presence leaves arrive last
+  (SPEC-170, ADR-0138, task #135, fixes #489, #439, #463). A sandbox left while its page still
+  loads comes back with no tool open, not the other sandbox's; the Shell shown again for another
+  task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
+  notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
+  sent as a teammate's tab hid no longer leaves their caret drawn.
+- An isolated sandbox's agent is told there is no container engine (SPEC-173, ADR-0140, task #163,
+  fixes #550). An agent of another project had designed a deployer around a local Docker daemon
+  before finding that `docker` exists but no daemon does: the sandbox's containment refuses what one
+  needs. The briefing now has a `## Containers` section: no engine here, in Yulius CI or in CD; use
+  an engine on another machine (`DOCKER_HOST=ssh://…`), keep rollback images there or in a
+  registry, and install test services with `apt`. An engine per sandbox is #551.
+- A folded subscription shows both its 5-hour and its weekly usage, without opening it (SPEC-172,
+  task #162). The Status panel's and the Dashboard's rows showed only the 5-hour bar; each now has
+  two lines, "5 h" and "Week", with a bar and the percent used. Where the list is narrower than
+  360 px (the Status panel on a phone), the lines keep their percents and drop the bars; in the
+  Status panel a row's state ("Limit reached") shows as its icon, so the name keeps its room.
+- The sandbox tabs show that they drag (SPEC-167, task #157). Each sandbox tab in the top row has
+  the six-dot grip the Notes tabs have (SPEC-136) before its name, and its tooltip adds "Click to
+  open, drag to reorder" under the repository and access. The grip is faint until the tab is
+  hovered or current and is hidden on devices without a mouse or pen; "All sandboxes" has none,
+  since it does not move. Both strips take the hint from one constant.
+- A CI run's stages are readable (SPEC-165, ADR-0136, task #155): each job is one row under
+  "Jobs", its wait for a job slot (hatched) running into its run, with "waited 6 min" beside how
+  long it ran and its state as an icon and a word; a job's checkout and stages fold under it (a
+  failed job opens, and what is opened survives the dialog's refresh); every waterfall has a time
+  axis with gridlines, a "now" mark and a legend; on a phone the bar goes under its name.
+- The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
+  crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
+  the narrow-strip e2e test now checks that no strip chip's text overflows its box.
+- The Tasks page shows how tasks hang together (SPEC-164, ADR-0135, task #154). A List / Graph
+  switch (`?view=graph`, also the sidebar Working group's "Show as a graph") opens Starts next (the
+  queued tasks in the order they get a free session: supertasks first, then the longest queued),
+  Chains and rules (chains, start rules and supertask holds drawn left to right, one arrow per link,
+  each card a link to the task), Prepared and On their own. Built in the browser from the task
+  summaries; no API change.
+- The Editor never opens a file twice, and a moved image placeholder is never shown as selected
+  text (SPEC-166, task #156). The task's screenshots, two editors stacked in one host, were #394,
+  fixed by #523 before this task. Reproducing them showed the Editor still broke another way:
+  - **#534:** a file opened again before its first open showed it (a double-click on its row,
+    which is two clicks) got a second tab, with a second model of the same file. Every open of a
+    path now waits for the one under way.
+  - **#535:** a press on a placeholder in the new-task prompt, and a drop, select it so Delete,
+    cut or a drag takes it. The browser painted that selection as a text highlight over the label
+    "Image 1". Now the placeholder is marked as a whole and its label is never painted.
+- Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
+  playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
+  `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes
+  (Yulius lands it when it passes, or builds and tests again when `dev` moved), and refuses on red.
+  A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
+  playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
+  as before.
+- The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
+  #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
+  CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
+  `?section=pipeline` with its filters after it. `/pipeline` links, "In Pipeline" and the
+  Overview's Pipeline card open the tab.
 - A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
   fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
   skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),

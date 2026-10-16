@@ -79,6 +79,17 @@ flowchart LR
   S --> W["crates/yulius-server/web"]
 ```
 
+## Containers
+
+An isolated sandbox runs no container engine. Its runs (agents, CI jobs, CD) have Docker's default
+capability set and a seccomp filter without mount APIs or nested user namespaces, which a daemon
+needs; a `docker` client is there only when the base copied one from the host's `/usr`. The
+briefing says so in a `## Containers` section, its last mandatory part, and points agents to an
+engine on another machine (`DOCKER_HOST=ssh://…`) and to `apt` for test services
+([SPEC-173](../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md),
+[decision 0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)); an
+engine per sandbox is #551.
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -177,16 +188,55 @@ The record marks it with an empty repository owner. The browser packs a chosen f
 working tree, `git/` the history part of `.git`); the server takes only `HEAD`, `packed-refs`,
 `shallow`, `objects/` and `refs/` of it, copies the branches and tags into the new `origin` with the
 hardened Git, and commits the working files on top. `delivery_merge` squashes a task branch onto
-the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing). CI
-sync, hygiene, the automatic pull request and reconciliation skip playgrounds.
+the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing) on green
+Yulius CI ([SPEC-163](../.ai/specs/SPEC-163-fix-411-yulius-ci-runs-the-gate-on-a-pla.md),
+[decision 0134](decisions/0134-a-playground-s-ci-tests-the-head-merged-into-its-integration-branch.md)):
+the CI sync tests the integration head without GitHub, and `delivery_merge` first builds the task
+head merged into the integration branch in Yulius's clone (the merge train's builder, a merge
+commit) and tests it as `task/<n>`; while that run goes the merge is armed, and it lands once the
+run passed. Nothing is published to GitHub. Hygiene, the automatic pull request and reconciliation
+skip playgrounds.
+
+A local checkout without GitHub comes in from the command line too
+([SPEC-171](../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)): `yulius onboard
+--playground` sends a bundle of every branch and tag, the uncommitted work and the chosen sessions
+through the import pipeline, with `playground: true` on the plan and the manifest. Into a new
+playground the job's files go under an id reserved when the job is created; the playground is made
+when the upload completes, as from a folder (the bundle's refs copied into `origin` with the
+hardened Git, the uncommitted work one commit on the checked-out branch). Into the person's
+existing playground of that name the upload lands as an import does, under `import/<login>/`.
+A removed playground's code goes on request
+([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md)):
+the request is kept in `playground_purges`, and its `origin` and sandbox directory are deleted
+only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
+once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
+
+A playground moves to GitHub
+([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
+[decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
+repository of the instance owner that its mover could import (`admin` or `maintain` there; the
+superadmin: one the App can access). Detached from its request, while no task of it is live or
+queued and no CI run of it is active, and holding the
+sandbox's merge pass, Yulius pushes every branch and tag of `origin` to it in one atomic push with
+the installation token (the default branch alone first, so GitHub takes it as its default), removes the clone's own transport settings, points its `origin` at it and refreshes its
+`origin/*` refs from the bare `origin` by path (no token through the clone), then writes the GitHub owner,
+name and repository id into the record in one compare-and-set (the commit point; a failure before
+it points the clone back). It then deletes the bare `origin`. From then on every playground test
+(`is_playground`) answers no, so access, credentials, delivery and CI take their GitHub paths.
 
 ```mermaid
 flowchart LR
   B["Browser: folder → tar.gz"] -->|"POST /api/playgrounds"| S["Server: unpack files/ and the history of git/"]
+  L["yulius onboard --playground: bundle, snapshot, sessions"] -->|"import job, then complete"| S
   S -->|"init --bare, copy refs, commit the files"| O[("data/playgrounds/id.git (outside the sandbox)")]
   O -->|"clone; fetch by path"| R["sandbox/repo"]
   R -->|"worktree from origin/dev"| T["Task worktree (agent, contained)"]
-  T -->|"delivery_merge: Yulius squashes, pushes by path"| O
+  T -->|"delivery_merge: head merged into dev, built in the clone"| C["task/n run (Yulius CI)"]
+  R -->|"dev head"| D["branch/dev run (Yulius CI)"]
+  C -->|"passed: Yulius squashes, pushes by path"| O
+  P["Purge of a removed playground"] -.->|"once nothing of the sandbox runs: delete"| O
+  O -->|"Move to GitHub: atomic push of every branch and tag"| G[("GitHub: empty repository of the owner")]
+  G -.->|"then origin of sandbox/repo; data/playgrounds/id.git deleted"| R
 ```
 
 ## Parallel tasks at merge
@@ -489,6 +539,15 @@ access decision within the staleness bound, never waiting on GitHub). It is not 
 proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
+The Superagent reads the agent vault too: `secrets_list` names its sandbox's agent secrets (never
+a value), and `secret_verify`, the Superagent's only (a matching candidate's hash must not reach
+a task transcript other members read), compares the SHA-256 of a value the
+person holds with the stored value and its variants (a final line break; literal `\n` as line
+breaks, since an agent secret never spans lines), answering only the kind of match and the line
+count. Both run without asking; the proxy, `.env` copies, host requests and the browser stay a
+task's ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
+[decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
@@ -702,8 +761,8 @@ until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-s
 [decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
 token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
 agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
-owner, and the terminal opens read-only for others. Anyone else who may work in the project asks
-for control; the owner hands it over or declines, and an absent owner's task passes at once.
+owner. Anyone else who may work in the project asks for control; the owner hands it over or
+declines, and an absent owner's task passes at once.
 
 ```mermaid
 flowchart LR
@@ -715,6 +774,35 @@ flowchart LR
   OWN --> TOK["Yulius's pushes, PRs, merges as Bob"]
   OWN --> ID["worktree commit identity: Bob"]
   OWN --> GATE["load_task: only Bob writes"]
+```
+
+Everyone but the owner watches the task as its live transcript, not its terminal: the terminal is
+drawn for the size its writer's browser sets and is unreadable at another
+([SPEC-179](../.ai/specs/SPEC-179-ui-problem-when-someone-else-has-a-contr.md),
+[decision 0145](decisions/0145-someone-else-s-task-is-watched-as-its-live-transcript.md)).
+`watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
+reads on from where it stopped; `App::task_transcript` reads the latest lineage entry's file
+(`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a `stat`.
+An electro-blue pixel octopus (`octopus.js`) crawls along a lane stuck to the transcript's top.
+
+```mermaid
+sequenceDiagram
+  participant W as Watcher's browser (watchview.js)
+  participant API as GET /api/tasks/{tid}/transcript
+  participant F as Session transcript (JSONL)
+  W->>API: tail (no from)
+  API->>F: read_tail: last 200 entries, redacted
+  API-->>W: entries, end, bytes, session_id
+  loop every 1.5 s while live and shown
+    W->>API: from=end, seen=bytes, session
+    API->>F: stat
+    alt same session, same size
+      API-->>W: no entries
+    else grown
+      API->>F: read_page from end
+      API-->>W: new entries, end, bytes
+    end
+  end
 ```
 
 ## Ready-made automations
@@ -802,6 +890,22 @@ items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
+
+The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
+is drawn from the task summaries the store already holds, with no endpoint of its own:
+`taskgraph.js` reads each open task's `after` (a chain, or a start rule's `#N`s), `held_by`,
+`supertask`, `status` and `state_since` into the queue in start order, a layered graph (a column
+per longest path, rows by barycenter, cycles never followed) drawn as HTML cards over SVG arrows,
+the prepared tasks and the rest, and redraws on the store's `tasks` events.
+
+```mermaid
+flowchart LR
+  S["store.js tasksOf(sandbox)"] -->|"after, held_by, supertask, status, state_since"| M["taskgraph.js taskStructure"]
+  EV["task.updated / task.created"] --> S
+  M --> Q["Starts next (supertasks first, then longest queued)"]
+  M --> L["layered layout: columns, rows"] --> V["cards (links) over SVG arrows"]
+  M --> R["Prepared, On their own"]
+```
 
 ```mermaid
 flowchart LR
@@ -947,8 +1051,13 @@ the job's reaped process tree (`getrusage` of its children) into `exit.json`; th
 the job's end and the end trigger adds them to its span
 ([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
-outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
-task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
+outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
+the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
+days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's spans on a time
+axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
+job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
+([SPEC-165](../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
+[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)).
 
 ```mermaid
 flowchart LR
@@ -963,7 +1072,7 @@ flowchart LR
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
   S --> API["GET …/stages/timeline, summary, spans"]
-  API --> UI["Pipeline page, run dialogs, task overview, Dashboard"]
+  API --> UI["Dashboard (Overview, Pipeline tab), run dialogs, task overview"]
 ```
 
 ## Notes
@@ -984,19 +1093,23 @@ measured on a hidden mirror) and shows the teammates who have it open
 ([SPEC-112](../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md),
 [decision 0091](decisions/0091-notepad-presence-is-relayed-not-stored.md)): a browser sends its
 selection in the saved text's offsets, `App::note_presence` relays it as `note.presence` to the
-notepad's readers (20 a second per person and notepad at most) and stores nothing.
+notepad's readers (20 a second per person and notepad at most) and stores nothing. Each update
+carries `seq`, growing per browser tab, and a receiver drops one older than the newest it heard
+from that tab, so a leave sent as the page goes (with `keepalive`, not waiting for the update on
+its way) is never undone by a late update ([decision 0138](decisions/0138-presence-updates-carry-a-per-tab-sequence-number.md)).
 
 ```mermaid
 sequenceDiagram
     participant A as Alice's notepad
     participant S as Server (App::note_presence)
     participant B as Bob's notepad
-    A->>S: PUT notes/presence {revision, selection, hello, client} (≤ 1 per 100 ms, every 15 s)
+    A->>S: PUT notes/presence {revision, selection, hello, client, seq} (≤ 1 per 100 ms, every 15 s)
     S-->>B: note.presence (team: everyone; sandbox: its viewers)
     B->>S: PUT notes/presence (answers a hello)
     S-->>A: note.presence
     Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
-    A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
+    A->>S: PUT notes/presence {selection: null, seq} (hidden, another tab, page gone)
+    Note over B: an update with a lower seq from that tab, arriving later, is dropped
 ```
 
 The Editor shows the same presence for files
@@ -1017,6 +1130,32 @@ flowchart LR
     BUS -.->|dropped| R[Reader of the sandbox]
     B --> M[Monaco decoration<br/>+ caret position]
     M --> L[editorlayer.js<br/>rounded gliding shapes]
+```
+
+The file in front follows the disk ([SPEC-181](../.ai/specs/SPEC-181-here-ui-got-bugged-a-little-bit-we-want.md),
+[decision 0146](decisions/0146-the-editor-follows-the-file-in-front-by-polling-with-its-sha.md)).
+Agents and shells write the sandbox directly, so there is no event to wait for: while the Editor is
+shown, the page visible and the sandbox in front, the browser looks at that one file every 2 s
+(and at once when the Editor or the page comes back) with the `sha256` it has, and
+`App::file_read` answers 204 when the bytes still hash to it. A newer version replaces unedited
+text as one undoable edit of the part that changed; edited text is kept and the status bar says
+"Changed on disk", and the save's 409 choice decides.
+
+```mermaid
+sequenceDiagram
+    participant E as Editor (file in front)
+    participant S as Server (App::file_read)
+    participant D as Sandbox disk
+    loop every 2 s while shown
+        E->>S: GET files/content?path&known=sha
+        S->>D: read + sha256
+        alt same sha256
+            S-->>E: 204
+        else changed (agent, shell, teammate's save)
+            S-->>E: {content, sha256}
+            E-->>E: unedited: one edit of the changed part; edited: "Changed on disk"
+        end
+    end
 ```
 
 ```mermaid

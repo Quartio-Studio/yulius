@@ -202,6 +202,77 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
+    async fn move_to_github(
+        &self,
+        id: &SandboxId,
+        owner: &str,
+        name: &str,
+        github_repo_id: Option<u64>,
+    ) -> AppResult<bool> {
+        let (id, owner, name) = (id.as_str().to_owned(), owner.to_owned(), name.to_owned());
+        self.call_access(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE sandboxes SET repo_owner = ?1, repo_name = ?2, github_repo_id = ?3 \
+                     WHERE id = ?4 AND repo_owner = '' AND removed_at IS NULL",
+                    params![owner, name, github_repo_id.map(to_i64), id],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    async fn request_purge(&self, id: &SandboxId, by: &UserId, at: Timestamp) -> AppResult<bool> {
+        let (id, by) = (id.as_str().to_owned(), by.as_str().to_owned());
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "INSERT OR IGNORE INTO playground_purges (sandbox_id, requested_by, requested_at) \
+                     VALUES (?1, ?2, ?3)",
+                    params![id, by, at.0],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    async fn pending_purges(&self) -> AppResult<Vec<SandboxId>> {
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT sandbox_id FROM playground_purges WHERE purged_at IS NULL \
+                     ORDER BY requested_at, sandbox_id",
+                )
+                .map_err(db)?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(ids
+                .iter()
+                .filter_map(|id| SandboxId::parse(id).ok())
+                .collect())
+        })
+        .await
+    }
+
+    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE playground_purges SET purged_at = ?1 WHERE sandbox_id = ?2 AND purged_at IS NULL",
+                    params![at.0, id],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
     async fn release_removed_slug(&self, slug: &str, owner: &str, name: &str) -> AppResult<bool> {
         let (slug, owner, name) = (slug.to_owned(), owner.to_owned(), name.to_owned());
         self.call(move |c| {

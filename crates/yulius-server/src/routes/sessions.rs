@@ -5,8 +5,8 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use yulius_app::session_docs::{SessionFilter, parse_kind};
-use yulius_contracts::api::sessions::{SessionDoc, SessionList, TranscriptPage};
+use yulius_app::session_docs::{SessionFilter, TranscriptRead, parse_kind};
+use yulius_contracts::api::sessions::{SessionDoc, SessionList, TaskTranscript, TranscriptPage};
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::import::{OnboardPlan, OnboardPlanRequest};
 
@@ -66,6 +66,30 @@ pub async fn transcript(
         )
         .await?,
     ))
+}
+
+#[derive(Deserialize)]
+pub struct TaskTranscriptQuery {
+    from: Option<u64>,
+    limit: Option<usize>,
+    seen: Option<u64>,
+    session: Option<String>,
+}
+
+/// `GET /api/tasks/{tid}/transcript`: the task's live session for its watchers (SPEC-179).
+pub async fn task_transcript(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    Query(query): Query<TaskTranscriptQuery>,
+) -> ApiResult<Json<TaskTranscript>> {
+    let read = TranscriptRead {
+        from: query.from,
+        limit: query.limit.unwrap_or(200),
+        seen: query.seen,
+        session: query.session,
+    };
+    Ok(Json(app.task_transcript(&ctx, &tid, read).await?))
 }
 
 pub async fn continue_session(

@@ -7,7 +7,7 @@
 //! wrote (the tool call's path decides) — so task transcripts, which are not redacted at the
 //! source, are safe to show to people and to other tasks.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -158,33 +158,53 @@ fn bounded(text: &str, max: usize) -> String {
     cut(text, max).0
 }
 
+/// The edit an edit tool made; `truncated` when a side was cut or hunks were dropped.
 fn diff_of(name: &str, input: &Value) -> Option<TranscriptDiff> {
     let path = str_field(input, "file_path")?.to_owned();
-    let hunk = |old: &str, new: &str| DiffHunk {
-        old: bounded(old, MAX_HUNK_CHARS),
-        new: bounded(new, MAX_HUNK_CHARS),
+    let mut truncated = false;
+    let mut hunk = |old: &str, new: &str| {
+        let (old, old_cut) = cut(old, MAX_HUNK_CHARS);
+        let (new, new_cut) = cut(new, MAX_HUNK_CHARS);
+        truncated |= old_cut || new_cut;
+        DiffHunk { old, new }
     };
-    let hunks = match name {
+    let hunks: Vec<DiffHunk> = match name {
         "Edit" => vec![hunk(
             str_field(input, "old_string").unwrap_or(""),
             str_field(input, "new_string").unwrap_or(""),
         )],
         "Write" => vec![hunk("", str_field(input, "content").unwrap_or(""))],
-        "MultiEdit" => input
-            .get("edits")
-            .and_then(Value::as_array)?
-            .iter()
-            .take(MAX_HUNKS)
-            .map(|edit| {
-                hunk(
-                    str_field(edit, "old_string").unwrap_or(""),
-                    str_field(edit, "new_string").unwrap_or(""),
-                )
-            })
-            .collect(),
+        "MultiEdit" => {
+            let edits = input.get("edits").and_then(Value::as_array)?;
+            let hunks = edits
+                .iter()
+                .take(MAX_HUNKS)
+                .map(|edit| {
+                    hunk(
+                        str_field(edit, "old_string").unwrap_or(""),
+                        str_field(edit, "new_string").unwrap_or(""),
+                    )
+                })
+                .collect();
+            truncated |= edits.len() > MAX_HUNKS;
+            hunks
+        }
         _ => return None,
     };
-    Some(TranscriptDiff { path, hunks })
+    Some(TranscriptDiff {
+        path,
+        hunks,
+        truncated,
+    })
+}
+
+/// A meta block (harness bookkeeping) cut at `max`.
+fn meta_block(text: &str, max: usize) -> TranscriptBlock {
+    let (text, truncated) = cut(text, max);
+    TranscriptBlock::Meta {
+        text: clean(&text, false),
+        truncated,
+    }
 }
 
 fn result_text(content: Option<&Value>) -> String {
@@ -224,18 +244,16 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
     let mut blocks = Vec::new();
     let role = match kind {
         "summary" => {
-            let text = str_field(record, "summary")?;
+            let (text, truncated) = cut(str_field(record, "summary")?, MAX_TEXT_CHARS);
             blocks.push(TranscriptBlock::Text {
-                text: clean(&bounded(text, MAX_TEXT_CHARS), false),
-                truncated: false,
+                text: clean(&text, false),
+                truncated,
             });
             "summary"
         }
         "system" => {
             let text = str_field(record, "content")?;
-            blocks.push(TranscriptBlock::Meta {
-                text: clean(&bounded(text, MAX_TEXT_CHARS), false),
-            });
+            blocks.push(meta_block(text, MAX_TEXT_CHARS));
             "system"
         }
         "user" | "assistant" => {
@@ -269,9 +287,7 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
 
 fn text_block(text: &str, meta: bool) -> TranscriptBlock {
     if meta || is_meta_text(text) {
-        return TranscriptBlock::Meta {
-            text: clean(&bounded(text, MAX_RESULT_CHARS), false),
-        };
+        return meta_block(text, MAX_RESULT_CHARS);
     }
     let (text, truncated) = cut(text, MAX_TEXT_CHARS);
     TranscriptBlock::Text {
@@ -442,6 +458,11 @@ pub struct Page {
     pub entries: Vec<TranscriptEntry>,
     /// The line to continue from; `None` at the end.
     pub next: Option<u64>,
+    /// The line after the last one read: where a reader of a growing transcript continues. A last
+    /// line still being written (no newline yet) is not read.
+    pub end: u64,
+    /// Whether entries before the page were left out ([`read_tail`]).
+    pub earlier: bool,
     /// Lines skipped (unreadable or too long).
     pub skipped: u32,
 }
@@ -453,7 +474,7 @@ fn page_chars(entry: &TranscriptEntry) -> usize {
         .map(|block| match block {
             TranscriptBlock::Text { text, .. }
             | TranscriptBlock::Thinking { text, .. }
-            | TranscriptBlock::Meta { text }
+            | TranscriptBlock::Meta { text, .. }
             | TranscriptBlock::ToolResult { text, .. } => text.len(),
             TranscriptBlock::ToolCall { input, diff, .. } => {
                 input.len()
@@ -485,7 +506,10 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
         let read = read_line(&mut reader, &mut buf, MAX_LINE_BYTES)?;
         let current = line;
         match read {
-            LineRead::Eof => return Ok(page),
+            LineRead::Eof => {
+                page.end = line;
+                return Ok(page);
+            }
             LineRead::TooLong(_) => {
                 line += 1;
                 if current >= from {
@@ -506,6 +530,7 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
         }
         if page.entries.len() >= limit || chars >= max_chars {
             page.next = Some(current);
+            page.end = current;
             return Ok(page);
         }
         if buf.iter().all(u8::is_ascii_whitespace) {
@@ -521,6 +546,59 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
             Err(_) => page.skipped += 1,
         }
     }
+}
+
+/// Reads the last `limit` entries (≤ [`MAX_PAGE_ENTRIES`]) within about `max_chars` of text (≤
+/// [`MAX_PAGE_CHARS`]; the last entry is kept whatever its size): the tail of a live session
+/// (SPEC-179 WAT-001). The whole transcript is read, so a dotenv file read before the tail is still
+/// redacted in it. `earlier` says entries were left out; `end` is where a reader continues.
+///
+/// # Errors
+/// I/O failures opening or reading the transcript.
+pub fn read_tail(path: &Path, limit: usize, max_chars: usize) -> io::Result<Page> {
+    let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
+    let max_chars = max_chars.clamp(1, MAX_PAGE_CHARS);
+    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
+    let mut buf = Vec::new();
+    let mut env_calls = EnvCalls::default();
+    let mut tail: VecDeque<(usize, TranscriptEntry)> = VecDeque::new();
+    let mut page = Page::default();
+    let mut chars = 0;
+    let mut line = 0_u64;
+    loop {
+        let current = line;
+        match read_line(&mut reader, &mut buf, MAX_LINE_BYTES)? {
+            LineRead::Eof => break,
+            LineRead::TooLong(_) => {
+                line += 1;
+                page.skipped += 1;
+                continue;
+            }
+            LineRead::Line(_) => line += 1,
+        }
+        if buf.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        match serde_json::from_slice::<Value>(&buf) {
+            Ok(record) => {
+                if let Some(entry) = entry_of(current, &record, &mut env_calls) {
+                    let size = page_chars(&entry);
+                    chars += size;
+                    tail.push_back((size, entry));
+                    while tail.len() > 1 && (tail.len() > limit || chars > max_chars) {
+                        if let Some((size, _)) = tail.pop_front() {
+                            chars -= size;
+                            page.earlier = true;
+                        }
+                    }
+                }
+            }
+            Err(_) => page.skipped += 1,
+        }
+    }
+    page.entries = tail.into_iter().map(|(_, entry)| entry).collect();
+    page.end = line;
+    Ok(page)
 }
 
 fn memchr_tool_use(line: &[u8]) -> bool {
@@ -640,6 +718,9 @@ pub fn render_text(entries: &[TranscriptEntry], max_chars: usize) -> (String, Op
                             for new in hunk.new.lines().take(80) {
                                 block_text.push_str(&format!("  + {new}\n"));
                             }
+                        }
+                        if diff.truncated {
+                            block_text.push_str("  …(cut: the change is longer)\n");
                         }
                     }
                 }
@@ -777,6 +858,55 @@ mod tests {
     }
 
     #[test]
+    fn a_page_ends_before_a_line_still_being_written_and_reads_it_once_complete() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let page = read_page(&path, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(page.end, 7, "the unfinished line is left for later");
+        let full = read_page(&path, 0, 2, MAX_PAGE_CHARS)?;
+        assert_eq!(full.end, 3, "a full page ends where the next one starts");
+        let mut text = std::fs::read_to_string(&path)?;
+        text.push_str(" cart\"}}\n");
+        std::fs::write(&path, text)?;
+        let rest = read_page(&path, page.end, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            rest.entries.iter().map(|e| e.line).collect::<Vec<_>>(),
+            vec![7]
+        );
+        assert_eq!((rest.end, rest.next), (8, None));
+        Ok(())
+    }
+
+    #[test]
+    fn the_tail_holds_the_last_entries_with_env_tracking_from_the_start() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let tail = read_tail(&path, 4, MAX_PAGE_CHARS)?;
+        let lines: Vec<u64> = tail.entries.iter().map(|e| e.line).collect();
+        assert_eq!(lines, vec![3, 4, 5, 6]);
+        assert!(tail.earlier, "lines 1 and 2 were left out");
+        assert_eq!((tail.end, tail.next), (7, None));
+        let TranscriptBlock::ToolResult { text, .. } = &tail.entries[0].blocks[0] else {
+            return Err("tool result".into());
+        };
+        assert!(
+            text.contains("[REDACTED:"),
+            "the .env read before the tail: {text}"
+        );
+        let all = read_tail(&path, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(all.entries.len(), 6);
+        assert!(!all.earlier);
+        let bounded = read_tail(&path, 100, 1)?;
+        assert_eq!(
+            bounded.entries.len(),
+            1,
+            "the text bound keeps the last entry"
+        );
+        assert!(bounded.earlier);
+        Ok(())
+    }
+
+    #[test]
     fn index_batches_resume_at_byte_offsets() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
@@ -810,6 +940,135 @@ mod tests {
         let (short, next) = render_text(&page.entries, 120);
         assert!(short.len() < 400);
         assert!(next.is_some());
+        Ok(())
+    }
+
+    fn diff_in(line: &Value) -> Result<TranscriptDiff, Box<dyn std::error::Error>> {
+        let entry = entry_of(0, line, &mut EnvCalls::default()).ok_or("no entry")?;
+        match entry.blocks.into_iter().next() {
+            Some(TranscriptBlock::ToolCall {
+                diff: Some(diff), ..
+            }) => Ok(diff),
+            other => Err(format!("not an edit: {other:?}").into()),
+        }
+    }
+
+    fn call(name: &str, input: Value) -> Value {
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": name, "input": input},
+        ]}})
+    }
+
+    // #350: a diff the server cut says so, so the page claims no count.
+    #[test]
+    fn a_diff_cut_at_its_bounds_is_marked_truncated() -> TestResult {
+        let small = diff_in(&call(
+            "Edit",
+            json!({"file_path": "a.rs", "old_string": "a", "new_string": "b"}),
+        ))?;
+        assert!(!small.truncated, "a small edit is whole");
+        let at_bound = diff_in(&call(
+            "Write",
+            json!({"file_path": "a.rs", "content": "x".repeat(MAX_HUNK_CHARS)}),
+        ))?;
+        assert!(!at_bound.truncated, "a side at the bound is whole");
+        let long = diff_in(&call(
+            "Write",
+            json!({"file_path": "a.rs", "content": "x".repeat(MAX_HUNK_CHARS + 1)}),
+        ))?;
+        assert!(long.truncated, "a side over the bound is cut");
+        assert_eq!(long.hunks[0].new.chars().count(), MAX_HUNK_CHARS);
+        let old_side = diff_in(&call(
+            "Edit",
+            json!({"file_path": "a.rs", "old_string": "y".repeat(MAX_HUNK_CHARS + 1), "new_string": ""}),
+        ))?;
+        assert!(old_side.truncated, "the removed side counts too");
+        let edits = |n: usize| {
+            (0..n)
+                .map(|i| json!({"old_string": format!("a{i}"), "new_string": format!("b{i}")}))
+                .collect::<Vec<_>>()
+        };
+        let all = diff_in(&call(
+            "MultiEdit",
+            json!({"file_path": "a.rs", "edits": edits(MAX_HUNKS)}),
+        ))?;
+        assert!(!all.truncated, "{MAX_HUNKS} hunks are all kept");
+        let dropped = diff_in(&call(
+            "MultiEdit",
+            json!({"file_path": "a.rs", "edits": edits(MAX_HUNKS + 1)}),
+        ))?;
+        assert!(dropped.truncated, "hunks past {MAX_HUNKS} are dropped");
+        assert_eq!(dropped.hunks.len(), MAX_HUNKS);
+        // Agents reading the session are told too; the field is additive on the wire.
+        let entry = entry_of(
+            0,
+            &call(
+                "Write",
+                json!({"file_path": "a.rs", "content": "x".repeat(MAX_HUNK_CHARS + 1)}),
+            ),
+            &mut EnvCalls::default(),
+        )
+        .ok_or("no entry")?;
+        let (text, _) = render_text(&[entry], 100_000);
+        assert!(
+            text.ends_with("  …(cut: the change is longer)\n\n"),
+            "{text}"
+        );
+        let old: TranscriptDiff = serde_json::from_value(json!({"path": "a.rs", "hunks": []}))?;
+        assert!(!old.truncated, "a diff without the field is whole");
+        Ok(())
+    }
+
+    // #380: a meta text the server cut says so, like text and tool results.
+    #[test]
+    fn a_meta_text_cut_at_its_bound_is_marked_truncated() -> TestResult {
+        let meta = |line: &Value| -> Result<(String, bool), Box<dyn std::error::Error>> {
+            let entry = entry_of(0, line, &mut EnvCalls::default()).ok_or("no entry")?;
+            match entry.blocks.into_iter().next() {
+                Some(TranscriptBlock::Meta { text, truncated }) => Ok((text, truncated)),
+                other => Err(format!("not meta: {other:?}").into()),
+            }
+        };
+        let user = |text: String| json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": text}});
+        let system = |text: String| json!({"type": "system", "content": text});
+        assert_eq!(meta(&user("short".into()))?, ("short".to_owned(), false));
+        let (text, cut_off) = meta(&user("s".repeat(MAX_RESULT_CHARS)))?;
+        assert!(
+            !cut_off && text.len() == MAX_RESULT_CHARS,
+            "at the bound it is whole"
+        );
+        let (text, cut_off) = meta(&user("s".repeat(MAX_RESULT_CHARS + 1)))?;
+        assert!(
+            cut_off && text.len() == MAX_RESULT_CHARS,
+            "over the bound it is cut"
+        );
+        let (_, cut_off) = meta(&system("s".repeat(MAX_TEXT_CHARS)))?;
+        assert!(!cut_off, "a system line at its bound is whole");
+        let (text, cut_off) = meta(&system("s".repeat(MAX_TEXT_CHARS + 1)))?;
+        assert!(
+            cut_off && text.len() == MAX_TEXT_CHARS,
+            "a system line over it is cut"
+        );
+        // A summary line is cut at the message bound and says so too (review round 2).
+        let summary = |text: String| -> Result<bool, Box<dyn std::error::Error>> {
+            let line = json!({"type": "summary", "summary": text});
+            match entry_of(0, &line, &mut EnvCalls::default())
+                .and_then(|entry| entry.blocks.into_iter().next())
+            {
+                Some(TranscriptBlock::Text { truncated, .. }) => Ok(truncated),
+                other => Err(format!("not text: {other:?}").into()),
+            }
+        };
+        assert!(!summary("s".repeat(MAX_TEXT_CHARS))?);
+        assert!(summary("s".repeat(MAX_TEXT_CHARS + 1))?);
+        let old: TranscriptBlock = serde_json::from_value(json!({"type": "meta", "text": "x"}))?;
+        assert_eq!(
+            old,
+            TranscriptBlock::Meta {
+                text: "x".into(),
+                truncated: false
+            }
+        );
         Ok(())
     }
 

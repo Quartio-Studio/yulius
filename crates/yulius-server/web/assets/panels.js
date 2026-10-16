@@ -123,6 +123,7 @@ export function createPanelHost(ctx) {
   const views = new Map(); // key → view
   let recent = []; // sandbox ids whose views are kept, the one used last first
   const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
+  const arriving = new Set(); // sandbox ids whose page is loading, not the context yet (SPEC-170)
 
   // ---- width (default 45 % of the work area, resizable, remembered per user in this browser). The
   // work area is the room the centre and the panel share: the window less the rail and the sidebar,
@@ -311,7 +312,15 @@ export function createPanelHost(ctx) {
     /** Applies the remembered rail visibility once the rail is in the document. */
     mounted() { setRailVisible(railVisible, { persist: false }); },
     get kind() { return panel.hidden ? null : kind; },
+    /** A sandbox's page started loading: setContext comes once it has, unless the person left first. */
+    arrive(next) { arriving.add(next.id); },
     setContext(nextSandbox, nextTask) {
+      // A sandbox left while its page loaded never was the context: it comes back with no tool,
+      // unless it kept one from an earlier visit (SPEC-170 TKS-001, #489).
+      for (const id of arriving) {
+        if (id !== (nextSandbox && nextSandbox.id) && id !== (sandbox && sandbox.id) && !toolOf.has(id)) toolOf.set(id, null);
+      }
+      arriving.clear();
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
       const taskChanged = (nextTask && nextTask.id) !== (task && task.id);
       const left = sandbox;
@@ -387,6 +396,8 @@ function createShellView(ctx, sandbox, getTask) {
   let active = null;
   let loaded = false;
   let shown = false;
+  // Shown by the person (it takes the keyboard), not again for a new page (SPEC-170 TKS-002).
+  let focusWanted = false;
   let destroyed = false;
   let where = '';
   let renaming = null;
@@ -585,12 +596,12 @@ function createShellView(ctx, sandbox, getTask) {
       shells = list.map((shell) => ({ ...shell }));
       if (!shells.length) {
         renderTabs();
-        await create({ focus: shown });
+        await create({ focus: shown && focusWanted });
         return;
       }
       const remembered = readJson(activeKey, null);
       const pick = shells.find((shell) => shell.id === remembered) || shells[shells.length - 1];
-      activate(pick.id, { focus: shown });
+      activate(pick.id, { focus: shown && focusWanted });
     } catch (error) {
       if (destroyed) return;
       setChildren(views, h('div', { class: 'panel-msg stack items-center' },
@@ -622,13 +633,16 @@ function createShellView(ctx, sandbox, getTask) {
   return {
     el,
     headExtra: () => [folderSelect(), iconButton('plus', 'New terminal', () => create({ focus: true }))],
-    show() {
+    show(opts = {}) {
       shown = true;
+      // Shown again for a new task or sandbox, not opened by the person: the keyboard stays with
+      // the page, as for the Superagent and Notes (SPEC-056, #439).
+      focusWanted = !opts.context;
       if (!loaded) { load(); return; }
       const shell = shells.find((s) => s.id === active);
-      if (shell && shell.view) setTimeout(() => { shell.view.refit(); shell.view.focus(); }, 0);
+      if (shell && shell.view) setTimeout(() => { shell.view.refit(); if (focusWanted) shell.view.focus(); }, 0);
       // Opened again after its last terminal was closed: a new one, as on the first opening.
-      else if (!shells.length) create({ focus: true });
+      else if (!shells.length) create({ focus: focusWanted });
     },
     hide() { shown = false; },
     destroy() {

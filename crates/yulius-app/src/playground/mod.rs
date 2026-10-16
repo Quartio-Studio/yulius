@@ -19,12 +19,18 @@ use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug_base};
 
 mod folder;
+mod github;
+mod onboard;
+mod purge;
+
+pub(crate) use onboard::UploadTarget;
 
 pub use folder::{FolderUpload, MAX_FOLDER_UPLOAD_BYTES};
 
 /// The note a playground's delivery views carry instead of a GitHub error (PLY-008).
 pub const PLAYGROUND_NOTE: &str = "This playground keeps its Git on this server: no pull \
-     requests; `delivery_merge` squashes a task into the integration branch here.";
+     requests; `delivery_merge` squashes a task into the integration branch here once Yulius CI \
+     passed on it.";
 
 /// Refuses `what` in a playground (PLY-002): it needs GitHub, which a playground never calls.
 ///
@@ -34,7 +40,7 @@ pub(crate) fn refuse_in_playground(sandbox: &SandboxRecord, what: &str) -> AppRe
     if sandbox.is_playground() {
         return Err(AppError::Conflict(format!(
             "{what} needs GitHub, and this sandbox is a playground: its Git stays on this server, \
-             with no pull request, CI, deploy, promotion or GitHub issue"
+             with no pull request, deploy, promotion or GitHub issue"
         )));
     }
     Ok(())
@@ -101,7 +107,7 @@ impl App {
             return Ok(());
         }
         // Every repository on disk counts, a removed playground's too: removal keeps its files
-        // (PRJ-009), so removing cannot free room for more.
+        // (PRJ-009); purging its code frees its place (SPEC-171).
         let dir = self.config.data_dir.join("playgrounds");
         let ids: Vec<SandboxId> = match std::fs::read_dir(&dir) {
             Ok(entries) => entries
@@ -129,7 +135,8 @@ impl App {
         if kept >= MAX_PLAYGROUNDS_PER_PERSON {
             return Err(AppError::Conflict(format!(
                 "you keep {MAX_PLAYGROUNDS_PER_PERSON} playgrounds, the most a person may; a \
-                 removed one keeps its files on the server and still counts"
+                 removed one counts until its code is deleted (remove it with \"Also delete its \
+                 code from this server for good\")"
             )));
         }
         Ok(())
@@ -168,14 +175,19 @@ impl App {
             self.discard_playground(&id).await;
             return Err(err);
         }
-        self.record_playground(
-            id,
-            &name,
-            &profile,
-            user,
-            &format!("template={}", kind.id()),
-        )
-        .await
+        let recorded = self
+            .record_playground(
+                id.clone(),
+                &name,
+                &profile,
+                user,
+                &format!("template={}", kind.id()),
+            )
+            .await;
+        if recorded.is_err() {
+            self.discard_playground(&id).await;
+        }
+        recorded
     }
 
     /// The bare `origin`, the template's scaffold pushed to the production and integration
@@ -225,7 +237,8 @@ impl App {
     }
 
     /// Records a seeded playground as a sandbox (its slug and name unique), audits it and tells
-    /// viewers. On failure its directory is removed.
+    /// viewers. On failure the caller removes what it seeded: a CLI upload's files stay with its
+    /// job, so completing again retries (SPEC-171).
     async fn record_playground(
         &self,
         id: SandboxId,
@@ -235,10 +248,7 @@ impl App {
         detail: &str,
     ) -> AppResult<SandboxRecord> {
         // Again here: creations that ran at once each passed the first check.
-        if let Err(err) = self.playground_quota(user).await {
-            self.discard_playground(&id).await;
-            return Err(err);
-        }
+        self.playground_quota(user).await?;
         let record = SandboxRecord {
             id: id.clone(),
             slug: String::new(),
@@ -256,13 +266,7 @@ impl App {
             created_at: self.now(),
             removed_at: None,
         };
-        let record = match self.insert_sandbox_unique(record).await {
-            Ok(record) => record,
-            Err(err) => {
-                self.discard_playground(&id).await;
-                return Err(err);
-            }
-        };
+        let record = self.insert_sandbox_unique(record).await?;
         self.deps
             .store
             .audit(

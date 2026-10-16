@@ -166,6 +166,7 @@ fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
             },
         ],
         since: "2026-09-23T00:00:00.000Z".to_owned(),
+        playground: false,
     };
     contents.insert("repo.bundle".to_owned(), bundle);
     contents.insert("snapshot.tar.gz".to_owned(), snapshot);

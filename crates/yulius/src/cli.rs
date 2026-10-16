@@ -85,12 +85,17 @@ pub struct OnboardArgs {
     pub status: bool,
     /// List every redaction.
     pub show_redactions: bool,
+    /// Upload into a playground of the caller (SPEC-171).
+    pub playground: bool,
+    /// The playground's name (`None`: the checkout directory's name).
+    pub playground_name: Option<String>,
     /// No colours.
     pub no_color: bool,
 }
 
 /// `yulius onboard [path] [--server <url>] [--sessions all|recent|pick|none] [--since 14d]
-/// [--sessions-only] [--dry-run] [--status] [--show-redactions] [--yes] [--no-color]`.
+/// [--sessions-only] [--dry-run] [--status] [--show-redactions] [--playground [--name <name>]]
+/// [--yes] [--no-color]`.
 pub fn onboard(args: OnboardArgs) -> ExitCode {
     install_tls();
     set_colors(args.no_color);
@@ -111,6 +116,8 @@ pub fn onboard(args: OnboardArgs) -> ExitCode {
             dry_run: args.dry_run,
             status_only: args.status,
             show_redactions: args.show_redactions,
+            playground: args.playground,
+            playground_name: args.playground_name.clone(),
             ..ImportOptions::new(args.path.clone(), server)
         };
         let mut io = TerminalIo::new(store);

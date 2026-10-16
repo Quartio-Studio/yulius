@@ -29,6 +29,11 @@ import { mentionOf, splitMentions } from './promptparts.js';
 export const ATOM = '\uFFFC';
 /** A drag carrying a file's path to put in the text (a tray thumbnail, SPEC-150). */
 export const PLACE_TYPE = 'application/x-yulius-file';
+/**
+ * Marks a drag started in a prompt box, one type per box (`dragover` reads types, not data): one
+ * that box no longer tracks (a redraw forgot it) is refused there, not dropped as a copy (#478).
+ */
+const OWN_TYPE = 'application/x-yulius-prompt-';
 /** Steps the undo history keeps. */
 const HISTORY_MAX = 100;
 /** Typing within this long of the last typing joins its undo step (within a word). */
@@ -62,6 +67,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   let disabled = false;
   let dragged = null; // the file being dragged, while it is
   let moving = null; // `[start, end]` of this box's own selection or file being dragged
+  const ownType = OWN_TYPE + Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, '0')).join('');
   let pendingCount = 0;
   let kept = null; // the caret when the box last lost the keyboard (`place` puts a file there)
   const history = { states: [], index: -1, kind: '', at: 0 };
@@ -140,7 +146,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
 
   /**
    * Draws the model. A drag from this box under way is forgotten: its offsets may be stale, and its
-   * source node is replaced, so its `dragend` would never arrive.
+   * source node is replaced, so its `dragend` would never arrive. Dropped back here it is refused
+   * (`OWN_TYPE`), so it is started again.
    */
   function draw(plain, atoms) {
     if (moving) dragDone();
@@ -463,7 +470,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   }
 
   // A file, or the selection, dragged inside the box moves; text dragged in from elsewhere is
-  // inserted as plain text.
+  // inserted as plain text; a drag of this box that a redraw forgot is refused.
   el.addEventListener('dragstart', (event) => {
     if (!editable()) { event.preventDefault(); return; }
     const atom = event.target instanceof Element ? event.target.closest('.pi-atom') : null;
@@ -481,6 +488,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     }
     event.dataTransfer.effectAllowed = 'copyMove';
     event.dataTransfer.setData('text/plain', asText(plain, atoms, moving[0], moving[1]));
+    event.dataTransfer.setData(ownType, '1');
     // However the drag ends, even off the box or after a redraw replaced the dragged node.
     document.addEventListener('dragend', dragDone, { capture: true, once: true });
   });
@@ -490,17 +498,19 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     moving = null;
   }
   el.addEventListener('dragend', dragDone);
+  /** This box's own drag that a redraw forgot: its offsets are stale and it is no text from elsewhere. */
+  const forgotten = (event) => !moving && Boolean(event.dataTransfer) && [...event.dataTransfer.types].includes(ownType);
   el.addEventListener('dragover', (event) => {
     if (!moving && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
     event.preventDefault();
-    if (!editable()) { event.dataTransfer.dropEffect = 'none'; return; }
+    if (!editable() || forgotten(event)) { event.dataTransfer.dropEffect = 'none'; return; }
     event.dataTransfer.dropEffect = moving ? 'move' : 'copy';
     showPoint(event.clientX, event.clientY);
   });
   el.addEventListener('drop', (event) => {
     if (!moving && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
     event.preventDefault();
-    if (!editable()) { dragDone(); return; }
+    if (!editable() || forgotten(event)) { dragDone(); return; }
     const target = offsetAtPoint(event.clientX, event.clientY);
     const placing = !moving && [...event.dataTransfer.types].includes(PLACE_TYPE) ? event.dataTransfer.getData(PLACE_TYPE) : '';
     if (placing && known(placing)) {
@@ -605,6 +615,24 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
 
   // Where `place` puts a file by default: the caret the person left.
   el.addEventListener('focusout', () => { kept = selection(); });
+
+  // A file in the selection looks chosen as a whole: its label is never painted as selected text
+  // (the stylesheet), the file is marked instead (#535). Followed while the box has the keyboard.
+  function markSelected() {
+    // Gone with the keyboard in it: some browsers send no focusout then.
+    if (!el.isConnected) { document.removeEventListener('selectionchange', markSelected); return; }
+    const sel = window.getSelection();
+    const range = el.contains(document.activeElement) && sel && sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
+    for (const atom of el.querySelectorAll('.pi-atom')) atom.classList.toggle('pi-selected', Boolean(range) && !range.collapsed && range.intersectsNode(atom));
+  }
+  el.addEventListener('focusin', () => {
+    document.addEventListener('selectionchange', markSelected);
+    markSelected();
+  });
+  el.addEventListener('focusout', () => {
+    document.removeEventListener('selectionchange', markSelected);
+    for (const atom of el.querySelectorAll('.pi-selected')) atom.classList.remove('pi-selected');
+  });
 
   // ---------------------------------------------------------------- the composer's side
 

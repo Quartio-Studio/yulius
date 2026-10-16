@@ -33,7 +33,6 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
-import { mountPipelinePage } from './pages/pipeline.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
@@ -62,7 +61,6 @@ const SANDBOX_PAGES = {
   secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   ci: (ctx, sandbox, route) => mountCiCdPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox, route) => mountDashboardPage(ctx, sandbox, route),
-  pipeline: (ctx, sandbox, route) => mountPipelinePage(ctx, sandbox, route),
 };
 
 const ADMIN_PAGES = {
@@ -505,6 +503,7 @@ function createApp(root, transport) {
     shell.el.classList.remove('no-sandbox');
     if (wasOutside && ctx.fitSidebar) ctx.fitSidebar();
     currentSandbox = sandbox;
+    shell.panels.arrive(sandbox);
     shell.tabRow.update(sandbox.slug);
     shell.sidebar.update(route, sandbox);
     ensureTasks(sandbox).then(() => { if (currentRoute === route && shell) shell.sidebar.refresh(); });
@@ -735,7 +734,9 @@ function createApp(root, transport) {
   /** Opens a sandbox's composer (the one in view, or used last) and puts the cursor in the prompt. */
   function openNewTask(target) {
     document.body.classList.remove('drawer-open');
-    const sandbox = target || defaultSandbox();
+    const given = target || defaultSandbox();
+    // As the store has it now: the object handed in may be older (#436).
+    const sandbox = given && (store.sandboxById(given.id) || given);
     // While onboarding runs, the sandbox's page is its onboarding task (SPEC-111): go there
     // directly, not through the page that would open it again.
     const onboarding = sandbox && sandbox.onboarding === 'preparing' && !store.tasksError(sandbox.id)

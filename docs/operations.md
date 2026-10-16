@@ -564,7 +564,7 @@ The manifest flow requests these repository permissions:
 | --- | --- | --- |
 | Contents | Read and write | Clone and fetch repositories; push task branches (as the task's creator); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
-| Issues | Read and write | Agents log follow-up work, bugs and flaky tests as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
+| Issues | Read and write | Agents log what lies outside their change (pre-existing bugs, flaky tests they did not cause, nits left after review; [ADR-0141](decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)) as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
 | Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
 | Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |
@@ -718,6 +718,20 @@ onboarding task (adapting the repository to the Yulius standards) waits until so
 **Start onboarding** on the sandbox page in the browser, which the CLI cannot do (SPEC-051,
 ADR-0038). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
 --status` and the sandbox page say what is pending.
+
+A checkout that is not on GitHub (no remote, or another host) goes to a playground instead
+(SPEC-171): `yulius onboard --playground [path] [--name <name>]` sends every local branch and tag,
+the uncommitted work and the chosen sessions to a playground of yours named after the checkout
+directory (or `--name`). The first run makes it, with the uncommitted work as one commit on the
+checked-out branch (a detached `HEAD` is refused); later runs land in it under `import/<login>/`.
+Nothing is pushed anywhere and GitHub is never called; it counts toward your 10 playgrounds.
+
+Removing a playground can delete its code for good (the removal dialog's "Also delete its code
+from this server for good", or `POST /api/sandboxes/{sid}/purge`; the superadmin can purge an
+already removed one through the API). Its `<data>/playgrounds/<id>.git` and
+`<data>/sandboxes/<id>/` are deleted once no agent run, shell, browser, CI run or other process of
+it is left, within a disk upkeep round (5 minutes); task records, the removal's export under
+`<data>/exports/` and the audit (`sandbox.purge_requested`, `sandbox.purged`) stay (ADR-0139).
 
 ### Dropped files
 

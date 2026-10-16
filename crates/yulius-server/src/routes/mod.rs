@@ -112,6 +112,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
         .route("/api/tasks/{tid}/prompt", get(tasks::prompt))
         .route(
+            "/api/tasks/{tid}/transcript",
+            get(sessions::task_transcript),
+        )
+        .route(
             "/api/tasks/{tid}/prompt/attachments/{n}",
             get(tasks::prompt_attachment),
         )
@@ -209,6 +213,11 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route(
             "/api/sandboxes/{sid}",
             axum::routing::delete(projects::remove),
+        )
+        .route("/api/sandboxes/{sid}/purge", post(projects::purge))
+        .route(
+            "/api/sandboxes/{sid}/move-to-github",
+            post(projects::move_to_github),
         )
         .route(
             "/api/sandboxes/{sid}/onboarding/skip",

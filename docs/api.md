@@ -77,12 +77,16 @@ grants per client and 1000 per instance; past either it answers 429.
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
+| POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
+| POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
 
 A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
 has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
 superadmin see it (admin). Its `origin` is a bare repository on the server outside the sandbox, so
-nothing is pushed anywhere; Yulius CI, pull requests, hygiene's GitHub checks and the automatic pull request skip
-it, and its delivery view and Git page carry one note saying so. Nothing issues a GitHub token for
+nothing is pushed anywhere; pull requests, hygiene's GitHub checks and the automatic pull request skip
+it, and its delivery view and Git page carry one note saying so. Yulius CI tests its integration
+head and, when a task delivers, the task head merged into it (runs `task/<n>`, labelled `Task #n`);
+it publishes no commit status (SPEC-163). Nothing issues a GitHub token for
 it (`/internal/git-credential` answers 403), promotion and `issue_create` answer 409, and since its
 maker may be anyone signed in, it has no deploy: a profile with an environment command is 422 and
 an environment run 409.
@@ -150,8 +154,8 @@ in `crates/yulius-contracts/src/import.rs`.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| POST | `/api/onboard/plan` | `{"owner","name","sessions":[{"harness":"claude","session_id","sha256","size"}]}` (≤ 2000) → `OnboardPlan`. Changes nothing. |
-| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only; write for an existing sandbox); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. A session file is at most 128 MiB; at most 2000 sessions, each once. |
+| POST | `/api/onboard/plan` | `{"owner","name","sessions":[{"harness":"claude","session_id","sha256","size"}]}` (≤ 2000) → `OnboardPlan`. Changes nothing. With `"playground": true` (and an empty `owner`), the caller's playground named `name` (or a taken-name variant, `name-2`), else whether they may make one (the limit of 10, SPEC-171). |
+| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only; write for an existing sandbox); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. A session file is at most 128 MiB; at most 2000 sessions, each once. A manifest with `"playground": true` (empty owner and remote URL, `bundle` every branch) goes to the caller's playground of that name, else to a new one made when the job completes (its branches as they are, the snapshot one commit on `head_branch`; 422 without a bundle or a branch, 409 at the limit of 10). A person has one such upload open at a time: the same manifest resumes it, another one supersedes it (its files go, and completing it is 409). Without that flag an empty owner is refused (SPEC-171). |
 | PUT | `/api/import/{job}/files/{name}?offset=N` | raw chunk (≤ 8 MiB) with `X-Chunk-Sha256` → `{"name", "received_bytes"}`. `name` is one percent-encoded segment. Repeats are acknowledged; an offset beyond the received length is 409; a wrong digest is 422 (a wrong whole-file digest resets the file to 0). |
 | POST | `/api/import/{job}/complete` | → `ImportResult`; 409 while files are incomplete. Idempotent. |
 
@@ -211,12 +215,20 @@ SessionDoc = {"id", "sandbox_id", "kind": "task|imported", "title", "harness": "
   "can_continue", "can_delete",
   "hits": [{"line", "role": "user|assistant|tool|summary", "snippet": [{"text", "hit"}]}]}
 SessionTask = {"id", "number", "title", "status"}
+TaskTranscript = {"session_id" | null, "doc_id" | null, "entries": [TranscriptEntry], "next": line | null,
+  "end": line, "bytes", "earlier": bool, "skipped_lines"}
 TranscriptEntry = {"line", "role": "user|assistant|system|summary", "at", "sidechain", "blocks": [
   {"type": "text", "text", "truncated"} | {"type": "thinking", "text", "truncated"} |
-  {"type": "tool_call", "id", "name", "summary", "input", "diff": {"path", "hunks": [{"old", "new"}]} | null} |
+  {"type": "tool_call", "id", "name", "summary", "input", "diff": {"path", "hunks": [{"old", "new"}], "truncated"} | null} |
   {"type": "tool_result", "tool_use_id", "text", "is_error", "truncated"} |
-  {"type": "image", "media_type"} | {"type": "meta", "text"}]}
+  {"type": "image", "media_type"} | {"type": "meta", "text", "truncated"}]}
 ```
+
+Texts are bounded: a message at 32 Ki characters, thinking at 8 Ki, a tool result and a meta text at
+16 Ki (a `system` line's meta at 32 Ki), each side of a diff hunk at 16 Ki and an edit at 20 hunks,
+and a tool call's input at 8 Ki (cut without a flag). `truncated: true` says the server cut it; on a
+diff, that a side was cut or hunks were dropped, so its line counts are not the edit's (SPEC-177).
+`truncated` on diffs and meta blocks is additive: a payload without it reads as `false`.
 
 Agents use the same library through the internal MCP: `sessions_search {query, kind?, limit?}`
 (≤ 20 sessions, ≤ 3 passages each, the asking task's own sessions excluded) and `session_read {id |
@@ -238,7 +250,8 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained`, `prepared` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}],"parts":[{"text"}\|{"attachment":n}]}`: the prompt the task started with, without its attached files (an inline `@'path'` mention or an `@path` line each), its attached files in order (SPEC-043), and `parts`, the prompt in order with each file where it sits (`n` indexes `attachments`; SPEC-124). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
-| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
+| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's own attachments, dropped on its terminal or queued with a message, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
+| GET | `/api/tasks/{tid}/transcript?from=<line>&limit=N&seen=<bytes>&session=<id>` | read | → `TaskTranscript`: the task's latest Claude Code session as the people watching someone else's task read it (SPEC-179). Without `from` the tail: the last `limit` entries (≤ 500, default 200, about 2 MiB of text; `earlier` when entries were left out) and `doc_id`, the session's document; with `from` the entries from that line (`next` when the page is full). `end` is the line after the last complete line (a line still being written waits), `bytes` the transcript's size: a reader continues with `from=end&seen=bytes&session=session_id`, answered without reading the file while that session's size is unchanged. Redacted as session pages are. No session yet: `session_id` null, no entries |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065) |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
@@ -454,7 +467,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099) |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
@@ -997,8 +1010,10 @@ resolves to nothing, the run gets the server without that variable or token.
   is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
   `GET /api/sandboxes/{sid}/files?root&path` → `{"path","entries":[{"name","path",
   "kind":"file|dir|symlink","size"}],"truncated"}` (directories first; `.git` hidden; at most
-  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path` → `{"path","content":
-  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB). `PUT
+  2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path&known?` → `{"path","content":
+  "…|null","binary","too_large","size","sha256"}` (UTF-8 text up to 2 MiB); with `known`, the
+  `sha256` the caller has (64 lowercase hex digits, else 422), an unchanged file answers 204 with
+  no body (the Editor looks at the file in front every 2 s, SPEC-181). `PUT
   /api/sandboxes/{sid}/files/content` `{"root?","path","content","base_sha256?"}` →
   `{"path","sha256","size"}`: atomic; 409 when the file changed since `base_sha256` or, without
   a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
@@ -1006,9 +1021,9 @@ resolves to nothing, the run gets the server without that variable or token.
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
   `PUT /api/sandboxes/{sid}/files/presence` (write) `{"root?","path","sha256?","selection":
-  {"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-127): the caller's selection in UTF-16
-  offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when unknown),
-  or `null` when they left the file; `hello` and `client` as for notepad presence. Relayed as
+  {"anchor","head"}|null,"hello"?,"client"?,"seq"?}` → 204 (SPEC-127): the caller's selection in
+  UTF-16 offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when
+  unknown), or `null` when they left the file; `hello`, `client` and `seq` as for notepad presence. Relayed as
   `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
   other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
   4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
@@ -1109,11 +1124,13 @@ resolves to nothing, the run gets the server without that variable or token.
     note again. 422 over 256 KiB of UTF-8.
     Every stored edit publishes `note.updated`.
   - `PUT /api/notes/presence` (anyone signed in) and `PUT /api/sandboxes/{sid}/notes/presence`
-    (read) `{"revision","selection":{"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-112):
-    the caller's selection in UTF-16 offsets of the text at `revision`, or `null` when they left;
-    `hello` asks the others to answer with theirs; `client` names the browser tab (at most 32
-    letters and digits). Relayed as `note.presence`, stored nowhere.
-    422 for unknown fields or an offset over 1 Mi, 404 without read access, 429 past 20 updates a
+    (read) `{"revision","selection":{"anchor","head"}|null,"hello"?,"client"?,"seq"?}` → 204
+    (SPEC-112): the caller's selection in UTF-16 offsets of the text at `revision`, or `null` when
+    they left; `hello` asks the others to answer with theirs; `client` names the browser tab (at
+    most 32 letters and digits); `seq` (an unsigned integer, default 0) grows with each update the
+    tab sends, so receivers drop one older than the newest they heard from that tab (0: not
+    numbered; SPEC-170, ADR-0138). Relayed as `note.presence`, stored nowhere.
+    422 for unknown fields, a negative `seq` or an offset over 1 Mi, 404 without read access, 429 past 20 updates a
     second per person and notepad. There is no presence for the personal notepad.
 
 ## Administration, analytics, status
@@ -1367,9 +1384,9 @@ found or moved; clients refetch `GET /api/update`),
 `{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
 only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
-"revision","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a shared notepad, to
+"revision","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a shared notepad, to
 the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
-"client","name","sha256","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a file
+"client","name","sha256","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a file
 open in the editor, only to people with write access to that sandbox; SPEC-127),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
@@ -1432,3 +1449,12 @@ task; other hooks answer as usual.
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
   for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
   redacted.
+- MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
+  `sha256sum`'s line) →
+  `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`
+  on a match only): whether the
+  candidate whose SHA-256 is given is the secret's value, without a final line break, or with its
+  line breaks as the literal `\n` the vault holds; never the value or a hash Yulius computed from
+  it. Production secrets are refused; audited once per vault generation, sandbox, caller, secret
+  and candidate (`vault.agent.verify`). The Superagent (`ck_` token) is served `secrets_list` and
+  `secret_verify`, not the other secret tools; task agents are not served `secret_verify`.

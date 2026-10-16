@@ -1480,6 +1480,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
 - **The subordinate range is shared by every sandbox.** Mount, PID and network namespaces separate them; per-sandbox ranges are a later refinement.
 - **Disk is a soft quota.** It needs project quotas on a dedicated data volume to become hard.
 - **The secrets proxy is a way out, not the only one,** unless `YULIUS_SANDBOX_EGRESS=none`.
+- **No container engine.** The capability set and seccomp filter leave no room for one (`dockerd` fails at its first `iptables`), even where the base copied a `docker` client from the host. The briefing tells agents so (SPEC-173, ADR-0140); an engine per sandbox is #551.
 
 ## 3. Code organization
 
@@ -2018,8 +2019,14 @@ workflow, steps of similar effort, tests, decisions, evidence; ADR-19), the deli
 Git hygiene and the profile's path, "Read before you build" (the docs index and sessions as docs:
 `sessions_search`, `session_read`), Yulius tools, dev-server ports, task (goal, workflow, spec path
 and policy, steps with weighted progress and nudges), project foundations it lacks (DSC-014), project
-summary (`docs/product.md` head), architecture pointer, decision index (titles), recent changes
-(last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims.
+summary (`docs/product.md` head), architecture pointer, in an isolated sandbox the missing container
+engine (SPEC-173; the last mandatory part, so a tight budget cuts it first), decision index
+(titles), recent changes (last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims.
+The session hook lowers the budget by the task's workflow instructions; when the mandatory parts and
+600 bytes for the optional ones no longer fit, the goal quote (at most 600 bytes) shrinks first,
+down to 40 bytes, before any mandatory part is cut (#555, SPEC-174): the whole request is in the
+task's prompt or request file. No bundled workflow is larger than 1,444 bytes
+(`the_shipped_catalog_is_valid`).
 
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 

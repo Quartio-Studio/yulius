@@ -75,13 +75,9 @@ test('an image pasted mid-text stays there, deletes and comes back, moves, and r
   // The original prompt shows it there too.
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await screen.getByRole('menuitem', 'See the original prompt').click();
-  await expect(browser.locator('.prompt-modal .prompt-text').getByRole('img', { name: 'shot.png' })).toBeVisible();
-  const inView = await browser.evaluate(() => {
-    const copy = document.querySelector('.prompt-modal .prompt-text')!.cloneNode(true) as HTMLElement;
-    for (const img of copy.querySelectorAll('img')) img.replaceWith(`[${img.getAttribute('alt')}]`);
-    return copy.textContent;
-  });
-  expect(inView).toMatch(/while the header\s*\[shot\.png\]\s*is fine\./);
+  await expect(browser.locator('.prompt-modal .prompt-text').getByRole('button', { name: 'Open Image 1, shot.png' })).toBeVisible();
+  const inView = await browser.evaluate(() => document.querySelector('.prompt-modal .prompt-text')!.textContent);
+  expect(inView).toMatch(/while the header\s*Image 1\s*is fine\./);
 });
 
 test('an image dragged to another place in the text lands at the drop point', async ({ app, browser, screen }) => {
@@ -112,6 +108,57 @@ test('an image dragged to another place in the text lands at the drop point', as
   // A move is one undo step.
   await browser.keyboard.press('ControlOrMeta+z');
   expect(await promptText(browser)).toBe('Before the image, [drag.png] after it.');
+});
+
+// #535 (SPEC-166): a press selects a placeholder (so Delete, cut or a drag takes it) and a drop
+// selects it where it landed; it looks chosen as a whole, and its label is never painted as
+// selected text. A real mouse: Chromium's own press, drag and drop.
+test('a placeholder pressed or dragged with the mouse looks selected as a whole, its label never as selected text', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('Before the image, ');
+  await pasteImage(browser, 'drag.png');
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
+  await browser.keyboard.type(' after it.');
+  const look = () => browser.evaluate(() => {
+    const atom = document.querySelector('.composer-prompt .pi-atom')!;
+    return { selected: atom.classList.contains('pi-selected'), paint: getComputedStyle(atom.querySelector('.pi-file-name')!, '::selection').backgroundColor };
+  });
+  const chosen = { selected: true, paint: 'rgba(0, 0, 0, 0)' };
+  const points = () => browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt')!;
+    const atom = input.querySelector('.pi-atom')!.getBoundingClientRect();
+    const text = [...input.childNodes].find((n) => n.nodeType === 3 && (n as Text).data.length > 1)! as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 1);
+    const first = range.getBoundingClientRect();
+    const end = range.cloneRange();
+    end.setStart(text, text.data.length - 1);
+    end.setEnd(text, text.data.length);
+    const last = end.getBoundingClientRect();
+    return { atom: { x: atom.left + atom.width / 2, y: atom.top + atom.height / 2 }, start: { x: first.left + 1, y: first.top + first.height / 2 }, end: { x: last.right - 1, y: last.top + last.height / 2 } };
+  });
+
+  const from = await points();
+  await browser.mouse.move(from.atom.x, from.atom.y);
+  await browser.mouse.down();
+  await expect.poll(look).toEqual(chosen);
+  for (let i = 1; i <= 8; i += 1) await browser.mouse.move(from.atom.x + ((from.start.x - from.atom.x) * i) / 8, from.start.y);
+  await browser.mouse.up();
+  await expect.poll(() => promptText(browser)).toBe('[drag.png]Before the image,  after it.');
+  await expect.poll(look).toEqual(chosen);
+
+  // A click in the text leaves it; a press chooses it again, and Delete takes it.
+  const to = await points();
+  const click = async ({ x, y }: { x: number; y: number }) => { await browser.mouse.move(x, y); await browser.mouse.down(); await browser.mouse.up(); };
+  await click(to.end);
+  await expect.poll(look).toEqual({ ...chosen, selected: false });
+  await click(to.atom);
+  await expect.poll(look).toEqual(chosen);
+  await browser.keyboard.press('Delete');
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
+  expect(await promptText(browser)).toBe('Before the image,  after it.');
 });
 
 test('a draft keeps each image in its place across a reload; an older draft shows its files in the tray', async ({ app, browser, screen }) => {
@@ -335,6 +382,60 @@ test('a drag that ended off the prompt, or outlived a redraw, moves no stale ran
   expect(await promptText(browser)).toBe('alpha beta gammaX');
   await dragOut(true);
   expect((await promptText(browser)).replace(/\n/g, '')).toBe('alpha beta gammaXX');
+});
+
+// #478: a drag from the prompt that a thumbnail's redraw (`prompt.refresh()`) interrupted is
+// refused on drop: no stale range moves, and its text is not dropped back in as a copy.
+test('a drag from the prompt that a thumbnail interrupted is refused on drop, nothing duplicated', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('alpha beta gamma');
+  // The image's thumbnail is made only when the test lets it.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __thumbnail?: () => void };
+    const real = window.createImageBitmap.bind(window);
+    window.createImageBitmap = (() => new Promise((resolve) => { w.__thumbnail = () => resolve(real(new ImageData(4, 4))); })) as typeof window.createImageBitmap;
+  });
+  await pasteImage(browser, 'shot.png');
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  await expect.poll(() => browser.evaluate(() => typeof (window as unknown as { __thumbnail?: unknown }).__thumbnail)).toBe('function');
+  const before = await promptText(browser);
+  // "alpha" is dragged; the thumbnail lands meanwhile and the prompt is drawn again.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __drag: DataTransfer; __source: Text; __thumbnail: () => void };
+    const text = document.querySelector('.composer-prompt')!.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    w.__drag = new DataTransfer();
+    w.__source = text;
+    text.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: w.__drag }));
+    w.__thumbnail();
+  });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __source: Text }).__source.isConnected)).toBe(false);
+  // Dropped back into the prompt, after "gamma".
+  const dropped = await browser.evaluate(() => {
+    const w = window as unknown as { __drag: DataTransfer };
+    const input = document.querySelector('.composer-prompt')!;
+    const text = input.firstChild as Text;
+    const end = document.createRange();
+    end.setStart(text, text.data.length - 1);
+    end.setEnd(text, text.data.length);
+    const box = end.getBoundingClientRect();
+    const at = { clientX: box.right, clientY: box.top + box.height / 2 };
+    // A drag the script made keeps `dropEffect` at none whatever is set: what the page sets is
+    // recorded instead.
+    let effect = '';
+    Object.defineProperty(w.__drag, 'dropEffect', { get: () => effect || 'none', set: (value: string) => { effect = value; } });
+    const over = !input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+    // The page takes the drop (the browser inserts nothing of its own) and makes no change.
+    const drop = !input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: w.__drag, ...at }));
+    return { over, effect, drop };
+  });
+  expect(dropped, 'the drag is refused over the prompt, its drop the page’s').toEqual({ over: true, effect: 'none', drop: true });
+  expect(await promptText(browser)).toBe(before);
 });
 
 // SPEC-124 review round 4: a placeholder deleted before its upload fails leaves no empty steps.

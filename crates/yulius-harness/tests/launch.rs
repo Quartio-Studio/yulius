@@ -610,7 +610,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             "--mcp-config",
             config,
             "--allowedTools",
-            "mcp__yulius__tasks_list,mcp__yulius__task_get,mcp__yulius__automations_list,mcp__yulius__workflows_list,mcp__yulius__sessions_search,mcp__yulius__session_read",
+            "mcp__yulius__tasks_list,mcp__yulius__task_get,mcp__yulius__automations_list,mcp__yulius__workflows_list,mcp__yulius__sessions_search,mcp__yulius__session_read,mcp__yulius__secrets_list,mcp__yulius__secret_verify",
             "--model",
             "claude-opus-5-5",
             "--effort",

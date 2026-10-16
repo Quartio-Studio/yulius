@@ -187,14 +187,41 @@ function richText(text, className = 'ss-text') {
   }));
 }
 
+/** The attributes that make a scrolling block a named region a keyboard reaches. */
+const regionAttrs = (label) => ({ tabindex: '0', role: 'region', 'aria-label': label });
+
 /**
  * Long code, results and diffs scroll inside their box (480 px, about 20 lines): those are named
- * regions a keyboard reaches, as the Git page's diffs. Short ones are no tab stops.
+ * regions a keyboard reaches, as the Git page's diffs; blocks that fit are no tab stops (#363).
+ * Once laid out, `markRegion` decides from the block itself; until then (an entry off screen under
+ * `content-visibility: auto`, a closed fold) an estimate for the narrowest layout (38 columns)
+ * keeps every block that may scroll reachable. `data-region` keeps the name for `markRegion`.
  */
 function scroller(text, label) {
   const lines = String(text || '').split('\n');
-  const rows = lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 80)), 0);
-  return rows > 16 ? { tabindex: '0', role: 'region', 'aria-label': label } : null;
+  const rows = lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 38)), 0);
+  return { 'data-region': label, ...(rows > 16 ? regionAttrs(label) : null) };
+}
+
+const leaving = new WeakSet(); // regions that stopped scrolling while they had the keyboard
+
+/**
+ * Makes a laid-out block a region exactly when it scrolls; one not laid out keeps its estimate.
+ * A region that stops scrolling while it has the keyboard stays one until the keyboard leaves it.
+ */
+export function markRegion(el) {
+  if (!el.clientHeight) return;
+  const scrolls = el.scrollHeight > el.clientHeight;
+  if (scrolls === (el.getAttribute('role') === 'region')) return;
+  if (scrolls) {
+    for (const [key, value] of Object.entries(regionAttrs(el.dataset.region))) el.setAttribute(key, value);
+  } else if (el === document.activeElement) {
+    if (leaving.has(el)) return;
+    leaving.add(el);
+    el.addEventListener('blur', () => { leaving.delete(el); markRegion(el); }, { once: true });
+  } else {
+    for (const key of Object.keys(regionAttrs(''))) el.removeAttribute(key);
+  }
 }
 
 const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
@@ -222,10 +249,13 @@ function hunkLines(hunk) {
 }
 
 function diffView(diff) {
+  const count = diff.hunks.length;
   return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
-    diff.hunks.map((hunk) => {
+    diff.hunks.map((hunk, index) => {
       const { head, removed, added, tail } = hunkLines(hunk);
-      return h('pre', { class: 'ss-diff-hunk', ...scroller([...head, ...removed, ...added, ...tail].join('\n'), `Changed lines of ${diff.path}`) },
+      // A cut diff may have had more hunks than it shows (#350).
+      const label = `Changed lines of ${diff.path}${count > 1 ? ` (${index + 1} of ${count}${diff.truncated ? ' shown' : ''})` : ''}`;
+      return h('pre', { class: 'ss-diff-hunk', ...scroller([...head, ...removed, ...added, ...tail].join('\n'), label) },
         head.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)),
         removed.map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)),
         added.map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)),
@@ -236,7 +266,7 @@ function diffView(diff) {
 /**
  * What the TUI prints under a folded call's `⎿`: a summary of an applied edit, write or read, else
  * the first lines of the result. Without a result (the session ended, or it is on the next page)
- * nothing is claimed.
+ * nothing is claimed, nor a count for a diff the server cut (#350).
  */
 export function callPreview(call, result) {
   if (!result) return [];
@@ -248,6 +278,7 @@ export function callPreview(call, result) {
       added += lines.added.length;
       removed += lines.removed.length;
     }
+    if (call.diff.truncated) return [`${call.name === 'Write' ? 'Wrote' : 'Updated'} ${call.diff.path}`];
     if (call.name === 'Write') return [`Wrote ${plural(added, 'line')} to ${call.diff.path}`];
     return [`Updated ${call.diff.path} with ${plural(added, 'addition')} and ${plural(removed, 'removal')}`];
   }
@@ -318,10 +349,17 @@ export function foldsNote(text) {
 
 const utf8 = new TextEncoder();
 
-/** A long meta note as one faint line that opens to the text as recorded. */
-const foldedNote = (text) => h('details', { class: 'ss-fold ss-note' },
-  h('summary', null, tuiLine('⎿', `Context added (${bytes(utf8.encode(text).length)})`, { kind: 'out', className: 'ss-out' })),
-  h('div', { class: 'ss-meta ss-dim ss-note-text', ...scroller(text, 'Added context') }, text));
+/** The note under a block the server cut at its bound. */
+const cutNote = (what) => h('p', { class: 'ss-cut ss-dim xs' }, `Cut here: the ${what} is longer.`);
+
+/**
+ * A long meta note as one faint line that opens to the text as recorded. A note the server cut
+ * (#380) is at least its size and says so where it ends.
+ */
+const foldedNote = (text, cut = false) => h('details', { class: 'ss-fold ss-note' },
+  h('summary', null, tuiLine('⎿', `Context added (${cut ? 'at least ' : ''}${bytes(utf8.encode(text).length)})`, { kind: 'out', className: 'ss-out' })),
+  h('div', { class: 'ss-meta ss-dim ss-note-text', ...scroller(text, 'Added context') }, text),
+  cut ? cutNote('context') : null);
 
 const parsedMeta = new WeakMap(); // meta block → its lines, parsed once
 
@@ -332,6 +370,12 @@ function metaOf(item) {
 }
 
 const outLines = (lines, className, attrs = null) => h('span', { class: ['ss-line', 'ss-out', ...[className].flat(Infinity)], ...attrs }, mark('⎿', 'out'), h('span', { class: 'ss-line-body' }, h('span', { class: 'ss-out-text' }, lines.join('\n'))));
+
+/** `Bash(npm test)`: a call as its summary line names it, for region names. */
+const callName = (item) => {
+  const name = TOOL_LABEL[item.name] || item.name;
+  return item.summary ? `${name}(${item.summary})` : name;
+};
 
 function toolCall(item, result) {
   const failed = Boolean(result && result.is_error);
@@ -346,37 +390,45 @@ function toolCall(item, result) {
         item.summary ? ['(', h('span', { class: 'ss-tool-summary' }, item.summary), ')'] : null,
         failed ? h('span', { class: 'ss-tool-flag' }, ' error') : null), { kind: failed ? 'err' : result ? 'ok' : 'call' }),
       preview.length ? outLines(preview, ['ss-preview', !diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
-    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input', ...scroller(item.input, `Input of ${item.name}`) }, h('code', null, item.input)),
-    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err'], scroller(result.text, `Result of ${item.name}`)) : null,
-    result && result.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the result is longer.') : null);
+    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input', ...scroller(item.input, `Input of ${callName(item)}`) }, h('code', null, item.input)),
+    item.diff && item.diff.truncated ? cutNote('change') : null,
+    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err'], scroller(result.text, `Result of ${callName(item)}`)) : null,
+    result && result.truncated ? cutNote('result') : null);
 }
 
-function block(item, results, role) {
+function block(item, results, role, line) {
   switch (item.type) {
     case 'text':
       return h('div', { class: 'ss-block' },
         role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt', block: true })
           : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim', block: true })
             : tuiLine('⏺', richText(item.text), { kind: 'say', block: true }),
-        item.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the message is longer.') : null);
+        item.truncated ? cutNote('message') : null);
     case 'thinking':
       return h('details', { class: 'ss-fold ss-thinking' }, h('summary', null, tuiLine('✻', 'Thinking…', { kind: 'think' })), richText(item.text, 'ss-text ss-dim'));
     case 'tool_call':
       return toolCall(item, results.get(item.id));
     case 'tool_result':
       return results.has(item.tool_use_id) && results.get(item.tool_use_id).shown ? null : h('details', { class: ['ss-fold', 'ss-tool', item.is_error && 'ss-tool-error'] },
-        h('summary', null, outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
-        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], scroller(item.text, 'Result')));
+        // Opened, the folded preview hides: the summary keeps a name (axe summary-name).
+        h('summary', null, h('span', { class: 'sr-only' }, 'Tool result'), outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
+        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], scroller(item.text, `Result (line ${line})`)),
+        item.truncated ? cutNote('result') : null);
     case 'image':
       return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
     case 'meta': {
-      const lines = metaOf(item).map((line) => {
+      // The server cuts a meta text at its end (#380): its last line is where the cut is.
+      const parsed = metaOf(item);
+      const cutFold = item.truncated && parsed.length > 0 && parsed[parsed.length - 1].kind === 'note' && foldsNote(parsed[parsed.length - 1].text);
+      const lines = parsed.map((line, index) => {
         if (line.kind === 'command') return tuiLine('>', line.text, { kind: 'prompt', className: 'ss-prompt' });
         if (line.kind === 'shell') return tuiLine('!', line.text, { kind: 'shell', className: 'ss-prompt' });
         if (line.kind === 'out' || line.kind === 'err') return outLines(linesOf(line.text), line.kind === 'err' && 'ss-out-err');
-        return foldsNote(line.text) ? foldedNote(line.text) : h('div', { class: 'ss-meta ss-dim' }, line.text);
+        return foldsNote(line.text) ? foldedNote(line.text, cutFold && index === parsed.length - 1) : h('div', { class: 'ss-meta ss-dim' }, line.text);
       });
-      return lines.length ? h('div', { class: 'ss-block' }, lines) : null;
+      const last = parsed.length ? parsed[parsed.length - 1].kind : null;
+      const cutWhat = last === 'out' || last === 'err' ? 'output' : 'context';
+      return lines.length ? h('div', { class: 'ss-block' }, lines, item.truncated && !cutFold ? cutNote(cutWhat) : null) : null;
     }
     default:
       return null;
@@ -536,6 +588,143 @@ export function scheduleCockroaches(well, { random = Math.random, timer = { set:
   };
 }
 
+/**
+ * A transcript's entries as the TUI prints them (SPEC-075), in an `<ol>`, for a page that adds them
+ * as they come: the Sessions view page by page, a watched task as its session writes (SPEC-179).
+ * Each tool result shows inside the call it answers; a result that arrives after its call (a later
+ * page or read) prints that call again with it. `target` marks the line a search opened.
+ */
+export function transcriptEntries({ target = null } = {}) {
+  const el = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });
+  const results = new Map(); // tool_use_id → result, shown inside its call
+  const calls = new Map(); // tool_use id → the entry printed with that call: { item, node }, one per entry
+  // Scrolling blocks are regions as laid out, again when their width changes (#363).
+  const regions = typeof ResizeObserver === 'function' ? new ResizeObserver((changes) => changes.forEach((change) => markRegion(change.target))) : null;
+  const regionNames = new Set(); // a name used again (a command run twice) names its line, then a count
+
+  function entry(item) {
+    const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
+    const shown = item.blocks.map((b) => block(b, results, role, item.line)).filter(Boolean);
+    if (!shown.length) return null;
+    const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
+    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
+    // A prompt (typed or a command) carries its time, as turns start there.
+    const when = label === 'Prompt' && item.at;
+    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
+      h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
+      shown,
+      when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
+  }
+
+  /**
+   * Names an entry's scrolling blocks uniquely and watches whether they scroll; notes how its folds
+   * were printed, so a reprint keeps only what the reader changed.
+   */
+  function register(li) {
+    for (const fold of li.querySelectorAll('details')) if (!fold.dataset.printedOpen) fold.dataset.printedOpen = String(fold.open);
+    for (const box of li.querySelectorAll('[data-region]')) {
+      const base = box.dataset.region;
+      const line = li.dataset.line;
+      // A name that already says its line (`Result (line 19)`) counts on inside it.
+      const lined = base.endsWith(` (line ${line})`);
+      let name = base;
+      for (let n = 1; regionNames.has(name); n += 1) name = lined ? `${base.slice(0, -1)}, ${n + 1})` : `${base} (line ${line}${n > 1 ? `, ${n}` : ''})`;
+      if (name !== base) {
+        box.dataset.region = name;
+        if (box.hasAttribute('aria-label')) box.setAttribute('aria-label', name);
+      }
+      regionNames.add(box.dataset.region);
+      if (regions) regions.observe(box);
+    }
+  }
+
+  /** Forgets an entry printed again: its names are free, its blocks no longer watched. */
+  function unregister(li) {
+    for (const box of li.querySelectorAll('[data-region]')) {
+      regionNames.delete(box.dataset.region);
+      if (regions) regions.unobserve(box);
+    }
+  }
+
+  /**
+   * Prints `entries` after those already shown; calls already shown take their new results.
+   * Returns how many entries it added at the end (results folded into earlier calls not counted).
+   */
+  function append(entries) {
+    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_result') results.set(b.tool_use_id, { ...b });
+    const answered = new Set();
+    for (const item of entries) {
+      for (const b of item.blocks) {
+        if (b.type !== 'tool_result' || !calls.has(b.tool_use_id)) continue;
+        results.get(b.tool_use_id).shown = true;
+        answered.add(calls.get(b.tool_use_id));
+      }
+    }
+    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_call' && results.has(b.id)) results.get(b.id).shown = true;
+    for (const printed of answered) {
+      const fresh = entry(printed.item);
+      if (!fresh || !printed.node.isConnected) continue;
+      keepState(printed.node, fresh);
+      unregister(printed.node);
+      printed.node.replaceWith(fresh);
+      const focus = fresh.querySelector('[data-keep-focus]');
+      if (focus) {
+        delete focus.dataset.keepFocus;
+        focus.focus({ preventScroll: true });
+      }
+      printed.node = fresh;
+      register(fresh);
+    }
+    let added = 0;
+    for (const item of entries) {
+      const node = entry(item);
+      if (!node) continue;
+      el.append(node);
+      register(node);
+      added += 1;
+      // The entry's calls share one record, so a result for any of them prints the entry anew.
+      const printed = { item, node };
+      for (const b of item.blocks) if (b.type === 'tool_call') calls.set(b.id, printed);
+    }
+    return added;
+  }
+
+  /**
+   * An entry printed again keeps what the reader did with it: the folds they opened or closed
+   * (in order; the others open as the new print has them, an edit's diff with its result) and
+   * where the keyboard was, marked for the new entry (`data-keep-focus`).
+   */
+  function keepState(old, fresh) {
+    const before = old.querySelectorAll('details');
+    const after = fresh.querySelectorAll('details');
+    if (before.length === after.length) {
+      before.forEach((fold, index) => {
+        // The new print's own state stays the baseline, so a reader's choice outlives reprints.
+        after[index].dataset.printedOpen = String(after[index].open);
+        if (String(fold.open) !== fold.dataset.printedOpen) after[index].open = fold.open;
+      });
+    }
+    const active = document.activeElement;
+    if (!active || !old.contains(active)) return;
+    const path = [];
+    for (let node = active; node !== old; node = node.parentElement) path.unshift([...node.parentElement.children].indexOf(node));
+    let target = fresh;
+    for (const index of path) target = target && target.children[index];
+    (target || fresh.querySelector('summary') || fresh).dataset.keepFocus = '';
+  }
+
+  /** Forgets every entry (a new session, or one rewritten). */
+  function clear() {
+    results.clear();
+    calls.clear();
+    regionNames.clear();
+    if (regions) regions.disconnect();
+    el.replaceChildren();
+  }
+
+  return { el, append, clear, destroy() { if (regions) regions.disconnect(); } };
+}
+
 /** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
 const lockedPrompt = () => h('div', { class: 'ss-locked' }, mark('>', 'prompt'), h('span', { class: 'ss-line-body' }, 'Read-only session · nothing can be sent'), icon('lock', { size: 14 }));
 
@@ -549,7 +738,6 @@ export function mountSessionView(ctx, sandbox, id, route) {
   let alive = true;
   let loading = false;
   let stopCockroaches = () => {};
-  const results = new Map(); // tool_use_id → result, shown inside its call
 
   const titleEl = h('h1', { class: 'page-title gt-title' }, 'Session');
   const meta = h('div', { class: 'gt-meta' });
@@ -559,7 +747,8 @@ export function mountSessionView(ctx, sandbox, id, route) {
     h('a', { class: 'gt-back', href: href(back), dataset: { route: back, restore: 'page' } }, icon('back', { size: 14 }), 'Sessions'),
     h('div', { class: 'gt-title-row' }, titleEl, actions),
     meta, notice);
-  const entriesEl = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });
+  const transcript = transcriptEntries({ target });
+  const entriesEl = transcript.el;
   const earlier = h('div', { class: 'ss-more' });
   const more = h('div', { class: 'ss-more' });
   const body = h('div', { class: 'ss-body' }, placeholder('Loading the transcript…', 'loading'));
@@ -615,27 +804,6 @@ export function mountSessionView(ctx, sandbox, id, route) {
     }
   }
 
-  function entry(item) {
-    const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
-    const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
-    if (!shown.length) return null;
-    const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
-    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
-    // A prompt (typed or a command) carries its time, as turns start there.
-    const when = label === 'Prompt' && item.at;
-    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
-      h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
-      shown,
-      when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
-  }
-
-  function append(entries) {
-    // Results are shown inside the call they answer (when both are on this page).
-    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_result') results.set(b.tool_use_id, { ...b });
-    for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_call' && results.has(b.id)) results.get(b.id).shown = true;
-    entriesEl.append(...entries.map(entry).filter(Boolean));
-  }
-
   function renderMore() {
     setChildren(more, next !== null && next !== undefined
       ? h('button', { type: 'button', class: 'btn', disabled: loading, onClick: () => load(next) }, loading ? 'Loading…' : 'Load more')
@@ -661,7 +829,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
         setChildren(body, earlier, tui);
         stopCockroaches = scheduleCockroaches(tui);
       }
-      append(page.entries || []);
+      transcript.append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) {
         stopCockroaches();
         setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
@@ -682,5 +850,5 @@ export function mountSessionView(ctx, sandbox, id, route) {
     }
   }
   load(from);
-  return { el, destroy() { alive = false; stopCockroaches(); } };
+  return { el, destroy() { alive = false; stopCockroaches(); transcript.destroy(); } };
 }

@@ -21,6 +21,17 @@ check its requirement evidence and run scoped verification when useful. Do not
 claim an unexecuted test passed.
 
 Deliver findings ordered by severity, each with path/location, concrete trigger,
-impact and suggested correction. If no actionable issue is found, say so and name
-validation limits. Do not automatically edit code during a read-only review or
-post reviews/comments externally without task authorization.
+impact and suggested correction, marked own code (code or tests the change added
+or modified) or pre-existing (on dev before the change, with the evidence). If no
+actionable issue is found, say so and name validation limits. Do not automatically
+edit code during a read-only review or post reviews/comments externally without
+task authorization.
+
+An own-code finding is fixed in the same PR, test-first, and never becomes a
+follow-up issue: a test that cannot fail, a weak or missing assertion, a race or a
+missing regression test included. The round limit does not excuse it; the author
+keeps fixing, splits the change or asks a person. Only a pre-existing bug, a flaky
+test the change did not cause, or a cosmetic nit left at the round limit becomes
+an issue, saying why it is outside the change ("present on dev before this change",
+with the evidence). The PR answers every finding; deferring an own-code finding
+makes your verdict request changes (`docs/engineering/workflow.md`, Review output).
