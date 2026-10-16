@@ -46,6 +46,7 @@ pub mod model;
 pub mod needs_you;
 pub mod notes;
 pub mod onboarding;
+mod pause;
 pub mod playground;
 pub mod ports;
 pub mod prepared;

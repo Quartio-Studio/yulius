@@ -146,4 +146,8 @@ pub enum UiEvent {
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,
+    /// The stream is alive (sent every heartbeat interval): a page that hears nothing for a
+    /// while knows its connection died without a close (SPEC-191 LIV-001).
+    #[serde(rename = "heartbeat")]
+    Heartbeat,
 }

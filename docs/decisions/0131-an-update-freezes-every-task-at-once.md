@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Specified in [SPEC-160](../../.ai/specs/SPEC-160-tasks-should-be-paused-imidietly-not-wai.md);
-task #151. Amends ADR-18 of SPEC-002 (§2.5) and SPEC-001 OPS-008.
+task #151. Amends ADR-18 of SPEC-002 (§2.5) and SPEC-001 OPS-008. Extended by
+[0154](0154-paused-is-an-overlay-on-a-live-run.md): the runs a person paused stay frozen through
+every thaw and sweep, and a paused task's summary says so.
 
 ## Context
 

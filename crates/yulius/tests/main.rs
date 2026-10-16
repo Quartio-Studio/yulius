@@ -72,6 +72,7 @@ mod supervision;
 mod task_delete;
 mod task_done;
 mod task_ownership;
+mod task_pause;
 mod task_prompt;
 mod task_transcript;
 mod terminal_ws;

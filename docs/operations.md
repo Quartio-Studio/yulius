@@ -897,7 +897,9 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    (nothing changes); the superadmin can also **Continue without waiting** or **Cancel**. To check
    a freeze on a host: `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/agents/run-*/cgroup.events`
    (`sandboxes/*/run-*` without the `cpu` controller) shows `frozen 1` while the update restarts.
-   A server that starts thaws every run group left frozen; to thaw them by hand (a binary without
+   A server that starts thaws every run group left frozen, but those of tasks a person paused
+   (SPEC-191: it freezes them again; `SELECT number, paused_by FROM tasks WHERE paused_by IS NOT
+   NULL` lists them); to thaw them by hand (a binary without
    this, SPEC-160): `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/{,agents/}run-*/cgroup.freeze; do echo 0 > "$f"; done`. A response streaming from the model provider at the
    restart is cut (the egress proxy restarts with the server) and Claude Code retries it.
 3. **Restart**: the helper stops `yulius.service` (with `KillMode=process` agent sessions and
@@ -906,7 +908,8 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    up to 2 minutes until `/internal/version` reports the new commit. If it does not, it stops the
    service, restores the previous binary **and database**, and starts them again ("rolled back").
 4. **Resume**: the server that started releases and thaws the tasks one by one; they go on as if
-   nothing happened. A server that starts with no update open thaws any run group left frozen.
+   nothing happened, except the tasks a person paused, which stay paused until they resume them.
+   A server that starts with no update open thaws any run group left frozen but those.
 
 The service user cannot replace `/usr/local/bin/yulius` or restart itself. A root-owned **path
 unit** starts the helper when the server writes `/var/lib/yulius/update/request.json`; the request

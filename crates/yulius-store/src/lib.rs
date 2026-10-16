@@ -81,7 +81,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0030_job_resource_use.sql"),
     // Schema version 32 (SPEC-171).
     include_str!("migrations/0032_playground_purges.sql"),
-    // Schema version 33 (SPEC-195).
+    // Schema version 33 (SPEC-191).
+    include_str!("migrations/0033_task_person_pause.sql"),
+    // Schema version 34 (SPEC-195).
     include_str!("migrations/0034_instance_vidoc_key.sql"),
 ];
 

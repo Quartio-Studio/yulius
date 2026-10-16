@@ -101,7 +101,9 @@ watching, steering and unblocking.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
-  and `gh` use a narrowed App token), so only they change it. Others
+  and `gh` use a narrowed App token), so only they change it. Its owner can **pause** a running task and resume it later: the agent
+  stops where it is without being told (as an update pauses every task) and goes on from there; a
+  paused task, and one an update holds, reads Paused in the lists and says why. Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
@@ -161,7 +163,8 @@ watching, steering and unblocking.
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ready-made ones, off until a person enables them in
   one click on the Automations page: "Keep the docs up to date", "Work through open issues" (the
-  core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
+  core team's issues ranked, and the 5 most important actionable ones that no running task owns
+  verified in parallel and given a task each, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When

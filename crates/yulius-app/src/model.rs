@@ -303,6 +303,17 @@ pub struct ControlRequest {
     pub at: Timestamp,
 }
 
+/// A person's pause of a task's run (SPEC-191 PER-001).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonPause {
+    /// Who paused it.
+    pub by: UserId,
+    /// When.
+    pub at: Timestamp,
+    /// The attempt it was taken on: the pause acts on that run only.
+    pub attempt: AttemptId,
+}
+
 /// Since when a task is in its current state, as a person reads it (SPEC-087 TIM-001).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskTimes {

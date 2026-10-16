@@ -76,9 +76,11 @@ export class Backoff {
  * connecting | open | reconnecting | failed | closed.
  * `path` is a string or a function called at each connect (e.g. to add the current terminal
  * size); `onOpen(socket, isReconnect)` sends handshakes; `onMessage(data)` receives frames.
+ * `staleMs` (for a server that beats, as the event stream does): an open connection that heard
+ * nothing for that long is taken for dead, closed and replaced (SPEC-191 LIV-002).
  */
 export class ReconnectingSocket {
-  constructor({ transport, path, onOpen, onMessage, onStatus, backoff }) {
+  constructor({ transport, path, onOpen, onMessage, onStatus, backoff, staleMs = 0 }) {
     this.transport = transport;
     this.path = path;
     this.onOpen = onOpen || (() => {});
@@ -91,6 +93,9 @@ export class ReconnectingSocket {
     this.connectedOnce = false;
     this.status = 'closed';
     this.healthy = false;
+    this.staleMs = staleMs;
+    this.heardAt = 0;
+    this.watch = null;
   }
 
   start() {
@@ -131,11 +136,16 @@ export class ReconnectingSocket {
       if (this.ws !== ws) return;
       const reconnect = this.connectedOnce;
       this.connectedOnce = true;
+      this.heardAt = Date.now();
+      if (this.staleMs > 0 && !this.watch) {
+        this.watch = setInterval(() => this.checkAlive(this.staleMs), Math.max(50, Math.round(this.staleMs / 4)));
+      }
       this.setStatus('open');
       this.onOpen(this, reconnect);
     };
     ws.onmessage = (event) => {
       if (this.ws !== ws) return;
+      this.heardAt = Date.now();
       if (!this.healthy) {
         this.healthy = true;
         this.backoff.reset();
@@ -181,6 +191,16 @@ export class ReconnectingSocket {
     return Boolean(this.ws && this.ws.readyState === 1);
   }
 
+  /**
+   * Replaces an open connection that heard nothing for `silentMs` (a dead one looks open until a
+   * close that may never come); true when it did. Only for a server that beats (`staleMs`).
+   */
+  checkAlive(silentMs = this.staleMs) {
+    if (!this.staleMs || this.stopped || !this.isOpen || Date.now() - this.heardAt <= silentMs) return false;
+    this.retry();
+    return true;
+  }
+
   /** Send a JSON object (or raw string). Returns false when not connected. */
   send(message) {
     if (!this.isOpen) return false;
@@ -193,6 +213,8 @@ export class ReconnectingSocket {
     this.stopped = true;
     clearTimeout(this.timer);
     this.timer = null;
+    clearInterval(this.watch);
+    this.watch = null;
     if (this.ws) {
       const ws = this.ws;
       this.ws = null;

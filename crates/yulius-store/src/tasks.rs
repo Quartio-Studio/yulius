@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
-    AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord,
+    AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord, PersonPause,
     ProviderSessionRecord, RecountOutcome, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
     TaskTimes,
 };
@@ -435,6 +435,96 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn person_pause(&self, task: &TaskId) -> AppResult<Option<PersonPause>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let row: Option<PauseRow> = c
+                .query_row(
+                    "SELECT paused_by, paused_at, paused_attempt FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(db)?;
+            row.map_or(Ok(None), person_pause_of)
+        })
+        .await
+    }
+
+    async fn set_person_pause(
+        &self,
+        task: &TaskId,
+        by: &UserId,
+        attempt: &AttemptId,
+        at: Timestamp,
+    ) -> AppResult<PersonPause> {
+        let (id, by, attempt) = (
+            task.as_str().to_owned(),
+            by.as_str().to_owned(),
+            attempt.as_str().to_owned(),
+        );
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "UPDATE tasks SET paused_by = ?2, paused_at = ?3, paused_attempt = ?4, \
+                 updated_at = ?3 WHERE id = ?1 AND paused_by IS NULL",
+                params![id, by, at.0, attempt],
+            )
+            .map_err(db)?;
+            let row: PauseRow = tx
+                .query_row(
+                    "SELECT paused_by, paused_at, paused_attempt FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .map_err(db)?;
+            tx.commit().map_err(db)?;
+            person_pause_of(row)?.ok_or_else(|| AppError::internal("the pause was not recorded"))
+        })
+        .await
+    }
+
+    async fn clear_person_pause(&self, task: &TaskId, at: Timestamp) -> AppResult<bool> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET paused_by = NULL, paused_at = NULL, paused_attempt = NULL, \
+                     updated_at = ?2 WHERE id = ?1 AND paused_by IS NOT NULL",
+                    params![id, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn person_paused_tasks(&self) -> AppResult<Vec<(TaskId, PersonPause)>> {
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, paused_by, paused_at, paused_attempt FROM tasks \
+                     WHERE paused_by IS NOT NULL ORDER BY paused_at LIMIT 1000",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
+                })
+                .map_err(db)?;
+            let mut paused = Vec::new();
+            for row in rows {
+                let (id, pause) = row.map_err(db)?;
+                if let Some(pause) = person_pause_of(pause)? {
+                    let task = TaskId::parse(&id).map_err(|_| db(bad_column("tasks.id", &id)))?;
+                    paused.push((task, pause));
+                }
+            }
+            Ok(paused)
         })
         .await
     }
@@ -1083,4 +1173,20 @@ impl TaskStore for SqliteStore {
         })
         .await
     }
+}
+
+/// `paused_by`, `paused_at`, `paused_attempt` of a task row.
+type PauseRow = (Option<String>, Option<i64>, Option<String>);
+
+/// A person's pause from its columns (SPEC-191); none unless all three are set.
+fn person_pause_of(row: PauseRow) -> AppResult<Option<PersonPause>> {
+    let (Some(by), Some(at), Some(attempt)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(PersonPause {
+        by: UserId::parse(&by).map_err(|_| db(bad_column("tasks.paused_by", &by)))?,
+        at: Timestamp(at),
+        attempt: AttemptId::parse(&attempt)
+            .map_err(|_| db(bad_column("tasks.paused_attempt", &attempt)))?,
+    }))
 }

@@ -7,11 +7,11 @@ import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
 import { createWatchView } from './watchview.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, pauseLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -320,6 +320,13 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon('clock', { size: 16 }), h('span', { class: 'attention-text' },
         h('strong', null, current.supertask ? 'Supertask. ' : `Queued after supertask #${held[0]}. `), supertaskLine(current)),
       can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
+    } else if (info.paused) {
+      // Its run is paused (SPEC-191): by an update, which ends by itself, or by a person, who
+      // resumes it here. What is typed meanwhile waits in the terminal.
+      const byPerson = info.paused.by === 'person';
+      content = [icon('st-paused', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `${pauseLine(info.paused).replace(/\.?$/, '.')} `),
+        byPerson ? 'What you type waits until it resumes.' : ''),
+      can.resume ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => resumeTask(ctx, current) }, 'Resume') : null];
     } else if (info.held) {
       content = null; // the held-prompt card says it
     } else if (info.needsYou) {
