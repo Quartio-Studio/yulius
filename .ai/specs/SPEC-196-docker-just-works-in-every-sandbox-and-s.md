@@ -67,13 +67,13 @@ the host with one command.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Every joined run binds the sandbox's Docker directory and gets DOCKER_HOST
-- [ ] A Docker front per sandbox serves the socket: engine on demand, relay, or an explanatory refusal
-- [ ] The manager attaches fronts to new and adopted holders, restarts them and stops them with the holder
-- [ ] Runs already running get the Docker directory without a restart
-- [ ] Agents, doctor and the docker smoke command say how to check
-- [ ] Host-level isolation test of adoption, live injection and socket recreation; ADR and docs
+- [x] Write the fix spec and the regression test that fails
+- [x] Every joined run binds the sandbox's Docker directory and gets DOCKER_HOST
+- [x] A Docker front per sandbox serves the socket: engine on demand, relay, or an explanatory refusal
+- [x] The manager attaches fronts to new and adopted holders, restarts them and stops them with the holder
+- [x] Runs already running get the Docker directory without a restart
+- [x] Agents, doctor and the docker smoke command say how to check
+- [x] Host-level isolation test of adoption, live injection and socket recreation; ADR and docs
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green and delivered to dev
 
@@ -126,4 +126,45 @@ the host with one command.
 
 ## Evidence
 
-(Filled in at the end.)
+- **Reproduction** (this task's own sandbox, a run started before its holder had an engine,
+  2026-10-16): `docker version` → "dial unix /var/run/docker.sock: connect: no such file or
+  directory"; `/run/docker.sock` and `/run/yulius` absent; `DOCKER_HOST` empty. Filed as #597.
+- **Regression tests written first, seen failing** (commit `1afa8e0d`):
+  - `every_holder_gives_its_runs_docker_whatever_its_age`: "a holder from before engines gains
+    one" (the old test asserted the defect);
+  - `a_joined_run_binds_the_docker_directory_and_sets_docker_host`: no directory bind, no
+    `DOCKER_HOST`.
+- **Tests added with the change** (all passing): the front's modes, socket replacement, holder
+  loss and a planted link (`docker_front`); the mount planner, the outcome lines and the scan
+  (`docker_bind`); the adopted pre-engine holder gaining an engine front, a dead front restarted,
+  Docker off → refusal → on again, an unchanged front kept across restarts, the mode per holder
+  and prerequisite, the bridge forwards (`manager`, with a fake front executable and the test
+  process as the holder); the front spec in each mode and a SPEC-187 `holder.json` still read
+  (`yulius-contracts`); the engine view's directory; the briefing variants and budgets; doctor's
+  reasons; the smoke's `systemd-run` argv and stale-sandbox detection.
+- **Review round 1** (fresh session, request changes at `64dd3ebd`). Own code, each fixed
+  test-first (tests `af2b0206` seen failing, fixes `e911bbf3`):
+  - *High:* an engine front for a holder from before #583 could not start its engine (no
+    `sysroots/<sandbox>/docker`, the bind source). The front's start now makes it; the smoke's
+    pre-engine holder lacks it too, like a real old one.
+  - *Medium:* the Docker directory was writable by runs and the engine (unmeasured disk, and
+    deleting the socket stopped the engine). It is read-only in runs, the engine and runs it is
+    moved into.
+  - *Medium:* the bind bookkeeping had no test: now the pure `bind_plan`/`bind_record`, tested
+    for 3 tries, done, and forgotten namespaces.
+  - *Low:*
+    - a transient cgroup failure turned an engine front into a refusal: `front_action` keeps a
+      running front then (tested);
+    - rollback to an older server is documented (ADR-0158);
+    - an interrupted smoke's sandbox is removed by the next smoke (tested);
+    - a base from before Docker gets a refusal saying so (tested);
+    - this spec's Plan and Evidence were unfilled.
+  - *Nit:* `docs/operations.md` named the holder for the engine's start.
+- **Gate:** `scripts/dev ci` → exit 0 at `64dd3ebd` (nextest 1988 passed, 18 skipped); rerun
+  after the review fixes, see the pull request.
+- **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
+  expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
+- **Not run here:** `isolation_docker_live`, `isolation_docker` and `yulius doctor
+  --docker-smoke` need the host (namespaces, mounts, `setns`, a delegated unit, Docker Hub); this
+  sandbox and Yulius CI are isolated runs whose seccomp filter refuses them. A person runs `sudo
+  yulius doctor --docker-smoke` on the production VM after promotion.
