@@ -142,7 +142,7 @@ pub fn bwrap_argv(view: &EngineView) -> Vec<String> {
         ),
         // The sandbox's Docker directory, as runs see it (ADR-0158), for `-v /var/run/docker.sock`.
         (
-            "--bind",
+            "--ro-bind",
             format!("{state}/{DOCKER_DIR}"),
             DOCKER_DIR_IN_RUNS,
         ),

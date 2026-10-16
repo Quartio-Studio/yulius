@@ -51,7 +51,8 @@ What constrains a fix:
   a run (idle). New holders no longer serve the socket themselves; their spec keeps only
   `containers` (forwards on every address).
 - **A directory, not a file.** Every joined run that is not a production CD run binds
-  `<state>/docker` at `/run/yulius/docker` and links `/run/docker.sock` (= `/var/run/docker.sock`)
+  `<state>/docker` read-only at `/run/yulius/docker` (connecting to a socket needs no write
+  access to its mount; nothing else can be stored there, outside the disk quota) and links `/run/docker.sock` (= `/var/run/docker.sock`)
   to `yulius/docker/docker.sock`, with `DOCKER_HOST=unix:///run/yulius/docker/docker.sock`. The
   engine's view has the same, for `-v /var/run/docker.sock`. A front that starts again recreates
   the socket inside the directory, and every run sees the new one.
@@ -61,7 +62,7 @@ What constrains a fix:
   `/run/yulius/docker` whose `/var` is not a tmpfs (a production CD run's is). For them, `yulius
   sandbox-host bind-docker` (single-threaded) opens their namespaces through the host's `/proc`,
   joins the sandbox's user namespace, and for each run clones `<state>/docker` in the holder's
-  mount namespace and moves it to `/run/yulius/docker` in the run's. It adds the
+  mount namespace and moves it to `/run/yulius/docker` in the run's, read-only. It adds the
   `/run/docker.sock` link when nothing is there. Each namespace is tried at most 3 times. Nothing
   restarts and the run's environment is unchanged: `docker`'s default path is the link.
 - **Old holders' forwards.** A holder from before engines listens for its forwards on loopback
@@ -101,6 +102,13 @@ What constrains a fix:
   namespace the run controls anyway. The helper is not in the run's PID namespace, so the run
   cannot see or trace it. The moved tree's root is the directory: `..` leads to the run's own
   `/run/yulius`, and `open_by_handle_at` stays refused.
+- **Engine storage and old bases.** A holder from before engines has no
+  `sysroots/<sandbox>/docker`: the server makes it before an engine front starts. A holder whose
+  base was copied before Docker was on the host gets a refusal saying so; it gets an engine when
+  it starts again on a newer base (after the sandbox's idle time).
+- **Rolling back** to a server from before this decision: it does not know fronts, counts a
+  front as a run and never stops it, so those holders no longer go idle. Their runs keep the
+  socket. A person stops the fronts (`pkill -f 'sandbox-host docker'`) after such a rollback.
 - One more detached process per live holder (a few MB). Its log is
   `<state>/docker-front.log`.
 - Not runnable in a sandbox or in Yulius CI (both are isolated runs). The unit tests cover the

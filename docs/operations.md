@@ -489,14 +489,14 @@ from a sandbox, and no daemon needs to run on the host.
   build` and a two-service `docker compose up` in that run, a recreated socket, and `DOCKER_HOST`
   in a new run. It needs Docker Hub (`hello-world`, `busybox`).
 
-- **What it is.** On the first connection to the sandbox's socket, the holder starts `dockerd` as
-  root of the sandbox's user namespace (not the host's): in the sandbox's network, with a run's
-  view of the files plus its storage, a cgroup namespace rooted at `sandboxes/<sandbox>/engine`,
-  and a seccomp profile of its own that every container inherits, `--privileged` included.
-  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves through
-  the sandbox's egress, and they reach the egress proxy at `host.docker.internal:<internal port>`
-  (with `--add-host=host.docker.internal:host-gateway`). A port published in the sandbox's port
-  range is relayed like a dev server's.
+- **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
+  starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
+  network, with a run's view of the files plus its storage, a cgroup namespace rooted at
+  `sandboxes/<sandbox>/engine`, and a seccomp profile of its own that every container inherits,
+  `--privileged` included. Containers count against the sandbox's memory, task and CPU limits.
+  Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
+  `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
+  port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.**
   - Docker installed on the host (`docker-ce` or `docker.io`). The base copies `dockerd`,
     `containerd`, `runc`, `docker-proxy` and the CLI plugins.

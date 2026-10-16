@@ -234,8 +234,9 @@ fn joined_argv(
         .as_ref()
         .filter(|_| join.host_system.is_none())
     {
+        // Read-only: it holds only the socket (connecting needs no write access to the mount).
         argv.extend([
-            "--bind".into(),
+            "--ro-bind".into(),
             dir.clone(),
             DOCKER_DIR_IN_RUNS.into(),
             "--symlink".into(),

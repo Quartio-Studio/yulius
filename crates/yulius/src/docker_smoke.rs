@@ -194,7 +194,12 @@ pub async fn smoke(
         return Err(format!("sandboxes get no engine here: {reason}"));
     }
     drop(docker_on);
-    let id = format!("docker-smoke-{}", std::process::id());
+    // A smoke test that was interrupted (Ctrl-C, a crash) left its sandbox: remove it first.
+    for stale in stale_smokes(data_dir) {
+        eprintln!("removing {stale}, left by an interrupted smoke test");
+        remove_sandbox(&config, exe, &stale).await;
+    }
+    let id = format!("{SMOKE_PREFIX}{}", std::process::id());
     let request = SandboxRequest {
         id: id.clone(),
         hostname: HOSTNAME.into(),
@@ -209,9 +214,37 @@ pub async fn smoke(
         let _ = run.kill();
         let _ = run.wait();
     }
-    let cleanup = Manager::new(config.clone());
-    cleanup.adopt_one(&id).await;
-    cleanup.stop_all().await;
+    remove_sandbox(&config, exe, &id).await;
+    result.map(|()| checks)
+}
+
+/// Sandbox names of smoke tests.
+const SMOKE_PREFIX: &str = "docker-smoke-";
+
+/// Smoke sandboxes in `data_dir` whose smoke process is gone.
+fn stale_smokes(data_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("runtime").join("sandboxes")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| {
+            name.strip_prefix(SMOKE_PREFIX)
+                .and_then(|pid| pid.parse::<i32>().ok())
+                .is_some_and(|pid| {
+                    pid != i32::try_from(std::process::id()).unwrap_or(0)
+                        && nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err()
+                })
+        })
+        .collect()
+}
+
+/// Stops the smoke sandbox `id`'s holder and front, and removes its files.
+async fn remove_sandbox(config: &yulius_sandbox::manager::IsolationConfig, exe: &Path, id: &str) {
+    let manager = Manager::new(config.clone());
+    manager.adopt_one(id).await;
+    manager.stop_all().await;
     let mapper = yulius_sandbox::userns::Mapper {
         bwrap: config.bwrap.clone(),
         newuidmap: config.newuidmap.clone(),
@@ -219,16 +252,16 @@ pub async fn smoke(
         uid: config.uid,
         gid: config.gid,
     };
+    let data_dir = &config.data_dir;
     for tree in [
-        request.dir.clone(),
-        data_dir.join("sysroots").join(&id),
-        data_dir.join("runtime").join("sandboxes").join(&id),
+        data_dir.join("sandboxes").join(id),
+        data_dir.join("sysroots").join(id),
+        data_dir.join("runtime").join("sandboxes").join(id),
     ] {
         if let Err(error) = yulius_sandbox::base::remove_tree(&mapper, exe, &tree) {
             eprintln!("yulius: {error}");
         }
     }
-    result.map(|()| checks)
 }
 
 async fn phases(
@@ -287,6 +320,15 @@ async fn phases(
         first_line(&refused),
     );
     drop(before);
+    // A holder from before engines has no engine storage either (review round 1): the front
+    // must make it.
+    let _ = std::fs::remove_dir(
+        config
+            .data_dir
+            .join("sysroots")
+            .join(&request.id)
+            .join("docker"),
+    );
 
     // 2. An updated server adopts the holder with Docker on: the old run uses the engine.
     let after = Manager::new(config.clone());
@@ -479,6 +521,33 @@ mod tests {
                 "/var/lib/yulius"
             ]
         );
+    }
+
+    /// An interrupted smoke test's sandbox is found by name and dead process; a live one, this
+    /// one and real sandboxes are left alone.
+    #[test]
+    fn only_sandboxes_of_finished_smoke_tests_are_stale() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let data = tempfile::tempdir()?;
+        let root = data.path().join("runtime/sandboxes");
+        let mut child = std::process::Command::new("sleep").arg("30").spawn()?;
+        let alive = format!("{SMOKE_PREFIX}{}", child.id());
+        let mine = format!("{SMOKE_PREFIX}{}", std::process::id());
+        // Pids are below 2^22 on Linux.
+        let dead = format!("{SMOKE_PREFIX}{}", 1u32 << 23);
+        for name in [
+            &alive,
+            &mine,
+            &dead,
+            &"s1".to_owned(),
+            &format!("{SMOKE_PREFIX}x"),
+        ] {
+            std::fs::create_dir_all(root.join(name))?;
+        }
+        assert_eq!(stale_smokes(data.path()), vec![dead]);
+        let _ = child.kill();
+        let _ = child.wait();
+        Ok(())
     }
 
     /// The scripts end each phase with a line the smoke waits for.

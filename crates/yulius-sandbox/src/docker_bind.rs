@@ -10,7 +10,7 @@
 //! 1. enters the holder's mount namespace, where `<state>/docker` is visible, and clones it as a
 //!    detached tree (`open_tree(OPEN_TREE_CLONE)`): a plain bind cannot cross mount namespaces;
 //! 2. enters the run's mount namespace and moves the tree to `/run/yulius/docker`
-//!    (`move_mount`), creating the directory in the run's `/run` tmpfs;
+//!    (`move_mount`), creating the directory in the run's `/run` tmpfs, and makes it read-only;
 //! 3. links `/run/docker.sock` to it when nothing is at that path (a SPEC-187 run's file bind
 //!    stays).
 //!
@@ -222,6 +222,7 @@ fn bind_one(
         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
     )
     .map_err(|e| format!("move_mount: {e}"))?;
+    read_only(Path::new(DOCKER_DIR_IN_RUNS));
     match std::fs::symlink_metadata(ENGINE_SOCKET_IN_RUNS) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             std::os::unix::fs::symlink(DOCKER_SOCKET_LINK, ENGINE_SOCKET_IN_RUNS)
@@ -229,6 +230,31 @@ fn bind_one(
         }
         _ => Ok(()),
     }
+}
+
+/// Makes the bind at `path` read-only, as in runs started with it (the directory holds only the
+/// socket). Best effort: a bind keeps its source's locked flags (atime, nosuid, nodev), so they
+/// are repeated; if the kernel still refuses, the bind stays writable but works.
+#[cfg(target_os = "linux")]
+fn read_only(path: &Path) {
+    use nix::mount::MsFlags;
+    use nix::sys::statvfs::FsFlags;
+    let mut flags = MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY;
+    if let Ok(stat) = nix::sys::statvfs::statvfs(path) {
+        for (have, set) in [
+            (FsFlags::ST_NOSUID, MsFlags::MS_NOSUID),
+            (FsFlags::ST_NODEV, MsFlags::MS_NODEV),
+            (FsFlags::ST_NOEXEC, MsFlags::MS_NOEXEC),
+            (FsFlags::ST_NOATIME, MsFlags::MS_NOATIME),
+            (FsFlags::ST_NODIRATIME, MsFlags::MS_NODIRATIME),
+            (FsFlags::ST_RELATIME, MsFlags::MS_RELATIME),
+        ] {
+            if stat.flags().contains(have) {
+                flags |= set;
+            }
+        }
+    }
+    let _ = nix::mount::mount(None::<&str>, path, None::<&str>, flags, None::<&str>);
 }
 
 /// Body of `yulius sandbox-host bind-docker` (Linux only).
