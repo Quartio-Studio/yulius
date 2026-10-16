@@ -97,25 +97,31 @@ test('a double click on the builder’s Delete asks once, also while it looks up
   await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
   await browser.locator('.wf-head .btn-quiet-danger').click();
   await browser.locator('.wf-head .btn-quiet-danger').click();
+  // A press reaches the mock at once (no await before the request): the second asked nothing.
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { asked: Record<string, number> } }).__yuliusMock.asked['/api/sandboxes/sb_studio/automation-templates'] ?? 0)).toBe(1);
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await expect(screen.getByRole('dialog', 'Delete automation “Work through open issues”?')).toBeVisible();
-  expect(await browser.evaluate(() => document.querySelectorAll('[role="dialog"], dialog[open]').length)).toBe(1);
 });
 
 test('the builder’s Delete asks nothing once the builder is left during its lookup (final review)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/automations/aut_3', '&hold=/api/sandboxes/sb_studio/automation-templates'));
   await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  const waiting = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldWaiting?: number } }).__yuliusMock.heldWaiting ?? 0);
   await browser.locator('.wf-head .btn-quiet-danger').click();
+  // The builder's lookup waits at the hold, then the list's too; both are answered together.
+  await expect.poll(waiting).toBe(1);
   await browser.evaluate(() => { location.hash = '#/s/studio/automations'; });
+  await expect.poll(waiting).toBe(2);
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
-  // The list's read of the shipped automations was held with the builder's: once it shows, both are answered.
   await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
   expect(await browser.evaluate(() => document.querySelectorAll('[role="dialog"], dialog[open]').length)).toBe(0);
-  // Back in the builder, Delete asks again.
+  // Back in the builder, Delete asks again; a question left over from the first visit, answered
+  // before this one, would make two dialogs of this name.
   await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_3'; });
   await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
   await browser.locator('.wf-head .btn-quiet-danger').click();
   await expect(screen.getByRole('dialog', 'Delete automation “Work through open issues”?')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('[role="dialog"], dialog[open]').length)).toBe(1);
 });
 
 test('a reload keeps focus on the same labelled control, wherever it moved (unit, in the page)', async ({ app, browser }) => {

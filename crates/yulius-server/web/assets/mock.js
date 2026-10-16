@@ -13,7 +13,7 @@
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
-// `__yuliusMock.release()`, as hold= does for GETs), as=<login> (signed in as another member, a
+// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
 import { counter, taskInfo } from './status.js';
@@ -3650,7 +3650,13 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];
 
 async function handleFetch(db, url, init = {}) {
-  // Counted as the page asks, before the simulated latency (SPEC-108 tests).
+  // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
+  // GET by path (SPEC-197).
+  if ((init.method || 'GET') === 'GET') {
+    const asked = new URL(url, ORIGIN).pathname;
+    db.asked = db.asked || {};
+    db.asked[asked] = (db.asked[asked] || 0) + 1;
+  }
   if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
   // The Editor's file reads, as asked, and whether a save of a file was on its way (SPEC-181).
   const fileContent = /^\/api\/sandboxes\/[^/]+\/files\/content$/.test(new URL(url, ORIGIN).pathname);
@@ -3679,8 +3685,11 @@ async function handleFetchAfterLatency(db, url, init) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
-  if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
-  if (db.held && method === 'POST' && u.pathname === db.holdPostPath) await db.held;
+  // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (method === 'POST' && u.pathname === db.holdPostPath))) {
+    db.heldWaiting = (db.heldWaiting || 0) + 1;
+    try { await db.held; } finally { db.heldWaiting -= 1; }
+  }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
     db.failedReads += 1;

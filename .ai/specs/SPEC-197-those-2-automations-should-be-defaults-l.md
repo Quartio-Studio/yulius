@@ -145,7 +145,13 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   (the mock's `holdpost=`), so it no longer depends on timing under load, and `keepFocus` gained
   the case of a label gone after the rebuild. Round 4 (1ed2068d) requested changes. The second dev
   merge had committed this worktree's leftover `tools/vidoc/node_modules`, after dev dropped its
-  ignore line; it was removed in a new commit (ADR-0157). The left-builder case was untested; its
-  test fails without the `isConnected` check and passes with it. Final review on the head below.
+  ignore line; it was removed in a new commit (ADR-0157). The left-builder case was untested and got
+  a test. Round 5 (34492182) approved, noting that both Delete tests could pass without their fixes
+  when `release()` came before the requests reached the hold. The mock now counts GETs as they are
+  asked (`asked`) and the requests waiting at a hold (`heldWaiting`). The double-click test checks
+  that one lookup was asked; the left-builder test releases only once both lookups wait. Mutation
+  checks: without the re-entry guard, "expected 2 to be 1"; without the `isConnected` check,
+  "expected 1 to be 0"; both pass with the code. The head that carries this is reviewed before
+  delivery.
 - Not testable here: the live instance's Automations page (it runs `main`; this reaches it at the
   next promotion).
