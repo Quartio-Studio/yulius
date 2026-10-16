@@ -3015,9 +3015,81 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
         "{uses:?}"
     );
 
+    // Another project's secret is never added for it (review round 1).
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let other = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(
+            json!({"name": "OTHER_KEY", "hosts": ["other.quartio.test"], "injection": "bearer",
+            "value": "other_synthetic_value_4471"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    assert!(
+        !f.h.app
+            .egress_intercepts(&client, "other.quartio.test", 443)
+            .await
+    );
+    let elsewhere =
+        f.h.app
+            .egress_apply(&client, egress_request("other.quartio.test", &[]))
+            .await;
+    assert_eq!(forwarded(&elsewhere, "authorization"), None);
+
+    // A Superagent whose person lost write access, or was disabled, gets no proxy client.
+    use yulius_app::ports::store::UserStore as _;
+    cockpit_id(&f, &f.carol).await?;
+    let carol = UserId::parse("u-carol")?;
+    let carols =
+        f.h.app
+            .cockpit_mcp_token(&carol, &sid())
+            .ok_or("carol's token")?;
+    f.h.github.set_perm("carol", "acme/fixture", perms("read"));
+    // Past the access decisions' staleness bound, as for its MCP calls.
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    assert!(
+        f.h.app.egress_client(&carols).await.is_none(),
+        "lost access"
+    );
+    let dave = seed_github_user(&f.h, "u-dave", "dave").await?;
+    f.h.github.set_perm("dave", "acme/fixture", perms("write"));
+    cockpit_id(&f, &dave).await?;
+    let daves =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-dave")?, &sid())
+            .ok_or("dave's token")?;
+    f.h.store
+        .update_user_flags(&UserId::parse("u-dave")?, Some(Some(f.h.app.now())), None)
+        .await?;
+    assert!(f.h.app.egress_client(&daves).await.is_none(), "disabled");
+
     // Ended, its bearer is refused at once.
     f.h.app.end_all_shells().await;
     assert!(f.h.app.egress_client(&token).await.is_none());
+    Ok(())
+}
+
+/// SPEC-186 SAV-006 (review round 1): a Superagent started while the egress proxy was not wired
+/// is restarted once it is, so it gets the proxy.
+#[tokio::test]
+async fn a_superagent_started_without_the_proxy_restarts_once_it_is_wired() -> TestResult {
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    g.h.app.enable_egress(None);
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    assert_ne!(g.h.app.cockpit_refresh_state(&id), "none");
+    other_cockpit(&g, &id).await?;
+    g.h.app.end_all_shells().await;
     Ok(())
 }
 

@@ -112,7 +112,7 @@ fn open_folder(worktree: &Path, folders: &[String]) -> AppResult<Folder> {
             shown()
         )),
         Errno::ENOENT => AppError::Invalid(format!(
-            "the folder {} does not exist in the worktree",
+            "the folder {} does not exist in the folder you work in",
             shown()
         )),
         other => os_error(other),
@@ -124,13 +124,13 @@ fn open_folder(worktree: &Path, folders: &[String]) -> AppResult<Folder> {
     let real = real_path(&fd)?;
     if !inside(worktree, &real) {
         return Err(AppError::Forbidden(format!(
-            "{} is outside the task's worktree",
+            "{} is outside the folder you work in",
             shown()
         )));
     }
     let relative = real
         .strip_prefix(worktree)
-        .map_err(|_| AppError::Forbidden("outside the task's worktree".into()))?
+        .map_err(|_| AppError::Forbidden("outside the folder you work in".into()))?
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()

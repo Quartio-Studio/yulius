@@ -577,23 +577,24 @@ async fn a_dotenv_that_cannot_be_updated_is_refused_and_the_example_keeps_its_mo
             json!({"secrets": ["STRIPE_KEY"]}),
         )
     };
-    // A multi-line value already there for the name is replaced whole (SPEC-186 SAV-005).
-    for (text, why) in [(
-        "A=1\nBROKEN='never closed\n",
-        "on line 2 of the file never closes",
-    )] {
-        std::fs::write(&env, text)?;
-        let refused = copy().await?;
-        assert_eq!(refused["isError"], true, "{refused}");
-        assert!(refused.to_string().contains(why), "{refused}");
-        assert_eq!(read(&env), text, "nothing is written");
-        assert!(!w.worktree.join(".env.example").exists());
-        assert_eq!(
-            w.h.store.vault_get(&w.id).await?.ok_or("secret")?.env_files,
-            EnvFiles::No,
-            "a person is not asked for a copy that cannot work"
-        );
-    }
+    // (A multi-line value already there for the name is replaced whole since SPEC-186.)
+    let text = "A=1\nBROKEN='never closed\n";
+    std::fs::write(&env, text)?;
+    let refused = copy().await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("on line 2 of the file never closes"),
+        "{refused}"
+    );
+    assert_eq!(read(&env), text, "nothing is written");
+    assert!(!w.worktree.join(".env.example").exists());
+    assert_eq!(
+        w.h.store.vault_get(&w.id).await?.ok_or("secret")?.env_files,
+        EnvFiles::No,
+        "a person is not asked for a copy that cannot work"
+    );
 
     std::fs::write(&env, "A=1\n")?;
     let example = w.worktree.join(".env.example");

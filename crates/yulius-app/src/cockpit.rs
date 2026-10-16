@@ -66,6 +66,16 @@ pub(crate) const REFRESH_WAITING: u8 = 2;
 /// again.
 const REFRESH_RETRY_MS: i64 = 60_000;
 
+/// How a refresh went ([`App::refresh_cockpit`]).
+enum Refresh {
+    /// The Cockpit has ended (started again, or it had ended already).
+    Ended,
+    /// Its conversation was written to since it was found idle: it stays, and is looked at again.
+    Busy,
+    /// It could not start again now: it stays, and is tried again later.
+    Failed,
+}
+
 /// Whether a Cockpit's conversation is idle, from its transcript: no turn open and no background
 /// work (a Monitor stream, a background agent) Claude Code waits for (SPEC-186 SAV-006).
 #[derive(Default)]
@@ -75,13 +85,27 @@ struct TurnState {
     background: HashMap<String, Option<i64>>,
 }
 
+/// The length of a conversation's transcript (0 when it cannot be read).
+fn transcript_len(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path).map_or(0, |meta| meta.len())
+}
+
+/// Whether the conversation found idle with transcript `seen` (path and length) still is: nothing
+/// was written to it since, such as a prompt sent meanwhile (review round 1). No conversation:
+/// nothing to cut.
+fn still_idle(seen: Option<(&std::path::Path, u64)>) -> bool {
+    seen.is_none_or(|(path, len)| transcript_len(path) == len)
+}
+
 impl TurnState {
     fn observe(&mut self, observation: &Observation, now: Timestamp) {
         match observation {
             Observation::UserTurn { .. } | Observation::AgentWork { .. } => self.open = true,
+            // As the task reducer reads them (`finish.rs`): a full context ends a turn (#213).
             Observation::TurnComplete { at: Some(_) }
             | Observation::TurnInterrupted { .. }
-            | Observation::TurnEnded { .. } => self.open = false,
+            | Observation::TurnEnded { .. }
+            | Observation::ContextFull => self.open = false,
             Observation::BackgroundStarted {
                 id,
                 expires_in_ms,
@@ -152,10 +176,13 @@ impl App {
     }
 
     /// What a Cockpit this Yulius starts is served and started with, as a digest: its MCP
-    /// instructions and tools and [`COCKPIT_LAUNCH_REVISION`] (SPEC-186 SAV-006).
+    /// instructions and tools, whether the egress proxy is wired and
+    /// [`COCKPIT_LAUNCH_REVISION`] (SPEC-186 SAV-006).
     pub(crate) fn cockpit_launch_digest(&self) -> String {
         let view = json!({
             "revision": COCKPIT_LAUNCH_REVISION,
+            // Started without the egress proxy, it gets it once the proxy is wired.
+            "egress": self.egress_wired(),
             "instructions": crate::mcp::COCKPIT_INSTRUCTIONS,
             "tools": crate::mcp::cockpit_tool_descriptors(),
         });
@@ -401,9 +428,12 @@ impl App {
                     }
                 }
             }
-            let Some((_, watch)) = watched.as_mut() else {
+            let Some((watched_path, watch)) = watched.as_mut() else {
                 // No conversation yet: a new start cuts nothing (SPEC-186 SAV-006).
-                if self.cockpit_refresh_now(&runtime, &mut refresh_from).await {
+                if self
+                    .cockpit_refresh_now(&runtime, &mut refresh_from, None)
+                    .await
+                {
                     return;
                 }
                 continue;
@@ -456,7 +486,12 @@ impl App {
             // Once its history is read: idle, it starts again now; in a turn, it waits for the end.
             if history_read && runtime.refresh.load(Ordering::SeqCst) != REFRESH_NONE {
                 if turn.idle(now) {
-                    if self.cockpit_refresh_now(&runtime, &mut refresh_from).await {
+                    // What was read so far: a prompt written after it keeps the process.
+                    let seen = (watched_path.as_path(), transcript_len(watched_path));
+                    if self
+                        .cockpit_refresh_now(&runtime, &mut refresh_from, Some(seen))
+                        .await
+                    {
                         return;
                     }
                 } else {
@@ -472,40 +507,50 @@ impl App {
         self: &Arc<Self>,
         runtime: &Arc<ShellRuntime>,
         retry_from: &mut i64,
+        seen: Option<(&std::path::Path, u64)>,
     ) -> bool {
         let now = self.now().0;
         if runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE || now < *retry_from {
             return false;
         }
         runtime.refresh.store(REFRESH_DUE, Ordering::SeqCst);
-        let ended = self.refresh_cockpit(runtime).await;
-        if !ended {
-            *retry_from = now.saturating_add(REFRESH_RETRY_MS);
+        match self.refresh_cockpit(runtime, seen).await {
+            Refresh::Ended => true,
+            // The conversation moved on: the watch reads it and decides again.
+            Refresh::Busy => false,
+            Refresh::Failed => {
+                *retry_from = now.saturating_add(REFRESH_RETRY_MS);
+                false
+            }
         }
-        ended
     }
 
     /// Starts a Cockpit adopted from a Yulius that served it something else again, resuming its
     /// newest conversation, so it gets this Yulius' tools and environment (SPEC-186 SAV-006);
-    /// its viewers are told why and follow it (`switched`). Returns whether this Cockpit has
-    /// ended; `false` leaves it running as it is (its owner lost access, no subscription has
-    /// capacity, its process could not be ended).
-    async fn refresh_cockpit(self: &Arc<Self>, runtime: &Arc<ShellRuntime>) -> bool {
+    /// its viewers are told why and follow it (`switched`). `seen` is the conversation's
+    /// transcript as it was found idle: written to since, the Cockpit is busy again and stays.
+    /// Otherwise the Cockpit stays running as it is when its owner lost access, no subscription
+    /// has capacity or its process could not be ended (`Failed`).
+    async fn refresh_cockpit(
+        self: &Arc<Self>,
+        runtime: &Arc<ShellRuntime>,
+        seen: Option<(&std::path::Path, u64)>,
+    ) -> Refresh {
         let Ok(_starting) = self
             .cockpit_start_slot(runtime.creator(), runtime.sandbox())
             .await
         else {
-            return false;
+            return Refresh::Failed;
         };
         if !runtime.is_live() {
-            return true;
+            return Refresh::Ended;
         }
         let owner = match self.deps.store.user(runtime.creator()).await {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
-            _ => return false,
+            _ => return Refresh::Failed,
         };
         let Ok((record, _)) = self.require(&owner, runtime.sandbox(), Action::Work).await else {
-            return false;
+            return Refresh::Failed;
         };
         let account = match self
             .pool_account(Provider::Anthropic, cockpit_family())
@@ -514,16 +559,20 @@ impl App {
             Ok(account) => account,
             Err(err) => {
                 tracing::info!(error = %err, shell = %runtime.id(), "the cockpit waits for a subscription to restart on");
-                return false;
+                return Refresh::Failed;
             }
         };
+        // Checked last, right before the end: a prompt sent meanwhile is not cut.
+        if !still_idle(seen) {
+            return Refresh::Busy;
+        }
         runtime.notice(REFRESH_NOTICE);
         runtime.switching.store(true, Ordering::SeqCst);
         if !self.end_shells(std::slice::from_ref(runtime)).await {
             // Its process may still run: a second one would write the same conversation.
             runtime.switching.store(false, Ordering::SeqCst);
             tracing::warn!(shell = %runtime.id(), "the cockpit is not restarted: its process could not be ended");
-            return false;
+            return Refresh::Failed;
         }
         match self.start_cockpit(&owner, &record, &account, false).await {
             Ok(started) => {
@@ -534,7 +583,7 @@ impl App {
                 tracing::warn!(error = %err, shell = %runtime.id(), "the cockpit could not start again after an update");
             }
         }
-        true
+        Refresh::Ended
     }
 
     /// A usage limit cut the Cockpit's turn (SPEC-074): records it on its subscription
@@ -798,5 +847,31 @@ mod tests {
         assert!(!turn.idle(now), "woken by a notification");
         turn.observe(&Observation::TurnInterrupted { at: None }, now);
         assert!(turn.idle(now));
+        // The API rejected a prompt for a full context: that turn is over too (#213).
+        turn.observe(
+            &Observation::UserTurn {
+                at: None,
+                wake: false,
+            },
+            now,
+        );
+        turn.observe(&Observation::ContextFull, now);
+        assert!(turn.idle(now), "a full context ends the turn");
+    }
+
+    /// Review round 1: a conversation that grew after it was found idle (a prompt sent meanwhile)
+    /// is not cut by the restart.
+    #[test]
+    fn a_transcript_that_grew_since_it_was_idle_is_not_cut()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("conv-1.jsonl");
+        std::fs::write(&path, "{}\n")?;
+        let seen = super::transcript_len(&path);
+        assert!(super::still_idle(Some((path.as_path(), seen))));
+        assert!(super::still_idle(None), "no conversation: nothing to cut");
+        std::fs::write(&path, "{}\n{\"type\":\"user\"}\n")?;
+        assert!(!super::still_idle(Some((path.as_path(), seen))));
+        Ok(())
     }
 }

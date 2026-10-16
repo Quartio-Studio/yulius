@@ -356,6 +356,11 @@ impl App {
         }
     }
 
+    /// Whether the egress proxy is wired: runs get the proxy environment.
+    pub(crate) fn egress_wired(&self) -> bool {
+        self.vault.egress.load(Ordering::SeqCst)
+    }
+
     /// Wires the egress proxy (composition): agent runs get the proxy environment and, when
     /// `ca_bundle` is set, a CA bundle (the host's roots plus the egress CA).
     pub fn enable_egress(&self, ca_bundle: Option<String>) {

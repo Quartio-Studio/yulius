@@ -397,7 +397,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             description: "Copy agent secrets' real values into a git-ignored dotenv file of the folder you work in (a task's worktree, the Superagent's repository; default .env) and their names into the .env.example beside it (SPEC-129), for code that runs outside Yulius' proxy (a deployed app, a deploy script). You never see the values, so never write or edit those lines yourself: you would write [secret:NAME]. A person allows each secret once: until then nothing is written and the result gives the Secrets page link to print. Refused unless Git ignores the file and does not track it.".into(),
             input_schema: schema(json!({
                 "secrets": {"type": "array", "items": {"type": "string"}, "description": "Secret NAMEs from secrets_list (1-16)"},
-                "path": {"type": "string", "description": "Dotenv file relative to the worktree, e.g. .env (default) or deploy/.env.production"},
+                "path": {"type": "string", "description": "Dotenv file relative to the folder you work in (a task's worktree, the Superagent's repository), e.g. .env (default) or deploy/.env.production"},
                 "reason": {"type": "string", "description": "What needs the real value (short), recorded in the secrets activity"}
             }), &["secrets"]),
         },

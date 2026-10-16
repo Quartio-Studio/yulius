@@ -60,10 +60,13 @@ Three things stood in the way:
   byte for byte. Copying again replaces the whole multi-line value. Each line of a key block is a
   redaction needle, so the copied file reads as `[secret:NAME]`.
 - **New tools by a restart, not a notification.** Each Superagent's shell record keeps a launch
-  digest: SHA-256 of its MCP instructions, its tool descriptors and `COCKPIT_LAUNCH_REVISION`
+  digest: SHA-256 of its MCP instructions, its tool descriptors, whether the egress proxy is wired
+  (so one started without it gets it once it is, and `serve` wires it before adopting shells) and
+  `COCKPIT_LAUNCH_REVISION`
   (bumped when its environment or settings change). An adopted Superagent whose digest differs, or
   is absent (started before this), starts again under its start lock once its conversation is idle
-  (no turn open, no background agent or unexpired Monitor), resuming its newest conversation on a
+  (no turn open, no background agent or unexpired Monitor, and nothing written to its transcript
+  since it was found so, checked right before its process is ended), resuming its newest conversation on a
   subscription with capacity, without redoing a turn. Its viewers get a notice and the exit status
   `switched`, which the panel follows. Mid-turn it waits for the turn to end; a start that cannot
   happen (no capacity, access lost, its process not ended) is tried again a minute later.

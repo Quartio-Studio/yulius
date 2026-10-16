@@ -558,7 +558,8 @@ lines are redaction needles.
 
 Claude Code reads the Yulius tools once per connection, so each Cockpit's `shell.json` keeps the
 launch digest it started with (`App::cockpit_launch_digest`: its MCP instructions, tool
-descriptors and `COCKPIT_LAUNCH_REVISION`). One adopted after a restart with another digest, or
+descriptors, whether the egress proxy is wired and `COCKPIT_LAUNCH_REVISION`; `serve` wires
+the proxy before it adopts shells). One adopted after a restart with another digest, or
 none, is due a refresh: its watch tracks whether a turn or background work is open, and once its
 conversation is idle it is ended (`switched`) and started again resuming that conversation, as a
 usage-limit move does but without redoing a turn.

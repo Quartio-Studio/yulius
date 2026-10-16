@@ -80,8 +80,9 @@ what it is served gets the new tools and environment by itself.
   Through the proxy a value is sent as stored (an HTTP header cannot carry line breaks).
   Tested with a 3-line PEM key and a 7-line OpenSSH key (synthetic).
 - SAV-006 (new tools without a restart): Each Superagent records what it was started with, a
-  digest of its MCP view (instructions, tools, tools allowed without asking) and of its launch
-  shape (a revision constant bumped when its environment changes). An adopted Superagent whose
+  digest of its MCP view (instructions, tools), whether the egress proxy was wired, and a
+  revision constant bumped when its launch otherwise changes (environment, settings, the tools
+  it runs without asking). An adopted Superagent whose
   record differs from what this Yulius would start, or has none (started before this change), is
   restarted once its conversation is idle (no turn open, no background work), resuming its newest
   conversation on a subscription with capacity; its viewers are told why and the panel follows it
@@ -98,11 +99,11 @@ what it is served gets the new tools and environment by itself.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Multi-line keys reach a .env byte-identical to the original file
-- [ ] The Superagent copies allowed secrets into its repository's ignored .env and asks for hosts
-- [ ] The Superagent runs behind the egress proxy with its own bearer and placeholders
-- [ ] A Superagent started before an update restarts and resumes once idle with the new tools
-- [ ] The Superagent's briefing, ADR-0150 and the docs say what it can do with the vault
+- [x] Multi-line keys reach a .env byte-identical to the original file
+- [x] The Superagent copies allowed secrets into its repository's ignored .env and asks for hosts
+- [x] The Superagent runs behind the egress proxy with its own bearer and placeholders
+- [x] A Superagent started before an update restarts and resumes once idle with the new tools
+- [x] The Superagent's briefing, ADR-0150 and the docs say what it can do with the vault
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -158,3 +159,17 @@ what it is served gets the new tools and environment by itself.
   (a JSON service-account file kept on one line) keeps being refused rather than having its
   escapes rewritten. The final line break is added because PEM and OpenSSH files end with one
   (OpenSSH refuses a key without it).
+- Independent review round 1 (REQUEST CHANGES; no value or production-secret leak found; the
+  reviewer read a key-block `.env` back byte for byte with `sh`, Node `dotenv` 16, `python-dotenv`
+  1.2.4 and Docker Compose; all own code, all fixed): the proxy's refusal of a Superagent whose
+  person was disabled or lost access, and of another sandbox's secrets, was untested (medium: now
+  in `the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer`; the lost-access case
+  waits out the access decisions' staleness bound, as the MCP calls do); `serve` adopted shells
+  before wiring the proxy, so a Superagent restarted at once could start without it and never be
+  restarted again (now wired first, and the launch digest holds whether the proxy is wired:
+  `a_superagent_started_without_the_proxy_restarts_once_it_is_wired`, red before); a full context
+  did not end a turn for the refresh (now as `finish.rs` reads it, unit test red before); a prompt
+  sent between the idle check and the end could be cut (now the transcript's length is checked
+  again right before the end, unit test red before); nits: the spec's digest wording, "worktree"
+  in the Superagent's refusals and the `path` description, key armour labels must match (unit
+  case red before), a one-element test loop.

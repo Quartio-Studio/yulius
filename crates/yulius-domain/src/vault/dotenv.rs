@@ -17,18 +17,18 @@ fn plain(c: char) -> bool {
     c.is_ascii_alphanumeric() || "_-./:+=@,%^".contains(c)
 }
 
-/// Whether `line` is a key's armour line `-----<edge> <label>-----` (PEM, OpenSSH).
-fn armour(line: &str, edge: &str) -> bool {
+/// The label of a key's armour line `-----<edge> <label>-----` (PEM, OpenSSH).
+fn armour<'a>(line: &'a str, edge: &str) -> Option<&'a str> {
     line.strip_prefix("-----")
         .and_then(|rest| rest.strip_prefix(edge))
         .and_then(|rest| rest.strip_prefix(' '))
         .and_then(|rest| rest.strip_suffix("-----"))
-        .is_some_and(|label| !label.is_empty() && !label.contains('-'))
+        .filter(|label| !label.is_empty() && !label.contains('-'))
 }
 
 /// The key file a value stands for, when it is a key block stored with literal `\n` (an agent
 /// secret never spans lines, SPEC-186 SAV-005): its armour opens the first line and closes the
-/// last, a body is between them, and no other `\` remains. The file ends with one line break, as
+/// last with the same label, a body is between them, and no other `\` remains. The file ends with one line break, as
 /// PEM and OpenSSH files do (OpenSSH refuses a key without it), whether or not the stored value
 /// ends with a literal `\n`. `None` for any other value: one that is not a key keeps its escapes.
 #[must_use]
@@ -40,8 +40,7 @@ pub fn key_block(value: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
     let (first, last) = (lines.first()?, lines.last()?);
     let block = lines.len() >= 3
-        && armour(first, "BEGIN")
-        && armour(last, "END")
+        && armour(first, "BEGIN").is_some_and(|label| armour(last, "END") == Some(label))
         && !text.contains(['\\', '\'', '\r'])
         && !text.contains("${");
     block.then(|| format!("{text}\n"))
@@ -327,6 +326,12 @@ mod tests {
                 armour("END", "KEY")
             ),
             format!("{}\\n{}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            // Review round 1: the armour's labels differ.
+            format!(
+                "{}\\nYWJj\\n{}",
+                armour("BEGIN", "KEY"),
+                armour("END", "OTHER KEY")
+            ),
         ] {
             assert_eq!(key_block(&odd), None, "{odd}");
             assert!(line("K", &odd).is_err(), "{odd}");
