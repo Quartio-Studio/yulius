@@ -1,11 +1,11 @@
 ---
 yulius-task: f0bdd2d9-5c1c-48c4-a929-c1c3586fe4fd
-status: draft
+status: done
 ---
 
 # SPEC-187: Docker works inside isolated sandboxes, through an engine of the sandbox's own
 
-Status: draft
+Status: done
 Date: 2026-10-16
 Owner: task #172
 Scope authorization: task #172 (requested by MrFishPL): "Make Docker usable inside Yulius
@@ -67,28 +67,28 @@ another sandbox or the host's Docker.
 | ID | Requirement |
 | --- | --- |
 | DKR-001 | When a sandbox's runs are isolated, the host has `dockerd` (so the base has it), the cgroup delegation is on and `YULIUS_SANDBOX_DOCKER` is not `off`, the sandbox has a Docker engine of its own. Every contained run joined to the holder (agent session, Superagent, Shell, CI job; not a production CD run on the host's system) finds its socket at `/run/docker.sock` (= `/var/run/docker.sock`), so `docker`, `docker compose`, buildx and testcontainers work without settings. |
-| DKR-002 | The engine starts on the first connection to that socket and is ready or answers why not (a Docker-API JSON error naming the engine log's last lines) within 60 s. It stops after `YULIUS_SANDBOX_IDLE_MINUTES` with no client connection and no container process. It lives as long as the holder, so it survives a Yulius restart or update, and while it runs the holder is not idle. |
+| DKR-002 | The engine starts on the first connection to that socket and is ready or answers why not (a Docker-API JSON error naming the engine log's last lines) within 60 s; clients queued behind a failed start share its answer for 5 s. The holder never follows a link at the engine's control socket, which the engine (and any container) can write. It stops after `YULIUS_SANDBOX_IDLE_MINUTES` with no client connection and no container process. It lives as long as the holder, so it survives a Yulius restart or update, and while it runs the holder is not idle. |
 | DKR-003 | The engine runs in the sandbox's user, network and cgroup namespaces and never in the holder's mount namespace. It gets a run's file view (the system layer, the sandbox directory at its host path, a tmpfs over the data directory), plus only: its storage, its control socket's directory, a fresh read-only sysfs of the sandbox's network, the engine's own cgroup subtree at `/sys/fs/cgroup` (its cgroup namespace's root), the sandbox's Docker socket and the `yulius` executable read-only. No host Docker socket, no host `/sys`, no host cgroup tree, no `runtime/` or other sandboxes. |
-| DKR-004 | The engine has every capability of the sandbox's user namespace under the engine seccomp profile. It is the run profile plus the mount APIs, `umount2`, `pivot_root` and `setns`, with the keyring calls answering `ENOSYS`. Nested user namespaces, `bpf`, `io_uring`, `perf_event_open`, modules, kexec, `userfaultfd`, `open_by_handle_at` and the other refusals stay. A seccomp filter is inherited and cannot be removed, so every container, `--privileged` included, is bound by it. Environment: cleared, then `PATH`, `HOME=/root`. |
-| DKR-005 | Containers are limited by the sandbox's cgroup. The engine lives in `sandboxes/<sid>/engine` (CPU weight 100 beside `system`, `agents`, `ci`), and containers are created below it, so the sandbox's `memory.max`, `pids.max` and `cpu.max` bound them. |
+| DKR-004 | The engine has every capability of the sandbox's user namespace under the engine seccomp profile. It is the run profile plus the mount APIs, `umount2`, `pivot_root` and `setns`, with the keyring calls answering `ENOSYS`. Nested user namespaces, `bpf`, `io_uring`, `perf_event_open`, modules, kexec, `userfaultfd`, `open_by_handle_at` and the other refusals stay. A seccomp filter is inherited and cannot be removed, so every container, `--privileged` included, is bound by it. Environment: cleared, then `PATH`, `HOME=/root`. Its read-only binds are not locked (same user namespace), so a server whose `yulius` executable the sandbox's root (the service user) owns gets no engine. |
+| DKR-005 | Containers are limited by the sandbox's cgroup. The engine lives in `sandboxes/<sid>/engine` (CPU weight 100 beside `system`, `agents`, `ci`), and containers are created below it, so the sandbox's `memory.max`, `pids.max` and `cpu.max` bound them. Per-container flags (`-m`, `--cpus`) are not applied: no controller passes below a group holding the engine (documented). |
 | DKR-006 | Engine storage (`sysroots/<sid>/docker`, outside the sandbox directory and never bound into runs) counts toward the sandbox's soft disk quota as the consumer "containers". When disk upkeep must free space (≥ 90 % of the quota or a refused start) and the holder is live, the build cache and images that no container uses are pruned through the engine, reported and audited like the other build caches. Containers and volumes are never pruned. |
 | DKR-007 | Container traffic leaves through the sandbox's network namespace and its egress (`slirp4netns` with host loopback off), like a run's. With the engine on, the relays of the internal listener and `YULIUS_SANDBOX_FORWARD` listen on every IPv4 address of the sandbox's network, not only its loopback. A container then reaches the egress proxy and its secret injection at `host.docker.internal:<port>` (`--add-host=host.docker.internal:host-gateway`). Nothing outside the sandbox can connect in: `slirp4netns` forwards no port inward. |
 | DKR-008 | A port a container publishes inside the sandbox's dev-server range is relayed to the host's loopback like a dev server's, because `docker-proxy` listens in the sandbox's network. |
 | DKR-009 | From a container: the host's loopback (`10.0.2.2`, a host loopback port), another sandbox's dev server and the host's Docker are unreachable. The socket a container mounts is its own sandbox's engine. |
-| DKR-010 | The briefing's `## Containers` section, in an isolated sandbox with the engine on, says Docker works there and how: its own engine, started on first use, bind mounts from the sandbox directory, images in the disk quota, `-p` in the port range for previews, `host.docker.internal` for the egress proxy. In an isolated sandbox without it, the section keeps saying there is no engine (SPEC-173 CTR-001). Without isolation, no section. It stays the last mandatory part (SPEC-173 CTR-002). |
+| DKR-010 | The briefing's `## Containers` section, in an isolated sandbox whose holder serves an engine (not merely the setting: a holder adopted from before engines, or whose socket failed, serves none), says Docker works there and how: its own engine, started on first use, bind mounts from the sandbox directory, images in the disk quota, `-p` in the port range for previews, `host.docker.internal` for the egress proxy. In an isolated sandbox without it, the section keeps saying there is no engine (SPEC-173 CTR-001). Without isolation, no section. It stays the last mandatory part (SPEC-173 CTR-002). |
 | DKR-011 | `yulius doctor` reports whether sandboxes get Docker and, if not, why: no `dockerd`, no cgroup delegation, `YULIUS_SANDBOX_DOCKER=off`. With the engine on, it lists the kernel modules a sandbox cannot load itself (`overlay bridge veth nf_tables nft_compat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`) that are neither loaded nor built in. |
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The engine's seccomp profile and file view, built and tested as pure functions
-- [ ] The holder serves the sandbox's Docker socket and starts and stops the engine on demand
-- [ ] The server gives sandboxes an engine: runs see its socket, it gets its cgroup and storage
-- [ ] Engine images count toward the disk quota and are pruned under pressure
-- [ ] Agents are told Docker works; doctor and operator docs name the prerequisites
-- [ ] Host-level isolation tests: docker run, build, compose and the refusals
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The engine's seccomp profile and file view, built and tested as pure functions
+- [x] The holder serves the sandbox's Docker socket and starts and stops the engine on demand
+- [x] The server gives sandboxes an engine: runs see its socket, it gets its cgroup and storage
+- [x] Engine images count toward the disk quota and are pruned under pressure
+- [x] Agents are told Docker works; doctor and operator docs name the prerequisites
+- [x] Host-level isolation tests: docker run, build, compose and the refusals
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -149,3 +149,51 @@ another sandbox or the host's Docker.
   - `YULIUS_SANDBOX_DOCKER=on` when the prerequisites hold;
   - the engine's idle stop reuses `YULIUS_SANDBOX_IDLE_MINUTES`;
   - pruning only images no container uses and the build cache.
+
+## Evidence
+
+- **Reproduction** (this task's isolated sandbox, 2026-10-16): `docker version` fails with "failed
+  to connect to the docker API at unix:///var/run/docker.sock". `/proc/self/status` shows
+  `NoNewPrivs: 1`, `Seccomp: 2`, reduced capabilities, `uid_map` `0 999 1 / 1 231072 65535`. The
+  base has Docker 29.9 (`dockerd`, `containerd`, `runc`, buildx and compose plugins).
+  `/proc/modules` lists `overlay bridge veth nf_tables nft_compat nft_chain_nat nf_nat
+  nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
+- **Tests written first, seen failing for the right reason**, then passing:
+  - the engine seccomp profile (missing API);
+  - the socket bind in joined runs (`a_joined_run_sees_the_sandboxs_docker_socket`: no bind);
+  - the engine cgroup group (`SandboxGroups.engine` missing);
+  - engine storage measured as "containers" (labelled "system" before);
+  - disk upkeep pruning the engine (trait method missing);
+  - the briefing variants and budgets (section cut at 440 bytes, then shortened to ≤ 257);
+  - the doctor check.
+- **Review round 1** (fresh session, request changes). Own code, each fixed test-first:
+  - *High:* the holder followed a link at the engine-writable control socket. The regression test
+    `a_link_at_the_control_socket_is_never_followed` failed with a plain `connect` (it reached the
+    decoy). Fixed with `O_PATH|O_NOFOLLOW`, a socket check and `/proc/self/fd`.
+  - *Medium:* the briefing came from the global setting. Now it comes from this sandbox's holder
+    (`docker_is_told_per_sandbox_from_its_holder`).
+  - *Low:*
+    - queued clients restarted a failing engine (`clients_queued_behind_a_failed_start_share_its_answer`
+      failed with 4 starts, now 1);
+    - a stale socket file counted as served (now the readiness report says so,
+      `the_readiness_line_says_whether_the_docker_socket_is_served`);
+    - an executable owned by the sandbox's root (no engine, `an_executable_the_sandbox_owns_gets_no_engine`);
+    - doctor text with a run of spaces (asserted);
+    - the `--privileged` probe now uses `--cgroupns=host`;
+    - per-container resource flags and the storage undercount are documented.
+  - *Pre-existing:* `sysroots/<sandbox>` is never deleted for removed sandboxes: #582.
+  - A flaky test of this change (`a_command_that_ignores_term_is_killed_after_the_grace` raced the
+    shell's `trap`, gate run 1) was fixed to wait on a ready file, and passed 8 runs in a row.
+- **Gate:** `scripts/dev ci` → exit 0 at `1ee6409e` (nextest 1942 passed, 18 skipped); rerun after
+  the review fixes, see the pull request.
+- **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
+  expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
+- **Not run here:**
+  - the host-level test `isolation_docker`, which needs `YULIUS_ISOLATION_TEST=1` and
+    `YULIUS_ISOLATION_TEST_DOCKER=1` on the host in a delegated transient unit. This task's sandbox
+    and Yulius CI are isolated runs whose seccomp filter refuses the namespaces and mounts the
+    holder and engine need, so it skips there;
+  - a real `docker run hello-world` in a fresh sandbox, which waits for a host running this
+    version.
+
+  A person runs both after the deploy.
