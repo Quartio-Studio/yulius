@@ -121,6 +121,29 @@ mod tests {
         assert!(issues.prompt.contains("Needs a person:"));
         assert!(issues.prompt.contains("not this automation or its tasks"));
         assert!(issues.prompt.contains("--search \"Fixes #<number>\""));
+        // SPEC-194: only the 5 most important actionable issues no running task owns, ranked
+        // before any is verified; the rest wait untouched for a later run.
+        assert_eq!(
+            issues.description,
+            "Every night, the core team's open GitHub issues are ranked and the 5 most important actionable ones get a task each."
+        );
+        for wording in [
+            "5 most important actionable",
+            "Rank",
+            "reactions",
+            "`priority: high`",
+            "in rank order",
+            "stop",
+            "untouched",
+            "a running task owns",
+            "branch",
+            "`task_get`",
+            "never count toward the 5",
+        ] {
+            assert!(issues.prompt.contains(wording), "{wording}");
+        }
+        assert!(!issues.prompt.contains("verify each one"));
+        assert!(!issues.prompt.contains("Give each remaining issue"));
         // SPEC-134 CDK-003: dev is deployed and tested every night, never production.
         let deploy = template("nightly-dev-deploy").ok_or("deploy template")?;
         for wording in [
