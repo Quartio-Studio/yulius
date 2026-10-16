@@ -1,11 +1,11 @@
 ---
 yulius-task: 0ab40d0e-824c-4561-8f61-a0f683354103
-status: in-progress
+status: done
 ---
 
 # SPEC-191: Live task lists, and Paused as a state an update and a person both set
 
-Status: in progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #176
 Scope authorization: task #176, requested by MrFishPL: "Tasks list doesnt refresh automatically,
@@ -113,14 +113,14 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Live updates never go silently stale: the event stream has a heartbeat and a watchdog
-- [ ] A task an update pauses reads Paused in the list, the sidebar and its view
-- [ ] A person pauses and resumes a running task (stored, frozen, thawed)
-- [ ] An update or a restart never wakes a task a person paused; ending or stopping it clears the pause
-- [ ] Pause and Resume buttons in the task view and the Tasks list, with e2e tests
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Live updates never go silently stale: the event stream has a heartbeat and a watchdog
+- [x] A task an update pauses reads Paused in the list, the sidebar and its view
+- [x] A person pauses and resumes a running task (stored, frozen, thawed)
+- [x] An update or a restart never wakes a task a person paused; ending or stopping it clears the pause
+- [x] Pause and Resume buttons in the task view and the Tasks list, with e2e tests
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -191,3 +191,35 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
   three small pull requests touching the same files in sequence. The spec review suggested
   shipping LIV first; kept together because the person's pause is what was asked for "in general"
   and LIV alone is about 60 lines.
+
+## Evidence
+
+- Root cause (LIV): `routes/events.rs` sent no heartbeat and `ReconnectingSocket` reconnected only
+  on a close; reproduced in e2e (`live-updates.e2e.ts`, mock stream silenced without a close): the
+  list kept "Working" after the task changed; fails before `6d802cbe`, passes after.
+- Test-first, each seen failing without its change: `http_auth::a_quiet_event_stream_sends_heartbeats`
+  (no heartbeat), `self_update::an_update_s_pause_is_in_the_task_summary_and_published` (`pause`
+  null), `pause.e2e.ts` (no Paused icon; no Pause menu item), `task_pause.rs` (404 before the
+  routes), `self_update::an_update_never_wakes_a_task_a_person_paused` and
+  `task_pause::stopping_a_paused_task_thaws_it_first` (failed with the keep list and the shutdown
+  thaw disabled), `freeze.rs::thaw_all_spares_the_groups_it_is_told_to_keep`.
+- Independent review, round 1 (`om-code-review`, fresh session, head `0d932890`): request
+  changes, two Medium own-code findings, both fixed test-first in `15a721e3`: M1, a resume during
+  the pause's freeze left the run frozen (`task_pause::a_resume_during_the_pause_s_freeze_leaves_nothing_frozen`
+  fails with the lock removed: "left frozen"); M2, untested paths (switch refusal, close, the
+  launch-goal wait, the tab shown again: new tests). Lows fixed: L1 the update's release thaws
+  under the freeze lock; L2 the notice's doubled full stop and L3 a watcher's menu saying "update"
+  (e2e, seen failing); L4 an idle run that cannot be frozen counts as paused
+  (`task_pause::an_idle_run_that_cannot_be_frozen_is_paused_at_once`). Nits: the tab-shown check
+  waits 1.5 beats; the keep list is read once per pass; the plan is ticked. The run-start ending
+  path and the automatic switch call the same `end_person_pause` as stop and close (tested);
+  driving them needs a live agent run, so they have no test of their own.
+- `scripts/dev ci` (doctor, repository check, script tests, check, fmt, clippy `-D warnings`,
+  nextest, doctests, deny, shear, doc): exit 0 on `15a721e3`, 1939 tests passed, 18 skipped.
+- e2e, full suite: 580 passed, 1 skipped on `15a721e3` (`agent.e2e.ts` needs a model key).
+- `scripts/dev security`: not run, exit 2. Vidoc rejects the key (HTTP 401, #470); per ADR-0104
+  this is unrun, not passed.
+- Not testable here: a real cgroup freeze of a person's pause (no delegated cgroup in this
+  sandbox; the freeze itself is SPEC-160's, tested there), and a dead connection behind a real
+  proxy (simulated by the mock).
+
