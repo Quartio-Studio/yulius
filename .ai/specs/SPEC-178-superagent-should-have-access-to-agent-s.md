@@ -5,7 +5,8 @@ status: done
 
 # SPEC-178: The Superagent reads the agent vault: names, and whether a value matches
 
-Status: done
+Status: done; VAU-003's refusal of `secret_copy_to_env` and `secret_request_hosts` and VAU-004's
+"not the proxy, `.env` copies or host requests" are superseded by SPEC-186 (ADR-0150).
 Date: 2026-10-15
 Owner: Yulius task #165
 Scope authorization: task #165: "superagent should have access to agent's vault as well", with a

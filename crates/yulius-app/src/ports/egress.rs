@@ -11,7 +11,7 @@ use yulius_domain::vault::redact::PlainMatcher;
 /// The run behind a proxy credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressClient {
-    /// An agent run or a CI job.
+    /// An agent run, a CI job or a person's Superagent.
     pub caller: EgressCaller,
     /// Its sandbox: the sandbox's secrets and the instance-wide ones apply.
     pub sandbox_id: SandboxId,
@@ -39,24 +39,34 @@ pub enum EgressCaller {
         /// The granted secret names.
         secrets: Vec<String>,
     },
+    /// A person's Superagent (SPEC-186 SAV-001): every agent secret of its sandbox applies but a
+    /// production-deploy one, as for an agent run.
+    Superagent {
+        /// Its shell (process), which its uses are audited once per.
+        shell_id: String,
+        /// Audit actor `cockpit:<login>`.
+        actor: String,
+    },
 }
 
 impl EgressClient {
-    /// The audit actor: `task:<n>` or `ci:<run>`.
+    /// The audit actor: `task:<n>`, `ci:<run>` or `cockpit:<login>`.
     #[must_use]
     pub fn actor(&self) -> String {
         match &self.caller {
             EgressCaller::Agent { task_number, .. } => format!("task:{task_number}"),
             EgressCaller::Ci { run_id, .. } => format!("ci:{run_id}"),
+            EgressCaller::Superagent { actor, .. } => actor.clone(),
         }
     }
 
-    /// What its uses are audited once per: the agent run or the CI job.
+    /// What its uses are audited once per: the agent run, the CI job or the Superagent's shell.
     #[must_use]
     pub fn use_key(&self) -> &str {
         match &self.caller {
             EgressCaller::Agent { attempt_id, .. } => attempt_id,
             EgressCaller::Ci { job_id, .. } => job_id,
+            EgressCaller::Superagent { shell_id, .. } => shell_id,
         }
     }
 
@@ -65,6 +75,7 @@ impl EgressClient {
     pub fn may_use(&self, name: &str, cd_prod: bool) -> bool {
         match &self.caller {
             EgressCaller::Agent { .. } => true,
+            EgressCaller::Superagent { .. } => !cd_prod,
             EgressCaller::Ci { secrets, .. } => !cd_prod && secrets.iter().any(|s| s == name),
         }
     }

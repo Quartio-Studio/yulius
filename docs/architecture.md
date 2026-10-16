@@ -562,24 +562,42 @@ redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for
 hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
 server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
 token the person's environment holds, answered while the person may work in the sandbox (by an
-access decision within the staleness bound, never waiting on GitHub). It is not behind the egress
-proxy, so servers imported from `.mcp.json` with placeholders do not authenticate there ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
-The Superagent reads the agent vault too: `secrets_list` names its sandbox's agent secrets (never
-a value), and `secret_verify`, the Superagent's only (a matching candidate's hash must not reach
-a task transcript other members read), compares the SHA-256 of a value the
-person holds with the stored value and its variants (a final line break; literal `\n` as line
-breaks, since an agent secret never spans lines), answering only the kind of match and the line
-count. Both run without asking; the proxy, `.env` copies, host requests and the browser stay a
-task's ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
+The Superagent uses the agent vault as a task's agent does
+([SPEC-186](../.ai/specs/SPEC-186-the-superagent-uses-the-agent-vault-like.md),
+[decision 0150](decisions/0150-the-superagent-uses-agent-secrets-as-a-task-does.md)). It starts
+behind the egress proxy with its own `ck_` bearer (`App::vault_superagent_setup`: proxy variables,
+the CA bundle in its run directory, a placeholder per agent secret), and the proxy's policy takes
+a live Superagent's bearer as `EgressCaller::Superagent`, which never uses a production secret.
+`secret_copy_to_env` and `secret_request_hosts` take a `SecretUser` (a task's agent or the
+Superagent): the Superagent's copies go to the sandbox repository's ignored `.env`, and its asks
+are recorded as `<login>'s Superagent`. It has no project browser, so no `browser_fill_secret`.
+`secrets_list` gives it a task's records with its own guidance, and `secret_verify`, the
+Superagent's only (a matching candidate's hash must not reach a task transcript other members
+read), compares the SHA-256 of a value the person holds with the stored value and its variants (a
+final line break; literal `\n` as line breaks, since an agent secret never spans lines)
+([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
 [decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
+A key block stored that way is written to a `.env` as its file (`dotenv::key_block`), and its
+lines are redaction needles.
+
+Claude Code reads the Yulius tools once per connection, so each Cockpit's `shell.json` keeps the
+launch digest it started with (`App::cockpit_launch_digest`: its MCP instructions, tool
+descriptors, whether the egress proxy is wired and `COCKPIT_LAUNCH_REVISION`; `serve` wires
+the proxy before it adopts shells). One adopted after a restart with another digest, or
+none, is due a refresh: its watch tracks whether a turn or background work is open, and once its
+conversation is idle it is ended (`switched`) and started again resuming that conversation, as a
+usage-limit move does but without redoing a turn.
 
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
+  W -->|"adopted with another launch digest: start again resuming, once idle (switched)"| APP
+  SH -->|"HTTPS_PROXY yulius:ck_… (bound hosts get their secrets)"| EG["Egress proxy: EgressCaller::Superagent"]
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
   MS -->|"mcp_attachments: values in the secret environment"| HP
   SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
@@ -587,7 +605,8 @@ flowchart LR
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
-  SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
+  SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management and vault tools"]
+  MCP -->|"secret_copy_to_env (SecretUser::Superagent)"| ENV[".env in the sandbox repository"]
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]

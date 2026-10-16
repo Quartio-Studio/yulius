@@ -14,6 +14,7 @@ use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::shells::COCKPIT_TOKEN_PREFIX;
+use crate::vault::SecretUser;
 
 /// Maximum tool result text returned to the model.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
@@ -23,9 +24,10 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
-/// MGT-006, SPEC-066 MGT-012) and reading its agent vault (SPEC-178, ADR-0144). Everything else
-/// belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 17] = [
+/// MGT-006, SPEC-066 MGT-012) and using its agent vault as a task's agent does, but the project
+/// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150). Everything else belongs to a
+/// task.
+pub const COCKPIT_TOOLS: [&str; 19] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -43,7 +45,12 @@ pub const COCKPIT_TOOLS: [&str; 17] = [
     "session_read",
     "secrets_list",
     "secret_verify",
+    "secret_copy_to_env",
+    "secret_request_hosts",
 ];
+
+/// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, and secret_verify tells whether a value the person holds is one of them, from its SHA-256; secrets_list names them and says how. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.";
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -387,10 +394,10 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "secret_copy_to_env".into(),
-            description: "Copy agent secrets' real values into a git-ignored dotenv file of your worktree (default .env) and their names into the .env.example beside it (SPEC-129), for code that runs outside Yulius' proxy (a deployed app, a deploy script). You never see the values, so never write or edit those lines yourself: you would write [secret:NAME]. A person allows each secret once: until then nothing is written and the result gives the Secrets page link to print. Refused unless Git ignores the file and does not track it.".into(),
+            description: "Copy agent secrets' real values into a git-ignored dotenv file of the folder you work in (a task's worktree, the Superagent's repository; default .env) and their names into the .env.example beside it (SPEC-129), for code that runs outside Yulius' proxy (a deployed app, a deploy script). You never see the values, so never write or edit those lines yourself: you would write [secret:NAME]. A person allows each secret once: until then nothing is written and the result gives the Secrets page link to print. Refused unless Git ignores the file and does not track it.".into(),
             input_schema: schema(json!({
                 "secrets": {"type": "array", "items": {"type": "string"}, "description": "Secret NAMEs from secrets_list (1-16)"},
-                "path": {"type": "string", "description": "Dotenv file relative to the worktree, e.g. .env (default) or deploy/.env.production"},
+                "path": {"type": "string", "description": "Dotenv file relative to the folder you work in (a task's worktree, the Superagent's repository), e.g. .env (default) or deploy/.env.production"},
                 "reason": {"type": "string", "description": "What needs the real value (short), recorded in the secrets activity"}
             }), &["secrets"]),
         },
@@ -448,7 +455,7 @@ impl App {
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": match caller {
                         McpCaller::Agent(_) => "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
-                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. secrets_list names the project's agent secrets (never their values) and secret_verify tells whether a value the person holds is one of them, from its SHA-256. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.",
+                        McpCaller::Cockpit(_) => COCKPIT_INSTRUCTIONS,
                     },
                 }))
             }
@@ -524,6 +531,14 @@ impl App {
                 McpCaller::Cockpit(_) if name == "secret_verify" => {
                     self.tool_secret_verify(&project, &args).await
                 }
+                McpCaller::Cockpit(caller) if name == "secret_copy_to_env" => {
+                    self.tool_secret_copy_to_env(SecretUser::Superagent(caller), &args)
+                        .await
+                }
+                McpCaller::Cockpit(caller) if name == "secret_request_hosts" => {
+                    self.tool_secret_request_hosts(SecretUser::Superagent(caller), &args)
+                        .await
+                }
                 McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
                 McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {
                     TaskToolResult::Value(outcome) => outcome,
@@ -580,8 +595,14 @@ impl App {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
             "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
-            "secret_request_hosts" => self.tool_secret_request_hosts(ctx, &args).await,
-            "secret_copy_to_env" => self.tool_secret_copy_to_env(ctx, &args).await,
+            "secret_request_hosts" => {
+                self.tool_secret_request_hosts(SecretUser::Task(ctx), &args)
+                    .await
+            }
+            "secret_copy_to_env" => {
+                self.tool_secret_copy_to_env(SecretUser::Task(ctx), &args)
+                    .await
+            }
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         })
     }
