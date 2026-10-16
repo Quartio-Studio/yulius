@@ -43,7 +43,7 @@ pub enum Egress {
 /// Whether isolated sandboxes get a Docker engine of their own (ADR-0151).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum DockerMode {
-    /// When the host has `dockerd` and the cgroup delegation is on.
+    /// When the cgroup delegation is on (and the sandbox's system has `dockerd`).
     On,
     /// Never.
     Off,
@@ -93,7 +93,8 @@ pub struct IsolationArgs {
         default_value_t = 5
     )]
     pub idle_minutes: u64,
-    /// A Docker engine per isolated sandbox (`on` needs `dockerd` and the cgroup delegation).
+    /// A Docker engine per isolated sandbox (`on` needs the cgroup delegation and `dockerd` in
+    /// the sandbox's system).
     #[arg(long = "sandbox-docker", env = "YULIUS_SANDBOX_DOCKER", value_enum, default_value_t = DockerMode::On)]
     pub docker: DockerMode,
 }
@@ -218,20 +219,19 @@ pub fn resolve(
             stop_after: Duration::from_secs(args.idle_minutes.max(1) * 60),
         },
         auto_build: true,
-        docker: docker_setting(args.docker, which("dockerd").is_some()),
+        docker: docker_setting(args.docker),
     })
 }
 
-/// The Docker setting and the host's `dockerd` (SPEC-196 DKL-005: the reason when off).
+/// The Docker setting (SPEC-196 DKL-005: the reason when off). The host's `dockerd` does not
+/// count: an engine runs the sandbox's own, which its front checks (SPEC-199 DSY-001).
 ///
 /// # Errors
-/// Why sandboxes get no engine from these two.
-pub fn docker_setting(mode: DockerMode, dockerd: bool) -> Result<(), String> {
-    use yulius_sandbox::manager::{DOCKER_NO_DOCKERD, DOCKER_OFF};
-    match (mode, dockerd) {
-        (DockerMode::Off, _) => Err(DOCKER_OFF.to_owned()),
-        (DockerMode::On, false) => Err(DOCKER_NO_DOCKERD.to_owned()),
-        (DockerMode::On, true) => Ok(()),
+/// Why sandboxes get no engine from it.
+pub fn docker_setting(mode: DockerMode) -> Result<(), String> {
+    match mode {
+        DockerMode::Off => Err(yulius_sandbox::manager::DOCKER_OFF.to_owned()),
+        DockerMode::On => Ok(()),
     }
 }
 
@@ -441,4 +441,20 @@ pub async fn install(
         "sandbox isolation on (namespace holder per sandbox)"
     );
     Ok(Some(manager))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-199 DSY-001 (task #185): the engine runs the sandbox's own `dockerd`, so only the
+    /// setting turns sandboxes' Docker off, never the host's missing `dockerd`.
+    #[test]
+    fn only_the_setting_turns_sandbox_docker_off() {
+        assert_eq!(docker_setting(DockerMode::On), Ok(()));
+        assert_eq!(
+            docker_setting(DockerMode::Off),
+            Err(yulius_sandbox::manager::DOCKER_OFF.to_owned())
+        );
+    }
 }

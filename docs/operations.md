@@ -443,7 +443,7 @@ systemctl restart yulius
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
-| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when the host has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
+| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
 
 **Where things live.**
 - `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
@@ -500,8 +500,13 @@ from a sandbox, and no daemon needs to run on the host.
   `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
   port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.**
-  - Docker installed on the host (`docker-ce` or `docker.io`). The base copies `dockerd`,
-    `containerd`, `runc`, `docker-proxy` and the CLI plugins.
+  - `dockerd` in the sandbox's system
+    ([ADR-0160](decisions/0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md)).
+    Docker installed on the host (`docker-ce` or `docker.io`) gives it to every new base, which
+    copies `dockerd`, `containerd`, `runc`, `docker-proxy` and the CLI plugins. Without it, an
+    agent installs it in its own sandbox (`sudo apt-get install -y docker.io`) and the front
+    starts an engine at the next tick (30 s). A sandbox keeps its base's `dockerd` until its
+    holder next starts on a newer base (after the idle time); one installed in the sandbox stays. The host does not need to run its own Docker daemon.
   - The cgroup delegation (§3).
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
@@ -537,7 +542,7 @@ from a sandbox, and no daemon needs to run on the host.
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
   reason. Without an engine it names the missing prerequisite and the fix (`YULIUS_SANDBOX_DOCKER=off`,
-  no `dockerd`, no cgroup delegation, a writable executable), the same words as `yulius doctor`.
+  no `dockerd` in the sandbox, no cgroup delegation, a writable executable), the same words as `yulius doctor`.
   For an engine that did not start, it gives the last lines of
   `<data>/runtime/sandboxes/<sandbox>/engine.log`. The front's own log is `docker-front.log`
   beside it.

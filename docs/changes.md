@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- A sandbox's Docker engine comes from its own system, not the host's (SPEC-199, ADR-0160, task
+  #185). After #602 every sandbox answered "the host has no `dockerd`": Docker had been purged
+  from the host on 2026-10-12, yet the engine runs the sandbox's own `dockerd`, and sandboxes on
+  older bases still had one. The front now serves an engine whenever the sandbox's upper layer or
+  its base has `dockerd` (links planted in the upper layer are never followed). Without one, the
+  answer tells the agent to `sudo apt-get install -y docker.io` in the sandbox, and the engine
+  starts at the next tick with nothing restarted. The host's Docker only gives new bases
+  `dockerd`; `yulius doctor` warns without it and still checks the delegation and kernel modules.
 - The automations Yulius ships are the Automations page's defaults (SPEC-197, ADR-0159, task #183).
   They sat below the list as "Ready-made automations" with Enable, and two an agent had created by
   name read "Created by an agent". The page now opens with Defaults, as Workflows does: all three

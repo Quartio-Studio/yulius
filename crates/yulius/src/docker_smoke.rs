@@ -35,6 +35,11 @@ const PULL_WAIT: Duration = Duration::from_secs(15 * 60);
 /// Bound on a check that does not.
 const WAIT: Duration = Duration::from_secs(90);
 
+/// Why the smoke cannot run: its throwaway sandbox has only the current base's system.
+const NO_DOCKERD_IN_BASE: &str = "the current sandbox base has no `dockerd`: an operator installs \
+    Docker on the host (docker-ce or docker.io), waits until `yulius doctor` shows the base rebuilt, \
+    and runs the smoke test again";
+
 const DOCKERFILE: &str =
     "FROM busybox\nRUN echo built-in-the-sandbox > /built\nCMD [\"cat\", \"/built\"]\n";
 const COMPOSE: &str = "services:\n  web:\n    image: busybox\n    command: [\"sh\", \"-c\", \"mkdir -p /w && echo compose-web > /w/index.html && httpd -f -p 8080 -h /w\"]\n  probe:\n    image: busybox\n    depends_on: [web]\n    command: [\"sh\", \"-c\", \"for i in $$(seq 30); do wget -qO- http://web:8080/ && exit 0; sleep 1; done; exit 1\"]\n";
@@ -194,20 +199,16 @@ pub async fn smoke(
         return Err(format!("sandboxes get no engine here: {reason}"));
     }
     drop(docker_on);
-    // The smoke's holder runs on the current base: one copied before Docker was installed has
-    // no engine to start until the server rebuilds it (review round 3).
+    // The smoke's holder runs on the current base (and a throwaway upper layer): one copied
+    // without Docker on the host has no engine to start (review round 3; SPEC-199).
     let bases = yulius_sandbox::base::Bases::new(data_dir);
     let base = bases.current().map(|base| bases.path(&base.id));
     if base.is_some_and(|base| {
-        ![
-            "usr/bin/dockerd",
-            "usr/sbin/dockerd",
-            "usr/local/bin/dockerd",
-        ]
-        .iter()
-        .any(|path| base.join(path).is_file())
+        !yulius_sandbox::manager::DOCKERD_PATHS
+            .iter()
+            .any(|path| base.join(path).is_file())
     }) {
-        return Err(yulius_sandbox::manager::DOCKER_OLD_BASE.into());
+        return Err(NO_DOCKERD_IN_BASE.into());
     }
     // A smoke test that was interrupted (Ctrl-C, a crash) left its sandbox: remove it first.
     for stale in stale_smokes(data_dir) {
