@@ -70,7 +70,6 @@ closer to the view's sides.
 - [x] The watched transcript has no octopus, its docs and tests updated
 - [x] The watched transcript is inset 16 px, as the card above it
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Merged into dev on green CI
 
 ## Acceptance criteria
 
