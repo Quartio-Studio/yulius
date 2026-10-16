@@ -769,9 +769,58 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
 /// Superagent took the scan for one still running (#604). The final status still lands last.
 #[tokio::test]
 async fn a_running_run_s_status_counts_the_jobs_that_ended() -> TestResult {
-    let f = fixture_with(false, |data| {
-        format!(
-            r#"[[ci.jobs]]
+    let f = fixture_with(false, held_toml).await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_counted(&pr_sha).await?;
+    std::fs::write(f.data.join("release"), "")?;
+    f.settle().await?;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(
+        description.starts_with("Passed: 3 jobs, 1 skipped"),
+        "{description}"
+    );
+    // The last job's end leaves the status to the run's end: no "2 of 3" just before it.
+    let statuses = f.h.github.statuses();
+    assert!(
+        !statuses
+            .iter()
+            .any(|(sha, st)| *sha == pr_sha && st.description.contains("2 of 3")),
+        "{statuses:?}"
+    );
+    Ok(())
+}
+
+/// The statuses published as jobs end use no retry attempt of the run's final status: one that
+/// GitHub refused is published again by the retry loop (SPEC-198 RCS-004).
+#[tokio::test]
+async fn a_refused_final_status_is_retried_after_the_job_statuses() -> TestResult {
+    let f = fixture_with(false, held_toml).await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_counted(&pr_sha).await?;
+    let forbidden = &f.h.github.statuses_forbidden;
+    forbidden.store(true, std::sync::atomic::Ordering::SeqCst);
+    std::fs::write(f.data.join("release"), "")?;
+    f.settle().await?;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "pending", "the final status was refused: {description}");
+    forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
+    f.h.app.ci_retry_statuses().await;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "success", "{:?}", f.h.github.statuses());
+    assert!(
+        description.starts_with("Passed: 3 jobs, 1 skipped"),
+        "{description}"
+    );
+    Ok(())
+}
+
+/// A passing job, a skipped one and one held until `<data>/release` exists.
+fn held_toml(data: &Path) -> String {
+    format!(
+        r#"[[ci.jobs]]
 name = "check"
 command = "true"
 
@@ -783,42 +832,35 @@ command = 'exit "$YULIUS_CI_SKIP_CODE"'
 name = "held"
 command = 'while [ ! -f "{}" ]; do sleep 0.05; done'
 "#,
-            data.join("release").display()
-        )
-    })
-    .await?;
-    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    loop {
-        f.h.app.ci_dispatch().await;
-        let last = f.last_status(&pr_sha);
-        if let Some((state, description, _)) = &last {
-            if description == "Running on Yulius: 1 of 3 jobs passed, 1 skipped" {
-                assert_eq!(state, "pending", "{description}");
-                break;
+        data.join("release").display()
+    )
+}
+
+impl Fixture {
+    /// Dispatches until `sha`'s running status counts the passed and the skipped job of
+    /// [`held_toml`] while `held` still runs.
+    async fn until_counted(&self, sha: &str) -> BoxResult<()> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.app.ci_dispatch().await;
+            if let Some((state, description, _)) = self.last_status(sha) {
+                if description == "Running on Yulius: 1 of 3 jobs passed, 1 skipped" {
+                    assert_eq!(state, "pending", "{description}");
+                    return Ok(());
+                }
+                // `held` timed out: the run ended without ever counting its ended jobs.
+                assert_eq!(state, "pending", "{:?}", self.h.github.statuses());
             }
-            // `held` timed out: the run ended without ever counting its ended jobs.
-            assert_eq!(state, "pending", "{:?}", f.h.github.statuses());
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!(
+                    "no status counted the ended jobs: {:?}",
+                    self.h.github.statuses()
+                )
+                .into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        if tokio::time::Instant::now() > deadline {
-            return Err(format!(
-                "no status counted the ended jobs: {:?}",
-                f.h.github.statuses()
-            )
-            .into());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    std::fs::write(f.data.join("release"), "")?;
-    f.settle().await?;
-    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
-    assert_eq!(state, "success", "{description}");
-    assert!(
-        description.starts_with("Passed: 3 jobs, 1 skipped"),
-        "{description}"
-    );
-    Ok(())
 }
 
 /// A squash merge of an up-to-date pull request has exactly the tree its run tested: the
