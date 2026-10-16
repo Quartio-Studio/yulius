@@ -8,7 +8,7 @@ turns the gate on or off. Amended by [0116](0116-ci-jobs-use-named-agent-secrets
 Yulius CI now runs the gate as the `security` job on pull request heads, and can give it
 `VIDOC_API_KEY` as a placeholder through the egress proxy; the title's "Yulius CI does not" no
 longer holds. Amended by [0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the job is
-granted the key, and a scan that cannot run ends it skipped.
+granted the key, and a scan that cannot run ends it skipped. Its Vidoc CLI parts (`vidoc ci`, `tools/vidoc`, `api.vidoc.dev`) are superseded by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the scan runs on vidoc-1 through `model.vidocsecurity.com`.
 
 ## Context
 

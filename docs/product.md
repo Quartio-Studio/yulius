@@ -118,9 +118,16 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans with
-  Vidoc once the key works (#470). A job that checked nothing exits with `$YULIUS_CI_SKIP_CODE` and
-  reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
+  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans the
+  pull request's changes with Vidoc's vidoc-1. A job that checked nothing exits with
+  `$YULIUS_CI_SKIP_CODE` and reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
+- **Vidoc security scan** (SPEC-195, ADR-0157): an optional instance key, which the superadmin sets,
+  tests and removes like the Jev key, and which setup offers as a skippable step. With it, every
+  project's agents and granted CI jobs run `yulius security-scan`: Vidoc's vidoc-1 reviews the
+  branch's changed files (or, with `--all`, the whole repository), and open critical or high
+  findings fail the scan. The code goes to Vidoc, but the key never reaches agents: the egress proxy
+  adds it toward `model.vidocsecurity.com` only. Infra bootstrap adds the `security` job only when
+  the instance has a key. Without one, the scan reports "not run".
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names

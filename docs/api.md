@@ -34,7 +34,7 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup step offers the optional Jev key with this session (`PUT /api/admin/jev`, ADM-001). |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
@@ -1167,6 +1167,11 @@ resolves to nothing, the run gets the server without that variable or token.
 | DELETE | `/api/admin/jev` | superadmin | removes the saved key (the `YULIUS_JEV_API_KEY_FILE` key is used again, if any) → `JevKeyView` |
 | POST | `/api/admin/jev/adopt` | superadmin | saves the key of `YULIUS_JEV_API_KEY_FILE` in settings → `JevKeyView`; 409 without a usable file |
 | POST | `/api/admin/jev/test` | superadmin | one small Jev request with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` |
+| GET | `/api/admin/vidoc` | superadmin | → `VidocKeyView` (never the key; SPEC-195 VDK-002) |
+| PUT | `/api/admin/vidoc` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `VidocKeyView`: sealed, audited `vidoc.key_set`, used at once as the virtual agent secret `VIDOC_API_KEY` toward `model.vidocsecurity.com` |
+| DELETE | `/api/admin/vidoc` | superadmin | removes the saved key (the `YULIUS_VIDOC_API_KEY_FILE` key is used again, if any), audited `vidoc.key_removed` → `VidocKeyView` |
+| POST | `/api/admin/vidoc/adopt` | superadmin | saves the key of `YULIUS_VIDOC_API_KEY_FILE` in settings → `VidocKeyView`; 409 without a usable file |
+| POST | `/api/admin/vidoc/test` | superadmin | one `GET /v1/models` with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` (`invalid`: no `vidoc-1` in the answer) |
 
 ```json
 AdminUser = {"id","github_login","display_name","is_instance_admin","disabled",
@@ -1321,6 +1326,7 @@ UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
          "can_cancel","can_proceed"}|null}
 JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
               "config_present","config_error|null"}
+VidocKeyView = JevKeyView's fields, for the Vidoc key
 ```
 
 `available` lists the commits from the build to the head of `main` without merges and promotions,

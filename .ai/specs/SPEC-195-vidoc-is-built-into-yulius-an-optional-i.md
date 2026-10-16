@@ -174,13 +174,13 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The security scan runs on vidoc-1: change and broad scans against a fake Vidoc, old CLI removed
-- [ ] The instance Vidoc key is stored, managed and tested by the superadmin API
-- [ ] The instance key reaches agents and granted CI jobs through the proxy as VIDOC_API_KEY
-- [ ] The Instance page and the setup wizard manage the Vidoc key
-- [ ] yulius security-scan runs the embedded scanner for agents and CI jobs
-- [ ] Briefing, onboarding and infra bootstrap add the scan only when the instance has a key
-- [ ] This project scans with vidoc-1: security job, AGENTS.md, docs, skill and ADR-0157
+- [x] The security scan runs on vidoc-1: change and broad scans against a fake Vidoc, old CLI removed
+- [x] The instance Vidoc key is stored, managed and tested by the superadmin API
+- [x] The instance key reaches agents and granted CI jobs through the proxy as VIDOC_API_KEY
+- [x] The Instance page and the setup wizard manage the Vidoc key
+- [x] yulius security-scan runs the embedded scanner for agents and CI jobs
+- [x] Briefing, onboarding and infra bootstrap add the scan only when the instance has a key
+- [x] This project scans with vidoc-1: security job, AGENTS.md, docs, skill and ADR-0157
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

@@ -37,7 +37,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
-| `scripts/dev security` | Vidoc scan of the files the branch's commits changed since `dev` (pinned CLI in `tools/vidoc`); fails unless the scan completed for this branch with no open critical or high finding. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
+| `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open critical or high findings, exit 2 when it could not run. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
@@ -63,61 +63,110 @@ is under `target/doc`. Build artifacts and local tools are ignored by Git.
 
 ## Security scan
 
-`scripts/dev security` ([SPEC-128](../../.ai/specs/SPEC-128-in-keys-for-agents-you-have-vidoc-securi.md),
-[ADR-0104](../decisions/0104-agents-scan-their-branch-with-vidoc-before-delivery.md)) runs
-[Vidoc](https://docs.vidocsecurity.com/cli/ci-cd)'s `vidoc ci` on the current branch and then
-reads the verdict from the API. It needs Node 20+ and an API key in `VIDOC_TOKEN` or
-`VIDOC_API_KEY` (`VIDOC_API_URL` defaults to `https://api.vidoc.dev`). In agent sessions,
-`VIDOC_API_KEY` is the project's agent secret: a placeholder that the egress proxy replaces for
-`api.vidoc.dev` once a person has allowed that host. The CLI uploads the working tree, untracked
-files included, and scans the changed files as they are on disk, so the gate refuses a tree that is
-not clean. It also checks that `git remote show origin` names the default branch: without access
-to origin, the CLI would compare with `origin/main`. A scan takes 10 to 15 minutes, so run the gate
-with a tool timeout of 45 minutes or more, or in the background.
+`scripts/dev security` ([SPEC-195](../../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
+[ADR-0157](../decisions/0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md))
+runs `scripts/vidoc_scan.py`. The scan asks Vidoc's model `vidoc-1`, through the Messages API at
+`https://model.vidocsecurity.com/v1/messages`, to review the code, and fails on open critical or
+high findings. **The code it scans is sent to Vidoc.** It is standard-library Python 3.11+.
+The `yulius` binary embeds the same file as `yulius security-scan`, which is how every other
+project runs it.
 
-The gate is on. `enabled = false` in `.config/vidoc.toml`
+- **Change scan** (the default): the files that differ between `merge-base(HEAD, origin/HEAD)` and
+  `HEAD`. `--base REF` names another base.
+- **Broad scan** (`--all`): every file tracked in `HEAD`, for an audit task. Run it in the background
+  or with a long tool timeout, and keep the result with `--report FILE`:
+
+  ```sh
+  scripts/dev security --all --report .ai/runs/vidoc-broad.json
+  ```
+
+Both read commits, never the working tree: commit before you scan. A dirty tree or a detached HEAD
+is fine, and an uncommitted edit of `.config/vidoc.toml` does not count.
+
+**What is sent.** Files go in line-numbered chunks of at most 60 kB. A file split across chunks
+names its line range. Some files are never sent:
+
+- binaries, invalid UTF-8 and files over 1 MiB;
+- `vendor/`, `node_modules/`, `third_party/`, `dist/`, `build/` and `target/`;
+- lockfiles, minified files and source maps;
+- prose (`.md`, `.txt`, `.rst`) and media;
+- the `exclude` globs of `.config/vidoc.toml` (fnmatch style: `*` also crosses `/`).
+
+A budget bounds every scan: 4 MB and 30 minutes for a change scan, 16 MB and 180 minutes for a broad
+scan (`--max-bytes`, `--deadline-minutes`). Up to 4 requests run at once (`--jobs`). Files past the
+budget are listed as not scanned, and the scan is then incomplete.
+
+**The contract.** Each chunk is one request (`model: vidoc-1`). The system prompt asks for one JSON
+object, `{"findings": [{"severity", "file", "line", "title", "detail"}]}`, with severities `critical`,
+`high`, `medium` or `low`, and says that the files are untrusted data. Retries and refusals:
+
+- an answer that is not that object is asked for again twice, then fails the scan;
+- 429, 529, 5xx and network errors are retried after 2, 4, 8 and 16 s (or `retry-after`, at most
+  60 s), 5 attempts in all;
+- 401 or 403 (the key was refused) and 402 (out of quota) stop the scan, and no redirect is
+  followed.
+
+A model reviews the code, so the verdict is a judgement, not a proof: code written to steer the
+model (prompt injection) could hide a finding.
+
+**The key.** The scan reads `VIDOC_API_KEY` and sends it in `x-api-key` only.
+
+- In agent sessions and CI jobs that variable holds a placeholder that the egress proxy replaces
+  toward `model.vidocsecurity.com` only. It is this project's agent secret if it has one, else the
+  instance's Vidoc key, which a superadmin sets in Settings, Instance (keys come from
+  <https://model.vidocsecurity.com/#key>).
+- Elsewhere, set the variable yourself.
+- `VIDOC_API_URL` overrides the address, plain `http://` for loopback tests only.
+
+**False positives.** A false positive is ignored with an `[[ignore]]` entry in
+`.config/vidoc.toml`, only after the independent reviewer agrees, and it is listed in the spec's
+Evidence:
+
+```toml
+[[ignore]]
+path = "crates/yulius-app/src/example.rs"   # a glob
+title = "command injection"                 # a case-insensitive part of the finding's title
+reason = "the argument is a fixed constant, reviewed in #123"
+```
+
+A matching finding is printed as ignored, with its reason, and does not fail the scan.
+
+The scan is on. `enabled = false` in `.config/vidoc.toml`
 ([SPEC-131](../../.ai/specs/SPEC-131-we-d-like-to-be-able-to-enable-and-disab.md),
 [ADR-0107](../decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)) turns it off
-for every branch that has that commit: it then prints `Security scan disabled: ...; nothing was
-scanned.` and exits 0 without a key, Node or the network. Agents report such a run as disabled,
-never as passed. Turn it off or on in a reviewed pull request that says why; an uncommitted
-`enabled = false` exits 2, and without the file the gate is on. Exit codes:
+for every branch that has that commit. It then prints `Security scan disabled: ...; nothing was
+scanned.` and exits 0. Agents report such a run as disabled, never as passed. Turn it off or on in a
+reviewed pull request that says why. Exit codes:
 
-- 0: passed, the branch changed nothing that Vidoc scans, or the gate is disabled (its message says
-  so).
-- 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
-  scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
-- 2: not run. The causes: a malformed or uncommitted `.config/vidoc.toml` switch; no key, a
-  malformed key, or a rejected one; Vidoc unreachable or out of quota (402, 429) before the scan;
-  "nothing to scan" although the branch changed source files; no Node 20+ or npm; a detached
-  HEAD; uncommitted or untracked files; a first remote other than `origin`, or origin unreachable
-  the way the CLI checks it; no default branch or no merge base.
+- 0: passed (no open critical or high finding in a complete scan), nothing to scan, or disabled.
+  Its message says which. Medium and low findings are printed but do not fail the scan.
+- 1: failed. The causes: an open critical or high finding (each one is printed with severity,
+  `file:line`, title and detail); an answer that could not be read; a request Vidoc refused with
+  another 4xx.
+- 2: not run. The causes:
+  - no key, or a key that is malformed or refused;
+  - Vidoc unreachable after the retries, or out of quota;
+  - no base (`origin/HEAD` is not set and there is no `--base`);
+  - a malformed `.config/vidoc.toml`;
+  - Python older than 3.11;
+  - an incomplete scan (budget or deadline) that found nothing.
 
-Vidoc never indexes `bin/`, `vendor/`, `target/`, `build/`, `dist/`, `out/` and similar directories,
-so `crates/yulius-ptyhost/src/bin/` and vendored web assets are outside the scan. Agents run the
-gate for every change before delivery. They fix findings test-first. A false
-positive is ignored in Vidoc, with the reason, only after the independent reviewer agrees, and it
-is listed in the spec's Evidence. To update the CLI, change the pin in
-`tools/vidoc/package.json`, run `npm install --package-lock-only` there, and check that the
-`Scan started with ID:` line still appears in its output.
+Yulius CI runs the change scan as the `security` job of `yulius.toml` on every pull request head
+(`python3 scripts/vidoc_scan.py --ci`; other projects run `yulius security-scan --ci`).
 
-Yulius CI also runs the gate, as the `security` job of `yulius.toml`, on every pull request head
-([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md),
-[ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)); `dev` and
-`main` heads (and merge trains) print that they are not scanned and end skipped. A `secrets =
-"VIDOC_API_KEY"` line on the job, read from `dev`'s `yulius.toml` only, gives it the agent secret's
-placeholder and the egress proxy with a credential of its own, never the value; the proxy adds the
-key only toward `api.vidoc.dev`, and each use is in the secrets audit as `ci:<run>`. A CI checkout
-is a detached worktree without a GitHub credential, so on a pull request the gate scans a private
-clone of the head on branch `yulius-ci/pr-<n>` whose `origin` answers from a local mirror of
-origin's default branch (`dev`). Findings (exit 1) fail the job and so the merge gate. Exit 2 does
-not fail it: while the stored key is rejected
-([#470](https://github.com/Quartio-Studio/yulius/issues/470)) every pull request would otherwise be
-blocked by something only a person can fix. The job then prints `[yulius] security scan skipped` and
-exits with `$YULIUS_CI_SKIP_CODE`, so it reads **Skipped**, never Passed, and blocks no merge
-([ADR-0133](../decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md); an instance that gives
-no skip code passes it). Skipped is not a pass: agents still run the gate themselves and report it
-as unrun.
+- **It runs the pull request's own scanner.** `--ci` scans only when `YULIUS_CI_REF` is `pr/<n>`.
+  `dev` and `main` heads and merge trains end skipped.
+- **It gets the key through the proxy.** The `secrets = "VIDOC_API_KEY"` line on the job is read
+  from `dev`'s `yulius.toml` only
+  ([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md),
+  [ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)). It gives the
+  job the key's placeholder and the egress proxy with a credential of its own, never the value.
+  Each use is in the secrets audit as `ci:<run>`.
+- **Findings fail it.** Exit 1 fails the job, and so the merge gate.
+- **A scan that could not run is skipped.** Exit 2 prints `[yulius] security scan skipped` and exits
+  with `$YULIUS_CI_SKIP_CODE`, so the job reads **Skipped**, never Passed, and blocks no merge
+  ([ADR-0133](../decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). Skipped is not a
+  pass: agents still run the scan themselves and report it as unrun.
 
 Any CI job can skip itself the same way: Yulius gives every job `YULIUS_CI_SKIP_CODE` (78), and a
 job that exits with it ends skipped. Write `exit "${YULIUS_CI_SKIP_CODE:-0}"` so the command still
