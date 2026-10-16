@@ -549,3 +549,42 @@ test('under reduced motion the Working mark stands still on ✻ and the words do
   });
   expect(still).toEqual({ mark: true, words: true, shown: '✻' });
 });
+
+// The light ran over the whole line (the words' box was `flex: 1`) and, with the shared loading
+// keyframes, crossed it for about an eighth of each cycle: a flash, then still grey words.
+test('the light of the Working words runs through the words themselves, left to right, most of each cycle', async ({ app, browser }) => {
+  await watchWorking(app, browser);
+  const sweep = await browser.evaluate(() => {
+    const words = document.querySelector('.watch .watch-working-text') as HTMLElement;
+    const run = words.getAnimations()[0];
+    if (!run) return null;
+    run.pause();
+    const duration = Number(run.effect!.getComputedTiming().duration);
+    const box = words.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(words);
+    const text = range.getBoundingClientRect();
+    const [from, to] = [text.left - box.left, text.right - box.left];
+    // The brightest point is the middle of the symmetric gradient: where it lies along the box.
+    const width = words.clientWidth;
+    const centres: number[] = [];
+    const samples = 40;
+    for (let i = 0; i < samples; i += 1) {
+      run.currentTime = (i / samples) * duration;
+      const style = getComputedStyle(words);
+      const size = style.backgroundSize.split(' ')[0]!;
+      const image = size.endsWith('%') ? (Number.parseFloat(size) / 100) * width : Number.parseFloat(size);
+      const x = style.backgroundPositionX;
+      const offset = x.endsWith('%') ? (Number.parseFloat(x) / 100) * (width - image) : Number.parseFloat(x);
+      centres.push(offset + image / 2);
+    }
+    run.play();
+    const over = centres.filter((c) => c >= from && c <= to);
+    const rising = over.every((c, i) => i === 0 || c > over[i - 1]!);
+    return { share: over.length / samples, rising, words: Math.round(to - from), box: Math.round(box.width) };
+  });
+  expect(sweep, 'the words shimmer').not.toBeNull();
+  expect(sweep!.box, 'the shimmering box is the words, not the line').toBeLessThanOrEqual(sweep!.words + 2);
+  expect(sweep!.share, 'the light is over the words most of the cycle').toBeGreaterThanOrEqual(0.6);
+  expect(sweep!.rising, 'it moves left to right').toBe(true);
+});

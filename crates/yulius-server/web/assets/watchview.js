@@ -33,7 +33,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   const empty = h('div', { class: 'watch-empty', role: 'status', hidden: true });
   // Claude Code's spinner (SPEC-190): the mark turns through the TUI's frames, a strip moved by CSS.
   const spinner = h('span', { class: 'ss-mark watch-spinner', 'aria-hidden': 'true' }, h('span', { class: 'watch-spinner-frames' }, [...SPINNER_FRAMES].map((frame) => h('span', null, frame))));
-  const working = h('div', { class: 'watch-working ss-line', hidden: true }, spinner, h('span', { class: 'ss-line-body watch-working-text' }, 'Working…'));
+  const working = h('div', { class: 'watch-working ss-line', hidden: true }, spinner, h('span', { class: 'ss-line-body' }, h('span', { class: 'watch-working-text' }, 'Working…')));
   const lockedText = h('span', { class: 'ss-line-body' });
   // Where the TUI's prompt box was: who types, and that this person watches (not a control).
   const locked = h('div', { class: 'ss-locked' }, h('span', { class: 'ss-mark ss-mark-prompt', 'aria-hidden': 'true' }, '>'), lockedText, icon('lock', { size: 14 }));

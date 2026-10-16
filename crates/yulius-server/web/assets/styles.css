@@ -2599,7 +2599,9 @@ button.task-group-head:hover { color: var(--text); }
 .watch-spinner-frames { display: flex; flex-direction: column; animation: working-turn 1.44s steps(12) infinite; }
 .watch-spinner-frames > span { height: 1lh; text-align: center; }
 @keyframes working-turn { to { transform: translateY(-100%); } }
-.watch-working-text { color: transparent; background: linear-gradient(100deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; animation: shimmer var(--duration-pulse) linear infinite; }
+/* The light runs through the words' own box, from just left of them to just right (WRK-002). */
+.watch-working-text { display: inline-block; color: transparent; background: linear-gradient(90deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; animation: working-sweep 2s linear infinite; }
+@keyframes working-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
 @media (prefers-reduced-motion: reduce) {
   .watch-working-text { animation: none; color: var(--session-dim); background: none; }
