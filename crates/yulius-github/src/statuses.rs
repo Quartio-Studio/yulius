@@ -1,13 +1,15 @@
-//! Commit statuses Yulius publishes for its own CI runs, and branch deletion for repository
-//! hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-21).
+//! Commit statuses Yulius publishes for its own CI runs, branch deletion for repository
+//! hygiene (SPEC-001 DLV-006/007, SPEC-002 ADR-21), and the branch heads CD and promotion read
+//! (SPEC-184).
 
 use reqwest::Method;
 
-use crate::client::GitHubClient;
+use crate::client::{GitHubClient, decode};
 use crate::error::GitHubError;
 use crate::http::{Call, upstream_message};
 use crate::secret::Secret;
 use crate::validate;
+use crate::wire::WireGitRef;
 
 /// Longest description GitHub accepts on a commit status.
 pub const MAX_STATUS_DESCRIPTION_CHARS: usize = 140;
@@ -126,5 +128,42 @@ impl GitHubClient {
             }
         }
         Err(self.error_for(&reply, &call))
+    }
+
+    /// The commit `branch` points at (`GET /repos/{owner}/{repo}/git/ref/heads/{branch}`, App
+    /// permission "Contents: read"). The ref is matched exactly, so a nested name such as
+    /// `release/1.0` is one branch and a prefix of one is none. `Ok(None)` when the branch does
+    /// not exist; GitHub answers the same 404 when `token` cannot see the repository at all.
+    ///
+    /// # Errors
+    /// [`GitHubError::InvalidInput`] for a bad owner, repository or branch name,
+    /// [`GitHubError::Decode`] when GitHub's answer holds no commit id; other typed errors.
+    pub async fn branch_head(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Option<String>, GitHubError> {
+        validate::owner(owner)?;
+        validate::repo_name(repo)?;
+        validate::branch(branch)?;
+        let mut segments = vec!["repos", owner, repo, "git", "ref", "heads"];
+        segments.extend(branch.split('/'));
+        let url = self.api_url(&segments)?;
+        let call = Call::new(Method::GET, url, Some(token.expose()));
+        let reply = self.send_any(&call).await?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        if !reply.is_success() {
+            return Err(self.error_for(&reply, &call));
+        }
+        let wire: WireGitRef = decode(&reply)?;
+        // The id is handed to Git (the CD mirror's fetch): never anything but a commit id.
+        if validate::sha(&wire.object.sha).is_err() {
+            return Err(GitHubError::Decode("branch head is not a commit id".into()));
+        }
+        Ok(Some(wire.object.sha))
     }
 }

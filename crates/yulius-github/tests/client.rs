@@ -1383,6 +1383,28 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
             .await,
         Err(GitHubError::Forbidden { .. })
     ));
+    // A branch's head is read from GitHub (SPEC-184 BRH-001), and is gone with the branch.
+    assert_eq!(
+        client.branch_head(&token, "acme", "app", "task/ci").await?,
+        fake.branch_sha("acme", "app", "task/ci")
+    );
+    assert!(
+        fake.branch_sha("acme", "app", "task/ci").is_some(),
+        "the branch exists before deletion"
+    );
+    // A refusal or an outage is an error, never "no such branch".
+    let head_path = "/repos/acme/app/git/ref/heads/task/ci";
+    fake.inject_fault(FakeFault::new("GET", head_path, 403, 1));
+    assert!(matches!(
+        client.branch_head(&token, "acme", "app", "task/ci").await,
+        Err(GitHubError::Forbidden { .. })
+    ));
+    // Three attempts (a read is retried), all refused: the fault is used up after them.
+    fake.inject_fault(FakeFault::new("GET", head_path, 502, 3));
+    assert_eq!(
+        client.branch_head(&token, "acme", "app", "task/ci").await,
+        Err(GitHubError::Upstream(502))
+    );
     // Branch deletion: true once, false when already gone.
     assert!(
         client
@@ -1395,6 +1417,10 @@ async fn commit_statuses_are_published_and_branches_deleted() -> TestResult {
             .await?
     );
     assert_eq!(fake.branch_sha("acme", "app", "task/ci"), None);
+    assert_eq!(
+        client.branch_head(&token, "acme", "app", "task/ci").await?,
+        None
+    );
     Ok(())
 }
 
