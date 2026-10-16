@@ -1,11 +1,11 @@
 ---
 yulius-task: b5ceff68-9e19-4454-9681-e28c9bc6cb7f
-status: in-progress
+status: done
 ---
 
 # SPEC-198: A running CI run's commit status counts the jobs that already ended
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #184
 Scope authorization: task #184 (requested by MrFishPL), about the Superagent's answer "None. As
@@ -125,3 +125,43 @@ longer report a job that already ended, such as PR #600's real Vidoc scan, as st
   again, and since RCS-004 that retry has attempts left.
 - No ADR: this makes the existing commit-status contract (SPEC-162, ADR-0133) true while a run
   is going, and does not change it.
+
+## Evidence
+
+- **Reproduction.**
+  - GitHub statuses of `369b3d9` (PR #600): `pending | Queued` at 11:46:55Z, then
+    `pending | Running on Yulius: 0 of 3 jobs passed` at 11:46:56Z, then `success` at 12:02:50Z.
+    Nothing was published in between.
+  - Yet run `521ba595`'s `security` job had passed after 3 min 47 s, with a real vidoc-1 scan:
+    23 of 23 chunks reviewed and 10 medium or low findings.
+  - PRs #602 and #603 show the same: `security` ended skipped in 3 s, and GitHub still says
+    `0 of 3 jobs passed`.
+- **Regression tests, before the fix.**
+  - At `d963f275`, `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+    test(/^local_ci::a_running_run_s_status/)'` failed with `left: "error" right: "pending"`.
+    The only pending status was `0 of 3 jobs passed`, until `held` timed out.
+  - At `e9cf923c`, both tests failed before the review fixes. The final status was not retried
+    (`left: "pending" right: "success"`), and a `2 of 3` status was published.
+- **After the fix.**
+  - `local_ci::` 24 of 24 passed, and `yulius-store` 66 of 66 passed.
+  - The reviewer ran the `local_ci` suite 10 more times at `8d7f668d`. All runs passed, and the
+    new test took 1.7 to 2.9 s against an 8 s job timeout.
+- **Gate.** `scripts/dev ci` exited 0 at `b5aebe3a`: 2017 tests passed, 18 skipped, plus
+  formatting, lint, deps, docs and repository checks.
+- **Security.** `scripts/dev security` exited 2, which means **not run**. Vidoc answered
+  `401 Missing or invalid API key` to this agent session's `VIDOC_API_KEY` through the proxy,
+  although the key is bound to `model.vidocsecurity.com`. Task #181's session hit the same 401.
+  This is unrun, not passed (ADR-0133, ADR-0157). The pull request's CI `security` job runs the
+  live change scan.
+- **Review.** The independent review, round 1 at `8d7f668d`, requested changes.
+  - Finding 1: job-end publishes used up the final status's retries. Fixed test-first as
+    RCS-004.
+  - Finding 2: the last job published a redundant status. Fixed test-first, RCS-003.
+  - Finding 3: a cancelled run's job could publish once. The job now also checks the run's own
+    cancel signal. A gap of a few microseconds cannot be tested deterministically, so this has
+    no dedicated test.
+  - Finding 4: a race between the retry loop and the executor. Pre-existing, and it now
+    recovers, as described under Decisions.
+  - Finding 5: documentation. Fixed.
+- **Issues.** #604 filed for this defect. #470 closed, because PR #600 delivered the first live
+  scan.
