@@ -156,7 +156,8 @@ watching, steering and unblocking.
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ready-made ones, off until a person enables them in
   one click on the Automations page: "Keep the docs up to date", "Work through open issues" (the
-  core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
+  core team's issues ranked, and the 5 most important actionable ones that no running task owns
+  verified in parallel and given a task each, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
@@ -179,7 +180,8 @@ watching, steering and unblocking.
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
-  `yulius wait`, `ci_status` and `delivery_status`.
+  `yulius wait`, `ci_status` and `delivery_status`. An agent removes the files its task created
+  with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent

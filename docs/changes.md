@@ -16,6 +16,23 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   its run is frozen as an update freezes it, or held at its turn boundary; Resume
   (`…/resume`) thaws it. Updates, restarts and their sweeps never wake it; stop, close and a
   switch thaw it first. Migration 0033.
+- The ready-made automation "Work through open issues" no longer works through all of the core
+  team's open issues (SPEC-194, task #180). It first drops the issues a running task owns: an
+  active task whose title ends with `(#N)` or whose prompt refers to the issue, a `Taken by` task
+  still running, or an open pull request that closes it. It also drops those it marked
+  `Not actionable yet:` until a person answers.
+  It ranks the rest (priority label, severity, reactions, age) and verifies them in that order
+  until it has the 5 most important actionable ones, then starts a task for each. Issues below the
+  cut are left untouched for a later run. `tasks_list` scope `active` now also lists tasks
+  paused for capacity. This project's automation was updated to the new prompt.
+  Automations other projects already added from the template keep their prompt.
+- A task removes the files it created itself, instead of asking a person (SPEC-192, ADR-0155,
+  task #177). Claude Code stops some `rm` commands for a person's approval even with approvals
+  bypassed (a file at `/`, a path in a variable); the session terminal asked and the agent then
+  left the removal to the person. `yulius remove <path>…` removes what is provably the task's:
+  untracked or ignored paths of its worktree and paths of its session's own `/`, `/tmp`, `/run`
+  and `/dev/shm`; anything shared is refused with the reason. Task runs also get `TMPDIR=/tmp`,
+  so `$TMPDIR/x` no longer lands at `/x`.
 - A confirmed deploy answers at once (SPEC-189, task #174, fixes #585). After "Deploy production…"
   the page showed nothing while the server checked and promoted (13 s on Yulius's own instance), so
   the click looked broken. The Deploy dialog now opens on confirmation, "Starting", with what it
