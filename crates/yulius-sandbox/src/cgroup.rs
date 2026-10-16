@@ -344,6 +344,29 @@ impl Delegation {
     }
 }
 
+/// Creates the group `dir` when it is gone; returns whether it did (SPEC-201 DBX-005, #614).
+/// `yulius.service` stops with `KillMode=process`, and systemd then removes every empty group
+/// left in the unit, the leaf of an idle engine among them, while its holder and front run on.
+/// Only `dir` is created: without its parent (the sandbox's group, which holds the limits) it
+/// fails. A leaf made again under a split parent gets the default `cpu.weight`, 100, which is the
+/// engine's (`LEAVES`).
+///
+/// # Errors
+/// `dir` has a `..`, the parent is gone, or the group cannot be created.
+pub fn restore_leaf(dir: &Path) -> io::Result<bool> {
+    if dir.components().any(|c| c.as_os_str() == "..") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a cgroup directory",
+        ));
+    }
+    match std::fs::create_dir(dir) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Moves the calling process into the cgroup directory `dir` (its children follow).
 ///
 /// # Errors
@@ -480,6 +503,27 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(group.join("pids.max"))?, "64");
         assert!(join(&group).is_err(), "only under /sys/fs/cgroup");
+        Ok(())
+    }
+
+    /// SPEC-201 DBX-005: a pruned leaf is made again, an existing one left alone, and a missing
+    /// parent is never made up.
+    #[test]
+    fn a_pruned_leaf_is_restored_under_its_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let leaf = root.path().join("s1/engine");
+        assert!(restore_leaf(&leaf).is_err(), "no parent");
+        assert!(!root.path().join("s1").exists());
+        std::fs::create_dir(root.path().join("s1"))?;
+        assert!(restore_leaf(&leaf)?);
+        assert!(leaf.is_dir());
+        std::fs::write(leaf.join("cgroup.procs"), "")?;
+        assert!(!restore_leaf(&leaf)?, "already there");
+        assert!(leaf.join("cgroup.procs").exists(), "left as it was");
+        // Review round 1 (nit): no `..`, as `join` refuses.
+        let around = root.path().join("s1/../s2");
+        assert!(restore_leaf(&around).is_err());
+        assert!(!root.path().join("s2").exists());
         Ok(())
     }
 

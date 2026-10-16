@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- A sandbox's Docker engine starts again after Yulius restarts (SPEC-201 part 2, task #186,
+  fixes #614). After the instance updated, every sandbox whose engine had stopped as idle
+  answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory". systemd
+  removes a stopped unit's empty cgroups, the idle engine's leaf among them. The Docker front,
+  which survives the restart, prepared that leaf only when it started. The front now makes the
+  leaf again before each engine start, and the server's adoption and upkeep tick do it for every
+  kept engine front, and for the relay front of a SPEC-187 holder that runs its own engine. That
+  also heals fronts started by an older binary, right after the update.
 - The in-sandbox Docker install brings buildx and compose (SPEC-201, ADR-0160 amended, task #186,
   fixes #610). After #185, an agent that followed the hint `sudo apt-get install -y docker.io` got
   an engine, but `docker buildx build` was an unknown command: Ubuntu's `docker.io` only suggests

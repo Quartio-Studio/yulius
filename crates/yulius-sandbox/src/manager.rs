@@ -482,7 +482,26 @@ impl Manager {
             .as_ref()
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
         let serve = match front_action(current, self.front_mode(&request, &live.record)) {
-            FrontAction::Keep => return,
+            FrontAction::Keep => {
+                // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
+                // from an older binary does not make it again (SPEC-201 DBX-006); a SPEC-187
+                // holder's own engine, behind a relay front, uses the same leaf.
+                if live
+                    .front
+                    .as_ref()
+                    .is_some_and(|f| f.mode == "engine" || f.mode == "relay")
+                    && let Some(groups) = self.group_paths(sandbox)
+                {
+                    match crate::cgroup::restore_leaf(&groups.engine) {
+                        Ok(true) => tracing::info!(sandbox, "recreated the engine's cgroup"),
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::warn!(sandbox, %error, "cannot recreate the engine's cgroup");
+                        }
+                    }
+                }
+                return;
+            }
             FrontAction::Start(serve) => {
                 if live.front.is_some() {
                     tracing::warn!(
@@ -1701,6 +1720,46 @@ while True:
         while crate::holder::exists(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// SPEC-201 DBX-006 (#614): a restart of `yulius.service` prunes an idle engine's empty
+    /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
+    /// even for a front from an older binary, which no update replaces. Review round 1 (major):
+    /// also for a SPEC-187 holder, whose own engine uses the same leaf behind a relay front.
+    #[tokio::test]
+    async fn a_kept_engine_front_gets_its_pruned_leaf_back()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (holder_engine, mode) in [(false, "engine"), (true, "relay")] {
+            kept_front_restores_the_leaf(holder_engine, mode).await?;
+        }
+        Ok(())
+    }
+
+    async fn kept_front_restores_the_leaf(
+        holder_engine: bool,
+        mode: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), holder_engine)?;
+        assert_eq!(manager.adopt().await, 1);
+        let front = front_of(&manager).await.ok_or("no front")?;
+        assert_eq!(front.mode, mode);
+        let leaf = manager.group_paths("s1").ok_or("no delegation")?.engine;
+        assert!(leaf.is_dir());
+        std::fs::remove_dir(&leaf)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        assert_eq!(
+            front_of(&manager).await.map(|f| f.pid),
+            Some(front.pid),
+            "{mode}: the running front is kept"
+        );
+        assert!(leaf.is_dir(), "{mode}: the engine's leaf is back");
+        kill(front.pid);
+        Ok(())
     }
 
     /// SPEC-196 DKL-003 (#597), the upgrade: a holder kept from before engines (adopted after
