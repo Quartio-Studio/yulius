@@ -87,6 +87,44 @@ pub const DOCKER_NO_CGROUP: &str = "the sandbox's cgroup could not be prepared (
 pub const DOCKER_WRITABLE_EXE: &str = "the `yulius` executable is owned or writable by the \
     service user, which an engine could rewrite; an operator installs it owned by root, mode 755";
 
+/// Where a system layer has `dockerd` (`docker-ce` puts it in `usr/bin`, `docker.io` in
+/// `usr/sbin`).
+pub const DOCKERD_PATHS: [&str; 3] = [
+    "usr/bin/dockerd",
+    "usr/sbin/dockerd",
+    "usr/local/bin/dockerd",
+];
+
+/// Whether the system a sandbox's engine runs has `dockerd` (SPEC-199 DSY-002): the sandbox's
+/// overlay `upper` layer decides where it has an entry, else its `base`. The upper layer is the
+/// sandbox's to write, so it is read without following links: a link at `dockerd` counts (it
+/// resolves inside the sandbox), and anything else over a path (a whiteout, a directory, a link
+/// over a parent) hides the base's.
+#[must_use]
+pub fn system_has_dockerd(base: &Path, upper: &Path) -> bool {
+    DOCKERD_PATHS
+        .iter()
+        .any(|path| upper_has(upper, path).unwrap_or_else(|| base.join(path).is_file()))
+}
+
+/// What an overlay upper layer says about the file at `relative`: `Some(true)` it provides one,
+/// `Some(false)` it hides the lower one, `None` it has no entry on the way. Never follows a link.
+fn upper_has(upper: &Path, relative: &str) -> Option<bool> {
+    let mut path = upper.to_path_buf();
+    let mut parts = relative.split('/').peekable();
+    while let Some(part) = parts.next() {
+        path.push(part);
+        let kind = std::fs::symlink_metadata(&path).ok()?.file_type();
+        if parts.peek().is_none() {
+            return Some(kind.is_file() || kind.is_symlink());
+        }
+        if !kind.is_dir() {
+            return Some(false);
+        }
+    }
+    None
+}
+
 /// Idle handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleConfig {
@@ -309,8 +347,9 @@ impl Manager {
         self.config.data_dir.join("sysroots").join(sandbox)
     }
 
-    /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they do: the setting
-    /// and `dockerd`, the cgroup delegation, and a `yulius` executable the sandbox's root neither
+    /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they may (each one
+    /// that has `dockerd` in its own system, SPEC-199): the setting, the cgroup delegation, and a
+    /// `yulius` executable the sandbox's root neither
     /// owns nor may write through its group or as anyone (the engine's read-only binds are not
     /// locked, so an engine could remount and rewrite it; ADR-0151).
     #[must_use]
@@ -354,14 +393,7 @@ impl Manager {
             };
         }
         let base = self.bases.path(&record.base_id);
-        let has_dockerd = [
-            "usr/bin/dockerd",
-            "usr/sbin/dockerd",
-            "usr/local/bin/dockerd",
-        ]
-        .iter()
-        .any(|path| base.join(path).is_file());
-        if !has_dockerd {
+        if !system_has_dockerd(&base, &self.sysroot(&request.id).join("upper")) {
             return DockerServe::Refuse {
                 reason: DOCKER_OLD_BASE.to_owned(),
             };
@@ -1779,6 +1811,51 @@ while True:
             assert!(!reason.contains("  "), "{reason}");
             assert!(!DOCKER_OLD_BASE.contains("  "));
         }
+        Ok(())
+    }
+
+    /// SPEC-199 DSY-002 (task #185): the engine runs the sandbox's own `dockerd`, so its system
+    /// decides: an entry in its upper layer (where `sudo apt-get install` writes) over its base.
+    /// A link the sandbox planted there is never followed by the server.
+    #[tokio::test]
+    async fn a_sandbox_whose_own_system_has_dockerd_gets_an_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let request = request(data.path());
+        let manager = adopting(data.path(), Ok(()), false)?;
+        let mode = |base: &str| {
+            let mut record = live_record(false);
+            record.base_id = base.into();
+            manager.front_mode(&request, &record)
+        };
+        let engine = |serve: DockerServe| matches!(serve, DockerServe::Engine { .. });
+        // base-0 has no `dockerd`; base-1 has one (`adopting`).
+        assert!(!engine(mode("base-0")));
+        assert!(engine(mode("base-1")));
+
+        let upper = manager.sysroot("s1").join("upper");
+        std::fs::create_dir_all(&upper)?;
+        let elsewhere = data.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("sbin"))?;
+        std::fs::write(elsewhere.join("sbin/dockerd"), "")?;
+        std::os::unix::fs::symlink(&elsewhere, upper.join("usr"))?;
+        assert!(!engine(mode("base-0")), "a planted link was followed");
+        assert!(!engine(mode("base-1")), "a link over usr hides the base's");
+        std::fs::remove_file(upper.join("usr"))?;
+
+        // `apt-get install docker.io` in the sandbox: /usr/sbin/dockerd in its upper layer.
+        std::fs::create_dir_all(upper.join("usr/sbin"))?;
+        std::fs::write(upper.join("usr/sbin/dockerd"), "")?;
+        assert!(engine(mode("base-0")));
+        std::fs::remove_file(upper.join("usr/sbin/dockerd"))?;
+        // A link at `dockerd` itself resolves inside the sandbox: it counts, unread.
+        std::os::unix::fs::symlink("/nowhere/dockerd", upper.join("usr/sbin/dockerd"))?;
+        assert!(engine(mode("base-0")));
+        std::fs::remove_file(upper.join("usr/sbin/dockerd"))?;
+
+        // Anything else over the base's `dockerd` (a whiteout is a character device) removes it.
+        std::fs::create_dir_all(upper.join("usr/bin/dockerd"))?;
+        assert!(!engine(mode("base-1")));
         Ok(())
     }
 
