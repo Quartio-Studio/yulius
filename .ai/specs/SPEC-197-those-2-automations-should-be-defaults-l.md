@@ -119,8 +119,10 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   passed once fixed; the builder's Delete wording and `keepFocus` by label failed, then passed; the
   double-press assertion fails with the guard removed (mutation check) and passes with it.
 - `cd e2e && npx e2e run tests/automations.e2e.ts`: 12 passed (12).
-- `scripts/dev ci` on the merged head (origin/dev 4835317d merged): 1992 tests run, 1992 passed,
-  18 skipped; exit 0. Earlier heads 753b52c1 and 56244b9b: 1975 passed each.
+- `scripts/dev ci` on the final merged head 32b8bfb1 (origin/dev 55f6a25e merged): 1996 tests
+  run, 1996 passed, 18 skipped; exit 0. Full e2e suite run after it on the same head, with nothing
+  beside it: 594 passed, 1 skipped (59 files), exit 0. Earlier heads: 1975 passed (753b52c1,
+  56244b9b) and 1992 passed (bc650894).
 - Full e2e suite (`npx e2e run`): 583 passed, 1 skipped on 753b52c1. On the merged head while
   the Rust gate ran beside it, 2 timed out under load (`queued-messages` "the request shows its
   files as placeholders", tracked by #525; `responsive` automation editor heading). Both files
