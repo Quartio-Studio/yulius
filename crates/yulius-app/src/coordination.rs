@@ -63,6 +63,17 @@ pub struct ProjectCaller {
     pub detail: Value,
 }
 
+/// Whether `tasks_list` scope `active` lists a task in `status`: it is at work or will be
+/// (SPEC-194 TOP-007: a task paused for capacity still owns its work).
+fn is_active(status: yulius_domain::task::TaskStatus) -> bool {
+    use yulius_domain::task::TaskStatus as S;
+    status.is_live()
+        || matches!(
+            status,
+            S::Queued | S::Chained | S::Prepared | S::WaitingCapacity
+        )
+}
+
 fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
@@ -133,15 +144,7 @@ impl App {
             tasks.retain(|t| t.id != own.id);
         }
         tasks.retain(|t| match scope {
-            "active" => {
-                t.status.is_live()
-                    || matches!(
-                        t.status,
-                        yulius_domain::task::TaskStatus::Queued
-                            | yulius_domain::task::TaskStatus::Chained
-                            | yulius_domain::task::TaskStatus::Prepared
-                    )
-            }
+            "active" => is_active(t.status),
             "recent" => !t.status.is_live(),
             _ => true,
         });
@@ -373,5 +376,30 @@ impl App {
             },
         );
         self.publish_task(&task.id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_active;
+    use yulius_domain::task::{StopReason, TaskStatus as S};
+
+    #[test]
+    fn active_lists_tasks_at_work_or_waiting_to_work() {
+        for status in [
+            S::Queued,
+            S::Chained,
+            S::Prepared,
+            S::Starting,
+            S::Running,
+            S::Switching,
+            S::WaitingCapacity,
+            S::Stopping,
+        ] {
+            assert!(is_active(status), "{status:?}");
+        }
+        for status in [S::Closed, S::Stopped(StopReason::Crashed)] {
+            assert!(!is_active(status), "{status:?}");
+        }
     }
 }
