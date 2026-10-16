@@ -2107,7 +2107,8 @@ mod tests {
             "`docker info` checks",
             // SPEC-199 (review round 1, low): a sandbox whose system lacks `dockerd` installs it;
             // SPEC-201 DBX-003 (#610): with buildx and compose, in the sandbox, not on the host.
-            "missing parts: `sudo apt install docker.io docker-buildx docker-compose-v2` here",
+            // Review round 1 (low): `-y`, else apt aborts at its prompt without a terminal.
+            "missing parts: `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` here",
             "disk quota",
             "the sandbox dir",
             "your ports",
