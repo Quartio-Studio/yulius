@@ -5,13 +5,59 @@
 //! `sh`) reads them the same: bare when plain, in single quotes (literal) otherwise, in double
 //! quotes only for a value with `'` and nothing those readers escape differently. A value with
 //! `\` or `${` is refused: `python-dotenv` unescapes the one and expands the other even inside
-//! single quotes, and Docker Compose reads `\'` as a quote.
+//! single quotes, and Docker Compose reads `\'` as a quote. The exception is a key block stored
+//! with literal `\n` (a PEM or OpenSSH key; an agent secret never spans lines): it is written as
+//! the key file it stands for, in single quotes across lines, which those readers take literally
+//! (SPEC-186 SAV-005).
 
 use super::VaultError;
 
 /// Characters a bare value may hold.
 fn plain(c: char) -> bool {
     c.is_ascii_alphanumeric() || "_-./:+=@,%^".contains(c)
+}
+
+/// Whether `line` is a key's armour line `-----<edge> <label>-----` (PEM, OpenSSH).
+fn armour(line: &str, edge: &str) -> bool {
+    line.strip_prefix("-----")
+        .and_then(|rest| rest.strip_prefix(edge))
+        .and_then(|rest| rest.strip_prefix(' '))
+        .and_then(|rest| rest.strip_suffix("-----"))
+        .is_some_and(|label| !label.is_empty() && !label.contains('-'))
+}
+
+/// The key file a value stands for, when it is a key block stored with literal `\n` (an agent
+/// secret never spans lines, SPEC-186 SAV-005): its armour opens the first line and closes the
+/// last, a body is between them, and no other `\` remains. The file ends with one line break, as
+/// PEM and OpenSSH files do (OpenSSH refuses a key without it), whether or not the stored value
+/// ends with a literal `\n`. `None` for any other value: one that is not a key keeps its escapes.
+#[must_use]
+pub fn key_block(value: &str) -> Option<String> {
+    let text = value
+        .strip_suffix("\\n")
+        .unwrap_or(value)
+        .replace("\\n", "\n");
+    let lines: Vec<&str> = text.split('\n').collect();
+    let (first, last) = (lines.first()?, lines.last()?);
+    let block = lines.len() >= 3
+        && armour(first, "BEGIN")
+        && armour(last, "END")
+        && !text.contains(['\\', '\'', '\r'])
+        && !text.contains("${");
+    block.then(|| format!("{text}\n"))
+}
+
+/// The lines of a key block's file that hold key material (its armour excluded): a copied key
+/// file shows them one per line, so redaction looks for each (SPEC-186 SAV-005). Empty for a
+/// value that is not a key block.
+#[must_use]
+pub fn key_lines(value: &str) -> Vec<String> {
+    key_block(value).map_or_else(Vec::new, |file| {
+        file.lines()
+            .filter(|line| !line.starts_with("-----"))
+            .map(str::to_owned)
+            .collect()
+    })
 }
 
 /// The `NAME=value` line for a value (no line break).
@@ -24,6 +70,10 @@ pub fn line(name: &str, value: &str) -> Result<String, VaultError> {
         return Err(VaultError::Value(format!(
             "{name} holds a control character a .env line cannot carry"
         )));
+    }
+    // A key: its file, in single quotes across lines, which every reader takes literally.
+    if let Some(file) = key_block(value) {
+        return Ok(format!("{name}='{file}'"));
     }
     if value.contains('\\') || value.contains("${") {
         return Err(VaultError::Value(format!(
@@ -78,18 +128,20 @@ fn still_open(rest: &str, quote: char) -> bool {
 }
 
 /// `text` with each `(name, line)` set: the first line for a name is replaced in place (keeping
-/// `export`), later ones are dropped, missing names are appended. Every other line is kept,
-/// including the lines of another name's multi-line quoted value.
+/// `export`), later ones are dropped, missing names are appended. A name's multi-line quoted
+/// value is replaced or dropped whole (SPEC-186 SAV-005), never cut in half. Every other line is
+/// kept, including the lines of another name's multi-line quoted value.
 ///
 /// # Errors
-/// [`VaultError::Value`] when a name to set already holds a multi-line quoted value: replacing
-/// its first line would leave the others as stray lines. Also when a quoted value is still open
-/// at the end of the file: it would swallow the lines appended after it.
+/// [`VaultError::Value`] when a quoted value is still open at the end of the file: it would
+/// swallow the lines appended after it (and where a value being replaced ends is unknown).
 pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultError> {
     let eol = line_end(text);
     let mut seen = vec![false; entries.len()];
     let mut out = String::with_capacity(text.len() + entries.len() * 64);
     let mut open: Option<char> = None;
+    // The open value belongs to a name being set: its lines go with its first one.
+    let mut dropping = false;
     // The line number and name of the value the open quote belongs to.
     let mut opened_at = (0, "");
     for (number, raw) in text.lines().enumerate() {
@@ -97,8 +149,10 @@ pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultE
             if !still_open(raw, quote) {
                 open = None;
             }
-            out.push_str(raw);
-            out.push_str(eol);
+            if !dropping {
+                out.push_str(raw);
+                out.push_str(eol);
+            }
             continue;
         }
         let key = key_of(raw);
@@ -108,13 +162,8 @@ pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultE
             open = opens(value);
             opened_at = (number + 1, key);
         }
+        dropping = found.is_some();
         match found {
-            Some(i) if open.is_some() => {
-                return Err(VaultError::Value(format!(
-                    "{} already holds a value over several lines: remove it from the file first",
-                    entries[i].0
-                )));
-            }
             Some(i) if seen[i] => {}
             Some(i) => {
                 seen[i] = true;
@@ -219,12 +268,104 @@ mod tests {
         Ok(())
     }
 
-    /// Review of SPEC-129, round 2: a multi-line quoted value already there for a copied name
-    /// is not cut in half (its other lines would become stray assignments); it is refused.
+    /// The armour of a synthetic key: `-----BEGIN <label>-----`, built at run time so no scanner
+    /// takes the source for a key.
+    fn armour(edge: &str, label: &str) -> String {
+        format!("-----{edge} {label}-----")
+    }
+
+    /// A synthetic key file of `body` lines between its armour, with its final line break.
+    fn key_file(label: &str, body: &[&str]) -> String {
+        let mut lines = vec![armour("BEGIN", label)];
+        lines.extend(body.iter().map(|l| (*l).to_owned()));
+        lines.push(armour("END", label));
+        format!("{}\n", lines.join("\n"))
+    }
+
+    /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
+    /// written as the key file it stands for, with its final line break, whether or not the
+    /// stored value ends with a literal `\n`; `sh` and dotenv readers read single quotes
+    /// literally, across lines.
     #[test]
-    fn a_multi_line_value_being_replaced_is_refused() -> Result<(), VaultError> {
+    fn a_key_stored_with_escaped_line_breaks_is_written_as_its_file() -> Result<(), VaultError> {
+        let pem = key_file("SYNTHETIC KEY", &["c3ludGhldGljLXBlbS1ib2R5LTAx"]);
+        let openssh = key_file(
+            &format!("{} PRIVATE KEY", "OPENSSH"),
+            &[
+                "b3BlbnNzaC1rZXktdjEAAAAAc3ludGhldGljLTAx",
+                "c3ludGhldGljLW9wZW5zc2gta2V5LWxpbmUtMDIA",
+                "c3ludGhldGljLW9wZW5zc2gta2V5LWxpbmUtMDMA",
+                "c3ludGhldGljLW9wZW5zc2gta2V5LWxpbmUtMDQA",
+                "c3ludGhldGljLTA1==",
+            ],
+        );
+        assert_eq!(pem.lines().count(), 3);
+        assert_eq!(openssh.lines().count(), 7);
+        for file in [&pem, &openssh] {
+            let escaped = file.replace('\n', "\\n");
+            let bare = escaped.trim_end_matches("\\n").to_owned();
+            for stored in [escaped, bare] {
+                assert_eq!(line("KEY", &stored)?, format!("KEY='{file}'"), "{stored}");
+                assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
+            }
+        }
+        // Not a key: a JSON file kept on one line keeps its escapes, so it is still refused.
+        let json = r#"{"private_key":"x\ny","client":"synthetic-1234"}"#;
+        assert_eq!(key_block(json), None);
+        assert!(line("K", json).is_err());
+        // Armour without an end, another escape, or a quote inside: refused as before.
+        for odd in [
+            format!("{}\\nYWJj", armour("BEGIN", "KEY")),
+            format!(
+                "{}\\nYW\\tJj\\n{}",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
+            format!(
+                "{}\\nit's\\n{}",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
+            format!("{}\\n{}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+        ] {
+            assert_eq!(key_block(&odd), None, "{odd}");
+            assert!(line("K", &odd).is_err(), "{odd}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-186 SAV-005: copying a key again (after a rotation) replaces its whole multi-line
+    /// value; a multi-line value is never cut in half (its other lines would become stray
+    /// assignments, review of SPEC-129 round 2).
+    #[test]
+    fn a_multi_line_value_being_replaced_is_replaced_whole() -> Result<(), VaultError> {
         let pem = "KEY=\"-----BEGIN KEY-----\nabc\nOTHER=x\n-----END KEY-----\"\nB=1\n";
-        assert!(upsert(pem, &[entry("KEY", "new-value-1")?]).is_err());
+        assert_eq!(
+            upsert(pem, &[entry("KEY", "new-value-1")?])?,
+            "KEY=new-value-1\nB=1\n"
+        );
+        let new_key = key_file("KEY", &["bmV3LWtleS1ib2R5"]).replace('\n', "\\n");
+        let copied = upsert("A=1\n", &[entry("KEY", &new_key)?])?;
+        assert_eq!(
+            upsert(
+                &copied,
+                &[entry("KEY", "new-value-1")?, entry("A", "a-value-12")?]
+            )?,
+            "A=a-value-12\nKEY=new-value-1\n"
+        );
+        assert_eq!(
+            upsert(&copied, &[entry("KEY", &new_key)?])?,
+            copied,
+            "the same key copied again"
+        );
+        assert_eq!(
+            upsert(
+                "KEY='a\nb'\nKEY='c\nd'\nB=1\n",
+                &[entry("KEY", "new-value-1")?]
+            )?,
+            "KEY=new-value-1\nB=1\n",
+            "a later line of the same name goes, all of it"
+        );
         assert!(upsert("KEY='open\nB=1\n", &[entry("KEY", "new-value-1")?]).is_err());
         assert_eq!(
             upsert(pem, &[entry("B", "b-value-12")?])?,

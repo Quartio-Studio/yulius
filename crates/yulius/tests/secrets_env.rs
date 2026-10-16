@@ -561,8 +561,8 @@ async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
 }
 
 /// #475: a `.env` that cannot be updated without breaking it is refused before a person is
-/// asked, and nothing is written: a copied name already holding a value over several lines, or a
-/// quote left open at the end of the file. An existing `.env.example` keeps its mode when a
+/// asked, and nothing is written: a quote left open at the end of the file (a copied name already
+/// holding a value over several lines is replaced whole since SPEC-186). An existing `.env.example` keeps its mode when a
 /// name is added to it.
 #[tokio::test]
 async fn a_dotenv_that_cannot_be_updated_is_refused_and_the_example_keeps_its_mode() -> TestResult {
@@ -577,16 +577,11 @@ async fn a_dotenv_that_cannot_be_updated_is_refused_and_the_example_keeps_its_mo
             json!({"secrets": ["STRIPE_KEY"]}),
         )
     };
-    for (text, why) in [
-        (
-            "STRIPE_KEY=\"-----BEGIN KEY-----\nabc\n-----END KEY-----\"\nB=1\n",
-            "already holds a value over several lines",
-        ),
-        (
-            "A=1\nBROKEN='never closed\n",
-            "on line 2 of the file never closes",
-        ),
-    ] {
+    // A multi-line value already there for the name is replaced whole (SPEC-186 SAV-005).
+    for (text, why) in [(
+        "A=1\nBROKEN='never closed\n",
+        "on line 2 of the file never closes",
+    )] {
         std::fs::write(&env, text)?;
         let refused = copy().await?;
         assert_eq!(refused["isError"], true, "{refused}");
@@ -652,5 +647,134 @@ async fn secrets_of_every_project_are_answered_by_administrators() -> TestResult
     let allowed = answer_seen(&w, &admin, &id, true, "asked", Some(&by)).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["env_files"], "allowed");
+    Ok(())
+}
+
+/// A synthetic key file: `-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
+/// its own line, with a final line break (the armour is built at run time so no scanner takes
+/// the source for a key).
+pub(crate) fn key_file(label: &str, body: &[&str]) -> String {
+    let mut lines = vec![format!("-----BEGIN {label}-----")];
+    lines.extend(body.iter().map(|l| (*l).to_owned()));
+    lines.push(format!("-----END {label}-----"));
+    format!("{}\n", lines.join("\n"))
+}
+
+/// A synthetic 3-line PEM key.
+pub(crate) fn pem_key() -> String {
+    key_file(
+        &format!("{} KEY", "SYNTHETIC ED25519"),
+        &["c3ludGhldGljLWVkMjU1MTktcGVtLWtleS1ib2R5"],
+    )
+}
+
+/// A synthetic 7-line OpenSSH key (`n` makes each a different one).
+pub(crate) fn openssh_key(n: u8) -> String {
+    let body: Vec<String> = (1..=5)
+        .map(|line| format!("c3ludGhldGljLW9wZW5zc2gta2V5LXZ{n}-bGluZS0w{line}"))
+        .collect();
+    let body: Vec<&str> = body.iter().map(String::as_str).collect();
+    key_file(&format!("{} PRIVATE KEY", "OPENSSH"), &body)
+}
+
+/// What `sh` reads for `name` from the `.env` in `dir`, byte for byte.
+pub(crate) fn sourced(dir: &Path, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let out = Command::new("sh")
+        .args(["-c", &format!(". ./.env && printf %s \"${name}\"")])
+        .current_dir(dir)
+        .output()?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+    }
+    Ok(String::from_utf8(out.stdout)?)
+}
+
+/// SPEC-186 SAV-005: keys stored with literal `\n` (an agent secret never spans lines), with or
+/// without a final one, come out of the `.env` byte-identical to their files: a 3-line PEM key
+/// and a 7-line OpenSSH key. Their lines stay redacted when the file is read, and copying again
+/// after a rotation replaces the whole value.
+#[tokio::test]
+async fn multi_line_keys_reach_the_env_byte_identical_to_their_files() -> TestResult {
+    let w = world().await?;
+    let (pem, ssh) = (pem_key(), openssh_key(1));
+    assert_eq!((pem.lines().count(), ssh.lines().count()), (3, 7));
+    let stored_pem = pem.replace('\n', "\\n");
+    let stored_ssh = ssh.trim_end().replace('\n', "\\n");
+    let mut ids = Vec::new();
+    for (name, value) in [("DEPLOY_PEM", &stored_pem), ("DEPLOY_SSH", &stored_ssh)] {
+        let created = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": name, "value": value})),
+            &w.writer,
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+        assert!(
+            w.h.store
+                .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+                .await?
+        );
+        ids.push(id);
+    }
+    std::fs::write(w.worktree.join(".env"), "# local\nOTHER=1\n")?;
+    let copied = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["DEPLOY_PEM", "DEPLOY_SSH"]}),
+    )
+    .await?;
+    assert_ne!(copied["isError"], true, "{copied}");
+    assert_eq!(sourced(&w.worktree, "DEPLOY_PEM")?, pem);
+    assert_eq!(sourced(&w.worktree, "DEPLOY_SSH")?, ssh);
+    assert_eq!(sourced(&w.worktree, "OTHER")?, "1");
+
+    // The key's lines are redacted wherever the file is shown (`cat .env`).
+    let text = read(&w.worktree.join(".env"));
+    let shown =
+        w.h.app
+            .redact_for_sandbox(&yulius_domain::ids::SandboxId::parse("s1")?, &text)
+            .await;
+    for body in pem
+        .lines()
+        .chain(ssh.lines())
+        .filter(|l| !l.starts_with("-----"))
+    {
+        assert!(text.contains(body), "{body}");
+        assert!(!shown.contains(body), "{body} shown in {shown}");
+    }
+    assert!(shown.contains("[secret:DEPLOY_SSH]"), "{shown}");
+
+    // Rotated and copied again: the whole old value goes, the new one is read as its file.
+    let rotated = openssh_key(2);
+    let patched = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{}", ids[1]),
+        Some(json!({"value": rotated.replace('\n', "\\n")})),
+        &w.writer,
+    )
+    .await?;
+    assert!(patched.status.is_success(), "{}", patched.body);
+    let again = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["DEPLOY_SSH"]}),
+    )
+    .await?;
+    assert_ne!(again["isError"], true, "{again}");
+    assert_eq!(sourced(&w.worktree, "DEPLOY_SSH")?, rotated);
+    assert_eq!(sourced(&w.worktree, "DEPLOY_PEM")?, pem);
+    let text = read(&w.worktree.join(".env"));
+    assert!(
+        !text.contains("LXZ1-"),
+        "the old key's lines are gone: {text}"
+    );
+    // Each key's lines, and its closing quote on a line of its own.
+    assert_eq!(text.lines().count(), 2 + (3 + 1) + (7 + 1), "{text}");
     Ok(())
 }

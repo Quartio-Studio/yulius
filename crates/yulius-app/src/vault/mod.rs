@@ -321,6 +321,10 @@ impl App {
         for record in &records {
             let payload: AgentPayload = self.open_payload(record)?;
             let mut forms = needles(&payload.value);
+            // A key copied into a file (`.env`) shows as its lines (SPEC-186 SAV-005).
+            for line in yulius_domain::vault::dotenv::key_lines(&payload.value) {
+                forms.extend(needles(&line));
+            }
             if let Some(seed) = &payload.totp {
                 forms.extend(needles(seed));
             }
