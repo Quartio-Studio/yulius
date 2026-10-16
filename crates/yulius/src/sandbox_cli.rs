@@ -159,10 +159,25 @@ pub fn host(action: HostAction) -> ExitCode {
     }
 }
 
-/// `yulius sandbox-exec [--engine] [--cgroup DIR] -- bwrap …`: joins `cgroup`, then execs `bwrap`
-/// with the run's seccomp filter, or the engine's (ADR-0151).
+/// `yulius sandbox-exec [--engine] [--cgroup DIR] [--join FILE] -- bwrap …`: joins `cgroup` and
+/// the sandbox of `join` (still single-threaded), then execs `bwrap` with the run's seccomp
+/// filter, or the engine's (ADR-0151).
 #[must_use]
-pub fn exec(engine: bool, cgroup: Option<&Path>, argv: &[OsString]) -> ExitCode {
+pub fn exec(
+    engine: bool,
+    cgroup: Option<&Path>,
+    join: Option<&Path>,
+    argv: &[OsString],
+) -> ExitCode {
+    if let Some(path) = join {
+        let joined =
+            yulius_sandbox::holder::read_json::<yulius_contracts::ptyhost::SandboxJoin>(path)
+                .map_err(|e| e.to_string())
+                .and_then(|join| yulius_sandbox::enter::join(&join).map_err(|e| e.to_string()));
+        if let Err(error) = joined {
+            return fail(&format!("cannot join the sandbox: {error}"));
+        }
+    }
     if let Some(cgroup) = cgroup
         && let Err(error) = yulius_sandbox::cgroup::join(cgroup)
     {

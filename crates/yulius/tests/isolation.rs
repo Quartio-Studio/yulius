@@ -14,8 +14,8 @@
 //! 6 GB). The limits test needs a delegated cgroup: run it in a transient unit,
 //! `systemd-run --uid=<user> -p Delegate=yes -p DelegateSubgroup=server --wait --pipe … isolation_limits`
 //! with `YULIUS_ISOLATION_TEST_LIMITS=1`. The Docker test (SPEC-187) needs the same unit, Docker
-//! installed on the host and its kernel modules: `… isolation_docker` with
-//! `YULIUS_ISOLATION_TEST_DOCKER=1`.
+//! installed on the host and its kernel modules: `… isolation_docker` (and `isolation_docker_live`,
+//! SPEC-196) with `YULIUS_ISOLATION_TEST_DOCKER=1`.
 
 #![cfg(target_os = "linux")]
 
@@ -875,6 +875,45 @@ async fn isolation_docker() -> TestResult {
     let iso = fixture(Limits::default(), Some(delegation.clone()), forward).await?;
     assert!(iso.manager.docker(), "sandboxes get an engine");
     guarded(&iso, docker_end_to_end(&iso, &delegation, forward, blocked)).await
+}
+
+/// SPEC-196 (#597): Docker reaches runs whatever their age, the way an update meets them: a
+/// holder serving no engine and a run started then (without the Docker directory) get it once
+/// the holder is adopted with Docker on; the refusal before names its reason; a recreated
+/// socket keeps the old run working; a new run has `DOCKER_HOST`. The scenario is
+/// `yulius doctor --docker-smoke`'s, over the fixture's base. Same prerequisites as
+/// `isolation_docker`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolation_docker_live() -> TestResult {
+    if let Err(why) = enabled("isolation_docker_live") {
+        eprintln!("{why}");
+        return Ok(());
+    }
+    let required = std::env::var("YULIUS_ISOLATION_TEST_DOCKER").as_deref() == Ok("1");
+    let delegation = match yulius::wiring::sandbox::delegation() {
+        Ok(delegation) => delegation,
+        Err(why) if !required => {
+            eprintln!("SKIPPED isolation_docker_live: {why}");
+            return Ok(());
+        }
+        Err(why) => return Err(why.into()),
+    };
+    let (forward, _hello) = hello_server().await?;
+    let iso = fixture(Limits::default(), Some(delegation.clone()), forward).await?;
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let checks = yulius::docker_smoke::smoke(&iso.data, &exe, delegation, &mut |check| {
+        eprintln!(
+            "{} {}: {}",
+            if check.ok { "ok" } else { "FAIL" },
+            check.name,
+            check.detail
+        );
+    })
+    .await?;
+    let failed: Vec<_> = checks.iter().filter(|c| !c.ok).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(checks.len(), 8, "{checks:#?}");
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

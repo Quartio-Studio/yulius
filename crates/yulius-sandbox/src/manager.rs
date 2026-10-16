@@ -937,25 +937,8 @@ impl Manager {
         let mut adopted = 0;
         for entry in entries.flatten().take(10_000) {
             let sandbox = entry.file_name().to_string_lossy().into_owned();
-            let state = StatePaths::new(entry.path());
-            let Ok(record) = read_json::<HolderRecord>(&state.record()) else {
-                continue;
-            };
-            let slot = self.entry(&sandbox);
-            let mut guard = slot.lock().await;
-            if alive(&record) {
-                let relays = self.start_relays(&sandbox, &record);
-                let mut live = Live::new(record, relays);
-                // A front that outlived the previous server process is kept when it still
-                // serves this holder in the right mode (`keep_front`).
-                live.front = read_json::<DockerFrontRecord>(&state.docker_record()).ok();
-                guard.live = Some(live);
-                guard.last_used = Some(Instant::now());
-                self.keep_front(&sandbox, &mut guard).await;
+            if self.adopt_one(&sandbox).await {
                 adopted += 1;
-            } else {
-                self.stop_holder(&sandbox, &record).await;
-                guard.stale = Some(record);
             }
         }
         if adopted > 0 {
@@ -965,6 +948,39 @@ impl Manager {
             );
         }
         adopted
+    }
+
+    /// Adopts `sandbox`'s holder when it still runs, with its Docker front (kept when it still
+    /// serves this holder in the right mode, else started; SPEC-196 DKL-003); removes the record
+    /// of a dead one. Returns whether a holder was adopted.
+    pub async fn adopt_one(&self, sandbox: &str) -> bool {
+        let state = StatePaths::new(self.state_dir(sandbox));
+        let Ok(record) = read_json::<HolderRecord>(&state.record()) else {
+            return false;
+        };
+        let slot = self.entry(sandbox);
+        let mut guard = slot.lock().await;
+        if alive(&record) {
+            let relays = self.start_relays(sandbox, &record);
+            let mut live = Live::new(record, relays);
+            live.front = read_json::<DockerFrontRecord>(&state.docker_record()).ok();
+            guard.live = Some(live);
+            guard.last_used = Some(Instant::now());
+            self.keep_front(sandbox, &mut guard).await;
+            true
+        } else {
+            self.stop_holder(sandbox, &record).await;
+            guard.stale = Some(record);
+            false
+        }
+    }
+
+    /// The Docker front `sandbox`'s live holder has (pid, mode).
+    pub async fn docker_front(&self, sandbox: &str) -> Option<(u32, String)> {
+        let entry = self.entry(sandbox);
+        let state = entry.lock().await;
+        let front = state.live.as_ref()?.front.as_ref()?;
+        Some((front.pid, front.mode.clone()))
     }
 
     /// Processes in `net_ns` other than `exclude` (the holder and its Docker front): the
