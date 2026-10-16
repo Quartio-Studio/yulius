@@ -217,7 +217,7 @@ export function pausedLine(task) {
  * pause has not taken hold (its run could not be frozen).
  */
 export function pauseLine(pause) {
-  if (pause.by === 'update') return pause.pending ? 'Pausing for a Yulius update at the end of its turn' : 'Paused for a Yulius update. It continues by itself.';
+  if (pause.by === 'update') return pause.pending ? `Pausing for a ${BRAND.name} update at the end of its turn` : `Paused for a ${BRAND.name} update. It continues by itself.`;
   const who = pause.user && pause.user.login ? `@${pause.user.login}` : 'a person';
   return `Paused by ${who}${pause.pending ? ' · pausing at the end of its turn' : ''}`;
 }

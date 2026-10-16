@@ -34,7 +34,7 @@ export function openTaskMenu(ctx, anchor, task) {
     { label: task.status === 'chained' || task.status === 'prepared' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     can.resume
       ? { label: 'Resume', onSelect: () => resumeTask(ctx, task) }
-      : { label: 'Pause', disabled: !can.pause, title: can.pause ? 'Stops the agent where it is, until you resume it' : (task.pause ? 'Paused for a Yulius update: it continues by itself' : allows(access, 'write') && !owner ? 'Only a running task can be paused' : why), onSelect: () => pauseTask(ctx, task) },
+      : { label: 'Pause', disabled: !can.pause, title: can.pause ? 'Stops the agent where it is, until you resume it' : (task.pause ? `Paused for a ${BRAND.name} update: it continues by itself` : allows(access, 'write') && !owner ? 'Only a running task can be paused' : why), onSelect: () => pauseTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
