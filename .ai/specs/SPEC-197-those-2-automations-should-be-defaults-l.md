@@ -118,11 +118,11 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   passed. Review fixes were also test-first: focus after switching on failed (`toBeFocused`) and
   passed once fixed; the builder's Delete wording and `keepFocus` by label failed, then passed; the
   double-press assertion fails with the guard removed (mutation check) and passes with it.
-- `cd e2e && npx e2e run tests/automations.e2e.ts`: 12 passed (12).
-- `scripts/dev ci` on the final merged head 32b8bfb1 (origin/dev 55f6a25e merged): 1996 tests
-  run, 1996 passed, 18 skipped; exit 0. Full e2e suite run after it on the same head, with nothing
-  beside it: 594 passed, 1 skipped (59 files), exit 0. Earlier heads: 1975 passed (753b52c1,
-  56244b9b) and 1992 passed (bc650894).
+- `cd e2e && npx e2e run tests/automations.e2e.ts`: 13 passed (13).
+- `scripts/dev ci` on 3e38551b (origin/dev 3127a28b merged; the code of the delivered head): script
+  tests 85 OK, nextest 2015 tests run, 2015 passed, 18 skipped; exit 0. Full e2e suite run after it
+  on the same head, with nothing beside it: 598 passed, 1 skipped (59 files), exit 0. Earlier
+  heads: 1975 passed (753b52c1, 56244b9b), 1992 (bc650894), 1996 (32b8bfb1).
 - Full e2e suite (`npx e2e run`): 583 passed, 1 skipped on 753b52c1. On the merged head while
   the Rust gate ran beside it, 2 timed out under load (`queued-messages` "the request shows its
   files as placeholders", tracked by #525; `responsive` automation editor heading). Both files
@@ -130,8 +130,9 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   head passed: 592 passed, 1 skipped (59 files), exit 0. The load timeouts are outside this change:
   they are page-load timeouts at a CPU the gate saturated, and `queued-messages` does not touch
   automations.
-- `scripts/dev security`: not run, exit 2. Vidoc answered HTTP 401 "Invalid or expired token"
-  (#470). Under ADR-0104 that is reported as unrun, not passed.
+- `scripts/dev security` on 3e38551b (the vidoc-1 scan of ADR-0157): not run, exit 2. Vidoc
+  refused this agent's key (HTTP 401), so the scan is reported as unrun, not passed. The CI
+  `security` job scans the pull request head.
 - Visual check: a screenshot of the mock Automations page (dark theme, 1440 px) shows Defaults
   (three shipped automations, the agent-made one badged "Default", the two not added off) above
   Custom.
@@ -142,6 +143,9 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   asking, so a double click opened two dialogs. A test reproduced it (two dialogs), and a re-entry
   guard fixed it (no dialog once the builder is left). The double-press test now holds the enable
   (the mock's `holdpost=`), so it no longer depends on timing under load, and `keepFocus` gained
-  the case of a label gone after the rebuild.
+  the case of a label gone after the rebuild. Round 4 (1ed2068d) requested changes. The second dev
+  merge had committed this worktree's leftover `tools/vidoc/node_modules`, after dev dropped its
+  ignore line; it was removed in a new commit (ADR-0157). The left-builder case was untested; its
+  test fails without the `isConnected` check and passes with it. Final review on the head below.
 - Not testable here: the live instance's Automations page (it runs `main`; this reaches it at the
   next promotion).
