@@ -805,7 +805,10 @@ async fn a_refused_final_status_is_retried_after_the_job_statuses() -> TestResul
     std::fs::write(f.data.join("release"), "")?;
     f.settle().await?;
     let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
-    assert_eq!(state, "pending", "the final status was refused: {description}");
+    assert_eq!(
+        state, "pending",
+        "the final status was refused: {description}"
+    );
     forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
     f.h.app.ci_retry_statuses().await;
     let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
