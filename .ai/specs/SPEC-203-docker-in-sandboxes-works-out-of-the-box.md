@@ -91,8 +91,8 @@ Code today:
   any package install.
 - **HST-007** The service user is the data directory's owner, else `--user` (default `yulius`).
   A missing user is created as a system user with the data directory as its home (mode 0700). A
-  user without a subordinate uid or gid range of 65,536 ids gets the first free one at or above
-  100,000 aligned to 65,536 (`usermod --add-subuids --add-subgids`).
+  user without a subordinate uid or gid range of 65,536 ids gets the range right after every range in
+  use, at or above 100,000 (`usermod --add-subuids --add-subgids`).
 - **HST-008** `yulius.service`: missing, it is written from the documented unit when
   `--public-url` is given (else manual, naming the flag), enabled and started at the end. Present
   without `Delegate=yes`, `DelegateSubgroup=server` or `KillMode=process`, a drop-in

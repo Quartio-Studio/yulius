@@ -78,6 +78,10 @@ impl Host for RealHost {
             .map_err(|e| format!("chmod {}: {e}", path.display()))
     }
 
+    fn fingerprint(&self) -> String {
+        yulius_sandbox::base::fingerprint(Path::new("/"), yulius_app::identity::SUDO_SHIM)
+    }
+
     fn run(&mut self, cmd: &Cmd) -> Result<Out, String> {
         let (program, args) = cmd.argv.split_first().ok_or("an empty command")?;
         let show = cmd.show && !self.quiet;
