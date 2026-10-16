@@ -74,8 +74,8 @@ watching, steering and unblocking.
   so the agent gets the correction when the task starts. The request and the message box show
   files as placeholders (`Image N`) that open on a click (a double-click in the box); images pasted or dropped into a message
   land where they are put and move like a character, as in the composer.
-  A **supertask** (the composer's start menu, for broad work such as security hardening) waits
-  for the running tasks of its project, then runs alone: the project's other tasks wait for it,
+  A **supertask** (the composer's start menu, for broad work such as security hardening or
+  one-shotting the product) waits for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
   The Tasks page's **Graph** (also from the sidebar's Working group) shows that structure at a
   glance: the queue in the order tasks get a free session, the chains, start rules and supertask

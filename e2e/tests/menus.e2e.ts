@@ -83,7 +83,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await screen.getByRole('button', /Run after: Start now/).click();
     await expect(screen.getByRole('menuitemradio', /^Supertask/)).toBeVisible();
     const supertask = await descriptionOf(browser, 'Supertask');
-    expect(supertask.text).toBe('Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.');
+    expect(supertask.text).toBe('Runs alone once this project’s running tasks end; its other tasks wait. For broad work: security hardening, one-shotting the product.');
     expect(supertask.cut).toBe(false);
     expect(supertask.insideList).toBe(true);
     expect(supertask.lines).toBeGreaterThan(1);
