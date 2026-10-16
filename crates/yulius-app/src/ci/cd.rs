@@ -1388,6 +1388,7 @@ pub fn production_containment(
 ) -> Containment {
     let mut join = ci_join(join);
     join.host_system = Some(resolver.to_path_buf());
+    join.engine_socket = None;
     join.extra_readonly.clear();
     Containment::Bubblewrap {
         sandbox_root: work.to_path_buf(),
@@ -1603,6 +1604,7 @@ mod tests {
             system_passwd: None,
             system_group: None,
             host_system: None,
+            engine_socket: None,
         };
         let (work, home, cache) = (
             Path::new("/data/runs/cd-r/work"),

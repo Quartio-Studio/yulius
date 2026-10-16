@@ -60,10 +60,16 @@ fn join_namespaces(_join: &SandboxJoin) -> io::Result<()> {
     Err(io::Error::other("sandbox namespaces are Linux-only"))
 }
 
-/// Body of `yulius sandbox-exec -- <bwrap> <arguments>`: execs `bwrap` with the seccomp filter
-/// (where the architecture has one). Returns only on failure.
+/// Body of `yulius sandbox-exec -- <bwrap> <arguments>`: execs `bwrap` with the run seccomp
+/// filter (where the architecture has one). Returns only on failure.
 #[must_use]
 pub fn exec_bwrap(argv: &[OsString]) -> io::Error {
+    exec_bwrap_with(argv, crate::seccomp::Profile::Run)
+}
+
+/// As [`exec_bwrap`] with `profile`'s filter (`sandbox-exec --engine`: the engine's, ADR-0151).
+#[must_use]
+pub fn exec_bwrap_with(argv: &[OsString], profile: crate::seccomp::Profile) -> io::Error {
     use std::os::unix::process::CommandExt as _;
 
     let Some((program, rest)) = argv.split_first() else {
@@ -72,7 +78,7 @@ pub fn exec_bwrap(argv: &[OsString]) -> io::Error {
     let mut command = std::process::Command::new(program);
     // Kept open until exec replaces this process.
     let mut filter = None;
-    if let Some(bytes) = crate::seccomp::program_bytes() {
+    if let Some(bytes) = crate::seccomp::program_bytes_for(profile) {
         let pipe = cloexec_pipe().and_then(|(read, write)| {
             let mut writer = std::fs::File::from(write);
             writer.write_all(&bytes)?;

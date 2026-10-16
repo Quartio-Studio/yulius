@@ -40,6 +40,15 @@ pub enum Egress {
     None,
 }
 
+/// Whether isolated sandboxes get a Docker engine of their own (ADR-0151).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DockerMode {
+    /// When the host has `dockerd` and the cgroup delegation is on.
+    On,
+    /// Never.
+    Off,
+}
+
 /// Isolation settings of `yulius serve` (environment variables in `docs/operations.md`).
 #[derive(Debug, Clone, Args)]
 pub struct IsolationArgs {
@@ -84,6 +93,9 @@ pub struct IsolationArgs {
         default_value_t = 5
     )]
     pub idle_minutes: u64,
+    /// A Docker engine per isolated sandbox (`on` needs `dockerd` and the cgroup delegation).
+    #[arg(long = "sandbox-docker", env = "YULIUS_SANDBOX_DOCKER", value_enum, default_value_t = DockerMode::On)]
+    pub docker: DockerMode,
 }
 
 impl Default for IsolationArgs {
@@ -97,6 +109,7 @@ impl Default for IsolationArgs {
             disk_gb: 100,
             forward: Vec::new(),
             idle_minutes: 5,
+            docker: DockerMode::On,
         }
     }
 }
@@ -205,6 +218,7 @@ pub fn resolve(
             stop_after: Duration::from_secs(args.idle_minutes.max(1) * 60),
         },
         auto_build: true,
+        docker: args.docker == DockerMode::On && which("dockerd").is_some(),
     })
 }
 
@@ -281,6 +295,7 @@ impl SandboxIsolation for NamespaceIsolation {
                     system_passwd: joined.system_passwd,
                     system_group: joined.system_group,
                     host_system: None,
+                    engine_socket: join.engine_socket.map(PathBuf::from),
                 }))
             }
             Ok(None) if self.strict => Err(AppError::Conflict(
@@ -325,6 +340,14 @@ impl SandboxIsolation for NamespaceIsolation {
         let manager = Arc::clone(&self.manager);
         let sandbox = sandbox.as_str().to_owned();
         tokio::spawn(async move { manager.release(&sandbox).await });
+    }
+
+    async fn prune_engine(&self, sandbox: &SandboxRef) -> Option<u64> {
+        self.manager.prune_engine(sandbox.id.as_str()).await
+    }
+
+    async fn docker(&self, sandbox: &SandboxRef) -> bool {
+        self.manager.docker_for(sandbox.id.as_str()).await
     }
 
     /// The limits apply only through the cgroup delegation (SPEC-082 RES-001).
@@ -400,6 +423,7 @@ pub async fn install(
         base = ?status.base.as_ref().map(|b| b.id.clone()),
         egress = status.egress,
         limits = status.limits,
+        docker = manager.docker(),
         "sandbox isolation on (namespace holder per sandbox)"
     );
     Ok(Some(manager))
