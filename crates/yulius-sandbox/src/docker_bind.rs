@@ -9,10 +9,11 @@
 //!
 //! 1. enters the holder's mount namespace, where `<state>/docker` is visible, and clones it as a
 //!    detached tree (`open_tree(OPEN_TREE_CLONE)`): a plain bind cannot cross mount namespaces;
-//! 2. enters the run's mount namespace and moves the tree to `/run/yulius/docker`
-//!    (`move_mount`), creating the directory in the run's `/run` tmpfs, and makes it read-only;
-//! 3. links `/run/docker.sock` to it when nothing is at that path (a SPEC-187 run's file bind
-//!    stays).
+//! 2. enters the run's mount namespace, creates `/run/yulius/docker` in its `/run` tmpfs and
+//!    links `/run/docker.sock` to the socket there when nothing is at that path (a SPEC-187 run's
+//!    file bind stays);
+//! 3. moves the tree to `/run/yulius/docker` (`move_mount`) and makes it read-only (a bind left
+//!    writable is reported).
 //!
 //! The run sees only that directory (the bind's root), its environment is unchanged
 //! (`/var/run/docker.sock` is `docker`'s default), and nothing restarts. The helper is not in
@@ -113,8 +114,11 @@ fn cgroup_of(pid: u32) -> Option<PathBuf> {
 /// What happened to one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The directory was moved in.
-    Bound,
+    /// The directory was moved in; read-only, or writable with why the remount failed.
+    Bound {
+        /// Why it stayed writable.
+        writable: Option<String>,
+    },
     /// Nothing to do ([`Plan`] other than `Bind`).
     Skipped(Plan),
     /// It failed.
@@ -126,7 +130,10 @@ impl Outcome {
     #[must_use]
     pub fn line(&self, pid: u32) -> String {
         match self {
-            Self::Bound => format!("bound {pid}"),
+            Self::Bound { writable: None } => format!("bound {pid}"),
+            Self::Bound {
+                writable: Some(error),
+            } => format!("bound {pid} (writable: {error})"),
             Self::Skipped(plan) => format!("skipped {pid} {plan:?}"),
             Self::Failed(error) => format!("failed {pid} {error}"),
         }
@@ -188,7 +195,7 @@ pub fn bind(spec: &DockerFrontSpec, pids: &[u32]) -> Result<Vec<(u32, Outcome)>,
             let outcome = match target {
                 Err(outcome) => outcome,
                 Ok(mnt) => bind_one(&holder_mnt, &mnt, &source)
-                    .map_or_else(Outcome::Failed, |()| Outcome::Bound),
+                    .map_or_else(Outcome::Failed, |writable| Outcome::Bound { writable }),
             };
             (pid, outcome)
         })
@@ -200,7 +207,7 @@ fn bind_one(
     holder_mnt: &std::fs::File,
     run_mnt: &std::fs::File,
     source: &Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     use nix::sched::{CloneFlags, setns};
     use rustix::mount::{MoveMountFlags, OpenTreeFlags, move_mount, open_tree};
     use yulius_contracts::sandbox::{DOCKER_SOCKET_LINK, ENGINE_SOCKET_IN_RUNS};
@@ -214,6 +221,15 @@ fn bind_one(
     setns(run_mnt, CloneFlags::CLONE_NEWNS).map_err(|e| format!("setns run: {e}"))?;
     std::fs::create_dir_all(DOCKER_DIR_IN_RUNS)
         .map_err(|e| format!("mkdir {DOCKER_DIR_IN_RUNS}: {e}"))?;
+    // The link first (review round 2): a helper stopped before the move leaves no mount, so the
+    // next pass tries again, and finds the link there.
+    match std::fs::symlink_metadata(ENGINE_SOCKET_IN_RUNS) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::os::unix::fs::symlink(DOCKER_SOCKET_LINK, ENGINE_SOCKET_IN_RUNS)
+                .map_err(|e| format!("link {ENGINE_SOCKET_IN_RUNS}: {e}"))?;
+        }
+        _ => {}
+    }
     move_mount(
         &tree,
         "",
@@ -222,21 +238,16 @@ fn bind_one(
         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
     )
     .map_err(|e| format!("move_mount: {e}"))?;
-    read_only(Path::new(DOCKER_DIR_IN_RUNS));
-    match std::fs::symlink_metadata(ENGINE_SOCKET_IN_RUNS) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::os::unix::fs::symlink(DOCKER_SOCKET_LINK, ENGINE_SOCKET_IN_RUNS)
-                .map_err(|e| format!("link {ENGINE_SOCKET_IN_RUNS}: {e}"))
-        }
-        _ => Ok(()),
-    }
+    Ok(read_only(Path::new(DOCKER_DIR_IN_RUNS)).err())
 }
 
 /// Makes the bind at `path` read-only, as in runs started with it (the directory holds only the
-/// socket). Best effort: a bind keeps its source's locked flags (atime, nosuid, nodev), so they
-/// are repeated; if the kernel still refuses, the bind stays writable but works.
+/// socket). A bind keeps its source's locked flags (atime, nosuid, nodev), so they are repeated.
+///
+/// # Errors
+/// The kernel refused: the bind stays writable but works.
 #[cfg(target_os = "linux")]
-fn read_only(path: &Path) {
+fn read_only(path: &Path) -> Result<(), String> {
     use nix::mount::MsFlags;
     use nix::sys::statvfs::FsFlags;
     let mut flags = MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY;
@@ -254,7 +265,8 @@ fn read_only(path: &Path) {
             }
         }
     }
-    let _ = nix::mount::mount(None::<&str>, path, None::<&str>, flags, None::<&str>);
+    nix::mount::mount(None::<&str>, path, None::<&str>, flags, None::<&str>)
+        .map_err(|e| format!("read-only remount: {e}"))
 }
 
 /// Body of `yulius sandbox-host bind-docker` (Linux only).
@@ -302,11 +314,21 @@ mod tests {
     #[test]
     fn outcomes_round_trip_through_the_helpers_output() {
         for (outcome, done) in [
-            (Outcome::Bound, true),
+            (Outcome::Bound { writable: None }, true),
+            // Review round 2 (nit): a bind left writable is said so, and still done.
+            (
+                Outcome::Bound {
+                    writable: Some("read-only remount: EPERM".into()),
+                },
+                true,
+            ),
             (Outcome::Skipped(Plan::HostSystem), true),
             (Outcome::Failed("move_mount: EPERM".into()), false),
         ] {
             assert_eq!(Outcome::parse(&outcome.line(42)), Some((42, done)));
+            if let Outcome::Bound { writable: Some(_) } = &outcome {
+                assert!(outcome.line(42).contains("writable: read-only remount"));
+            }
         }
         assert_eq!(Outcome::parse("noise"), None);
     }

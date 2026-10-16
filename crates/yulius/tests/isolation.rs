@@ -898,6 +898,14 @@ async fn isolation_docker_live() -> TestResult {
         }
         Err(why) => return Err(why.into()),
     };
+    if yulius::wiring::sandbox::which("dockerd").is_none() {
+        let why = "the host has no dockerd for the sandboxes' base";
+        if required {
+            return Err(why.into());
+        }
+        eprintln!("SKIPPED isolation_docker_live: {why}");
+        return Ok(());
+    }
     let (forward, _hello) = hello_server().await?;
     let iso = fixture(Limits::default(), Some(delegation.clone()), forward).await?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));

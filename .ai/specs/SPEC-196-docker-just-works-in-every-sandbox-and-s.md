@@ -161,6 +161,19 @@ the host with one command.
     - a base from before Docker gets a refusal saying so (tested);
     - this spec's Plan and Evidence were unfilled.
   - *Nit:* `docs/operations.md` named the holder for the engine's start.
+- **Review round 2** (fresh session, request changes at `40897ae5`): every round-1 fix
+  confirmed, nothing high or medium. Own code, fixed (test `a78dc183` seen failing:
+  `deciding_a_front_prepares_no_cgroup`, "…/sandboxes/s2 was prepared"):
+  - *Low:* the mode decision and the bind scan called `cgroup_of`, which rewrites the limits and
+    splits the CPU, twice per tick, and without a group dropped the engine filter. They now read
+    paths only (`Delegation::sandbox_paths`); groups are prepared once when an engine front
+    starts, and without delegation there is no engine to leave out.
+  - *Low:* `isolation_docker_live` failed instead of skipping on a host without `dockerd`.
+  - *Nit:* a bind left writable (remount refused) is reported in the helper's line and the log.
+  - *Nit:* the `/run/docker.sock` link is made before the move, so a helper stopped between
+    the two leaves a run the next pass completes.
+  - *Nit:* ADR-0158 says the read-only directory binds runs, and that a `--privileged`
+    container can remount the engine's.
 - **Gate:** `scripts/dev ci` → exit 0 at `64dd3ebd` (nextest 1988 passed, 18 skipped). After the
   review fixes, the first rerun failed on one test of this change's own
   (`a_joined_run_gets_the_sandboxs_docker_directory` still expected a writable bind), fixed in

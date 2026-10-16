@@ -52,7 +52,8 @@ What constrains a fix:
   `containers` (forwards on every address).
 - **A directory, not a file.** Every joined run that is not a production CD run binds
   `<state>/docker` read-only at `/run/yulius/docker` (connecting to a socket needs no write
-  access to its mount; nothing else can be stored there, outside the disk quota) and links `/run/docker.sock` (= `/var/run/docker.sock`)
+  access to its mount; runs cannot store anything there, outside the disk quota, nor remove the
+  socket) and links `/run/docker.sock` (= `/var/run/docker.sock`)
   to `yulius/docker/docker.sock`, with `DOCKER_HOST=unix:///run/yulius/docker/docker.sock`. The
   engine's view has the same, for `-v /var/run/docker.sock`. A front that starts again recreates
   the socket inside the directory, and every run sees the new one.
@@ -109,6 +110,9 @@ What constrains a fix:
 - **Rolling back** to a server from before this decision: it does not know fronts, counts a
   front as a run and never stops it, so those holders no longer go idle. Their runs keep the
   socket. A person stops the fronts (`pkill -f 'sandbox-host docker'`) after such a rollback.
+- The engine's read-only bind is not locked (same user namespace, as ADR-0151 says of its
+  other binds), so a `--privileged` container could remount the directory writable, as it can
+  already write `<state>/engine`. That is the engine's own sandbox, not runs.
 - One more detached process per live holder (a few MB). Its log is
   `<state>/docker-front.log`.
 - Not runnable in a sandbox or in Yulius CI (both are isolated runs). The unit tests cover the

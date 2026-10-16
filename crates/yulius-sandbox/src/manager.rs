@@ -340,18 +340,18 @@ impl Manager {
         self.docker()
     }
 
-    /// How `request`'s front serves its socket beside the holder of `record` (ADR-0158); `None`
-    /// when the sandbox's cgroup could not be prepared this time ([`front_action`] keeps a
-    /// running front then).
-    fn front_mode(&self, request: &SandboxRequest, record: &HolderRecord) -> Option<DockerServe> {
+    /// How `request`'s front serves its socket beside the holder of `record` (ADR-0158). Asked
+    /// at every tick, it only reads paths: the sandbox's groups are prepared when an engine front
+    /// starts ([`Manager::start_front`]).
+    fn front_mode(&self, request: &SandboxRequest, record: &HolderRecord) -> DockerServe {
         if let Some(reason) = self.docker_unavailable() {
-            return Some(DockerServe::Refuse { reason });
+            return DockerServe::Refuse { reason };
         }
         if record.engine {
             let state = StatePaths::new(self.state_dir(&request.id));
-            return Some(DockerServe::Relay {
+            return DockerServe::Relay {
                 socket: state.engine_socket().to_string_lossy().into_owned(),
-            });
+            };
         }
         let base = self.bases.path(&record.base_id);
         let has_dockerd = [
@@ -362,14 +362,23 @@ impl Manager {
         .iter()
         .any(|path| base.join(path).is_file());
         if !has_dockerd {
-            return Some(DockerServe::Refuse {
+            return DockerServe::Refuse {
                 reason: DOCKER_OLD_BASE.to_owned(),
-            });
+            };
         }
-        let groups = self.cgroup_of(&request.id)?;
-        Some(DockerServe::Engine {
-            engine: self.engine_spec(request, &groups.engine),
-        })
+        match self.group_paths(&request.id) {
+            Some(groups) => DockerServe::Engine {
+                engine: self.engine_spec(request, &groups.engine),
+            },
+            None => DockerServe::Refuse {
+                reason: DOCKER_NO_DELEGATION.to_owned(),
+            },
+        }
+    }
+
+    /// The paths of `sandbox`'s groups, without preparing them; `None` without delegation.
+    fn group_paths(&self, sandbox: &str) -> Option<SandboxGroups> {
+        Some(self.config.delegation.as_ref()?.sandbox_paths(sandbox))
     }
 
     /// The request of a sandbox known only from its holder's files (an adopted holder before
@@ -473,6 +482,14 @@ impl Manager {
         use tokio::io::AsyncBufReadExt as _;
         let paths = StatePaths::new(self.state_dir(sandbox));
         std::fs::create_dir_all(paths.docker_dir()).map_err(|e| format!("docker/: {e}"))?;
+        // The sandbox's groups are prepared here, once per start: the engine's leaf must exist.
+        let groups = self.cgroup_of(sandbox);
+        let serve = match serve {
+            DockerServe::Engine { .. } if groups.is_none() => DockerServe::Refuse {
+                reason: DOCKER_NO_CGROUP.to_owned(),
+            },
+            serve => serve,
+        };
         if matches!(serve, DockerServe::Engine { .. }) {
             // A holder from before engines has no storage yet (review round 1).
             let storage = self.sysroot(sandbox).join("docker");
@@ -493,9 +510,7 @@ impl Manager {
             user_ns: record.user_ns,
             net_ns: record.net_ns,
             mnt_ns: record.mnt_ns,
-            cgroup: self
-                .cgroup_of(sandbox)
-                .map(|g| g.system.to_string_lossy().into_owned()),
+            cgroup: groups.map(|g| g.system.to_string_lossy().into_owned()),
             serve,
             bridge_forwards,
         };
@@ -561,7 +576,8 @@ impl Manager {
             return;
         }
         let (record, front) = (live.record.clone(), live.front_pid());
-        let engine = self.cgroup_of(sandbox).map(|g| g.engine);
+        // Without delegation there is no engine, so no container to leave out.
+        let engine = self.group_paths(sandbox).map(|g| g.engine);
         let known = live.bound.clone();
         let planned = tokio::task::spawn_blocking(move || {
             crate::docker_bind::run_namespaces(
@@ -1362,23 +1378,12 @@ enum FrontAction {
 }
 
 /// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
-/// runs) and the wanted mode (`None`: undecidable this time, as when the sandbox's cgroup could
-/// not be prepared; a running front is kept, so one failed write never cuts an engine).
-fn front_action(
-    current: Option<(&DockerFrontRecord, bool)>,
-    wanted: Option<DockerServe>,
-) -> FrontAction {
+/// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
+/// a running engine.
+fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe) -> FrontAction {
     let running = current
         .filter(|(_, running)| *running)
         .map(|(front, _)| front);
-    let Some(wanted) = wanted else {
-        return match running {
-            Some(_) => FrontAction::Keep,
-            None => FrontAction::Start(DockerServe::Refuse {
-                reason: DOCKER_NO_CGROUP.to_owned(),
-            }),
-        };
-    };
     let reason = match &wanted {
         DockerServe::Refuse { reason } => Some(reason),
         _ => None,
@@ -1714,25 +1719,25 @@ while True:
         let on = adopting(data.path(), Ok(()), true)?;
         assert!(matches!(
             on.front_mode(&request, &live_record(true)),
-            Some(DockerServe::Relay { socket }) if socket.ends_with("runtime/sandboxes/s1/docker.sock")
+            DockerServe::Relay { socket } if socket.ends_with("runtime/sandboxes/s1/docker.sock")
         ));
         assert!(matches!(
             on.front_mode(&request, &live_record(false)),
-            Some(DockerServe::Engine { .. })
+            DockerServe::Engine { .. }
         ));
         // Review round 1 (low): a base copied before Docker was installed has no `dockerd`.
         let mut older = live_record(false);
         older.base_id = "base-0".into();
         assert!(matches!(
             on.front_mode(&request, &older),
-            Some(DockerServe::Refuse { reason }) if reason.contains("before Docker was installed")
+            DockerServe::Refuse { reason } if reason.contains("before Docker was installed")
         ));
         let off = adopting(data.path(), Err(DOCKER_OFF.into()), true)?;
         assert_eq!(
             off.front_mode(&request, &live_record(true)),
-            Some(DockerServe::Refuse {
+            DockerServe::Refuse {
                 reason: DOCKER_OFF.into()
-            })
+            }
         );
         let mut undelegated = config(data.path(), 1);
         undelegated.docker = Ok(());
@@ -1780,7 +1785,7 @@ while True:
         let mut request = request(data.path());
         request.id = "s2".into();
         let serve = manager.front_mode(&request, &live_record(false));
-        assert!(matches!(serve, Some(DockerServe::Engine { .. })), "{serve:?}");
+        assert!(matches!(serve, DockerServe::Engine { .. }), "{serve:?}");
         let unit = manager.config.delegation.as_ref().map(|d| d.unit.clone());
         let group = unit.ok_or("delegated")?.join("sandboxes/s2");
         assert!(!group.exists(), "{} was prepared", group.display());
@@ -1797,8 +1802,9 @@ while True:
     }
 
     /// SPEC-196 DKL-003: a front is kept while it serves as wanted, started when none runs,
-    /// replaced when the mode or the refusal changed. Review round 1 (low): when the wanted mode
-    /// cannot be decided (the cgroup could not be prepared once), a running engine is kept.
+    /// replaced when the mode or the refusal changed. Review rounds 1 and 2 (low): the wanted
+    /// mode needs no cgroup write (`deciding_a_front_prepares_no_cgroup`), so a failed one never
+    /// replaces a running engine.
     #[test]
     fn a_front_is_replaced_only_when_its_mode_changed() {
         let engine = || DockerServe::Engine {
@@ -1813,40 +1819,29 @@ while True:
         };
         let running = front("engine", None);
         assert_eq!(
-            front_action(Some((&running, true)), Some(engine())),
+            front_action(Some((&running, true)), engine()),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(Some((&running, true)), None),
-            FrontAction::Keep
-        );
-        assert_eq!(
-            front_action(Some((&running, false)), Some(engine())),
+            front_action(Some((&running, false)), engine()),
             FrontAction::Start(engine())
         );
+        assert_eq!(front_action(None, engine()), FrontAction::Start(engine()));
         assert_eq!(
-            front_action(None, Some(engine())),
-            FrontAction::Start(engine())
-        );
-        assert_eq!(
-            front_action(None, None),
-            FrontAction::Start(refuse(DOCKER_NO_CGROUP))
-        );
-        assert_eq!(
-            front_action(Some((&running, true)), Some(refuse("off"))),
+            front_action(Some((&running, true)), refuse("off")),
             FrontAction::Replace(refuse("off"))
         );
         let refusing = front("refuse", Some("off"));
         assert_eq!(
-            front_action(Some((&refusing, true)), Some(refuse("off"))),
+            front_action(Some((&refusing, true)), refuse("off")),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(Some((&refusing, true)), Some(refuse("other"))),
+            front_action(Some((&refusing, true)), refuse("other")),
             FrontAction::Replace(refuse("other"))
         );
         assert_eq!(
-            front_action(Some((&refusing, true)), Some(engine())),
+            front_action(Some((&refusing, true)), engine()),
             FrontAction::Replace(engine())
         );
     }
