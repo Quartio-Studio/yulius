@@ -626,14 +626,15 @@ impl GitHubPort for GitHubAdapter {
 
     async fn branch_sha(
         &self,
-        _token: &Secret,
-        _owner: &str,
-        _repo: &str,
-        _branch: &str,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        branch: &str,
     ) -> AppResult<Option<String>> {
-        Err(AppError::Upstream(
-            "branch lookup via GitHub is not supported; read the fetched clone instead".into(),
-        ))
+        self.plain
+            .branch_head(&gh(token), owner, repo_name, branch)
+            .await
+            .map_err(map_err)
     }
 }
 
