@@ -47,7 +47,7 @@ restart.
 | DSY-002 | A front serves an engine when the sandbox's merged system has `dockerd` at `usr/local/sbin`, `usr/local/bin`, `usr/sbin` or `usr/bin`: an entry in the sandbox's upper layer decides (a file or a link counts, an overlay whiteout hides the base's), else the holder's base. The server never follows a link the sandbox could have planted in its upper layer (walked by directory descriptor with `O_NOFOLLOW`). A running engine front is kept when `dockerd` leaves the sandbox's system. |
 | DSY-003 | A sandbox without `dockerd` gets a refusal (`DOCKER_NO_DOCKERD`) that names both fixes: install it in the sandbox (`sudo apt-get install -y docker.io`), after which the engine starts within a minute; or an operator installs Docker on the host and the sandbox gets it when its holder next starts on a newer base. Installing it in the sandbox switches the front to an engine at the next tick, without restarting anything. |
 | DSY-004 | `yulius doctor` without a host `dockerd` still checks the delegation and the kernel modules, and warns that new bases have no `dockerd`, with both fixes. `yulius doctor --docker-smoke` still needs a current base with `dockerd` and says so. |
-| DSY-006 | The briefing's `## Containers` section with an engine names the in-sandbox install (`sudo apt-get install -y docker.io`) for a system without `dockerd`. |
+| DSY-006 | The briefing's `## Containers` section with an engine names the in-sandbox install (`sudo apt install docker.io` adds it) for a system without `dockerd`, short enough that tight-budget renderings keep the section whole. |
 | DSY-005 | ADR-0160, `docs/operations.md`, `docs/architecture.md` and `docs/changes.md` say that a sandbox's engine comes from its own system. |
 
 ## Plan
