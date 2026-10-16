@@ -208,6 +208,28 @@ test('the view says whose task it is and that you watch it, above the transcript
   await expect(mark).toBeHidden();
 });
 
+// Task #170: "also reduce horizontal padding in this view". The watched transcript is inset as the
+// control card above it (16 px), not as a past session's page (32 px); phones keep their 12 px.
+test('a watched transcript has 16 px at its sides, as the card above it; a past session keeps 32 px', async ({ app, browser }) => {
+  await watchStudio12(app, browser);
+  const sides = () => browser.evaluate(() => {
+    const style = getComputedStyle(document.querySelector('.ss-tui')!);
+    return [style.paddingLeft, style.paddingRight];
+  });
+  expect(await sides()).toEqual(['16px', '16px']);
+  expect(await browser.evaluate(() => {
+    const card = document.querySelector('.taskview-term.watching > .attention-bar')!.getBoundingClientRect();
+    const tui = document.querySelector('.watch .ss-tui')!;
+    return Math.round(card.left - tui.getBoundingClientRect().left);
+  }), 'the transcript lines up with the card').toBe(16);
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect.poll(sides).toEqual(['12px', '12px']);
+  await browser.setViewport({ width: 1440, height: 900 });
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  expect(await sides()).toEqual(['32px', '32px']);
+});
+
 // Task #170: "remove the octopus, it was an overkill" (SPEC-185 OCT-001). The transcript starts at
 // the top of its well, with no lane above it; past sessions keep their spider.
 test('a watched task has no octopus and no lane: its first line is at the top of the transcript', async ({ app, browser }) => {
