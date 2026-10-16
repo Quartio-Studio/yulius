@@ -764,6 +764,63 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// While a run is going, its commit status counts the jobs that already ended (SPEC-198 RCS-001):
+/// GitHub said "0 of 3 jobs passed" for PR #600 long after its security scan had passed, and the
+/// Superagent took the scan for one still running (#604). The final status still lands last.
+#[tokio::test]
+async fn a_running_run_s_status_counts_the_jobs_that_ended() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "scan"
+command = 'exit "$YULIUS_CI_SKIP_CODE"'
+
+[[ci.jobs]]
+name = "held"
+command = 'while [ ! -f "{}" ]; do sleep 0.05; done'
+"#,
+            data.join("release").display()
+        )
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let last = f.last_status(&pr_sha);
+        if let Some((state, description, _)) = &last {
+            if description == "Running on Yulius: 1 of 3 jobs passed, 1 skipped" {
+                assert_eq!(state, "pending", "{description}");
+                break;
+            }
+            // `held` timed out: the run ended without ever counting its ended jobs.
+            assert_eq!(state, "pending", "{:?}", f.h.github.statuses());
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!(
+                "no status counted the ended jobs: {:?}",
+                f.h.github.statuses()
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("release"), "")?;
+    f.settle().await?;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(
+        description.starts_with("Passed: 3 jobs, 1 skipped"),
+        "{description}"
+    );
+    Ok(())
+}
+
 /// A squash merge of an up-to-date pull request has exactly the tree its run tested: the
 /// integration branch reuses that result instead of running everything again (F 2026-10-12:
 /// every merge cost a second run in the sandbox's one CI lane).
