@@ -101,7 +101,9 @@ watching, steering and unblocking.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
-  and `gh` use a narrowed App token), so only they change it. Others
+  and `gh` use a narrowed App token), so only they change it. Its owner can **pause** a running task and resume it later: the agent
+  stops where it is without being told (as an update pauses every task) and goes on from there; a
+  paused task, and one an update holds, reads Paused in the lists and says why. Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
@@ -137,7 +139,8 @@ watching, steering and unblocking.
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets a person allowed for each, and shows each run on the CD
-  (deployment) page. A merge deploys nothing: a person or an agent
+  (deployment) page; a confirmed deploy opens its dialog at once, saying what it checks and
+  promotes, and that dialog becomes the run. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
@@ -153,7 +156,8 @@ watching, steering and unblocking.
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ready-made ones, off until a person enables them in
   one click on the Automations page: "Keep the docs up to date", "Work through open issues" (the
-  core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
+  core team's issues ranked, and the 5 most important actionable ones that no running task owns
+  verified in parallel and given a task each, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
@@ -176,7 +180,8 @@ watching, steering and unblocking.
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
-  `yulius wait`, `ci_status` and `delivery_status`.
+  `yulius wait`, `ci_status` and `delivery_status`. An agent removes the files its task created
+  with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
@@ -187,8 +192,10 @@ watching, steering and unblocking.
   and a description: agents find the service's host and ask for it, and a person allows it with
   one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
   `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
-  there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH),
-  stored with literal `\n`, lands there as its file, byte for byte (SPEC-186).
+  there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
+  pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands
+  in the `.env` as its file, byte for byte (SPEC-186, SPEC-193). A key saved before that, its line
+  breaks lost, is marked "Paste again" for the people who manage it.
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the

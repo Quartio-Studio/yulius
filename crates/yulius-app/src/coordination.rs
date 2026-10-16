@@ -133,15 +133,7 @@ impl App {
             tasks.retain(|t| t.id != own.id);
         }
         tasks.retain(|t| match scope {
-            "active" => {
-                t.status.is_live()
-                    || matches!(
-                        t.status,
-                        yulius_domain::task::TaskStatus::Queued
-                            | yulius_domain::task::TaskStatus::Chained
-                            | yulius_domain::task::TaskStatus::Prepared
-                    )
-            }
+            "active" => Self::is_active_status(t.status),
             "recent" => !t.status.is_live(),
             _ => true,
         });
@@ -373,5 +365,38 @@ impl App {
             },
         );
         self.publish_task(&task.id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::context::App;
+    use yulius_domain::task::{FailReason, StopReason, TaskStatus as S};
+
+    fn is_active(status: S) -> bool {
+        App::is_active_status(status)
+    }
+
+    #[test]
+    fn active_lists_tasks_at_work_or_waiting_to_work() {
+        for status in [
+            S::Queued,
+            S::Chained,
+            S::Prepared,
+            S::Starting,
+            S::Running,
+            S::Switching,
+            S::WaitingCapacity,
+            S::Stopping,
+        ] {
+            assert!(is_active(status), "{status:?}");
+        }
+        for status in [
+            S::Closed,
+            S::Stopped(StopReason::Crashed),
+            S::Failed(FailReason::SpawnError),
+        ] {
+            assert!(!is_active(status), "{status:?}");
+        }
     }
 }

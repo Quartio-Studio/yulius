@@ -258,10 +258,30 @@ impl App {
                 .is_ok_and(|released| released.contains(task))
     }
 
-    /// Whether the turn boundary of `task` is held for an update; records that it is.
-    pub(crate) fn hold_for_update(&self, task: &TaskId) -> bool {
+    /// Whether an update's pause of `task` took hold (SPEC-191 PAU-001): its run is frozen, or
+    /// its turn boundary was held in the last 15 s. Meaningful while [`Self::held_for_update`].
+    #[must_use]
+    pub fn update_pause_holds(&self, task: &TaskId) -> bool {
+        let frozen = self.updates.frozen.lock().is_ok_and(|f| {
+            f.get(task)
+                .is_some_and(|run| run.state == FreezeState::Frozen)
+        });
+        frozen || self.recently_held(task)
+    }
+
+    fn recently_held(&self, task: &TaskId) -> bool {
+        let now = self.now().0;
+        self.updates.held_at.lock().is_ok_and(|h| {
+            h.get(task)
+                .is_some_and(|at| now.saturating_sub(*at) <= HELD_FRESH_MS)
+        })
+    }
+
+    /// Whether the turn boundary of `task` is held for an update (`Some`), and then whether the
+    /// hold just took it (`Some(true)`: its pause took hold and is worth publishing); records it.
+    pub(crate) fn hold_for_update(&self, task: &TaskId) -> Option<bool> {
         if !self.updates.hold.load(Ordering::SeqCst) {
-            return false;
+            return None;
         }
         if self
             .updates
@@ -269,8 +289,9 @@ impl App {
             .lock()
             .is_ok_and(|released| released.contains(task))
         {
-            return false;
+            return None;
         }
+        let newly = !self.update_pause_holds(task);
         let now = self.now().0;
         if let Ok(mut held) = self.updates.held_at.lock() {
             held.insert(task.clone(), now);
@@ -280,10 +301,36 @@ impl App {
         self.runtime(task)
             .hold_polled_ms
             .store(now, Ordering::SeqCst);
-        true
+        Some(newly)
     }
 
-    fn set_hold(&self, on: bool) {
+    /// Turns the hold on or off; the lists hear of every live task's pause when it changed
+    /// (SPEC-191 PAU-002).
+    async fn switch_hold(&self, on: bool) {
+        if self.set_hold(on) {
+            self.publish_live_tasks().await;
+        }
+    }
+
+    async fn publish_live_tasks(&self) {
+        let mut tasks: Vec<TaskId> = self
+            .deps
+            .store
+            .live_attempts()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.task_id)
+            .collect();
+        tasks.sort();
+        tasks.dedup();
+        for task in &tasks {
+            self.publish_task(task).await;
+        }
+    }
+
+    /// Whether the hold changed.
+    fn set_hold(&self, on: bool) -> bool {
         let was = self.updates.hold.swap(on, Ordering::SeqCst);
         if was && !on {
             if let Ok(mut released) = self.updates.released.lock() {
@@ -293,6 +340,7 @@ impl App {
                 held.clear();
             }
         }
+        was != on
     }
 
     /// At start: an open run that pauses tasks keeps them paused from the first hook call on
@@ -303,7 +351,9 @@ impl App {
     /// until it resumes them.
     pub async fn restore_update_hold(&self) {
         match self.deps.store.open_update_run().await {
-            Ok(Some(run)) if run.state.holds_tasks() => self.set_hold(true),
+            Ok(Some(run)) if run.state.holds_tasks() => {
+                self.set_hold(true);
+            }
             Ok(_) => self.sweep_frozen_runs().await,
             Err(err) => tracing::warn!(error = %err, "cannot read the open update run"),
         }
@@ -352,7 +402,8 @@ impl App {
                 }
                 RunFreeze::Freezing => {
                     tracing::warn!(task = %attempt.task_id, "the run did not freeze; it pauses at its turn boundary");
-                    self.thaw_run(&attempt.run_dir).await;
+                    let kept = self.person_frozen_runs().await.unwrap_or_default();
+                    self.thaw_run(&attempt.run_dir, &kept).await;
                     FreezeState::Refused
                 }
                 RunFreeze::Unsupported => FreezeState::Refused,
@@ -365,6 +416,10 @@ impl App {
                         state,
                     },
                 );
+            }
+            // Its pause took hold: the lists say so (SPEC-191 PAU-002).
+            if state == FreezeState::Frozen {
+                self.publish_task(&attempt.task_id).await;
             }
         }
         // A run refused in this pass may be in a turn.
@@ -421,12 +476,7 @@ impl App {
         let Ok(Some(record)) = self.deps.store.task(task).await else {
             return true;
         };
-        let now = self.now().0;
-        let recently_held = self.updates.held_at.lock().is_ok_and(|h| {
-            h.get(task)
-                .is_some_and(|at| now.saturating_sub(*at) <= HELD_FRESH_MS)
-        });
-        policy::at_pause_point(record.status, record.activity, recently_held)
+        policy::at_pause_point(record.status, record.activity, self.recently_held(task))
     }
 
     /// Thaws every run frozen in this drain and forgets it (refused runs are kept: they stay
@@ -448,13 +498,38 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let kept = self.person_frozen_runs().await.unwrap_or_default();
         for run in runs {
-            self.thaw_run(&run).await;
+            self.thaw_run(&run, &kept).await;
         }
     }
 
+    /// The lock that serializes freezing and thawing runs: the update's freeze passes and thaws,
+    /// and a person's pause and resume (SPEC-191), each with the check that decides it.
+    pub(crate) async fn freeze_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.updates.freezing.lock().await
+    }
+
+    /// Freezes one run (blocking work off the runtime); the caller holds [`Self::freeze_lock`].
+    pub(crate) async fn host_freeze(&self, run_dir: &str) -> RunFreeze {
+        let host = Arc::clone(&self.deps.session_host);
+        let dir = PathBuf::from(run_dir);
+        tokio::task::spawn_blocking(move || host.freeze(&dir))
+            .await
+            .unwrap_or(RunFreeze::Unsupported)
+    }
+
+    /// Thaws one run for an update, never one a person paused (`kept`, from
+    /// [`Self::person_frozen_runs`], SPEC-191 PER-003); the caller holds [`Self::freeze_lock`].
+    async fn thaw_run(&self, run_dir: &str, kept: &[String]) {
+        if kept.iter().any(|run| run == run_dir) {
+            return;
+        }
+        self.host_thaw(run_dir).await;
+    }
+
     /// Thaws one run (blocking work off the runtime).
-    async fn thaw_run(&self, run_dir: &str) {
+    pub(crate) async fn host_thaw(&self, run_dir: &str) {
         let host = Arc::clone(&self.deps.session_host);
         let dir = PathBuf::from(run_dir);
         if tokio::task::spawn_blocking(move || host.thaw(&dir))
@@ -479,16 +554,25 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let kept = self.person_frozen_runs().await.unwrap_or_default();
         for run in runs {
-            self.thaw_run(&run).await;
+            self.thaw_run(&run, &kept).await;
         }
         self.sweep_frozen_runs().await;
     }
 
-    /// Thaws every run group the process host finds frozen.
+    /// Thaws every run group the process host finds frozen, but those of runs a person paused;
+    /// nothing when it cannot tell which those are (SPEC-191 PER-003).
     async fn sweep_frozen_runs(&self) {
+        let keep: Vec<PathBuf> = match self.person_frozen_runs().await {
+            Ok(runs) => runs.into_iter().map(PathBuf::from).collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot read the tasks people paused; nothing is thawed");
+                return;
+            }
+        };
         let host = Arc::clone(&self.deps.session_host);
-        match tokio::task::spawn_blocking(move || host.thaw_all()).await {
+        match tokio::task::spawn_blocking(move || host.thaw_all(&keep)).await {
             Ok(0) => {}
             Ok(thawed) => tracing::info!(thawed, "thawed runs left frozen by an update"),
             Err(_) => tracing::warn!("thawing left-over runs panicked"),
@@ -538,7 +622,7 @@ impl App {
         }
         // No open run: nothing may stay held (a run ended while this server was down) or frozen.
         if self.update_holds_starts() {
-            self.set_hold(false);
+            self.switch_hold(false).await;
             self.drain_queue().await;
         }
         if self.updates.frozen.lock().is_ok_and(|f| !f.is_empty()) {
@@ -1008,7 +1092,7 @@ impl App {
     async fn drive_update(self: &Arc<Self>, services: &UpdateServices, run: UpdateRunRecord) {
         self.reset_phase(&run);
         if run.state.holds_tasks() {
-            self.set_hold(true);
+            self.switch_hold(true).await;
         }
         let age = self.now().millis_since(run.state_since);
         match run.state {
@@ -1033,7 +1117,7 @@ impl App {
                             }
                             self.updates.proceed.store(false, Ordering::SeqCst);
                             if self.move_run(&run, RunState::Draining, None, None).await {
-                                self.set_hold(true);
+                                self.switch_hold(true).await;
                                 let _ = self
                                     .deps
                                     .store
@@ -1228,7 +1312,7 @@ impl App {
     /// capacity is re-evaluated.
     async fn end_update_hold(&self) {
         self.thaw_frozen_runs().await;
-        self.set_hold(false);
+        self.switch_hold(false).await;
         self.updates.proceed.store(false, Ordering::SeqCst);
         self.capacity_changed();
     }
@@ -1267,13 +1351,19 @@ impl App {
             if let Ok(mut released) = self.updates.released.lock() {
                 released.insert(task.clone());
             }
-            // Released first: its first hook after the thaw is not held.
-            for attempt in attempts.iter().filter(|a| a.task_id == *task) {
-                self.thaw_run(&attempt.run_dir).await;
+            // Released first: its first hook after the thaw is not held. Under the lock, so a
+            // person's pause cannot land between its check and the thaw.
+            {
+                let _pass = self.freeze_lock().await;
+                let kept = self.person_frozen_runs().await.unwrap_or_default();
+                for attempt in attempts.iter().filter(|a| a.task_id == *task) {
+                    self.thaw_run(&attempt.run_dir, &kept).await;
+                }
             }
             if let Ok(mut frozen) = self.updates.frozen.lock() {
                 frozen.remove(task);
             }
+            self.publish_task(task).await;
             let done = u32::try_from(index + 1).unwrap_or(u32::MAX);
             self.updates.resumed.store(done, Ordering::SeqCst);
             self.publish_run(run, &format!("{done}/{total}"));

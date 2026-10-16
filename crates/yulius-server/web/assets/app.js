@@ -297,7 +297,12 @@ function createApp(root, transport) {
       // Each reconnect attempt reports again: the 5 s count starts at the first one only.
       if (!connTimer) connTimer = setTimeout(() => { connTimer = null; showConn(); }, 5000);
     };
-    const retryIfDown = () => { if (store.state.eventsStatus !== 'open' && store.state.eventsStatus !== 'closed') store.retryEvents(); };
+    // Back in view or online: a stream that is down retries now, and one that looks open but went
+    // silent (it died without a close while the laptop slept) is replaced (SPEC-191 LIV-002).
+    const retryIfDown = () => {
+      if (store.state.eventsStatus !== 'open' && store.state.eventsStatus !== 'closed') store.retryEvents();
+      else if (store.state.eventsStatus === 'open') store.checkEvents();
+    };
     const onVisible = () => { if (!document.hidden) retryIfDown(); };
     const onOffline = () => { if (!connBanner.hidden) showConn(); };
     window.addEventListener('online', retryIfDown);

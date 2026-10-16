@@ -316,6 +316,31 @@ sequenceDiagram
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```
 
+## A task's own files
+
+Claude Code's removal check asks a person even with approvals bypassed (a root-level path, a path
+in a variable, a `sh -c` script). A task removes the files it created itself with
+`yulius remove <path>…`, run in its own run, which alone sees the run's private tmpfs
+([SPEC-192](../.ai/specs/SPEC-192-claude-sessions-asks-me-to-delete-someth.md),
+[decision 0155](decisions/0155-a-task-removes-its-own-files-with-yulius-remove.md)). It judges
+ownership by location: an untracked or ignored path of the task's worktree
+(`YULIUS_TASK_WORKTREE`), or a path on the run's own tmpfs (`/`, `/tmp`, `/run`, `/dev/shm`) of a
+contained run; mount points, directories holding one and the root's links are refused, and a
+link is removed as a link. Task runs get `TMPDIR=/tmp`, so `$TMPDIR/x` is not `/x`.
+
+```mermaid
+flowchart TD
+    P[path: directory resolved, last component not followed] --> M{a mount point or holds one?}
+    M -- yes --> R[refused]
+    M -- no --> W{in the task's worktree?}
+    W -- yes --> T{the worktree, .git, or tracked by git?}
+    T -- yes --> R
+    T -- no --> D[removed]
+    W -- no --> C{contained run and on its tmpfs at /, /tmp, /run or /dev/shm?}
+    C -- "yes, not /bin, /sbin, /lib, /lib64" --> D
+    C -- no --> R
+```
+
 ## Task start
 
 A task's agent is a native Claude Code session, and its first message is in before a person can
@@ -581,7 +606,12 @@ final line break; literal `\n` as line breaks, since an agent secret never spans
 ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
 [decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
 A key block stored that way is written to a `.env` as its file (`dotenv::key_block`), and its
-lines are redaction needles.
+lines are redaction needles. The Secrets page's value field is one line, so it writes a pasted
+key block's line breaks as literal `\n`; `check_agent_value` refuses a key flattened onto one line
+(`dotenv::flattened_key`), and the agent secrets list marks one stored before that `flattened`
+for the people who manage it
+([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
+[decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
 
 Claude Code reads the Yulius tools once per connection, so each Cockpit's `shell.json` keeps the
 launch digest it started with (`App::cockpit_launch_digest`: its MCP instructions, tool
@@ -683,7 +713,11 @@ the sandbox's containment, production in the sandbox's network only on the host'
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it.
+you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
+after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
+dialog as soon as the person confirms, saying what is being checked and promoted with the time so
+far, and turns it into the run's view when the answer comes, or shows the refusal in it
+([SPEC-189](../.ai/specs/SPEC-189-when-i-clicked-deploy-nothing-happened-f.md)).
 
 ```mermaid
 sequenceDiagram
@@ -1252,6 +1286,25 @@ sequenceDiagram
   S->>H: thaw(run) one by one after releasing each task
   H->>K: cgroup.freeze=0
 ```
+
+A task's summary says when its live run is paused (`pause`, ADR-0154): by an update, or by a
+person. A person's pause (`pause.rs`) freezes the run with the same host call under the update's
+freeze lock, or holds its turn boundary when it cannot be frozen, and is stored with its attempt;
+the update's thaws and sweeps keep those runs frozen and a starting server freezes them again.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: running
+  Working --> PausedByPerson: POST /pause (freeze, or hold at turn end)
+  Working --> PausedByUpdate: update drains (freeze)
+  PausedByUpdate --> Working: update releases (thaw)
+  PausedByPerson --> PausedByPerson: update drains, installs, releases (kept frozen)
+  PausedByPerson --> Working: POST /resume (thaw)
+  PausedByPerson --> Ending: stop, close, switch (thaw first)
+```
+
+The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a stream silent for
+50 s, so a connection that died without a close is noticed and the lists resync (SPEC-191).
 
 ## Agent primitives
 

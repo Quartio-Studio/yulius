@@ -8,6 +8,7 @@ use yulius_contracts::api::secrets::{
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
+use yulius_domain::vault::dotenv::flattened_key;
 use yulius_domain::vault::hosts::parse_hosts;
 use yulius_domain::vault::{
     Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
@@ -114,6 +115,12 @@ impl App {
         let injection = Injection::parse(&record.injection, record.header_name.as_deref())
             .unwrap_or(Injection::None);
         let name = SecretName::parse(&record.name).map_err(invalid)?;
+        // Only its managers learn this about the value (SPEC-193 MLK-003). A payload that does
+        // not open marks nothing: the list stays readable and a reveal reports the fault.
+        let flattened = manage
+            && self
+                .open_payload::<AgentPayload>(record)
+                .is_ok_and(|payload| flattened_key(&payload.value));
         Ok(AgentSecretView {
             id: record.id.clone(),
             name: record.name.clone(),
@@ -140,6 +147,7 @@ impl App {
             value_updated_at: rfc3339(record.value_updated_at),
             last_used_at: record.last_used_at.map(rfc3339),
             rotate_due: self.now().millis_since(record.value_updated_at) >= ROTATE_AFTER_MS,
+            flattened,
             can_manage: manage,
         })
     }
