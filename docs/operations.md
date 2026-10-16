@@ -494,9 +494,8 @@ from a sandbox, and no daemon needs to run on the host.
 
   Run as root, it always runs as the data directory's owner in a delegated transient unit
   (`systemd-run`), never in the root shell's own cgroup (SPEC-202, #617), and refuses a data
-  directory root owns. It uses the
-  current base, and removes its throwaway sandbox (`docker-smoke-<pid>`) at the end. It prints
-  one line per check and exits 0 only when sandboxes get Docker: a run older than the engine
+  directory root owns. It uses the current base, and removes its throwaway sandbox
+  (`docker-smoke-<pid>`) at the end. It prints one plain line per check and exits 0 only when sandboxes get Docker: a run older than the engine
   gets the socket, its refusal names the reason, then `docker run --rm hello-world`, a `docker
   build` and a two-service `docker compose up` in that run, a recreated socket, and `DOCKER_HOST`
   in a new run. It needs Docker Hub (`hello-world`, `busybox`).

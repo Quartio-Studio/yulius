@@ -4,8 +4,8 @@
 //! It needs the service user and a delegated cgroup. Started as root, wherever, it runs itself
 //! again (SPEC-202 RSB-001) through `systemd-run --uid=<the data directory's owner> -p
 //! Delegate=yes -p DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone
-//! else outside one it says so. Inside, with the current base, it creates a throwaway sandbox (`docker-smoke-<pid>`,
-//! next to the real ones but adopted by nobody else) and:
+//! else outside one it says so. Inside, with the current base, it creates a throwaway sandbox
+//! (`docker-smoke-<pid>`, next to the real ones but adopted by nobody else) and:
 //!
 //! 1. starts its holder with Docker off, and a run that has no Docker directory (a run started
 //!    before ADR-0158); the run must get the directory and the refusal must name the reason;
@@ -558,32 +558,41 @@ fn plain(segment: &str) -> String {
             '\u{1b}' => match chars.next() {
                 // CSI: parameters up to a final byte.
                 Some('[') => skip_csi(&mut chars),
-                // OSC, DCS, SOS, PM, APC: a string up to BEL or ST (ESC \\).
-                Some(']' | 'P' | 'X' | '^' | '_') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\u{7}' || (c == '\u{1b}' && chars.next().is_some()) {
+                // OSC, DCS, SOS, PM, APC: a string up to BEL or ST.
+                Some(']' | 'P' | 'X' | '^' | '_') => skip_string(&mut chars),
+                // Intermediate bytes (charset selection, `ESC # 8`, `ESC SP F`), then the final.
+                Some(' '..='/') => {
+                    for c in chars.by_ref() {
+                        if !(' '..='/').contains(&c) {
                             break;
                         }
                     }
                 }
-                // Character set selection: one more character.
-                Some('(' | ')' | '*' | '+' | '-' | '.' | '/') => {
-                    chars.next();
-                }
                 _ => {}
             },
-            // 8-bit CSI.
+            // 8-bit CSI and strings.
             '\u{9b}' => skip_csi(&mut chars),
+            '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
             '\t' => out.push(' '),
-            '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
+            '\u{61c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2069}'
             | '\u{feff}' => {}
             c if c.is_control() => {}
             c => out.push(c),
         }
     }
     out
+}
+
+/// Skips a control string up to its end: BEL, ST (`ESC \\`, or 8-bit) or the text's end.
+fn skip_string(chars: &mut impl Iterator<Item = char>) {
+    while let Some(c) = chars.next() {
+        if c == '\u{7}' || c == '\u{9c}' || (c == '\u{1b}' && chars.next().is_some()) {
+            break;
+        }
+    }
 }
 
 /// Skips a CSI sequence's parameters and final byte.
@@ -616,12 +625,20 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+/// The first line with printable text (whole: [`printable`] cuts it after cleaning).
 fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or_default().to_owned()
+    text.lines()
+        .find(|line| !printable(line).is_empty())
+        .unwrap_or_default()
+        .to_owned()
 }
 
+/// The last line with printable text (whole: [`printable`] cuts it after cleaning).
 fn last_line(text: &str) -> String {
-    text.lines().last().unwrap_or_default().to_owned()
+    text.lines()
+        .rfind(|line| !printable(line).is_empty())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Waits (polling a file the run writes) until `path` has the line `line`.
@@ -806,6 +823,23 @@ mod tests {
         // The hello and build details: the last line, cleaned before it is cut.
         let progress = "Pulling 1%\r".repeat(50) + "done";
         assert_eq!(printable(&last_line(&progress)), "done");
+    }
+
+    /// SPEC-202 RSB-003, review round 2: a last line that is only an escape leaves the detail
+    /// to the line before; escapes with intermediate bytes and 8-bit strings go whole.
+    #[test]
+    fn details_skip_empty_last_lines_and_rarer_escapes() {
+        assert_eq!(
+            printable(&last_line("step 1\nERROR: failed to solve\n\u{1b}[0m\n")),
+            "ERROR: failed to solve"
+        );
+        assert_eq!(
+            printable(&first_line("\u{1b}[0m\nfirst words\n")),
+            "first words"
+        );
+        assert_eq!(printable("\u{1b}#8a\u{1b}%Gb\u{1b} Fc"), "abc");
+        assert_eq!(printable("a\u{9d}0;title\u{9c}b\u{90}q\u{9c}c"), "abc");
+        assert_eq!(printable("a\u{61c}b\u{2060}c\u{2028}d"), "abcd");
     }
 
     /// SPEC-202 RSB-004: the compose check shows the probe's result, not the web container's
