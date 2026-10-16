@@ -338,12 +338,7 @@ async fn intake_check_proposes_a_supertask_for_broad_work_that_does_not_split() 
         r.body,
         json!({"verdict": "several", "checked": true, "supertask": false})
     );
-    let r = post(
-        &i,
-        check,
-        json!({"prompt": "this is maybe broad work"}),
-    )
-    .await?;
+    let r = post(&i, check, json!({"prompt": "this is maybe broad work"})).await?;
     assert_eq!(
         r.body,
         json!({"verdict": "one", "checked": true, "supertask": false}),
