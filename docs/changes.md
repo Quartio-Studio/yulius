@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The in-sandbox Docker install brings buildx and compose (SPEC-201, ADR-0160 amended, task #186,
+  fixes #610). After #185, an agent that followed the hint `sudo apt-get install -y docker.io` got
+  an engine, but `docker buildx build` was an unknown command: Ubuntu's `docker.io` only suggests
+  `docker-buildx` and `docker-compose-v2`. A product sandbox could build no image, and its agent
+  sent the person to change the host. The refusal, `yulius doctor`, the smoke test and the
+  briefing now name `docker.io docker-buildx docker-compose-v2`, or, on the host, `docker-ce`
+  with `docker-buildx-plugin` and `docker-compose-plugin`. The briefing tells the agent to install
+  missing parts in its own sandbox, which needs no host change.
 - A sandbox's Docker engine comes from its own system, not the host's (SPEC-199, ADR-0160, task
   #185). After #602 every sandbox answered "the host has no `dockerd`": Docker had been purged
   from the host on 2026-10-12, yet the engine runs the sandbox's own `dockerd`, and sandboxes on

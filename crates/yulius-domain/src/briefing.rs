@@ -833,9 +833,10 @@ fn containers(input: &BriefingInput<'_>) -> String {
         return String::new();
     }
     if input.docker {
-        return "## Containers\n\nDocker works here and in CI (own engine, disk quota; `docker info` \
-                checks, `sudo apt install docker.io` adds it). Mount the sandbox directory, ports in \
-                your range. Egress proxy: `host.docker.internal` with \
+        // SPEC-201 DBX-003: Ubuntu's `docker.io` alone has no buildx or compose.
+        return "## Containers\n\nDocker works here and in CI (disk quota; `docker info` checks; \
+                missing parts: `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` \
+                here). Mount the sandbox dir; ports in your range. Proxy: \
                 `--add-host=host.docker.internal:host-gateway`.\n\n"
             .to_owned();
     }
@@ -2103,14 +2104,16 @@ mod tests {
         for present in [
             "## Containers",
             "Docker works here and in CI",
-            "own engine",
             "`docker info` checks",
-            // SPEC-199 (review round 1, low): a sandbox whose system lacks `dockerd` installs it.
-            "`sudo apt install docker.io` adds it",
+            // SPEC-199 (review round 1, low): a sandbox whose system lacks `dockerd` installs it;
+            // SPEC-201 DBX-003 (#610): with buildx and compose, in the sandbox, not on the host.
+            // Review round 1 (low): `-y`, else apt aborts at its prompt without a terminal.
+            "missing parts: `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` here",
             "disk quota",
-            "the sandbox directory",
+            "the sandbox dir",
+            // Review round 2 (nit): published ports stay in the task's range.
             "ports in your range",
-            "Egress proxy: `host.docker.internal`",
+            "Proxy: `--add-host=host.docker.internal:host-gateway`",
             DOCKER_SECTION_END,
         ] {
             assert!(text.contains(present), "{present} not in {text}");

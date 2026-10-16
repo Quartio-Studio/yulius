@@ -112,7 +112,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 - **When the prerequisites are missing** (the cgroup delegation), the briefing's `## Containers`
   section says there is no engine and `docker info` says why. A sandbox whose own system (its
   upper layer, else its base) has no `dockerd` is told to install it there
-  (`sudo apt-get install -y docker.io`) or that the host's Docker reaches new bases (ADR-0160).
+  (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`, buildx and compose
+  included, SPEC-201) or that the host's Docker reaches new bases (ADR-0160).
 - **Proof on a host.** `yulius doctor --docker-smoke` walks a throwaway sandbox through an
   upgrade (a run older than the engine, adoption with Docker on, a recreated socket).
 

@@ -5,6 +5,8 @@
 Accepted. Specified in [SPEC-199](../../.ai/specs/SPEC-199-i-got-this.md); task #185. Amends
 [0151](0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md) and
 [0158](0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md).
+Amended on 2026-10-16 by [SPEC-201](../../.ai/specs/SPEC-201-analyse-what-happened-in-185-task-and-fi.md)
+(task #186, #610): the install names buildx and compose.
 
 ## Context
 
@@ -36,9 +38,21 @@ to fix it, and the only fix it could suggest was a host change made by a person.
 
   The server therefore learns nothing about host paths from links the sandbox plants.
 - **Installing Docker in a sandbox turns its engine on.** Without `dockerd` the refusal tells the
-  agent to run `sudo apt-get install -y docker.io` (or an operator to install Docker on the host,
-  for new bases). The front is asked at every tick (30 s), so it switches to an engine without a
-  restart.
+  agent to run `sudo apt-get install -y docker.io docker-buildx docker-compose-v2`, or an operator
+  to install Docker on the host for new bases (`docker-ce` with `docker-buildx-plugin` and
+  `docker-compose-plugin`). The front is asked at every tick (30 s), so it switches to an engine
+  without a restart.
+- **The install brings buildx and compose** (amendment, SPEC-201). Ubuntu's `docker.io` only
+  *suggests* `docker-buildx` and `docker-compose-v2`, so it alone gave an engine on which
+  `docker buildx build` was an unknown command. The refusal, `yulius doctor`, the smoke test and
+  the briefing (`missing parts: sudo apt-get install -y docker.io docker-buildx
+  docker-compose-v2 here`) name all three packages. The same command adds a missing plugin to a
+  sandbox whose engine is Ubuntu's. On a base copied from a `docker-ce` host, apt refuses it
+  (`containerd.io` conflicts with `containerd`, and `docker-buildx` depends on `docker.io`) and
+  removes nothing, so a missing plugin there is
+  `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin` from Docker's apt source,
+  which such bases carry (`docker-ce-cli` recommends both, so they normally have them). Either install writes to the sandbox's own system, so
+  every session, CI job and dev deploy there gets the plugins, with no host change.
 - **The host's `dockerd` is advice.** `yulius doctor` warns without it, since new bases then have
   none, and still checks the delegation and the kernel modules. The smoke test needs it, because
   its throwaway sandbox has only the current base.
