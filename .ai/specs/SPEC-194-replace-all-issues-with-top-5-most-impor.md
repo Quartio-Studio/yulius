@@ -1,11 +1,11 @@
 ---
 yulius-task: d81e194c-0102-476a-93ed-b00d21b0c762
-status: in-progress
+status: done
 ---
 
 # SPEC-194: "Work through open issues" solves the 5 most important actionable issues
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #180
 Scope authorization: task #180 (MrFishPL, 2026-10-16): "replace all issues with top 5 most
@@ -60,9 +60,9 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The open-issues template ranks the issues and solves only the 5 most important actionable ones
 - [x] The mock, product summary and changes log describe the top-5 automation
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
-- [ ] This project's enabled automation carries the new prompt
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+- [x] This project's enabled automation carries the new prompt
 
 ## Acceptance criteria
 
@@ -117,3 +117,25 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 - **Update this project's automation directly** with `automation_update` (same text as the
   catalog): it was created from the template, never ran and is disabled; the template's own rule
   that releases do not rewrite added automations stays.
+
+## Evidence
+
+- `cargo test -p yulius-app --lib automations::templates`: the extended
+  `the_shipped_catalog_is_valid` failed against the old catalog file (description, then each new
+  wording in turn), passes with the new one.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^mcp_coordination::/)'`:
+  `active_tasks_include_those_paused_for_capacity` failed with dev's `coordination.rs`
+  (`["task claude2"]`, the paused task missing) and passes with the fix; 3 passed.
+- The prompt's `gh` commands run here (gh 2.45.0): the collect command, `gh pr list --state open
+  --limit 1000 --json number,body` (3 PRs) and the open issues' comments (35 rows, 7 KB).
+  `closingIssuesReferences` is not available in this gh, hence the description keywords.
+- `scripts/dev ci`: exit 0 at c9b4024e, a61cc4c2 and 444eba06 (after merging `origin/dev`).
+- `scripts/dev security`: exit 2, **not run**. Vidoc rejected the key (HTTP 401, invalid or
+  expired token; tracked in #470, ADR-0104).
+- Independent review in fresh sessions: three rounds of requested changes (ownership matching,
+  not-actionable loop, `waiting_capacity`, PR list limit, comment fetch size, test strength), all
+  fixed test-first. The final pass approved 444eba06.
+- Pre-existing, outside this change: on this repository GitHub reports the core team as
+  `CONTRIBUTOR`, so the SPEC-042 scope rule leaves 30 of 41 open issues out. Filed as #594.
+- TOP-006: `automation_update` gave automation `1a189dfa` the catalog prompt verbatim (still
+  disabled, as before).
