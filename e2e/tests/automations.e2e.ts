@@ -21,7 +21,8 @@ const CUSTOM = ['Daily customer feedback', 'Weekly dependency audit'];
 const DEFAULTS = ['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night'];
 
 test('the shipped automations are the defaults, switched on in place, and Delete resets one (AC-AUT-31..33)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/automations'));
+  // Its enable waits for `release()`, so a second press surely lands while it is being enabled.
+  await app.open(mock('/s/studio/automations', '&holdpost=/api/sandboxes/sb_studio/automation-templates/docs-up-to-date/enable'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Automations');
   await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
   await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
@@ -48,6 +49,7 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   // A second press while it is being enabled keeps it on: one automation per switch (AUT-034).
   await browser.keyboard.press('Space');
   expect(await browser.evaluate(() => (document.activeElement as HTMLInputElement).checked)).toBe(true);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await expect(screen.getByText('Keep the docs up to date enabled.')).toBeVisible();
   await expect(screen.getByRole('button', 'Run history of Keep the docs up to date')).toBeVisible();
   await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeChecked();
@@ -90,6 +92,16 @@ test('the builder’s Delete of a default says it is reset, of a custom one not 
   await expect(custom.getByText(/stays among the defaults/)).toBeHidden();
 });
 
+test('a double click on the builder’s Delete asks once, also while it looks up the default (final review)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/aut_3', '&hold=/api/sandboxes/sb_studio/automation-templates'));
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('dialog', 'Delete automation “Work through open issues”?')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('[role="dialog"], dialog[open]').length)).toBe(1);
+});
+
 test('a reload keeps focus on the same labelled control, wherever it moved (unit, in the page)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/automations'));
   const focused = await browser.evaluate(async () => {
@@ -108,10 +120,15 @@ test('a reload keeps focus on the same labelled control, wherever it moved (unit
     (container.firstChild as HTMLElement).focus();
     keepFocus(container, () => { container.replaceChildren(...card(['y', 'x', 'x'])); });
     const byPlace = document.activeElement?.getAttribute('aria-label') ?? null;
+    // A unique label gone after the rebuild falls back to the position too.
+    container.replaceChildren(...card(['p', 'q']));
+    (container.lastChild as HTMLElement).focus();
+    keepFocus(container, () => { container.replaceChildren(...card(['r', 's', 't'])); });
+    const gone = document.activeElement?.getAttribute('aria-label') ?? null;
     container.remove();
-    return [byLabel, byPlace];
+    return [byLabel, byPlace, gone];
   });
-  expect(focused).toEqual(['switch', 'y']);
+  expect(focused).toEqual(['switch', 'y', 's']);
 });
 
 test('without the shipped list every automation shows under Custom (AC-AUT-35)', async ({ app, browser, screen }) => {

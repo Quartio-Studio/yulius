@@ -12,7 +12,8 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), as=<login> (signed in as another member, a
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
+// `__yuliusMock.release()`, as hold= does for GETs), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
 import { counter, taskInfo } from './status.js';
@@ -158,6 +159,7 @@ function seed(params) {
     failPath: params.get('fail') || null,
     failedReads: 0,
     holdPath: params.get('hold') || null,
+    holdPostPath: params.get('holdpost') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed;
     // `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
@@ -311,7 +313,7 @@ function seed(params) {
   if (params.get('tasks') === '0') db.tasks = [];
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
   // `hold=frames` keeps the sandbox Chrome's picture back instead.
-  if (db.holdPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -3638,6 +3640,7 @@ async function handleFetchAfterLatency(db, url, init) {
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
+  if (db.held && method === 'POST' && u.pathname === db.holdPostPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
     db.failedReads += 1;

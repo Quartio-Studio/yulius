@@ -340,9 +340,18 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     }
   }
 
+  // One Delete at a time: it looks up whether this is a default before it asks, so a second
+  // press meanwhile is ignored, and nothing is asked once the builder has been left.
+  let deleting = false;
   async function doDelete() {
+    if (deleting) return;
+    deleting = true;
+    try { await deleteOnce(); } finally { deleting = false; }
+  }
+  async function deleteOnce() {
     // A default (a shipped automation's name) is reset by Delete; unknown, it is said as any other.
     const shipped = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automation-templates`).catch(() => []);
+    if (!el.isConnected) return;
     const isDefault = Array.isArray(shipped) && shipped.some((t) => t.automation_id === id);
     if (!(await confirmDialog({ title: `Delete automation “${state.name}”?`, message: deleteMessage(isDefault), confirmLabel: 'Delete', danger: true }))) return;
     try {

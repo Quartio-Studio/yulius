@@ -118,7 +118,7 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   passed. Review fixes were also test-first: focus after switching on failed (`toBeFocused`) and
   passed once fixed; the builder's Delete wording and `keepFocus` by label failed, then passed; the
   double-press assertion fails with the guard removed (mutation check) and passes with it.
-- `cd e2e && npx e2e run tests/automations.e2e.ts`: 11 passed (11).
+- `cd e2e && npx e2e run tests/automations.e2e.ts`: 12 passed (12).
 - `scripts/dev ci` on the merged head (origin/dev 4835317d merged): 1992 tests run, 1992 passed,
   18 skipped; exit 0. Earlier heads 753b52c1 and 56244b9b: 1975 passed each.
 - Full e2e suite (`npx e2e run`): 583 passed, 1 skipped on 753b52c1. On the merged head while
@@ -135,7 +135,11 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   Custom.
 - Reviews: round 1 (753b52c1) requested changes (fallback untested, focus lost, weak assertions,
   stale MCP text, SPEC-042 pointer), all fixed in 56244b9b. Round 2 approved 56244b9b with two
-  minors (builder Delete, double-press test) and a focus nit, fixed in b5e6ad1d. Final review on
-  the merged head.
+  minors (builder Delete, double-press test) and a focus nit, fixed in b5e6ad1d. Round 3 approved
+  the merged head 92a00309 with one minor: the builder's Delete now looked up the default before
+  asking, so a double click opened two dialogs. A test reproduced it (two dialogs), and a re-entry
+  guard fixed it (no dialog once the builder is left). The double-press test now holds the enable
+  (the mock's `holdpost=`), so it no longer depends on timing under load, and `keepFocus` gained
+  the case of a label gone after the rebuild.
 - Not testable here: the live instance's Automations page (it runs `main`; this reaches it at the
   next promotion).
