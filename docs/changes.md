@@ -9,7 +9,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A running CI run's commit status counts the jobs that already ended (SPEC-198, task #184, fixes
   #604). GitHub kept "Running on Yulius: 0 of 3 jobs passed" until a run ended, so the Superagent
   took PR #600's finished Vidoc scan for a running one and answered that no PR had been scanned.
-  Each job that passes or ends skipped now publishes the status again. The stale issue #470 is closed.
+  Each job that passes or ends skipped while other jobs still run now publishes the status again,
+  and a published status resets the retry attempts, so a refused final status is still retried.
+  The stale issue #470 is closed.
 - Docker works in every sandbox and session, without a restart or a new session (SPEC-196,
   ADR-0158, task #182, fixes #597). After #583, sandboxes busy during the upgrade kept no engine,
   and sessions started before had no socket and no reason.
