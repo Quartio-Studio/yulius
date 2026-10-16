@@ -847,14 +847,23 @@ export function popoverFocus(panel, trigger, close) {
   return () => { panel.removeEventListener('focusout', onOut); panel.removeEventListener('keydown', onKey); };
 }
 
-/** Rebuild `container` with `rebuild()` and put focus back on the same control, if it had it. */
+/**
+ * Rebuild `container` with `rebuild()` and put focus back on the same control, if it had it: the
+ * control of the same `aria-label` when that label is unique before and after (a card may gain
+ * controls before it, SPEC-197), else the one at the same place.
+ */
 export function keepFocus(container, rebuild) {
   const before = [...container.querySelectorAll(FOCUSABLE)];
-  const index = before.indexOf(document.activeElement);
+  const active = document.activeElement;
+  const index = before.indexOf(active);
+  const label = index >= 0 ? active.getAttribute('aria-label') : null;
+  const labelled = (list) => list.filter((el) => el.getAttribute('aria-label') === label);
+  const unique = label !== null && labelled(before).length === 1;
   rebuild();
   if (index < 0) return;
   const after = [...container.querySelectorAll(FOCUSABLE)];
-  const target = after[Math.min(index, after.length - 1)] || container;
+  const same = unique ? labelled(after) : [];
+  const target = (same.length === 1 ? same[0] : after[Math.min(index, after.length - 1)]) || container;
   target.focus({ preventScroll: true });
 }
 

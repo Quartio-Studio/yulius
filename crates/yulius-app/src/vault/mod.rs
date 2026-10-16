@@ -39,6 +39,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::ports::vault::{VaultSecretRecord, VaultSection};
+use crate::vidoc_key::{VIDOC_HOST, VIDOC_SECRET, VIDOC_SECRET_ID};
 
 /// Bound of remembered "already audited" keys before the memory is cleared.
 const AUDITED_KEYS_MAX: usize = 10_000;
@@ -305,6 +306,50 @@ impl App {
             .unwrap_or_else(|| "superadmin".into())
     }
 
+    /// The agent secrets an agent run, the Superagent or a granted CI job uses through the egress
+    /// proxy: the stored ones that apply to `sandbox` and, when the instance has a Vidoc key and
+    /// the sandbox no `VIDOC_API_KEY` of its own, the instance key as that virtual secret
+    /// (SPEC-195 VDK-005). Never for MCP references, `.env` copies or browser filling, which
+    /// would hand out its value.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn applied_agent_secrets(
+        &self,
+        sandbox: &SandboxId,
+    ) -> AppResult<Vec<VaultSecretRecord>> {
+        let mut records = self.deps.store.vault_agent(Some(sandbox)).await?;
+        if self.vidoc_key().is_some() && !records.iter().any(|r| r.name == VIDOC_SECRET) {
+            records.push(instance_vidoc_record());
+        }
+        Ok(records)
+    }
+
+    /// A record's payload: the instance Vidoc key for its virtual record (`None` once removed),
+    /// else the sealed payload.
+    ///
+    /// # Errors
+    /// Decryption failures.
+    pub(crate) fn agent_payload(
+        &self,
+        record: &VaultSecretRecord,
+    ) -> AppResult<Option<AgentPayload>> {
+        if record.id == VIDOC_SECRET_ID {
+            return Ok(self.vidoc_key().map(|key| AgentPayload {
+                username: None,
+                value: key.expose().to_owned(),
+                totp: None,
+            }));
+        }
+        self.open_payload(record).map(Some)
+    }
+
+    /// Marks agent secrets as changed: redaction caches reload (also when the instance Vidoc key,
+    /// a virtual agent secret, changes; SPEC-195 VDK-005).
+    pub(crate) fn bump_vault_generation(&self) {
+        self.vault.bump();
+    }
+
     /// The redaction matcher of every agent secret that applies to `sandbox` (values, TOTP
     /// seeds and their encodings), cached until an agent secret changes.
     ///
@@ -318,10 +363,12 @@ impl App {
         {
             return Ok(matcher.clone());
         }
-        let records = self.deps.store.vault_agent(Some(sandbox)).await?;
+        let records = self.applied_agent_secrets(sandbox).await?;
         let mut secrets = Vec::with_capacity(records.len());
         for record in &records {
-            let payload: AgentPayload = self.open_payload(record)?;
+            let Some(payload) = self.agent_payload(record)? else {
+                continue;
+            };
             let mut forms = needles(&payload.value);
             // A key copied into a file (`.env`) shows as its lines (SPEC-186 SAV-005).
             for line in yulius_domain::vault::dotenv::key_lines(&payload.value) {
@@ -366,5 +413,41 @@ impl App {
     pub fn enable_egress(&self, ca_bundle: Option<String>) {
         let _ = self.vault.ca_bundle.set(ca_bundle);
         self.vault.egress.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The instance Vidoc key as an agent secret record (SPEC-195 VDK-005): bound to Vidoc's API
+/// host only, added by placeholder, never sealed in the vault (its payload comes from
+/// [`App::vidoc_key`]).
+fn instance_vidoc_record() -> VaultSecretRecord {
+    let never = yulius_domain::time::Timestamp(0);
+    VaultSecretRecord {
+        id: VIDOC_SECRET_ID.into(),
+        section: VaultSection::Agent,
+        sandbox_id: None,
+        name: VIDOC_SECRET.into(),
+        description: "The instance's Vidoc key (Settings, Instance): Vidoc's vidoc-1 security \
+                      scan, `yulius security-scan`"
+            .into(),
+        hosts: vec![VIDOC_HOST.into()],
+        injection: "none".into(),
+        header_name: None,
+        fields: vec!["value".into()],
+        envelope: crate::ports::Envelope {
+            kek_id: 0,
+            wrapped_key: Vec::new(),
+            ciphertext: Vec::new(),
+        },
+        created_by: "instance".into(),
+        created_at: never,
+        updated_by: "instance".into(),
+        updated_at: never,
+        value_updated_at: never,
+        last_used_at: None,
+        requested_hosts: Vec::new(),
+        requested_by: None,
+        env_files: crate::ports::vault::EnvFiles::No,
+        env_requested_by: None,
+        cd_prod: false,
     }
 }

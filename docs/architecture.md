@@ -28,7 +28,8 @@ flowchart LR
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
     CH["Chrome on Xvfb"]
-    AG -->|"/run/docker.sock"| DE["Docker engine (on demand)"]
+    AG -->|"/run/yulius/docker"| DF["Docker front"]
+    DF --> DE["Docker engine (on demand)"]
   end
   AG -->|"MCP + hooks"| INT
   APP <--> GH["GitHub App + REST"]
@@ -49,7 +50,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`, switched on or off in `.config/vidoc.toml`) |
+| tooling | `tools/` (fake agent, xtask) and `scripts/` (the gates, and `vidoc_scan.py`, the security scan that `yulius` embeds as `yulius security-scan`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
@@ -88,11 +89,18 @@ Each isolated sandbox has its own Docker engine
 [decision 0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md),
 superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)).
 
-- **The socket.** The namespace holder serves the sandbox's `docker.sock`, which agents, the
-  Superagent, Shells and CI jobs see at `/run/docker.sock`.
+- **The socket** ([decision 0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
+  A Docker front (`yulius sandbox-host docker`), a process the server starts beside every live
+  holder, adopted ones included, serves `<state>/docker/docker.sock`. Agents, the Superagent,
+  Shells and CI jobs bind that directory at `/run/yulius/docker`, with `DOCKER_HOST` and a
+  `/run/docker.sock` link, so a recreated socket reaches them. Runs started without it get the
+  directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
+  bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
+  engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine` and execs `bwrap`, then `yulius sandbox-host engine`
-  supervises `dockerd`. The holder splices each connection to the engine's own socket.
+  supervises `dockerd`. The front splices each connection to the engine's own socket (for a
+  holder of SPEC-187, to that holder's own engine).
 - **The engine's process.** `dockerd` is root of the sandbox's user namespace, in the sandbox's
   network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
@@ -102,12 +110,14 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   and build cache are pruned through its own control socket; a stopped engine is never started
   for that.
 - **When the prerequisites are missing** (`dockerd` on the host, the cgroup delegation), the
-  briefing's `## Containers` section keeps saying there is no engine.
+  briefing's `## Containers` section says there is no engine and `docker info` says why.
+- **Proof on a host.** `yulius doctor --docker-smoke` walks a throwaway sandbox through an
+  upgrade (a run older than the engine, adoption with Docker on, a recreated socket).
 
 ```mermaid
 flowchart LR
   subgraph NS["Sandbox user + network namespace"]
-    R["run: agent, Superagent, Shell, CI job"] -->|"/run/docker.sock"| H["holder: docker.sock"]
+    R["run: agent, Superagent, Shell, CI job"] -->|"/run/yulius/docker/docker.sock"| H["Docker front (beside the holder)"]
     H -->|"first connection: sandbox-exec --engine → bwrap"| E["sandbox-host engine → dockerd"]
     H -->|"splice"| E
     E --> C["containers (engine seccomp, engine/ cgroup)"]
@@ -115,6 +125,8 @@ flowchart LR
   end
   T --> S["slirp4netns (host loopback off)"] --> I["Internet"]
   M["server: disk upkeep"] -->|"running engine only: prune build cache, unused images"| E
+  K["server: upkeep tick"] -->|"start / restart the front"| H
+  K -->|"bind-docker: move the directory into runs without it"| R
 ```
 
 ## Disk
@@ -660,13 +672,13 @@ sequenceDiagram
     participant X as Egress proxy
     P->>UI: Add VIDOC_API_KEY (name, value, description)
     UI->>App: POST agent-secrets (hosts [], injection none)
-    A->>App: secrets_list, then secret_request_hosts(api.vidoc.com)
+    A->>App: secrets_list, then secret_request_hosts(model.vidocsecurity.com)
     App-->>A: requested, waiting for a person (task needs attention)
-    A->>X: request to api.vidoc.com with the placeholder
+    A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: forwarded without the secret (not bound yet)
     P->>UI: Allow
     UI->>App: POST agent-secrets/{id}/request {allow: true}
-    A->>X: request to api.vidoc.com with the placeholder
+    A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
@@ -692,8 +704,40 @@ flowchart LR
   PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
   EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]
   JOB -->|"request with yulius-secret-VIDOC_API_KEY"| X["Egress proxy: client ci:run"]
-  X -->|"value only toward bound hosts"| V["api.vidoc.dev"]
+  X -->|"value only toward bound hosts"| V["model.vidocsecurity.com"]
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
+```
+
+## Vidoc: the instance key and the security scan
+
+Vidoc is an optional instance service, like Jev
+([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md), ADR-0157).
+
+- **The key.** A superadmin saves the key on the Instance page or in a setup step
+  (`crates/yulius-app/src/vidoc_key.rs`, `/api/admin/vidoc*`). It is sealed in the `instance` row,
+  or read from `YULIUS_VIDOC_API_KEY_FILE` while nothing is saved.
+- **Where it applies.** The vault adds it as the virtual agent secret `VIDOC_API_KEY`
+  (`App::applied_agent_secrets`, `vault/mod.rs`), bound to `model.vidocsecurity.com` only, for every
+  sandbox without an agent secret of that name. That covers agent runs and the Superagent, and CI
+  jobs whose integration-branch grant names it. The egress proxy injects, audits (`instance:vidoc`)
+  and redacts it as it does any agent secret. MCP references, `.env` copies and browser filling
+  never resolve it.
+- **The scan.** It runs where the code is. `scripts/vidoc_scan.py`, embedded in the binary as
+  `yulius security-scan`, reads `HEAD`'s tree and sends line-numbered chunks to `/v1/messages`.
+  It reads the JSON findings back, and fails on open critical or high ones.
+- **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
+  has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
+
+```mermaid
+flowchart LR
+  SA["Superadmin: Instance page or setup"] -->|"PUT /api/admin/vidoc"| APP["Yulius: instance row, sealed"]
+  FILE["YULIUS_VIDOC_API_KEY_FILE"] -.->|"while nothing is saved"| APP
+  APP -->|"virtual agent secret VIDOC_API_KEY, unless the project has its own"| PX["Egress proxy"]
+  AG["Agent: yulius security-scan, scripts/dev security"] -->|"x-api-key: yulius-secret-VIDOC_API_KEY"| PX
+  CI["CI job security, granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
+  PX -->|"the key toward model.vidocsecurity.com only"| V["Vidoc /v1/messages, vidoc-1"]
+  V -->|"JSON findings: exit 0, 1, or 2 when not run"| AG
+  APP -->|"key set: briefing and onboarding add the scan"| BOOT["infra bootstrap"]
 ```
 
 ## CD (deployment)
@@ -894,12 +938,15 @@ Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
 [decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
 embedded at build time. Enable copies one into an ordinary automation; a project's automation of
-the same name counts as the template's.
+the same name counts as the template's. The Automations page lists every shipped automation first,
+as Defaults (the project's automation of its name, or the shipped one switched off until its switch
+enables it), then the project's others as Custom ([SPEC-197](../.ai/specs/SPEC-197-those-2-automations-should-be-defaults-l.md),
+[decision 0159](decisions/0159-shipped-automations-are-the-automations-page-defaults.md)).
 
 ```mermaid
 flowchart LR
   CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
-  UI["Automations page: Ready-made"] -->|"GET automation-templates"| TPL
+  UI["Automations page: Defaults"] -->|"GET automation-templates"| TPL
   UI -->|"POST …/enable"| EN["App::enable_automation_template"]
   EN -->|"same name exists"| UPD["re-enable it"]
   EN -->|"else"| INS["insert automation (enabled)"]
@@ -1106,7 +1153,11 @@ limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` m
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs
 ([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
-[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)).
+[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). It is published
+when the run is queued and when it starts. It is published again each time a job passes or ends
+skipped while other jobs still run (one at a time, so its count never goes back), and last when
+the run ends, after every job's task. A published status resets the run's retry attempts
+([SPEC-198](../.ai/specs/SPEC-198-it-isn-t-true-because-i-saw-that-some-ci.md)).
 
 ```mermaid
 flowchart LR

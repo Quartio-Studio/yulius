@@ -1,7 +1,7 @@
 # Ready-made automations
 
-Yulius offers these automations on every project's Automations page, where a person enables one
-with one click (SPEC-042). Each `<id>.md` file here is one automation: a frontmatter (`name`,
+Yulius lists these automations on every project's Automations page as its Defaults, where a person
+switches one on (SPEC-042, SPEC-197). Each `<id>.md` file here is one automation: a frontmatter (`name`,
 `description`, `cron`, `utc_offset_minutes`, optional `workflow` such as `wf-docs`, `order`) and
 then the prompt of each task it creates. Yulius embeds every `*.md` file of this directory except
 this README at build time; a unit test parses each one, so a malformed file fails CI.

@@ -61,7 +61,9 @@ switch on.
   create two automations.
 - AUT-009: The Automations page shows "Ready-made automations" not yet added, with what each does,
   its schedule and an Enable button (disabled without write access); the empty state shows them
-  too. Enabling one adds it to the list, enabled, and removes the suggestion.
+  too. Enabling one adds it to the list, enabled, and removes the suggestion. (Superseded by
+  [SPEC-197](SPEC-197-those-2-automations-should-be-defaults-l.md) AUT-032..036: every shipped
+  automation is listed first under Defaults and switched on in place.)
 - AUT-010: "Keep the docs up to date" runs daily at 03:00 UTC+2 with workflow Docs. Its prompt
   reviews the changes merged since this automation's previous task (the last day; found with
   `tasks_list`, `limit` 200), or the documentation as a whole when there is none (first run:

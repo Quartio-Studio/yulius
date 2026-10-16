@@ -19,7 +19,8 @@ watching, steering and unblocking.
 - **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
   contained sandbox with its own system layer, Docker engine (SPEC-187: `docker build`, `run` and
-  `compose` work for agents, the Superagent, shells and CI jobs), home, shells per user, browser
+  `compose` work for agents, the Superagent, shells and CI jobs; SPEC-196: in sessions started
+  before too, `yulius doctor --docker-smoke` proves it on a host), home, shells per user, browser
   and editor. The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
@@ -120,9 +121,16 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans with
-  Vidoc once the key works (#470). A job that checked nothing exits with `$YULIUS_CI_SKIP_CODE` and
-  reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
+  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans the
+  pull request's changes with Vidoc's vidoc-1. A job that checked nothing exits with
+  `$YULIUS_CI_SKIP_CODE` and reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
+- **Vidoc security scan** (SPEC-195, ADR-0157): an optional instance key, which the superadmin sets,
+  tests and removes like the Jev key, and which setup offers as a skippable step. With it, every
+  project's agents and granted CI jobs run `yulius security-scan`: Vidoc's vidoc-1 reviews the
+  branch's changed files (or, with `--all`, the whole repository), and open critical or high
+  findings fail the scan. The code goes to Vidoc, but the key never reaches agents: the egress proxy
+  adds it toward `model.vidocsecurity.com` only. Infra bootstrap adds the `security` job only when
+  the instance has a key. Without one, the scan reports "not run".
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
@@ -154,10 +162,11 @@ watching, steering and unblocking.
   install by themselves.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
-- **Automations**: tasks on a schedule. Three ready-made ones, off until a person enables them in
-  one click on the Automations page: "Keep the docs up to date", "Work through open issues" (the
-  core team's issues ranked, and the 5 most important actionable ones that no running task owns
-  verified in parallel and given a task each, no new issues) and
+- **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
+  its Defaults (as the default workflows do), each off until a person switches it on: "Keep the
+  docs up to date", "Work through open issues" (the core team's issues ranked, and the 5 most
+  important actionable ones that no running task owns verified in parallel and given a task each,
+  no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When

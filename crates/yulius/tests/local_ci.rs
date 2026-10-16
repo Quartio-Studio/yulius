@@ -120,6 +120,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let yulius_exe = exe.clone();
     // Launch the freshly built binary once before anything is timed: macOS scans a new binary
     // on its first launch (XProtect), which can take tens of seconds on a CI runner and would
     // otherwise land inside a job's start or timeout.
@@ -132,6 +133,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
             config.ci.job_timeout = Duration::from_secs(8);
             config.ci.max_jobs = 3;
             config.contained = contained;
+            config.yulius_exe = yulius_exe;
         })),
         ..HarnessOptions::default()
     })?;
@@ -760,6 +762,108 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     let (_, description, _) = f.last_status(&merged).ok_or("status")?;
     assert!(description.contains("2 skipped"), "{description}");
     Ok(())
+}
+
+/// While a run is going, its commit status counts the jobs that already ended (SPEC-198 RCS-001):
+/// GitHub said "0 of 3 jobs passed" for PR #600 long after its security scan had passed, and the
+/// Superagent took the scan for one still running (#604). The final status still lands last.
+#[tokio::test]
+async fn a_running_run_s_status_counts_the_jobs_that_ended() -> TestResult {
+    let f = fixture_with(false, held_toml).await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_counted(&pr_sha).await?;
+    std::fs::write(f.data.join("release"), "")?;
+    f.settle().await?;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(
+        description.starts_with("Passed: 3 jobs, 1 skipped"),
+        "{description}"
+    );
+    // The last job's end leaves the status to the run's end: no "2 of 3" just before it.
+    let statuses = f.h.github.statuses();
+    assert!(
+        !statuses
+            .iter()
+            .any(|(sha, st)| *sha == pr_sha && st.description.contains("2 of 3")),
+        "{statuses:?}"
+    );
+    Ok(())
+}
+
+/// The statuses published as jobs end use no retry attempt of the run's final status: one that
+/// GitHub refused is published again by the retry loop (SPEC-198 RCS-004).
+#[tokio::test]
+async fn a_refused_final_status_is_retried_after_the_job_statuses() -> TestResult {
+    let f = fixture_with(false, held_toml).await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_counted(&pr_sha).await?;
+    let forbidden = &f.h.github.statuses_forbidden;
+    forbidden.store(true, std::sync::atomic::Ordering::SeqCst);
+    std::fs::write(f.data.join("release"), "")?;
+    f.settle().await?;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(
+        state, "pending",
+        "the final status was refused: {description}"
+    );
+    forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
+    f.h.app.ci_retry_statuses().await;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "success", "{:?}", f.h.github.statuses());
+    assert!(
+        description.starts_with("Passed: 3 jobs, 1 skipped"),
+        "{description}"
+    );
+    Ok(())
+}
+
+/// A passing job, a skipped one and one held until `<data>/release` exists.
+fn held_toml(data: &Path) -> String {
+    format!(
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "scan"
+command = 'exit "$YULIUS_CI_SKIP_CODE"'
+
+[[ci.jobs]]
+name = "held"
+command = 'while [ ! -f "{}" ]; do sleep 0.05; done'
+"#,
+        data.join("release").display()
+    )
+}
+
+impl Fixture {
+    /// Dispatches until `sha`'s running status counts the passed and the skipped job of
+    /// [`held_toml`] while `held` still runs.
+    async fn until_counted(&self, sha: &str) -> BoxResult<()> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.app.ci_dispatch().await;
+            if let Some((state, description, _)) = self.last_status(sha) {
+                if description == "Running on Yulius: 1 of 3 jobs passed, 1 skipped" {
+                    assert_eq!(state, "pending", "{description}");
+                    return Ok(());
+                }
+                // `held` timed out: the run ended without ever counting its ended jobs.
+                assert_eq!(state, "pending", "{:?}", self.h.github.statuses());
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!(
+                    "no status counted the ended jobs: {:?}",
+                    self.h.github.statuses()
+                )
+                .into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 /// A squash merge of an up-to-date pull request has exactly the tree its run tested: the
@@ -1563,6 +1667,134 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
             "{outputs:?}"
         );
     }
+    Ok(())
+}
+
+/// SPEC-195 VSC-001, VSC-011: every project's CI job runs Yulius's embedded scanner as
+/// `yulius security-scan --ci`; without a Vidoc key it says why and ends skipped, never passed.
+#[tokio::test]
+async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = \"yulius security-scan --ci\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("Security scan not run: No Vidoc key"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|r| r["sha"] == pr_sha.as_str()))
+        .ok_or("run")?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    assert_eq!(detail["jobs"][0]["state"], "skipped", "{detail}");
+    Ok(())
+}
+
+/// SPEC-195 VSC-001 (review round 1): inside the containment too, a job finds `yulius` (bound
+/// read-only) and runs the embedded scan.
+#[tokio::test]
+async fn a_contained_ci_job_runs_the_embedded_security_scan() -> TestResult {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED a_contained_ci_job_runs_the_embedded_security_scan: bubblewrap cannot run here"
+        );
+        return Ok(());
+    }
+    let f = fixture_with(true, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"yulius security-scan --ci\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// A Vidoc connector whose tests always pass (the CI tests need only the key in use).
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// SPEC-195 VDK-005: a job granted `VIDOC_API_KEY` gets the instance key's placeholder when the
+/// sandbox has no such agent secret of its own, its output says where the key comes from, and the
+/// value never reaches it.
+#[tokio::test]
+async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() -> TestResult {
+    const INSTANCE_KEY: &str = "vidoc-instance-key-0123456789";
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = 'echo \"key=${VIDOC_API_KEY:-none} proxy=${HTTPS_PROXY:+set} base=${YULIUS_INTEGRATION_BRANCH:-none}\"'\n\n[[ci.jobs]]\nname = \"plain\"\ncommand = 'echo \"key=${VIDOC_API_KEY:-none}\"'\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("key=yulius-secret-VIDOC_API_KEY proxy=set base=dev"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] agent secrets: VIDOC_API_KEY (the instance's Vidoc key)"),
+        "{security}"
+    );
+    assert!(!security.contains(INSTANCE_KEY), "{security}");
+    let plain = output_of(&outputs, "plain")?;
+    assert!(
+        plain.contains("key=none"),
+        "an ungranted job gets nothing: {plain}"
+    );
     Ok(())
 }
 

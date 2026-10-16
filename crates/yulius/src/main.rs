@@ -62,6 +62,16 @@ enum Command {
         #[arg(long, default_value_t = 90)]
         minutes: u64,
     },
+    /// Scan this repository with Vidoc's vidoc-1 (SPEC-195): the branch's changes against the
+    /// integration branch, or the whole repository with --all; exit 0 passed, 1 failed, 2 not run.
+    /// `yulius security-scan --help` lists the options.
+    #[command(name = "security-scan", disable_help_flag = true)]
+    SecurityScan {
+        /// The scanner's options (--all, --base REF, --ci, --report FILE, --max-bytes N,
+        /// --deadline-minutes N, --jobs N, --help).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// In a task's session: remove files this task created (untracked or ignored paths of its
     /// worktree, paths of the session's own `/`, `/tmp`, `/run` and `/dev/shm`), refusing anything
     /// else.
@@ -86,6 +96,10 @@ enum Command {
         /// Join this cgroup directory first.
         #[arg(long)]
         cgroup: Option<std::path::PathBuf>,
+        /// Join the sandbox described by this file first (a `SandboxJoin`, as the ptyhost does;
+        /// `yulius doctor --docker-smoke`).
+        #[arg(long)]
+        join: Option<std::path::PathBuf>,
         /// `bwrap` and its arguments, after `--`.
         #[arg(last = true, required = true)]
         argv: Vec<std::ffi::OsString>,
@@ -149,6 +163,10 @@ enum Command {
     },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
+        /// Prove that sandboxes get Docker on this host, end to end, in a throwaway sandbox
+        /// (SPEC-196): run it as root or the service user; it uses the current base.
+        #[arg(long)]
+        docker_smoke: bool,
         /// Data directory.
         #[arg(
             long = "data-dir",
@@ -221,6 +239,7 @@ fn main() -> ExitCode {
                 yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
+        Command::SecurityScan { args } => yulius::security_scan::run(&args),
         Command::Remove { paths } => {
             let code =
                 yulius::remove_cli::run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
@@ -234,8 +253,9 @@ fn main() -> ExitCode {
         Command::SandboxExec {
             engine,
             cgroup,
+            join,
             argv,
-        } => yulius::sandbox_cli::exec(engine, cgroup.as_deref(), &argv),
+        } => yulius::sandbox_cli::exec(engine, cgroup.as_deref(), join.as_deref(), &argv),
         Command::SandboxBase { action } => yulius::sandbox_cli::base(action),
         Command::Login { server } => yulius::cli::login(&server),
         Command::Onboard {
@@ -266,6 +286,12 @@ fn main() -> ExitCode {
             no_color,
         }),
         Command::Doctor {
+            docker_smoke: true,
+            data,
+            ..
+        } => yulius::docker_smoke::main(&data),
+        Command::Doctor {
+            docker_smoke: false,
             data,
             contained,
             contained_readonly,

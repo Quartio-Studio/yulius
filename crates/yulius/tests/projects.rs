@@ -363,6 +363,17 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
             .ok_or("task")?;
     assert!(prep.prompt.contains("yulius.toml: is missing"));
     assert!(prep.prompt.contains("git-crypt") && prep.prompt.contains("pull request"));
+    // SPEC-195 VIB-002: without an instance Vidoc key the bootstrap adds no scan and says so.
+    assert!(
+        prep.prompt.contains("no Vidoc key on this instance"),
+        "{}",
+        prep.prompt
+    );
+    assert!(
+        !prep.prompt.contains("yulius security-scan --ci"),
+        "{}",
+        prep.prompt
+    );
     let record =
         w.h.store
             .sandbox(&SandboxId::parse(&shop_id)?)
@@ -1198,5 +1209,64 @@ async fn adding_a_removed_repository_again_gets_its_name_back() -> TestResult {
             .ok_or("removed sandbox")?;
     assert!(old.removed_at.is_some());
     assert!(old.slug.starts_with("product-removed-"), "{}", old.slug);
+    Ok(())
+}
+
+/// A Vidoc connector whose tests always pass (only whether a key is in use matters here).
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// SPEC-195 VIB-002: with an instance Vidoc key, infra bootstrap at onboarding adds the
+/// `security` CI job and the rule to scan before delivery.
+#[tokio::test]
+async fn onboarding_adds_the_security_scan_when_the_instance_has_a_vidoc_key() -> TestResult {
+    let w = World::new("org").await?;
+    w.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        std::sync::Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    w.h.app.load_vidoc_key().await;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice = w.browser(&alice_user).await?;
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    assert_eq!(shop.status, StatusCode::CREATED, "{:?}", shop.body);
+    let id = SandboxId::parse(text(&shop.body["id"]))?;
+    let record = w.h.store.sandbox(&id).await?.ok_or("sandbox")?;
+    let prep =
+        w.h.store
+            .task(&record.onboarding_task_id.ok_or("onboarding task")?)
+            .await?
+            .ok_or("task")?;
+    for wording in [
+        "this instance has a Vidoc key",
+        "name = \"security\"",
+        "secrets = \"VIDOC_API_KEY\"",
+        "yulius security-scan --ci",
+        "runs `yulius security-scan` before delivery",
+        "sends the changed code to Vidoc",
+    ] {
+        assert!(
+            prep.prompt.contains(wording),
+            "{wording} not in {}",
+            prep.prompt
+        );
+    }
+    assert!(
+        !prep.prompt.contains("vidoc-instance-key"),
+        "the key never reaches a prompt"
+    );
     Ok(())
 }

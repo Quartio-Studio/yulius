@@ -77,6 +77,8 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 # Optional: a Jev key file (see "Task intake (Jev)" below); the superadmin can also set the key in
 # Settings → Instance, which wins over the file.
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
+# Optional: a Vidoc key file (see "Security scans (Vidoc)" below); Settings → Instance wins too.
+#Environment=YULIUS_VIDOC_API_KEY_FILE=/var/lib/yulius/vidoc.key
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
 # Recommended behind the proxy: the secret it shares with Yulius, so sign-in limits are per client
@@ -409,8 +411,9 @@ shells and CI jobs join it. A sandbox gets:
   CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
 - its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
-  started on the first use of `/run/docker.sock` (= `/var/run/docker.sock`) by an agent, the
-  Superagent, a Shell or a CI job, and stopped once idle. See "Docker in sandboxes" below.
+  started on the first use of `/var/run/docker.sock` (`DOCKER_HOST`) by an agent, the
+  Superagent, a Shell or a CI job, also in sessions started before, and stopped once idle. See
+  "Docker in sandboxes" below.
 
 **Install once** (as root):
 
@@ -440,12 +443,12 @@ systemctl restart yulius
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
-| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when the host has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine). |
+| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when the host has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
 
 **Where things live.**
 - `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
 - `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer, `upper/`) and its Docker engine's images, containers and volumes (`docker/`).
-- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker socket (`docker.sock`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`).
+- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker directory (`docker/docker.sock`, served by its Docker front: `docker.json`, `docker-front.json`, `docker-front.log`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`). A holder of SPEC-187 also serves `docker.sock` itself.
 
 `yulius sandbox-base status` tells whether the base matches the host.
 
@@ -464,19 +467,38 @@ previous containment: read-only host system, the host's network, no limits.
 ### Docker in sandboxes
 
 Each isolated sandbox has its own Docker engine (SPEC-187,
-[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)).
+[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md);
+SPEC-196, [ADR-0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
 `docker`, `docker compose`, buildx and testcontainers work unchanged in agents' sessions, the
 Superagent, Shells and CI jobs (not in a production CD run). The host's Docker is never reachable
 from a sandbox, and no daemon needs to run on the host.
 
-- **What it is.** On the first connection to the sandbox's socket, the holder starts `dockerd` as
-  root of the sandbox's user namespace (not the host's): in the sandbox's network, with a run's
-  view of the files plus its storage, a cgroup namespace rooted at `sandboxes/<sandbox>/engine`,
-  and a seccomp profile of its own that every container inherits, `--privileged` included.
-  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves through
-  the sandbox's egress, and they reach the egress proxy at `host.docker.internal:<internal port>`
-  (with `--add-host=host.docker.internal:host-gateway`). A port published in the sandbox's port
-  range is relayed like a dev server's.
+- **Every session, whatever its age.** A Docker front beside each live holder serves the socket;
+  runs see it at `/var/run/docker.sock` and `DOCKER_HOST=unix:///run/yulius/docker/docker.sock`.
+  After an update the server adopts the holders and gives each a front. Within one upkeep tick
+  (30 s) it moves the Docker directory into sessions that started without it, so nothing needs a
+  restart or a new session.
+- **Verify on the host** (as root, after a deploy):
+
+  ```sh
+  sudo yulius doctor --docker-smoke
+  ```
+
+  It runs as the data directory's owner in a delegated transient unit (`systemd-run`), uses the
+  current base, and removes its throwaway sandbox (`docker-smoke-<pid>`) at the end. It prints
+  one line per check and exits 0 only when sandboxes get Docker: a run older than the engine
+  gets the socket, its refusal names the reason, then `docker run --rm hello-world`, a `docker
+  build` and a two-service `docker compose up` in that run, a recreated socket, and `DOCKER_HOST`
+  in a new run. It needs Docker Hub (`hello-world`, `busybox`).
+
+- **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
+  starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
+  network, with a run's view of the files plus its storage, a cgroup namespace rooted at
+  `sandboxes/<sandbox>/engine`, and a seccomp profile of its own that every container inherits,
+  `--privileged` included. Containers count against the sandbox's memory, task and CPU limits.
+  Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
+  `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
+  port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.**
   - Docker installed on the host (`docker-ce` or `docker.io`). The base copies `dockerd`,
     `containerd`, `runc`, `docker-proxy` and the CLI plugins.
@@ -514,7 +536,11 @@ from a sandbox, and no daemon needs to run on the host.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
-  last lines of `<data>/runtime/sandboxes/<sandbox>/engine.log`.
+  reason. Without an engine it names the missing prerequisite and the fix (`YULIUS_SANDBOX_DOCKER=off`,
+  no `dockerd`, no cgroup delegation, a writable executable), the same words as `yulius doctor`.
+  For an engine that did not start, it gives the last lines of
+  `<data>/runtime/sandboxes/<sandbox>/engine.log`. The front's own log is `docker-front.log`
+  beside it.
 
 ### Task intake (Jev)
 
@@ -562,14 +588,49 @@ wins over the file.
   task=… verdict=context|new_scope|drops_scope|redirect percent=…`; a held prompt is also audited
   as `prompt.held`. `journalctl -u yulius | grep 'scope check'` shows whether intake runs.
 
+### Security scans (Vidoc)
+
+Optional ([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
+ADR-0157). With a Vidoc key, every project's agents and granted CI jobs can run
+`yulius security-scan`. Vidoc's `vidoc-1` model reviews the files a branch changed (or, with
+`--all`, the whole repository) and the scan fails on open critical or high findings. **The scanned
+code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key the scan says "not run",
+and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
+
+The key is managed like the Jev key:
+
+- **Setup** offers it as an optional step after the Jev step.
+- **Settings → Instance** lets the superadmin set, replace, test and remove it. The test is one
+  `GET /v1/models` request, which must list `vidoc-1`.
+- **At rest** it is sealed with `master.key`, takes effect at once, is audited as `vidoc.key_set` and
+  `vidoc.key_removed`, and is never logged or returned.
+- **A key file** (`YULIUS_VIDOC_API_KEY_FILE`, owner-only, mode `0600`) is honoured while no key is
+  saved, and **Save it here** moves it into settings.
+
+Agents and CI jobs never get the key. They get `VIDOC_API_KEY=yulius-secret-VIDOC_API_KEY`, and the
+egress proxy replaces it toward `model.vidocsecurity.com` only. CI jobs get it only when their
+`yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). A project's own agent secret named
+`VIDOC_API_KEY` wins over the instance key. Each use is in the secrets audit (`instance:vidoc`).
+Projects onboarded with a key get a `security` CI job, `yulius security-scan --ci`. The scan needs
+`python3` 3.11 or later in the sandboxes. Agents and CI jobs start with an environment of their own,
+so `YULIUS_PYTHON`, which names another interpreter, is set in the job's command or in the session,
+not on the service.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--vidoc-api-key-file` / `YULIUS_VIDOC_API_KEY_FILE` | unset | File holding the instance's Vidoc API key, owned by the service user, mode `0600`. Used while no key is saved in settings; read at start. |
+
+The start log says `Vidoc is on (instance key saved in settings)` (or `… from
+YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
+
 ## 5. First run
 
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
 2. Open the public URL, enter the token, choose the superadmin password (twice) and confirm both
    warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
-   shown next. The last step asks for the Jev API key (optional; skip it to add it later in
-   Settings → Instance).
+   shown next. The last two steps ask for the Jev API key and the Vidoc API key (both optional;
+   skip them to add them later in Settings → Instance).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
@@ -1005,6 +1066,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   moved to `legacy/`. Files written in either mode belong to the service user, so repositories,
   worktrees and homes need no migration. Each sandbox's system layer starts empty. No database
   migration.
+- Upgrading to the instance Vidoc key (SPEC-195, 2026-10-16): migration 0034 adds the instance's
+  sealed Vidoc key. Without a key nothing changes. A project's agent secret `VIDOC_API_KEY` keeps
+  working, and wins over the instance key.
 - Upgrading to updates from main and the Jev key in settings (ADR-18, 2026-10-10): migration 0008
   adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
   configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save

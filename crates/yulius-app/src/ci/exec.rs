@@ -195,6 +195,22 @@ fn bind_run_files(plan: &mut LaunchPlan) {
     }
 }
 
+/// A CI job's PATH: the server's, with the directory of the `yulius` binary first when it is not
+/// on it, so `yulius security-scan` runs in every job (SPEC-195 VSC-001).
+fn ci_path(path: &str, exe: &Path) -> String {
+    let Some(dir) = exe.parent().filter(|d| d.is_absolute()) else {
+        return path.to_owned();
+    };
+    let dir = dir.to_string_lossy();
+    if path.split(':').any(|entry| entry == dir) {
+        path.to_owned()
+    } else if path.is_empty() {
+        dir.into_owned()
+    } else {
+        format!("{dir}:{path}")
+    }
+}
+
 /// The directory of a job's persistent checkout: the definition's name, plus the matrix value's
 /// position for matrix jobs (siblings run in parallel and need their own), plus the lane past
 /// the first (two runs of a sandbox run in parallel and need their own too).
@@ -315,25 +331,30 @@ impl App {
                 }
                 let mut handles = Vec::with_capacity(jobs.len());
                 let share = jobs.len();
+                // One job-end publish at a time, each reading the jobs afresh: the count on
+                // GitHub never goes back (SPEC-198).
+                let publishing = Arc::new(tokio::sync::Mutex::new(()));
                 for job in &jobs {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
                     let checkout = checkout_name(&job, &jobs, lane);
                     let job_cancel = siblings.clone();
                     let stop_siblings = Arc::clone(&siblings_tx);
+                    let publishing = Arc::clone(&publishing);
+                    let run_cancel = cancel.clone();
                     handles.push(tokio::spawn(async move {
                         let no_disk = Arc::clone(&app)
                             .ci_job(&sandbox, &run, &job, share, &checkout, job_cancel)
                             .await;
-                        let failed =
-                            app.deps
-                                .store
-                                .ci_jobs(&run.id, false)
-                                .await
-                                .is_ok_and(|all| {
-                                    all.iter()
-                                        .any(|j| j.id == job.id && j.state == RunState::Failed)
-                                });
+                        let all = app
+                            .deps
+                            .store
+                            .ci_jobs(&run.id, false)
+                            .await
+                            .unwrap_or_default();
+                        let ended = all.iter().find(|j| j.id == job.id).map(|j| j.state);
+                        let others_run = all.iter().any(|j| j.state.is_active());
+                        let failed = ended == Some(RunState::Failed);
                         if (failed || no_disk) && stop_siblings.borrow().is_none() {
                             let reason = if no_disk {
                                 "stopped early: the sandbox is over its disk quota".to_owned()
@@ -341,6 +362,17 @@ impl App {
                                 format!("stopped early: job {} failed", job.name)
                             };
                             let _ = stop_siblings.send(Some(reason));
+                        } else if matches!(ended, Some(RunState::Passed | RunState::Skipped))
+                            && others_run
+                            && stop_siblings.borrow().is_none()
+                            && run_cancel.borrow().is_none()
+                        {
+                            // The run goes on: its status counts this job now, not only once the
+                            // run ends. The run publishes its end after awaiting this task, so
+                            // that final status lands last; the last job leaves it to the end
+                            // (SPEC-198 RCS-001 to RCS-003).
+                            let _one = publishing.lock().await;
+                            app.ci_publish(&run.id).await;
                         }
                         no_disk
                     }));
@@ -649,7 +681,10 @@ impl App {
         dirs: [&Path; 3],
     ) -> Vec<(String, String)> {
         let [home, cache, checkout] = dirs;
-        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        let path = ci_path(
+            &std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+            &self.config.yulius_exe,
+        );
         let mut env = vec![
             ("HOME".to_owned(), home.to_string_lossy().into_owned()),
             ("PATH".to_owned(), path),
@@ -672,6 +707,11 @@ impl App {
                 cache.to_string_lossy().into_owned(),
             ),
             ("YULIUS_SANDBOX".to_owned(), sandbox.slug.clone()),
+            // The base of `yulius security-scan`'s change scan (SPEC-195).
+            (
+                "YULIUS_INTEGRATION_BRANCH".to_owned(),
+                self.profile_of(sandbox).integration_branch,
+            ),
         ];
         if let Some(value) = &job.matrix {
             env.push(("YULIUS_CI_MATRIX".to_owned(), value.clone()));
@@ -715,7 +755,7 @@ impl App {
             );
             return None;
         }
-        let records = match self.deps.store.vault_agent(Some(&sandbox.id)).await {
+        let records = match self.applied_agent_secrets(&sandbox.id).await {
             Ok(records) => records,
             Err(err) => {
                 tracing::warn!(job = %job.id, error = %err, "agent secrets could not be read for a CI job");
@@ -727,9 +767,13 @@ impl App {
             let record = records.iter().find(|r| &r.name == name);
             match (record, SecretName::parse(name)) {
                 (Some(record), _) if record.cd_prod => production.push(name.as_str()),
-                (Some(_), Ok(parsed)) => {
+                (Some(record), Ok(parsed)) => {
                     plan.env.push((name.clone(), placeholder(&parsed)));
-                    given.push(name.as_str());
+                    given.push(if record.id == crate::vidoc_key::VIDOC_SECRET_ID {
+                        "VIDOC_API_KEY (the instance's Vidoc key)"
+                    } else {
+                        name.as_str()
+                    });
                 }
                 _ => missing.push(name.as_str()),
             }
@@ -780,11 +824,9 @@ impl App {
             sandbox_root: self.sandbox_dir(&sandbox.id),
             home: home.to_path_buf(),
             writable: Vec::new(),
-            readonly: self
-                .config
-                .contained_readonly
-                .iter()
-                .cloned()
+            // The binary itself, for `yulius security-scan` (SPEC-195), as agent runs see it.
+            readonly: std::iter::once(self.config.yulius_exe.clone())
+                .chain(self.config.contained_readonly.iter().cloned())
                 .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
                 .collect(),
             binds: Vec::new(),
@@ -1112,6 +1154,23 @@ impl LogTail {
 mod tests {
     use super::*;
 
+    /// SPEC-195 VSC-001: a CI job finds `yulius` (for `yulius security-scan`) on its PATH.
+    #[test]
+    fn a_ci_job_finds_the_yulius_binary_on_its_path() {
+        let exe = Path::new("/opt/yulius/bin/yulius");
+        assert_eq!(
+            ci_path("/usr/local/bin:/usr/bin:/bin", exe),
+            "/opt/yulius/bin:/usr/local/bin:/usr/bin:/bin"
+        );
+        assert_eq!(
+            ci_path("/usr/bin:/opt/yulius/bin:/bin", exe),
+            "/usr/bin:/opt/yulius/bin:/bin",
+            "already there: unchanged"
+        );
+        assert_eq!(ci_path("", exe), "/opt/yulius/bin");
+        assert_eq!(ci_path("/usr/bin", Path::new("yulius")), "/usr/bin");
+    }
+
     /// SPEC-059 CI-303: only a run whose every error is a disk refusal, with nothing failed,
     /// goes back to the queue; a timeout or a failure next to a refusal keeps its verdict.
     #[test]
@@ -1163,13 +1222,13 @@ mod tests {
             system_passwd: None,
             system_group: None,
             host_system: None,
-            engine_socket: Some("/data/runtime/sandboxes/s1/docker.sock".into()),
+            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
         };
         let ci = ci_join(join.clone());
         assert_eq!(ci.cgroup, join.ci_cgroup);
         assert_eq!(ci.holder_pid, 7, "the rest of the join is kept");
         // SPEC-187 DKR-001: a CI job uses the sandbox's Docker engine like an agent.
-        assert_eq!(ci.engine_socket, join.engine_socket);
+        assert_eq!(ci.docker_dir, join.docker_dir);
         // Without delegation there is no group at all, as before.
         let bare = SandboxJoin {
             cgroup: None,

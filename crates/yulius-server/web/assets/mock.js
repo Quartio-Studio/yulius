@@ -11,8 +11,9 @@
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), as=<login> (signed in as another member, a
+// jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), fail=<path> (GETs of that path answer 500),
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
+// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
 import { counter, taskInfo } from './status.js';
@@ -152,12 +153,15 @@ function seed(params) {
       run: null,
     },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
+    // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
+    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
     // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
     failedReads: 0,
     holdPath: params.get('hold') || null,
+    holdPostPath: params.get('holdpost') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed;
     // `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
@@ -274,6 +278,8 @@ function seed(params) {
   db.automations = [
     { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
     { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
+    // A shipped automation an agent created by name (SPEC-042 OPS-010): a default all the same (SPEC-197).
+    { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
@@ -309,7 +315,7 @@ function seed(params) {
   if (params.get('tasks') === '0') db.tasks = [];
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
   // `hold=frames` keeps the sandbox Chrome's picture back instead.
-  if (db.holdPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -2226,10 +2232,11 @@ route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
 });
 route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
-// Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
+// Shipped (default) automations (SPEC-042, SPEC-197): the catalog, matched to a sandbox's automations by name.
 const AUTOMATION_TEMPLATES = [
   { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
   { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are ranked and the 5 most important actionable ones get a task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Get the 5 most important actionable open GitHub issues of this repository solved, among those written by the core team or their agents that no running task owns.', workflow_id: null },
+  { id: 'nightly-dev-deploy', name: 'Deploy dev every night', description: 'Every night, dev is deployed from the integration branch with the project’s CD and tested; a failure becomes an issue.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Deploy dev with `cd_deploy` and test it.', workflow_id: null },
 ];
 const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {
@@ -3328,6 +3335,35 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
 });
 
+// The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
+function vidocView(db) {
+  const v = db.vidoc;
+  const source = v.key ? 'settings' : v.config ? 'config' : null;
+  return { configured: Boolean(source), source, set_at: v.key ? v.setAt : null, set_by: v.key ? v.setBy : null, config_present: v.config, config_error: null };
+}
+route('GET', '/api/admin/vidoc', ({ db }) => { superadminOnly(db); return vidocView(db); });
+route('PUT', '/api/admin/vidoc', ({ db, body }) => {
+  superadminOnly(db);
+  const key = String(body.key || '').trim();
+  if (key.length < 8 || /\s/.test(key)) fail(422, 'invalid', 'the Vidoc key must be 8-4096 printable characters without spaces');
+  Object.assign(db.vidoc, { key, setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return vidocView(db);
+});
+route('DELETE', '/api/admin/vidoc', ({ db }) => { superadminOnly(db); db.vidoc.key = null; return vidocView(db); });
+route('POST', '/api/admin/vidoc/adopt', ({ db }) => {
+  superadminOnly(db);
+  if (!db.vidoc.config) fail(409, 'conflict', 'YULIUS_VIDOC_API_KEY_FILE holds no usable key');
+  Object.assign(db.vidoc, { key: 'from-config', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return vidocView(db);
+});
+route('POST', '/api/admin/vidoc/test', ({ db }) => {
+  superadminOnly(db);
+  const key = db.vidoc.key || (db.vidoc.config ? 'from-config' : null);
+  if (!key) return { ok: false, result: 'none', message: 'No Vidoc key is set.', latency_ms: null };
+  if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Vidoc refused this key. Check it and save it again.', latency_ms: 180 };
+  return { ok: true, result: 'ok', message: 'Vidoc answered: the key works and vidoc-1 is available.', latency_ms: 160 };
+});
+
 // The pool's tokens over 7 rolling days (SPEC-110), priced as Opus 5.5 ($4 in, $20 out, $0.20
 // cache read, $5 cache write per million).
 const poolSpend = (k) => {
@@ -3614,7 +3650,13 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];
 
 async function handleFetch(db, url, init = {}) {
-  // Counted as the page asks, before the simulated latency (SPEC-108 tests).
+  // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
+  // GET by path (SPEC-197).
+  if ((init.method || 'GET') === 'GET') {
+    const asked = new URL(url, ORIGIN).pathname;
+    db.asked = db.asked || {};
+    db.asked[asked] = (db.asked[asked] || 0) + 1;
+  }
   if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
   // The Editor's file reads, as asked, and whether a save of a file was on its way (SPEC-181).
   const fileContent = /^\/api\/sandboxes\/[^/]+\/files\/content$/.test(new URL(url, ORIGIN).pathname);
@@ -3643,7 +3685,11 @@ async function handleFetchAfterLatency(db, url, init) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
-  if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
+  // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (method === 'POST' && u.pathname === db.holdPostPath))) {
+    db.heldWaiting = (db.heldWaiting || 0) + 1;
+    try { await db.held; } finally { db.heldWaiting -= 1; }
+  }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
     db.failedReads += 1;

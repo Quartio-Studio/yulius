@@ -6,6 +6,50 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The automations Yulius ships are the Automations page's defaults (SPEC-197, ADR-0159, task #183).
+  They sat below the list as "Ready-made automations" with Enable, and two an agent had created by
+  name read "Created by an agent". The page now opens with Defaults, as Workflows does: all three
+  shipped automations badged "Default" with what they do, each switched on or off in place, then
+  Custom for the project's own. Deleting a default resets it: it stays listed, off, and switching it
+  on again starts from the shipped version.
+- A running CI run's commit status counts the jobs that already ended (SPEC-198, task #184, fixes
+  #604). GitHub kept "Running on Yulius: 0 of 3 jobs passed" until a run ended, so the Superagent
+  took PR #600's finished Vidoc scan for a running one and answered that no PR had been scanned.
+  Each job that passes or ends skipped while other jobs still run now publishes the status again,
+  and a published status resets the retry attempts, so a refused final status is still retried.
+  The stale issue #470 is closed.
+- Docker works in every sandbox and session, without a restart or a new session (SPEC-196,
+  ADR-0158, task #182, fixes #597). After #583, sandboxes busy during the upgrade kept no engine,
+  and sessions started before had no socket and no reason.
+  - A Docker front beside every holder, adopted ones included, serves the socket: the engine on
+    demand, a relay to a holder that already runs one, or a Docker-API error naming the missing
+    prerequisite and the operator's fix.
+  - Runs bind the directory `/run/yulius/docker` with `DOCKER_HOST` and a `/var/run/docker.sock`
+    link, so a recreated socket reaches them. Sessions started without it get the directory
+    moved into their mount namespace within one upkeep tick.
+  - The briefing says `docker info` checks the engine or says why there is none; `yulius doctor`
+    uses the same reasons.
+  - `sudo yulius doctor --docker-smoke` proves it on a host: a throwaway sandbox goes through an
+    upgrade, then hello-world, a build, compose, a recreated socket and a new run. The host test
+    `isolation_docker_live` runs the same scenario. Neither can run in a sandbox or in Yulius CI.
+
+- Vidoc is built into Yulius, and the security scan runs on vidoc-1 (SPEC-195, ADR-0157,
+  task #181).
+  - **The instance key.** An optional instance Vidoc key, managed like the Jev key: sealed,
+    `YULIUS_VIDOC_API_KEY_FILE`, a card on the Instance page (set, test, replace, remove, adopt) and
+    a skippable setup step. Agents and CI jobs granted `VIDOC_API_KEY` get its placeholder. The
+    egress proxy adds the key toward `model.vidocsecurity.com` only, and a project's own secret
+    wins.
+  - **The new scanner.** `scripts/vidoc_scan.py` replaces the dead Vidoc CLI and `api.vidoc.dev`.
+    It sends `HEAD`'s changed files, or the whole repository with `--all`, in bounded chunks to
+    `/v1/messages` and fails on open critical or high findings. Exit 2 means not run.
+    `.config/vidoc.toml` gains `exclude` and committed `[[ignore]]` false positives.
+  - **Every project.** The binary embeds the scanner as `yulius security-scan`, which agents run
+    through their shim and CI jobs find on their PATH.
+  - **Infra bootstrap.** The briefing and onboarding add the `security` job only when the instance
+    has a key.
+  - **This project.** The `security` job runs `python3 scripts/vidoc_scan.py --ci`, so pull
+    requests are really scanned again.
 - A multi-line key pasted as an agent secret keeps its line breaks (SPEC-193, ADR-0156, task #179,
   fixes #591). The value field is one line, and the browser turned a pasted PEM or OpenSSH key's
   line breaks into spaces without a word.

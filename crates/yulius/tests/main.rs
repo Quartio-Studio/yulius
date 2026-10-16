@@ -80,3 +80,4 @@ mod trusted_proxy;
 mod ui_contract;
 mod update_supervision;
 mod uploads;
+mod vidoc_key;

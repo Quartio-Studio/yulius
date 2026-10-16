@@ -32,27 +32,50 @@ pub fn join(join: &SandboxJoin) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn join_namespaces(join: &SandboxJoin) -> io::Result<()> {
+    join_holder(join.holder_pid, join.user_ns, join.net_ns, join.mnt_ns)
+}
+
+/// `/proc/<pid>/ns/<kind>` of a holder, refused unless it still has the recorded inode (a pid
+/// the holder no longer owns).
+///
+/// # Errors
+/// It is gone or changed.
+pub fn holder_ns(pid: u32, kind: &str, expected: u64) -> io::Result<std::fs::File> {
     use std::os::unix::fs::MetadataExt as _;
+    let file = std::fs::File::open(format!("/proc/{pid}/ns/{kind}"))?;
+    if file.metadata()?.ino() == expected {
+        Ok(file)
+    } else {
+        Err(io::Error::other(format!(
+            "the sandbox's {kind} namespace changed (holder restarted)"
+        )))
+    }
+}
 
+/// Joins the user, network and mount namespaces of the holder `pid` (checked against the
+/// recorded inodes), user namespace first. The caller must be single-threaded.
+///
+/// # Errors
+/// A namespace is gone or changed, or `setns` is refused.
+#[cfg(target_os = "linux")]
+pub fn join_holder(pid: u32, user_ns: u64, net_ns: u64, mnt_ns: u64) -> io::Result<()> {
     use nix::sched::{CloneFlags, setns};
-
-    let open = |kind: &str, expected: u64| -> io::Result<std::fs::File> {
-        let file = std::fs::File::open(format!("/proc/{}/ns/{kind}", join.holder_pid))?;
-        if file.metadata()?.ino() == expected {
-            Ok(file)
-        } else {
-            Err(io::Error::other(format!(
-                "the sandbox's {kind} namespace changed (holder restarted)"
-            )))
-        }
-    };
-    let user = open("user", join.user_ns)?;
-    let net = open("net", join.net_ns)?;
-    let mnt = open("mnt", join.mnt_ns)?;
+    let user = holder_ns(pid, "user", user_ns)?;
+    let net = holder_ns(pid, "net", net_ns)?;
+    let mnt = holder_ns(pid, "mnt", mnt_ns)?;
     setns(&user, CloneFlags::CLONE_NEWUSER).map_err(io::Error::from)?;
     setns(&net, CloneFlags::CLONE_NEWNET).map_err(io::Error::from)?;
     setns(&mnt, CloneFlags::CLONE_NEWNS).map_err(io::Error::from)?;
     std::env::set_current_dir("/")
+}
+
+/// Joins a holder's namespaces (Linux only).
+///
+/// # Errors
+/// Always here.
+#[cfg(not(target_os = "linux"))]
+pub fn join_holder(_pid: u32, _user_ns: u64, _net_ns: u64, _mnt_ns: u64) -> io::Result<()> {
+    Err(io::Error::other("sandbox namespaces are Linux-only"))
 }
 
 #[cfg(not(target_os = "linux"))]

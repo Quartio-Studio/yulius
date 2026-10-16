@@ -1,10 +1,10 @@
-"""The Vidoc security gate (SPEC-128): settings, the repository, the CLI run and the verdict."""
+"""The Vidoc security scan on vidoc-1 (SPEC-195): config, file selection, chunking, the answer
+contract, retries, the verdict and the CI mode, against real Git repositories and a fake Vidoc."""
 import contextlib
 import http.server
 import io
 import json
 import os
-import signal
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,462 +13,641 @@ import tempfile
 import threading
 import time
 import unittest
-import unittest.mock
+import urllib.error
 
 import vidoc_scan
 from vidoc_scan import Failed, Usage
 
-SCAN_ID = "019f8a10-9e8d-7c6b-a5f4-3e2d1c0b9a87"
-CODEBASE = "019f8a1b-0c2d-73e4-a5f6-7b8c9d0e1f2a"
-BRANCH = "feat/109-vidoc"
-TOKEN = "yulius-secret-VIDOC_API_KEY"
-MERGE_BASE = "b0a35287149d5936984176bb1190dc3e8dca9f9a"
+KEY = "yulius-secret-VIDOC_API_KEY"
+PLANTED = 'import os\n\n\ndef run(name):\n    os.system("ls " + name)\n'
+CLEAN = "def add(a, b):\n    return a + b\n"
 
 
-def scan_record(**changes):
-    record = {"id": SCAN_ID, "branch": BRANCH, "status": "completed", "codebaseId": CODEBASE}
-    record.update(changes)
-    return record
+def answer(findings=(), text=None):
+    """A Messages API answer whose text block is the findings JSON (or `text`)."""
+    body = text if text is not None else json.dumps({"findings": list(findings)})
+    return {"id": "msg_1", "type": "message", "role": "assistant", "model": "vidoc-1",
+            "content": [{"type": "thinking", "thinking": "Looking.", "signature": "s"},
+                        {"type": "text", "text": body}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 10, "output_tokens": 5}}
 
 
-def issues_page(issues=(), total=None):
-    return {"issues": list(issues), "total": len(issues) if total is None else total,
-            "limit": 100, "offset": 0}
+def files_of(content):
+    """The paths of the file markers in a request's user message."""
+    return [line.split(" ", 2)[1] for line in content.splitlines()
+            if line.startswith(vidoc_scan.FILE_MARK)]
 
 
-ISSUE = {"severity": "high", "name": "Command injection in hook runner",
-         "path": "crates/yulius-app/src/hooks.rs", "line": 42,
-         "url": "https://app.vidoc.dev/projects/p/issues?issue=i"}
+def judge(body, headers=None):
+    """The fake model: a critical finding on every `os.system(` line, else nothing."""
+    content = body["messages"][0]["content"]
+    findings, path = [], None
+    for line in content.splitlines():
+        if line.startswith(vidoc_scan.FILE_MARK):
+            path = line.split(" ", 2)[1]
+        elif "os.system(" in line and "|" in line:
+            number = int(line.split("|", 1)[0])
+            findings.append({"severity": "critical", "file": path, "line": number,
+                             "title": "OS command injection",
+                             "detail": "name reaches a shell; pass arguments as a list."})
+    return 200, answer(findings), {}
 
 
-class FakeApi:
-    """Answers GET paths from a table; records every request."""
+class FakeVidoc:
+    """A Messages API on loopback. `behave(body, headers) -> (status, json, headers)`."""
 
-    def __init__(self, answers):
-        self.answers = answers
+    def __init__(self, behave=judge):
+        self.behave = behave
         self.requests = []
+        fake = self
 
-    def get(self, path, params=None):
-        self.requests.append((path, params))
-        answer = self.answers[path]
-        if callable(answer):
-            answer = answer(params)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("content-length") or 0)
+                body = json.loads(self.rfile.read(length))
+                headers = {k.lower(): v for k, v in self.headers.items()}
+                fake.requests.append((self.path, headers, body))
+                status, payload, extra = fake.behave(body, headers)
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(data)))
+                for name, value in extra.items():
+                    self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(data)
 
+            def log_message(self, *args):
+                pass
 
-class FakeCli:
-    def __init__(self, code=0, output=f"Indexing...\nScan started with ID: {SCAN_ID}\nDone\n"):
-        self.code, self.output, self.env = code, output, None
+        class Server(http.server.ThreadingHTTPServer):
+            # Handler threads are joined on close, so none outlives its test (a daemon thread
+            # writing to stderr at interpreter shutdown aborts Python).
+            daemon_threads = False
+            block_on_close = True
 
-    def __call__(self, env):
-        self.env = env
-        return self.code, self.output
+            def handle_error(self, request, client_address):
+                # A client that gave up (a deadline test) is expected; anything else is shown.
+                if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+                    super().handle_error(request, client_address)
 
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
 
-class FakeGit:
-    """A clean branch two commits ahead of origin/dev unless told otherwise."""
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
 
-    def __init__(self, **answers):
-        self.answers = {
-            "symbolic-ref": (0, BRANCH + "\n"),
-            "status": (0, ""),
-            "remote": (0, "origin\n"),
-            "show": (0, "* remote origin\n  Fetch URL: https://github.com/o/r.git\n  HEAD branch: dev\n"),
-            "ls-remote": (0, "6f2177e7e7259c81f7454baead867cc121577166\tHEAD\n"),
-            "fetch": (0, ""),
-            "merge-base": (0, MERGE_BASE + "\n"),
-            "diff": (0, "scripts/vidoc_scan.py\ndocs/changes.md\n"),
-        }
-        self.answers.update(answers)
-        self.calls, self.envs = [], {}
+    def close(self):
+        self.release()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(10)
 
-    def __call__(self, *args, env=None):
-        self.calls.append(args)
-        self.envs[args] = env
-        rest = list(args)
-        while rest[0] == "-c":
-            rest = rest[2:]
-        key = "show" if rest[:2] == ["remote", "show"] else rest[0]
-        return self.answers[key]
+    def release(self):
+        """Wakes handlers waiting on `stalled` (set by a test), before the server closes."""
+        stalled = getattr(self, "stalled", None)
+        if stalled is not None:
+            stalled.set()
 
-
-def api_for(scan=None, issues=None):
-    return FakeApi({
-        "/v1/codebase": {"codebases": []},
-        f"/v1/scan-workflows/{SCAN_ID}/status": scan if scan is not None else scan_record(),
-        "/v1/issues": issues if issues is not None else issues_page(),
-    })
-
-
-def run(api=None, cli=None, git=None, env=None):
-    out = io.StringIO()
-    env = {"VIDOC_API_KEY": TOKEN} if env is None else env
-    code = vidoc_scan.gate(env, git or FakeGit(), api or api_for(), cli or FakeCli(),
-                           Path("/tmp/vidoc.log"), out)
-    return code, out.getvalue()
+    def scanned(self):
+        return sorted({p for _, _, body in self.requests for p in files_of(body["messages"][0]["content"])})
 
 
-class Switch(unittest.TestCase):
-    """SPEC-131: `.config/vidoc.toml` turns the gate on or off; it ships on."""
+def git(root, *args):
+    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True,
+                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"})
 
-    # Git of the temporary repositories only, whatever GIT_* variables the suite runs under.
-    git_env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
-               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
-    def root_with(self, text=None):
-        root = Path(tempfile.mkdtemp(prefix="vidoc-switch-"))
-        self.addCleanup(shutil.rmtree, root)
-        if text is not None:
-            (root / ".config").mkdir()
-            (root / ".config" / "vidoc.toml").write_text(text)
-        return root
+def write(root, files):
+    for path, text in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(text, bytes):
+            target.write_bytes(text)
+        else:
+            target.write_text(text)
 
-    def test_the_repository_ships_the_gate_enabled(self):
-        self.assertTrue(vidoc_scan.switch(Path(__file__).resolve().parent.parent))
 
-    def test_on_off_and_a_missing_file_which_means_on(self):
-        self.assertTrue(vidoc_scan.switch(self.root_with("enabled = true\n")))
-        self.assertFalse(vidoc_scan.switch(self.root_with("# off for now\nenabled = false\n")))
-        self.assertTrue(vidoc_scan.switch(self.root_with()))
+class Repo:
+    """A repository whose `origin/dev` (origin's HEAD) holds `base`, checked out on a feature
+    branch that adds `change` in one commit."""
 
-    def test_a_malformed_switch_is_not_run_and_names_the_file(self):
-        for text in ("enabled = \n", 'enabled = "false"\n', "enabled = 0\n", "# nothing\n",
-                     "enabled = true\nscan = false\n", "[vidoc]\nenabled = false\n"):
-            with self.subTest(text=text), self.assertRaises(Usage) as caught:
-                vidoc_scan.switch(self.root_with(text))
-            self.assertIn(".config/vidoc.toml", str(caught.exception))
+    def __init__(self, test, base, change=None, origin_head=True):
+        self.root = Path(tempfile.mkdtemp(prefix="vidoc-repo-"))
+        test.addCleanup(shutil.rmtree, self.root, True)
+        git(self.root, "init", "-q", "-b", "dev")
+        write(self.root, base)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "base")
+        git(self.root, "update-ref", "refs/remotes/origin/dev", "HEAD")
+        if origin_head:
+            git(self.root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev")
+        git(self.root, "checkout", "-q", "-b", "feat/x")
+        if change:
+            self.commit(change)
 
-    def run_main(self, root):
-        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
-        self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
+    def commit(self, files, message="change"):
+        write(self.root, files)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", message)
+
+
+class Scanning(unittest.TestCase):
+    def fake(self, behave=judge):
+        server = FakeVidoc(behave)
+        self.addCleanup(server.close)
+        return server
+
+    def run_scan(self, repo, server, *argv, env=None):
+        environment = {"VIDOC_API_KEY": KEY, "VIDOC_API_URL": server.url if server else ""}
+        environment.update(env or {})
         out, err = io.StringIO(), io.StringIO()
+        sleeps = []
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            with unittest.mock.patch.dict(os.environ, self.git_env, clear=True):
-                code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
-        return code, out.getvalue(), err.getvalue()
+            code = vidoc_scan.main(list(argv), env=environment, root=repo.root,
+                                   sleep=sleeps.append)
+        self.sleeps = sleeps
+        return code, out.getvalue() + err.getvalue()
 
-    def committed(self, text):
-        root = self.root_with(text)
-        for args in (["init", "-q"], ["add", "-A"],
-                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "switch"]):
-            subprocess.run(["git", *args], cwd=root, env=self.git_env, check=True,
-                           capture_output=True)
-        return root
 
-    def test_only_a_committed_switch_turns_the_gate_off(self):
-        off = (0, "enabled = false\n")
-        vidoc_scan.committed_switch(FakeGit(status=(0, ""), **{"cat-file": off}))
-        for answers in ({"status": (0, " M .config/vidoc.toml\n")},
-                        {"status": (0, "?? .config/vidoc.toml\n")}, {"status": (128, "")},
-                        {"cat-file": (128, "")}, {"cat-file": (0, "enabled = true\n")},
-                        {"cat-file": (0, "enabled = \n")}):
-            answers = {"cat-file": off, **answers}
-            with self.subTest(answers=answers), self.assertRaises(Usage) as caught:
-                vidoc_scan.committed_switch(FakeGit(**answers))
-            self.assertIn(".config/vidoc.toml", str(caught.exception))
+class ChangeScan(Scanning):
+    """VSC-003, VSC-008: the change scan sends only the branch's files and fails on findings."""
 
-    def test_a_switch_hidden_from_git_status_is_still_not_run(self):
-        root = self.committed("enabled = true\n")
-        subprocess.run(["git", "update-index", "--skip-worktree", ".config/vidoc.toml"], cwd=root,
-                       env=self.git_env, check=True)
-        (root / ".config" / "vidoc.toml").write_text("enabled = false\n")
-        code, out, err = self.run_main(root)
-        self.assertEqual(code, 2)
-        self.assertNotIn("disabled", out)
-        self.assertIn("committed", err)
+    def test_a_planted_injection_fails_the_change_scan(self):
+        repo = Repo(self, {"lib/ok.py": CLEAN}, {"app/run.py": PLANTED})
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 1, output)
+        self.assertIn("[critical] app/run.py:5 OS command injection", output)
+        self.assertIn("pass arguments as a list", output)
+        self.assertEqual(server.scanned(), ["app/run.py"], "only the changed file is sent")
 
-    def test_an_uncommitted_off_switch_is_not_run(self):
-        root = self.committed("enabled = true\n")
-        (root / ".config" / "vidoc.toml").write_text("enabled = false\n")
-        code, out, err = self.run_main(root)
-        self.assertEqual(code, 2)
-        self.assertNotIn("disabled", out)
-        self.assertIn("uncommitted", err)
+    def test_clean_changes_pass_and_say_what_was_scanned(self):
+        repo = Repo(self, {"app/run.py": PLANTED}, {"lib/ok.py": CLEAN})
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(server.scanned(), ["lib/ok.py"])
+        self.assertIn("change scan", output)
+        self.assertIn("no open critical or high finding", output)
 
-    def test_disabled_passes_at_once_without_a_key_and_says_nothing_was_scanned(self):
-        code, out, err = self.run_main(self.committed("enabled = false\n"))
-        self.assertEqual(code, 0)
-        self.assertIn("Security scan disabled: .config/vidoc.toml sets enabled = false; "
-                      "nothing was scanned.", out)
-        self.assertEqual(err, "")
+    def test_each_request_is_a_vidoc_1_message_with_the_key_in_x_api_key_only(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake()
+        self.assertEqual(self.run_scan(repo, server)[0], 0)
+        path, headers, body = server.requests[0]
+        self.assertEqual(path, "/v1/messages")
+        self.assertEqual(headers["x-api-key"], KEY)
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+        self.assertNotIn("authorization", headers)
+        self.assertEqual(body["model"], "vidoc-1")
+        self.assertIn("untrusted", body["system"])
+        self.assertIn("1| def add(a, b):", body["messages"][0]["content"])
+        self.assertEqual([k for k, v in headers.items() if KEY in v], ["x-api-key"])
 
-    def test_enabled_still_needs_a_key(self):
-        code, _, err = self.run_main(self.root_with("enabled = true\n"))
-        self.assertEqual(code, 2)
-        self.assertIn("No Vidoc API key", err)
+    def test_the_scan_reads_commits_not_the_working_tree(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        (repo.root / "b.py").write_text(PLANTED)
+        (repo.root / "untracked.py").write_text(PLANTED)
+        git(repo.root, "checkout", "-q", "--detach")
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(server.scanned(), ["b.py"])
 
-    def test_a_malformed_switch_exits_2_from_main(self):
-        code, _, err = self.run_main(self.root_with('enabled = "no"\n'))
-        self.assertEqual(code, 2)
-        self.assertIn("Security scan not run: .config/vidoc.toml", err)
+    def test_deleted_files_and_nothing_changed(self):
+        repo = Repo(self, {"a.py": PLANTED, "b.py": CLEAN})
+        git(repo.root, "rm", "-q", "a.py")
+        git(repo.root, "commit", "-q", "-m", "drop")
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(server.requests, [])
+        self.assertIn("nothing to scan", output)
+
+    def test_the_integration_branch_yulius_names_is_the_base(self):
+        # Review minor 3: origin's default branch (main) is not where the project integrates.
+        repo = Repo(self, {"a.py": CLEAN}, origin_head=False)
+        git(repo.root, "update-ref", "refs/remotes/origin/main", "refs/remotes/origin/dev~0")
+        git(repo.root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(repo.root, "checkout", "-q", "dev")
+        repo.commit({"on_dev.py": CLEAN}, "dev moves on")
+        git(repo.root, "update-ref", "refs/remotes/origin/dev", "HEAD")
+        git(repo.root, "checkout", "-q", "-b", "feat/y")
+        repo.commit({"mine.py": CLEAN})
+        server = self.fake()
+        code, output = self.run_scan(repo, server, env={"YULIUS_INTEGRATION_BRANCH": "dev"})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(server.scanned(), ["mine.py"])
+        self.assertIn("origin/dev", output)
+        server = self.fake()
+        self.assertEqual(self.run_scan(repo, server)[0], 0)
+        self.assertEqual(server.scanned(), ["mine.py", "on_dev.py"], "origin/HEAD without it")
+
+    def test_an_explicit_base_wins_and_no_base_is_not_run(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN}, origin_head=False)
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 2, output)
+        self.assertIn("--base", output)
+        code, output = self.run_scan(repo, server, "--base", "origin/dev")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(server.scanned(), ["b.py"])
+
+
+class BroadScan(Scanning):
+    """VSC-003, VSC-005: --all sends every scannable tracked file in bounded chunks."""
+
+    def test_every_scannable_file_is_sent_in_bounded_chunks(self):
+        big = "".join(f"value_{i} = {i}  # {'x' * 60}\n" for i in range(3000))
+        repo = Repo(self, {"a.py": CLEAN, "src/big.py": big, "src/run.py": PLANTED,
+                           "README.md": "# docs\n", "vendor/lib.js": "eval(x)\n",
+                           "logo.png": b"\x89PNG\r\n\x1a\n\x00\x00"})
+        server = self.fake()
+        code, output = self.run_scan(repo, server, "--all")
+        self.assertEqual(code, 1, output)
+        self.assertEqual(server.scanned(), ["a.py", "src/big.py", "src/run.py"])
+        for _, _, body in server.requests:
+            self.assertLessEqual(len(body["messages"][0]["content"].encode()),
+                                 vidoc_scan.CHUNK_BYTES + 2048)
+        parts = [line for _, _, body in server.requests
+                 for line in body["messages"][0]["content"].splitlines()
+                 if line.startswith(vidoc_scan.FILE_MARK + " src/big.py")]
+        self.assertGreater(len(parts), 2, "the big file is split into line ranges")
+        # Chunks are reviewed several at a time, so requests arrive in any order.
+        self.assertEqual(sum("lines 1-" in part for part in parts), 1)
+        self.assertEqual(sum(part.endswith("-3000 of 3000") for part in parts), 1)
+        self.assertIn("broad scan", output)
+        self.assertIn("[critical] src/run.py:5", output)
+        self.assertIn("skipped 3 file(s)", output)
+
+    def test_past_the_budget_the_rest_is_listed_and_the_scan_is_not_run(self):
+        files = {f"m{i}.py": f"# {'y' * 200}\n" * 200 for i in range(6)}
+        repo = Repo(self, files)
+        server = self.fake()
+        code, output = self.run_scan(repo, server, "--all", "--max-bytes", "90000")
+        self.assertEqual(code, 2, output)
+        self.assertIn("not scanned", output)
+        self.assertIn("m5.py", output)
+        self.assertLess(len(server.scanned()), 6)
+
+    def test_findings_still_fail_an_incomplete_scan(self):
+        files = {"a.py": PLANTED, **{f"m{i}.py": f"# {'y' * 200}\n" * 200 for i in range(6)}}
+        repo = Repo(self, files)
+        code, output = self.run_scan(repo, self.fake(), "--all", "--max-bytes", "90000",
+                                     "--jobs", "1")
+        self.assertEqual(code, 1, output)
+
+    def test_an_unwritable_report_keeps_the_verdict(self):
+        repo = Repo(self, {"a.py": PLANTED})
+        code, output = self.run_scan(repo, self.fake(), "--all", "--report",
+                                     str(repo.root / "no" / "such" / "dir" / "r.json"))
+        self.assertEqual(code, 1, output)
+        self.assertIn("could not write the report", output)
+
+    def test_a_file_name_with_a_line_break_keeps_its_own_content(self):
+        # Review minor 5: `git cat-file --batch` reads names line by line.
+        repo = Repo(self, {"a.py": CLEAN, "b\nc.py": PLANTED, "z.py": CLEAN})
+        server = self.fake()
+        code, output = self.run_scan(repo, server, "--all")
+        self.assertEqual(code, 1, output)
+        contents = "".join(body["messages"][0]["content"] for _, _, body in server.requests)
+        self.assertIn('os.system("ls " + name)', contents)
+        self.assertEqual(contents.count("os.system"), 1, "no content under another path")
+
+    def test_a_report_file_holds_findings_and_unscanned_files(self):
+        repo = Repo(self, {"a.py": PLANTED, "b.md": "x\n"})
+        report = repo.root.parent / f"{repo.root.name}-report.json"
+        self.addCleanup(report.unlink, True)
+        code, _ = self.run_scan(repo, self.fake(), "--all", "--report", str(report))
+        self.assertEqual(code, 1)
+        data = json.loads(report.read_text())
+        self.assertEqual(data["mode"], "broad")
+        self.assertEqual([f["file"] for f in data["findings"]], ["a.py"])
+        self.assertEqual(data["skipped"], [{"path": "b.md", "reason": "prose"}])
+        self.assertEqual(data["unscanned"], [])
+
+
+class Service(Scanning):
+    """VSC-007, VSC-008: retries, refusals, quota and unreadable answers."""
+
+    def test_rate_limits_are_retried_with_retry_after(self):
+        calls = []
+
+        def behave(body, headers):
+            calls.append(1)
+            if len(calls) < 3:
+                return 429, {"type": "error", "error": {"message": "slow down"}}, {"retry-after": "7"}
+            return judge(body)
+
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        code, output = self.run_scan(repo, self.fake(behave))
+        self.assertEqual(code, 1, output)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.sleeps, [7, 7])
+
+    def test_an_outage_past_the_retries_is_not_run(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake(lambda body, headers: (503, {"error": {"message": "down"}}, {}))
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 2, output)
+        self.assertEqual(len(server.requests), vidoc_scan.ATTEMPTS)
+        self.assertEqual(self.sleeps, [2, 4, 8, 16])
+        self.assertIn("cannot be reached", output)
+
+    def test_a_refused_key_or_no_quota_is_not_run(self):
+        for status, words in ((401, "refused the key"), (403, "refused the key"),
+                              (402, "out of quota")):
+            with self.subTest(status=status):
+                repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+                server = self.fake(lambda body, headers, s=status: (s, {"error": {"message": "no"}}, {}))
+                code, output = self.run_scan(repo, server)
+                self.assertEqual(code, 2, output)
+                self.assertIn(words, output)
+                self.assertEqual(len(server.requests), 1, "never retried")
+
+    def test_an_unreachable_service_is_not_run(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake()
+        url = server.url
+        server.close()
+        code, output = self.run_scan(repo, None, env={"VIDOC_API_URL": url})
+        self.assertEqual(code, 2, output)
+        self.assertIn("cannot be reached", output)
+
+    def test_the_deadline_bounds_a_stalled_request(self):
+        # Review M1: a request already in flight cannot outlive the deadline (each request's
+        # timeout is what is left of it, and nothing is retried past it).
+        release = threading.Event()
+
+        def stall(body, headers):
+            release.wait(30)
+            return judge(body)
+
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake(stall)
+        server.stalled = release
+        started = time.monotonic()
+        code, output = self.run_scan(repo, server, "--deadline-minutes", "0.02")
+        self.assertLess(time.monotonic() - started, 15, "bounded by the deadline")
+        self.assertEqual(code, 2, output)
+        self.assertIn("deadline", output)
+        self.assertIn("not scanned: b.py", output)
+
+    def test_findings_are_printed_as_they_arrive(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        code, output = self.run_scan(repo, self.fake())
+        self.assertEqual(code, 1, output)
+        first = output.index("found [critical] b.py:5")
+        self.assertLess(first, output.index("chunk 1/1 reviewed"), output)
+
+    def test_an_error_body_that_cannot_be_read_still_maps_the_status(self):
+        class Broken:
+            def read(self, n=-1):
+                raise OSError("connection reset")
+
+            def close(self):
+                pass
+
+        error = urllib.error.HTTPError("http://x", 401, "no", {}, Broken())
+        client = vidoc_scan.Client("http://127.0.0.1:9", KEY, lambda s: None)
+        client.opener = type("O", (), {"open": lambda self, *a, **k: (_ for _ in ()).throw(error)})()
+        with self.assertRaises(Usage):
+            client.post({"model": "vidoc-1"}, time.monotonic() + 60)
+
+    def test_an_unreadable_answer_is_retried_then_fails(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake(lambda body, headers: (200, answer(text="Sure! Looks fine."), {}))
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(len(server.requests), 3)
+        self.assertIn("could not be read", output)
+
+    def test_another_client_error_fails(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake(lambda body, headers: (400, {"error": {"message": "bad"}}, {}))
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(len(server.requests), 1)
+
+    def test_an_old_python_is_not_run(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        saved, vidoc_scan.tomllib = vidoc_scan.tomllib, None
+        self.addCleanup(setattr, vidoc_scan, "tomllib", saved)
+        code, output = self.run_scan(repo, self.fake())
+        self.assertEqual(code, 2, output)
+        self.assertIn("Python 3.11", output)
+
+    def test_no_key_is_not_run(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        code, output = self.run_scan(repo, self.fake(), env={"VIDOC_API_KEY": ""})
+        self.assertEqual(code, 2, output)
+        self.assertIn("No Vidoc key", output)
+
+
+class Config(Scanning):
+    """VSC-002, VSC-004, VSC-009, ADR-0107: the committed `.config/vidoc.toml`."""
+
+    def test_a_committed_switch_turns_the_scan_off(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED, ".config/vidoc.toml": "enabled = false\n"})
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 0, output)
+        self.assertIn("Security scan disabled", output)
+        self.assertEqual(server.requests, [])
+
+    def test_an_uncommitted_switch_does_not_count(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        write(repo.root, {".config/vidoc.toml": "enabled = false\n"})
+        code, output = self.run_scan(repo, self.fake())
+        self.assertEqual(code, 1, output)
+        self.assertIn("committed", output)
+
+    def test_excluded_paths_are_not_sent(self):
+        repo = Repo(self, {"a.py": CLEAN},
+                    {"gen/x.py": PLANTED, "b.py": CLEAN,
+                     ".config/vidoc.toml": 'enabled = true\nexclude = ["gen/*"]\n'})
+        server = self.fake()
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("gen/x.py", server.scanned())
+
+    def test_an_ignored_false_positive_passes_and_is_shown(self):
+        config = ('enabled = true\n[[ignore]]\npath = "app/*.py"\ntitle = "command injection"\n'
+                  'reason = "name is a fixed constant (reviewed in #9)"\n')
+        repo = Repo(self, {"a.py": CLEAN}, {"app/run.py": PLANTED, ".config/vidoc.toml": config})
+        code, output = self.run_scan(repo, self.fake())
+        self.assertEqual(code, 0, output)
+        self.assertIn("ignored", output)
+        self.assertIn("name is a fixed constant", output)
+
+    def test_malformed_configs_are_not_run(self):
+        for text in ("enabled = 1\n", "enabled = true\nmystery = 2\n", "[[ignore]]\npath = 'a'\n",
+                     "enabled = true\n[[ignore]]\npath = 'a'\ntitle = 'b'\n", "enabled = [\n",
+                     "exclude = 'x'\n"):
+            with self.subTest(text=text):
+                with self.assertRaises(Usage):
+                    vidoc_scan.parse_config(text, "test")
+
+    def test_a_valid_config(self):
+        config = vidoc_scan.parse_config(
+            'enabled = true\nexclude = ["a/*"]\n[[ignore]]\npath = "b"\ntitle = "T"\nreason = "r"\n',
+            "test")
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.exclude, ["a/*"])
+        self.assertEqual(config.ignore[0].reason, "r")
+        self.assertTrue(vidoc_scan.parse_config("", "test").enabled, "no keys: on")
+
+
+class Selection(unittest.TestCase):
+    """VSC-004: what is never sent."""
+
+    def test_skip_reasons(self):
+        config = vidoc_scan.Config(True, ["secret/*"], [])
+        cases = {
+            ("src/a.rs", b"fn main() {}\n"): None,
+            ("Dockerfile", b"FROM x\n"): None,
+            ("web/vendor/monaco.js", b"x\n"): "vendored or built",
+            ("node_modules/x/i.js", b"x\n"): "vendored or built",
+            ("Cargo.lock", b"x\n"): "lockfile",
+            ("e2e/package-lock.json", b"{}\n"): "lockfile",
+            ("a.min.js", b"x\n"): "minified",
+            ("a.js.map", b"{}\n"): "minified",
+            ("docs/x.md", b"# x\n"): "prose",
+            ("logo.svg", b"<svg/>\n"): "media",
+            ("bin.dat", b"a\x00b"): "binary",
+            ("latin.txt2", b"\xff\xfe"): "binary",
+            ("secret/k.py", b"x\n"): "excluded",
+            ("empty.py", b""): "empty",
+            ("huge.py", b"x" * (vidoc_scan.MAX_FILE_BYTES + 1)): "larger than 1 MiB",
+            ("long.js", b"x" * (vidoc_scan.CHUNK_BYTES + 1)): "minified",
+        }
+        for (path, data), reason in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(vidoc_scan.skip_reason(path, data, config), reason)
+
+
+class Chunking(unittest.TestCase):
+    def test_lines_are_split_on_line_feeds_only(self):
+        # Review nit: a form feed or U+2028 inside a line must not shift the line numbers.
+        chunk = vidoc_scan.make_chunks([("a.py", "x = 1\fy\ns = '\u2028'\nz = 3\n")], 1000)[0]
+        self.assertEqual((chunk.parts[0].first, chunk.parts[0].last), (1, 3))
+        self.assertIn("3| z = 3", chunk.text)
+
+    def test_files_are_packed_in_order_and_numbered(self):
+        chunks = vidoc_scan.make_chunks([("a.py", "x = 1\ny = 2\n"), ("b.py", "z = 3\n")], 1000)
+        self.assertEqual(len(chunks), 1)
+        text = chunks[0].text
+        self.assertIn(f"{vidoc_scan.FILE_MARK} a.py lines 1-2 of 2", text)
+        self.assertIn("2| y = 2", text)
+        self.assertEqual([(p.path, p.first, p.last) for p in chunks[0].parts],
+                         [("a.py", 1, 2), ("b.py", 1, 1)])
+
+    def test_a_large_file_is_split_at_line_boundaries(self):
+        text = "".join(f"line {i}\n" for i in range(1, 401))
+        chunks = vidoc_scan.make_chunks([("big.py", text)], 1500)
+        ranges = [(p.first, p.last) for c in chunks for p in c.parts]
+        self.assertGreater(len(ranges), 2)
+        self.assertEqual(ranges[0][0], 1)
+        self.assertEqual(ranges[-1][1], 400)
+        for (_, last), (first, _) in zip(ranges, ranges[1:]):
+            self.assertEqual(first, last + 1, "no gap, no overlap")
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk.text.encode()), 1500 + 200)
+
+
+class Answers(unittest.TestCase):
+    """VSC-006: the answer contract."""
+
+    def chunk(self):
+        return vidoc_scan.make_chunks([("a.py", "x\n" * 10), ("b.py", "y\n" * 5)], 10_000)[0]
+
+    def test_fenced_json_with_synonyms_and_bad_lines(self):
+        text = "```json\n" + json.dumps({"findings": [
+            {"severity": "HIGH", "file": "a.py", "line": 3, "title": "T", "detail": "D"},
+            {"severity": "informational", "file": "b.py", "line": 99, "title": "U", "detail": ""},
+            {"severity": "moderate", "file": "elsewhere.py", "line": 1, "title": "V"},
+        ]}) + "\n```"
+        findings = vidoc_scan.parse_answer(answer(text=text), self.chunk())
+        self.assertEqual([(f.severity, f.file, f.line) for f in findings],
+                         [("high", "a.py", 3), ("low", "b.py", None), ("medium", "elsewhere.py", None)])
+
+    def test_unreadable_answers(self):
+        for text in ("no json here", json.dumps({"issues": []}),
+                     json.dumps({"findings": [{"severity": "apocalyptic", "file": "a.py"}]}),
+                     json.dumps({"findings": [{"severity": "high"}]}),
+                     json.dumps({"findings": "none"})):
+            with self.subTest(text=text):
+                with self.assertRaises(vidoc_scan.Unreadable):
+                    vidoc_scan.parse_answer(answer(text=text), self.chunk())
+        with self.assertRaises(vidoc_scan.Unreadable):
+            vidoc_scan.parse_answer({"content": [], "stop_reason": "max_tokens"}, self.chunk())
 
 
 class Settings(unittest.TestCase):
-    def test_token_prefers_vidoc_token_then_the_agent_secret(self):
-        self.assertEqual(vidoc_scan.settings({"VIDOC_TOKEN": "a", "VIDOC_API_KEY": "b"})[0], "a")
-        self.assertEqual(vidoc_scan.settings({"VIDOC_API_KEY": "b"})[0], "b")
+    """VSC-010."""
 
-    def test_missing_key_is_a_usage_error_that_says_how_to_add_one(self):
-        with self.assertRaises(Usage) as caught:
-            vidoc_scan.settings({"VIDOC_TOKEN": "  "})
-        self.assertIn("VIDOC_API_KEY", str(caught.exception))
-        self.assertIn("api.vidoc.dev", str(caught.exception))
-
-    def test_a_key_with_whitespace_or_control_characters_is_refused_without_echoing_it(self):
-        for key in ["abc def", "abc\ndef", "abc\x00def"]:
-            with self.subTest(key=key), self.assertRaises(Usage) as caught:
-                vidoc_scan.settings({"VIDOC_TOKEN": key})
-            self.assertNotIn("def", str(caught.exception))
-
-    def test_api_defaults_to_vidoc_cloud_and_drops_a_trailing_slash(self):
-        self.assertEqual(vidoc_scan.settings({"VIDOC_API_KEY": "k"})[1], "https://api.vidoc.dev")
-        self.assertEqual(
-            vidoc_scan.settings({"VIDOC_API_KEY": "k", "VIDOC_API_URL": "https://api.example.com/"})[1],
-            "https://api.example.com")
-
-    def test_api_must_be_https_without_a_path(self):
-        for url in ["http://api.vidoc.dev", "https://api.vidoc.dev/v1", "api.vidoc.dev", "https://"]:
-            with self.subTest(url=url), self.assertRaises(Usage):
-                vidoc_scan.settings({"VIDOC_API_KEY": "k", "VIDOC_API_URL": url})
-
-    def test_node_major_version(self):
-        self.assertEqual(vidoc_scan.node_major("v24.21.0\n"), 24)
-        self.assertIsNone(vidoc_scan.node_major("command not found"))
-
-    def test_node_20_and_npm_are_required(self):
-        def which(found):
-            return lambda name: f"/usr/bin/{name}" if name in found else None
-        vidoc_scan.require_node(which({"node", "npm"}), lambda node: "v24.21.0\n")
-        for found, version in [({"node", "npm"}, "v18.19.0\n"), ({"npm"}, ""), ({"node"}, "v24.1.0\n")]:
-            with self.subTest(found=found, version=version), self.assertRaises(Usage):
-                vidoc_scan.require_node(which(found), lambda node, v=version: v)
-
-
-class ScanId(unittest.TestCase):
-    def test_reads_the_one_scan_id(self):
-        self.assertEqual(vidoc_scan.parse_scan_id(f"x\nScan started with ID: {SCAN_ID}\n"), SCAN_ID)
-
-    def test_none_without_or_with_two_different_ids(self):
-        self.assertIsNone(vidoc_scan.parse_scan_id("Scan started with ID: not-a-uuid"))
-        other = "019f8a10-9e8d-7c6b-a5f4-3e2d1c0b9a88"
-        self.assertIsNone(vidoc_scan.parse_scan_id(
-            f"Scan started with ID: {SCAN_ID}\nScan started with ID: {other}\n"))
-
-
-class CliEnvironment(unittest.TestCase):
-    def test_passes_only_what_the_cli_and_git_need_plus_the_vidoc_settings(self):
-        env = vidoc_scan.cli_env({
-            "PATH": "/bin", "HOME": "/h", "HTTPS_PROXY": "http://p", "NODE_EXTRA_CA_CERTS": "/ca",
-            "GIT_CONFIG_COUNT": "1", "YULIUS_TASK_TOKEN": "t", "YULIUS_URL": "http://y",
-            "SSH_AUTH_SOCK": "/s", "XDG_CONFIG_HOME": "/x", "VIDOC_PROFILE": "x", "GITHUB_TOKEN": "g", "GITHUB_EVENT_PATH": "/e", "DEBUG": "1",
-            "ANTHROPIC_API_KEY": "a"}, "tok", "https://a.b", Path("/tmp/l/vidoc.log"))
-        self.assertEqual(env, {
-            "PATH": "/bin", "HOME": "/h", "HTTPS_PROXY": "http://p", "NODE_EXTRA_CA_CERTS": "/ca",
-            "GIT_CONFIG_COUNT": "1", "YULIUS_TASK_TOKEN": "t", "YULIUS_URL": "http://y",
-            "SSH_AUTH_SOCK": "/s", "XDG_CONFIG_HOME": "/x", "VIDOC_TOKEN": "tok", "VIDOC_API_URL": "https://a.b", "CI": "true",
-            "VIDOC_LOG_FILE": "/tmp/l/vidoc.log"})
-
-
-class Install(unittest.TestCase):
-    def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.dir)
-        (self.dir / "package.json").write_text(json.dumps(
-            {"dependencies": {"@vidocsecurity/cli": "0.1.25"}}))
-        (self.dir / "package-lock.json").write_text('{"lockfileVersion": 3}')
-
-    def installed(self, version, stamp=True):
-        package = self.dir / "node_modules/@vidocsecurity/cli"
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "package.json").write_text(json.dumps({"version": version}))
-        (self.dir / "node_modules/.bin").mkdir(exist_ok=True)
-        (self.dir / "node_modules/.bin/vidoc").write_text("")
-        if stamp:
-            vidoc_scan.mark_installed(self.dir)
-
-    def test_installs_when_missing_or_another_version(self):
-        self.assertTrue(vidoc_scan.needs_install(self.dir))
-        self.installed("0.1.21")
-        self.assertTrue(vidoc_scan.needs_install(self.dir))
-
-    def test_keeps_the_pinned_version(self):
-        self.installed("0.1.25")
-        self.assertFalse(vidoc_scan.needs_install(self.dir))
-
-    def test_reinstalls_after_the_lockfile_changed_or_an_unmarked_install(self):
-        self.installed("0.1.25", stamp=False)
-        self.assertTrue(vidoc_scan.needs_install(self.dir))
-        vidoc_scan.mark_installed(self.dir)
-        (self.dir / "package-lock.json").write_text('{"lockfileVersion": 3, "x": 1}')
-        self.assertTrue(vidoc_scan.needs_install(self.dir))
-
-    def test_the_repository_pins_an_exact_version_with_integrity(self):
-        tool = Path(__file__).resolve().parent.parent / "tools/vidoc"
-        pin = json.loads((tool / "package.json").read_text())["dependencies"]["@vidocsecurity/cli"]
-        self.assertRegex(pin, r"^\d+\.\d+\.\d+$")
-        lock = json.loads((tool / "package-lock.json").read_text())
-        locked = lock["packages"]["node_modules/@vidocsecurity/cli"]
-        self.assertEqual(locked["version"], pin)
-        self.assertTrue(locked["integrity"].startswith("sha512-"))
-
-
-class Repository(unittest.TestCase):
-    def test_a_detached_head_is_not_run(self):
-        cli = FakeCli()
-        with self.assertRaises(Usage):
-            run(cli=cli, git=FakeGit(**{"symbolic-ref": (1, "")}))
-        self.assertIsNone(cli.env)
-
-    def test_uncommitted_or_untracked_files_are_not_run_because_the_cli_uploads_them(self):
-        git, cli = FakeGit(status=(0, "?? scratch.txt\n")), FakeCli()
-        with self.assertRaises(Usage) as caught:
-            run(cli=cli, git=git)
-        self.assertIn("commit", str(caught.exception))
-        self.assertIsNone(cli.env)
-        self.assertIn(("status", "--porcelain", "--untracked-files=all"), git.calls)
-
-    def test_an_unknown_default_branch_is_not_run(self):
-        cli = FakeCli()
-        for show in [(128, ""), (0, "* remote origin\n"), (0, "  HEAD branch: (unknown)\n")]:
-            with self.subTest(show=show), self.assertRaises(Usage):
-                run(cli=cli, git=FakeGit(show=show))
-        self.assertIsNone(cli.env)
-
-    def test_origin_unreachable_the_way_the_cli_checks_it_is_not_run(self):
-        git = FakeGit(**{"ls-remote": (128, "")})
-        with self.assertRaises(Usage):
-            run(git=git)
-        check = [c for c in git.calls if "ls-remote" in c][0]
-        self.assertEqual(check, ("-c", "credential.interactive=never", "-c", "core.askPass=", "-c",
-                                 "core.sshCommand=ssh -oBatchMode=yes -oStrictHostKeyChecking=yes",
-                                 "ls-remote", "origin", "HEAD"))
-        env = git.envs[check]
-        self.assertEqual(env["VIDOC_TOKEN"], TOKEN)
-        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
-
-    def test_a_first_remote_other_than_origin_is_not_run(self):
-        with self.assertRaises(Usage):
-            run(git=FakeGit(remote=(0, "upstream\norigin\n")))
-
-    def test_no_merge_base_with_the_default_branch_is_not_run(self):
-        git = FakeGit(**{"merge-base": (1, "")})
-        with self.assertRaises(Usage):
-            run(git=git)
-        self.assertIn(("merge-base", "HEAD", "origin/dev"), git.calls)
-
-
-class PullRequestCi(unittest.TestCase):
-    """SPEC-142 CSE-006: in Yulius CI on a pull request head, the scan runs in a private clone of
-    the commit whose origin answers like GitHub, without a credential or a write to the shared
-    clone."""
-
-    git_env = Switch.git_env
-    URL = "https://github.example/acme/app.git"
-
-    def git(self, cwd, *args):
-        result = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
-                                cwd=cwd, env=self.git_env, check=True, capture_output=True,
-                                text=True)
-        return result.stdout.strip()
-
-    def setUp(self):
-        top = Path(tempfile.mkdtemp(prefix="vidoc-ci-"))
-        self.addCleanup(shutil.rmtree, top)
-        patcher = unittest.mock.patch.dict(os.environ, self.git_env, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        origin, work, self.shared = top / "origin.git", top / "work", top / "repo"
-        self.git(top, "init", "-q", "--bare", "-b", "dev", str(origin))
-        self.git(top, "clone", "-q", str(origin), str(work))
-        (work / "README.md").write_text("app\n")
-        self.git(work, "add", "-A")
-        self.git(work, "commit", "-qm", "init")
-        self.git(work, "push", "-q", "origin", "HEAD:dev", "HEAD:main")
-        self.git(work, "checkout", "-qb", "feat/one")
-        (work / "feature.py").write_text("print(1)\n")
-        self.git(work, "add", "-A")
-        self.git(work, "commit", "-qm", "feature")
-        self.git(work, "push", "-q", "origin", "feat/one")
-        self.dev = self.git(work, "rev-parse", "dev")
-        self.head = self.git(work, "rev-parse", "HEAD")
-        # The sandbox's shared clone (origin's real URL, unreachable here) and the job's detached
-        # checkout, a worktree of it, as Yulius CI prepares them.
-        self.git(top, "clone", "-q", str(origin), str(self.shared))
-        self.git(self.shared, "remote", "set-url", "origin", self.URL)
-        self.checkout = top / "ci" / "jobs" / "security"
-        self.git(self.shared, "worktree", "add", "-q", "--detach", str(self.checkout), self.head)
-        self.scratch = top / "scratch"
-        self.scratch.mkdir()
-
-    def refs(self):
-        return self.git(self.shared, "for-each-ref", "--format=%(refname) %(objectname)")
-
-    def test_only_a_pull_request_head_in_yulius_ci_is_one(self):
-        self.assertEqual(vidoc_scan.ci_pull_request({"YULIUS_CI": "1", "YULIUS_CI_REF": "pr/12"}), 12)
-        for env in ({"YULIUS_CI": "1", "YULIUS_CI_REF": "branch/dev"},
-                    {"YULIUS_CI": "1", "YULIUS_CI_REF": "train/1+2"},
-                    {"YULIUS_CI": "1", "YULIUS_CI_REF": "pr/0"},
-                    {"YULIUS_CI": "1", "YULIUS_CI_REF": "pr/1x"},
-                    {"YULIUS_CI_REF": "pr/12"}, {}):
+    def test_key_and_address(self):
+        self.assertEqual(vidoc_scan.settings({"VIDOC_API_KEY": " k-123 "}),
+                         ("k-123", "https://model.vidocsecurity.com"))
+        self.assertEqual(vidoc_scan.settings({"VIDOC_API_KEY": "k", "VIDOC_API_URL": "http://127.0.0.1:9/"}),
+                         ("k", "http://127.0.0.1:9"))
+        for env in ({}, {"VIDOC_API_KEY": "a b"},
+                    {"VIDOC_API_KEY": "k", "VIDOC_API_URL": "http://example.com"},
+                    {"VIDOC_API_KEY": "k", "VIDOC_API_URL": "https://example.com/v1"}):
             with self.subTest(env=env):
-                self.assertIsNone(vidoc_scan.ci_pull_request(env))
+                with self.assertRaises(Usage):
+                    vidoc_scan.settings(env)
 
-    def test_the_private_clone_scans_the_commit_on_a_branch_against_the_default_branch(self):
-        before = self.refs()
-        clone = vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
-        git = vidoc_scan.git_in(clone)
-        self.assertEqual(git("config", "--get", "remote.origin.url")[1].strip(), self.URL)
-        self.assertEqual(git("rev-parse", "HEAD")[1].strip(), self.head)
-        env = vidoc_scan.cli_env({"PATH": os.environ.get("PATH", "")}, TOKEN, "https://v", "/l")
-        branch, base, changed = vidoc_scan.check_repository(git, env)
-        self.assertEqual((branch, base, changed), ("yulius-ci/pr-7", "origin/dev", ["feature.py"]))
-        self.assertEqual(git("merge-base", "HEAD", "origin/dev")[1].strip(), self.dev)
-        self.assertEqual(self.refs(), before, "the shared clone is never written")
-        self.assertNotIn("yulius-ci", self.git(self.shared, "branch", "--list"))
 
-    def test_without_origin_s_default_branch_it_is_not_run(self):
-        self.git(self.shared, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
-        with self.assertRaises(Usage) as caught:
-            vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
-        self.assertIn("default branch", str(caught.exception))
+class CiMode(Scanning):
+    """VSC-011, SPEC-162: pull request heads only; not run ends skipped."""
 
-    def test_a_file_system_error_while_preparing_is_not_run(self):
-        with unittest.mock.patch.object(Path, "write_text", side_effect=OSError("disk full")), \
-                self.assertRaises(Usage) as caught:
-            vidoc_scan.ci_clone(vidoc_scan.git_in(self.checkout), self.scratch, 7)
-        self.assertIn("disk full", str(caught.exception))
+    def test_a_pull_request_head_scans_and_fails_on_findings(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        code, output = self.run_scan(repo, self.fake(), "--ci",
+                                     env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
+        self.assertEqual(code, 1, output)
 
-    def test_main_scans_the_private_clone_and_removes_it(self):
-        seen = {}
+    def test_not_run_ends_skipped(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        for skip, expected in (("78", 78), (None, 0)):
+            with self.subTest(skip=skip):
+                env = {"YULIUS_CI_REF": "pr/7", "VIDOC_API_KEY": ""}
+                if skip:
+                    env["YULIUS_CI_SKIP_CODE"] = skip
+                code, output = self.run_scan(repo, self.fake(), "--ci", env=env)
+                self.assertEqual(code, expected, output)
+                self.assertIn("[yulius] security scan skipped", output)
 
-        def gate(env, git, api, cli, log, out):
-            seen["branch"] = git("symbolic-ref", "--short", "HEAD")[1].strip()
-            seen["root"] = git("rev-parse", "--show-toplevel")[1].strip()
-            return 0
+    def test_nothing_to_scan_or_disabled_ends_skipped(self):
+        # Review minor 2 (ADR-0133): a job that checked nothing ends skipped, not passed.
+        for change in ({"notes.md": "# x\n"}, {".config/vidoc.toml": "enabled = false\n"}):
+            with self.subTest(change=change):
+                repo = Repo(self, {"a.py": CLEAN}, change)
+                code, output = self.run_scan(repo, self.fake(), "--ci",
+                                             env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
+                self.assertEqual(code, 78, output)
+                self.assertIn("[yulius] security scan skipped", output)
 
-        env = {"PATH": os.environ.get("PATH", ""), "VIDOC_API_KEY": TOKEN, "YULIUS_CI": "1",
-               "YULIUS_CI_REF": "pr/7"}
-        root = self.checkout
-        (root / "tools" / "vidoc").mkdir(parents=True)
-        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
-        self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
-        with unittest.mock.patch.object(vidoc_scan, "gate", gate), \
-                unittest.mock.patch.object(vidoc_scan, "require_node", lambda *a: None), \
-                unittest.mock.patch.object(vidoc_scan, "needs_install", lambda tool: False), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(vidoc_scan.main(root=root, env=env), 0)
-        self.assertEqual(seen["branch"], "yulius-ci/pr-7")
-        self.assertNotEqual(Path(seen["root"]).resolve(), root.resolve())
-        self.assertFalse(Path(seen["root"]).exists(), "the private clone is removed")
-        self.assertIn("pull request #7", out.getvalue())
+    def test_other_heads_are_not_scanned(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        for ref in ("branch/dev", "branch/main", "train/3+4", ""):
+            with self.subTest(ref=ref):
+                server = self.fake()
+                code, output = self.run_scan(repo, server, "--ci",
+                                             env={"YULIUS_CI_REF": ref, "YULIUS_CI_SKIP_CODE": "78"})
+                self.assertEqual(code, 78, output)
+                self.assertEqual(server.requests, [])
+                self.assertIn("pull request", output)
 
 
 class SecurityJob(unittest.TestCase):
-    """SPEC-142 CSE-007, SPEC-162 SKP-004/005: the `security` CI job is granted VIDOC_API_KEY and
-    runs the gate on pull request heads only; findings fail it, and a scan that could not run
-    (exit 2) ends the job skipped, never passed."""
+    """SPEC-195 VIB-003: this repository's `security` job runs the in-tree scanner in CI mode with
+    its grant."""
 
     def job(self):
         import tomllib
@@ -477,301 +656,31 @@ class SecurityJob(unittest.TestCase):
         self.assertEqual(len(jobs), 1, "one security job")
         return jobs[0]
 
-    def run_job(self, ref, code, skip_code="78"):
-        root = Path(tempfile.mkdtemp(prefix="vidoc-job-"))
-        self.addCleanup(shutil.rmtree, root)
-        (root / "scripts").mkdir()
-        (root / "scripts" / "bootstrap.py").write_text("import sys\nsys.exit(0)\n")
-        dev = root / "scripts" / "dev"
-        dev.write_text(f"#!/bin/sh\necho \"dev $*\" >> ran\nexit {code}\n")
-        dev.chmod(0o755)
-        env = {"PATH": os.environ.get("PATH", ""), "YULIUS_CI": "1", "YULIUS_CI_REF": ref}
-        if skip_code is not None:
-            env["YULIUS_CI_SKIP_CODE"] = skip_code
-        result = subprocess.run(["/bin/sh", "-c", self.job()["command"]], cwd=root, env=env,
-                                capture_output=True, text=True, timeout=60)
-        ran = (root / "ran").read_text() if (root / "ran").exists() else ""
-        return result.returncode, result.stdout + result.stderr, ran
-
-    def test_it_is_granted_the_vidoc_key(self):
-        # The running instance knows `secrets` since dev was promoted to main with SPEC-142 (#517).
+    def test_it_is_granted_the_key_and_runs_the_in_tree_scanner(self):
         self.assertEqual(self.job().get("secrets"), "VIDOC_API_KEY")
-
-    def test_a_pull_request_head_passes_or_fails_with_the_scan(self):
-        for code, expected in ((0, 0), (1, 1)):
-            with self.subTest(code=code):
-                exit_code, _, ran = self.run_job("pr/3", code)
-                self.assertEqual(exit_code, expected)
-                self.assertEqual(ran, "dev security\n")
-
-    def test_a_scan_that_cannot_run_ends_the_job_skipped(self):
-        exit_code, output, ran = self.run_job("pr/3", 2)
-        self.assertEqual((exit_code, ran), (78, "dev security\n"))
-        self.assertIn("security scan skipped", output)
-
-    def test_an_instance_without_a_skip_code_passes_it_and_still_says_skipped(self):
-        # Before SPEC-162 reaches the running instance, jobs get no YULIUS_CI_SKIP_CODE: exit 0,
-        # so no pull request is blocked by what only a person can fix.
-        exit_code, output, _ = self.run_job("pr/3", 2, skip_code=None)
-        self.assertEqual(exit_code, 0)
-        self.assertIn("security scan skipped", output)
-
-    def test_other_heads_are_not_scanned_and_read_skipped(self):
-        for ref in ("branch/dev", "branch/main", "train/3+4"):
-            for skip_code, expected in (("78", 78), (None, 0)):
-                with self.subTest(ref=ref, skip_code=skip_code):
-                    exit_code, output, ran = self.run_job(ref, 1, skip_code=skip_code)
-                    self.assertEqual((exit_code, ran), (expected, ""))
-                    self.assertIn("pull request", output)
+        self.assertEqual(self.job()["command"], "python3 scripts/vidoc_scan.py --ci")
 
 
-class Gate(unittest.TestCase):
-    def test_clean_scan_passes_and_names_it(self):
-        api, cli = api_for(), FakeCli()
-        code, out = run(api, cli)
-        self.assertEqual(code, 0)
-        self.assertIn(SCAN_ID, out)
-        self.assertEqual(cli.env["VIDOC_TOKEN"], TOKEN)
-        issue_reads = [params for path, params in api.requests if path == "/v1/issues"]
-        self.assertEqual(issue_reads, [
-            {"codebaseId": CODEBASE, "branch": BRANCH, "status": "open",
-             "severity": "critical,high", "limit": "100"},
-            {"codebaseId": CODEBASE, "branch": BRANCH, "status": "open", "limit": "1"}])
+class NoOldScan(unittest.TestCase):
+    """VSC-012: the dead API and CLI are gone from code and the living docs."""
 
-    def test_findings_fail_and_are_printed(self):
-        code, out = run(api_for(issues=issues_page([ISSUE])))
-        self.assertEqual(code, 1)
-        self.assertIn("[high] Command injection in hook runner", out)
-        # The API's line is 0-based: the CLI prints line + 1.
-        self.assertIn("crates/yulius-app/src/hooks.rs:43", out)
-        self.assertIn(ISSUE["url"], out)
-
-    def test_findings_wrapped_like_the_cli_endpoint_are_printed_too(self):
-        code, out = run(api_for(issues=issues_page([{"issue": ISSUE}])))
-        self.assertEqual(code, 1)
-        self.assertIn("[high] Command injection in hook runner", out)
-
-    def test_open_critical_or_high_counted_without_the_severity_filter_fail_a_zero_total(self):
-        def answer(params):
-            if "severity" in params:
-                return issues_page()
-            page = issues_page(total=3)
-            page["stats"] = {"severityCounts": {"critical": 0, "high": 1, "medium": 2}}
-            return page
-        api = api_for()
-        api.answers["/v1/issues"] = answer
-        with self.assertRaises(Failed):
-            run(api)
-
-    def test_more_findings_than_one_page_still_fail_with_the_total(self):
-        code, out = run(api_for(issues=issues_page([ISSUE], total=130)))
-        self.assertEqual(code, 1)
-        self.assertIn("130", out)
-
-    def test_the_key_is_never_printed(self):
-        for api in [api_for(), api_for(issues=issues_page([ISSUE]))]:
-            _, out = run(api)
-            self.assertNotIn(TOKEN, out)
-        for raised, path, status in [(Usage, "/v1/codebase", 401), (Failed, "/v1/issues", 500)]:
-            api = api_for()
-            api.answers[path] = vidoc_scan.HttpError(status, "no")
-            with self.assertRaises(raised) as caught:
-                run(api)
-            self.assertNotIn(TOKEN, str(caught.exception))
-
-    def test_a_rejected_key_stops_before_the_upload(self):
-        api = api_for()
-        api.answers["/v1/codebase"] = vidoc_scan.HttpError(401, "Invalid or expired token")
-        cli = FakeCli()
-        with self.assertRaises(Usage) as caught:
-            run(api, cli)
-        self.assertIsNone(cli.env)
-        self.assertIn("api.vidoc.dev", str(caught.exception))
-
-    def test_a_cli_error_fails(self):
-        with self.assertRaises(Failed):
-            run(cli=FakeCli(code=1))
-
-    def test_no_scan_id_fails(self):
-        with self.assertRaises(Failed):
-            run(cli=FakeCli(output="Scan did not complete successfully\n"))
-
-    def test_a_fixed_finding_the_cli_still_lists_does_not_fail_an_open_total_of_zero(self):
-        output = f"Scan started with ID: {SCAN_ID}\n[High] SQL injection - src/a.rs:3 [Validated]\n"
-        code, _ = run(cli=FakeCli(output=output))
-        self.assertEqual(code, 0)
-
-    def test_nothing_to_scan_with_changed_source_files_is_not_run(self):
-        output = "No scannable files matched the selected scope in the current directory.\n"
-        with self.assertRaises(Usage):
-            run(cli=FakeCli(output=output), git=FakeGit(diff=(0, "crates/a/src/lib.rs\n")))
-
-    def test_nothing_to_scan_passes_when_sources_changed_only_where_the_cli_never_looks(self):
-        output = "No scannable files matched the selected scope in the current directory.\n"
-        changed = "crates/yulius-ptyhost/src/bin/yulius-ptyhost.rs\nweb/assets/vendor/monaco/x.js\n"
-        git = FakeGit(diff=(0, changed))
-        code, _ = run(cli=FakeCli(output=output), git=git)
-        self.assertEqual(code, 0)
-        diff = [c for c in git.calls if c[0] == "diff"][0]
-        self.assertIn("--diff-filter=d", diff)
-
-    def test_the_base_is_fetched_before_its_merge_base_like_the_cli_does(self):
-        git = FakeGit()
-        run(git=git)
-        self.assertLess(git.calls.index(("fetch", "--no-tags", "origin", "dev")),
-                        git.calls.index(("merge-base", "HEAD", "origin/dev")))
-        with self.assertRaises(Usage):
-            run(git=FakeGit(fetch=(128, "")))
-
-    def test_vidoc_unreachable_or_out_of_quota_before_the_scan_is_not_run(self):
-        for status in [0, 402, 429, 503]:
-            api = api_for()
-            api.answers["/v1/codebase"] = vidoc_scan.HttpError(status, "down")
-            with self.subTest(status=status), self.assertRaises(Usage):
-                run(api)
-
-    def test_nothing_to_scan_passes_and_names_the_changed_files(self):
-        output = "No scannable files matched the selected scope in the current directory.\n"
-        api = api_for()
-        code, out = run(api, FakeCli(output=output), FakeGit(diff=(0, "docs/a.md\nAGENTS.md\n")))
-        self.assertEqual(code, 0)
-        self.assertIn("nothing to scan", out)
-        self.assertIn("2 changed file(s) since origin/dev", out)
-        self.assertEqual([p for p, _ in api.requests], ["/v1/codebase"])
-
-    def test_an_unfinished_or_foreign_scan_fails(self):
-        for scan in [scan_record(status="failed"), scan_record(status="in_progress"),
-                     scan_record(branch="dev"), scan_record(id="other"), scan_record(codebaseId=None),
-                     ["not", "an", "object"]]:
-            with self.subTest(scan=scan), self.assertRaises(Failed):
-                run(api_for(scan=scan))
-
-    def test_malformed_issue_answers_fail(self):
-        for page in [{"issues": []}, {"issues": [], "total": -1}, {"issues": [], "total": 1.5},
-                     {"issues": [], "total": "0"}, {"total": 0}, []]:
-            with self.subTest(page=page), self.assertRaises(Failed):
-                run(api_for(issues=page))
-
-    def test_an_api_error_after_the_scan_fails(self):
-        api = api_for()
-        api.answers["/v1/issues"] = vidoc_scan.HttpError(500, "boom")
-        with self.assertRaises(Failed):
-            run(api)
-
-
-class Redirecting(http.server.BaseHTTPRequestHandler):
-    seen = []
-
-    def do_GET(self):
-        Redirecting.seen.append((self.path, self.headers.get("x-vidoc-token")))
-        if self.path.startswith("/v1/"):
-            self.send_response(302)
-            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
-            self.end_headers()
-        else:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"{}")
-
-    def log_message(self, *args):
-        pass
-
-
-class Http(unittest.TestCase):
-    def test_redirects_are_refused_so_the_key_never_follows_them(self):
-        server = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        Redirecting.seen = []
-        api = vidoc_scan.Api(f"http://127.0.0.1:{server.server_port}", "the-key")
-        with self.assertRaises(vidoc_scan.HttpError) as caught:
-            api.get("/v1/codebase")
-        self.assertEqual(caught.exception.status, 302)
-        self.assertEqual(Redirecting.seen, [("/v1/codebase", "the-key")])
-
-
-class Unsendable(unittest.TestCase):
-    def test_a_request_that_cannot_be_sent_does_not_echo_the_key(self):
-        api = vidoc_scan.Api("https://127.0.0.1:9", "bad\nkey")
-        with self.assertRaises(vidoc_scan.HttpError) as caught:
-            api.get("/v1/codebase")
-        self.assertNotIn("bad", str(caught.exception))
-
-
-FAKE_CLI = (
-    "import os, subprocess, sys, time\n"
-    "assert sys.argv[1:] == ['ci'], sys.argv\n"
-    "print('Indexing', flush=True)\n"
-    "print('Scan started with ID: " + SCAN_ID + "', flush=True)\n"
-    "if os.environ.get('FAKE_CHILD'):\n"
-    "    child = subprocess.Popen(['sleep', '60'], stdout=subprocess.DEVNULL)\n"
-    "    print('child', child.pid, flush=True)\n"
-    "time.sleep(float(os.environ.get('FAKE_SLEEP', '0')))\n"
-    "sys.exit(int(os.environ.get('FAKE_EXIT', '0')))\n")
-
-
-def alive(pid):
-    try:
-        with open(f"/proc/{pid}/stat") as stat:
-            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except (FileNotFoundError, ProcessLookupError):
-        # Gone, or reaped between the open and the read.
-        return False
-
-
-class AliveHelper(unittest.TestCase):
-    def test_a_process_reaped_between_open_and_read_reads_as_ended(self):
-        # /proc/<pid>/stat opened just before the process is reaped reads ESRCH, not ENOENT.
-        class Reaped(io.StringIO):
-            def read(self, *args):
-                raise ProcessLookupError(3, "No such process")
-        with unittest.mock.patch("builtins.open", lambda *a, **k: Reaped()):
-            self.assertFalse(alive(1))
-
-
-class RealRunner(unittest.TestCase):
-    def runner(self, timeout_s=30):
-        return vidoc_scan.run_cli([sys.executable, "-c", FAKE_CLI], Path.cwd(), timeout_s)
-
-    def test_echoes_and_returns_the_output_and_exit_code(self):
-        echoed = io.StringIO()
-        with contextlib.redirect_stdout(echoed):
-            code, output = self.runner()({**os.environ, "FAKE_EXIT": "3"})
-        self.assertEqual(code, 3)
-        self.assertEqual(vidoc_scan.parse_scan_id(output), SCAN_ID)
-        self.assertIn("Indexing", echoed.getvalue())
-
-    @unittest.skipUnless(Path("/proc/self/stat").exists(), "needs /proc")
-    def test_a_cli_past_its_bound_is_killed_with_its_children_and_fails(self):
-        echoed = io.StringIO()
-        started = time.monotonic()
-        with contextlib.redirect_stdout(echoed), self.assertRaises(Failed):
-            self.runner(timeout_s=1)({**os.environ, "FAKE_SLEEP": "60", "FAKE_CHILD": "1"})
-        self.assertLess(time.monotonic() - started, 30)
-        child = int(echoed.getvalue().split("child ", 1)[1].split()[0])
-        deadline = time.monotonic() + 10
-        while alive(child) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertFalse(alive(child))
-
-    @unittest.skipUnless(Path("/proc/self/stat").exists(), "needs /proc")
-    def test_sigterm_kills_the_cli_with_its_children_and_fails(self):
-        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
-        self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
-        vidoc_scan.install_signal_handlers()
-        echoed = io.StringIO()
-        timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGTERM))
-        timer.start()
-        self.addCleanup(timer.cancel)
-        with contextlib.redirect_stdout(echoed), self.assertRaises(Failed) as caught:
-            self.runner()({**os.environ, "FAKE_SLEEP": "60", "FAKE_CHILD": "1"})
-        self.assertIn("signal", str(caught.exception))
-        child = int(echoed.getvalue().split("child ", 1)[1].split()[0])
-        deadline = time.monotonic() + 10
-        while alive(child) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertFalse(alive(child))
+    def test_no_old_api_or_cli(self):
+        root = Path(__file__).resolve().parent.parent
+        self.assertFalse((root / "tools" / "vidoc").exists())
+        listed = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True,
+                                check=True).stdout.split()
+        history = (".ai/specs/", "docs/decisions/", "docs/changes.md", "scripts/test_vidoc_scan.py")
+        stale = []
+        for path in listed:
+            if path.startswith(history) or not (root / path).is_file():
+                continue
+            try:
+                text = (root / path).read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if any(word in text for word in ("api.vidoc.dev", "@vidocsecurity/cli", "VIDOC_TOKEN")):
+                stale.append(path)
+        self.assertEqual(stale, [])
 
 
 if __name__ == "__main__":

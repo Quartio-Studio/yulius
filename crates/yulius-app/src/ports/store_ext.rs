@@ -381,7 +381,8 @@ pub trait IntakeStore: Send + Sync {
     ) -> AppResult<Option<crate::auto_choice::AutoChoiceRecord>>;
 }
 
-/// Instance updates (SPEC-002 ADR-18) and the saved Jev key (SPEC-001 ADM-002).
+/// Instance updates (SPEC-002 ADR-18), the saved Jev key (SPEC-001 ADM-002) and the saved Vidoc
+/// key (SPEC-195 VDK-001).
 #[async_trait]
 pub trait UpdateStore: Send + Sync {
     /// Inserts a run; `false` when another run is open (at most one at a time).
@@ -406,6 +407,14 @@ pub trait UpdateStore: Send + Sync {
     async fn jev_key(&self) -> AppResult<Option<crate::jev_key::StoredJevKey>>;
     /// Saves the sealed Jev key set by `by` (`Some`) or removes it (`None`).
     async fn set_jev_key(
+        &self,
+        key: Option<(&crate::model::Sealed, &str)>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// The saved instance Vidoc key, sealed, with when and by whom it was set (SPEC-195).
+    async fn vidoc_key(&self) -> AppResult<Option<crate::vidoc_key::StoredVidocKey>>;
+    /// Saves the sealed Vidoc key set by `by` (`Some`) or removes it (`None`).
+    async fn set_vidoc_key(
         &self,
         key: Option<(&crate::model::Sealed, &str)>,
         at: Timestamp,
@@ -464,7 +473,8 @@ pub trait CiStore: Send + Sync {
     /// when the run was not running.
     async fn requeue_ci_run(&self, id: &str, note: &str, at: Timestamp) -> AppResult<bool>;
     /// Records a commit status publication: `published` is the run state GitHub accepted the
-    /// status of, `None` on failure with `note`; counts the attempt.
+    /// status of, `None` on failure with `note`. A failure adds an attempt and a published status
+    /// resets them, so attempts count the failures in a row (SPEC-198 RCS-004).
     async fn record_ci_status(
         &self,
         id: &str,

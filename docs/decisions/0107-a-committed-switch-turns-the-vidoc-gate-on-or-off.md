@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Specified in [SPEC-131](../../.ai/specs/SPEC-131-we-d-like-to-be-able-to-enable-and-disab.md).
-Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md).
+Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md). Amended by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the switch is read from `HEAD`, and the file also holds `exclude` globs and `[[ignore]]` entries.
 
 ## Context
 
