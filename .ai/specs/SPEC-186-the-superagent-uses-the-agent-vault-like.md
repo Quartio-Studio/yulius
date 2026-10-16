@@ -194,7 +194,8 @@ what it is served gets the new tools and environment by itself.
 - `scripts/dev ci` (contracts, check, lint, nextest, doctests, deps): exit 0 at `172c90e1` (1918
   passed, 18 skipped) and at `974423ee` (1920 passed, 18 skipped); the last commit (a read moved
   before a poll, a test assertion, an index line) is covered by the targeted `cockpit::` runs (37
-  passed) and the final gate run below.
+  passed) and the final gate: exit 0 at `ecd514c0` (1920 passed, 18 skipped). Review round 3
+  (APPROVE at `ecd514c0`) asked only for this line.
 - e2e (`npx e2e run`, the Superagent panel's text changed): 568 passed, 1 skipped.
 - Reviewer's own check: a key-block `.env` read back byte for byte by `sh`, Node `dotenv` 16,
   `python-dotenv` 1.2.4 and Docker Compose (`env_file` and `${KEY}`).
