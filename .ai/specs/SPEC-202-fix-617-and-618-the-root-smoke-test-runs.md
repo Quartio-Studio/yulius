@@ -106,7 +106,8 @@ The smoke prints one readable line per check.
 ## Evidence
 
 - Red before each fix, green after (`cargo nextest run -p yulius --lib -E
-  'test(/docker_smoke::/)'`, `cargo nextest run -p yulius-sandbox --lib -E 'test(/base::tests::/)'`):
+  'test(/docker_smoke::/)'`, `cargo nextest run -p yulius-sandbox --lib -E
+  'test(/base::tests::/)'`):
   - `root_always_runs_the_smoke_as_the_owner_without_touching_its_own_cgroup` and
     `root_refuses_a_data_directory_owned_by_root` failed on the old decision (root took
     `Here(..)`), pass after RSB-001.
