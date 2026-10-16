@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-173](../../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md);
+Superseded by [0151](0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md) (task #172). Specified in [SPEC-173](../../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md);
 task #163, #550. Builds on [0003](0003-sandbox-isolation.md) (ADR-22) and
 [0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md).
 

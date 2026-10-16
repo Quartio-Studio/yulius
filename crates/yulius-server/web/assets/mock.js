@@ -1832,12 +1832,13 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   if (!env) fail(422, 'invalid', 'the environment is dev or prod');
   need(sandbox, name === 'prod' ? 'admin' : 'write');
   db.lastCdDeploy = body || {}; // what the page sent (SPEC-137: `confirm_ms` of a production deploy)
+  // A test can hold the answer (`__yuliusMock.holdCdDeploy = promise`): the checks and a promotion
+  // take a while, and a refusal comes after them (SPEC-189).
+  if (db.holdCdDeploy) { await db.holdCdDeploy; db.holdCdDeploy = null; }
   if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
   if (cd.runs.some((r) => r.environment === name && progressCd(r).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
-  // A test can hold the answer (`__yuliusMock.holdCdDeploy = promise`), as a promotion takes a while.
-  if (db.holdCdDeploy) await db.holdCdDeploy;
   db.nextId += 1;
   const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, name === 'prod' && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {});
   cd.runs.unshift(run);

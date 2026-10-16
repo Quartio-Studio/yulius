@@ -27,8 +27,17 @@ const LEGACY_LEAF: &str = "legacy";
 /// The parent of sandbox groups.
 const SANDBOXES: &str = "sandboxes";
 /// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'
-/// share, so up to 80 % of the sandbox under full contention while the holder idles.
-const LEAVES: [(&str, u32); 3] = [("system", 100), ("agents", 100), ("ci", 400)];
+/// share, so up to 80 % of the sandbox under full contention while the holder and the engine
+/// idle. The engine's group (SPEC-187 DKR-005) is the root of its cgroup namespace: containers
+/// get groups below it.
+const LEAVES: [(&str, u32); 4] = [
+    ("system", 100),
+    ("agents", 100),
+    ("ci", 400),
+    ("engine", 100),
+];
+/// The engine's group, also without the `cpu` split.
+const ENGINE_LEAF: &str = "engine";
 
 /// Limits of one sandbox; `None` leaves a limit unset (`max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -216,8 +225,8 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
     })
 }
 
-/// The groups a sandbox's processes join (SPEC-053 CPU-201). Without the `cpu` controller all
-/// three are the sandbox's own group.
+/// The groups a sandbox's processes join (SPEC-053 CPU-201). Without the `cpu` controller the
+/// first three are the sandbox's own group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxGroups {
     /// The holder and `slirp4netns`.
@@ -226,6 +235,8 @@ pub struct SandboxGroups {
     pub agents: PathBuf,
     /// CI jobs.
     pub ci: PathBuf,
+    /// The Docker engine and, below it, its containers (ADR-0151); always a group of its own.
+    pub engine: PathBuf,
 }
 
 impl SandboxGroups {
@@ -234,12 +245,18 @@ impl SandboxGroups {
             system: dir.to_path_buf(),
             agents: dir.to_path_buf(),
             ci: dir.to_path_buf(),
+            engine: dir.join(ENGINE_LEAF),
         }
     }
 
     fn leaves(dir: &Path) -> Self {
-        let [system, agents, ci] = LEAVES.map(|(leaf, _)| dir.join(leaf));
-        Self { system, agents, ci }
+        let [system, agents, ci, engine] = LEAVES.map(|(leaf, _)| dir.join(leaf));
+        Self {
+            system,
+            agents,
+            ci,
+            engine,
+        }
     }
 }
 
@@ -270,10 +287,12 @@ impl Delegation {
             }
         }
         if !self.controllers.iter().any(|c| c == "cpu") {
-            return Ok(SandboxGroups::single(&dir));
+            let groups = SandboxGroups::single(&dir);
+            std::fs::create_dir_all(&groups.engine)?;
+            return Ok(groups);
         }
         let groups = SandboxGroups::leaves(&dir);
-        for leaf in [&groups.system, &groups.agents, &groups.ci] {
+        for leaf in [&groups.system, &groups.agents, &groups.ci, &groups.engine] {
             std::fs::create_dir_all(leaf)?;
         }
         // Joining a leaf works without the weights too; the next preparation tries again.
@@ -477,6 +496,7 @@ mod tests {
                 system: dir.join("system"),
                 agents: dir.join("agents"),
                 ci: dir.join("ci"),
+                engine: dir.join("engine"),
             }
         );
         // Only the CPU goes down to the leaves; the limits stay on the sandbox.
@@ -485,7 +505,12 @@ mod tests {
             "+cpu"
         );
         assert_eq!(std::fs::read_to_string(dir.join("cpu.max"))?, "max 100000");
-        for (leaf, weight) in [("system", "100"), ("agents", "100"), ("ci", "400")] {
+        for (leaf, weight) in [
+            ("system", "100"),
+            ("agents", "100"),
+            ("ci", "400"),
+            ("engine", "100"),
+        ] {
             assert_eq!(
                 std::fs::read_to_string(dir.join(leaf).join("cpu.weight"))?,
                 weight,
@@ -576,9 +601,13 @@ mod tests {
                 system: dir.clone(),
                 agents: dir.clone(),
                 ci: dir.clone(),
+                engine: dir.join("engine"),
             }
         );
         assert!(!dir.join("ci").exists());
+        // The engine's containers still get a group of their own below the sandbox's (SPEC-187
+        // DKR-005), without controllers passed down.
+        assert!(dir.join("engine").is_dir());
         assert!(!dir.join("cgroup.subtree_control").exists());
         Ok(())
     }

@@ -28,6 +28,7 @@ flowchart LR
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
     CH["Chrome on Xvfb"]
+    AG -->|"/run/docker.sock"| DE["Docker engine (on demand)"]
   end
   AG -->|"MCP + hooks"| INT
   APP <--> GH["GitHub App + REST"]
@@ -63,6 +64,7 @@ flowchart TD
   SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
   SBX --> CIG["ci/ weight 400: CI jobs"]
+  SBX --> ENG["engine/ weight 100: dockerd, containers below it"]
 ```
 
 The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent runs it, and the
@@ -81,14 +83,39 @@ flowchart LR
 
 ## Containers
 
-An isolated sandbox runs no container engine. Its runs (agents, CI jobs, CD) have Docker's default
-capability set and a seccomp filter without mount APIs or nested user namespaces, which a daemon
-needs; a `docker` client is there only when the base copied one from the host's `/usr`. The
-briefing says so in a `## Containers` section, its last mandatory part, and points agents to an
-engine on another machine (`DOCKER_HOST=ssh://…`) and to `apt` for test services
-([SPEC-173](../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md),
-[decision 0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)); an
-engine per sandbox is #551.
+Each isolated sandbox has its own Docker engine
+([SPEC-187](../.ai/specs/SPEC-187-docker-works-inside-sandboxes-for-tasks.md),
+[decision 0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md),
+superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)).
+
+- **The socket.** The namespace holder serves the sandbox's `docker.sock`, which agents, the
+  Superagent, Shells and CI jobs see at `/run/docker.sock`.
+- **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
+  joins `sandboxes/<sandbox>/engine` and execs `bwrap`, then `yulius sandbox-host engine`
+  supervises `dockerd`. The holder splices each connection to the engine's own socket.
+- **The engine's process.** `dockerd` is root of the sandbox's user namespace, in the sandbox's
+  network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
+  and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
+  `setns` and `pivot_root`) bounds every container.
+- **Idle stop.** The engine stops after the idle time with no client and no container.
+- **Disk.** Its storage counts toward the quota. Under pressure, a running engine's unused images
+  and build cache are pruned through its own control socket; a stopped engine is never started
+  for that.
+- **When the prerequisites are missing** (`dockerd` on the host, the cgroup delegation), the
+  briefing's `## Containers` section keeps saying there is no engine.
+
+```mermaid
+flowchart LR
+  subgraph NS["Sandbox user + network namespace"]
+    R["run: agent, Superagent, Shell, CI job"] -->|"/run/docker.sock"| H["holder: docker.sock"]
+    H -->|"first connection: sandbox-exec --engine → bwrap"| E["sandbox-host engine → dockerd"]
+    H -->|"splice"| E
+    E --> C["containers (engine seccomp, engine/ cgroup)"]
+    C -->|"NAT in the sandbox's network"| T["tap0"]
+  end
+  T --> S["slirp4netns (host loopback off)"] --> I["Internet"]
+  M["server: disk upkeep"] -->|"running engine only: prune build cache, unused images"| E
+```
 
 ## Disk
 
@@ -656,7 +683,11 @@ the sandbox's containment, production in the sandbox's network only on the host'
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it.
+you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
+after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
+dialog as soon as the person confirms, saying what is being checked and promoted with the time so
+far, and turns it into the run's view when the answer comes, or shows the refusal in it
+([SPEC-189](../.ai/specs/SPEC-189-when-i-clicked-deploy-nothing-happened-f.md)).
 
 ```mermaid
 sequenceDiagram
@@ -804,6 +835,8 @@ reads on from where it stopped; `App::task_transcript` reads the latest lineage 
 (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a `stat`.
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
 change of height ([decision 0149](decisions/0149-the-watched-transcript-follows-the-bottom-as-a-state.md)).
+While the agent works, a `✻ Working… (1m 23s)` line moves as Claude Code's spinner, in CSS, and
+counts from the task's `working_since` ([decision 0153](decisions/0153-the-working-line-moves-as-claude-code-s-spinner.md)).
 
 ```mermaid
 sequenceDiagram

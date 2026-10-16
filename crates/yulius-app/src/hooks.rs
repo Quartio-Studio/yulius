@@ -389,6 +389,11 @@ impl App {
             })
             .collect();
         let decisions = repo.decision_files();
+        // This sandbox's holder, not the setting: one without an engine is told so (SPEC-187).
+        let docker = match self.isolation.get() {
+            Some(isolation) => isolation.docker(&self.sandbox_ref(&sandbox)).await,
+            None => false,
+        };
         let input = BriefingInput {
             project_name: if sandbox.is_playground() {
                 format!("{} (playground)", sandbox.repo_name)
@@ -423,6 +428,7 @@ impl App {
             now: self.now(),
             playground: sandbox.is_playground(),
             isolated: self.isolation.get().is_some(),
+            docker,
         };
         let workflow = self.workflow_instructions(task).await.map(|text| {
             let clipped: String = text.chars().take(3_000).collect();

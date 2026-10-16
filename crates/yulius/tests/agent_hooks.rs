@@ -863,6 +863,36 @@ async fn an_isolated_sandboxs_briefing_names_the_missing_container_engine() -> T
     Ok(())
 }
 
+struct IsolatedWithDocker;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for IsolatedWithDocker {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn docker(&self, _: &yulius_app::ports::isolation::SandboxRef) -> bool {
+        true
+    }
+}
+
+/// SPEC-187 DKR-010: with an engine per sandbox the briefing says Docker works, and no longer
+/// that there is no engine.
+#[tokio::test]
+async fn a_sandbox_with_an_engine_is_told_docker_works() -> TestResult {
+    let f = fixture().await?;
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert!(f.h.app.set_isolation(Arc::new(IsolatedWithDocker)));
+    let text = f.h.app.briefing(&task, Agent::ClaudeCode).await?;
+    assert!(text.contains("## Containers"), "{text}");
+    assert!(text.contains("Docker works here"), "{text}");
+    assert!(!text.contains("No container engine"), "{text}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     let f = fixture().await?;

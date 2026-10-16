@@ -18,7 +18,9 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
-  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
+  contained sandbox with its own system layer, Docker engine (SPEC-187: `docker build`, `run` and
+  `compose` work for agents, the Superagent, shells and CI jobs), home, shells per user, browser
+  and editor. The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and
@@ -137,7 +139,8 @@ watching, steering and unblocking.
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets a person allowed for each, and shows each run on the CD
-  (deployment) page. A merge deploys nothing: a person or an agent
+  (deployment) page; a confirmed deploy opens its dialog at once, saying what it checks and
+  promotes, and that dialog becomes the run. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
