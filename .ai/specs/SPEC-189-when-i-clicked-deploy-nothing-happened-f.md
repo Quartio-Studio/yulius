@@ -45,18 +45,19 @@ nothing about what the page shows meanwhile.
 ## Requirements
 
 - CDS-001. Confirming a deploy opens the Deploy dialog at once, before the server answers, in a
-  "Starting" state: the environment, its branch, who asked, what is being done now (for production
+  "Starting" state: the environment, its branch and who asked ("main · by <login>"), what is being done now (for production
   with `promote`: checking, then promoting `<integration branch> at <promotes_from>` into
   `<branch>`; otherwise checking `<branch> at <head>`), how long it has taken so far (counting each
-  second), and that its stages and output appear here as soon as it starts. Its content is polite
-  live text, so a screen reader hears the state.
+  second), and that its stages and output appear here as soon as it starts. What it does is a
+  status live region filled once it exists ("Starting: …"), so a screen reader hears it.
 - CDS-002. When the server answers with the run, the same dialog becomes that run's view (state,
   stages, output, "In Pipeline"), without closing and reopening; the address names the run as
   before, and the run list refreshes.
 - CDS-003. A refused deploy says why in that dialog: a "Not started" badge and the server's
   reason (which already says when nothing ran), instead of a toast behind it.
 - CDS-004. Closing the starting dialog does not stop the deploy. When it starts, a toast says so
-  with an "Open" action that opens its run; a refusal is a toast, as before. While the dialog is
+  with an "Open" action that opens its run (through its address once the person left the CD tab);
+  a refusal is a toast, as before. While the dialog is
   open it is the confirmation of the start, so no toast covers it. Leaving the CD tab
   meanwhile still opens nothing and names nothing in the address (SPEC-151 CCD-003).
 - CDS-005. Nothing else changes: the confirmation (typed slug, `confirm_ms`, the commit it binds),
@@ -74,18 +75,24 @@ nothing about what the page shows meanwhile.
 ## Acceptance criteria
 
 - AC1 (CDS-001, CDS-002): in mock `studio`, with the deploy answer held, confirming "Deploy
-  production…" shows the dialog "Deploy" with "Starting", "Promoting quartio at 9f3c2a1 into main"
-  and an elapsed time that grows, with no WCAG violation; after the answer the same dialog element
+  production…" shows the dialog "Deploy" with "Starting", "main · by mkarp", "Checking, then
+  promoting quartio at 9f3c2a1 into main…" (its status region reading "Starting: …") and an elapsed
+  time that grows, with no WCAG violation; after the answer the same dialog element
   shows "Deploying", its output and the run in the address.
 - AC2 (CDS-003): a dev deploy refused for a secret shows "Not started" and the reason in the
   dialog, and the dialog no longer says "Starting".
 - AC3 (CDS-004): the starting dialog closed with Escape stays closed when the answer comes; a toast
-  "Deploying production." with "Open" opens the run. Leaving the tab still draws nothing.
+  "Deploying production." with "Open" opens the run, also from the CI tab. A refusal after the
+  dialog closed is a toast. Another page opened while it starts closes the dialog, and the answer
+  draws nothing there nor on the way back.
 
 ## Test plan
 
-- e2e `cd.e2e.ts`: "a confirmed deploy opens its dialog at once and says what is starting" (AC1,
-  AC3) and the existing dev refusal check extended (AC2). Both fail on `dev` at b62aaee3. The test
+- e2e `cd.e2e.ts`: "a confirmed deploy opens its dialog at once and says what is starting" (AC1),
+  "a starting deploy closed meanwhile goes on, and its toast opens it" (AC3), "a refusal after its
+  dialog closed is a toast; a page left with it open draws nothing" (AC3) and the existing dev
+  refusal check extended (AC2). The first two and AC2 fail on `dev` at b62aaee3. The mock's
+  `holdCdDeploy` now holds before its refusals, as the server refuses after its checks. The test
   "a tab left behind draws nothing when its answers come late" closes the now-open starting dialog
   before leaving the tab (the dialog is modal).
 - Gates: `scripts/dev ci`, `scripts/dev security`, the whole e2e suite.
@@ -104,5 +111,13 @@ nothing about what the page shows meanwhile.
 - **What the dialog says comes from the card the person confirmed** (branch, head,
   `promotes_from`), the same facts the confirmation listed; the page does not guess the server's
   phase, so it names checks and promotion together ("Checking, then promoting …").
+- **Review round 1** (fresh session, head 519a1774, request changes; all own code): who asked was
+  missing (major, fixed test-first); the toast's Open did nothing from the CI tab (fixed
+  test-first: it goes through the run's address); the live region was filled as it appeared
+  (fixed: filled on the next frame, "Starting: " in it); a refusal after closing and a page left
+  with the dialog open had no test (added; both already behaved). Nits fixed: one `what`, one
+  integration-branch helper, `soFar`. Left as is: between the answer and the run's first read (one
+  round trip) the dialog still reads "Starting" without its counter, which is true until the run
+  is shown.
 - **Elapsed seconds, not a fake progress bar.** The duration is unknown (a GitHub merge); a counter
   that moves proves the page is alive without promising an end.

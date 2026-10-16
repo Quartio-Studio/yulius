@@ -40,9 +40,11 @@ const POLL_IDLE_MS = 30000;
 
 const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const shortSha = (sha) => String(sha || '').slice(0, 7);
+/** The integration branch: the dev environment's branch (SPEC-152). */
+const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');
 const title = (env) => (env.name === 'dev' ? 'Dev' : 'Production');
 /** How long a deploy has been starting: "12 s so far", "1 min 5 s so far". */
-const seconds = (s) => {
+const soFar = (s) => {
   const n = Math.floor(s);
   return `${n < 60 ? `${n} s` : `${Math.floor(n / 60)} min ${n % 60} s`} so far`;
 };
@@ -126,7 +128,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const facts = [];
     if (env.promote) {
       // What a deploy promotes (SPEC-152): the integration branch is the dev environment's branch.
-      const integration = (overview.environments || []).find((e) => e.name === 'dev');
+      const integration = integrationOf(overview);
       facts.push(['Promotes', [integration ? h('code', null, integration.branch) : 'the integration branch',
         env.promotes_from ? h('span', { class: 'muted' }, ` at ${shortSha(env.promotes_from)}`) : null, ` into ${env.branch}`]]);
     }
@@ -228,10 +230,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       reload({ quiet: true });
       // Still watched, the dialog becomes the run; closed meanwhile, a toast says it went out.
       if (starting.open()) showRun(run.run_id, starting.modal);
-      else toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => showRun(run.run_id) } });
+      else toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
       starting.stop();
-      if (starting.open()) starting.refused(error);
+      if (starting.open()) starting.refused(error, what);
       else errorToast(error, `Couldn’t deploy ${what}`);
       if (!destroyed) reload({ quiet: true });
     }
@@ -243,33 +245,36 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
    */
   function startingDialog(env, overview) {
     const prod = env.name === 'prod';
-    const integration = overview && (overview.environments || []).find((e) => e.name === 'dev');
+    const integration = integrationOf(overview);
+    const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
+    const who = `${env.branch}${me ? ` · by ${me}` : ''}`;
     const doing = prod && env.promote
       ? `Checking, then promoting ${integration ? integration.branch : 'the integration branch'}${env.promotes_from ? ` at ${shortSha(env.promotes_from)}` : ''} into ${env.branch}…`
       : `Checking ${env.branch}${env.head ? ` at ${shortSha(env.head)}` : ''} and what it needs…`;
-    const head = h('div', { class: 'row-wrap' }, badge('Starting', 'warn'), h('strong', null, title(env)), h('span', { class: 'muted small' }, env.branch));
-    const elapsed = h('span', { class: 'muted small cd-starting-elapsed' }, seconds(0));
-    const state = h('div', { class: 'cd-starting', role: 'status' },
-      h('span', { class: 'cd-starting-spinner', 'aria-hidden': 'true' }),
-      h('div', { class: 'stack-sm' },
-        h('p', null, doing),
-        h('p', { class: 'muted small' }, 'Its stages and output appear here as soon as it starts. Closing this does not stop it.')));
-    const row = h('div', { class: 'cd-starting-row' }, state, elapsed);
+    const head = h('div', { class: 'row-wrap' }, badge('Starting', 'warn'), h('strong', null, title(env)), h('span', { class: 'muted small' }, who));
+    const elapsed = h('span', { class: 'muted small cd-starting-elapsed' }, soFar(0));
+    // A live region is read when it changes, not when it appears: it is filled once it exists.
+    const state = h('div', { class: 'stack-sm', role: 'status' });
+    const row = h('div', { class: 'cd-starting-row' },
+      h('div', { class: 'cd-starting' }, h('span', { class: 'cd-starting-spinner', 'aria-hidden': 'true' }), state), elapsed);
     const modal = deployDialog(h('div', { class: 'stack' }, head, row));
+    requestAnimationFrame(() => setChildren(state,
+      h('p', null, h('span', { class: 'sr-only' }, 'Starting: '), doing),
+      h('p', { class: 'muted small' }, 'Its stages and output appear here as soon as it starts. Closing this does not stop it.')));
     const since = performance.now();
-    const tick = setInterval(() => { elapsed.textContent = seconds((performance.now() - since) / 1000); }, 1000);
+    const tick = setInterval(() => { elapsed.textContent = soFar((performance.now() - since) / 1000); }, 1000);
     const stop = () => { clearInterval(tick); elapsed.remove(); };
     modal.stop = stop;
     return {
       modal,
       stop,
       open: () => openRun === modal,
-      refused(error) {
+      refused(error, what) {
         const message = error && error.message ? error.message : String(error);
         if (error && error.code) console.warn(`Couldn’t deploy ${env.name}: ${error.code}`, error);
-        setChildren(head, badge('Not started', 'danger'), h('strong', null, title(env)), h('span', { class: 'muted small' }, env.branch));
+        setChildren(head, badge('Not started', 'danger'), h('strong', null, title(env)), h('span', { class: 'muted small' }, who));
         row.replaceWith(h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn', { size: 16 }),
-          h('span', { class: 'banner-text' }, `Couldn’t deploy ${prod ? 'production' : 'dev'}: ${message}`)));
+          h('span', { class: 'banner-text' }, `Couldn’t deploy ${what}: ${message}`)));
       },
     };
   }
@@ -283,6 +288,12 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     } catch (error) {
       errorToast(error, 'Couldn’t cancel the deploy');
     }
+  }
+
+  /** A run from a toast: here while the CD tab shows, else through its address (SPEC-189). */
+  function openLater(id) {
+    if (destroyed) ctx.navigate(`${page}&run=${encodeURIComponent(id)}`);
+    else showRun(id);
   }
 
   /** The Deploy dialog, one at a time: `modal.stop()` ends what refreshes it when it closes. */
