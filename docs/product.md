@@ -99,7 +99,7 @@ watching, steering and unblocking.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they change it. Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
-  terminal's colours, with an electro-blue pixel octopus crawling along its top), see whose it is
+  terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
   the new owner.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are

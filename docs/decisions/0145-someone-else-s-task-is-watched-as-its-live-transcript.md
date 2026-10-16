@@ -6,6 +6,8 @@ Accepted. Specified in [SPEC-179](../../.ai/specs/SPEC-179-ui-problem-when-someo
 It changes what [0060](0060-a-task-is-owned-by-one-person.md) shows people who do not own a task
 (the terminal opened read-only) and reuses [0059](0059-a-session-is-printed-as-the-tui-in-html.md)'s
 TUI-in-HTML printing for a live session.
+Amended by [0149](0149-the-watched-transcript-follows-the-bottom-as-a-state.md) (SPEC-185, #575): the view
+follows the bottom as a state through every change of height, and the octopus is gone.
 
 ## Context
 
@@ -28,8 +30,8 @@ from where it stopped, and a long session has no tail.
   the same session is answered from one `stat`, without reading the file.
 - A tool result that arrives after its call is printed inside that call (the call's entry is drawn
   again), on the Sessions page too.
-- An electro-blue pixel octopus lives in a lane stuck to the top of the watched transcript, as the
-  spider web marks a past session: arm frames in CSS `steps()`, corner-to-corner travel by script.
+- ~~An electro-blue pixel octopus lives in a lane stuck to the top of the watched transcript.~~
+  Removed by 0149.
 
 ## Alternatives
 

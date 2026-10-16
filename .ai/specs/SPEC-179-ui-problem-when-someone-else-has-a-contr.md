@@ -88,7 +88,7 @@ reference face crawls along the top between the corners.
   not shown, as no terminal is. In the sidebar, a task someone else owns shows a small round mark
   with the owner's initials before its time, titled "@owner owns this task"; its tooltip and its
   screen-reader sentence say "owned by @owner". Your own tasks show no mark.
-- **WAT-006 The octopus.** A pixel-art octopus in electro blue (`--octo-*` tokens, both themes) lives
+- **WAT-006 The octopus.** Removed by SPEC-185 OCT-001 (ADR-0149, task #170): a watched task has no octopus and no lane. Was: A pixel-art octopus in electro blue (`--octo-*` tokens, both themes) lives
   in a lane stuck to the top of the transcript (`position: sticky; top: 0`) above the text, so it
   stays at the top while the transcript scrolls and never covers a line. Its face is the reference's:
   a round head, two single dark dot eyes set wide and an `ε` mouth between and below them, and no
@@ -126,7 +126,7 @@ reference face crawls along the top between the corners.
   not the faded session palette, AA in both themes; axe finds nothing.
 - **AC-WAT-5.** e2e: the control card's words and the locked line; the sidebar's owner mark on
   another owner's task (title, initials, screen-reader words) and none on one's own.
-- **AC-WAT-6.** e2e: the octopus is in the sticky lane at the top of the watched transcript, stays
+- **AC-WAT-6.** Removed by SPEC-185 OCT-001 (its tests replaced by AC-OCT-1). Was: e2e: the octopus is in the sticky lane at the top of the watched transcript, stays
   there while the transcript scrolls, has the face (two eye pixels, an ε mouth) and eight tentacles,
   moves between the corners and changes tentacle frames, rests still in the top-right corner under
   reduced motion, and is gone when the view is left. Past sessions keep the spider and no octopus.

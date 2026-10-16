@@ -2588,57 +2588,14 @@ button.task-group-head:hover { color: var(--text); }
 .watch { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; container: page / inline-size; }
 .watch-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 .watch-scroll:focus-visible { outline: none; box-shadow: var(--focus-inset); }
-.watch .ss-tui { flex: 1 0 auto; border-top: 0; }
+.watch .ss-tui { flex: 1 0 auto; border-top: 0; padding-inline: 16px; } /* inset as the control card above it */
+@container page (max-width: 640px) { .watch .ss-tui { padding-inline: 12px; } }
 .watch-earlier { position: relative; margin: 0 0 12px; font-family: var(--font); }
 .watch-earlier[hidden], .watch-empty[hidden], .watch-working[hidden], .watch-jump[hidden] { display: none; }
 .watch-empty { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 48px 24px; text-align: center; font-family: var(--font); }
 .watch-working { position: relative; margin-top: 12px; padding: 0 1ch; }
 .watch-working-text { color: transparent; background: linear-gradient(100deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; animation: shimmer var(--duration-pulse) linear infinite; }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
-/* The octopus's lane (octopus.js, WAT-006): stuck to the top of the scrolling transcript across the
-   whole well, opaque, so the octopus covers no line; text scrolling under it fades out. */
-.watch-lane { position: sticky; top: 0; z-index: var(--z-sticky); height: 80px; margin: -16px -32px 8px; background: var(--session-bg); pointer-events: none; }
-.watch-lane::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px; background: linear-gradient(var(--session-bg), transparent); }
-.octo { position: absolute; top: 6px; left: 0; width: 96px; height: 72px; padding: 0 8px; box-sizing: content-box; will-change: transform; } /* 2 px pixels */
-.octo-sprite { display: block; width: 96px; height: 72px; overflow: visible; filter: drop-shadow(0 0 6px var(--octo-aura)); }
-.octo-ink { fill: var(--octo-ink); }
-.octo-body { fill: var(--octo-body); }
-.octo-shade { fill: var(--octo-shade); }
-.octo-glow { fill: var(--octo-glow); }
-.octo-sucker { fill: var(--octo-sucker); }
-.octo-eye, .octo-mouth { fill: var(--octo-eye); }
-/* One arm frame shows at a time: crawling, four fast ones; resting, four slow ones; waving, two.
-   Frame n shows for the n-th quarter (half) of the loop: a delay shifts each into its place. */
-.octo-frame { visibility: hidden; }
-@keyframes octo-frame-4 { 0% { visibility: visible; } 25%, 100% { visibility: hidden; } }
-@keyframes octo-frame-2 { 0% { visibility: visible; } 50%, 100% { visibility: hidden; } }
-.octo.is-crawling .octo-crawl { animation: octo-frame-4 var(--duration-octo-crawl) step-end infinite; }
-.octo.is-resting:not(.is-waving) .octo-rest { animation: octo-frame-4 var(--duration-octo-rest) step-end infinite; }
-.octo.is-waving .octo-wave { animation: octo-frame-2 var(--duration-octo-wave) step-end infinite; }
-.octo.is-crawling .octo-crawl-1 { animation-delay: calc(var(--duration-octo-crawl) * -0.75); }
-.octo.is-crawling .octo-crawl-2 { animation-delay: calc(var(--duration-octo-crawl) * -0.5); }
-.octo.is-crawling .octo-crawl-3 { animation-delay: calc(var(--duration-octo-crawl) * -0.25); }
-.octo.is-resting:not(.is-waving) .octo-rest-1 { animation-delay: calc(var(--duration-octo-rest) * -0.75); }
-.octo.is-resting:not(.is-waving) .octo-rest-2 { animation-delay: calc(var(--duration-octo-rest) * -0.5); }
-.octo.is-resting:not(.is-waving) .octo-rest-3 { animation-delay: calc(var(--duration-octo-rest) * -0.25); }
-.octo.is-waving .octo-wave-1 { animation-delay: calc(var(--duration-octo-wave) * -0.5); }
-/* Crawling, its arms push on every other frame: the head rises a pixel with them. */
-.octo.is-crawling .octo-head { animation: octo-bob var(--duration-octo-crawl) step-end infinite; }
-@keyframes octo-bob { 0%, 50% { transform: none; } 25%, 75% { transform: translateY(-1px); } }
-/* Its eyes look where it goes, and blink now and then; its arms ripple the way it crawls. */
-.octo.is-left .octo-look { transform: translateX(-0.5px); }
-.octo.is-right .octo-look { transform: translateX(0.5px); }
-.octo-eyes { transform-box: fill-box; transform-origin: center; animation: octo-blink var(--duration-octo-blink) step-end infinite; }
-@keyframes octo-blink { 0%, 94% { transform: none; } 95%, 97% { transform: scaleY(0.25); } 98%, 100% { transform: none; } }
-.octo.is-left .octo-arms { transform-box: view-box; transform-origin: 50% 0; transform: scaleX(-1); }
-@media (prefers-reduced-motion: reduce) {
-  .octo .octo-frame, .octo .octo-head, .octo .octo-eyes { animation: none; }
-  .octo .octo-rest-0 { visibility: visible; }
-}
-@container page (max-width: 640px) {
-  .watch-lane { height: 62px; margin: -12px -12px 8px; }
-  .octo, .octo-sprite { width: 72px; height: 54px; } /* 1.5 px pixels */
-}
 @media (prefers-reduced-motion: reduce) { .watch-working-text { animation: none; color: var(--session-dim); background: none; } }
 
 /* instance updates (updates.js, pages/instance.js; SPEC-002 ADR-18) and the Jev key (jevkey.js) */
