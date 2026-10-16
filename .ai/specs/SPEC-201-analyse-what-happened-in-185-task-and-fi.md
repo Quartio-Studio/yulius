@@ -94,7 +94,7 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
 - [x] Reproduce the pruned engine cgroup after a restart and find its cause
 - [x] Regression tests: the front and the tick restore a missing engine leaf
 - [x] The front and the tick recreate the engine leaf; docs and gate green
-- [x] Independent review of the engine-leaf fix, findings fixed test-first
+- [ ] Independent review of the engine-leaf fix, findings fixed test-first
 
 ## Acceptance criteria
 

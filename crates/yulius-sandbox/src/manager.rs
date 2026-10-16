@@ -1720,15 +1720,26 @@ while True:
 
     /// SPEC-201 DBX-006 (#614): a restart of `yulius.service` prunes an idle engine's empty
     /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
-    /// even for a front from an older binary, which no update replaces.
+    /// even for a front from an older binary, which no update replaces. Review round 1 (major):
+    /// also for a SPEC-187 holder, whose own engine uses the same leaf behind a relay front.
     #[tokio::test]
     async fn a_kept_engine_front_gets_its_pruned_leaf_back()
     -> Result<(), Box<dyn std::error::Error>> {
+        for (holder_engine, mode) in [(false, "engine"), (true, "relay")] {
+            kept_front_restores_the_leaf(holder_engine, mode).await?;
+        }
+        Ok(())
+    }
+
+    async fn kept_front_restores_the_leaf(
+        holder_engine: bool,
+        mode: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()), holder_engine)?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
-        assert_eq!(front.mode, "engine");
+        assert_eq!(front.mode, mode);
         let leaf = manager.group_paths("s1").ok_or("no delegation")?.engine;
         assert!(leaf.is_dir());
         std::fs::remove_dir(&leaf)?;
@@ -1740,9 +1751,9 @@ while True:
         assert_eq!(
             front_of(&manager).await.map(|f| f.pid),
             Some(front.pid),
-            "the running front is kept"
+            "{mode}: the running front is kept"
         );
-        assert!(leaf.is_dir(), "the engine's leaf is back");
+        assert!(leaf.is_dir(), "{mode}: the engine's leaf is back");
         kill(front.pid);
         Ok(())
     }

@@ -514,6 +514,10 @@ mod tests {
         std::fs::write(leaf.join("cgroup.procs"), "")?;
         assert!(!restore_leaf(&leaf)?, "already there");
         assert!(leaf.join("cgroup.procs").exists(), "left as it was");
+        // Review round 1 (nit): no `..`, as `join` refuses.
+        let around = root.path().join("s1/../s2");
+        assert!(restore_leaf(&around).is_err());
+        assert!(!root.path().join("s2").exists());
         Ok(())
     }
 

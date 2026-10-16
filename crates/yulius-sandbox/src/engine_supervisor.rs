@@ -580,6 +580,8 @@ open(stopped, "w").write("stopped")
             Duration::from_secs(20),
         );
         let reason = orphan.connect().await.err().unwrap_or_default();
+        // Review round 1 (low): refused before the engine is spawned, naming the group.
+        assert!(reason.starts_with("the engine's cgroup "), "{reason}");
         assert!(reason.contains("gone/engine"), "{reason}");
         assert!(!f.path("gone").exists());
         Ok(())
