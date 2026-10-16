@@ -306,4 +306,18 @@ Infra bootstrap adds the scan to a project only when the instance has a key. Thi
 - **Not testable here.** The running instance is built from `main`, so the instance key, its
   Instance card and `yulius security-scan` for other projects reach this instance after a person
   promotes `dev`. Until then this project's PR jobs scan with its own agent secret.
-- **Ignores:** none were needed.
+- **The first real scan in Yulius CI.** This PR's `security` job, run 50ca979b on b047560e, sent
+  45 files in 28 chunks through the proxy with the project's agent secret. It failed (exit 1) with
+  3 high "missing authorization" findings, all in `crates/yulius-server/web/assets/mock.js`, the
+  UI's in-browser fake backend (`?mock=1`), and 15 medium or low notes.
+- **Exclusions and ignores.** `.config/vidoc.toml` now excludes `mock.js`, with its reason
+  committed beside it: it serves fake data in the viewer's own browser, and the real checks live
+  in `yulius-app`, which is scanned. The exclusion holds only while `mock.js` has no DOM sink. The
+  independent reviewer agreed in round 4. No `[[ignore]]` entries are needed.
+- **The change scan of 06187277**, live: 22 chunks, no open critical or high finding, exit 0. Its
+  11 medium or low notes are in code this change did not write:
+  - The `checkout_name` "path traversal" is a false positive: job names are validated as
+    `[a-z0-9][a-z0-9_-]*`.
+  - The others (the workspace-token search cost, bracketed-paste content, the egress client
+    cache's TTL, TOCTOU in path checks, the `.gitconfig` login) are left to the broad audit,
+    task #160.
