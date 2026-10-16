@@ -163,6 +163,18 @@ impl App {
                 retry_after_secs: crate::updates::HOLD_RETRY_SECS,
             });
         }
+        // A person paused a run that could not be frozen: it waits here, after the update's
+        // hold (the drain sees its pause point) and before any rotation (SPEC-191 PER-001).
+        if matches!(event, events::STOP | events::USER_PROMPT_SUBMIT)
+            && let Some(newly) = self.hold_for_person(&ctx.task.id, &ctx.attempt.id).await
+        {
+            if newly {
+                self.publish_task(&ctx.task.id).await;
+            }
+            return Ok(HookReply::Hold {
+                retry_after_secs: crate::pause::HOLD_RETRY_SECS,
+            });
+        }
         match event {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(&ctx, input).await?,

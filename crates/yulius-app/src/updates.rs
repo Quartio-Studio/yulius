@@ -502,6 +502,23 @@ impl App {
         }
     }
 
+    /// Freezes `run_dir` for a person's pause, never during an update's freeze pass or thaw
+    /// (SPEC-191 PER-001).
+    pub(crate) async fn freeze_run_now(&self, run_dir: &str) -> RunFreeze {
+        let _pass = self.updates.freezing.lock().await;
+        let host = Arc::clone(&self.deps.session_host);
+        let dir = PathBuf::from(run_dir);
+        tokio::task::spawn_blocking(move || host.freeze(&dir))
+            .await
+            .unwrap_or(RunFreeze::Unsupported)
+    }
+
+    /// Thaws `run_dir` when a person's pause ends, under the same lock (SPEC-191 PER-002).
+    pub(crate) async fn thaw_run_now(&self, run_dir: &str) {
+        let _pass = self.updates.freezing.lock().await;
+        self.thaw_run(run_dir).await;
+    }
+
     /// Thaws one run (blocking work off the runtime).
     async fn thaw_run(&self, run_dir: &str) {
         let host = Arc::clone(&self.deps.session_host);

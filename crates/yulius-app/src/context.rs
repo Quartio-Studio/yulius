@@ -44,6 +44,8 @@ pub struct AppConfig {
     pub viewer_recheck_ms: u64,
     /// How often the UI event stream says it is alive with a heartbeat (SPEC-191 LIV-001).
     pub events_heartbeat_ms: u64,
+    /// How often a person's pause asks the kernel again whether the run froze (SPEC-191 PER-001).
+    pub person_freeze_pass_ms: u64,
     /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
     pub resume_stagger_ms: u64,
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
@@ -114,6 +116,7 @@ impl AppConfig {
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
             events_heartbeat_ms: 20_000,
+            person_freeze_pass_ms: 2_000,
             resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
             stop_escalation_ms: u64::try_from(
                 yulius_domain::task::STOP_INTERRUPT_GRACE_MS

@@ -47,8 +47,9 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     recheck.tick().await;
     // A quiet stream still says it is alive, so the page can tell a dead connection from a quiet
     // one and reconnect (SPEC-191 LIV-001).
-    let mut heartbeat =
-        tokio::time::interval(Duration::from_millis(app.config.events_heartbeat_ms.max(100)));
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(
+        app.config.events_heartbeat_ms.max(100),
+    ));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
     loop {

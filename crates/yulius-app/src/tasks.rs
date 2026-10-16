@@ -202,7 +202,7 @@ impl App {
                 && self.agent_waits_on_yulius(&task.id),
             not_started,
             awaits_start_onboarding,
-            pause: self.pause_view(task),
+            pause: self.pause_view(task).await,
         })
     }
 

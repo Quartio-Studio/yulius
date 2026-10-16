@@ -179,6 +179,10 @@ pub struct TaskRuntime {
     /// When a held hook of the current run last asked again (ms, 0 = not since this server
     /// started): a hold nobody polls any more was given up by the CLI (ADR-17).
     pub(crate) hold_polled_ms: AtomicI64,
+    /// How a person's pause of the current run stands (SPEC-191 PER-001, `pause::PersonFreeze`).
+    pub(crate) person_freeze: std::sync::atomic::AtomicU8,
+    /// When a hook of the current run was last held for a person's pause (ms, 0 = not held).
+    pub(crate) person_held_ms: AtomicI64,
     /// Turn-end step nudges already given to the agent (`Nudge::key`), so each is given once.
     pub(crate) nudged: Mutex<std::collections::BTreeSet<String>>,
     /// The terminal already said that this task acts on GitHub as the App, not its owner
@@ -265,6 +269,8 @@ impl TaskRuntime {
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
+            person_freeze: std::sync::atomic::AtomicU8::new(0),
+            person_held_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
