@@ -582,11 +582,16 @@ mod tests {
     /// brings buildx and compose to the base.
     #[test]
     fn the_host_install_it_asks_for_brings_buildx_and_compose() {
-        for needle in ["docker-ce with docker-buildx-plugin and docker-compose-plugin"] {
-            assert!(NO_DOCKERD_IN_BASE.contains(needle), "{needle}");
-        }
+        assert!(
+            NO_DOCKERD_IN_BASE
+                .contains("docker-ce with docker-buildx-plugin and docker-compose-plugin"),
+            "{NO_DOCKERD_IN_BASE}"
+        );
         // Review round 1 (nit): one host install everywhere, as the refusal and doctor name it.
-        assert!(!NO_DOCKERD_IN_BASE.contains("docker.io"), "{NO_DOCKERD_IN_BASE}");
+        assert!(
+            !NO_DOCKERD_IN_BASE.contains("docker.io"),
+            "{NO_DOCKERD_IN_BASE}"
+        );
     }
 
     /// The scripts end each phase with a line the smoke waits for.
