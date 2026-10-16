@@ -16,6 +16,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   cut are left untouched for a later run. `tasks_list` scope `active` now also lists tasks
   paused for capacity. This project's automation was updated to the new prompt.
   Automations other projects already added from the template keep their prompt.
+- The watched task's Working line moves as Claude Code's spinner (SPEC-190, ADR-0153, task #175).
+  Under someone else's task, `✻ Working…` stood still: the mark never moved and the shimmer
+  flashed over the whole line for a fraction of each cycle. Now the mark turns through
+  `· ✢ ✳ ✶ ✻ ✽`, a light runs through the words, and the time worked follows, as in
+  `✻ Working… (1m 23s)`. Under reduced motion the mark stays on `✻` and the words don't shimmer.
 - Docker works inside isolated sandboxes (SPEC-187, ADR-0151, task #172, fixes #551). Each sandbox
   gets its own engine at `/run/docker.sock`, started by its namespace holder on first use, so
   agents, the Superagent, Shells and CI jobs run `docker build`, `docker run` and `docker compose`

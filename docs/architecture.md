@@ -831,6 +831,8 @@ reads on from where it stopped; `App::task_transcript` reads the latest lineage 
 (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a `stat`.
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
 change of height ([decision 0149](decisions/0149-the-watched-transcript-follows-the-bottom-as-a-state.md)).
+While the agent works, a `✻ Working… (1m 23s)` line moves as Claude Code's spinner, in CSS, and
+counts from the task's `working_since` ([decision 0153](decisions/0153-the-working-line-moves-as-claude-code-s-spinner.md)).
 
 ```mermaid
 sequenceDiagram
