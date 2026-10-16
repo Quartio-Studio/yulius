@@ -47,10 +47,11 @@ to fix it, and the only fix it could suggest was a host change made by a person.
   `docker buildx build` was an unknown command. The refusal, `yulius doctor`, the smoke test and
   the briefing (`missing parts: sudo apt-get install -y docker.io docker-buildx
   docker-compose-v2 here`) name all three packages. The same command adds a missing plugin to a
-  sandbox whose engine is Ubuntu's. On a base copied from a `docker-ce` host, `docker.io`
-  conflicts with `docker-ce` and would replace it, so a missing plugin there is
-  `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin` (`docker-ce-cli` recommends
-  both, so such bases normally have them). Either install writes to the sandbox's own system, so
+  sandbox whose engine is Ubuntu's. On a base copied from a `docker-ce` host, apt refuses it
+  (`containerd.io` conflicts with `containerd`, and `docker-buildx` depends on `docker.io`) and
+  removes nothing, so a missing plugin there is
+  `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin` from Docker's apt source,
+  which such bases carry (`docker-ce-cli` recommends both, so they normally have them). Either install writes to the sandbox's own system, so
   every session, CI job and dev deploy there gets the plugins, with no host change.
 - **The host's `dockerd` is advice.** `yulius doctor` warns without it, since new bases then have
   none, and still checks the delegation and the kernel modules. The smoke test needs it, because

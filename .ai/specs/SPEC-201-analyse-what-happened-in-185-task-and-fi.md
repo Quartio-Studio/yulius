@@ -88,9 +88,10 @@ installs them in its own sandbox, without a person or a host change.
   - (a) Yulius detecting a missing buildx per sandbox and telling the briefing. This needs a new
     per-sandbox probe in the briefing input. `apt-get install` of the full set is idempotent, so
     one command fixes a missing engine, a missing plugin or both on a sandbox whose engine is
-    Ubuntu's. On a base copied from a `docker-ce` host it would replace `docker-ce`; the docs name
-    `docker-buildx-plugin docker-compose-plugin` for that case, which is rare (`docker-ce-cli`
-    recommends both).
+    Ubuntu's. On a base copied from a `docker-ce` host apt refuses it and removes nothing
+    (`containerd.io` conflicts with `containerd`, checked with `apt-get install -s` in this
+    sandbox). The docs name `docker-buildx-plugin docker-compose-plugin` for that case, which is
+    rare (`docker-ce-cli` recommends both).
   - (b) Yulius installing the plugins itself, rejected in ADR-0160 (files owned by the service
     user, a pinned download to maintain).
   - (c) Telling agents to drop the plugin into `~/.docker/cli-plugins`. That is a hand-made binary
@@ -126,16 +127,27 @@ installs them in its own sandbox, without a person or a host change.
   and three nits.
   - L1: the briefing's `apt install` without `-y` aborts at the prompt with no terminal. It is now
     `apt-get install -y`, test first (449dd4eb).
-  - L2: on a base copied from a `docker-ce` host, `docker.io` conflicts with `docker-ce`. ADR-0160,
-    the operations doc and the Decisions section now name `docker-buildx-plugin
+  - L2: on a base copied from a `docker-ce` host, the full install does not apply. ADR-0160, the
+    operations doc and the Decisions section now name `docker-buildx-plugin
     docker-compose-plugin` for that case.
   - L3: SPEC-199 now says it is amended by SPEC-201.
   - L4: this section was added, and the Plan is ticked.
   - Nit 5: the smoke's host advice now matches the refusal and doctor (`docker-ce` with its
     plugins), test first.
   - Nit 7: the long operations line is rewrapped.
-  - Nit 6 is left: the briefing says "your ports", not "ports in your range". The 270-byte budget
-    has no room once `-y` is added. The `## Dev servers` section names the range.
+  - Nit 6 was first left ("your ports"), for lack of room in the 270-byte budget, and was fixed in
+    round 2.
+- **Review round 2** (fresh session, at `05a9eb9b`): APPROVE, with one minor finding and one nit
+  in own code, plus one pre-existing nit.
+  - Minor: the docs said that on a `docker-ce` base `docker.io` "would replace" `docker-ce`. In
+    fact apt refuses it and removes nothing (`apt-get install -s -y docker.io docker-buildx
+    docker-compose-v2` in this sandbox: "containerd.io : Conflicts: containerd"). The three
+    passages are corrected.
+  - Nit: "ports in your range" is back, test first. "Egress proxy:" became "Proxy:" to stay within
+    the budget (268 bytes).
+  - Pre-existing nit: the briefing's `docker` flag is per server, not per sandbox (SPEC-199). The
+    "missing parts … here" wording now covers a sandbox without `dockerd`, so no change was
+    needed.
 - **Not testable here:**
   - running the hint in the product sandbox, which this task cannot reach (only this sandbox is
     visible under `/var/lib/yulius/sandboxes`);
