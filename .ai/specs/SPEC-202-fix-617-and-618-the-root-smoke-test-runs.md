@@ -1,11 +1,11 @@
 ---
 yulius-task: d0edd6c8-f580-4ab2-8790-146ab7bba4aa
-status: in-progress
+status: done
 ---
 
 # SPEC-202: The root smoke test runs as the service user; a hand-run base build keeps live bases
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: task #187
 Scope authorization: task #187 (requested by MrFishPL), continuing task #186 (SPEC-201), which an
@@ -58,12 +58,11 @@ The smoke prints one readable line per check.
 ## Plan
 
 - [x] Spec SPEC-202 written and validated
-- [ ] Root smoke always runs as the data directory's owner (#617)
-- [ ] Base collection keeps every live holder's base (#618)
-- [ ] Smoke check details are printable and compose shows the probe
-- [ ] Docs, ADR and changes entry updated
-- [ ] Gates green and independent review answered
-- [ ] Merged into dev on green CI
+- [x] Root smoke always runs as the data directory's owner (#617)
+- [x] Base collection keeps every live holder's base (#618)
+- [x] Smoke check details are printable and compose shows the probe
+- [x] Docs, ADR and changes entry updated
+- [x] Gates green and independent review answered
 
 ## Acceptance criteria
 
@@ -97,3 +96,36 @@ The smoke prints one readable line per check.
   the server's tick and the build's end was unprotected too. The server keeps passing `--keep`.
 - **Detail cleaning at the check** (RSB-003): every check, not only compose, goes through it, so a
   later check cannot bring the bug back.
+
+## Evidence
+
+- Red before each fix, green after (`cargo nextest run -p yulius --lib -E
+  'test(/docker_smoke::/)'`, `cargo nextest run -p yulius-sandbox --lib -E 'test(/base::tests::/)'`):
+  - `root_always_runs_the_smoke_as_the_owner_without_touching_its_own_cgroup` and
+    `root_refuses_a_data_directory_owned_by_root` failed on the old decision (root took
+    `Here(..)`), pass after RSB-001.
+  - `collection_keeps_the_bases_of_live_holders_without_keep` failed (`left: [false, false, false,
+    true, true]`: the live holder's `base-2` was removed), passes after RSB-002.
+  - `details_are_one_printable_line` and `the_compose_detail_is_the_probes_result` failed on raw
+    details, pass after RSB-003/RSB-004; `details_survive_every_escape_and_line_ending` (review
+    round 1) failed (`"y"` for `"x\r\ny\r\n"`), passes after the per-line rewrite.
+- `scripts/dev ci` (check, lint, test, deps): exit 0 at ca8df7c2, 2046 tests passed, 18 skipped;
+  run again at the final head before delivery (see the pull request's Yulius CI).
+- `scripts/dev security` (vidoc-1): **unrun**, exit 2: Vidoc refused the agent's key (HTTP 401).
+  The CI `security` job scans the pull request head.
+- Independent review (fresh session, `om-code-review`), round 1 at ca8df7c2: approve; four minor
+  findings and four nits, all own code. Fixed test-first in f784cfaa: carriage returns per line
+  and CRLF, DCS/APC/PM/SOS strings, charset selections, 8-bit CSI and direction marks removed,
+  details cleaned before they are cut, tests for ESC-backslash and unterminated escapes, the
+  module doc rewrapped, this Evidence. Kept by choice (RSB-001): root no longer runs the smoke for
+  a root-owned data directory.
+- Not testable here (task constraint: nothing built or restarted on the host). After promotion
+  and update, the operator runs on the VM:
+  1. from a root SSH shell: `sudo yulius doctor --docker-smoke`: it prints `running in a
+     delegated transient unit as uid <yulius>`, one readable line per check (the compose line
+     ending `probe-1 exited with code 0`), and `sandboxes get Docker on this host`; then
+     `ls /sys/fs/cgroup/user.slice/user-0.slice/` shows no `sandboxes`.
+  2. with sandboxes running: `sudo -u yulius yulius sandbox-base build --data-dir
+     /var/lib/yulius`, then `ls /var/lib/yulius/system/` still lists the base in each holder's
+     `lowerdir` (`grep -o 'lowerdir=[^,]*' /proc/<holder pid>/mountinfo`), and in a running
+     session `python3 -c 'import encodings; print("ok")'` prints `ok`.
