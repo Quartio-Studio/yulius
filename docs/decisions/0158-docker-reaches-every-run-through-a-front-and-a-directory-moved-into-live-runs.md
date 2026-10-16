@@ -4,6 +4,8 @@
 
 Accepted. Specified in [SPEC-196](../../.ai/specs/SPEC-196-docker-just-works-in-every-sandbox-and-s.md);
 task #182, #597. Amends [0151](0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md).
+Amended by [0160](0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md): whether a front serves an engine follows the sandbox's own system, not the
+host's `dockerd`.
 
 ## Context
 
@@ -39,7 +41,8 @@ What constrains a fix:
   - **engine**: the ADR-0151 supervisor and engine, unchanged;
   - **relay**: to a SPEC-187 holder's own `<state>/docker.sock`, which keeps its engine and
     storage;
-  - **refuse**: a Docker-API 503 naming the reason (setting off, no `dockerd`, no delegation, a
+  - **refuse**: a Docker-API 503 naming the reason (setting off, no `dockerd` in the sandbox's
+    system, no delegation, a
     writable executable) and the operator's fix (`yulius doctor`, `yulius doctor
     --docker-smoke`).
 
@@ -104,9 +107,9 @@ What constrains a fix:
   cannot see or trace it. The moved tree's root is the directory: `..` leads to the run's own
   `/run/yulius`, and `open_by_handle_at` stays refused.
 - **Engine storage and old bases.** A holder from before engines has no
-  `sysroots/<sandbox>/docker`: the server makes it before an engine front starts. A holder whose
-  base was copied before Docker was on the host gets a refusal saying so; it gets an engine when
-  it starts again on a newer base (after the sandbox's idle time).
+  `sysroots/<sandbox>/docker`: the server makes it before an engine front starts. A sandbox whose
+  system has no `dockerd` gets a refusal saying how to install it in the sandbox or on the host
+  (ADR-0160).
 - **Rolling back** to a server from before this decision: it does not know fronts, counts a
   front as a run and never stops it, so those holders no longer go idle. Their runs keep the
   socket. A person stops the fronts (`pkill -f 'sandbox-host docker'`) after such a rollback.

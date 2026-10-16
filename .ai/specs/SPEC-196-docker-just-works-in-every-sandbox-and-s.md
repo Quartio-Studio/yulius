@@ -13,6 +13,8 @@ sandbox of the instance with no reload, restart or new session; a stable path in
 holders gaining an engine in place, running sessions getting the socket, start on demand, no silent
 failure, and a single host command that verifies it on the real VM. Amends SPEC-187 / ADR-0151.
 Fixes #597.
+Amended by [SPEC-199](SPEC-199-i-got-this.md): DKL-005's "no `dockerd`" is the sandbox's own
+system's, not the host's (ADR-0160).
 
 ## Goal
 

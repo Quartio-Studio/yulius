@@ -340,9 +340,9 @@ const ENGINE_MODULES: [&str; 11] = [
 ];
 
 /// Whether isolated sandboxes get a Docker engine of their own (SPEC-187 DKR-011), from the
-/// setting, the host's `dockerd`, the cgroup delegation and the kernel's modules (the text of
-/// `/proc/modules` and of `modules.builtin`). The reasons are those the sandboxes' Docker socket
-/// answers with (SPEC-196 DKL-005).
+/// setting, the cgroup delegation, the kernel's modules (the text of `/proc/modules` and of
+/// `modules.builtin`) and the host's `dockerd` (which new bases copy; SPEC-199 DSY-004). The
+/// reasons are those the sandboxes' Docker socket answers with (SPEC-196 DKL-005).
 fn docker_check(
     on: bool,
     dockerd: Option<PathBuf>,
@@ -350,20 +350,13 @@ fn docker_check(
     loaded: &str,
     builtin: &str,
 ) -> Check {
-    use yulius_sandbox::manager::{DOCKER_NO_DELEGATION, DOCKER_NO_DOCKERD, DOCKER_OFF};
+    use yulius_sandbox::manager::{DOCKER_NO_DELEGATION, DOCKER_OFF};
     const NAME: &str = "sandbox Docker";
     if !on {
         return check(
             NAME,
             Level::Ok,
             format!("no engine in sandboxes: {DOCKER_OFF}"),
-        );
-    }
-    if dockerd.is_none() {
-        return check(
-            NAME,
-            Level::Warn,
-            format!("no engine in sandboxes: {DOCKER_NO_DOCKERD}"),
         );
     }
     if !delegated {
@@ -386,25 +379,35 @@ fn docker_check(
         .into_iter()
         .filter(|module| !present.iter().any(|p| p == module))
         .collect();
-    if missing.is_empty() {
-        check(
-            NAME,
-            Level::Ok,
-            "each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on \
-             first use; `yulius doctor --docker-smoke` proves it on this host",
-        )
-    } else {
+    if !missing.is_empty() {
         let list = missing.join(" ");
-        check(
+        return check(
             NAME,
             Level::Warn,
             format!(
                 "kernel modules a sandbox cannot load are missing: {list}; run `sudo modprobe -a \
                  {list}` and list them in /etc/modules-load.d/yulius-docker.conf"
             ),
+        );
+    }
+    if dockerd.is_none() {
+        check(NAME, Level::Warn, NO_HOST_DOCKERD)
+    } else {
+        check(
+            NAME,
+            Level::Ok,
+            "each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on \
+             first use; `yulius doctor --docker-smoke` proves it on this host",
         )
     }
 }
+
+/// The host has no `dockerd` (SPEC-199 DSY-004): new bases copy none, but a sandbox's engine
+/// runs its own system's, so it can install one itself.
+const NO_HOST_DOCKERD: &str = "the host has no `dockerd`, so new sandbox bases have none: a \
+    sandbox gets its engine once Docker is installed in it (`sudo apt-get install -y docker.io`), \
+    or an operator installs Docker on the host (docker-ce or docker.io) so every new base copies \
+    it";
 
 fn delegation_check() -> Check {
     if let Ok(found) = crate::wiring::sandbox::delegation_detect() {
@@ -642,9 +645,23 @@ mod tests {
             off.detail
         );
 
+        // SPEC-199 DSY-004: without the host's `dockerd`, new bases have none; a sandbox can
+        // install it itself, and the delegation and modules still count.
         let none = docker_check(true, None, true, all, "");
         assert_eq!(none.level, Level::Warn);
-        assert!(none.detail.contains("dockerd"), "{}", none.detail);
+        for needle in [
+            "`dockerd`",
+            "sudo apt-get install -y docker.io",
+            "on the host",
+        ] {
+            assert!(none.detail.contains(needle), "{needle}: {}", none.detail);
+        }
+        let none_undelegated = docker_check(true, None, false, all, "");
+        assert!(
+            none_undelegated.detail.contains("Delegate=yes"),
+            "{}",
+            none_undelegated.detail
+        );
 
         let undelegated = docker_check(true, dockerd.clone(), false, all, "");
         assert_eq!(undelegated.level, Level::Warn);
@@ -665,6 +682,12 @@ mod tests {
             .map(|l| format!("{l}\n"))
             .collect();
         let builtin = "kernel/net/bridge/bridge.ko\nkernel/fs/ext4/ext4.ko\n";
+        let none_missing = docker_check(true, None, true, &loaded, builtin);
+        assert!(
+            none_missing.detail.contains("overlay veth"),
+            "{}",
+            none_missing.detail
+        );
         let missing = docker_check(true, dockerd, true, &loaded, builtin);
         assert_eq!(missing.level, Level::Warn);
         assert!(
