@@ -3086,9 +3086,21 @@ async fn a_superagent_started_without_the_proxy_restarts_once_it_is_wired() -> T
 
     let g = fixture_with(true, Some(f.data.clone())).await?;
     g.h.app.enable_egress(None);
+    let served = serve(g.h.router.clone()).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
     assert_ne!(g.h.app.cockpit_refresh_state(&id), "none");
-    other_cockpit(&g, &id).await?;
+    let again = other_cockpit(&g, &id).await?;
+    let mut socket = attach(served.addr, &again, &g.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let token =
+        g.h.app
+            .cockpit_mcp_token(&yulius_domain::ids::UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    assert!(
+        printed(&screen, "proxy")?.starts_with(&format!("http://yulius:{token}@")),
+        "the new one is behind the proxy: {screen}"
+    );
     g.h.app.end_all_shells().await;
     Ok(())
 }

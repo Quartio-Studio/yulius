@@ -438,6 +438,9 @@ impl App {
                 }
                 continue;
             };
+            // Its length before the poll: everything up to it is read by the poll, so a prompt
+            // written later shows as growth when the refresh checks again (review round 2).
+            let polled_len = transcript_len(watched_path);
             let observations = match watch.poll() {
                 Ok(observations) => observations,
                 Err(err) => {
@@ -487,7 +490,7 @@ impl App {
             if history_read && runtime.refresh.load(Ordering::SeqCst) != REFRESH_NONE {
                 if turn.idle(now) {
                     // What was read so far: a prompt written after it keeps the process.
-                    let seen = (watched_path.as_path(), transcript_len(watched_path));
+                    let seen = (watched_path.as_path(), polled_len);
                     if self
                         .cockpit_refresh_now(&runtime, &mut refresh_from, Some(seen))
                         .await

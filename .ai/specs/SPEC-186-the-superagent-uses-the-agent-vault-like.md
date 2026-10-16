@@ -1,11 +1,11 @@
 ---
 yulius-task: b8e293d1-1e32-498b-9e2f-a185f43bd27c
-status: in-progress
+status: done
 ---
 
 # SPEC-186: The Superagent uses the agent vault like a task agent, and sees new tools without a restart
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #171
 Scope authorization: task #171, requested by MrFishPL: task #165 (SPEC-178, ADR-0144) was
@@ -104,8 +104,8 @@ what it is served gets the new tools and environment by itself.
 - [x] The Superagent runs behind the egress proxy with its own bearer and placeholders
 - [x] A Superagent started before an update restarts and resumes once idle with the new tools
 - [x] The Superagent's briefing, ADR-0150 and the docs say what it can do with the vault
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -173,3 +173,34 @@ what it is served gets the new tools and environment by itself.
   again right before the end, unit test red before); nits: the spec's digest wording, "worktree"
   in the Superagent's refusals and the `path` description, key armour labels must match (unit
   case red before), a one-element test loop.
+- Independent review round 2 (APPROVE at `974423ee`, every round-1 fix confirmed, the targeted
+  tests stress-run 4 times): own-code nits fixed in the next commit (the transcript's length is
+  read before its poll, so all of it was observed; the ADR index names the proxy in the digest;
+  the restart-once-wired test checks the new process's proxy). Left as it is: the lost-access and
+  disabled cases do not first prove a proxy client existed, since that would fill the proxy's
+  15-second cache the refusal must bypass; their Superagents starting shows they could work.
+
+## Evidence
+
+- Red before green, each with the change absent or stubbed: `dotenv` unit tests (key blocks,
+  whole replacement, matching labels), `secrets_env::multi_line_keys_reach_the_env_byte_identical_to_their_files`
+  (the key lines shown unredacted), `cockpit::the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env`
+  ("unknown tool"), `cockpit::the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer`
+  (no proxy in its environment), `cockpit::a_superagent_started_before_an_update_restarts_resuming_its_conversation`
+  and `cockpit::a_superagent_mid_turn_restarts_only_once_its_turn_ends` (adoption never marking a
+  refresh due; the mid-turn one also with every turn treated as idle),
+  `cockpit::a_superagent_started_without_the_proxy_restarts_once_it_is_wired`, the `cockpit.rs`
+  unit tests (`ContextFull`, a transcript that grew), `vault::runtime` read-only bind (mutation).
+- `scripts/dev ci` (contracts, check, lint, nextest, doctests, deps): exit 0 at `172c90e1` (1918
+  passed, 18 skipped) and at `974423ee` (1920 passed, 18 skipped); the last commit (a read moved
+  before a poll, a test assertion, an index line) is covered by the targeted `cockpit::` runs (37
+  passed) and the final gate run below.
+- e2e (`npx e2e run`, the Superagent panel's text changed): 568 passed, 1 skipped.
+- Reviewer's own check: a key-block `.env` read back byte for byte by `sh`, Node `dotenv` 16,
+  `python-dotenv` 1.2.4 and Docker Compose (`env_file` and `${KEY}`).
+- `scripts/dev security`: not run (exit 2): Vidoc answers HTTP 401 for the stored key (#470,
+  ADR-0104); unrun, not passed.
+- Not tested here: a real Claude Code Superagent (the integration tests drive the real ptyhost
+  with a fake `claude`, the MCP endpoint with the Superagent's own `ck_` token and the egress
+  policy directly, not a TLS round trip through the proxy to a real host), and an update of a real
+  instance with a Superagent open.
