@@ -1,13 +1,14 @@
 // Task intake in the UI (SPEC-001 TSK-011..013, SPEC-002 ADR-16): the composer's split check
-// and card, the "Run after" choice, and the card of a prompt held by the scope check.
+// and card, its supertask proposal (SPEC-188), the "Run after" choice, and the card of a prompt
+// held by the scope check.
 // Every API path is a literal at its call site (tests/ui_contract.rs checks them).
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton } from './dom.js';
 import { allows, isLive } from './status.js';
 
-/** Prompts with fewer words are one task without asking (the server's rule, SPLIT_MIN_WORDS). */
-export const SPLIT_MIN_WORDS = 40;
+/** Prompts with fewer words are never checked (the server's rule, BREADTH_MIN_WORDS). */
+const CHECK_MIN_WORDS = 3;
 /** How long the composer waits for the split check after Enter before creating the task. */
 const CHECK_WAIT_MS = 4000;
 /** How long a proposal may take (one headless Claude run, bounded at 60 s on the server). */
@@ -21,17 +22,18 @@ export function chainCandidates(ctx, sandbox) {
 }
 
 /**
- * Asks whether a new task's prompt mixes separate workstreams. Resolves to true only for a
- * confident "several"; short prompts, a slow or failing check and no Jev resolve to false, so
- * the task is created as asked.
+ * Asks intake about a new task's prompt: `several` when it mixes separate workstreams (TSK-011),
+ * `supertask` when Jev is sure it is broad work that should run alone (SPEC-188). Very short
+ * prompts, a slow or failing check and no Jev resolve to neither, so the task is created as asked.
  */
-export async function looksSeveral(ctx, sandbox, prompt) {
-  if (prompt.split(/\s+/).filter(Boolean).length < SPLIT_MIN_WORDS) return false;
+export async function checkRequest(ctx, sandbox, prompt) {
+  const none = { several: false, supertask: false };
+  if (prompt.split(/\s+/).filter(Boolean).length < CHECK_MIN_WORDS) return none;
   try {
     const verdict = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/intake/check`, { prompt }, { timeoutMs: CHECK_WAIT_MS });
-    return Boolean(verdict && verdict.verdict === 'several');
+    return { several: Boolean(verdict && verdict.verdict === 'several'), supertask: Boolean(verdict && verdict.supertask) };
   } catch {
-    return false;
+    return none;
   }
 }
 
@@ -109,6 +111,31 @@ export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
   })();
 
   return { el, cancel: () => finish(() => {}) };
+}
+
+/**
+ * The composer's supertask proposal (SPEC-188), in the split card's place: a request Jev finds
+ * to be broad work, started another way, is not created until the person picks. `replaces` names
+ * the chosen start a supertask would replace ("After #12"), if any. `run()` creates it as a
+ * supertask, `keep()` as chosen, `close()` withdraws (the prompt stays).
+ */
+export function supertaskCard({ replaces, run, keep, close }) {
+  let done = false;
+  const finish = (fn) => {
+    if (done) return;
+    done = true;
+    fn();
+  };
+  const runButton = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => finish(run) }, 'Run as a supertask');
+  const el = h('section', { class: 'split-card', role: 'region', 'aria-label': 'Supertask proposal' },
+    h('div', { class: 'split-head' }, icon('shield', { size: 16 }),
+      h('div', { class: 'split-heading' }, h('strong', null, 'Run it as a supertask?'),
+        h('span', { class: 'muted' }, 'This looks like broad work across the project. A supertask runs alone once the project’s running tasks end, and its other tasks wait, so no parallel work collides with it.',
+          replaces ? ` It replaces “${replaces}”.` : '')),
+      iconButton('x', 'Close the proposal', () => finish(close), { class: 'split-x' })),
+    h('div', { class: 'split-actions' }, h('span', { class: 'split-spacer' }),
+      h('button', { type: 'button', class: 'btn btn-ghost', onClick: () => finish(keep) }, 'Start as chosen'), runButton));
+  return { el, focus: () => runButton.focus(), cancel: () => finish(() => {}) };
 }
 
 /**

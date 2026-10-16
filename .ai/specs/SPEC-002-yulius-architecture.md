@@ -575,8 +575,10 @@ one in the same session and branch. There was no way to say "start this when #12
 context.
 
 1. *Jev.* TypeSafe's `jev-1.13.0` Choice evaluator is the only classifier. One fixed question with a
-   fixed option set is asked per request: `split` (`one` | `several`) for a new task, `scope`
-   (`context` | `new_scope` | `drops_scope` | `redirect`) for a typed prompt. An answer counts only
+   fixed option set is asked per request: `split` (`one` | `several`) and, at the same time,
+   `breadth` (`focused` | `broad`, fixed 0.85; a supertask is proposed only when the request does
+   not split, SPEC-188, ADR-0152) for a new task, `scope` (`context` | `new_scope` |
+   `drops_scope` | `redirect`) for a typed prompt. An answer counts only
    when its typed choice is also the most probable option, at or above a fixed threshold
    (`YULIUS_JEV_SPLIT_THRESHOLD`, default 0.9; `YULIUS_JEV_SCOPE_THRESHOLD`, default 0.8). A choice
    that disagrees with its own distribution counts as uncertain. The adapter
