@@ -80,6 +80,12 @@ The smoke prints one readable line per check.
 - `cargo nextest` unit tests in `yulius` (`docker_smoke::tests`) and `yulius-sandbox`
   (`base::tests`), run red before each fix and green after.
 - The whole gate: `scripts/dev ci` (check, lint, test, deps), and `scripts/dev security`.
+- Review round 2 at ecdfbdb3: approve; round-1 findings verified fixed. One minor (an
+  escape-only last line left the hello or build detail empty) and nits (`ESC # 8`-style and 8-bit
+  string escapes, more invisible marks, two doc wraps, this Evidence), all own code, fixed
+  test-first in 514bf9aa (`details_skip_empty_last_lines_and_rarer_escapes` failed with `""`).
+  Left as is: an ESC inside an unfinished CSI does not restart it (not produced by Docker or
+  compose).
 - Not testable here (constraint of the task: nothing is built or restarted on the host): the
   operator runs, after promotion and update, `sudo yulius doctor --docker-smoke` from a root SSH
   shell, and `sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius` while sandboxes
@@ -109,8 +115,8 @@ The smoke prints one readable line per check.
   - `details_are_one_printable_line` and `the_compose_detail_is_the_probes_result` failed on raw
     details, pass after RSB-003/RSB-004; `details_survive_every_escape_and_line_ending` (review
     round 1) failed (`"y"` for `"x\r\ny\r\n"`), passes after the per-line rewrite.
-- `scripts/dev ci` (check, lint, test, deps): exit 0 at ca8df7c2, 2046 tests passed, 18 skipped;
-  run again at the final head before delivery (see the pull request's Yulius CI).
+- `scripts/dev ci` (check, lint, test, deps): exit 0 at ca8df7c2 (2046 passed), at ecdfbdb3
+  (2047 passed) and at 514bf9aa, the last code change (2048 passed, 18 skipped).
 - `scripts/dev security` (vidoc-1): **unrun**, exit 2: Vidoc refused the agent's key (HTTP 401).
   The CI `security` job scans the pull request head.
 - Independent review (fresh session, `om-code-review`), round 1 at ca8df7c2: approve; four minor
