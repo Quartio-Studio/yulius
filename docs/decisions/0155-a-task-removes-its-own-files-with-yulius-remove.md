@@ -15,10 +15,11 @@ removal to them. Transcripts of tasks #5, #89, #114, #118, #121, #124 and #134 s
 at `/` came from `$TMPDIR/…`: agent runs had no `TMPDIR`.
 
 The person asked for a Yulius tool that does the removal, "if only it deletes files created by
-this specific task". In a contained run (ADR-22 of SPEC-002) `/`, `/tmp`, `/run` and `/dev/shm` are
-the run's own fresh tmpfs, which only the run's processes see: neither the Yulius server, which
-serves the MCP tools, nor a person can reach `/ci6.log`. The sandbox directory and the system
-layer are shared by every task of the sandbox; the task's worktree is its own.
+this specific task". In a contained run (ADR-22 of SPEC-002) `/` and `/tmp` are the run's own fresh
+tmpfs (a run that joins its sandbox's holder gets a fresh `/run` and `/dev/shm` too), which only
+the run's processes see: neither the Yulius server, which serves the MCP tools, nor a person can
+reach `/ci6.log`. The sandbox directory and the system layer are shared by every task of the
+sandbox; the task's worktree is its own.
 
 ## Decision
 
@@ -26,12 +27,14 @@ layer are shared by every task of the sandbox; the task's worktree is its own.
   executable is bound into every run, as for `yulius wait`), so it sees the run's own filesystem.
   The briefing names it next to the MCP tools.
 - **Ownership by location.** A path is the task's when it is an untracked or ignored path of the
-  task's worktree (`YULIUS_TASK_WORKTREE`, set by the launch; not the worktree, not `.git`, git
-  tracks nothing at or under it), or a path on the run's own tmpfs mounted at `/`, `/tmp`, `/run`
-  or `/dev/shm` when `/` is a tmpfs (a contained run). The root's links containment makes
-  (`/bin`, `/sbin`, `/lib`, `/lib64`), mount points and directories holding one are refused, so a
-  removal never empties another filesystem. Everything else is refused with the reason and
-  where Yulius removes; the agent leaves it and names it in its summary.
+  task's worktree (`YULIUS_TASK_WORKTREE`, set by the launch, a directory of a sandbox's
+  `worktrees`; not the worktree, not `.git`, git tracks nothing at or under it, asked without the
+  caller's git environment), or a path on the run's own tmpfs mounted at `/`, `/tmp`, `/run` or
+  `/dev/shm` when `/` is `bwrap`'s own tmpfs (mounted from its `/newroot`: a contained run). The
+  root's links containment makes (`/bin`, `/sbin`, `/lib`, `/lib64`), mount points and
+  directories holding one are refused, so a removal never empties another filesystem. Everything else is refused with the reason and
+  where Yulius removes; the agent leaves it and names it in its summary. Without a readable mount
+  table nothing is removed.
 - **No following.** The path's directory is resolved, its last component never: a link goes as a
   link.
 - **`TMPDIR=/tmp`** for every task run, so `$TMPDIR/x` is no longer `/x`.
@@ -59,6 +62,11 @@ layer are shared by every task of the sandbox; the task's worktree is its own.
 - A session that was running before this change has no `YULIUS_TASK_WORKTREE` until it starts
   again: `yulius remove` then removes only paths of its own tmpfs and says the worktree is
   unknown.
+- An uncontained Yulius started inside a task's run (a dev instance under test) gives its own
+  agents that run's root and `/tmp`, which they then treat as theirs; whatever they remove stays
+  within the outer task's run.
+- The briefing steers agents to `yulius remove` before `rm` for paths at `/`, in `/tmp` or in a
+  variable, so the prompt does not appear first.
 - Claude Code flagging a `sh -c` script that holds no removal is not changed: there is nothing to
   remove, and agents already move such scripts into files.
 - The briefing's tools section drops its `yulius wait` sentence, which "Git and delivery" already

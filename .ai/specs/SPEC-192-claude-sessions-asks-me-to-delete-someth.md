@@ -52,45 +52,52 @@ else is refused with the reason, and nothing is removed. Agent runs also get `TM
 - RMV-001 (env): Every agent run of a task gets `YULIUS_TASK_WORKTREE` (its worktree) and
   `TMPDIR=/tmp` in its environment.
 - RMV-002 (worktree): `yulius remove` removes a path inside `$YULIUS_TASK_WORKTREE` (resolved,
-  symbolic links in its parent directories followed) when it is not the worktree itself, not its
-  `.git`, and git tracks nothing at or under it. A tracked path is refused ("tracked by git: use
+  symbolic links in its parent directories followed; taken only when it is a directory of a
+  sandbox's `worktrees`) when it is not the worktree itself, not its
+  `.git`, and git (asked without the caller's `GIT_DIR`, `GIT_INDEX_FILE` and the like) tracks
+  nothing at or under it. A tracked path is refused ("tracked by git: use
   `git rm`").
-- RMV-003 (run-private): In a contained run (the root `/` is a tmpfs), `yulius remove` removes a
+- RMV-003 (run-private): In a contained run (the root `/` is `bwrap`'s tmpfs, mounted from its
+  `/newroot`), `yulius remove` removes a
   path whose filesystem is the run's own tmpfs mounted at `/`, `/tmp`, `/run` or `/dev/shm`.
   The root's links that containment makes (`/bin`, `/sbin`, `/lib`, `/lib64`) are refused.
 - RMV-004 (mounts): A path that is a mount point or holds one (`/`, `/tmp`, `/usr`, a directory
-  holding a bind) is refused; removal never crosses into another filesystem.
+  holding a bind) is refused; removal never crosses into another filesystem. Without a readable
+  mount table nothing is removed.
 - RMV-005 (refusal): Any other path (the sandbox's shared home, system layer, repository, another
   task's worktree, or a run that is not contained) is refused with a reason that names where
   Yulius removes and tells the agent to leave the file and mention it in its summary, never to ask
   a person to remove it.
 - RMV-006 (removal): The last component is never followed: a link is removed as a link, a
   directory with its contents, a file as a file. A path that does not exist is reported as
-  already gone. Each path gets one line; the exit code is 0 when every path is gone, 1 when any
+  already gone; a removal that fails is reported as such, without the refusal note. Each path gets
+  one line (trailing slashes ignored); the exit code is 0 when every path is gone, 1 when any
   was refused or failed, 2 for a usage error (no path).
-- RMV-007 (briefing): The briefing's "Yulius tools" names `yulius remove` with when to use it:
-  for files the task created, instead of a removal Claude Code stops, never asking a person.
+- RMV-007 (briefing): The briefing's "Yulius tools" names `yulius remove` for the task's files at
+  `/`, in `/tmp` or through a variable, instead of `rm`, so Claude Code's prompt never comes first.
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Agent runs know their worktree and have a temporary directory
-- [ ] `yulius remove` decides which paths belong to the task
-- [ ] `yulius remove` removes them and reports each path
-- [ ] The briefing and docs tell agents to remove their own files with it
+- [x] Agent runs know their worktree and have a temporary directory
+- [x] `yulius remove` decides which paths belong to the task
+- [x] `yulius remove` removes them and reports each path
+- [x] The briefing and docs tell agents to remove their own files with it
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
 - AC-1: A run's launch environment holds `YULIUS_TASK_WORKTREE=<worktree>` and `TMPDIR=/tmp`.
-- AC-2: In a git worktree, `yulius remove` removes an untracked file, an ignored directory and a
-  link (not its target), and refuses a tracked file, a directory holding one, `.git` and the
+- AC-2: In a git worktree, `yulius remove` removes an untracked file, an ignored directory (not
+  what links inside it point to) and a link (not its target, also given with a trailing slash),
+  refuses a path reached through a link or `..` out of the worktree, and refuses a tracked file, a directory holding one, `.git` and the
   worktree itself, leaving them in place.
 - AC-3: With a contained mount table, a file at `/x`, `/tmp/a/b` or `/run/x` is the task's; `/`,
   `/tmp`, `/bin`, `/usr/x`, `/home/x`, a directory holding a mount point and a path in another
   task's worktree are refused.
-- AC-4: Without a contained root (no tmpfs `/`), `/tmp/x` is refused.
+- AC-4: Without a contained root (no tmpfs `/`, or a tmpfs `/` not mounted from `/newroot`),
+  `/tmp/x` is refused; without a mount table, everything is.
 - AC-5: A run of `yulius remove` with a refused and a removable path removes the removable one,
   prints a line for each and exits 1; with only removable or missing paths it exits 0; without
   paths it exits 2.

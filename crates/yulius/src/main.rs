@@ -63,7 +63,8 @@ enum Command {
         minutes: u64,
     },
     /// In a task's session: remove files this task created (untracked or ignored paths of its
-    /// worktree, paths of the session's own `/` and `/tmp`), refusing anything else.
+    /// worktree, paths of the session's own `/`, `/tmp`, `/run` and `/dev/shm`), refusing anything
+    /// else.
     Remove {
         /// Files or directories to remove; a link is removed, not what it points to.
         #[arg(required = true)]
