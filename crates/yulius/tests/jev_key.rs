@@ -195,7 +195,10 @@ async fn the_superadmin_manages_the_key_and_intake_follows_at_once() -> TestResu
     assert_eq!(r.body["set_by"], "superadmin");
     assert!(r.body["set_at"].is_string());
     let verdict = split_checked(&i).await?;
-    assert_eq!(verdict, json!({"verdict": "several", "checked": true}));
+    assert_eq!(
+        verdict,
+        json!({"verdict": "several", "checked": true, "supertask": false})
+    );
     assert_eq!(
         i.keys
             .log

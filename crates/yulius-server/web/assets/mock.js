@@ -1143,15 +1143,17 @@ async function mockAutoChoice(body, workflows) {
 
 // Task intake (TSK-011): requests of 40+ words mixing UI and backend work look like several
 // tasks; the proposal groups lines by area (UX first, backend second), after a moment (Claude).
+// Work on "the whole product" is broad: a supertask is proposed unless it splits (SPEC-188).
 const MOCK_BACKEND = /backend|api|server|database|pool|queue/i;
+const MOCK_BROAD = /whole product/i;
 route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const text = String(body.prompt || '');
   const words = text.split(/\s+/).filter(Boolean).length;
-  if (words < 40) return { verdict: 'one', checked: false };
+  if (words < 3) return { verdict: 'one', checked: false, supertask: false };
   const lines = text.split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l));
-  const several = lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
-  return { verdict: several ? 'several' : 'one', checked: true };
+  const several = words >= 40 && lines.some((l) => MOCK_BACKEND.test(l)) && lines.some((l) => !MOCK_BACKEND.test(l));
+  return { verdict: several ? 'several' : 'one', checked: true, supertask: !several && MOCK_BROAD.test(text) };
 });
 route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
