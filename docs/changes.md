@@ -15,6 +15,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Start as chosen. A request that splits ("fix all GitHub issues") is never proposed.
   `/intake/check` gains `supertask`, from a new fixed `breadth` question asked with the split
   question.
+- Deploying production (and every CD deploy and promotion) works on a real instance (SPEC-184,
+  task #169, fixes #574). The GitHub adapter's branch head read was a stub that always failed with
+  "branch lookup via GitHub is not supported; read the fetched clone instead"; it now asks GitHub
+  (`GET /repos/{owner}/{repo}/git/ref/heads/{branch}`, an unknown branch is none), as ADR-0109
+  requires. The same read gates CI jobs' agent-secret grants, which it had withheld too.
 
 ## 2026-10-15
 
