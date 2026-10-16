@@ -9,7 +9,7 @@ failOnPageErrors();
 // it) is noticed and replaced, and the lists catch up. `heartbeat=300` makes the mock beat every
 // 300 ms, and the page then gives up on a stream silent for 750 ms.
 
-type Mocked = { __yuliusMock: { silenceEvents: () => void; touchTask: (sid: string, n: number, c: object) => void } };
+type Mocked = { __yuliusMock: { heartbeats: number; silenceEvents: () => void; touchTask: (sid: string, n: number, c: object) => void } };
 
 test('a stream that dies without a close is replaced and the lists catch up', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks', '&heartbeat=300'));
@@ -33,6 +33,9 @@ test('a tab shown again replaces a silent stream before the watchdog would', asy
   await app.open(mock('/s/studio/tasks', '&heartbeat=2000'));
   const mark = (label: string) => browser.locator(`.tl-row[data-task-id="tsk_studio_12"] [role="img"][aria-label="${label}"]`);
   await expect(mark('Working')).toBeVisible();
+  // Silenced right after a beat: the watchdog alone could not catch up within 5 s of it.
+  const beats = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.heartbeats);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.heartbeats), { timeout: 5000, intervals: [20] }).toBeGreaterThan(beats);
   const silencedAt = await browser.evaluate(() => {
     (window as unknown as Mocked).__yuliusMock.silenceEvents();
     (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 12, { activity: 'needs_attention' });
@@ -44,5 +47,5 @@ test('a tab shown again replaces a silent stream before the watchdog would', asy
     return Boolean(document.querySelector('.tl-row[data-task-id="tsk_studio_12"] [role="img"][aria-label="Needs your action"]'));
   }), { timeout: 4500, intervals: [200] }).toBe(true);
   const caughtUp = await browser.evaluate(() => Date.now());
-  expect(caughtUp - silencedAt).toBeLessThan(5000);
+  expect(caughtUp - silencedAt).toBeLessThan(4500);
 });

@@ -292,17 +292,17 @@ async fn a_resume_during_the_pause_s_freeze_leaves_nothing_frozen() -> TestResul
                 .map_err(|e| e.to_string())
         })
     };
-    // Without serialization the resume would finish here, before the freeze.
-    let early = tokio::time::timeout(Duration::from_millis(200), async {
+    // Serialized: the resume waits for the freeze (without the lock it would be done by now).
+    let done_early = tokio::time::timeout(Duration::from_millis(200), async {
         while !resuming.is_finished() {
             tokio::task::yield_now().await;
         }
     })
     .await;
+    assert!(done_early.is_err(), "the resume waits for the freeze");
     release.send(()).map_err(|_| "release")?;
     assert_eq!(pausing.await??, StatusCode::OK);
     assert_eq!(resuming.await??, StatusCode::OK);
-    let _ = early;
     assert_eq!(f.h.store.person_pause(&f.task).await?, None);
     assert!(
         f.host.frozen().is_empty(),

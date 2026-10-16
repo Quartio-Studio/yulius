@@ -4586,7 +4586,7 @@ function openSocket(db, path) {
     ws.server = {
       open: () => {
         db.eventSockets.add(ws);
-        ws.beat = setInterval(() => ws.push(JSON.stringify({ type: 'heartbeat' })), db.heartbeatMs);
+        ws.beat = setInterval(() => { db.heartbeats += 1; ws.push(JSON.stringify({ type: 'heartbeat' })); }, db.heartbeatMs);
       },
       closed: () => { db.eventSockets.delete(ws); clearInterval(ws.beat); },
     };
@@ -4731,6 +4731,7 @@ export function createMockTransport(params) {
     for (const ws of [...db.eventSockets]) { db.eventSockets.delete(ws); clearInterval(ws.beat); }
   };
   db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
+  db.heartbeats = 0; // beats sent, so a test can silence the stream right after one
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {
     for (const shell of [...db.shells.values()]) {

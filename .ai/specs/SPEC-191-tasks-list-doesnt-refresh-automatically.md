@@ -214,6 +214,12 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
   waits 1.5 beats; the keep list is read once per pass; the plan is ticked. The run-start ending
   path and the automatic switch call the same `end_person_pause` as stop and close (tested);
   driving them needs a live agent run, so they have no test of their own.
+- Round 2 (head `626b1518`): approve, with two Low own-code findings and two nits, fixed
+  test-first after it: a stop or close waited for an update's freeze pass even with no pause
+  (`self_update::a_stop_does_not_wait_for_a_freeze_pass`, failed: "the stop waited"); the
+  tab-shown e2e could pass on the watchdog alone (it now silences right after a beat and fails
+  3/3 without the visibility path); the race test asserts the resume waits; ADR-0154 says what a
+  permission prompt does to a turn-boundary pause.
 - `scripts/dev ci` (doctor, repository check, script tests, check, fmt, clippy `-D warnings`,
   nextest, doctests, deny, shear, doc): exit 0 on `15a721e3`, 1939 tests passed, 18 skipped.
 - e2e, full suite: 580 passed, 1 skipped on `15a721e3` (`agent.e2e.ts` needs a model key).

@@ -249,8 +249,13 @@ impl App {
     /// task (it thaws it with the others) or nothing was frozen; in one step with the freeze, so
     /// a pause being frozen meanwhile is thawed after it. Whether there was a pause.
     async fn clear_and_thaw(&self, task: &TaskId) -> AppResult<bool> {
-        let _pass = self.freeze_lock().await;
         let store = &self.deps.store;
+        // Nobody paused it: nothing to wait for (an update's freeze pass may hold the lock). A
+        // pause set after this read is caught by the freeze's own check under the lock.
+        if store.person_pause(task).await?.is_none() {
+            return Ok(false);
+        }
+        let _pass = self.freeze_lock().await;
         let Some(pause) = store.person_pause(task).await? else {
             return Ok(false);
         };

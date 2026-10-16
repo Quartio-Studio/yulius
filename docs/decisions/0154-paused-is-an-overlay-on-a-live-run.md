@@ -51,6 +51,9 @@ frozen task as Working. People also asked to pause a task themselves and resume 
   the resume, and the agent handles it as any timeout. The provider stream open at the freeze is
   cut by the egress proxy and retried after the thaw (ADR-0131).
 - What a person types into a paused task's terminal waits until it resumes.
+- A run that cannot be frozen counts as paused once its agent is idle or asks a person (the
+  update's pause point): if the person answers a permission prompt in the terminal, its turn goes
+  on until its next `Stop` hook, which is held.
 - Rollback: a binary without this change ignores the three columns (they stay, null or stale, and
   a later pause clears a stale one), and its start-up sweep thaws every paused run, so a revert
   resumes every paused task.

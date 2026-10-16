@@ -1019,3 +1019,33 @@ async fn a_task_resumed_during_an_update_waits_for_the_update() -> TestResult {
     );
     Ok(())
 }
+
+/// Review N-L2 (SPEC-191 PER-004): stopping a task nobody paused does not wait for an update's
+/// freeze pass in progress.
+#[tokio::test]
+async fn a_stop_does_not_wait_for_a_freeze_pass() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    i.h.github
+        .set_perm("alice", "acme/fixture", support::perms("write"));
+    built(&i).await?;
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    *host.entered.lock().map_err(|_| "lock")? = Some(entered_tx);
+    *host.gate.lock().map_err(|_| "lock")? = Some(gate);
+    let app = i.h.app.clone();
+    let round = tokio::spawn(async move { app.update_round().await });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(std::time::Duration::from_secs(30)))
+        .await??;
+    // The freeze pass holds the lock: a stop of a task nobody paused goes on.
+    let stopped = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        post(&i, "/api/tasks/t-idle/stop", None, &i.member),
+    )
+    .await;
+    release.send(()).map_err(|_| "release")?;
+    round.await?;
+    let r = stopped.map_err(|_| "the stop waited for the freeze pass")??;
+    assert!(r.status.is_success(), "{} {}", r.status, r.body);
+    Ok(())
+}
