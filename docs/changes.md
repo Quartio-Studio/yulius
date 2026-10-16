@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The watched task's Working line moves as Claude Code's spinner (SPEC-190, ADR-0153, task #175).
+  Under someone else's task, `✻ Working…` stood still: the mark never moved and the shimmer
+  flashed over the whole line for a fraction of each cycle. Now the mark turns through
+  `· ✢ ✳ ✶ ✻ ✽`, a light runs through the words, and the time worked follows, as in
+  `✻ Working… (1m 23s)`. Under reduced motion the mark stays on `✻` and the words don't shimmer.
+
 - The Superagent uses agent secrets as a task's agent does, and sees new tools without a restart
   (SPEC-186, ADR-0150, task #171). It runs behind the egress proxy with its own bearer, so its
   requests to a secret's bound hosts carry it (`$NAME` holds the placeholder); it copies allowed
