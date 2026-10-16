@@ -45,6 +45,9 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   // automation from then on, still a default, with the keyboard still on its switch.
   await docs.focus();
   await browser.keyboard.press('Space');
+  // A second press while it is being enabled keeps it on: one automation per switch (AUT-034).
+  await browser.keyboard.press('Space');
+  expect(await browser.evaluate(() => (document.activeElement as HTMLInputElement).checked)).toBe(true);
   await expect(screen.getByText('Keep the docs up to date enabled.')).toBeVisible();
   await expect(screen.getByRole('button', 'Run history of Keep the docs up to date')).toBeVisible();
   await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeChecked();
@@ -69,6 +72,46 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
   expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
   expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+});
+
+test('the builder’s Delete of a default says it is reset, of a custom one not (AUT-035)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/aut_3'));
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  const dialog = screen.getByRole('dialog', 'Delete automation “Work through open issues”?');
+  await expect(dialog.getByText(/stays among the defaults, off/)).toBeVisible();
+  await dialog.getByRole('button', 'Cancel').click();
+
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_2'; });
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Weekly dependency audit');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  const custom = screen.getByRole('dialog', 'Delete automation “Weekly dependency audit”?');
+  await expect(custom.getByText('Future runs are cancelled. Tasks it already created stay.')).toBeVisible();
+  await expect(custom.getByText(/stays among the defaults/)).toBeHidden();
+});
+
+test('a reload keeps focus on the same labelled control, wherever it moved (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/automations'));
+  const focused = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { h, keepFocus } = await import(url);
+    const container = h('div');
+    document.body.append(container);
+    const card = (labels: string[]) => labels.map((label) => h('button', { type: 'button', 'aria-label': label }, label));
+    container.append(...card(['a', 'switch']));
+    (container.lastChild as HTMLElement).focus();
+    // The rebuilt card gains a control before the switch (an added default's open button).
+    keepFocus(container, () => { container.replaceChildren(...card(['open', 'a', 'switch'])); });
+    const byLabel = document.activeElement?.getAttribute('aria-label') ?? null;
+    // Labels that are not unique fall back to the position.
+    container.replaceChildren(...card(['x', 'x']));
+    (container.firstChild as HTMLElement).focus();
+    keepFocus(container, () => { container.replaceChildren(...card(['y', 'x', 'x'])); });
+    const byPlace = document.activeElement?.getAttribute('aria-label') ?? null;
+    container.remove();
+    return [byLabel, byPlace];
+  });
+  expect(focused).toEqual(['switch', 'y']);
 });
 
 test('without the shipped list every automation shows under Custom (AC-AUT-35)', async ({ app, browser, screen }) => {

@@ -15,6 +15,7 @@ import { openRuleEditor, ruleFromText, ruleText } from '../ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind } from '../startchoice.js';
 import { describeCron, cronValid, utcOffset, dateTime, relLong, startPhrase } from '../format.js';
 import { dataTable, notFound } from './common.js';
+import { deleteMessage } from './automations.js';
 
 const RECIPES = [
   { id: 'feedback', name: 'Daily feedback', icon: 'mail', days: [1, 2, 3, 4, 5], time: '09:00', text: 'Weekdays, 09:00', prompt: 'Implement yesterday’s customer feedback from the Quartio MCP. Open one pull request per change.' },
@@ -340,7 +341,10 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   }
 
   async function doDelete() {
-    if (!(await confirmDialog({ title: `Delete automation “${state.name}”?`, message: 'Future runs are cancelled. Tasks it already created stay.', confirmLabel: 'Delete', danger: true }))) return;
+    // A default (a shipped automation's name) is reset by Delete; unknown, it is said as any other.
+    const shipped = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/automation-templates`).catch(() => []);
+    const isDefault = Array.isArray(shipped) && shipped.some((t) => t.automation_id === id);
+    if (!(await confirmDialog({ title: `Delete automation “${state.name}”?`, message: deleteMessage(isDefault), confirmLabel: 'Delete', danger: true }))) return;
     try {
       await ctx.api.del(`/api/automations/${enc(id)}`);
       saved = snapshot();

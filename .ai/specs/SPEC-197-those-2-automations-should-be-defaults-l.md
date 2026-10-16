@@ -61,8 +61,8 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   switch is disabled. A failed enable leaves the switch off and says why.
 - **AUT-035 Deleting a default resets it.** Deleting an added default keeps the one verb behind
   the trash icon (Delete, #147), and its dialog says it stays among the defaults, off, and that
-  turning it on again starts from the current shipped version. Afterwards the card shows the
-  not-added default.
+  turning it on again starts from the current shipped version; the builder's Delete says the same
+  for a default. Afterwards the card shows the not-added default.
 - **AUT-036 Custom's empty state.** Without custom automations the Custom section shows "No custom
   automations yet" with New automation (write access). When the shipped list cannot be read, the
   page shows all automations under Custom as before, so the page still works.
@@ -94,12 +94,18 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
 
 - e2e (`e2e/tests/automations.e2e.ts`, mock server): the existing ready-made test rewritten for
   AC-AUT-31..33, a failed enable and a read-only check (AC-AUT-32, AC-AUT-34), and the shipped
-  list failing to load (AC-AUT-35). The mock catalog gains "Deploy dev every night"
+  list failing to load (AC-AUT-35); the builder's Delete of a default and of a custom automation
+  (AUT-035); a double press while enabling (AUT-034); `keepFocus` by label (unit, in the page). The mock catalog gains "Deploy dev every night"
   so it matches the shipped three, and one shipped automation created by an agent.
 - No server change: the API (templates with `automation_id`, enable, update, delete) is unchanged
   and covered by `crates/yulius/tests/automations.rs`.
 
 ## Decisions
+
+- Focus after a reload: `keepFocus` (dom.js, used by every loader) returns focus to the control of
+  the same unique `aria-label` before falling back to the same place, so an added default's
+  switch keeps focus although its card gains an open button before it, also when another reload
+  overtakes the enable's. Positional restore stays for unlabelled or repeated labels.
 
 - [ADR-0159](../../docs/decisions/0159-shipped-automations-are-the-automations-page-defaults.md):
   shipped automations are shown as the page's Defaults, switched on in place, recognised by name;

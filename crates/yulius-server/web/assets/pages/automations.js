@@ -16,6 +16,13 @@ import { BRAND } from '../brand.js';
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
 const RUN_LABEL = { scheduled: 'Scheduled', task_created: 'Task created', skipped_previous_active: 'Skipped: previous task still active', skipped_disabled: 'Skipped: disabled', failed: 'Failed' };
 
+/** What Delete says; deleting a default resets it (SPEC-197 AUT-035), here and in the builder. */
+export function deleteMessage(isDefault) {
+  return isDefault
+    ? 'Future runs are cancelled. Tasks it already created stay. It stays among the defaults, off: switching it on again starts from the version shipped then, and changes made here are lost.'
+    : 'Future runs are cancelled. Tasks it already created stay.';
+}
+
 const runBadge = (state) => badge(RUN_LABEL[state] || state || 'Unknown', RUN_TONE[state] || '');
 
 /** Mount the Automations page. */
@@ -76,9 +83,8 @@ export function mountAutomationsPage(ctx, sandbox) {
   }
 
   // One automation per switch: a press while it is being enabled keeps it on. The switch is not
-  // disabled meanwhile, which would drop keyboard focus; once the card is the added automation's,
-  // focus goes back to its switch (the card gains an open button before it, so keepFocus's place
-  // would be another control).
+  // disabled meanwhile, which would drop keyboard focus; the reload's keepFocus then finds the
+  // added automation's switch by its label.
   const enabling = new Set();
   async function enableShipped(t, input) {
     if (enabling.has(t.id)) { input.checked = true; return; }
@@ -88,9 +94,7 @@ export function mountAutomationsPage(ctx, sandbox) {
     try {
       await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automation-templates/${enc(t.id)}/enable`);
       toast(`${t.name} enabled.`, { kind: 'ok' });
-      const focused = document.activeElement === input;
       await reload();
-      if (focused) [...host.querySelectorAll('input[role="switch"]')].find((s) => s.getAttribute('aria-label') === input.getAttribute('aria-label'))?.focus({ preventScroll: true });
     } catch (error) {
       input.checked = false;
       errorToast(error, 'Couldn’t enable automation');
@@ -172,10 +176,7 @@ export function mountAutomationsPage(ctx, sandbox) {
   }
 
   async function remove(a, template) {
-    const message = template
-      ? 'Future runs are cancelled. Tasks it already created stay. It stays among the defaults, off: switching it on again starts from the version shipped then, and changes made here are lost.'
-      : 'Future runs are cancelled. Tasks it already created stay.';
-    if (!(await confirmDialog({ title: `Delete automation “${a.name}”?`, message, confirmLabel: 'Delete', danger: true }))) return;
+    if (!(await confirmDialog({ title: `Delete automation “${a.name}”?`, message: deleteMessage(Boolean(template)), confirmLabel: 'Delete', danger: true }))) return;
     try {
       await ctx.api.del(`/api/automations/${enc(a.id)}`);
       toast('Automation deleted.', { kind: 'ok' });
