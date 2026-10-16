@@ -105,7 +105,10 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
   `setns` and `pivot_root`) bounds every container.
-- **Idle stop.** The engine stops after the idle time with no client and no container.
+- **Idle stop.** The engine stops after the idle time with no client and no container. Its
+  `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
+  (`KillMode=process` keeps the holder and front running). The front makes it again before each
+  start, and the upkeep tick does the same for a kept engine front (SPEC-201, #614).
 - **Disk.** Its storage counts toward the quota. Under pressure, a running engine's unused images
   and build cache are pruned through its own control socket; a stopped engine is never started
   for that.

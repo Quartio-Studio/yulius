@@ -482,7 +482,22 @@ impl Manager {
             .as_ref()
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
         let serve = match front_action(current, self.front_mode(&request, &live.record)) {
-            FrontAction::Keep => return,
+            FrontAction::Keep => {
+                // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
+                // from an older binary does not make it again (SPEC-201 DBX-006).
+                if live.front.as_ref().is_some_and(|f| f.mode == "engine")
+                    && let Some(groups) = self.group_paths(sandbox)
+                {
+                    match crate::cgroup::restore_leaf(&groups.engine) {
+                        Ok(true) => tracing::info!(sandbox, "recreated the engine's cgroup"),
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::warn!(sandbox, %error, "cannot recreate the engine's cgroup");
+                        }
+                    }
+                }
+                return;
+            }
             FrontAction::Start(serve) => {
                 if live.front.is_some() {
                     tracing::warn!(
@@ -1707,8 +1722,8 @@ while True:
     /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
     /// even for a front from an older binary, which no update replaces.
     #[tokio::test]
-    async fn a_kept_engine_front_gets_its_pruned_leaf_back() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn a_kept_engine_front_gets_its_pruned_leaf_back()
+    -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let manager = adopting(data.path(), Ok(()), false)?;
         assert_eq!(manager.adopt().await, 1);

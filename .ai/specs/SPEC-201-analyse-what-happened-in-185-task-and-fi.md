@@ -115,9 +115,15 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
   `yulius-domain` (`briefing.rs`) assert the full package set and the in-sandbox wording.
 - Live check in this sandbox's engine, `ubuntu:24.04`: install `docker.io` alone, then with both
   plugins, and check buildx and compose.
+- Part 2 tests in `yulius-sandbox`:
+  - `engine_supervisor`: a start whose leaf is missing, with a command that fails without the
+    group as `sandbox-exec` does, and a start whose parent is missing;
+  - `manager`: `keep_front` after the leaf of an adopted holder's engine front is removed;
+  - `cgroup`: `restore_leaf`.
 - The full gate (`scripts/dev ci`).
-- Not testable here: running the hint in the product sandbox, which this task cannot reach, and
-  a host install, which is a person's decision.
+- Not testable here: running the hint in the product sandbox, which this task cannot reach; a
+  host install, which is a person's decision; a real systemd restart, since this sandbox cannot
+  see the host's cgroup tree. The tests remove the leaf the way systemd does.
 
 ## Decisions
 
@@ -133,6 +139,19 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
     user, a pinned download to maintain).
   - (c) Telling agents to drop the plugin into `~/.docker/cli-plugins`. That is a hand-made binary
     with no updates, and the system install already reaches every joined run.
+- **Part 2: make the leaf again where the engine starts, and at the tick**, over:
+  - (a) only at the tick: up to 30 s of failed starts after every restart;
+  - (b) only in the front: fronts from an older binary are kept across an update and would stay
+    broken until their holder restarts;
+  - (c) `sandbox-exec` creating its `--cgroup` directory: a generic join that makes any missing
+    group could make up a sandbox group without limits;
+  - (d) keeping the leaf non-empty, or keeping systemd from pruning: the unit has no setting
+    that stops it, and an idle process in the leaf would count as a container
+    (`containers_running`).
+
+  Only the leaf is made, never its parent, which holds the sandbox's limits. A leaf made again
+  under a split parent gets the default `cpu.weight`, 100, which is the engine's weight. No ADR:
+  this restores the layout ADR-0151 decided.
 - ADR-0160 is amended in place, with a dated note. The decision (the sandbox's own system
   provides Docker) stands; only its install command was incomplete.
 

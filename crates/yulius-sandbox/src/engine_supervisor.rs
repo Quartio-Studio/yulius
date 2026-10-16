@@ -186,6 +186,9 @@ impl Supervisor {
 
     fn spawn(&self) -> Result<Child, String> {
         (self.prepare)()?;
+        // A restart of `yulius.service` prunes an idle engine's empty leaf (SPEC-201 DBX-005).
+        crate::cgroup::restore_leaf(&self.cgroup)
+            .map_err(|e| format!("the engine's cgroup {}: {e}", self.cgroup.display()))?;
         let Some((program, args)) = self.command.split_first() else {
             return Err("no engine command".into());
         };

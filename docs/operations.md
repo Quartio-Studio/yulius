@@ -513,7 +513,13 @@ from a sandbox, and no daemon needs to run on the host.
     `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`. A sandbox keeps its
     base's `dockerd` until its holder next starts on a newer base (after the idle time); one
     installed in the sandbox stays. The host does not need to run its own Docker daemon.
-  - The cgroup delegation (§3).
+  - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
+    in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
+    and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
+    leaf again under the sandbox's group, and so does the server's upkeep tick (30 s) for a front
+    it keeps (SPEC-201, #614). Before that fix, `docker` answered "cannot join
+    …/sandboxes/<sandbox>/engine: No such file or directory" after every update, until a new run
+    prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
   - The `yulius` executable owned by root and writable by no group or other, as §2 installs it.
