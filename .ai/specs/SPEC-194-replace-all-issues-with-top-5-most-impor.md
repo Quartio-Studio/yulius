@@ -51,8 +51,8 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 | TOP-004 | It verifies in rank order, at most five at a time, each next batch only as large as the places still free (5 minus those found), and stops as soon as 5 issues are real and actionable or the list ends; it never verifies, comments on or closes issues ranked below that point. | `templates.rs` unit test |
 | TOP-005 | It starts exactly one task for each of those (at most 5), most important first, with SPEC-042's title, prompt and `Taken by task #N.` rules, and its summary lists the ranking it used and how many issues wait for a later run. | `templates.rs` unit test |
 | TOP-006 | This project's existing "Work through open issues" automation gets the new prompt (it was added from the old template and is not updated by a release). | `automations_list` after the merge |
-| TOP-007 | Before ranking, it drops every issue a running task owns; owned issues never count toward the 5 and get no comment. Running tasks are `tasks_list` scope `active` with `limit` 200 (queued, chained, prepared, starting, running, switching, waiting_capacity, stopping). A task owns an issue when its title ends with `(#<number>)`, its prompt (`task_get`) refers to the GitHub issue (`issues/<number>`, `issue #<number>`, `Fixes #<number>`, `Part of #<number>`), or the issue's `Taken by task #N.` comment names it; a task number (`task #<number>`, `after #<number>`, the number a branch starts with) never counts. An open pull request whose description puts a GitHub closing keyword (any case) before `#<number>` owns it too; all open pull requests are listed (`--limit 1000`, not gh's default 30). The comments the drop rules read come from one repository-wide call. | `templates.rs` unit test |
-| TOP-008 | `tasks_list` scope `active` also lists tasks paused for capacity (`waiting_capacity`): they still own their work. | `coordination.rs` unit test |
+| TOP-007 | Before ranking, it drops every issue a running task owns; owned issues never count toward the 5 and get no comment. Running tasks are `tasks_list` scope `active` with `limit` 200 (queued, chained, prepared, starting, running, switching, waiting_capacity, stopping). A task owns an issue when its title ends with `(#<number>)`, its prompt (`task_get`) refers to the GitHub issue (`issues/<number>`, `issue #<number>`, `Fixes #<number>`, `Part of #<number>`), or the issue's `Taken by task #N.` comment names it; a task number (`task #<number>`, `after #<number>`, the number a branch starts with) never counts. An open pull request whose description puts a GitHub closing keyword (any case) before `#<number>` owns it too; all open pull requests are listed (`--limit 1000`, not gh's default 30). The comments the drop rules read come from one call over the open issues only (the whole history outgrows an agent's command output). | `templates.rs` unit test |
+| TOP-008 | `tasks_list` scope `active` also lists tasks paused for capacity (`waiting_capacity`): they still own their work. | `tests/mcp_coordination.rs` `active_tasks_include_those_paused_for_capacity` |
 | TOP-009 | A real but not actionable verdict is the comment `Not actionable yet:` with what is missing; the next runs drop that issue until a person comments after it, so the top of the ranking is not re-verified every night. | `templates.rs` unit test |
 
 ## Plan
@@ -78,10 +78,12 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 
 ## Test plan
 
-- Unit: `active_lists_tasks_at_work_or_waiting_to_work` in `crates/yulius-app/src/coordination.rs`
-  (TOP-008) failed on `WaitingCapacity` before the fix.
+- Integration: `mcp_coordination::active_tasks_include_those_paused_for_capacity` (TOP-008) calls
+  `tasks_list` scope `active` with a `waiting_capacity` and a closed task; against dev's filter it
+  listed only `task claude2` (failed), with the fix it passes. The unit test
+  `active_lists_tasks_at_work_or_waiting_to_work` pins `App::is_active_status`.
 - Unit: `the_shipped_catalog_is_valid` in `crates/yulius-app/src/automations/templates.rs` gains
-  assertions for TOP-001, TOP-003..005 and TOP-007 (title suffix, issue references in the prompt via `task_get`, every open pull request with `--limit 1000`, the comments fetched in one call; ranking wording, `reactions`, "5 most important", "stop",
+  assertions for TOP-001, TOP-003..005 and TOP-007 (title suffix, issue references in the prompt via `task_get`, every open pull request with `--limit 1000`, the open issues' comments fetched in one call; ranking wording, `reactions`, "5 most important", "stop",
   untouched lower-ranked issues) and that the old "verify each one" wording is gone; it fails
   against the old catalog file, passes with the new one.
 - Existing integration tests (`tests/automations.rs`, `manage_tools.rs`, `cockpit.rs`) and the e2e

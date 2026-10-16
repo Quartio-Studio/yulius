@@ -28,8 +28,9 @@ others: they wait, untouched, for a later run. Never create a new issue (no `iss
    too: one of GitHub's closing keywords, in any case, before `#<number>` (`Fixes`, `Closes` or
    `Resolves`, and their forms such as `fix`, `closed`, `resolved`); list them all once with
    `gh pr list --state open --limit 1000 --json number,body`. The
-   comments the rules below read come in one call for the whole repository:
-   `gh api "repos/{owner}/{repo}/issues/comments?per_page=100&sort=created" --paginate --jq '.[] | {issue: (.issue_url | split("/") | last), author: .user.login, body: (.body | .[:120]), created_at}'`.
+   comments the rules below read come in one call, for open issues only:
+   `gh issue list --state open --limit 1000 --json number,comments --jq '.[] | .comments[] as $c | {issue: .number, author: $c.author.login, body: ($c.body | .[:120]), created_at: $c.createdAt}'`
+   (`gh issue view <number> --json comments` for an issue with more than 100 comments).
    Also drop, unless a person (not this automation or its tasks) commented since:
    - an issue that an earlier run gave to a task (its `Taken by task #N.` comment) that is no
      longer running while the issue is still open: retrying it every night would loop. Comment
