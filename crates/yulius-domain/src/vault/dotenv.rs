@@ -51,8 +51,22 @@ pub fn key_block(value: &str) -> Option<String> {
 /// and no literal `\n` marks its line breaks, which a single-line field replaced with spaces or
 /// dropped. A one-line key block is never a usable key file.
 #[must_use]
-pub fn flattened_key(_value: &str) -> bool {
-    false
+pub fn flattened_key(value: &str) -> bool {
+    let text = value.trim();
+    if text.contains("\\n") {
+        return false;
+    }
+    let Some(rest) = text.strip_prefix("-----BEGIN ") else {
+        return false;
+    };
+    let Some((label, rest)) = rest.split_once("-----") else {
+        return false;
+    };
+    let end = format!("-----END {label}-----");
+    armour(&format!("-----BEGIN {label}-----"), "BEGIN").is_some()
+        && rest
+            .strip_suffix(end.as_str())
+            .is_some_and(|body| !body.trim().is_empty())
 }
 
 /// The lines of a key block's file that hold key material (its armour excluded): a copied key
@@ -313,11 +327,23 @@ mod tests {
             file.replace('\n', "\\n"),
             format!("{}\\n", file.replace('\n', "\\n")),
             // A body with spaces is still a key once one break is kept.
-            format!("{} body with spaces\\n{}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            format!(
+                "{} body with spaces\\n{}",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
             "sk_synthetic_value_7781".to_owned(),
-            format!("{} c3ludGhldGlj {}", armour("BEGIN", "KEY"), armour("END", "CERTIFICATE")),
+            format!(
+                "{} c3ludGhldGlj {}",
+                armour("BEGIN", "KEY"),
+                armour("END", "CERTIFICATE")
+            ),
             format!("{} {}", armour("BEGIN", "KEY"), armour("END", "KEY")),
-            format!("prefix {} c3ludGhldGlj {}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            format!(
+                "prefix {} c3ludGhldGlj {}",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
             armour("BEGIN", "KEY"),
         ] {
             assert!(!flattened_key(&kept), "{kept}");

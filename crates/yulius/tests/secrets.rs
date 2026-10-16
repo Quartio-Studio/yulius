@@ -1194,7 +1194,12 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
         json!({"name": "DEPLOY_KEY", "value": flat}),
     )
     .await?;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
     assert!(
         refused.body.to_string().contains("line breaks were lost"),
         "{}",
@@ -1218,7 +1223,12 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
         &w.writer,
     )
     .await?;
-    assert_eq!(patched.status, StatusCode::BAD_REQUEST, "{}", patched.body);
+    assert_eq!(
+        patched.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        patched.body
+    );
 
     // Stored flattened before the fix: kept, and marked for its managers.
     let old = json!({"value": flat});

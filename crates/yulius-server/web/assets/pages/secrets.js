@@ -309,6 +309,29 @@ const ACTIONS = {
 // ---------------------------------------------------------------- agent secrets
 
 /**
+ * `text` on one line, its line breaks (LF, CRLF or CR) written as literal `\n`: an agent secret
+ * never spans lines, and the vault reads that form as a multi-line key's (SPEC-193 MLK-001). Line
+ * breaks around the text are dropped: a key file's final one comes back when it is copied.
+ */
+export function escapeLineBreaks(text) {
+  return text.replace(/^[\r\n]+|[\r\n]+$/g, '').replace(/\r\n|\r|\n/g, '\\n');
+}
+
+/**
+ * Keeps the line breaks of text pasted into a one-line `input` as `\n`: the browser would turn
+ * them into spaces or drop them (#591). Text without line breaks pastes as usual.
+ */
+function pasteLineBreaksEscaped(input) {
+  input.addEventListener('paste', (event) => {
+    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+    if (!/[\r\n]/.test(text)) return;
+    event.preventDefault();
+    input.setRangeText(escapeLineBreaks(text), input.selectionStart, input.selectionEnd, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/**
  * The add dialog asks for a name, a value and a description (SPEC-121): agents find the hosts and
  * how to send it, and a person allows the hosts they ask for. An instance administrator picks the
  * scope under More options. Editing keeps the hosts, and the request style of an older secret
@@ -317,11 +340,12 @@ const ACTIONS = {
 function agentForm(ctx, secret) {
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
   const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
+  pasteLineBreaksEscaped(value);
   const notes = h('textarea', { class: 'textarea', rows: 2, 'aria-label': 'Description', placeholder: 'API key for Vidoc, the video platform' });
   notes.value = secret ? secret.description : '';
   const parts = [
     field('Name', name, 'Agents refer to it by this name; their code reads $NAME, which holds a placeholder.'),
-    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
+    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Paste a multi-line key as it is: its line breaks are kept as \\n. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
     field('Description', notes, 'Which service it is for (a login’s user name goes here, never the value). Agents find the service’s address from it and ask you to allow it.'),
   ];
   const form = { name, value };
@@ -484,9 +508,13 @@ function mountAgents(ctx, sandbox, host, actions) {
       badges: [
         secret.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet') : iconBadge('folder', 'This sandbox', ''),
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
+        secret.flattened ? badge('Paste again', 'warn', 'Its line breaks were lost') : null,
       ].filter(Boolean),
       description: secret.description || h('span', { class: 'muted' }, 'No description'),
       extra: h('div', { class: 'stack-tight' },
+        // SPEC-193 MLK-003: saved before #591, a key whose line breaks became spaces; it is not
+        // rewritten, since the spaces cannot all be told from the key's own.
+        secret.flattened ? h('span', { class: 'small' }, 'Its line breaks were lost when it was saved, so it no longer works as a key file. Edit it and paste the key again: they are kept now.') : null,
         ...agentHosts(ctx, secret, reload),
         ...agentEnvFiles(ctx, secret, reload),
         ...agentCdProd(ctx, secret, reload),
