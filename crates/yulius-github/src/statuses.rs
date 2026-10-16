@@ -133,7 +133,7 @@ impl GitHubClient {
     /// The commit `branch` points at (`GET /repos/{owner}/{repo}/git/ref/heads/{branch}`, App
     /// permission "Contents: read"). The ref is matched exactly, so a nested name such as
     /// `release/1.0` is one branch and a prefix of one is none. `Ok(None)` when the branch does
-    /// not exist.
+    /// not exist; GitHub answers the same 404 when `token` cannot see the repository at all.
     ///
     /// # Errors
     /// [`GitHubError::InvalidInput`] for a bad owner, repository or branch name,

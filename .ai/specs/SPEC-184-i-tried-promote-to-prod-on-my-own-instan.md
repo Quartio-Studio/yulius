@@ -1,11 +1,11 @@
 ---
 yulius-task: 28ea8d1d-4405-461b-ad4b-6487a15d7dac
-status: in-progress
+status: done
 ---
 
 # SPEC-184: CD and promotion read branch heads from GitHub on a real instance
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #169, issue #574
 Scope authorization: task #169, "i tried promote to prod on my own instance and it failed, fix",
@@ -51,8 +51,8 @@ a real instance: the GitHub adapter returns the head commit GitHub reports for a
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -67,7 +67,8 @@ a real instance: the GitHub adapter returns the head commit GitHub reports for a
 
 - Regression (adapter over the fake GitHub): `crates/yulius/tests/production_branch.rs`,
   `the_adapter_reads_branch_heads_from_github`.
-- Client: `crates/yulius-github/tests/client.rs`, a branch head read and a missing branch.
+- Client: `crates/yulius-github/tests/client.rs`, a branch head read, a missing branch, and a 403
+  and an exhausted 502 that stay errors (never "no such branch").
 - Not testable here: a real production deploy on the reporter's instance (needs their GitHub App
   and CD tables); the fake GitHub models the same endpoint.
 
@@ -84,3 +85,18 @@ a real instance: the GitHub adapter returns the head commit GitHub reports for a
 - **What else the cause broke.** Every CD deploy (dev too), promotion through
   `dlv_promote_exactly`, and `ci_verified_gate` (CI jobs' agent-secret grants) failed the same way
   on real instances; all go through `branch_sha`, so this fix covers them.
+
+## Evidence
+
+- Regression test first (commit 41193ead): `cargo nextest run -p yulius -E 'binary_id(yulius::main)
+  & test(/^production_branch::the_adapter_reads/)'` failed with `Error: Upstream("branch lookup via
+  GitHub is not supported; read the fetched clone instead")`, the reporter's toast.
+- With the fix: `production_branch::` 3/3 passed; `cargo nextest run -p yulius-github --features
+  fake` 39/39 passed (then the error-path cases, passed).
+- `scripts/dev ci` at 02c95b3a: exit 0, 1910 tests passed, 18 skipped (first run at 0d07845d failed
+  only on `cargo fmt --check`, fixed in 02c95b3a). Rerun at the final head before delivery.
+- Independent review (fresh session, om-code-review): APPROVE; its two minor findings (no error-path
+  test; a 404 also means an invisible repository) are addressed by the 403/502 cases and the doc
+  comment on `GitHubClient::branch_head`.
+- Not run here: a real production deploy on the reporter's instance (their GitHub App and CD
+  tables).
