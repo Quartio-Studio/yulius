@@ -10,6 +10,8 @@
 //! - **[`Manager::tick`]** (every [`TICK`]):
 //!   - reaps holders that died;
 //!   - restarts a dead `slirp4netns`;
+//!   - keeps a Docker front beside every live holder, whatever its age, and moves the Docker
+//!     directory into runs that started without it (ADR-0158);
 //!   - stops holders idle for [`IdleConfig::stop_after`];
 //!   - refreshes disk usage (at most every [`USAGE_EVERY`] per sandbox);
 //!   - builds a new base when the host changed for [`REBUILD_DEBOUNCE`], one build at a time,
@@ -29,7 +31,8 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use yulius_contracts::ptyhost::SandboxJoin;
 use yulius_contracts::sandbox::{
-    EngineSpec, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap,
+    DockerFrontRecord, DockerFrontSpec, DockerServe, EngineSpec, HOLDER_RECORD_VERSION,
+    HolderRecord, HolderSpec, IdMap,
 };
 
 use crate::base::{BaseInfo, Bases};
@@ -54,6 +57,28 @@ pub const FINGERPRINT_EVERY: Duration = Duration::from_secs(30 * 60);
 pub const BUILD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// How often the host side asks a holder which ports listen inside.
 pub const PORTS_POLL: Duration = Duration::from_secs(1);
+/// Bound on a Docker front reporting that it serves.
+pub const FRONT_START_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bound on one `bind-docker` pass.
+pub const BIND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Attempts to move the Docker directory into one run's mount namespace.
+pub const BIND_TRIES: u8 = 3;
+/// Marks a mount namespace that needs nothing more.
+const BIND_DONE: u8 = u8::MAX;
+
+/// Why sandboxes get no engine: `YULIUS_SANDBOX_DOCKER=off` (SPEC-196 DKL-005).
+pub const DOCKER_OFF: &str = "Docker is turned off on this Yulius server \
+    (YULIUS_SANDBOX_DOCKER=off); an operator removes that setting and restarts Yulius";
+/// Why: the host has no `dockerd`.
+pub const DOCKER_NO_DOCKERD: &str = "the host has no `dockerd`; an operator installs Docker \
+    (dockerd, containerd, runc) on the host, then the sandboxes' base copies it";
+/// Why: no cgroup delegation.
+pub const DOCKER_NO_DELEGATION: &str = "the Yulius server has no cgroup delegation; an operator \
+    sets Delegate=yes and DelegateSubgroup=server on yulius.service and restarts it \
+    (docs/operations.md)";
+/// Why: the executable could be rewritten by an engine (ADR-0151).
+pub const DOCKER_WRITABLE_EXE: &str = "the `yulius` executable is owned or writable by the \
+    service user, which an engine could rewrite; an operator installs it owned by root, mode 755";
 
 /// Idle handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +120,9 @@ pub struct IsolationConfig {
     pub idle: IdleConfig,
     /// Build bases automatically (off in tests that bring their own).
     pub auto_build: bool,
-    /// Give each sandbox a Docker engine (ADR-0151); it also needs the cgroup delegation.
-    pub docker: bool,
+    /// Give each sandbox a Docker engine (ADR-0151), or why not ([`DOCKER_OFF`],
+    /// [`DOCKER_NO_DOCKERD`]); it also needs the cgroup delegation.
+    pub docker: Result<(), String>,
 }
 
 /// A sandbox asking to be entered.
@@ -149,6 +175,31 @@ pub enum PrepareError {
 struct Live {
     record: HolderRecord,
     relays: Vec<JoinHandle<()>>,
+    /// Its Docker front, once it serves (ADR-0158).
+    front: Option<DockerFrontRecord>,
+    /// Mount namespaces of its runs: attempts to bind the Docker directory, or [`BIND_DONE`].
+    bound: HashMap<u64, u8>,
+}
+
+impl Live {
+    fn new(record: HolderRecord, relays: Vec<JoinHandle<()>>) -> Self {
+        Self {
+            record,
+            relays,
+            front: None,
+            bound: HashMap::new(),
+        }
+    }
+
+    /// The front's pid, when it has one.
+    fn front_pid(&self) -> u32 {
+        self.front.as_ref().map_or(0, |f| f.pid)
+    }
+
+    /// Whether an engine may run (its own front's, or a SPEC-187 holder's).
+    fn serves_engine(&self) -> bool {
+        self.record.engine || self.front.as_ref().is_some_and(|f| f.mode != "refuse")
+    }
 }
 
 impl Drop for Live {
@@ -251,29 +302,324 @@ impl Manager {
         self.config.data_dir.join("sysroots").join(sandbox)
     }
 
-    /// Whether sandboxes get a Docker engine: the setting, the cgroup delegation, and a `yulius`
-    /// executable the sandbox's root neither owns nor may write through its group or as anyone
-    /// (the engine's read-only binds are not locked, so an engine could remount and rewrite it;
-    /// ADR-0151).
+    /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they do: the setting
+    /// and `dockerd`, the cgroup delegation, and a `yulius` executable the sandbox's root neither
+    /// owns nor may write through its group or as anyone (the engine's read-only binds are not
+    /// locked, so an engine could remount and rewrite it; ADR-0151).
     #[must_use]
-    pub fn docker(&self) -> bool {
+    pub fn docker_unavailable(&self) -> Option<String> {
         use std::os::unix::fs::MetadataExt as _;
+        if let Err(reason) = &self.config.docker {
+            return Some(reason.clone());
+        }
+        if self.config.delegation.is_none() {
+            return Some(DOCKER_NO_DELEGATION.to_owned());
+        }
         // Owned by the sandbox's root, or writable by its group (the service group) or anyone.
         let exe_writable = std::fs::metadata(&self.config.exe)
             .is_ok_and(|meta| meta.uid() == self.config.uid.host || meta.mode() & 0o022 != 0);
-        self.config.docker && self.config.delegation.is_some() && !exe_writable
+        exe_writable.then(|| DOCKER_WRITABLE_EXE.to_owned())
     }
 
-    /// Whether `sandbox`'s runs reach a Docker engine: its live holder serves one, or, without a
-    /// live holder, the next one will (SPEC-187 DKR-010). A holder from before engines, or one
-    /// whose socket failed, serves none.
-    pub async fn docker_for(&self, sandbox: &str) -> bool {
-        if !self.docker() {
-            return false;
+    /// Whether sandboxes get a Docker engine ([`Manager::docker_unavailable`] says why not).
+    #[must_use]
+    pub fn docker(&self) -> bool {
+        self.docker_unavailable().is_none()
+    }
+
+    /// Whether `sandbox`'s runs reach a Docker engine (SPEC-187 DKR-010). Every live holder gets
+    /// a front whatever its age (SPEC-196 DKL-003), so this is the host's answer.
+    pub async fn docker_for(&self, _sandbox: &str) -> bool {
+        self.docker()
+    }
+
+    /// How `request`'s front serves its socket beside the holder of `record` (ADR-0158).
+    fn front_mode(&self, request: &SandboxRequest, record: &HolderRecord) -> DockerServe {
+        if let Some(reason) = self.docker_unavailable() {
+            return DockerServe::Refuse { reason };
         }
-        let entry = self.entry(sandbox);
-        let state = entry.lock().await;
-        state.live.as_ref().is_none_or(|live| live.record.engine)
+        if record.engine {
+            let state = StatePaths::new(self.state_dir(&request.id));
+            return DockerServe::Relay {
+                socket: state.engine_socket().to_string_lossy().into_owned(),
+            };
+        }
+        match self.cgroup_of(&request.id) {
+            Some(groups) => DockerServe::Engine {
+                engine: self.engine_spec(request, &groups.engine),
+            },
+            None => DockerServe::Refuse {
+                reason: "the sandbox's cgroup could not be prepared (the Yulius server's log says \
+                         why); an operator checks the delegation with `yulius doctor`"
+                    .into(),
+            },
+        }
+    }
+
+    /// The request of a sandbox known only from its holder's files (an adopted holder before
+    /// any run asked for it): its host name and ports from `holder.json`.
+    fn adopted_request(&self, sandbox: &str) -> SandboxRequest {
+        let spec = read_json::<HolderSpec>(&StatePaths::new(self.state_dir(sandbox)).spec()).ok();
+        SandboxRequest {
+            id: sandbox.to_owned(),
+            hostname: spec
+                .as_ref()
+                .map_or_else(|| sandbox.to_owned(), |s| s.hostname.clone()),
+            dir: self.config.data_dir.join("sandboxes").join(sandbox),
+            port_first: spec.as_ref().map_or(0, |s| s.port_first),
+            port_last: spec.as_ref().map_or(0, |s| s.port_last),
+        }
+    }
+
+    /// Forwarded ports the front also serves on the engine's bridge: those of a holder whose
+    /// forwards listen on loopback only (started before engines; SPEC-187 specs carry `engine`,
+    /// newer ones `containers`).
+    fn bridge_forwards(&self, sandbox: &str) -> Vec<u16> {
+        let spec = std::fs::read(StatePaths::new(self.state_dir(sandbox)).spec())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let containers = spec
+            .as_ref()
+            .is_some_and(|s| s["containers"].as_bool() == Some(true) || !s["engine"].is_null());
+        if containers {
+            Vec::new()
+        } else {
+            self.config.forwards.keys().copied().collect()
+        }
+    }
+
+    /// Keeps `sandbox`'s front serving in the mode it should (SPEC-196 DKL-003): started when the
+    /// holder has none or it ended, replaced when the mode changed. An engine's other settings
+    /// change only with a new holder, so a running engine is never cut for them.
+    async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
+        let request = state
+            .request
+            .clone()
+            .unwrap_or_else(|| self.adopted_request(sandbox));
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        let serve = self.front_mode(&request, &live.record);
+        let reason = match &serve {
+            DockerServe::Refuse { reason } => Some(reason.clone()),
+            _ => None,
+        };
+        let net_ns = live.record.net_ns;
+        if let Some(front) = &live.front {
+            let running = crate::docker_front::is_front(front.pid, net_ns);
+            if running && front.mode == serve.kind() && front.reason == reason {
+                return;
+            }
+            if running {
+                tracing::info!(sandbox, from = %front.mode, to = serve.kind(), "replacing the sandbox's Docker front");
+                let paths = StatePaths::new(self.state_dir(sandbox));
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::docker_front::stop(&paths, net_ns);
+                })
+                .await;
+            } else {
+                tracing::warn!(
+                    sandbox,
+                    "the sandbox's Docker front ended; starting it again"
+                );
+            }
+            live.front = None;
+        }
+        let forwards = self.bridge_forwards(sandbox);
+        match self
+            .start_front(sandbox, &live.record, serve, forwards)
+            .await
+        {
+            Ok(front) => {
+                tracing::info!(sandbox, mode = %front.mode, pid = front.pid, "sandbox Docker front serving");
+                live.front = Some(front);
+            }
+            Err(error) => {
+                tracing::warn!(sandbox, %error, "cannot start the sandbox's Docker front");
+            }
+        }
+    }
+
+    /// Starts `sandbox`'s front beside the holder of `record` and waits until it serves.
+    async fn start_front(
+        &self,
+        sandbox: &str,
+        record: &HolderRecord,
+        serve: DockerServe,
+        bridge_forwards: Vec<u16>,
+    ) -> Result<DockerFrontRecord, String> {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        use tokio::io::AsyncBufReadExt as _;
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        std::fs::create_dir_all(paths.docker_dir()).map_err(|e| format!("docker/: {e}"))?;
+        let _ =
+            std::fs::set_permissions(paths.docker_dir(), std::fs::Permissions::from_mode(0o755));
+        let reason = match &serve {
+            DockerServe::Refuse { reason } => Some(reason.clone()),
+            _ => None,
+        };
+        let mode = serve.kind();
+        let spec = DockerFrontSpec {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: sandbox.to_owned(),
+            state_dir: paths.dir.to_string_lossy().into_owned(),
+            holder_pid: record.inner_pid,
+            user_ns: record.user_ns,
+            net_ns: record.net_ns,
+            mnt_ns: record.mnt_ns,
+            cgroup: self
+                .cgroup_of(sandbox)
+                .map(|g| g.system.to_string_lossy().into_owned()),
+            serve,
+            bridge_forwards,
+        };
+        spec.validate().map_err(|e| e.to_string())?;
+        write_json(&paths.docker_spec(), &spec).map_err(|e| e.to_string())?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(paths.docker_log())
+            .map_err(|e| format!("docker-front.log: {e}"))?;
+        // Detached like the holder: it outlives this server process.
+        let mut child = tokio::process::Command::new(&self.config.exe)
+            .args(["sandbox-host", "docker", "--spec"])
+            .arg(paths.docker_spec())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(log))
+            .process_group(0)
+            .kill_on_drop(false)
+            .spawn()
+            .map_err(|e| format!("sandbox-host docker: {e}"))?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let line = tokio::time::timeout(
+            FRONT_START_TIMEOUT,
+            tokio::io::BufReader::new(stdout).lines().next_line(),
+        )
+        .await;
+        let line = match line {
+            Ok(Ok(Some(line))) => line,
+            Ok(_) => String::from("it exited"),
+            Err(_) => String::from("it did not report in time"),
+        };
+        if line.trim() != crate::docker_front::READY {
+            let _ = child.kill().await;
+            return Err(line.chars().take(2000).collect());
+        }
+        let pid = child.id().ok_or("the front exited")?;
+        // Reaped while this server runs; it keeps running when the server stops.
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        let front = DockerFrontRecord {
+            pid,
+            mode: mode.to_owned(),
+            reason,
+            started_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+        };
+        write_json(&paths.docker_record(), &front).map_err(|e| e.to_string())?;
+        Ok(front)
+    }
+
+    /// Moves the Docker directory into `sandbox`'s runs that started without it (SPEC-196
+    /// DKL-004): their mount namespaces are planned here, and only those needing a bind go to
+    /// `yulius sandbox-host bind-docker`, at most [`BIND_TRIES`] times each.
+    async fn bind_docker_dirs(&self, sandbox: &str, state: &mut SandboxState) {
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        if live.front.is_none() {
+            return;
+        }
+        let (record, front) = (live.record.clone(), live.front_pid());
+        let engine = self.cgroup_of(sandbox).map(|g| g.engine);
+        let known = live.bound.clone();
+        let planned = tokio::task::spawn_blocking(move || {
+            crate::docker_bind::run_namespaces(
+                record.net_ns,
+                &[record.inner_pid, front],
+                &[record.mnt_ns],
+                engine.as_deref(),
+            )
+            .into_iter()
+            .filter(|(_, mnt)| known.get(mnt).is_none_or(|tries| *tries < BIND_TRIES))
+            .map(|(pid, mnt)| {
+                let plan = std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
+                    .map_or(crate::docker_bind::Plan::NotARun, |t| {
+                        crate::docker_bind::plan(&t)
+                    });
+                (pid, mnt, plan)
+            })
+            .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let mut pids = Vec::new();
+        for (pid, mnt, plan) in planned {
+            if plan == crate::docker_bind::Plan::Bind {
+                pids.push((pid, mnt));
+            } else {
+                live.bound.insert(mnt, BIND_DONE);
+            }
+        }
+        if pids.is_empty() {
+            return;
+        }
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let mut command = tokio::process::Command::new(&self.config.exe);
+        command
+            .args(["sandbox-host", "bind-docker", "--spec"])
+            .arg(paths.docker_spec());
+        for (pid, _) in &pids {
+            command.arg("--pid").arg(pid.to_string());
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = match command.spawn() {
+            Ok(child) => tokio::time::timeout(BIND_TIMEOUT, child.wait_with_output()).await,
+            Err(error) => {
+                tracing::warn!(sandbox, %error, "cannot start bind-docker");
+                return;
+            }
+        };
+        let text = match output {
+            Ok(Ok(output)) => {
+                if !output.status.success() {
+                    tracing::warn!(sandbox, error = %String::from_utf8_lossy(&output.stderr).trim(), "bind-docker failed");
+                }
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            }
+            _ => String::new(),
+        };
+        let mut done: HashMap<u32, bool> = HashMap::new();
+        for line in text.lines() {
+            if let Some((pid, ok)) = crate::docker_bind::Outcome::parse(line) {
+                done.insert(pid, ok);
+                if line.starts_with("bound") {
+                    tracing::info!(
+                        sandbox,
+                        pid,
+                        "gave a running run the sandbox's Docker directory"
+                    );
+                } else if !ok {
+                    tracing::warn!(sandbox, %line, "cannot give a run the sandbox's Docker directory");
+                }
+            }
+        }
+        for (pid, mnt) in pids {
+            let tries = live.bound.entry(mnt).or_insert(0);
+            if done.get(&pid) == Some(&true) {
+                *tries = BIND_DONE;
+            } else {
+                *tries = tries.saturating_add(1);
+            }
+        }
     }
 
     /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
@@ -361,7 +707,7 @@ impl Manager {
                 state.stale = Some(record);
             }
             if let Some(stale) = state.stale.clone() {
-                let runs = tokio::task::spawn_blocking(move || Self::runs_in(stale.net_ns, 0))
+                let runs = tokio::task::spawn_blocking(move || Self::runs_in(stale.net_ns, &[]))
                     .await
                     .unwrap_or(1);
                 if runs > 0 {
@@ -377,7 +723,8 @@ impl Manager {
                 .await
                 .map_err(PrepareError::Holder)?;
             let relays = self.start_relays(&request.id, &record);
-            state.live = Some(Live { record, relays });
+            state.live = Some(Live::new(record, relays));
+            self.keep_front(&request.id, &mut state).await;
         }
         let Some(record) = state.live.as_ref().map(|live| live.record.clone()) else {
             return Err(PrepareError::Holder("no holder".into()));
@@ -408,12 +755,12 @@ impl Manager {
                 exec_shim: Some(self.config.exe.to_string_lossy().into_owned()),
                 private_dirs: vec![self.config.data_dir.to_string_lossy().into_owned()],
                 host_system: None,
-                engine_socket: record.engine.then(|| {
+                docker_dir: Some(
                     StatePaths::new(self.state_dir(&request.id))
-                        .engine_socket()
+                        .docker_dir()
                         .to_string_lossy()
-                        .into_owned()
-                }),
+                        .into_owned(),
+                ),
             },
         }))
     }
@@ -422,17 +769,19 @@ impl Manager {
     /// without a live holder). Yulius's own records of runs, shells and the browser are checked
     /// beside it.
     pub async fn processes(&self, sandbox: &str) -> usize {
-        let record = {
+        let (record, front) = {
             let entry = self.entry(sandbox);
             let state = entry.lock().await;
             match &state.live {
-                Some(live) => live.record.clone(),
+                Some(live) => (live.record.clone(), live.front_pid()),
                 None => return 0,
             }
         };
-        tokio::task::spawn_blocking(move || Self::runs_in(record.net_ns, record.inner_pid))
-            .await
-            .unwrap_or(1)
+        tokio::task::spawn_blocking(move || {
+            Self::runs_in(record.net_ns, &[record.inner_pid, front])
+        })
+        .await
+        .unwrap_or(1)
     }
 
     /// Ends a lease taken by [`Manager::prepare`].
@@ -462,13 +811,10 @@ impl Manager {
         let state = StatePaths::new(self.state_dir(&request.id));
         let sysroot = self.sysroot(&request.id);
         let groups = self.cgroup_of(&request.id);
-        let engine = groups
-            .as_ref()
-            .filter(|_| self.docker())
-            .map(|groups| self.engine_spec(request, &groups.engine));
         for dir in [
             state.dir.clone(),
             state.root(),
+            state.docker_dir(),
             sysroot.join("upper"),
             sysroot.join("work"),
             sysroot.join("docker"),
@@ -503,7 +849,7 @@ impl Manager {
             port_first: request.port_first,
             port_last: request.port_last,
             forwards: self.config.forwards.keys().copied().collect(),
-            engine,
+            containers: self.docker(),
         };
         spec.validate().map_err(|e| e.to_string())?;
         write_json(&state.spec(), &spec).map_err(|e| e.to_string())?;
@@ -594,8 +940,13 @@ impl Manager {
             let mut guard = slot.lock().await;
             if alive(&record) {
                 let relays = self.start_relays(&sandbox, &record);
-                guard.live = Some(Live { record, relays });
+                let mut live = Live::new(record, relays);
+                // A front that outlived the previous server process is kept when it still
+                // serves this holder in the right mode (`keep_front`).
+                live.front = read_json::<DockerFrontRecord>(&state.docker_record()).ok();
+                guard.live = Some(live);
                 guard.last_used = Some(Instant::now());
+                self.keep_front(&sandbox, &mut guard).await;
                 adopted += 1;
             } else {
                 self.stop_holder(&sandbox, &record).await;
@@ -611,8 +962,9 @@ impl Manager {
         adopted
     }
 
-    /// Processes in `net_ns` other than `holder` (the sandbox's runs).
-    fn runs_in(net_ns: u64, holder: u32) -> usize {
+    /// Processes in `net_ns` other than `exclude` (the holder and its Docker front): the
+    /// sandbox's runs, and its engine while one runs.
+    fn runs_in(net_ns: u64, exclude: &[u32]) -> usize {
         let Ok(entries) = std::fs::read_dir("/proc") else {
             return 0;
         };
@@ -620,7 +972,7 @@ impl Manager {
             .flatten()
             .take(1 << 20)
             .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()))
-            .filter(|pid| *pid != holder)
+            .filter(|pid| !exclude.contains(pid))
             .filter(|pid| crate::holder::ns_inode(*pid, "net") == Some(net_ns))
             .count()
     }
@@ -676,8 +1028,11 @@ impl Manager {
                             Err(_) => {}
                         }
                     }
+                    self.keep_front(&sandbox, &mut state).await;
+                    self.bind_docker_dirs(&sandbox, &mut state).await;
+                    let front = state.live.as_ref().map_or(0, Live::front_pid);
                     let runs = tokio::task::spawn_blocking(move || {
-                        Self::runs_in(record.net_ns, record.inner_pid)
+                        Self::runs_in(record.net_ns, &[record.inner_pid, front])
                     })
                     .await
                     .unwrap_or(1);
@@ -717,7 +1072,7 @@ impl Manager {
         let (socket, measured) = {
             let entry = self.entry(sandbox);
             let state = entry.lock().await;
-            if !state.live.as_ref()?.record.engine {
+            if !state.live.as_ref()?.serves_engine() {
                 return None;
             }
             let measured = state.usage.as_ref().map_or(0, |(usage, _)| {
@@ -1018,7 +1373,7 @@ mod tests {
                 stop_after: Duration::from_secs(300),
             },
             auto_build: false,
-            docker: false,
+            docker: Err(DOCKER_OFF.into()),
         });
         let request = SandboxRequest {
             id: "s1".into(),
@@ -1061,7 +1416,7 @@ mod tests {
                 stop_after: Duration::from_secs(300),
             },
             auto_build: false,
-            docker: false,
+            docker: Err(DOCKER_OFF.into()),
         }
     }
 
@@ -1102,24 +1457,18 @@ mod tests {
         let off = manager(data.path(), 1);
         assert!(!off.docker_for("s1").await, "the setting is off");
         let mut on = config(data.path(), 1);
-        on.docker = true;
+        on.docker = Ok(());
         on.delegation = Some(delegation(data.path())?);
         let manager = Manager::new(on);
         assert!(manager.docker(), "the setting with the delegation");
         assert!(manager.docker_for("s1").await, "its next holder serves one");
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live {
-            record: live_record(false),
-            relays: Vec::new(),
-        });
+        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
         assert!(
             manager.docker_for("s1").await,
             "a holder from before engines gains one"
         );
-        entry.lock().await.live = Some(Live {
-            record: live_record(true),
-            relays: Vec::new(),
-        });
+        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
         assert!(manager.docker_for("s1").await);
         Ok(())
     }
@@ -1135,7 +1484,7 @@ mod tests {
         std::fs::write(&exe, "")?;
         let owner = std::fs::metadata(&exe)?.uid();
         let mut owned = config(data.path(), 1);
-        owned.docker = true;
+        owned.docker = Ok(());
         owned.delegation = Some(delegation(data.path())?);
         owned.exe = exe;
         owned.uid.host = owner;
@@ -1194,19 +1543,13 @@ mod tests {
         std::fs::create_dir_all(state.engine_control())?;
         let (front, front_hits) = fake_api(tokio::net::UnixListener::bind(state.engine_socket())?);
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live {
-            record: live_record(false),
-            relays: Vec::new(),
-        });
+        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
         assert_eq!(
             manager.prune_engine("s1").await,
             None,
             "a holder without an engine"
         );
-        entry.lock().await.live = Some(Live {
-            record: live_record(true),
-            relays: Vec::new(),
-        });
+        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
         assert_eq!(manager.prune_engine("s1").await, None, "a stopped engine");
         // A link the engine planted at its control socket is not followed.
         let decoy_path = data.path().join("decoy.sock");

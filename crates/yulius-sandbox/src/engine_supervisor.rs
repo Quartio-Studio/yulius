@@ -361,8 +361,9 @@ fn log_tail(path: &Path) -> String {
 }
 
 /// Answers a client the engine could not serve: its request head is read (bounded), then a
-/// Docker-API error, which `docker` prints as "Error response from daemon: …".
-async fn refuse(mut client: UnixStream, reason: &str) {
+/// Docker-API error, which `docker` prints as "Error response from daemon: …", naming how the
+/// operator checks the host (SPEC-196 DKL-005).
+pub(crate) async fn refuse(mut client: UnixStream, reason: &str) {
     let mut head = Vec::new();
     let _ = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, async {
         let mut buf = [0u8; 4096];
@@ -375,7 +376,10 @@ async fn refuse(mut client: UnixStream, reason: &str) {
     })
     .await;
     let body = serde_json::json!({
-        "message": format!("the sandbox's Docker engine is not available: {reason}")
+        "message": format!(
+            "the sandbox's Docker engine is not available: {reason}. The operator checks the host \
+             with `yulius doctor` and `yulius doctor --docker-smoke`"
+        )
     })
     .to_string();
     let response = format!(

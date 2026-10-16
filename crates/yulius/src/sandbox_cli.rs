@@ -35,6 +35,22 @@ pub enum HostAction {
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
+    /// The sandbox's Docker front beside its holder: serves `docker/docker.sock` until stopped
+    /// (ADR-0158).
+    Docker {
+        /// The front spec (`runtime/sandboxes/<sandbox>/docker.json`).
+        #[arg(long)]
+        spec: PathBuf,
+    },
+    /// Move the sandbox's Docker directory into running runs' mount namespaces (ADR-0158).
+    BindDocker {
+        /// The front spec.
+        #[arg(long)]
+        spec: PathBuf,
+        /// A process of each run.
+        #[arg(long = "pid", required = true)]
+        pids: Vec<u32>,
+    },
     /// Remove a tree as root of a mapped namespace (files owned by mapped ids).
     RemoveTree {
         /// The tree.
@@ -109,6 +125,29 @@ pub fn host(action: HostAction) -> ExitCode {
             Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
             Err(error) => fail(&error),
         },
+        HostAction::Docker { spec } => match yulius_sandbox::docker_front::run(&spec) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(&error),
+        },
+        HostAction::BindDocker { spec, pids } => {
+            let spec: yulius_contracts::sandbox::DockerFrontSpec =
+                match yulius_sandbox::holder::read_json(&spec) {
+                    Ok(spec) => spec,
+                    Err(error) => return fail(&format!("{}: {error}", spec.display())),
+                };
+            if let Err(error) = spec.validate() {
+                return fail(&error.to_string());
+            }
+            match yulius_sandbox::docker_bind::bind(&spec, &pids) {
+                Ok(outcomes) => {
+                    for (pid, outcome) in outcomes {
+                        println!("{}", outcome.line(pid));
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => fail(&error),
+            }
+        }
         HostAction::RemoveTree { path } => {
             yulius_sandbox::base::make_writable(&path);
             match std::fs::remove_dir_all(&path) {
