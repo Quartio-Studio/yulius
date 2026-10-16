@@ -1065,7 +1065,8 @@ impl App {
         }
     }
 
-    async fn ci_retry_statuses(&self) {
+    /// Publishes again the commit statuses that did not reach GitHub (run by the CI loop).
+    pub async fn ci_retry_statuses(&self) {
         let since = self.now().plus_millis(-STATUS_RETRY_WINDOW_MS);
         let Ok(runs) = self
             .deps

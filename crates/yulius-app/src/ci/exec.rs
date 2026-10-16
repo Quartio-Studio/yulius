@@ -331,25 +331,30 @@ impl App {
                 }
                 let mut handles = Vec::with_capacity(jobs.len());
                 let share = jobs.len();
+                // One job-end publish at a time, each reading the jobs afresh: the count on
+                // GitHub never goes back (SPEC-198).
+                let publishing = Arc::new(tokio::sync::Mutex::new(()));
                 for job in &jobs {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
                     let checkout = checkout_name(&job, &jobs, lane);
                     let job_cancel = siblings.clone();
                     let stop_siblings = Arc::clone(&siblings_tx);
+                    let publishing = Arc::clone(&publishing);
+                    let run_cancel = cancel.clone();
                     handles.push(tokio::spawn(async move {
                         let no_disk = Arc::clone(&app)
                             .ci_job(&sandbox, &run, &job, share, &checkout, job_cancel)
                             .await;
-                        let failed =
-                            app.deps
-                                .store
-                                .ci_jobs(&run.id, false)
-                                .await
-                                .is_ok_and(|all| {
-                                    all.iter()
-                                        .any(|j| j.id == job.id && j.state == RunState::Failed)
-                                });
+                        let all = app
+                            .deps
+                            .store
+                            .ci_jobs(&run.id, false)
+                            .await
+                            .unwrap_or_default();
+                        let ended = all.iter().find(|j| j.id == job.id).map(|j| j.state);
+                        let others_run = all.iter().any(|j| j.state.is_active());
+                        let failed = ended == Some(RunState::Failed);
                         if (failed || no_disk) && stop_siblings.borrow().is_none() {
                             let reason = if no_disk {
                                 "stopped early: the sandbox is over its disk quota".to_owned()
@@ -357,6 +362,17 @@ impl App {
                                 format!("stopped early: job {} failed", job.name)
                             };
                             let _ = stop_siblings.send(Some(reason));
+                        } else if matches!(ended, Some(RunState::Passed | RunState::Skipped))
+                            && others_run
+                            && stop_siblings.borrow().is_none()
+                            && run_cancel.borrow().is_none()
+                        {
+                            // The run goes on: its status counts this job now, not only once the
+                            // run ends. The run publishes its end after awaiting this task, so
+                            // that final status lands last; the last job leaves it to the end
+                            // (SPEC-198 RCS-001 to RCS-003).
+                            let _one = publishing.lock().await;
+                            app.ci_publish(&run.id).await;
                         }
                         no_disk
                     }));
