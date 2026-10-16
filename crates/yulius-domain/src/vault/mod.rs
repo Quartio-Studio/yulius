@@ -55,7 +55,8 @@ pub fn reauth_fresh(now: Timestamp, authenticated_at: Timestamp) -> bool {
 }
 
 /// Checks an agent-secret value: at least [`MIN_AGENT_VALUE_CHARS`] characters, no control
-/// characters (it must fit an HTTP header and never span lines), at most [`MAX_FIELD_BYTES`].
+/// characters (it must fit an HTTP header and never span lines), at most [`MAX_FIELD_BYTES`], and
+/// not a key whose line breaks were lost ([`dotenv::flattened_key`], SPEC-193 MLK-002).
 ///
 /// # Errors
 /// [`VaultError::Value`] naming the rule.
@@ -71,6 +72,11 @@ pub fn check_agent_value(value: &str) -> Result<(), VaultError> {
     if value.chars().any(char::is_control) {
         return Err(VaultError::Value(
             "an agent secret cannot contain line breaks or control characters".into(),
+        ));
+    }
+    if dotenv::flattened_key(value) {
+        return Err(VaultError::Value(
+            "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n".into(),
         ));
     }
     Ok(())
@@ -284,6 +290,21 @@ mod tests {
         assert!(check_agent_value("short12").is_err());
         assert!(check_agent_value("line one\nline two").is_err());
         assert!(check_agent_value(&"x".repeat(MAX_FIELD_BYTES + 1)).is_err());
+    }
+
+    /// SPEC-193 MLK-002: a key whose line breaks were lost is refused, saying how to keep them;
+    /// the same key with literal `\n` is a value.
+    #[test]
+    fn a_flattened_key_is_refused() {
+        let begin = format!("-----BEGIN {}-----", "SYNTHETIC KEY");
+        let end = format!("-----END {}-----", "SYNTHETIC KEY");
+        let flat = format!("{begin} c3ludGhldGljLWZsYXQ= {end}");
+        let Err(VaultError::Value(message)) = check_agent_value(&flat) else {
+            panic!("a flattened key is refused");
+        };
+        assert!(message.contains("line breaks were lost"), "{message}");
+        assert!(message.contains("\\n"), "{message}");
+        assert!(check_agent_value(&format!("{begin}\\nc3ludGhldGljLWZsYXQ=\\n{end}")).is_ok());
     }
 
     #[test]

@@ -21,6 +21,37 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     upgrade, then hello-world, a build, compose, a recreated socket and a new run. The host test
     `isolation_docker_live` runs the same scenario. Neither can run in a sandbox or in Yulius CI.
 
+- A multi-line key pasted as an agent secret keeps its line breaks (SPEC-193, ADR-0156, task #179,
+  fixes #591). The value field is one line, and the browser turned a pasted PEM or OpenSSH key's
+  line breaks into spaces without a word.
+  - The field now writes a pasted key's line breaks as literal `\n`, the vault's form for a
+    multi-line key, so `secret_verify` answers `escaped_newlines` for the key file and
+    `secret_copy_to_env` writes it back. Other text pastes as before. Checked with real
+    `ssh-keygen` and `openssl` keys, LF and CRLF.
+  - The server refuses a key flattened onto one line. One saved before the fix is not rewritten:
+    its card says "Paste again" to the people who manage it.
+  - Team secret values have the same one-line field (#592, not changed here).
+
+- Task lists stay live, a task an update holds reads Paused, and a person can pause a task
+  (SPEC-191, ADR-0154, task #176). The event stream had no heartbeat, so a connection that died
+  without a close (a laptop asleep, a network change, a dropped proxy connection) stayed open in
+  the page and the lists froze until a reload; the server now beats every 20 s and the page
+  replaces a stream silent for 50 s (30 s when shown again or back online) and resyncs.
+  `TaskSummary.pause` says why a live run is paused (an update, or a person) and the lists show
+  Paused with why. A task's owner pauses it from the task menu (`POST /api/tasks/{tid}/pause`):
+  its run is frozen as an update freezes it, or held at its turn boundary; Resume
+  (`…/resume`) thaws it. Updates, restarts and their sweeps never wake it; stop, close and a
+  switch thaw it first. Migration 0033.
+- The ready-made automation "Work through open issues" no longer works through all of the core
+  team's open issues (SPEC-194, task #180). It first drops the issues a running task owns: an
+  active task whose title ends with `(#N)` or whose prompt refers to the issue, a `Taken by` task
+  still running, or an open pull request that closes it. It also drops those it marked
+  `Not actionable yet:` until a person answers.
+  It ranks the rest (priority label, severity, reactions, age) and verifies them in that order
+  until it has the 5 most important actionable ones, then starts a task for each. Issues below the
+  cut are left untouched for a later run. `tasks_list` scope `active` now also lists tasks
+  paused for capacity. This project's automation was updated to the new prompt.
+  Automations other projects already added from the template keep their prompt.
 - A task removes the files it created itself, instead of asking a person (SPEC-192, ADR-0155,
   task #177). Claude Code stops some `rm` commands for a person's approval even with approvals
   bypassed (a file at `/`, a path in a variable); the session terminal asked and the agent then

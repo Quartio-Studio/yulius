@@ -397,6 +397,8 @@ function summary(task) {
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
+    // Why its live run is paused (SPEC-191 PAU-001): an update holds it, or a person paused it.
+    pause: (task.status === 'running' || task.status === 'switching') && task.pause ? { ...task.pause } : null,
   };
 }
 
@@ -1175,6 +1177,22 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  return summary(task);
+});
+// A person pauses a running task and resumes it (SPEC-191 PER-001/002): its run is frozen.
+route('POST', `/api/tasks/${ID}/pause`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'running') fail(409, 'conflict', 'Only a running task can be paused.');
+  if (!task.pause || task.pause.by !== 'person') {
+    touch(db, task, { pause: { by: 'person', user: { login: db.me.user.login }, since: new Date().toISOString(), pending: false } });
+  }
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/resume`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.pause && task.pause.by === 'person') touch(db, task, { pause: null });
   return summary(task);
 });
 route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
@@ -2211,7 +2229,7 @@ route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0
 // Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
 const AUTOMATION_TEMPLATES = [
   { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
-  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are ranked and the 5 most important actionable ones get a task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Get the 5 most important actionable open GitHub issues of this repository solved, among those written by the core team or their agents that no running task owns.', workflow_id: null },
 ];
 const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {
@@ -2339,7 +2357,9 @@ function vaultOf(db) {
       team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
       agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#111' },
         // SPEC-121: added with a name, a value and a description; an agent asked for its host.
-        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null }],
+        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null },
+        // SPEC-193 MLK-003: a key pasted before #591 was fixed, its line breaks turned into spaces.
+        { id: 'as_olddeploy', sandbox: 'sb_studio', scope: 'sandbox', name: 'OLD_DEPLOY_KEY', description: 'Deploy key for the staging server', hosts: [], injection: 'none', header_name: null, username: null, value: '-----BEGIN MOCK OPENSSH PRIVATE KEY----- bW9jay1mbGF0LTAx bW9jay1mbGF0LTAy -----END MOCK OPENSSH PRIVATE KEY-----', created_by: 'mkarp', updated_at: iso(2 * DAY), value_updated_at: iso(2 * DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
@@ -2354,7 +2374,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2387,10 +2407,17 @@ function teamSecret(db, id) {
 }
 
 const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** A key whose line breaks were lost: `dotenv::flattened_key` (SPEC-193 MLK-002). */
+function flattenedKey(value) {
+  const match = /^-----BEGIN ([^-]+)-----(.*)-----END ([^-]+)-----$/s.exec(String(value || '').trim());
+  return Boolean(match) && !value.includes('\\n') && match[2].trim() !== '';
+}
+
 function validateAgent(body, creating) {
   if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
   if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length > 16)) fail(422, 'invalid', 'at most 16 hosts');
   if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
+  if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
 }
 
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));
@@ -4565,9 +4592,13 @@ function openSocket(db, path) {
   // Terminal sockets may carry the viewer's size (`?cols=&rows=`), applied on hello here.
   const route_ = path.split('?')[0];
   if (route_ === '/api/events') {
+    // Like the server, the stream beats every heartbeat (`heartbeat=<ms>`, SPEC-191 LIV-001).
     ws.server = {
-      open: () => db.eventSockets.add(ws),
-      closed: () => db.eventSockets.delete(ws),
+      open: () => {
+        db.eventSockets.add(ws);
+        ws.beat = setInterval(() => { db.heartbeats += 1; ws.push(JSON.stringify({ type: 'heartbeat' })); }, db.heartbeatMs);
+      },
+      closed: () => { db.eventSockets.delete(ws); clearInterval(ws.beat); },
     };
     startAmbient(db);
   } else if ((m = route_.match(/^\/api\/tasks\/([^/]+)\/terminal$/))) {
@@ -4704,6 +4735,13 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // The event streams die without a close (a laptop asleep, a dropped proxy connection): nothing
+  // more reaches them, heartbeats included; a new connection works (SPEC-191 LIV-002).
+  db.silenceEvents = () => {
+    for (const ws of [...db.eventSockets]) { db.eventSockets.delete(ws); clearInterval(ws.beat); }
+  };
+  db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
+  db.heartbeats = 0; // beats sent, so a test can silence the stream right after one
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {
     for (const shell of [...db.shells.values()]) {
@@ -4747,6 +4785,8 @@ export function createMockTransport(params) {
   notesOf(db);
   return {
     kind: 'mock',
+    // How often the event stream beats (`heartbeat=<ms>`); the page's watchdog follows it.
+    eventsHeartbeatMs: db.heartbeatMs,
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
     pullClock,

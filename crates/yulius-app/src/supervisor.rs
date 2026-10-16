@@ -179,6 +179,10 @@ pub struct TaskRuntime {
     /// When a held hook of the current run last asked again (ms, 0 = not since this server
     /// started): a hold nobody polls any more was given up by the CLI (ADR-17).
     pub(crate) hold_polled_ms: AtomicI64,
+    /// How a person's pause of the current run stands (SPEC-191 PER-001, `pause::PersonFreeze`).
+    pub(crate) person_freeze: std::sync::atomic::AtomicU8,
+    /// When a hook of the current run was last held for a person's pause (ms, 0 = not held).
+    pub(crate) person_held_ms: AtomicI64,
     /// Turn-end step nudges already given to the agent (`Nudge::key`), so each is given once.
     pub(crate) nudged: Mutex<std::collections::BTreeSet<String>>,
     /// The terminal already said that this task acts on GitHub as the App, not its owner
@@ -265,6 +269,8 @@ impl TaskRuntime {
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
+            person_freeze: std::sync::atomic::AtomicU8::new(0),
+            person_held_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
@@ -1711,10 +1717,7 @@ impl App {
                     return;
                 }
                 tokio::time::sleep(step).await;
-                // A prompt held for capacity or an update is not refused: it waits.
-                let held = app.held_for_update(&task_id)
-                    || matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_)));
-                if !held {
+                if !app.launch_goal_held(&task_id).await {
                     waited += step;
                 }
             }
@@ -1955,6 +1958,7 @@ impl App {
         if ending {
             // The stop may have come before this run existed, so it armed no escalation for it.
             self.arm_escalation(task_id, Some(attempt.id.clone()));
+            self.end_person_pause(task_id).await;
             request_shutdown(&runtime).await;
         }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
@@ -2425,6 +2429,7 @@ impl App {
             *intent = Some(EndIntent::Close);
         }
         self.arm_escalation(task_id, closed);
+        self.end_person_pause(task_id).await;
         request_shutdown(&runtime).await;
         Ok(())
     }
@@ -2547,6 +2552,14 @@ impl App {
         });
     }
 
+    /// Whether the launch goal's watch of `task` does not count now: a prompt held for capacity,
+    /// an update or a person's pause is not refused, it waits (SPEC-191 PER-005).
+    pub async fn launch_goal_held(&self, task: &TaskId) -> bool {
+        self.held_for_update(task)
+            || matches!(self.deps.store.open_pause(task).await, Ok(Some(_)))
+            || self.is_paused_by_person(task).await
+    }
+
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
     ///
     /// # Errors
@@ -2622,6 +2635,7 @@ impl App {
         // The run this stop ends; without it (a store error) nothing is escalated.
         let stopped = self.live_attempt_id(task_id).await;
         self.arm_escalation(task_id, stopped);
+        self.end_person_pause(task_id).await;
         request_shutdown(&runtime).await;
         Ok(())
     }
@@ -2815,6 +2829,8 @@ impl App {
         });
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
+            // A paused run takes the end as it would unpaused (SPEC-191 PER-004).
+            self.end_person_pause(task_id).await;
             let (tx, rx) = oneshot::channel();
             if let Ok(mut intent) = runtime.intent.lock() {
                 *intent = Some(EndIntent::Switch(tx));

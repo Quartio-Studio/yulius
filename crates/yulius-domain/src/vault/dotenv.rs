@@ -28,7 +28,8 @@ fn armour<'a>(line: &'a str, edge: &str) -> Option<&'a str> {
 
 /// The key file a value stands for, when it is a key block stored with literal `\n` (an agent
 /// secret never spans lines, SPEC-186 SAV-005): its armour opens the first line and closes the
-/// last with the same label, a body is between them, and no other `\` remains. The file ends with one line break, as
+/// last (with any label: a key and its certificate share a file, SPEC-193), a body is between
+/// them, and no other `\` remains. The file ends with one line break, as
 /// PEM and OpenSSH files do (OpenSSH refuses a key without it), whether or not the stored value
 /// ends with a literal `\n`. `None` for any other value: one that is not a key keeps its escapes.
 #[must_use]
@@ -40,10 +41,37 @@ pub fn key_block(value: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
     let (first, last) = (lines.first()?, lines.last()?);
     let block = lines.len() >= 3
-        && armour(first, "BEGIN").is_some_and(|label| armour(last, "END") == Some(label))
+        && armour(first, "BEGIN").is_some()
+        && armour(last, "END").is_some()
         && !text.contains(['\\', '\'', '\r'])
         && !text.contains("${");
     block.then(|| format!("{text}\n"))
+}
+
+/// Whether `value` is a key flattened onto one line (SPEC-193 MLK-002): it opens with
+/// `-----BEGIN <label>-----` and closes with `-----END <label>-----` (any label: a key and its
+/// certificate share a file), something is between them
+/// and no literal `\n` marks its line breaks, which a single-line field replaced with spaces or
+/// dropped. A one-line key block is never a usable key file.
+#[must_use]
+pub fn flattened_key(value: &str) -> bool {
+    let text = value.trim();
+    if text.contains("\\n") {
+        return false;
+    }
+    let Some(rest) = text.strip_prefix("-----BEGIN ") else {
+        return false;
+    };
+    let Some((label, body)) = rest.split_once("-----") else {
+        return false;
+    };
+    // The last armour closes it, whatever its label: a key and its certificate share a file.
+    let Some((body, end)) = body.rsplit_once("-----END ") else {
+        return false;
+    };
+    armour(&format!("-----BEGIN {label}-----"), "BEGIN").is_some()
+        && armour(&format!("-----END {end}"), "END").is_some()
+        && !body.trim().is_empty()
 }
 
 /// The lines of a key block's file that hold key material (its armour excluded): a copied key
@@ -281,6 +309,81 @@ mod tests {
         format!("{}\n", lines.join("\n"))
     }
 
+    /// SPEC-193 MLK-002: a key whose line breaks a single-line field turned into spaces, or
+    /// dropped, is told apart from a key stored with literal `\n` and from ordinary values.
+    #[test]
+    fn a_key_flattened_onto_one_line_is_recognised() {
+        let file = key_file(
+            &format!("{} PRIVATE KEY", "OPENSSH"),
+            &["c3ludGhldGljLWZsYXQtMDE=", "c3ludGhldGljLWZsYXQtMDI="],
+        );
+        let file = file.trim_end();
+        for flat in [
+            file.replace('\n', " "),
+            file.replace('\n', ""),
+            format!(" {} ", file.replace('\n', " ")),
+            file.replace('\n', "  "),
+        ] {
+            assert!(flattened_key(&flat), "{flat}");
+        }
+        let pem = key_file("SYNTHETIC KEY", &["c3ludGhldGljLXBlbS1ib2R5"]);
+        assert!(flattened_key(&pem.trim_end().replace('\n', " ")));
+        // A key and its certificate in one file (`cat key.pem cert.pem`, review round 2).
+        assert!(flattened_key(&format!(
+            "{} c3ludGhldGlj {} {} Y2VydA== {}",
+            armour("BEGIN", "KEY"),
+            armour("END", "KEY"),
+            armour("BEGIN", "CERTIFICATE"),
+            armour("END", "CERTIFICATE")
+        )));
+        for kept in [
+            file.replace('\n', "\\n"),
+            format!("{}\\n", file.replace('\n', "\\n")),
+            // A body with spaces is still a key once one break is kept.
+            format!(
+                "{} body with spaces\\n{}",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
+            "sk_synthetic_value_7781".to_owned(),
+            format!(
+                "{} c3ludGhldGlj {} tail",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
+            format!("{} {}", armour("BEGIN", "KEY"), armour("END", "KEY")),
+            format!(
+                "prefix {} c3ludGhldGlj {}",
+                armour("BEGIN", "KEY"),
+                armour("END", "KEY")
+            ),
+            armour("BEGIN", "KEY"),
+        ] {
+            assert!(!flattened_key(&kept), "{kept}");
+        }
+    }
+
+    /// SPEC-193 (review round 3): a key and its certificate in one file (`cat key.pem cert.pem`),
+    /// which the Secrets page stores escaped, is a key block too: written as its file, both
+    /// bodies redaction needles.
+    #[test]
+    fn a_key_and_certificate_bundle_is_written_as_its_file() -> Result<(), VaultError> {
+        let key = key_file("SYNTHETIC KEY", &["c3ludGhldGljLWtleS1ib2R5"]);
+        let cert = key_file("CERTIFICATE", &["c3ludGhldGljLWNlcnQtYm9keQ=="]);
+        let file = format!("{key}{cert}");
+        let stored = file.trim_end().replace('\n', "\\n");
+        assert_eq!(key_block(&stored), Some(file.clone()));
+        assert_eq!(line("BUNDLE", &stored)?, format!("BUNDLE='{file}'"));
+        assert_eq!(
+            key_lines(&stored),
+            vec![
+                "c3ludGhldGljLWtleS1ib2R5".to_owned(),
+                "c3ludGhldGljLWNlcnQtYm9keQ==".to_owned()
+            ]
+        );
+        Ok(())
+    }
+
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
     /// written as the key file it stands for, with its final line break, whether or not the
     /// stored value ends with a literal `\n`; `sh` and dotenv readers read single quotes
@@ -326,11 +429,11 @@ mod tests {
                 armour("END", "KEY")
             ),
             format!("{}\\n{}", armour("BEGIN", "KEY"), armour("END", "KEY")),
-            // Review round 1: the armour's labels differ.
+            // The last line is no armour (labels may differ since SPEC-193: a key and its
+            // certificate share a file).
             format!(
-                "{}\\nYWJj\\n{}",
-                armour("BEGIN", "KEY"),
-                armour("END", "OTHER KEY")
+                "{}\\nYWJj\\n-----END OTHER-KEY-----",
+                armour("BEGIN", "KEY")
             ),
         ] {
             assert_eq!(key_block(&odd), None, "{odd}");

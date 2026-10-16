@@ -87,6 +87,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             get(tasks::list).post(tasks::create),
         )
         .route("/api/tasks/{tid}/stop", post(tasks::stop))
+        .route("/api/tasks/{tid}/pause", post(tasks::pause))
+        .route("/api/tasks/{tid}/resume", post(tasks::unpause))
         .route("/api/tasks/{tid}/start-now", post(tasks::start_now))
         .route("/api/tasks/{tid}/schedule", put(tasks::schedule))
         .route("/api/tasks/{tid}/start", put(tasks::change_start))
