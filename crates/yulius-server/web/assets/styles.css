@@ -2596,11 +2596,11 @@ button.task-group-head:hover { color: var(--text); }
 .watch-working { position: relative; margin-top: 12px; padding: 0 1ch; }
 /* Claude Code's spinner (SPEC-190): one line of a strip of 12 frames, stepped through. */
 .watch-spinner { height: 1lh; overflow: hidden; color: var(--session-fg); }
-.watch-spinner-frames { display: flex; flex-direction: column; animation: working-turn 1.44s steps(12) infinite; }
+.watch-spinner-frames { display: flex; flex-direction: column; animation: working-turn var(--duration-turn) steps(12) infinite; }
 .watch-spinner-frames > span { height: 1lh; text-align: center; }
 @keyframes working-turn { to { transform: translateY(-100%); } }
 /* The light runs through the words' own box, from just left of them to just right (WRK-002). */
-.watch-working-text { display: inline-block; color: transparent; background: linear-gradient(90deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; animation: working-sweep 2s linear infinite; }
+.watch-working-text { display: inline-block; color: transparent; background: linear-gradient(90deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; animation: working-sweep var(--duration-sweep) linear infinite; }
 .watch-working-time { color: var(--session-dim); }
 @keyframes working-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
