@@ -126,8 +126,9 @@ pub trait SandboxIsolation: Send + Sync {
         None
     }
 
-    /// Whether isolated sandboxes have a Docker engine of their own (ADR-0151).
-    fn docker(&self) -> bool {
+    /// Whether `sandbox`'s runs reach a Docker engine of its own (ADR-0151): its holder serves
+    /// one.
+    async fn docker(&self, _sandbox: &SandboxRef) -> bool {
         false
     }
 

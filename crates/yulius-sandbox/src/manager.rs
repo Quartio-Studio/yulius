@@ -251,10 +251,27 @@ impl Manager {
         self.config.data_dir.join("sysroots").join(sandbox)
     }
 
-    /// Whether sandboxes get a Docker engine (the setting and the cgroup delegation).
+    /// Whether sandboxes get a Docker engine: the setting, the cgroup delegation, and a `yulius`
+    /// executable the sandbox's root does not own (the engine's read-only binds are not locked,
+    /// so an engine could remount and rewrite one it owns; ADR-0151).
     #[must_use]
     pub fn docker(&self) -> bool {
-        self.config.docker && self.config.delegation.is_some()
+        use std::os::unix::fs::MetadataExt as _;
+        let exe_owned = std::fs::metadata(&self.config.exe)
+            .is_ok_and(|meta| meta.uid() == self.config.uid.host);
+        self.config.docker && self.config.delegation.is_some() && !exe_owned
+    }
+
+    /// Whether `sandbox`'s runs reach a Docker engine: its live holder serves one, or, without a
+    /// live holder, the next one will (SPEC-187 DKR-010). A holder from before engines, or one
+    /// whose socket failed, serves none.
+    pub async fn docker_for(&self, sandbox: &str) -> bool {
+        if !self.docker() {
+            return false;
+        }
+        let entry = self.entry(sandbox);
+        let state = entry.lock().await;
+        state.live.as_ref().is_none_or(|live| live.record.engine)
     }
 
     /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
@@ -445,7 +462,7 @@ impl Manager {
         let groups = self.cgroup_of(&request.id);
         let engine = groups
             .as_ref()
-            .filter(|_| self.config.docker)
+            .filter(|_| self.docker())
             .map(|groups| self.engine_spec(request, &groups.engine));
         for dir in [
             state.dir.clone(),
@@ -998,12 +1015,16 @@ mod tests {
     }
 
     fn manager(data: &Path, disk_max: u64) -> Arc<Manager> {
+        Manager::new(config(data, disk_max))
+    }
+
+    fn config(data: &Path, disk_max: u64) -> IsolationConfig {
         let map = IdMap {
             host: 1000,
             sub_start: 100_000,
             count: 65_535,
         };
-        Manager::new(IsolationConfig {
+        IsolationConfig {
             data_dir: data.to_path_buf(),
             exe: PathBuf::from("/usr/local/bin/yulius"),
             bwrap: PathBuf::from("/usr/bin/bwrap"),
@@ -1022,7 +1043,88 @@ mod tests {
             },
             auto_build: false,
             docker: false,
-        })
+        }
+    }
+
+    /// A delegated unit in `dir` (fake cgroup files).
+    fn delegation(dir: &Path) -> Result<Delegation, Box<dyn std::error::Error>> {
+        let unit = dir.join("unit");
+        std::fs::create_dir_all(&unit)?;
+        std::fs::write(unit.join("cgroup.procs"), "")?;
+        std::fs::write(unit.join("cgroup.controllers"), "memory pids\n")?;
+        Ok(crate::cgroup::prepare(&unit)?)
+    }
+
+    fn live_record(engine: bool) -> HolderRecord {
+        HolderRecord {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: "s1".into(),
+            base_id: "base-1".into(),
+            inner_pid: 4242,
+            bwrap_pid: 4241,
+            slirp_pid: None,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            boot_id: "b".into(),
+            started_at_ms: 0,
+            system_root: "/r".into(),
+            engine,
+        }
+    }
+
+    /// Review of SPEC-187 (medium): whether a sandbox's agents are told Docker works follows
+    /// that sandbox's holder: one adopted from before engines, or whose socket failed, serves
+    /// none, whatever the setting says.
+    #[tokio::test]
+    async fn docker_is_told_per_sandbox_from_its_holder() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let data = tempfile::tempdir()?;
+        let off = manager(data.path(), 1);
+        assert!(!off.docker_for("s1").await, "the setting is off");
+        let mut on = config(data.path(), 1);
+        on.docker = true;
+        on.delegation = Some(delegation(data.path())?);
+        let manager = Manager::new(on);
+        assert!(manager.docker(), "the setting with the delegation");
+        assert!(manager.docker_for("s1").await, "its next holder serves one");
+        let entry = manager.entry("s1");
+        entry.lock().await.live = Some(Live {
+            record: live_record(false),
+            relays: Vec::new(),
+        });
+        assert!(
+            !manager.docker_for("s1").await,
+            "a holder without an engine"
+        );
+        entry.lock().await.live = Some(Live {
+            record: live_record(true),
+            relays: Vec::new(),
+        });
+        assert!(manager.docker_for("s1").await);
+        Ok(())
+    }
+
+    /// Review of SPEC-187 (low): the engine's read-only binds are not locked (same user
+    /// namespace), so an executable the sandbox's root owns could be remounted and rewritten.
+    /// Such a host gets no engine.
+    #[test]
+    fn an_executable_the_sandbox_owns_gets_no_engine() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+        let data = tempfile::tempdir()?;
+        let exe = data.path().join("yulius");
+        std::fs::write(&exe, "")?;
+        let owner = std::fs::metadata(&exe)?.uid();
+        let mut owned = config(data.path(), 1);
+        owned.docker = true;
+        owned.delegation = Some(delegation(data.path())?);
+        owned.exe = exe;
+        owned.uid.host = owner;
+        let mut other = owned.clone();
+        other.uid.host = owner.wrapping_add(1);
+        assert!(!Manager::new(owned).docker());
+        assert!(Manager::new(other).docker());
+        Ok(())
     }
 
     /// SPEC-187 DKR-006: pruning goes through a live holder's Docker socket, and only when
@@ -1046,21 +1148,7 @@ mod tests {
                     .await;
             }
         });
-        let record = |engine| HolderRecord {
-            version: HOLDER_RECORD_VERSION,
-            sandbox: "s1".into(),
-            base_id: "base-1".into(),
-            inner_pid: 4242,
-            bwrap_pid: 4241,
-            slirp_pid: None,
-            user_ns: 1,
-            net_ns: 2,
-            mnt_ns: 3,
-            boot_id: "b".into(),
-            started_at_ms: 0,
-            system_root: "/r".into(),
-            engine,
-        };
+        let record = live_record;
         let entry = manager.entry("s1");
         entry.lock().await.live = Some(Live {
             record: record(false),

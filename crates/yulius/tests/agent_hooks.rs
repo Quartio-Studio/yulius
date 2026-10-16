@@ -874,7 +874,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for IsolatedWithDocker {
         Ok(None)
     }
     fn release(&self, _: &SandboxId) {}
-    fn docker(&self) -> bool {
+    async fn docker(&self, _: &yulius_app::ports::isolation::SandboxRef) -> bool {
         true
     }
 }

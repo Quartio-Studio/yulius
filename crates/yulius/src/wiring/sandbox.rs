@@ -346,8 +346,8 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.prune_engine(sandbox.id.as_str()).await
     }
 
-    fn docker(&self) -> bool {
-        self.manager.docker()
+    async fn docker(&self, sandbox: &SandboxRef) -> bool {
+        self.manager.docker_for(sandbox.id.as_str()).await
     }
 
     /// The limits apply only through the cgroup delegation (SPEC-082 RES-001).
