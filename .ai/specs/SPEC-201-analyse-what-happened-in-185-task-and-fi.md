@@ -94,7 +94,7 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
 - [x] Reproduce the pruned engine cgroup after a restart and find its cause
 - [x] Regression tests: the front and the tick restore a missing engine leaf
 - [x] The front and the tick recreate the engine leaf; docs and gate green
-- [ ] Independent review of the engine-leaf fix, findings fixed test-first
+- [x] Independent review of the engine-leaf fix, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -221,7 +221,8 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
   - `manager::tests::a_kept_engine_front_gets_its_pruned_leaf_back`: "the engine's leaf is back".
 
   `cgroup::tests::a_pruned_leaf_is_restored_under_its_parent` was written with `restore_leaf`.
-- **Part 2 gate:** `scripts/dev ci` exit 0 at `771f9dc4` (2040 passed, 18 skipped). An earlier
+- **Part 2 gate:** `scripts/dev ci` exit 0 at `771f9dc4`, and at `8411e71f` after review round 1
+  (2040 passed, 18 skipped, each time). An earlier
   run at `21fe1657` passed every test but failed `cargo doc`: the new doc comment linked the
   private `LEAVES`. The link became plain code.
 - **Part 2 review round 1** (fresh session, at `d143d10f`): REQUEST CHANGES, all findings in own
@@ -233,7 +234,9 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
   - Low: the missing-parent assertion could not tell the refusal from the fake join's own error.
     It now requires the start's "the engine's cgroup " prefix.
   - Nit: `restore_leaf` refuses a path with `..`, as `join` does (test first).
-  - Nit: the review box had been ticked early; it is ticked again only on approval.
+  - Nit: the review box had been ticked early. It is ticked in the head sent to round 2, the
+    commit after `8411e71f`, which changes only this spec. Round 2's verdict on that head is in
+    the pull request.
   - Nit left: a failure that persists warns at every tick. A live holder keeps the parent, so this
     is unlikely.
 
