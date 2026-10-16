@@ -55,7 +55,9 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
   "Off", a switch that is off, and nothing else to press; it does not open.
 - **AUT-034 The switch turns a default on.** Turning on a default that is not added calls the
   existing enable endpoint, which creates it enabled; the card becomes the added default with its
-  switch on. Turning an added default off or on is the ordinary update. Without write access the
+  switch on, and keyboard focus stays on that switch. A second press while it is being enabled
+  keeps it on (one automation per switch); the switch is not disabled meanwhile, which would drop
+  focus. Turning an added default off or on is the ordinary update. Without write access the
   switch is disabled. A failed enable leaves the switch off and says why.
 - **AUT-035 Deleting a default resets it.** Deleting an added default keeps the one verb behind
   the trash icon (Delete, #147), and its dialog says it stays among the defaults, off, and that
@@ -78,16 +80,21 @@ shipped automation that an agent created by name (as on Yulius's own instance) i
 - AC-AUT-31: in the mock studio project, "Defaults" lists the three shipped automations and
   "Custom" the two others; a shipped automation created by an agent shows "Default", not "Created
   by an agent"; "Ready-made automations" is gone; no WCAG violations.
-- AC-AUT-32: turning on "Keep the docs up to date" (not added) creates it enabled: the toast says it
-  is on and its switch stays on in the Defaults section, now with Run now; turning it off pauses it.
+- AC-AUT-32: turning on "Keep the docs up to date" (not added) from the keyboard creates it
+  enabled: the toast says so and its switch stays on, focused, in the Defaults section, now with
+  Run now, still "Default" and opening in the builder, while Custom is unchanged; turning it off
+  pauses it. A failed enable leaves the switch off and says why.
 - AC-AUT-33: deleting an added default says it stays among the defaults, off; afterwards it is still listed under
   Defaults with its switch off and no Run now.
 - AC-AUT-34: a person with read access sees the switches disabled.
+- AC-AUT-35: when the shipped list cannot be read, there is no Defaults section and all the
+  project's automations show under Custom, the agent-made one badged "Created by an agent".
 
 ## Test plan
 
 - e2e (`e2e/tests/automations.e2e.ts`, mock server): the existing ready-made test rewritten for
-  AC-AUT-31..33, plus a read-only check (AC-AUT-34). The mock catalog gains "Deploy dev every night"
+  AC-AUT-31..33, a failed enable and a read-only check (AC-AUT-32, AC-AUT-34), and the shipped
+  list failing to load (AC-AUT-35). The mock catalog gains "Deploy dev every night"
   so it matches the shipped three, and one shipped automation created by an agent.
 - No server change: the API (templates with `automation_id`, enable, update, delete) is unchanged
   and covered by `crates/yulius/tests/automations.rs`.

@@ -14,8 +14,11 @@ const namesIn = (browser, section: string) => browser.evaluate((id) => [...docum
 /** The badges and button labels of one automation card. */
 const cardOf = (browser, name: string) => browser.evaluate((title) => {
   const card = [...document.querySelectorAll('.item-card')].find((c) => c.querySelector('.item-name')?.textContent === title);
-  return card ? { badges: [...card.querySelectorAll('.item-title .badge')].map((b) => b.textContent.trim()), buttons: [...card.querySelectorAll('.item-controls button')].map((b) => b.getAttribute('aria-label') || b.textContent.trim()) } : null;
+  return card ? { badges: [...card.querySelectorAll('.item-title .badge')].map((b) => b.textContent.trim()), buttons: [...card.querySelectorAll('.item-controls button')].map((b) => b.getAttribute('aria-label') || b.textContent.trim()), opens: Boolean(card.querySelector('.item-open')) } : null;
 }, name);
+
+const CUSTOM = ['Daily customer feedback', 'Weekly dependency audit'];
+const DEFAULTS = ['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night'];
 
 test('the shipped automations are the defaults, switched on in place, and Delete resets one (AC-AUT-31..33)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/automations'));
@@ -23,26 +26,35 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
   await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
   await expect(screen.getByRole('heading', /^Ready-made/)).toBeHidden();
-  expect(await namesIn(browser, 'automations-defaults')).toEqual(['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']);
-  expect(await namesIn(browser, 'automations-custom')).toEqual(['Daily customer feedback', 'Weekly dependency audit']);
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
   // An agent created this one by name: it is a default all the same.
   const issues = await cardOf(browser, 'Work through open issues');
   expect(issues!.badges).toEqual(['Default']);
   expect(issues!.buttons).toContain('Run now');
+  expect(issues!.opens).toBe(true);
   // Custom automations keep their own badges.
   expect((await cardOf(browser, 'Daily customer feedback'))!.badges).toEqual(['Created by an agent']);
   // Not added yet: off, with nothing else to press.
   const docs = screen.getByRole('switch', 'Keep the docs up to date runs on schedule');
   await expect(docs).not.toBeChecked();
-  expect((await cardOf(browser, 'Keep the docs up to date'))!).toEqual({ badges: ['Default'], buttons: [] });
+  expect((await cardOf(browser, 'Keep the docs up to date'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
   expect(await axeViolations(browser)).toEqual([]);
 
-  // The switch turns it on: it is created, enabled, and is an ordinary automation from then on.
-  await docs.click();
+  // The switch turns it on (from the keyboard): it is created, enabled, and is an ordinary
+  // automation from then on, still a default, with the keyboard still on its switch.
+  await docs.focus();
+  await browser.keyboard.press('Space');
   await expect(screen.getByText('Keep the docs up to date enabled.')).toBeVisible();
-  await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeChecked();
   await expect(screen.getByRole('button', 'Run history of Keep the docs up to date')).toBeVisible();
-  expect(await namesIn(browser, 'automations-defaults')).toEqual(['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']);
+  await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeChecked();
+  await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeFocused();
+  const docsOn = await cardOf(browser, 'Keep the docs up to date');
+  expect(docsOn!.badges).toEqual(['Default']);
+  expect(docsOn!.buttons).toContain('Run now');
+  expect(docsOn!.opens).toBe(true);
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
   await screen.getByRole('switch', 'Keep the docs up to date runs on schedule').click();
   await expect(screen.getByText('Keep the docs up to date paused.')).toBeVisible();
 
@@ -50,11 +62,21 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   await screen.getByRole('button', 'Delete Work through open issues').click();
   const dialog = screen.getByRole('dialog', 'Delete automation “Work through open issues”?');
   await expect(dialog.getByText(/stays among the defaults, off/)).toBeVisible();
+  await expect(dialog.getByText(/changes made here are lost/)).toBeVisible();
   await dialog.getByRole('button', 'Delete').click();
   await expect(screen.getByRole('button', 'Delete Work through open issues')).toBeHidden();
   await expect(screen.getByRole('switch', 'Work through open issues runs on schedule')).not.toBeChecked();
-  expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [] });
-  expect(await namesIn(browser, 'automations-defaults')).toEqual(['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']);
+  expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+});
+
+test('without the shipped list every automation shows under Custom (AC-AUT-35)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations', '&fail=/api/sandboxes/sb_studio/automation-templates'));
+  await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeHidden();
+  expect(await namesIn(browser, 'automations-custom')).toEqual(['Daily customer feedback', 'Weekly dependency audit', 'Work through open issues']);
+  expect((await cardOf(browser, 'Work through open issues'))!.badges).toEqual(['Created by an agent']);
 });
 
 test('a failed switch-on stays off and says why; read access cannot switch (AC-AUT-32, AC-AUT-34)', async ({ app, browser, screen }) => {

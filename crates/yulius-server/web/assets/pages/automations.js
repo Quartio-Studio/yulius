@@ -70,21 +70,33 @@ export function mountAutomationsPage(ctx, sandbox) {
       badges: [defaultBadge()],
       description: schedule(t),
       extra: [h('div', { class: 'item-meta' }, t.description), h('div', { class: 'item-meta' }, 'Off')],
-      controls: [toggle({ checked: false, disabled: !write, label: `${t.name} runs on schedule`, onChange: (checked, input) => (checked ? enableShipped(t, input) : null) })],
+      controls: [toggle({ checked: false, disabled: !write, label: `${t.name} runs on schedule`, onChange: (_checked, input) => enableShipped(t, input) })],
       dim: true,
     });
   }
 
+  // One automation per switch: a press while it is being enabled keeps it on. The switch is not
+  // disabled meanwhile, which would drop keyboard focus; once the card is the added automation's,
+  // focus goes back to its switch (the card gains an open button before it, so keepFocus's place
+  // would be another control).
+  const enabling = new Set();
   async function enableShipped(t, input) {
-    input.disabled = true; // one automation per switch
+    if (enabling.has(t.id)) { input.checked = true; return; }
+    if (!input.checked) return;
+    enabling.add(t.id);
+    input.setAttribute('aria-busy', 'true');
     try {
       await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automation-templates/${enc(t.id)}/enable`);
       toast(`${t.name} enabled.`, { kind: 'ok' });
-      reload();
+      const focused = document.activeElement === input;
+      await reload();
+      if (focused) [...host.querySelectorAll('input[role="switch"]')].find((s) => s.getAttribute('aria-label') === input.getAttribute('aria-label'))?.focus({ preventScroll: true });
     } catch (error) {
       input.checked = false;
-      input.disabled = false;
       errorToast(error, 'Couldn’t enable automation');
+    } finally {
+      enabling.delete(t.id);
+      input.removeAttribute('aria-busy');
     }
   }
 
@@ -161,7 +173,7 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   async function remove(a, template) {
     const message = template
-      ? 'Future runs are cancelled. Tasks it already created stay. It stays among the defaults, off: switching it on again starts from the version shipped now, without your changes.'
+      ? 'Future runs are cancelled. Tasks it already created stay. It stays among the defaults, off: switching it on again starts from the version shipped then, and changes made here are lost.'
       : 'Future runs are cancelled. Tasks it already created stay.';
     if (!(await confirmDialog({ title: `Delete automation “${a.name}”?`, message, confirmLabel: 'Delete', danger: true }))) return;
     try {
