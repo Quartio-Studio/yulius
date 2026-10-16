@@ -1537,7 +1537,8 @@ export function mountComposer(ctx, sandbox) {
    */
   function showSupertask(value) {
     const after = afterTaskId && (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
-    const replaces = after ? `After #${after.number}` : startRule ? `When ${ruleText(startRule)}` : '';
+    // The start chip's own label ("After #?" while the tasks are read).
+    const replaces = afterTaskId ? `After #${after ? after.number : '?'}` : startRule ? `When ${ruleText(startRule)}` : '';
     split = supertaskCard({
       replaces,
       run: () => busyRun(autoStage(), async () => opened(await createTask({ ...bodyFor(value), supertask: true }))),

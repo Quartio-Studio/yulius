@@ -574,8 +574,8 @@ one in the same session and branch. There was no way to say "start this when #12
 **Decision.** The design is deterministic and the default always wins when unsure: one task,
 context.
 
-1. *Jev.* TypeSafe's `jev-1.13.0` Choice evaluator is the only classifier. One fixed question with a
-   fixed option set is asked per request: `split` (`one` | `several`) and, at the same time,
+1. *Jev.* TypeSafe's `jev-1.13.0` Choice evaluator is the only classifier. Each request asks one
+   fixed question with a fixed option set (a check may send two requests at once): `split` (`one` | `several`) and, at the same time,
    `breadth` (`focused` | `broad`, fixed 0.85; a supertask is proposed only when the request does
    not split, SPEC-188, ADR-0152) for a new task, `scope` (`context` | `new_scope` |
    `drops_scope` | `redirect`) for a typed prompt. An answer counts only
@@ -591,7 +591,8 @@ context.
      rounding accepted, never renormalized), non-negative token usage;
    - every failure is typed and means "no answer". The key comes from an owner-only file and never
      reaches a log, an error or a request body.
-2. *Split (TSK-011).* Prompts under 40 words are one task without a Jev call. After Enter, the
+2. *Split (TSK-011).* Prompts under 40 words are one task without a split question (they are still
+   asked about breadth from 3 words, SPEC-188). After Enter, the
    composer waits for the check for at most 4 s; any failure creates the task. On a confident
    `several`, the composer shows the card at once, with **Keep as one task** already usable, and
    asks for a proposal:

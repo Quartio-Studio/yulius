@@ -126,11 +126,13 @@ export function supertaskCard({ replaces, run, keep, close }) {
     done = true;
     fn();
   };
-  const runButton = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => finish(run) }, 'Run as a supertask');
+  // The focused action carries the question and why, so a screen reader hears what it decides.
+  const id = `supertask-card-${Math.random().toString(36).slice(2, 8)}`;
+  const runButton = h('button', { type: 'button', class: 'btn btn-primary', 'aria-describedby': `${id}-q ${id}-why`, onClick: () => finish(run) }, 'Run as a supertask');
   const el = h('section', { class: 'split-card', role: 'region', 'aria-label': 'Supertask proposal' },
     h('div', { class: 'split-head' }, icon('shield', { size: 16 }),
-      h('div', { class: 'split-heading' }, h('strong', null, 'Run it as a supertask?'),
-        h('span', { class: 'muted' }, 'This looks like broad work across the project. A supertask runs alone once the project’s running tasks end, and its other tasks wait, so no parallel work collides with it.',
+      h('div', { class: 'split-heading' }, h('strong', { id: `${id}-q` }, 'Run it as a supertask?'),
+        h('span', { class: 'muted', id: `${id}-why` }, 'This looks like broad work across the project. A supertask runs alone once the project’s running tasks end, while the project’s other tasks wait, so no parallel work collides with it.',
           replaces ? ` It replaces “${replaces}”.` : '')),
       iconButton('x', 'Close the proposal', () => finish(close), { class: 'split-x' })),
     h('div', { class: 'split-actions' }, h('span', { class: 'split-spacer' }),

@@ -50,7 +50,7 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| OSP-001 | The start menu's Supertask description (and the new task's start chip tooltip) reads: "Runs alone once this project’s running tasks end; its other tasks wait. For broad work: security hardening, one-shotting the product." It shows whole at 1280 px and 390 px (SPEC-094) and the start menu still fits a 1280 × 800 window without scrolling (SPEC-102). | e2e `menus.e2e.ts` SPEC-094 and SPEC-102 tests |
+| OSP-001 | The start menu's Supertask description (and the new task's start chip tooltip) reads: "Runs alone once this project’s running tasks end; the rest wait. For broad work: security hardening, one-shotting the product." It shows whole at 1280 px and 390 px (SPEC-094) and the start menu still fits a 1280 × 800 window without scrolling (SPEC-102). | e2e `menus.e2e.ts` SPEC-094 and SPEC-102 tests |
 | OSP-002 | The `task_create` tool's description and `docs/product.md` name the same examples: "for broad work such as security hardening or one-shotting the product". | `mcp.rs` unit test |
 | OSP-003 | Jev answers a fixed `breadth` question about a new task's request: `focused` or `broad` (work across most of the product at once that should run alone, such as security hardening, one-shotting the product, a project-wide refactor, migration or upgrade). The question says that a list of separate items, bugs or issues ("fix all open GitHub issues") is not broad: it splits into separate tasks. | domain unit test on the question |
 | OSP-004 | `/intake/check` answers `"supertask": true` only when Jev is confident (≥ 0.85) the request is `broad` **and** the split verdict is not `several` (a request that splits is never proposed as a supertask). Prompts under 3 words, no Jev key and every Jev failure answer `false`. The breadth and split questions are asked at once, each within the 2.5 s check deadline; `checked` says whether Jev answered either. | domain unit tests; `tests/intake.rs` |
@@ -100,7 +100,7 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
   one-shotting the product.") is a fourth line that makes the whole start menu scroll at
   1280 × 800 (SPEC-102). Options measured in the menu: the literal text (4 lines), a dozen
   rephrasings with "such as"/"like" (all 4 lines), shortening another option's description (out
-  of scope), and "Runs alone once this project’s running tasks end; its other tasks wait. For
+  of scope), and "Runs alone once this project’s running tasks end; the rest wait. For
   broad work: security hardening, one-shotting the product." (3 lines). Chosen: the last. It
   still says whose tasks wait (MDS-004), and the colon introduces examples. The request's "etc" is
   dropped: a list of examples after "for broad work" already says it is not complete, and "such
@@ -121,6 +121,14 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
 - **Prepared tasks are not stopped.** Their start is decided later by the person (Start now or a
   time), and a supertask cannot be prepared (API 422): proposing one would discard that choice.
   Run after and a rule are replaced by the supertask, and the card says so.
+- **Review round 1 (fresh session, head 094f929d, approve with minors, all own code).** Fixed
+  test-first: "Run as a supertask" after a chosen task is tested (no "After #12" left); a prepared
+  broad task is tested never to be stopped; a Rust test proves both questions are asked at once
+  (each waits for the other) and that one answer counts as checked; SPEC-002 ADR-16 and
+  `operations.md` name the breadth check; the menu's "its other tasks wait" (ambiguous: the
+  subject is the supertask) became "the rest wait", measured at three lines; the card's action is
+  described by its question and reason (`aria-describedby`); the card names "After #?" like the
+  chip while the tasks are read; a test line that could not fail checks the opened task instead.
 - **The check now runs for short prompts too.** Broad requests are often short ("Harden the
   security of the whole product"). The breadth question needs 3 words; the split question still
   needs 40. Without a Jev key the server answers at once.

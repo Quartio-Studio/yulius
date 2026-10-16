@@ -464,7 +464,7 @@ separate workstreams (the proposal comes from one headless `claude -p` run on a 
 account), to run broad work started another way as a supertask (SPEC-188; Jev's `breadth`
 question, fixed 85 % threshold, no setting), it holds prompts typed into a running task that add, drop or replace its scope until
 someone decides in the task view, and it chooses a new task's mode and workflow when the composer
-leaves them on Auto (the default). Without a key the split and scope checks are off, and Auto
+leaves them on Auto (the default). Without a key the split, breadth (supertask proposal) and scope checks are off, and Auto
 always takes its defaults: Goal, with the workflow named "Feature" (none when there is no such
 workflow, and none for a prompt-mode task). The Auto thresholds are fixed (75 % for the mode,
 60 % for the workflow) and have no setting.

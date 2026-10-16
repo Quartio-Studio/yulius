@@ -98,6 +98,11 @@ test('a broad request started now is stopped and offered as a supertask; "Run as
   await expect(card).toHaveText(/broad work/);
   await expect(card).not.toHaveText(/replaces/);
   await expect(card.getByRole('button', 'Run as a supertask')).toBeFocused();
+  // The focused action carries the question and why, for a screen reader.
+  expect(await browser.evaluate(() => {
+    const button = [...document.querySelectorAll('.split-card button')].find((b) => b.textContent === 'Run as a supertask')!;
+    return (button.getAttribute('aria-describedby') || '').split(' ').map((id) => document.getElementById(id)?.textContent || '').join(' ');
+  })).toMatch(/^Run it as a supertask\? This looks like broad work/);
   await expect(browser).toHaveURL(/#\/s\/studio$/);
   expect(await axeViolations(browser)).toEqual([]);
   await card.getByRole('button', 'Run as a supertask').click();
@@ -120,6 +125,35 @@ test('"Start as chosen" keeps the chosen start; the card says a supertask replac
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await expect(browser.locator('.strip-status')).toHaveText(/Queued after #12/);
   await expect(browser.locator('.supertask-chip')).toHaveCount(0);
+});
+
+test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
+  await screen.getByRole('textbox', 'Task prompt').fill(BROAD);
+  await screen.getByRole('button', 'Start task').click();
+  const card = screen.getByRole('region', 'Supertask proposal');
+  await expect(card).toHaveText(/It replaces “After #12”\./);
+  await card.getByRole('button', 'Run as a supertask').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await expect(browser.locator('.supertask-chip')).toHaveText('Supertask');
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Queued after #12/);
+  await expect(screen.getByRole('link', /^After #12$/)).toHaveCount(0);
+});
+
+test('a broad task prepared "When I decide" is never stopped (SPEC-188)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^When I decide/).click();
+  await screen.getByRole('textbox', 'Task prompt').fill(BROAD);
+  await screen.getByRole('button', /^Prepare task/).click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Harden the security of the whole product/);
+  await expect(browser.locator('.supertask-chip')).toHaveCount(0);
+  await expect(browser.locator('.strip-status')).toHaveText(/Prepared/);
 });
 
 test('closing the supertask proposal keeps the prompt; a chosen Supertask and focused work are never stopped (SPEC-188)', async ({ app, browser, screen }) => {
@@ -146,7 +180,7 @@ test('closing the supertask proposal keeps the prompt; a chosen Supertask and fo
   await screen.getByRole('textbox', 'Task prompt').fill('Fix the footer link on the pricing page');
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  await expect(screen.getByRole('region', 'Supertask proposal')).toHaveCount(0);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Fix the footer link on the pricing page$/);
 });
 
 test('picked conditions become the canonical start rule text (unit, in the page)', async ({ app, browser }) => {

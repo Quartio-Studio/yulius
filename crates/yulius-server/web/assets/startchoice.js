@@ -15,7 +15,7 @@ import { chainCandidates } from './intake.js';
 import { ruleChoices, openRuleEditor, ruleText, ruleFromText } from './ruleeditor.js';
 import { openScheduleDialog } from './actions.js';
 
-export const SUPERTASK_HELP = 'Runs alone once this project’s running tasks end; its other tasks wait. For broad work: security hardening, one-shotting the product.';
+export const SUPERTASK_HELP = 'Runs alone once this project’s running tasks end; the rest wait. For broad work: security hardening, one-shotting the product.';
 
 /** What "When I decide" does (SPEC-105). */
 export const WHEN_I_DECIDE_HELP = 'The task waits, prepared, until you press Start now';

@@ -369,6 +369,77 @@ async fn intake_check_proposes_a_supertask_for_broad_work_that_does_not_split() 
     Ok(())
 }
 
+/// A fake Jev for the check's two questions: each call waits until the other question is asked
+/// too (a sequential check would never get there and time out), then answers "several" and
+/// "broad" — or fails the split question when `split_down` is set.
+struct TogetherJev {
+    both: tokio::sync::Barrier,
+    split_down: bool,
+}
+
+#[async_trait]
+impl ChoiceEvaluator for TogetherJev {
+    async fn evaluate(
+        &self,
+        _state: &str,
+        question: &ChoiceQuestion<'_>,
+        deadline: Duration,
+    ) -> Result<ChoiceAnswer, JevFailure> {
+        tokio::time::timeout(deadline, self.both.wait())
+            .await
+            .map_err(|_| JevFailure::Timeout)?;
+        match question.id {
+            "split" if self.split_down => Err(JevFailure::Unavailable),
+            "split" => Ok(answer(question, "several", 0.96)),
+            _ => Ok(answer(question, "broad", 0.93)),
+        }
+    }
+}
+
+/// SPEC-188 OSP-004: the split and breadth questions are asked at once, within one deadline,
+/// and the check counts as checked when only one of them answers.
+#[tokio::test]
+async fn intake_check_asks_split_and_breadth_at_once() -> TestResult {
+    let long_broad = format!(
+        "Harden the whole product. {}",
+        "Review every endpoint, header and secret. ".repeat(8)
+    );
+    for (split_down, expected) in [
+        (
+            false,
+            json!({"verdict": "several", "checked": true, "supertask": false}),
+        ),
+        (
+            true,
+            json!({"verdict": "one", "checked": true, "supertask": true}),
+        ),
+    ] {
+        let jev = Arc::new(TogetherJev {
+            both: tokio::sync::Barrier::new(2),
+            split_down,
+        });
+        let h = harness()?;
+        let alice = seed_github_user(&h, "u-alice", "alice").await?;
+        seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+        h.github.set_perm("alice", "acme/fixture", perms("write"));
+        h.app.set_intake(IntakeServices::new(
+            Some(jev as Arc<dyn ChoiceEvaluator>),
+            None,
+        ));
+        let r = call(
+            &h.router,
+            Method::POST,
+            "/api/sandboxes/s1/intake/check",
+            Some(json!({"prompt": long_broad})),
+            &alice,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+        assert_eq!(r.body, expected, "split down: {split_down}");
+    }
+    Ok(())
+}
+
 /// AC-TSK-10/11: the composer's actions — parallel tasks, a chain, one task — through the
 /// public API; a chained task waits as `chained` and both tasks show the link.
 #[tokio::test]
