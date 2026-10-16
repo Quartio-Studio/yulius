@@ -985,6 +985,30 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
     Ok(())
 }
 
+/// SPEC-191 LIV-001: a quiet event stream still says it is alive, every heartbeat interval, so a
+/// page can tell a dead connection from a quiet one.
+#[tokio::test]
+async fn a_quiet_event_stream_sends_heartbeats() -> TestResult {
+    use support::{HarnessOptions, harness_with, serve, ws_connect};
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.events_heartbeat_ms = 150)),
+        ..HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut socket = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    for beat in 0..2 {
+        let text = next_ws_text(&mut socket, std::time::Duration::from_secs(2)).await;
+        let Some(Ok(text)) = text else {
+            return Err(format!("heartbeat {beat} did not arrive: {text:?}").into());
+        };
+        let event: Value = serde_json::from_str(&text)?;
+        assert_eq!(event, json!({"type": "heartbeat"}), "{text}");
+    }
+    Ok(())
+}
+
 /// The next text frame within `wait`: `Ok(text)`, `Err(close code)` when the socket closed, or
 /// `None` when nothing arrived.
 async fn next_ws_text(

@@ -4562,9 +4562,13 @@ function openSocket(db, path) {
   // Terminal sockets may carry the viewer's size (`?cols=&rows=`), applied on hello here.
   const route_ = path.split('?')[0];
   if (route_ === '/api/events') {
+    // Like the server, the stream beats every heartbeat (`heartbeat=<ms>`, SPEC-191 LIV-001).
     ws.server = {
-      open: () => db.eventSockets.add(ws),
-      closed: () => db.eventSockets.delete(ws),
+      open: () => {
+        db.eventSockets.add(ws);
+        ws.beat = setInterval(() => ws.push(JSON.stringify({ type: 'heartbeat' })), db.heartbeatMs);
+      },
+      closed: () => { db.eventSockets.delete(ws); clearInterval(ws.beat); },
     };
     startAmbient(db);
   } else if ((m = route_.match(/^\/api\/tasks\/([^/]+)\/terminal$/))) {
@@ -4701,6 +4705,12 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // The event streams die without a close (a laptop asleep, a dropped proxy connection): nothing
+  // more reaches them, heartbeats included; a new connection works (SPEC-191 LIV-002).
+  db.silenceEvents = () => {
+    for (const ws of [...db.eventSockets]) { db.eventSockets.delete(ws); clearInterval(ws.beat); }
+  };
+  db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {
     for (const shell of [...db.shells.values()]) {
@@ -4744,6 +4754,8 @@ export function createMockTransport(params) {
   notesOf(db);
   return {
     kind: 'mock',
+    // How often the event stream beats (`heartbeat=<ms>`); the page's watchdog follows it.
+    eventsHeartbeatMs: db.heartbeatMs,
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
     pullClock,

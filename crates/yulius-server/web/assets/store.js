@@ -15,6 +15,8 @@ const ORDER_KEY = 'yulius.sandboxOrder';
 const PULLS_PREFIX = 'yulius.pulls.';
 /** Delay before task events refresh the sandbox counters (one reload per burst). */
 const COUNTS_REFRESH_MS = 1500;
+// How often the server's event stream beats (`events_heartbeat_ms`, SPEC-191 LIV-001).
+const EVENTS_HEARTBEAT_MS = 20000;
 
 function readJson(key, fallback) {
   try {
@@ -229,6 +231,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
   }
 
+  const eventsHeartbeatMs = () => (api.transport && api.transport.eventsHeartbeatMs) || EVENTS_HEARTBEAT_MS;
+
   /** Connect the event stream; a reconnect triggers a resync (events may have been missed). */
   function startEvents() {
     if (events) return;
@@ -244,6 +248,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         if (event && typeof event.type === 'string') handleEvent(event);
       },
       onStatus: (status) => { state.eventsStatus = status; emit('events-status', status); },
+      // The server beats every 20 s (SPEC-191 LIV-001): a stream silent for 2.5 beats is dead.
+      staleMs: 2.5 * eventsHeartbeatMs(),
     });
     events.backoff.maxAttempts = 360;
     events.start();
@@ -404,6 +410,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     sandboxBySlug: (slug) => state.sandboxes.find((s) => s.slug === slug) || null,
     sandboxById: (id) => state.sandboxes.find((s) => s.id === id) || null,
     retryEvents: () => events && events.retry(),
+    /** Replace a stream that looks open but heard nothing for a beat (the tab shown again, online). */
+    checkEvents: () => Boolean(events && events.checkAlive(eventsHeartbeatMs())),
     /** Keeps the sandbox's pull requests fresh while a view shows them; returns a stop function. */
     watchPulls,
     /** The sandbox's pull requests by task id: the last overview read, or the stored one before it. */
