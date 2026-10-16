@@ -22,6 +22,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - Not verified on a real host yet: the opt-in host test `isolation_docker` cannot run in a
     sandbox or in Yulius CI.
 
+- Supertask names one-shotting the product, and Jev proposes it for broad work (SPEC-188,
+  ADR-0152, task #173). The start menu's Supertask now reads "Runs alone once this project’s
+  running tasks end; the rest wait. For broad work: security hardening, one-shotting the
+  product." (three lines, so the menu still fits a 1280 × 800 window), and the `task_create` tool
+  and the product summary name the same examples. A task started now, after a task or by a rule
+  is held when Jev is sure it is broad work: "Run it as a supertask?" offers Run as a supertask or
+  Start as chosen. A request that splits ("fix all GitHub issues") is never proposed.
+  `/intake/check` gains `supertask`, from a new fixed `breadth` question asked with the split
+  question.
 - The Superagent uses agent secrets as a task's agent does, and sees new tools without a restart
   (SPEC-186, ADR-0150, task #171). It runs behind the egress proxy with its own bearer, so its
   requests to a secret's bound hosts carry it (`$NAME` holds the placeholder); it copies allowed

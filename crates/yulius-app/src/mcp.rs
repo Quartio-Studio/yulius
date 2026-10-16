@@ -120,7 +120,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true; prepared, it waits until the person starts it, or until start_at. A supertask (for broad work such as security hardening) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true; prepared, it waits until the person starts it, or until start_at. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
@@ -745,6 +745,21 @@ mod tests {
             );
         }
         assert!(!description.contains("follow-up work"), "{description}");
+    }
+
+    /// SPEC-188 OSP-002: `task_create` names the supertask's examples as the start menu does.
+    #[test]
+    fn task_create_names_the_supertask_examples_of_the_start_menu() {
+        let tool = tool_descriptors()
+            .into_iter()
+            .find(|t| t.name == "task_create");
+        let description = tool.map(|t| t.description).unwrap_or_default();
+        assert!(
+            description.contains(
+                "A supertask (for broad work such as security hardening or one-shotting the product)"
+            ),
+            "{description}"
+        );
     }
 
     #[test]

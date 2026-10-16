@@ -17,9 +17,13 @@ pub struct IntakeRequest {
 pub struct IntakeVerdict {
     /// `one` (create the task) or `several` (ask for a proposal).
     pub verdict: String,
-    /// Whether Jev was asked: false for short prompts, without a Jev key, or when Jev failed;
-    /// the verdict is then `one`.
+    /// Whether Jev answered: false for prompts under 3 words, without a Jev key, or when Jev
+    /// failed; the verdict is then `one` and `supertask` false. The split question needs 40
+    /// words, so a shorter prompt is checked for breadth only.
     pub checked: bool,
+    /// Whether to propose running the task as a supertask (SPEC-188): Jev is sure it is broad
+    /// work, and the verdict is not `several`.
+    pub supertask: bool,
 }
 
 /// One proposed task.
