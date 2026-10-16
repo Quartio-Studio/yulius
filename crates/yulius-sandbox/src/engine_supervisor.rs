@@ -270,7 +270,7 @@ async fn stop(mut child: Child, grace: Duration) {
 }
 
 /// Whether a process runs in a group below `cgroup` (a container: the engine itself lives in
-/// `cgroup`), bounded to [`MAX_GROUPS`] directories.
+/// `cgroup`), bounded to 4096 directories.
 #[must_use]
 pub fn containers_running(cgroup: &Path) -> bool {
     let mut stack: Vec<PathBuf> = children(cgroup);
