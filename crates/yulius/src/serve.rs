@@ -474,6 +474,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let app = build_app(&args)?;
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
+    // The runs people paused stay paused across the restart (SPEC-191 PER-003).
+    app.restore_person_pauses().await;
     app.load_jev_key().await;
     let isolation =
         crate::wiring::sandbox::install(&app, &args.isolation, args.internal_bind.port()).await?;

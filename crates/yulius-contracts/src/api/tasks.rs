@@ -131,6 +131,23 @@ pub struct TaskSummary {
     /// Start onboarding (SPEC-153 OLC-005).
     #[serde(default)]
     pub awaits_start_onboarding: bool,
+    /// Why its live run is paused (SPEC-191 PAU-001): an update holds it or a person paused it.
+    /// Null otherwise; a capacity pause is the `waiting_capacity` status.
+    #[serde(default)]
+    pub pause: Option<TaskPause>,
+}
+
+/// Why a task's live run is paused (SPEC-191 PAU-001).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskPause {
+    /// `update` (an instance update holds it) or `person` (someone paused it).
+    pub by: String,
+    /// Who paused it (`person` only).
+    pub user: Option<UserRef>,
+    /// Since when, RFC 3339 (`person` only).
+    pub since: Option<String>,
+    /// The pause has not taken hold yet: its run cannot be frozen and its turn goes on.
+    pub pending: bool,
 }
 
 /// How "Auto" chose a new task's mode and workflow (SPEC-001 TSK-015).

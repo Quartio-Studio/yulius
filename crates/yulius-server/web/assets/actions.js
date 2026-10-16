@@ -32,6 +32,9 @@ export function openTaskMenu(ctx, anchor, task) {
     task.status === 'chained' || task.status === 'prepared' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     task.status === 'prepared' ? { label: task.start_at ? 'Change time…' : 'Schedule…', disabled: !can.schedule, title: can.schedule ? null : why, onSelect: () => rescheduleTask(ctx, task) } : null,
     { label: task.status === 'chained' || task.status === 'prepared' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
+    can.resume
+      ? { label: 'Resume', onSelect: () => resumeTask(ctx, task) }
+      : { label: 'Pause', disabled: !can.pause, title: can.pause ? 'Stops the agent where it is, until you resume it' : (task.pause && task.pause.by === 'update' && !owner && allows(access, 'write') ? `Paused for a ${BRAND.name} update: it continues by itself` : allows(access, 'write') && !owner ? 'Only a running task can be paused' : why), onSelect: () => pauseTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
@@ -121,6 +124,16 @@ export function rescheduleTask(ctx, task) {
 /** A task waiting in a chain starts now, whatever its predecessor does (TSK-012). */
 export function startNow(ctx, task) {
   return taskPost(ctx, task, 'start', () => ctx.api.post(`/api/tasks/${enc(task.id)}/start-now`), `Starting #${task.number}…`);
+}
+
+/** Pause a running task where it is, until a person resumes it (SPEC-191 PER-001). */
+export function pauseTask(ctx, task) {
+  return taskPost(ctx, task, 'pause', () => ctx.api.post(`/api/tasks/${enc(task.id)}/pause`), `Paused #${task.number}`);
+}
+
+/** Resume a task a person paused (SPEC-191 PER-002). */
+export function resumeTask(ctx, task) {
+  return taskPost(ctx, task, 'resume', () => ctx.api.post(`/api/tasks/${enc(task.id)}/resume`), `Resumed #${task.number}`);
 }
 
 /** Stop a live task (confirmation: stopping interrupts the agent); cancel a chained one. */

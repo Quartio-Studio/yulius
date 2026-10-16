@@ -291,8 +291,13 @@ impl SessionHost for PtySessionHost {
         }
     }
 
-    fn thaw_all(&self) -> usize {
-        freeze_tree().map_or(0, |tree| freeze::thaw_all(&tree.unit))
+    fn thaw_all(&self, keep: &[PathBuf]) -> usize {
+        let keep: std::collections::HashSet<String> = keep
+            .iter()
+            .filter_map(|run| run.file_name()?.to_str())
+            .map(|name| format!("{}{name}", freeze::RUN_GROUP_PREFIX))
+            .collect();
+        freeze_tree().map_or(0, |tree| freeze::thaw_all(&tree.unit, &keep))
     }
 }
 
