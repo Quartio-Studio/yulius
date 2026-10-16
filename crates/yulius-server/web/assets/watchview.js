@@ -51,11 +51,27 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   let seen = { session: null, end: 0, bytes: 0, loaded: false };
 
   const atBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= FOLLOW_SLACK;
+  // Following the latest lines is a state (SPEC-185): only the reader scrolling up away from the
+  // bottom ends it, and while it lasts a height that changes (the Working line, the card above, a
+  // block laid out late, the window) keeps the view at the bottom. Measured at each read instead,
+  // such a change left the view above the bottom for good, behind "New messages" (#575).
+  let following = true;
+  let lastTop = 0;
   function toBottom() {
     scroller.scrollTop = scroller.scrollHeight;
+    lastTop = scroller.scrollTop;
+    following = true;
     jump.hidden = true;
   }
-  scroller.addEventListener('scroll', () => { if (atBottom()) jump.hidden = true; }, { passive: true });
+  scroller.addEventListener('scroll', () => {
+    const top = scroller.scrollTop;
+    if (atBottom()) {
+      following = true;
+      jump.hidden = true;
+    } else if (top < lastTop) following = false;
+    lastTop = top;
+  }, { passive: true });
+  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (following) toBottom(); }) : null;
 
   function render() {
     const current = task();
@@ -84,7 +100,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   }
 
   function apply(page) {
-    const follow = !seen.loaded || atBottom();
+    const follow = !seen.loaded || following;
     const entries = page.entries || [];
     if (!seen.loaded) {
       const path = page.doc_id && sessionPath(page.doc_id);
@@ -163,6 +179,10 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       if (started) return;
       started = true;
       octopus = createOctopus(lane);
+      if (sizes) {
+        sizes.observe(scroller);
+        sizes.observe(tui);
+      }
       read();
     },
     /** The task changed: say so, and read once more when it ended or started again. */
@@ -185,6 +205,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       clock.clear(timer);
       if (reading) reading.abort();
       if (octopus) octopus.stop();
+      if (sizes) sizes.disconnect();
       transcript.destroy();
       document.removeEventListener('visibilitychange', visibility);
     },

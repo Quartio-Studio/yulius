@@ -110,6 +110,16 @@ test('at the bottom the view keeps following when "Working…" shows, the view g
   await expect(browser.locator('.watch .ss-entry:has-text("Step 31, after the agent went on working.")')).toBeVisible();
   await expect.poll(below, { message: 'new lines are followed' }).toBeLessThan(4);
   await expect(screen.getByRole('button', 'New messages')).toBeHidden();
+
+  // Scrolled up, a height that changes leaves the reader where they read.
+  await browser.evaluate(() => { document.querySelector('.watch .watch-scroll')!.scrollTop = 0; });
+  await touchTask(browser, 'sb_studio', 12, { activity: 'idle' });
+  await expect(browser.locator('.watch .watch-working')).toBeHidden();
+  await browser.evaluate(() => { (document.querySelector('.watch') as HTMLElement).style.maxHeight = '200px'; });
+  await touchTask(browser, 'sb_studio', 12, { activity: 'working' });
+  await expect(browser.locator('.watch .watch-working')).toBeVisible();
+  await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  expect(await browser.evaluate(() => document.querySelector('.watch .watch-scroll')!.scrollTop)).toBe(0);
 });
 
 test('a burst longer than a page is read to its end', async ({ app, browser, screen }) => {
