@@ -1222,13 +1222,13 @@ mod tests {
             system_passwd: None,
             system_group: None,
             host_system: None,
-            engine_socket: Some("/data/runtime/sandboxes/s1/docker.sock".into()),
+            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
         };
         let ci = ci_join(join.clone());
         assert_eq!(ci.cgroup, join.ci_cgroup);
         assert_eq!(ci.holder_pid, 7, "the rest of the join is kept");
         // SPEC-187 DKR-001: a CI job uses the sandbox's Docker engine like an agent.
-        assert_eq!(ci.engine_socket, join.engine_socket);
+        assert_eq!(ci.docker_dir, join.docker_dir);
         // Without delegation there is no group at all, as before.
         let bare = SandboxJoin {
             cgroup: None,

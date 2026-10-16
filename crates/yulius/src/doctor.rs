@@ -341,7 +341,8 @@ const ENGINE_MODULES: [&str; 11] = [
 
 /// Whether isolated sandboxes get a Docker engine of their own (SPEC-187 DKR-011), from the
 /// setting, the host's `dockerd`, the cgroup delegation and the kernel's modules (the text of
-/// `/proc/modules` and of `modules.builtin`).
+/// `/proc/modules` and of `modules.builtin`). The reasons are those the sandboxes' Docker socket
+/// answers with (SPEC-196 DKL-005).
 fn docker_check(
     on: bool,
     dockerd: Option<PathBuf>,
@@ -349,24 +350,27 @@ fn docker_check(
     loaded: &str,
     builtin: &str,
 ) -> Check {
+    use yulius_sandbox::manager::{DOCKER_NO_DELEGATION, DOCKER_NO_DOCKERD, DOCKER_OFF};
     const NAME: &str = "sandbox Docker";
     if !on {
-        return check(NAME, Level::Ok, "off (YULIUS_SANDBOX_DOCKER=off)");
+        return check(
+            NAME,
+            Level::Ok,
+            format!("no engine in sandboxes: {DOCKER_OFF}"),
+        );
     }
     if dockerd.is_none() {
         return check(
             NAME,
             Level::Warn,
-            "no engine in sandboxes: install Docker (`dockerd`, containerd, runc) on the host; \
-             the sandboxes' base copies it",
+            format!("no engine in sandboxes: {DOCKER_NO_DOCKERD}"),
         );
     }
     if !delegated {
         return check(
             NAME,
             Level::Warn,
-            "no engine in sandboxes: it needs the cgroup delegation (Delegate=yes, \
-             DelegateSubgroup=server on yulius.service)",
+            format!("no engine in sandboxes: {DOCKER_NO_DELEGATION}"),
         );
     }
     let mut present: Vec<String> = loaded
@@ -386,7 +390,8 @@ fn docker_check(
         check(
             NAME,
             Level::Ok,
-            "each isolated sandbox gets its own engine at /run/docker.sock on first use",
+            "each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on \
+             first use; `yulius doctor --docker-smoke` proves it on this host",
         )
     } else {
         let list = missing.join(" ");

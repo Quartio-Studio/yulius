@@ -218,8 +218,21 @@ pub fn resolve(
             stop_after: Duration::from_secs(args.idle_minutes.max(1) * 60),
         },
         auto_build: true,
-        docker: args.docker == DockerMode::On && which("dockerd").is_some(),
+        docker: docker_setting(args.docker, which("dockerd").is_some()),
     })
+}
+
+/// The Docker setting and the host's `dockerd` (SPEC-196 DKL-005: the reason when off).
+///
+/// # Errors
+/// Why sandboxes get no engine from these two.
+pub fn docker_setting(mode: DockerMode, dockerd: bool) -> Result<(), String> {
+    use yulius_sandbox::manager::{DOCKER_NO_DOCKERD, DOCKER_OFF};
+    match (mode, dockerd) {
+        (DockerMode::Off, _) => Err(DOCKER_OFF.to_owned()),
+        (DockerMode::On, false) => Err(DOCKER_NO_DOCKERD.to_owned()),
+        (DockerMode::On, true) => Ok(()),
+    }
 }
 
 /// The delegated cgroup unit of this process, without changing anything.
@@ -295,7 +308,7 @@ impl SandboxIsolation for NamespaceIsolation {
                     system_passwd: joined.system_passwd,
                     system_group: joined.system_group,
                     host_system: None,
-                    engine_socket: join.engine_socket.map(PathBuf::from),
+                    docker_dir: join.docker_dir.map(PathBuf::from),
                 }))
             }
             Ok(None) if self.strict => Err(AppError::Conflict(
@@ -424,6 +437,7 @@ pub async fn install(
         egress = status.egress,
         limits = status.limits,
         docker = manager.docker(),
+        no_docker = manager.docker_unavailable().unwrap_or_default(),
         "sandbox isolation on (namespace holder per sandbox)"
     );
     Ok(Some(manager))

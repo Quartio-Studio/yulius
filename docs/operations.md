@@ -411,8 +411,9 @@ shells and CI jobs join it. A sandbox gets:
   CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
 - its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
-  started on the first use of `/run/docker.sock` (= `/var/run/docker.sock`) by an agent, the
-  Superagent, a Shell or a CI job, and stopped once idle. See "Docker in sandboxes" below.
+  started on the first use of `/var/run/docker.sock` (`DOCKER_HOST`) by an agent, the
+  Superagent, a Shell or a CI job, also in sessions started before, and stopped once idle. See
+  "Docker in sandboxes" below.
 
 **Install once** (as root):
 
@@ -442,12 +443,12 @@ systemctl restart yulius
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
-| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when the host has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine). |
+| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when the host has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
 
 **Where things live.**
 - `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
 - `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer, `upper/`) and its Docker engine's images, containers and volumes (`docker/`).
-- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker socket (`docker.sock`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`).
+- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker directory (`docker/docker.sock`, served by its Docker front: `docker.json`, `docker-front.json`, `docker-front.log`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`). A holder of SPEC-187 also serves `docker.sock` itself.
 
 `yulius sandbox-base status` tells whether the base matches the host.
 
@@ -466,19 +467,38 @@ previous containment: read-only host system, the host's network, no limits.
 ### Docker in sandboxes
 
 Each isolated sandbox has its own Docker engine (SPEC-187,
-[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)).
+[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md);
+SPEC-196, [ADR-0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
 `docker`, `docker compose`, buildx and testcontainers work unchanged in agents' sessions, the
 Superagent, Shells and CI jobs (not in a production CD run). The host's Docker is never reachable
 from a sandbox, and no daemon needs to run on the host.
 
-- **What it is.** On the first connection to the sandbox's socket, the holder starts `dockerd` as
-  root of the sandbox's user namespace (not the host's): in the sandbox's network, with a run's
-  view of the files plus its storage, a cgroup namespace rooted at `sandboxes/<sandbox>/engine`,
-  and a seccomp profile of its own that every container inherits, `--privileged` included.
-  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves through
-  the sandbox's egress, and they reach the egress proxy at `host.docker.internal:<internal port>`
-  (with `--add-host=host.docker.internal:host-gateway`). A port published in the sandbox's port
-  range is relayed like a dev server's.
+- **Every session, whatever its age.** A Docker front beside each live holder serves the socket;
+  runs see it at `/var/run/docker.sock` and `DOCKER_HOST=unix:///run/yulius/docker/docker.sock`.
+  After an update the server adopts the holders and gives each a front. Within one upkeep tick
+  (30 s) it moves the Docker directory into sessions that started without it, so nothing needs a
+  restart or a new session.
+- **Verify on the host** (as root, after a deploy):
+
+  ```sh
+  sudo yulius doctor --docker-smoke
+  ```
+
+  It runs as the data directory's owner in a delegated transient unit (`systemd-run`), uses the
+  current base, and removes its throwaway sandbox (`docker-smoke-<pid>`) at the end. It prints
+  one line per check and exits 0 only when sandboxes get Docker: a run older than the engine
+  gets the socket, its refusal names the reason, then `docker run --rm hello-world`, a `docker
+  build` and a two-service `docker compose up` in that run, a recreated socket, and `DOCKER_HOST`
+  in a new run. It needs Docker Hub (`hello-world`, `busybox`).
+
+- **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
+  starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
+  network, with a run's view of the files plus its storage, a cgroup namespace rooted at
+  `sandboxes/<sandbox>/engine`, and a seccomp profile of its own that every container inherits,
+  `--privileged` included. Containers count against the sandbox's memory, task and CPU limits.
+  Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
+  `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
+  port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.**
   - Docker installed on the host (`docker-ce` or `docker.io`). The base copies `dockerd`,
     `containerd`, `runc`, `docker-proxy` and the CLI plugins.
@@ -516,7 +536,11 @@ from a sandbox, and no daemon needs to run on the host.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
-  last lines of `<data>/runtime/sandboxes/<sandbox>/engine.log`.
+  reason. Without an engine it names the missing prerequisite and the fix (`YULIUS_SANDBOX_DOCKER=off`,
+  no `dockerd`, no cgroup delegation, a writable executable), the same words as `yulius doctor`.
+  For an engine that did not start, it gives the last lines of
+  `<data>/runtime/sandboxes/<sandbox>/engine.log`. The front's own log is `docker-front.log`
+  beside it.
 
 ### Task intake (Jev)
 

@@ -273,10 +273,23 @@ fn split_cpu(dir: &Path, groups: &SandboxGroups) -> io::Result<()> {
 }
 
 impl Delegation {
-    /// The groups of `sandbox` (created when missing) with `limits` applied.
+    /// The paths of `sandbox`'s groups, as [`Delegation::sandbox_group`] makes them, without
+    /// touching anything.
+    #[must_use]
+    pub fn sandbox_paths(&self, sandbox: &str) -> SandboxGroups {
+        let dir = self.unit.join(SANDBOXES).join(sandbox);
+        if self.controllers.iter().any(|c| c == "cpu") {
+            SandboxGroups::leaves(&dir)
+        } else {
+            SandboxGroups::single(&dir)
+        }
+    }
+
+    /// Prepares `sandbox`'s groups ([`Delegation::sandbox_paths`]): creates them, writes the
+    /// limits and splits the CPU.
     ///
     /// # Errors
-    /// The group cannot be created or a limit cannot be written.
+    /// A group cannot be created or a limit written.
     pub fn sandbox_group(&self, sandbox: &str, limits: &Limits) -> io::Result<SandboxGroups> {
         let dir = self.unit.join(SANDBOXES).join(sandbox);
         std::fs::create_dir_all(&dir)?;
@@ -519,6 +532,8 @@ mod tests {
         }
         // Preparing again (every run does) changes nothing.
         assert_eq!(delegation.sandbox_group("s1", &Limits::default())?, groups);
+        // SPEC-196 review round 2: the same paths, read without preparing anything.
+        assert_eq!(delegation.sandbox_paths("s1"), groups);
         Ok(())
     }
 
