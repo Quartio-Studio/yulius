@@ -2111,8 +2111,9 @@ mod tests {
             "missing parts: `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` here",
             "disk quota",
             "the sandbox dir",
-            "your ports",
-            "Egress proxy: `--add-host=host.docker.internal:host-gateway`",
+            // Review round 2 (nit): published ports stay in the task's range.
+            "ports in your range",
+            "Proxy: `--add-host=host.docker.internal:host-gateway`",
             DOCKER_SECTION_END,
         ] {
             assert!(text.contains(present), "{present} not in {text}");
