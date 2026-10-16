@@ -309,24 +309,34 @@ const ACTIONS = {
 // ---------------------------------------------------------------- agent secrets
 
 /**
- * `text` on one line, its line breaks (LF, CRLF or CR) written as literal `\n`: an agent secret
- * never spans lines, and the vault reads that form as a multi-line key's (SPEC-193 MLK-001). Line
- * breaks around the text are dropped: a key file's final one comes back when it is copied.
+ * A pasted key block (PEM, OpenSSH: `-----BEGIN X-----` on its first line, `-----END X-----` on
+ * its last) on one line, its line breaks written as literal `\n`: an agent secret never spans
+ * lines, and the vault reads that form back as the key file (SPEC-193 MLK-001). Spaces around
+ * each line and blank lines around the key are dropped (a key file's final line break comes back
+ * when it is copied). `null` for any other text: its `\n` would mean nothing to its readers.
  */
-export function escapeLineBreaks(text) {
-  return text.replace(/^[\r\n]+|[\r\n]+$/g, '').replace(/\r\n|\r|\n/g, '\\n');
+function escapedKey(text) {
+  const lines = text.split(/\r\n|\r|\n/).map((line) => line.trim());
+  while (lines.length && !lines[0]) lines.shift();
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  const begin = /^-----BEGIN ([^-]+)-----$/.exec(lines[0] || '');
+  const ok = lines.length >= 3 && begin && lines[lines.length - 1] === `-----END ${begin[1]}-----`;
+  return ok ? lines.join('\\n') : null;
 }
 
 /**
- * Keeps the line breaks of text pasted into a one-line `input` as `\n`: the browser would turn
- * them into spaces or drop them (#591). Text without line breaks pastes as usual.
+ * Keeps the line breaks of a key pasted into a one-line `input` as `\n`: the browser would turn
+ * them into spaces or drop them (#591). Any other text pastes as usual. The paste is one undo
+ * step where the browser can insert text as typed.
  */
-function pasteLineBreaksEscaped(input) {
+function pasteKeysEscaped(input) {
   input.addEventListener('paste', (event) => {
     const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
-    if (!/[\r\n]/.test(text)) return;
+    const key = /[\r\n]/.test(text) ? escapedKey(text) : null;
+    if (key === null) return;
     event.preventDefault();
-    input.setRangeText(escapeLineBreaks(text), input.selectionStart, input.selectionEnd, 'end');
+    if (document.execCommand('insertText', false, key)) return;
+    input.setRangeText(key, input.selectionStart, input.selectionEnd, 'end');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
@@ -340,12 +350,12 @@ function pasteLineBreaksEscaped(input) {
 function agentForm(ctx, secret) {
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
   const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
-  pasteLineBreaksEscaped(value);
+  pasteKeysEscaped(value);
   const notes = h('textarea', { class: 'textarea', rows: 2, 'aria-label': 'Description', placeholder: 'API key for Vidoc, the video platform' });
   notes.value = secret ? secret.description : '';
   const parts = [
     field('Name', name, 'Agents refer to it by this name; their code reads $NAME, which holds a placeholder.'),
-    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Paste a multi-line key as it is: its line breaks are kept as \\n. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
+    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Paste a key (PEM, OpenSSH) as it is: its line breaks are kept as \\n. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
     field('Description', notes, 'Which service it is for (a login’s user name goes here, never the value). Agents find the service’s address from it and ask you to allow it.'),
   ];
   const form = { name, value };

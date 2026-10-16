@@ -38,11 +38,14 @@ flattened before the fix is not rewritten; its managers see that it must be past
 
 ## Requirements
 
-- MLK-001 (paste): Pasting text with line breaks (LF, CRLF or CR) into the agent secret Value
-  field, in Add and in Edit, inserts it with each break written as literal `\n`, at the cursor or
-  over the selection. Line breaks before the first and after the last line are dropped (a key file's
-  final line break: the `.env` copy adds it back, `secret_verify` accepts the file with it). Text
-  without line breaks, an already escaped value included, pastes unchanged.
+- MLK-001 (paste): Pasting a key block (once blank lines around it are dropped, its first line
+  is `-----BEGIN <label>-----` and its last `-----END <label>-----`, at least three lines) with
+  LF, CRLF or CR line breaks into the agent secret Value field, in Add and in Edit, inserts it with
+  each break written as literal `\n`, at the cursor or over the selection, as one undo step. Spaces
+  around each line and blank lines around the key are dropped (a key file's final line break: the
+  `.env` copy adds it back, `secret_verify` accepts the file with it). Any other text (one line, an
+  already escaped value, pretty-printed JSON whose `\n` would break it) pastes as the browser
+  pastes it (review round 1).
 - MLK-002 (refuse): Creating or updating an agent secret whose value is a key flattened onto one
   line (it opens with `-----BEGIN <label>-----` and closes with `-----END <label>-----`, the same
   label, with something between and no literal `\n`) is refused with a message saying its line
@@ -84,11 +87,12 @@ flattened before the fix is not rewritten; its managers see that it must be past
   `false` to a reader, and keeps its value.
 - e2e (`e2e/tests/secrets.e2e.ts`, mock): paste events carrying a CRLF PEM in Add and an LF
   OpenSSH key with a final break in Edit; the revealed values are the escaped forms; the mock's
-  flattened secret shows "Paste again" until it is edited; the escaping function keeps an
-  already escaped value and handles CR.
+  flattened secret shows "Paste again" until it is edited; an already escaped value, JSON and text
+  after the END line paste as the browser pastes them; an indented key with CR breaks and blank
+  lines around it is trimmed; Ctrl+Z undoes the paste in one step.
 - Manual evidence: real keys from `ssh-keygen` and `openssl genpkey`, escaped by the page's
-  function, written back by `dotenv::line` and verified by `secret_verify`'s likeness, accepted by
-  `ssh-keygen -y -f` and `openssl pkey`.
+  function, stored through the API, checked with `secret_verify` and copied with
+  `secret_copy_to_env`, then accepted by `ssh-keygen -y -f` and `openssl pkey`.
 
 ## Decisions
 
@@ -97,3 +101,41 @@ flattened before the fix is not rewritten; its managers see that it must be past
   server that accepts real breaks, which never receives them); the server refuses a flattened key;
   older flattened secrets are marked, not repaired (the lost breaks cannot be told apart from
   spaces in every key, e.g. an encrypted PEM's headers).
+
+## Review
+
+Independent review in a fresh session (round 1, head `6d766e16`): request changes, all findings
+own code, all fixed in this change.
+
+| # | Severity | Finding | Answer |
+| --- | --- | --- | --- |
+| 1 | medium | Every multi-line paste was escaped: pretty-printed JSON became invalid | Only a key block is escaped; other text pastes as before (e2e: JSON, text after END, escaped value) |
+| 2 | low | Spaces around a pasted key's lines left it unusable, unwarned | Each line is trimmed (e2e: indented key, CR breaks, `\n \n` after it) |
+| 3 | low | The Evidence the ADR cites did not exist | Evidence section below |
+| 4 | nit | The paste could not be undone | `execCommand('insertText')`, `setRangeText` as fallback (e2e: Ctrl+Z) |
+| 5 | nit | `escapeLineBreaks` exported, unused | Module-private `escapedKey` |
+| 6 | nit | Mock checked a flattened key before the name and length | Same order as the server |
+| 7 | nit | PATCH row did not say a flattened key is refused | Added |
+
+## Evidence
+
+- Regression tests failed before the fix (commit `07b461aa`): the domain tests
+  `a_key_flattened_onto_one_line_is_recognised` and `a_flattened_key_is_refused`, the integration
+  test `secrets::a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers` (201 for a
+  flattened key) and the e2e test (`expected "" to be "-----BEGIN MOCK PRIVATE KEY-----\\n…"`).
+  The review-round cases failed before their fix too (commit `e6133bcb`: JSON was escaped).
+- Real keys (generated in the session scratchpad, never in the repository): `ssh-keygen -t
+  ed25519`, `ssh-keygen -t rsa -b 2048`, `openssl genpkey` ed25519 and RSA 2048, plus CRLF copies
+  of the OpenSSH ed25519 and PEM RSA keys. Each was escaped by the page's own function (extracted
+  from `secrets.js` and run in Node), stored through the API, checked with `secret_verify` (the
+  original file's SHA-256) and copied with `secret_copy_to_env` in a throwaway integration test
+  (not committed). All six answered `escaped_newlines` with 3, 28, 28, 7, 7 and 27 lines. The
+  `.env` value was byte-identical to the LF file. `ssh-keygen -y -f` and `openssl pkey` accepted
+  every written key, and their public keys matched the originals'. The revised function (review
+  round 1) produces the same six stored values.
+- `cargo nextest run -p yulius-domain`: 344 passed. The new integration test passed.
+- `scripts/dev ci` (round 0 head): exit 0, 1966 tests passed, 18 skipped.
+- `npx e2e run` (full suite, round 0 head): 575 passed, 1 skipped. `npx e2e run
+  tests/secrets.e2e.ts` after the review fixes: 12 passed.
+- `scripts/dev security`: exit 2, unrun. Vidoc rejects the key (HTTP 401) since 2026-10-14
+  (#470, ADR-0104). This is not a pass. Yulius CI runs it as the `security` job.

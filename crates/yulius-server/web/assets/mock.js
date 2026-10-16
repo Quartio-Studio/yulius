@@ -2395,10 +2395,10 @@ function flattenedKey(value) {
 }
 
 function validateAgent(body, creating) {
-  if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
   if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
   if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length > 16)) fail(422, 'invalid', 'at most 16 hosts');
   if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
+  if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
 }
 
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));

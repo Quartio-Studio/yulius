@@ -19,11 +19,13 @@ answered `different` for each original file and a `.env` copy would have been an
 
 ## Decision
 
-- **The field escapes what is pasted.** A paste holding line breaks (LF, CRLF or CR) is inserted
-  at the cursor, or over the selection, with each break written as literal `\n`; breaks before the
-  first line and after the last are dropped (a key file's final break comes back in a `.env` copy,
-  and `secret_verify` accepts the file with it). Text without breaks, an already escaped value
-  included, pastes as the browser pastes it.
+- **The field escapes a pasted key.** A paste that is a key block (`-----BEGIN <label>-----` on its
+  first line, `-----END <label>-----` on its last, LF, CRLF or CR breaks) is inserted at the cursor,
+  or over the selection, as one undo step, with each break written as literal `\n`; spaces around
+  each line and blank lines around the key are dropped (a key file's final break comes back in a
+  `.env` copy, and `secret_verify` accepts the file with it). Any other text pastes as the browser
+  pastes it: only a key block's `\n` is read back as line breaks (`dotenv::key_block`), and in other
+  text, such as pretty-printed JSON, a `\n` outside a string would break it where a space does not.
 - **The server refuses a flattened key.** `check_agent_value` refuses a value that opens with
   `-----BEGIN <label>-----`, closes with `-----END <label>-----`, has something between and no
   literal `\n`: a one-line key block is never a usable key file, whatever path it came by (a drag,
@@ -43,6 +45,8 @@ answered `different` for each original file and a `.env` copy would have been an
 - Repairing older flattened values (spaces back to line breaks): a space cannot always be told from
   the key's own (an encrypted PEM's `Proc-Type: 4,ENCRYPTED` headers, a comment), so a repair
   could silently produce a different key. The person who holds the key pastes it again instead.
+- Escaping every multi-line paste: the first version did, and the independent review found it
+  turns a pretty-printed service-account JSON (valid with spaces) into invalid JSON.
 - Doing nothing on the server: a drag, an autofill or another client would still store a broken
   key silently, which is the defect.
 
@@ -54,5 +58,7 @@ answered `different` for each original file and a `.env` copy would have been an
   flattened; only the boolean leaves.
 - A value shaped like a one-line key block can no longer be stored, even deliberately; a person
   who wants that writes its breaks as `\n`.
+- A multi-line value that is not a key still loses its line breaks to the browser, as before; an
+  agent secret cannot hold them.
 - Team secrets are untouched: their values may hold real line breaks, which a person copies back,
   so escaping is wrong for them; their one-line value field has the same paste problem (#592).
