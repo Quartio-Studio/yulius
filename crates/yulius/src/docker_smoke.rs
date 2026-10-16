@@ -2,9 +2,9 @@
 //! Docker, end to end, the way an update meets them.
 //!
 //! It needs the service user and a delegated cgroup. Started as root, wherever, it runs itself
-//! again (SPEC-202 RSB-001) through `systemd-run --uid=<the data directory's owner> -p Delegate=yes -p
-//! DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone else outside one it
-//! says so. Inside, with the current base, it creates a throwaway sandbox (`docker-smoke-<pid>`,
+//! again (SPEC-202 RSB-001) through `systemd-run --uid=<the data directory's owner> -p
+//! Delegate=yes -p DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone
+//! else outside one it says so. Inside, with the current base, it creates a throwaway sandbox (`docker-smoke-<pid>`,
 //! next to the real ones but adopted by nobody else) and:
 //!
 //! 1. starts its holder with Docker off, and a run that has no Docker directory (a run started
@@ -527,50 +527,72 @@ fn spawn_run(
 /// Longest detail printed.
 const DETAIL_CHARS: usize = 200;
 
-/// `text` as one line a terminal prints as it is (SPEC-202 RSB-003): escape sequences and
-/// control characters removed, line breaks and tabs as spaces, and of a line rewritten with
-/// carriage returns only its last text, as a terminal would show it.
+/// `text` as one line a terminal prints as it is (SPEC-202 RSB-003): escape sequences,
+/// control characters and invisible or direction-changing marks removed, of each line rewritten
+/// with carriage returns only its last text (as a terminal shows it), lines joined by spaces,
+/// then cut to [`DETAIL_CHARS`].
 fn printable(text: &str) -> String {
-    let mut segments: Vec<String> = Vec::new();
+    text.split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            line.split('\r')
+                .map(|segment| plain(segment).trim().to_owned())
+                .rfind(|segment| !segment.is_empty())
+                .unwrap_or_default()
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(DETAIL_CHARS)
+        .collect()
+}
+
+/// `segment` (no line break or carriage return) without escape sequences, control characters and
+/// invisible or direction-changing marks; tabs become spaces.
+fn plain(segment: &str) -> String {
     let mut out = String::new();
-    let mut chars = text.chars();
+    let mut chars = segment.chars();
     while let Some(c) = chars.next() {
         match c {
             '\u{1b}' => match chars.next() {
                 // CSI: parameters up to a final byte.
-                Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('@'..='~').contains(&c) {
-                            break;
-                        }
-                    }
-                }
-                // OSC: up to BEL or ESC \.
-                Some(']') => {
+                Some('[') => skip_csi(&mut chars),
+                // OSC, DCS, SOS, PM, APC: a string up to BEL or ST (ESC \\).
+                Some(']' | 'P' | 'X' | '^' | '_') => {
                     while let Some(c) = chars.next() {
                         if c == '\u{7}' || (c == '\u{1b}' && chars.next().is_some()) {
                             break;
                         }
                     }
                 }
+                // Character set selection: one more character.
+                Some('(' | ')' | '*' | '+' | '-' | '.' | '/') => {
+                    chars.next();
+                }
                 _ => {}
             },
-            '\r' => segments.push(std::mem::take(&mut out)),
-            '\n' | '\t' => out.push(' '),
+            // 8-bit CSI.
+            '\u{9b}' => skip_csi(&mut chars),
+            '\t' => out.push(' '),
+            '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}' => {}
             c if c.is_control() => {}
             c => out.push(c),
         }
     }
-    segments.push(out);
-    segments
-        .into_iter()
-        .rev()
-        .map(|segment| segment.trim().to_owned())
-        .find(|segment| !segment.is_empty())
-        .unwrap_or_default()
-        .chars()
-        .take(DETAIL_CHARS)
-        .collect()
+    out
+}
+
+/// Skips a CSI sequence's parameters and final byte.
+fn skip_csi(chars: &mut impl Iterator<Item = char>) {
+    for c in chars {
+        if ('@'..='~').contains(&c) {
+            break;
+        }
+    }
 }
 
 /// The compose check's detail (SPEC-202 RSB-004): the probe service's last line (`probe-1 …`),
@@ -595,21 +617,11 @@ fn read(path: &Path) -> String {
 }
 
 fn first_line(text: &str) -> String {
-    text.lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .take(200)
-        .collect()
+    text.lines().next().unwrap_or_default().to_owned()
 }
 
 fn last_line(text: &str) -> String {
-    text.lines()
-        .last()
-        .unwrap_or_default()
-        .chars()
-        .take(200)
-        .collect()
+    text.lines().last().unwrap_or_default().to_owned()
 }
 
 /// Waits (polling a file the run writes) until `path` has the line `line`.
@@ -767,6 +779,33 @@ mod tests {
             "abc d"
         );
         assert_eq!(printable(&"x".repeat(500)).len(), 200);
+    }
+
+    /// SPEC-202 RSB-003, review round 1: carriage returns rewrite their own line only, every
+    /// kind of escape goes whole, and a long rewritten line is cleaned before it is cut.
+    #[test]
+    fn details_survive_every_escape_and_line_ending() {
+        // Windows line endings and a rewrite on the second line only.
+        assert_eq!(printable("x\r\ny\r\n"), "x y");
+        assert_eq!(printable("a\nb\rc"), "a c");
+        // OSC ended by ESC \, escapes left open at the end.
+        assert_eq!(printable("\u{1b}]0;t\u{1b}\\ok"), "ok");
+        assert_eq!(printable("ok\u{1b}]0;unterminated"), "ok");
+        assert_eq!(printable("ok\u{1b}[1"), "ok");
+        // Charset selection (`tput sgr0`), device control strings, 8-bit CSI.
+        assert_eq!(printable("\u{1b}(Bok\u{1b}[m"), "ok");
+        assert_eq!(
+            printable("a\u{1b}Pq#0;2;0;0;0\u{1b}\\b\u{1b}_apc\u{7}c"),
+            "abc"
+        );
+        assert_eq!(printable("a\u{9b}2Kb"), "ab");
+        // An ESC before a line break keeps the break.
+        assert_eq!(printable("a\u{1b}\nb"), "a b");
+        // Text direction overrides and invisible marks go.
+        assert_eq!(printable("a\u{202e}b\u{200b}c\u{2066}d"), "abcd");
+        // The hello and build details: the last line, cleaned before it is cut.
+        let progress = "Pulling 1%\r".repeat(50) + "done";
+        assert_eq!(printable(&last_line(&progress)), "done");
     }
 
     /// SPEC-202 RSB-004: the compose check shows the probe's result, not the web container's
