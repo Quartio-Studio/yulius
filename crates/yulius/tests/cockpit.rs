@@ -111,6 +111,8 @@ async fn fixture_ending(
         "http://127.0.0.1:1",
     ));
     let h = harness_with(HarnessOptions {
+        // Real Git: the Superagent's `.env` copies ask whether Git ignores the file (SPEC-186).
+        git: Some(Arc::new(yulius::wiring::git::GitAdapter::new("git"))),
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         harness: Some(harness),
         dir: Some(dir),
@@ -1198,7 +1200,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .ok_or("carol's cockpit token")?;
     assert_ne!(token, carols, "one token per Cockpit");
 
-    // Exactly the management tools (MGT-006).
+    // Exactly the management and vault tools (MGT-006, SPEC-186 SAV-002, SAV-003).
     let listed = mcp(&f, &token, "tools/list", json!({})).await?;
     let mut names: Vec<String> = listed["result"]["tools"]
         .as_array()
@@ -1216,6 +1218,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "secret_copy_to_env",
+            "secret_request_hosts",
             "secret_verify",
             "secrets_list",
             "session_read",
@@ -2324,9 +2328,10 @@ async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult
     Ok(())
 }
 
-/// SPEC-178 VAU-001, VAU-003 (ADR-0144): the Superagent lists its own sandbox's agent secrets,
-/// names and hosts only, and is told how it checks a value and where a person manages them; the
-/// vault tools that use a value (proxy hosts, `.env` copies, the browser) stay a task's.
+/// SPEC-178 VAU-001 (ADR-0144), SPEC-186 SAV-002..004, SAV-007 (ADR-0150): the Superagent lists
+/// its own sandbox's agent secrets, names, hosts and placeholders only, as a task's agent does,
+/// and is told how it uses and checks them; it is served the vault tools a task's agent is, but
+/// not the project browser's.
 #[tokio::test]
 async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> TestResult {
     use yulius_domain::ids::UserId;
@@ -2359,37 +2364,56 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         Some(1),
         "{listed}"
     );
-    // The Superagent is not behind the proxy: no placeholder and no proxy injection to use.
-    for proxy_only in ["placeholder", "adds"] {
-        assert!(
-            listed["secrets"][0].get(proxy_only).is_none(),
-            "{proxy_only}: {listed}"
-        );
-    }
+    // Behind the proxy as a task run is (SAV-001): the placeholder and what the proxy adds.
+    assert_eq!(
+        listed["secrets"][0]["placeholder"],
+        "yulius-secret-APIFY_KEY"
+    );
+    assert!(listed["secrets"][0]["adds"].is_string(), "{listed}");
     let raw = listed.to_string();
     for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
         assert!(!raw.contains(hidden), "{hidden} in {raw}");
     }
-    // The Superagent's own guidance: it has no placeholders, it verifies with `secret_verify`,
-    // and a person manages secrets on the Secrets page.
+    // The Superagent's own guidance (SAV-007): bound hosts through the proxy, `$NAME`, the
+    // repository's `.env`, host requests, `secret_verify`, and the Secrets page.
     let how = listed["how_to_use"].to_string();
-    assert!(how.contains("secret_verify"), "{how}");
-    assert!(how.contains("/s/fixture/secrets?section=agents"), "{how}");
-    assert!(!how.contains("secret_copy_to_env"), "{how}");
-
-    for tool in [
+    for said in [
+        "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
-        "browser_fill_secret",
+        "$NAME",
+        "/s/fixture/secrets?section=agents",
     ] {
-        let (refused, is_error) =
-            cockpit_tool(&f, &token, tool, json!({"secret": "APIFY_KEY"})).await?;
-        assert!(is_error, "{tool}: {refused}");
-        assert!(
-            refused.to_string().contains("unknown tool"),
-            "{tool}: {refused}"
-        );
+        assert!(how.contains(said), "{said}: {how}");
     }
+    assert!(!how.contains("browser_fill_secret"), "{how}");
+
+    let tools = mcp(&f, &token, "tools/list", json!({})).await?;
+    let served: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .ok_or("tools")?
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    for tool in [
+        "secrets_list",
+        "secret_verify",
+        "secret_copy_to_env",
+        "secret_request_hosts",
+    ] {
+        assert!(served.contains(&tool), "{tool}: {served:?}");
+    }
+    // It has no project browser (SAV-004).
+    assert!(!served.contains(&"browser_fill_secret"), "{served:?}");
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "browser_fill_secret",
+        json!({"secret": "APIFY_KEY"}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(refused.to_string().contains("unknown tool"), "{refused}");
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -2642,6 +2666,203 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         refused.to_string().contains("production secret"),
         "{refused}"
     );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// Runs `git` in `dir` with a synthetic identity.
+fn git(dir: &Path, args: &[&str]) -> TestResult {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+    }
+    Ok(())
+}
+
+/// The sandbox repository of the fixture as a Git repository that ignores `.env` and `.env.*`
+/// but keeps `.env.example`.
+fn ignoring_repo(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
+    git(&repo, &["init", "-q", "-b", "dev"])?;
+    std::fs::write(repo.join(".gitignore"), ".env\n.env.*\n!.env.example\n")?;
+    git(&repo, &["add", "."])?;
+    git(&repo, &["commit", "-q", "-m", "init"])?;
+    Ok(repo)
+}
+
+/// alice adds the agent secret `name` with `value` to `s1`; its id.
+async fn add_secret(
+    f: &Fixture,
+    name: &str,
+    value: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let resp = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": name, "value": value})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::CREATED, "{:?}", resp.body);
+    Ok(resp.body["id"].as_str().ok_or("id")?.to_owned())
+}
+
+/// The secrets activity entries with `action`.
+async fn audited(f: &Fixture, action: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    Ok(activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == action)
+        .cloned()
+        .collect())
+}
+
+/// SPEC-186 SAV-002, SAV-003, SAV-005 (ADR-0150): the Superagent verifies a 7-line OpenSSH key
+/// the person holds, copies it into the ignored `.env` of the sandbox repository it works in once
+/// a person allowed it (asked first, as a task's agent is), byte-identical to the key file, and
+/// asks for hosts; production secrets and files Git would commit are refused.
+#[tokio::test]
+async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env() -> TestResult {
+    use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    let repo = ignoring_repo(&f)?;
+    let key = crate::secrets_env::openssh_key(1);
+    let id = add_secret(&f, "DEPLOY_SSH", &key.trim_end().replace('\n', "\\n")).await?;
+    let prod = add_secret(&f, "PROD_KEY", "prod-synthetic-value-12345").await?;
+    assert!(f.h.store.vault_set_cd_prod(&prod, false, true).await?);
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+
+    // The person's key file checks out, all seven lines.
+    let (verified, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "DEPLOY_SSH", "sha256": f.h.app.deps.crypto.sha256_hex(key.as_bytes())}),
+    )
+    .await?;
+    assert!(!is_error, "{verified}");
+    assert_eq!(verified["match"], "escaped_newlines", "{verified}");
+    assert_eq!(verified["lines"], 7, "{verified}");
+
+    // Not allowed yet: asked for, as alice's Superagent, and nothing is written.
+    let copy = |secrets: Value, path: Option<&str>| {
+        let mut args = json!({"secrets": secrets, "reason": "the deploy script signs in"});
+        if let Some(path) = path {
+            args["path"] = json!(path);
+        }
+        cockpit_tool(&f, &token, "secret_copy_to_env", args)
+    };
+    let (asked, is_error) = copy(json!(["DEPLOY_SSH"]), None).await?;
+    assert!(!is_error, "{asked}");
+    assert_eq!(asked["copied"], json!([]), "{asked}");
+    assert_eq!(asked["waiting"], json!(["DEPLOY_SSH"]), "{asked}");
+    assert!(
+        asked["link"]
+            .as_str()
+            .is_some_and(|l| l.ends_with("/s/fixture/secrets?section=agents")),
+        "{asked}"
+    );
+    assert!(!repo.join(".env").exists(), "nothing is written");
+    let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
+    assert_eq!(record.env_files, EnvFiles::Asked);
+    assert_eq!(
+        record.env_requested_by.as_deref(),
+        Some("alice's Superagent")
+    );
+    let requests = audited(&f, "vault.agent.env_request").await?;
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["actor"], "cockpit:alice", "{requests:?}");
+
+    // A person allows it; the same call writes the key file's bytes into the ignored `.env`.
+    let allowed = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{id}/env"),
+        Some(
+            json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
+    let (copied, is_error) = copy(json!(["DEPLOY_SSH"]), None).await?;
+    assert!(!is_error, "{copied}");
+    assert_eq!(copied["copied"], json!(["DEPLOY_SSH"]), "{copied}");
+    assert_eq!(copied["file"], ".env", "{copied}");
+    assert!(!copied.to_string().contains("LXZ1-bGluZS0w"), "{copied}");
+    assert_eq!(crate::secrets_env::sourced(&repo, "DEPLOY_SSH")?, key);
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".env.example"))?,
+        "DEPLOY_SSH=\n"
+    );
+    let copies = audited(&f, "vault.agent.env").await?;
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0]["actor"], "cockpit:alice", "{copies:?}");
+
+    // A file Git would commit, and a production secret, are refused.
+    let (refused, is_error) = copy(json!(["DEPLOY_SSH"]), Some("deploy.env")).await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("Git does not ignore"),
+        "{refused}"
+    );
+    let (refused, is_error) = copy(json!(["PROD_KEY"]), None).await?;
+    assert!(is_error, "{refused}");
+    assert!(refused.to_string().contains("production"), "{refused}");
+
+    // Hosts are asked for, as alice's Superagent; a person allows them on the Secrets page.
+    let (requested, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_request_hosts",
+        json!({"secret": "DEPLOY_SSH", "hosts": ["deploy.quartio.test"], "reason": "deploys"}),
+    )
+    .await?;
+    assert!(!is_error, "{requested}");
+    assert_eq!(requested["requested"], json!(["deploy.quartio.test"]));
+    let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
+    assert_eq!(
+        record.requested_hosts,
+        vec!["deploy.quartio.test".to_owned()]
+    );
+    assert_eq!(record.requested_by.as_deref(), Some("alice's Superagent"));
+    assert!(record.hosts.is_empty(), "never bound by the Superagent");
+    let asks = audited(&f, "vault.agent.request").await?;
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(asks[0]["actor"], "cockpit:alice", "{asks:?}");
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_request_hosts",
+        json!({"secret": "PROD_KEY", "hosts": ["deploy.quartio.test"]}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(refused.to_string().contains("production"), "{refused}");
     f.h.app.end_all_shells().await;
     Ok(())
 }

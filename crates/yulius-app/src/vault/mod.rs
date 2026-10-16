@@ -16,6 +16,7 @@ mod runtime;
 mod team;
 mod terminal;
 mod two_factor;
+mod users;
 mod verify;
 
 use std::collections::{HashMap, HashSet};
@@ -32,6 +33,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub use runtime::{EGRESS_CA_FILE, FINGERPRINTS_FILE, SCRUB_EXEC_FLAG, SCRUB_FILE_ENV};
 pub use team::Revealed;
 pub use terminal::TerminalScrub;
+pub(crate) use users::SecretUser;
 
 use crate::auth::AuthContext;
 use crate::context::App;

@@ -22,12 +22,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::api::secrets::{AgentSecretView, EnvFilesAnswer};
 use yulius_domain::redact::is_env_file;
-use yulius_domain::task::Activity;
 use yulius_domain::vault::dotenv;
 use zeroize::Zeroizing;
 
 use super::requests::{reason, requester};
-use super::{AgentPayload, invalid};
+use super::{AgentPayload, SecretUser, invalid};
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -362,14 +361,15 @@ impl App {
         self.agent_view(&record, true).await
     }
 
-    /// `secret_copy_to_env`: copies the values of agent secrets of the task's project into a
-    /// dotenv file of its worktree that Git ignores (default `.env`), and their names into the
+    /// `secret_copy_to_env`: copies the values of agent secrets of the caller's project into a
+    /// dotenv file that Git ignores (default `.env`) of a task's worktree or of the sandbox
+    /// repository a Superagent runs in (SPEC-186 SAV-002), and their names into the
     /// `.env.example` beside it. All or nothing: everything that would refuse the copy is checked
-    /// first; then a secret no person has allowed is asked for instead (the task needs a person)
+    /// first; then a secret no person has allowed is asked for instead (a task needs a person)
     /// and nothing is written.
     pub(crate) async fn tool_secret_copy_to_env(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let args: CopyArgs = serde_json::from_value(args.clone())
@@ -387,7 +387,7 @@ impl App {
             )));
         }
         let store = &self.deps.store;
-        let all = store.vault_agent(Some(&ctx.task.sandbox_id)).await?;
+        let all = store.vault_agent(Some(user.sandbox())).await?;
         let mut records: Vec<VaultSecretRecord> = Vec::with_capacity(names.len());
         for name in &names {
             let record = all.iter().find(|r| &r.name == name).ok_or_else(|| {
@@ -417,12 +417,10 @@ impl App {
             )));
         }
         let sandbox = store
-            .sandbox(&ctx.task.sandbox_id)
+            .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
-        let worktree = self
-            .sandbox_worktree(&sandbox, ctx.task.id.as_str(), None)
-            .await?;
+        let worktree = self.secret_user_folder(user, &sandbox).await?;
         let folder = open_folder(&worktree, folders)?;
         let target = folder.path_of(file_name);
         let existing = read_in(&folder, file_name)?;
@@ -452,15 +450,10 @@ impl App {
         if !waiting.is_empty() {
             let why = reason(args.reason.as_deref());
             for record in &waiting {
-                self.ask_env_files(ctx, record, &sandbox.slug, &why).await?;
+                self.ask_env_files(user, record, &sandbox.slug, &why)
+                    .await?;
             }
-            if let Some(task) = store.task(&ctx.task.id).await?
-                && let Err(err) = self
-                    .set_task_activity(&task, Activity::NeedsAttention)
-                    .await
-            {
-                tracing::warn!(task = %task.id, error = %err, "could not flag a .env request");
-            }
+            self.flag_secret_wait(user, "a .env request").await?;
             let waiting: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             return Ok(json!({
                 "copied": [],
@@ -481,7 +474,7 @@ impl App {
         let (example_added, warning) = self.add_example_names(&worktree, &folder, &names).await;
         for record in &records {
             self.note_agent_use(
-                (ctx.attempt.id.as_str(), &ctx.actor()),
+                (&user.run(), &user.actor()),
                 record,
                 "vault.agent.env",
                 &target,
@@ -525,11 +518,11 @@ impl App {
         Writing::InPlace
     }
 
-    /// Records that `ctx`'s task asks to copy `record` into `.env` files (compare and set; a
-    /// repeated ask by the same task changes nothing).
+    /// Records that `user` (a task, a Superagent) asks to copy `record` into `.env` files
+    /// (compare and set; a repeated ask by the same asker changes nothing).
     pub(crate) async fn ask_env_files(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         record: &VaultSecretRecord,
         slug: &str,
         why: &str,
@@ -538,7 +531,7 @@ impl App {
         let by = requester(
             record.env_requested_by.as_deref(),
             asked,
-            ctx.task.number,
+            &user.asker(),
             record.sandbox_id.is_none().then_some(slug),
         );
         if asked && record.env_requested_by.as_deref() == Some(by.as_str()) {
@@ -559,7 +552,7 @@ impl App {
             ));
         }
         self.vault_audit(
-            &format!("task:{}", ctx.task.number),
+            &user.actor(),
             "vault.agent.env_request",
             Some(&record.id),
             &if why.is_empty() {
@@ -817,16 +810,11 @@ impl App {
                 )));
             }
             if let Some(ctx) = asker {
+                let user = SecretUser::Task(ctx);
                 for record in &waiting {
-                    self.ask_env_files(ctx, record, &sandbox.slug, why).await?;
+                    self.ask_env_files(user, record, &sandbox.slug, why).await?;
                 }
-                if let Some(task) = self.deps.store.task(&ctx.task.id).await?
-                    && let Err(err) = self
-                        .set_task_activity(&task, Activity::NeedsAttention)
-                        .await
-                {
-                    tracing::warn!(task = %task.id, error = %err, "could not flag a CD secret request");
-                }
+                self.flag_secret_wait(user, "a CD secret request").await?;
             }
             return Err(AppError::Conflict(format!(
                 "nothing ran: a person who manages {} allows using {} outside the proxy (the \

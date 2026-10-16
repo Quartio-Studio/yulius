@@ -488,33 +488,28 @@ impl App {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// `secrets_list`: names, descriptions and bindings of the agent secrets the caller's project
-    /// may use, and how a task's agent or the Superagent (no proxy, SPEC-178 VAU-001) uses them;
-    /// never a value.
+    /// `secrets_list`: names, descriptions, bindings and placeholders of the agent secrets the
+    /// caller's project may use, and how a task's agent or the Superagent (SPEC-186 SAV-007) uses
+    /// them; never a value.
     pub(crate) async fn tool_secrets_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
         let records = self.deps.store.vault_agent(Some(&caller.sandbox)).await?;
-        let superagent = caller.task.is_none();
         let secrets: Vec<Value> = records
             .iter()
             .map(|r| {
-                let mut secret = json!({
+                json!({
                     "name": r.name,
                     "description": r.description,
                     "scope": if r.sandbox_id.is_some() { "this project" } else { "every project" },
                     "hosts": r.hosts,
                     "requested_hosts": r.requested_hosts,
+                    "adds": injection_of(r).describe(),
+                    "placeholder": format!("{PLACEHOLDER_PREFIX}{}", r.name),
                     "fields": r.fields,
                     "env_files": r.env_files.as_str(),
-                });
-                // What the proxy adds and the placeholder it replaces: of no use outside it.
-                if !superagent {
-                    secret["adds"] = json!(injection_of(r).describe());
-                    secret["placeholder"] = json!(format!("{PLACEHOLDER_PREFIX}{}", r.name));
-                }
-                secret
+                })
             })
             .collect();
-        if superagent {
+        if caller.task.is_none() {
             let sandbox = self
                 .deps
                 .store
@@ -524,10 +519,12 @@ impl App {
             return Ok(json!({
                 "secrets": secrets,
                 "how_to_use": [
-                    "These are the project's agent secrets: tasks' agents use them without seeing them, through Yulius' proxy (on the bound hosts), the project browser and the git-ignored .env. This session is not behind the proxy and holds no placeholders: work that uses a secret belongs in a task.",
+                    "This session uses the project's agent secrets as a task's agent does, without seeing them: Yulius' proxy adds a secret to requests for its bound hosts (call them normally, for example curl https://<host>/...), and in code or CLIs the environment variable NAME holds the placeholder yulius-secret-NAME (for example Authorization: Bearer $NAME), which the proxy replaces for the bound hosts only. Several secrets on one host and header: choose with the request header X-Yulius-Secret: NAME. Secrets added after this session started have no variable yet: write the placeholder.",
+                    "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API host from its description and documentation and ask for it with secret_request_hosts; a person allows it on the Secrets page (they may be the person in front of you: give them the link).",
+                    "Code that runs outside the proxy (a deploy script, ssh, a deployed app) reads its keys from the git-ignored .env of this repository: put a secret there with secret_copy_to_env, never by writing the file yourself (you would write [secret:NAME]). A person allows each secret once (env_files: allowed); until then the call asks them. A multi-line key (stored with literal \\n) is written as its file, line breaks and final line break included.",
                     "To check that a value someone holds (a file, a key they pasted into a file) is the one in the vault, compute its SHA-256 in a shell without printing the value (for example sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and call secret_verify with the secret's name and that hash. It says whether it matches exactly, only without a final line break, or with its line breaks written as literal \\n (an agent secret never spans lines, so a multi-line key is stored that way), and on a match how many lines the value stands for.",
-                    format!("A person adds, rotates and reveals agent secrets (with their two-factor code) and allows the hosts agents ask for on the Secrets page: {}", self.agent_secrets_link(&sandbox.slug)),
-                    "You never receive values: anything that would show one (command output, files, tool results) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself."
+                    format!("A person adds, rotates and reveals agent secrets (with their two-factor code) and allows the hosts and .env copies asked for on the Secrets page: {}", self.agent_secrets_link(&sandbox.slug)),
+                    "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself."
                 ],
             }));
         }
