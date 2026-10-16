@@ -101,10 +101,11 @@ export function createAgentView(ctx, sandbox) {
       path: `/api/shells/${enc(shell.id)}/terminal`,
       onLink: (uri, event) => ctx.openLink(uri, event),
       readOnlyLabel: () => 'Read-only',
-      // A usage limit moved it to another subscription (SPEC-074 SUP-006): it goes on there, so
-      // the panel follows it instead of offering Start again.
+      // A usage limit moved it to another subscription (SPEC-074 SUP-006), or an update restarts
+      // it to get new tools (SPEC-186 SAV-006): it goes on, so the panel follows it instead of
+      // offering Start again.
       exitMessage: (exit) => (exit.status === 'switched'
-        ? { tone: 'info', text: 'Moving the Superagent to another subscription…' }
+        ? { tone: 'info', text: 'Restarting the Superagent; its conversation continues…' }
         : { tone: 'info', text: 'The Superagent stopped. Its conversation is kept.' }),
       exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
       // Opened again rather than recovered: the server answers once the new one runs (it holds the

@@ -49,12 +49,14 @@ watching, steering and unblocking.
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
-  them or a command prints shows there as `[secret:NAME]` (SPEC-147). A server taken from
-  `.mcp.json` whose key is an agent secret's placeholder needs the egress proxy, which the
-  Superagent does not have yet; one whose value is `${secret:NAME}` works. It reads the agent
-  vault (names, never values): it names the project's agent secrets and tells whether a
-  key the person holds in a file is the one in the vault, from the file's SHA-256, also when the
-  vault holds a multi-line key with literal `\n` (SPEC-178).
+  them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as
+  a task does, never seeing a value: it is behind the egress proxy, so its requests to a secret's
+  bound hosts carry it (`.mcp.json` servers with placeholders work too); it copies allowed secrets
+  into the repository's git-ignored `.env` and asks for hosts, each asked under the person's name
+  ("alice's Superagent") for a person to allow; and it tells whether a key the person holds in a
+  file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). After an update
+  that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
+  its conversation.
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
   task run on every subscription and to the Superagent, their secrets taken from the agent
   secrets. A repository's
@@ -183,7 +185,8 @@ watching, steering and unblocking.
   and a description: agents find the service's host and ask for it, and a person allows it with
   one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
   `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
-  there, and a person allows that once per secret (SPEC-129).
+  there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH),
+  stored with literal `\n`, lands there as its file, byte for byte (SPEC-186).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the

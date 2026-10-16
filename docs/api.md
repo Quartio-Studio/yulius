@@ -1450,8 +1450,12 @@ task; other hooks answer as usual.
   and `secret_copy_to_env {secrets, path?: ".env", reason?}` (SPEC-129: writes the values of
   secrets a person allowed into an ignored, untracked dotenv file of the task's worktree and
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
-  for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
-  redacted.
+  for instead, audited `vault.agent.env_request`, and nothing is written; a key block stored with
+  literal `\n` is written as its file in single quotes, SPEC-186); every MCP result is
+  redacted. The Superagent (`ck_` token, SPEC-186) is served `secrets_list`,
+  `secret_request_hosts` and `secret_copy_to_env` too (its copies go to the sandbox repository,
+  its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), not `browser_fill_secret`;
+  the egress proxy accepts its bearer as `yulius:ck_…`.
 - MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
   `sha256sum`'s line) →
   `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`
@@ -1459,5 +1463,4 @@ task; other hooks answer as usual.
   candidate whose SHA-256 is given is the secret's value, without a final line break, or with its
   line breaks as the literal `\n` the vault holds; never the value or a hash Yulius computed from
   it. Production secrets are refused; audited once per vault generation, sandbox, caller, secret
-  and candidate (`vault.agent.verify`). The Superagent (`ck_` token) is served `secrets_list` and
-  `secret_verify`, not the other secret tools; task agents are not served `secret_verify`.
+  and candidate (`vault.agent.verify`). Task agents are not served `secret_verify`.
