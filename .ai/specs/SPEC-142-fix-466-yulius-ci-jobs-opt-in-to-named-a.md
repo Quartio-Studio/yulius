@@ -5,7 +5,7 @@ status: done
 
 # SPEC-142: Yulius CI jobs opt in to named agent secrets through the egress proxy
 
-Status: done
+Status: done. The scan it describes moved to Vidoc's vidoc-1 API in [SPEC-195](SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md) (ADR-0157): the Vidoc CLI and `api.vidoc.dev` are gone.
 Date: 2026-10-15
 Owner: Yulius task #140 (part of task #118, SPEC-138)
 Scope authorization: task #140: "A `[[ci.jobs]]` entry can opt in to named agent secrets (e.g.

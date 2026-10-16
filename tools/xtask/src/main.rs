@@ -10,7 +10,8 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   test      Run nextest and documentation tests
   deps      Check advisories, licenses, sources, and unused dependencies
   ci        Run all required gates, failing on the first failed command
-  security  Scan the branch with Vidoc, failing on open critical or high findings (needs a key; not in ci)";
+  security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings;
+            --all scans the whole repository (needs a Vidoc key; not in ci)";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when
 /// it reads this line until the next one or the job's end.
@@ -130,11 +131,11 @@ fn execute(task: &str) -> io::Result<()> {
 /// The security gate keeps its exit code: 2 (not run here) must stay distinct from 1 (failed).
 /// On Unix Python replaces this process, so a signal sent to `scripts/dev` reaches the gate, which
 /// then kills the scan it started.
-fn security() -> io::Result<ExitCode> {
+fn security(args: &[String]) -> io::Result<ExitCode> {
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
-    println!("+ {python} scripts/vidoc_scan.py");
+    println!("+ {python} scripts/vidoc_scan.py {}", args.join(" "));
     let mut command = Command::new(&python);
-    command.arg("scripts/vidoc_scan.py");
+    command.arg("scripts/vidoc_scan.py").args(args);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -157,7 +158,7 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    if args.len() != 1
+    if (args.len() != 1 && args[0] != "security")
         || ![
             "doctor", "check", "fmt", "lint", "test", "deps", "ci", "security",
         ]
@@ -169,7 +170,7 @@ fn main() -> ExitCode {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     if args[0] == "security" {
         return env::set_current_dir(root)
-            .and_then(|()| security())
+            .and_then(|()| security(&args[1..]))
             .unwrap_or_else(|error| {
                 eprintln!("Gate failed: {error}");
                 ExitCode::FAILURE

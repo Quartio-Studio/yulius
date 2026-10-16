@@ -241,14 +241,11 @@ impl App {
         port: u16,
     ) -> AppResult<Vec<(VaultSecretRecord, AgentPayload)>> {
         let mut out = Vec::new();
-        for record in self
-            .deps
-            .store
-            .vault_agent(Some(&client.sandbox_id))
-            .await?
-        {
-            if client.may_use(&record.name, record.cd_prod) && bound_to(&record, host, port) {
-                let payload: AgentPayload = self.open_payload(&record)?;
+        for record in self.applied_agent_secrets(&client.sandbox_id).await? {
+            if client.may_use(&record.name, record.cd_prod)
+                && bound_to(&record, host, port)
+                && let Some(payload) = self.agent_payload(&record)?
+            {
                 out.push((record, payload));
             }
         }
@@ -355,7 +352,7 @@ impl App {
         if !matches!(report.channel.as_str(), "bash" | "tool") {
             return Err(AppError::Invalid("channel must be bash or tool".into()));
         }
-        let records = self.deps.store.vault_agent(Some(&sandbox)).await?;
+        let records = self.applied_agent_secrets(&sandbox).await?;
         for name in report.names.iter().take(64) {
             if let Some(record) = records.iter().find(|r| &r.name == name) {
                 self.vault_audit_once(
@@ -385,7 +382,7 @@ impl App {
         task_token: &str,
         launch: &mut LaunchPlan,
     ) -> AppResult<()> {
-        let records = self.deps.store.vault_agent(Some(&sandbox.id)).await?;
+        let records = self.applied_agent_secrets(&sandbox.id).await?;
         for record in &records {
             if let Ok(name) = SecretName::parse(&record.name) {
                 launch
@@ -423,7 +420,7 @@ impl App {
         bearer: &str,
         launch: &mut LaunchPlan,
     ) -> AppResult<()> {
-        for record in self.deps.store.vault_agent(Some(&sandbox.id)).await? {
+        for record in self.applied_agent_secrets(&sandbox.id).await? {
             if let Ok(name) = SecretName::parse(&record.name) {
                 let set = |(key, _): &(String, String)| key == name.as_str();
                 if !launch.env.iter().any(set) && !launch.secret_env.iter().any(set) {
@@ -531,14 +528,21 @@ impl App {
     /// caller's project may use, and how a task's agent or the Superagent (SPEC-186 SAV-007) uses
     /// them; never a value.
     pub(crate) async fn tool_secrets_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
-        let records = self.deps.store.vault_agent(Some(&caller.sandbox)).await?;
+        let records = self.applied_agent_secrets(&caller.sandbox).await?;
         let secrets: Vec<Value> = records
             .iter()
             .map(|r| {
+                let scope = if r.id == crate::vidoc_key::VIDOC_SECRET_ID {
+                    "the instance (its Vidoc key, set by the superadmin)"
+                } else if r.sandbox_id.is_some() {
+                    "this project"
+                } else {
+                    "every project"
+                };
                 json!({
                     "name": r.name,
                     "description": r.description,
-                    "scope": if r.sandbox_id.is_some() { "this project" } else { "every project" },
+                    "scope": scope,
                     "hosts": r.hosts,
                     "requested_hosts": r.requested_hosts,
                     "adds": injection_of(r).describe(),
@@ -779,7 +783,7 @@ impl EgressPolicy for App {
     }
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
-        match self.deps.store.vault_agent(Some(&client.sandbox_id)).await {
+        match self.applied_agent_secrets(&client.sandbox_id).await {
             Ok(records) => records
                 .iter()
                 .any(|r| client.may_use(&r.name, r.cd_prod) && bound_to(r, host, port)),

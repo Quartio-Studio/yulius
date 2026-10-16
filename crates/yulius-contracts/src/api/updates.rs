@@ -203,3 +203,43 @@ pub struct JevTestResult {
     /// Round trip of the request in milliseconds.
     pub latency_ms: Option<u64>,
 }
+
+/// `GET /api/admin/vidoc`: the instance Vidoc key's state, never the key (SPEC-195 VDK-002).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VidocKeyView {
+    /// Whether the instance has a Vidoc key now (without one, the security scan is off).
+    pub configured: bool,
+    /// Where the key in use comes from: `settings` (saved here) or `config`
+    /// (`YULIUS_VIDOC_API_KEY_FILE`); `None` without a key.
+    pub source: Option<String>,
+    /// When the saved key was set (RFC 3339).
+    pub set_at: Option<String>,
+    /// Who set it (login).
+    pub set_by: Option<String>,
+    /// Whether `YULIUS_VIDOC_API_KEY_FILE` holds a usable key (used when nothing is saved here).
+    pub config_present: bool,
+    /// Why the configured key file is not usable, in words.
+    pub config_error: Option<String>,
+}
+
+/// `PUT /api/admin/vidoc`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetVidocKey {
+    /// The Vidoc API key from <https://model.vidocsecurity.com/#key> (8–4096 printable
+    /// characters, no spaces).
+    pub key: String,
+}
+
+/// `POST /api/admin/vidoc/test`: one `GET /v1/models` with the key in use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VidocTestResult {
+    /// Vidoc answered and lists `vidoc-1`.
+    pub ok: bool,
+    /// `ok`, `refused` (the key was rejected), `unreachable`, `timeout`, `invalid` (no `vidoc-1`
+    /// in the answer) or `none` (no key).
+    pub result: String,
+    /// One sentence for the person.
+    pub message: String,
+    /// Round trip of the request in milliseconds.
+    pub latency_ms: Option<u64>,
+}

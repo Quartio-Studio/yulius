@@ -5,7 +5,7 @@ status: done
 
 # SPEC-128: agents scan their branch with Vidoc before delivery
 
-Status: done
+Status: done. The scan it describes moved to Vidoc's vidoc-1 API in [SPEC-195](SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md) (ADR-0157): the Vidoc CLI and `api.vidoc.dev` are gone.
 Date: 2026-10-14
 Owner: Yulius task #109
 Scope authorization: the person's request (task #109): "In keys for agents you have vidoc security

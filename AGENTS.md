@@ -75,17 +75,24 @@ scripts/dev ci
 scripts/dev security
 ```
 
-Every change: before delivery run `scripts/dev security`, which scans the branch's commits with
-Vidoc through the agent secret `VIDOC_API_KEY` and fails on open critical or high findings
-([ADR-0104](docs/decisions/0104-agents-scan-their-branch-with-vidoc-before-delivery.md)); exit 2
-(not runnable here) is unrun, not passed. Yulius CI runs it too, as the `security` job on pull
-request heads ([ADR-0116](docs/decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md);
-it gets the key as a placeholder through the egress proxy): findings fail the check, and a job that
-could not scan ends **skipped** ("security scan skipped",
-[ADR-0133](docs/decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)), which is unrun, not
-passed. `enabled` in `.config/vidoc.toml` turns the scan on (as committed) or off
+Every change: before delivery run `scripts/dev security`. It sends the files the branch changed
+against `dev` (read from `HEAD`, so commit first) to Vidoc's vidoc-1 at `model.vidocsecurity.com`
+and fails on open critical or high findings
+([ADR-0157](docs/decisions/0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md)).
+Fix a finding test-first. A false positive becomes an `[[ignore]]` entry in `.config/vidoc.toml`,
+with its reason, only once the independent reviewer agrees; list it in the spec's Evidence. Exit 2
+(not run: no key, a refused key, no quota, Vidoc unreachable) is unrun, never passed. The key is
+`VIDOC_API_KEY`, a placeholder that the egress proxy replaces: this project's agent secret, else
+the instance's Vidoc key (Settings, Instance). The code goes to Vidoc. `scripts/dev security
+--all` is the broad scan of the whole repository, for an audit task (`--report FILE` writes JSON).
+Yulius CI runs the change scan as the `security` job on pull request heads
+([ADR-0116](docs/decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)):
+findings fail the check, and a scan that could not run ends **skipped**
+([ADR-0133](docs/decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)), which is unrun,
+not passed. `enabled` in `.config/vidoc.toml` turns the scan on (as committed) or off
 ([ADR-0107](docs/decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)); a disabled
-scan exits 0 saying so and is reported as disabled, not passed.
+scan exits 0 saying so and is reported as disabled, not passed. Other projects run the same scanner
+as `yulius security-scan`.
 
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).

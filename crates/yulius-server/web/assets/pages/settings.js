@@ -133,7 +133,7 @@ export function mountSettingsPage(ctx) {
         tile('users', 'Users', superadmin ? 'Who may sign in' : 'Who may sign in, and resetting a lost two-factor', '/admin/users'),
         tile('user', 'Subscriptions', 'Claude subscriptions, their usage and when to add more', '/admin/accounts'),
         superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
-        superadmin ? tile('download', 'Instance', 'Version, updates and the Jev key', '/admin/instance') : null,
+        superadmin ? tile('download', 'Instance', 'Version, updates, the Jev and Vidoc keys', '/admin/instance') : null,
         tile('plug', 'MCP for every sandbox', 'Tool servers attached in every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
         tile('book', 'Skills for every sandbox', 'Skills available in every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))));
   }

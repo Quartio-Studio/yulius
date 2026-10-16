@@ -49,7 +49,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`, switched on or off in `.config/vidoc.toml`) |
+| tooling | `tools/` (fake agent, xtask) and `scripts/` (the gates, and `vidoc_scan.py`, the security scan that `yulius` embeds as `yulius security-scan`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
@@ -660,13 +660,13 @@ sequenceDiagram
     participant X as Egress proxy
     P->>UI: Add VIDOC_API_KEY (name, value, description)
     UI->>App: POST agent-secrets (hosts [], injection none)
-    A->>App: secrets_list, then secret_request_hosts(api.vidoc.com)
+    A->>App: secrets_list, then secret_request_hosts(model.vidocsecurity.com)
     App-->>A: requested, waiting for a person (task needs attention)
-    A->>X: request to api.vidoc.com with the placeholder
+    A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: forwarded without the secret (not bound yet)
     P->>UI: Allow
     UI->>App: POST agent-secrets/{id}/request {allow: true}
-    A->>X: request to api.vidoc.com with the placeholder
+    A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
@@ -692,8 +692,40 @@ flowchart LR
   PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
   EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]
   JOB -->|"request with yulius-secret-VIDOC_API_KEY"| X["Egress proxy: client ci:run"]
-  X -->|"value only toward bound hosts"| V["api.vidoc.dev"]
+  X -->|"value only toward bound hosts"| V["model.vidocsecurity.com"]
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
+```
+
+## Vidoc: the instance key and the security scan
+
+Vidoc is an optional instance service, like Jev
+([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md), ADR-0157).
+
+- **The key.** A superadmin saves the key on the Instance page or in a setup step
+  (`crates/yulius-app/src/vidoc_key.rs`, `/api/admin/vidoc*`). It is sealed in the `instance` row,
+  or read from `YULIUS_VIDOC_API_KEY_FILE` while nothing is saved.
+- **Where it applies.** The vault adds it as the virtual agent secret `VIDOC_API_KEY`
+  (`App::applied_agent_secrets`, `vault/mod.rs`), bound to `model.vidocsecurity.com` only, for every
+  sandbox without an agent secret of that name. That covers agent runs and the Superagent, and CI
+  jobs whose integration-branch grant names it. The egress proxy injects, audits (`instance:vidoc`)
+  and redacts it as it does any agent secret. MCP references, `.env` copies and browser filling
+  never resolve it.
+- **The scan.** It runs where the code is. `scripts/vidoc_scan.py`, embedded in the binary as
+  `yulius security-scan`, reads `HEAD`'s tree and sends line-numbered chunks to `/v1/messages`.
+  It reads the JSON findings back, and fails on open critical or high ones.
+- **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
+  has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
+
+```mermaid
+flowchart LR
+  SA["Superadmin: Instance page or setup"] -->|"PUT /api/admin/vidoc"| APP["Yulius: instance row, sealed"]
+  FILE["YULIUS_VIDOC_API_KEY_FILE"] -.->|"while nothing is saved"| APP
+  APP -->|"virtual agent secret VIDOC_API_KEY, unless the project has its own"| PX["Egress proxy"]
+  AG["Agent: yulius security-scan, scripts/dev security"] -->|"x-api-key: yulius-secret-VIDOC_API_KEY"| PX
+  CI["CI job security, granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
+  PX -->|"the key toward model.vidocsecurity.com only"| V["Vidoc /v1/messages, vidoc-1"]
+  V -->|"JSON findings: exit 0, 1, or 2 when not run"| AG
+  APP -->|"key set: briefing and onboarding add the scan"| BOOT["infra bootstrap"]
 ```
 
 ## CD (deployment)
