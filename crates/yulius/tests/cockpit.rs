@@ -65,6 +65,10 @@ echo \"workspace:${YULIUS_TASK_TOKEN:-none}\"\n\
 printf %s \"${CLAUDE_CODE_SHELL_PREFIX:-none}\" > \"$CLAUDE_CONFIG_DIR/launch-shell-prefix\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
 echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
+echo \"proxy:${HTTPS_PROXY:-none}\"\n\
+echo \"no-proxy:${NO_PROXY:-none}\"\n\
+echo \"ca:${SSL_CERT_FILE:-none}\"\n\
+echo \"placeholder:${APIFY_KEY:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
 echo \"cwd:$(pwd)\"\n\
 echo \"ready\"\n\
@@ -2864,5 +2868,150 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("production"), "{refused}");
     f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// An HTTPS request to `host` as the proxy hands it to the egress policy.
+fn egress_request(
+    host: &str,
+    headers: &[(&str, &str)],
+) -> yulius_app::ports::egress::EgressRequest {
+    yulius_app::ports::egress::EgressRequest {
+        host: host.into(),
+        port: 443,
+        path_and_query: "/v1/deploys".into(),
+        headers: headers
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), v.as_bytes().to_vec()))
+            .collect(),
+    }
+}
+
+/// The value of header `name` a request is forwarded with.
+fn forwarded(decision: &yulius_app::ports::egress::EgressDecision, name: &str) -> Option<String> {
+    match decision {
+        yulius_app::ports::egress::EgressDecision::Forward { headers, .. } => headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| String::from_utf8_lossy(v).into_owned()),
+        yulius_app::ports::egress::EgressDecision::Refuse { .. } => None,
+    }
+}
+
+/// SPEC-186 SAV-001, SAV-005 (ADR-0150): the Superagent runs behind the egress proxy as a task
+/// run does, with its own bearer: the proxy variables, the CA bundle and a placeholder per agent
+/// secret are in its environment, the proxy adds a bound secret to its requests for the bound
+/// host (a multi-line key as stored), never a production secret, audited as the Superagent, and
+/// refuses its bearer once it ended.
+#[tokio::test]
+async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> TestResult {
+    use yulius_app::ports::egress::EgressPolicy as _;
+    use yulius_app::ports::vault::VaultStore as _;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    f.h.app
+        .enable_egress(Some("synthetic-egress-ca-bundle\n".into()));
+    add_apify_key(&f).await?;
+    let pem = crate::secrets_env::pem_key().replace('\n', "\\n");
+    let deploy = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"name": "DEPLOY_PEM", "hosts": ["deploy.quartio.test"], "injection": "header",
+            "header_name": "X-Deploy-Key", "value": pem}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(deploy.status, StatusCode::CREATED, "{:?}", deploy.body);
+    // A production secret bound to a host (kept from before it was one): never used.
+    let prod = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"name": "PROD_KEY", "hosts": ["prod.quartio.test"], "injection": "bearer",
+            "value": "prod-synthetic-value-12345"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(prod.status, StatusCode::CREATED, "{:?}", prod.body);
+    assert!(
+        f.h.store
+            .vault_set_cd_prod(prod.body["id"].as_str().ok_or("id")?, false, true)
+            .await?
+    );
+
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let proxy = printed(&screen, "proxy")?;
+    assert!(
+        proxy.starts_with(&format!("http://yulius:{token}@")),
+        "its own bearer: {proxy}"
+    );
+    assert!(printed(&screen, "no-proxy")?.contains("anthropic.com"));
+    assert_eq!(printed(&screen, "placeholder")?, "yulius-secret-APIFY_KEY");
+    let ca = PathBuf::from(printed(&screen, "ca")?);
+    assert!(
+        ca.starts_with(f.data.join("shells").join(&id)),
+        "in its run directory: {ca:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&ca)?,
+        "synthetic-egress-ca-bundle\n"
+    );
+
+    let client = f.h.app.egress_client(&token).await.ok_or("client")?;
+    assert_eq!(client.actor(), "cockpit:alice");
+    assert!(
+        f.h.app
+            .egress_intercepts(&client, "api.apify.test", 443)
+            .await
+    );
+    assert!(
+        !f.h.app
+            .egress_intercepts(&client, "prod.quartio.test", 443)
+            .await
+    );
+    let apify =
+        f.h.app
+            .egress_apply(
+                &client,
+                egress_request(
+                    "api.apify.test",
+                    &[("authorization", "Bearer yulius-secret-APIFY_KEY")],
+                ),
+            )
+            .await;
+    assert_eq!(
+        forwarded(&apify, "authorization"),
+        Some(format!("Bearer {SECRET_VALUE}"))
+    );
+    // A header cannot carry line breaks: the key goes as stored, byte for byte.
+    let key =
+        f.h.app
+            .egress_apply(&client, egress_request("deploy.quartio.test", &[]))
+            .await;
+    assert_eq!(forwarded(&key, "x-deploy-key"), Some(pem.clone()));
+    let uses: Vec<Value> = audited(&f, "vault.agent.use").await?;
+    assert_eq!(uses.len(), 2, "{uses:?}");
+    assert!(
+        uses.iter().all(|u| u["actor"] == "cockpit:alice"),
+        "{uses:?}"
+    );
+
+    // Ended, its bearer is refused at once.
+    f.h.app.end_all_shells().await;
+    assert!(f.h.app.egress_client(&token).await.is_none());
     Ok(())
 }

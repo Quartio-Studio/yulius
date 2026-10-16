@@ -487,6 +487,7 @@ impl App {
         let project_mcp_servers = self.import_project_mcp(record).await;
         // The sandbox's MCP servers as a task run gets them, the file's included (SPEC-147).
         let mcp = self.mcp_attachments(record).await?;
+        let bearer = runtime.cockpit_token(self.deps.crypto.as_ref());
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder.clone(),
             config_dir: space.home.join(".claude"),
@@ -496,7 +497,7 @@ impl App {
             credential,
             yulius: Some((
                 self.config.internal_url.clone(),
-                crate::model::Secret(runtime.cockpit_token(self.deps.crypto.as_ref())),
+                crate::model::Secret(bearer.clone()),
             )),
             project_mcp_servers,
             mcp,
@@ -522,6 +523,9 @@ impl App {
         }
         plan.env = env;
         plan.containment = space.containment.clone();
+        // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
+        self.vault_superagent_setup(record, &runtime.run_dir, &bearer, &mut plan)
+            .await?;
         let reader = self.spawn_shell(runtime, &plan).await;
         drop(lease);
         let reader = reader?;

@@ -156,7 +156,7 @@ pub struct ShellRuntime {
     created_at: Timestamp,
     /// Creation number, persisted with the shell (stable tab order).
     seq: u64,
-    run_dir: PathBuf,
+    pub(crate) run_dir: PathBuf,
     token: [u8; 32],
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
@@ -424,7 +424,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/bin/sh"))
     }
 
-    fn shell(&self, id: &str) -> Option<Arc<ShellRuntime>> {
+    pub(crate) fn shell(&self, id: &str) -> Option<Arc<ShellRuntime>> {
         self.shells
             .shells
             .lock()
