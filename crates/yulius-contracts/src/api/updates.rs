@@ -247,3 +247,94 @@ pub struct VidocTestResult {
     /// Round trip of the request in milliseconds.
     pub latency_ms: Option<u64>,
 }
+
+/// `GET /api/admin/sandbox-docker` (superadmin; SPEC-203 HST-014): whether isolated sandboxes
+/// get Docker on this server, why not and the fix, in `yulius doctor`'s words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxDockerView {
+    /// Sandboxes get an engine (or Docker is deliberately off).
+    pub ok: bool,
+    /// The verdict: what holds, or what is missing and the fix.
+    pub detail: String,
+    /// Sandboxes are isolated on this server (without isolation there is no Docker).
+    pub isolated: bool,
+    /// The current base of sandboxes' systems.
+    pub base: Option<SandboxBaseView>,
+    /// The host has `dockerd` (new bases copy it).
+    pub host_dockerd: bool,
+    /// A base build that runs or waits.
+    pub rebuild: Option<BaseRebuildView>,
+    /// Sandboxes that run Docker installed in them instead of their base's (HST-017).
+    pub own_engines: Vec<OwnEngineView>,
+    /// How such a sandbox goes back to Docker's packages.
+    pub own_engine_fix: String,
+    /// The last update's re-check of the host (HST-012).
+    pub host_check: Option<crate::update::HostCheckReport>,
+    /// The last smoke test run from here (HST-015).
+    pub smoke: Option<DockerSmokeView>,
+}
+
+/// A base of sandboxes' systems.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxBaseView {
+    /// `base-<n>`.
+    pub id: String,
+    /// It has `dockerd`.
+    pub dockerd: bool,
+}
+
+/// A base build that runs or waits for the host to settle (RFC 3339 times).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseRebuildView {
+    /// A build runs, since then.
+    pub building_since: Option<String>,
+    /// The host changed then; the build waits until it has been unchanged for 10 minutes.
+    pub pending_since: Option<String>,
+    /// When that build starts.
+    pub starts_at: Option<String>,
+    /// When the new base should be ready (from the last build's duration), when known.
+    pub ready_by: Option<String>,
+    /// How long the last build took.
+    pub last_build_secs: Option<u64>,
+    /// The last build's error.
+    pub error: Option<String>,
+}
+
+/// A sandbox on its own Docker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnEngineView {
+    /// The sandbox's id.
+    pub sandbox: String,
+    /// Its name, when known.
+    pub name: Option<String>,
+    /// The `dockerd` its engine runs (in its system).
+    pub dockerd: String,
+}
+
+/// One check of the Docker smoke test.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerSmokeCheck {
+    /// What was checked (`yulius doctor --docker-smoke`'s names).
+    pub name: String,
+    /// It held.
+    pub ok: bool,
+    /// What was seen.
+    pub detail: String,
+}
+
+/// A smoke test started from Settings → Instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerSmokeView {
+    /// `running`, `passed` or `failed`.
+    pub state: String,
+    /// Who started it.
+    pub started_by: String,
+    /// When (RFC 3339).
+    pub started_at: String,
+    /// When it ended.
+    pub finished_at: Option<String>,
+    /// Each check as it ended.
+    pub checks: Vec<DockerSmokeCheck>,
+    /// Why it could not run or did not finish.
+    pub error: Option<String>,
+}

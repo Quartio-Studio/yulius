@@ -167,6 +167,9 @@ enum Command {
         /// (SPEC-196): run it as root or the service user; it uses the current base.
         #[arg(long)]
         docker_smoke: bool,
+        /// With --docker-smoke: one JSON line per check (what Settings → Instance reads).
+        #[arg(long, requires = "docker_smoke")]
+        json: bool,
         /// Data directory.
         #[arg(
             long = "data-dir",
@@ -374,14 +377,16 @@ fn main() -> ExitCode {
         Command::Doctor {
             docker_smoke: true,
             data,
+            json,
             ..
-        } => yulius::docker_smoke::main(&data),
+        } => yulius::docker_smoke::main(&data, json),
         Command::Doctor {
             docker_smoke: false,
             data,
             contained,
             contained_readonly,
             proxy_secret_file,
+            ..
         } => yulius::doctor::doctor(
             &data,
             contained,

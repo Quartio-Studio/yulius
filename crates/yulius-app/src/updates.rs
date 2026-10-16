@@ -235,6 +235,11 @@ impl App {
         self.updates.services.get()
     }
 
+    /// The root update helper, when installed in the update services.
+    pub(crate) fn updates_helper(&self) -> Option<&Arc<dyn UpdateHelper>> {
+        self.update_services()?.helper.as_ref()
+    }
+
     /// The commit this server was built from.
     #[must_use]
     pub fn build_commit(&self) -> Option<&str> {

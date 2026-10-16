@@ -56,6 +56,7 @@ mod projects;
 mod queued_messages;
 mod recovery;
 mod run_metrics;
+mod sandbox_docker;
 mod secrets;
 mod secrets_env;
 mod secrets_redaction;
