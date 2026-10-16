@@ -108,6 +108,9 @@ export function planOpen(task) {
 export function statusInfo(task) {
   const status = task.status;
   const activity = task.activity;
+  // Its live run is paused (SPEC-191): an update holds it, or a person paused it. Whatever the
+  // agent was doing, it does nothing now; nothing is for anyone to do unless a person resumes it.
+  if ((status === 'running' || status === 'switching') && task.pause) return { glyph: '⏸', icon: 'st-paused', tone: 'queued', label: 'Paused', group: 'working', paused: task.pause };
   if (status === 'running') {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
     // waiting: the agent finished its turn and the next move is the user's — unless its
@@ -209,10 +212,22 @@ export function pausedLine(task) {
 }
 
 /**
+ * Why a live run is paused, in words (SPEC-191 PAU-003): "Paused for a Yulius update. It
+ * continues by itself." or "Paused by @alice", and "pausing at the end of its turn" while the
+ * pause has not taken hold (its run could not be frozen).
+ */
+export function pauseLine(pause) {
+  if (pause.by === 'update') return pause.pending ? 'Pausing for a Yulius update at the end of its turn' : 'Paused for a Yulius update. It continues by itself.';
+  const who = pause.user && pause.user.login ? `@${pause.user.login}` : 'a person';
+  return `Paused by ${who}${pause.pending ? ' · pausing at the end of its turn' : ''}`;
+}
+
+/**
  * The second line of a task row (sidebar, Tasks page): what the agent is doing, or what the user
  * should do, in words — the reason of a browser request, the current step, or the state.
  */
 export function activityLine(task, info = statusInfo(task)) {
+  if (info.paused) return pauseLine(info.paused);
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
   if (info.held) return 'A prompt was held · choose what to do';
   if (info.shells) return shellsLine(info.shells, info.shellsSince);
@@ -269,6 +284,8 @@ export function supertaskLine(task) {
  */
 export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
+  // A paused run does nothing until it resumes: that is what it shows (SPEC-191).
+  if (info.paused) return info;
   // A prompt typed into the session was held before it reached the agent (TSK-013).
   if (task.held_prompt && info.group !== 'ended') return { ...info, icon: 'st-attention', tone: 'attention', label: 'Prompt held · your choice', group: 'needs', held: task.held_prompt };
   // The agent asked a person to do something only a person can (`needs_you`, SPEC-134): it stays

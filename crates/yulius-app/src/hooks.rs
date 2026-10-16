@@ -153,8 +153,12 @@ impl App {
         // An instance update pauses every task at its turn boundary, as a capacity pause does:
         // the agent waits here and is never told (SPEC-002 ADR-18).
         if matches!(event, events::STOP | events::USER_PROMPT_SUBMIT)
-            && self.hold_for_update(&ctx.task.id)
+            && let Some(newly) = self.hold_for_update(&ctx.task.id)
         {
+            // Its pause took hold: the lists say so (SPEC-191 PAU-002).
+            if newly {
+                self.publish_task(&ctx.task.id).await;
+            }
             return Ok(HookReply::Hold {
                 retry_after_secs: crate::updates::HOLD_RETRY_SECS,
             });

@@ -77,8 +77,8 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
   lists change without a reload.
 - **PAU-003 Paused reads Paused.** A paused task shows the `st-paused` icon and "Paused" in the
   Tasks page, the sidebar and its view, with the line "Paused for a Yulius update. It continues by
-  itself." or "Paused by you" / "Paused by @user" (and "· pausing at the end of its turn" while
-  pending). It counts in the Working group, as a capacity pause does.
+  itself." (while pending: "Pausing for a Yulius update at the end of its turn") or "Paused by
+  @user" (while pending: "· pausing at the end of its turn"). It counts in the Working group, as a capacity pause does.
 
 ### A person's pause (PER)
 

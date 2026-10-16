@@ -397,6 +397,8 @@ function summary(task) {
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
+    // Why its live run is paused (SPEC-191 PAU-001): an update holds it, or a person paused it.
+    pause: (task.status === 'running' || task.status === 'switching') && task.pause ? { ...task.pause } : null,
   };
 }
 

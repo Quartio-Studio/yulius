@@ -865,3 +865,75 @@ async fn continuing_without_waiting_still_freezes_what_it_can() -> TestResult {
     );
     Ok(())
 }
+
+/// The pause of `task` in its summary, as JSON (null without one).
+async fn pause_of(i: &Instance, task: &TaskId) -> Result<Value, Box<dyn std::error::Error>> {
+    let record = i.h.store.task(task).await?.ok_or("task")?;
+    let summary = i.h.app.task_summary(&record).await?;
+    Ok(serde_json::to_value(summary)?["pause"].clone())
+}
+
+/// The pauses the `task.updated` events received so far said, by task id.
+fn published_pauses(
+    rx: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+) -> Vec<(String, Value)> {
+    let mut seen = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event {
+            let pause = serde_json::to_value(&task)
+                .map(|v| v["pause"].clone())
+                .unwrap_or_default();
+            seen.push((task.id.clone(), pause));
+        }
+    }
+    seen
+}
+
+/// AC-PAU-1 (SPEC-191 PAU-001/002): an update's pause is in the summary of every live task, as
+/// `pending` until its run is frozen, and the lists hear about it as it goes on and off.
+#[tokio::test]
+async fn an_update_s_pause_is_in_the_task_summary_and_published() -> TestResult {
+    let (i, _host) = freezing_instance().await?;
+    let (working, idle) = two_tasks(&i).await?;
+    assert_eq!(pause_of(&i, &working).await?, Value::Null);
+    let mut rx = i.h.app.events.subscribe();
+
+    built(&i).await?;
+    assert_eq!(
+        pause_of(&i, &working).await?,
+        json!({"by": "update", "user": null, "since": null, "pending": true}),
+        "the hold is on, the run not frozen yet"
+    );
+    let published = published_pauses(&mut rx);
+    for task in [&working, &idle] {
+        assert!(
+            published
+                .iter()
+                .any(|(id, pause)| id == task.as_str() && pause["by"] == "update"),
+            "{task} was published paused: {published:?}"
+        );
+    }
+
+    let _ = i.h.app.update_round().await;
+    assert_eq!(pause_of(&i, &working).await?["pending"], false, "frozen");
+    assert!(
+        published_pauses(&mut rx)
+            .iter()
+            .any(|(id, pause)| id == working.as_str() && pause["pending"] == false),
+        "the freeze was published"
+    );
+
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(pause_of(&i, &working).await?, Value::Null, "released");
+    let published = published_pauses(&mut rx);
+    for task in [&working, &idle] {
+        assert!(
+            published
+                .iter()
+                .any(|(id, pause)| id == task.as_str() && pause.is_null()),
+            "{task} was published unpaused: {published:?}"
+        );
+    }
+    Ok(())
+}
