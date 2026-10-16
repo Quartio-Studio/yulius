@@ -74,9 +74,9 @@ pub const DOCKER_OFF: &str = "Docker is turned off on this Yulius server \
 /// buildx and compose, so both installs name them (SPEC-201 DBX-001/002).
 pub const DOCKER_NO_DOCKERD: &str = "this sandbox's system has no `dockerd`: install Docker in the \
     sandbox (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`) and the engine \
-    starts within a minute, or an operator installs Docker on the host (docker-ce with \
-    docker-buildx-plugin and docker-compose-plugin) and the sandbox gets it when its holder next \
-    starts on a newer base";
+    starts within a minute, or an operator runs `sudo yulius host setup`, which installs Docker on \
+    the host (docker-ce with docker-buildx-plugin and docker-compose-plugin), and the sandbox gets \
+    it when its holder next starts on a newer base";
 /// Why: no cgroup delegation.
 pub const DOCKER_NO_DELEGATION: &str = "the Yulius server has no cgroup delegation; an operator \
     sets Delegate=yes and DelegateSubgroup=server on yulius.service and restarts it \
@@ -108,6 +108,27 @@ pub fn system_has_dockerd(base: &Path, upper: &Path) -> bool {
     DOCKERD_PATHS
         .iter()
         .any(|path| upper_has(upper, path).unwrap_or_else(|| base.join(path).is_file()))
+}
+
+/// The `dockerd` a sandbox's engine runs when Docker installed in the sandbox shadows its
+/// base's (SPEC-203 HST-017): the first of [`DOCKERD_PATHS`] in the merged system comes from the
+/// upper layer, at another path than the base's own (Ubuntu's `docker.io` in `usr/sbin` over
+/// `docker-ce` in `usr/bin`). `None` when the base's runs, the base has none, or the sandbox
+/// reinstalled Docker at the base's path.
+#[must_use]
+pub fn own_engine(base: &Path, upper: &Path) -> Option<&'static str> {
+    let base_first = DOCKERD_PATHS
+        .iter()
+        .find(|path| base.join(path).is_file())?;
+    for path in DOCKERD_PATHS {
+        match upper_has(upper, path) {
+            Some(true) => return (path != *base_first).then_some(path),
+            Some(false) => {}
+            None if base.join(path).is_file() => return None,
+            None => {}
+        }
+    }
+    None
 }
 
 /// What an overlay upper layer says about the file at `relative`: `Some(true)` it provides one,
@@ -291,8 +312,49 @@ struct SandboxState {
 #[derive(Default)]
 struct BuildState {
     pending: Option<(String, Instant)>,
+    /// When the pending change was first seen (ms since the epoch).
+    pending_at_ms: Option<i64>,
     checked: Option<Instant>,
     last_error: Option<String>,
+    /// When the running build started (ms since the epoch).
+    building_since_ms: Option<i64>,
+    /// How long the last successful build took.
+    last_build: Option<Duration>,
+}
+
+/// Where the base's rebuild stands, for Settings → Instance (SPEC-203 HST-014). Times are ms
+/// since the epoch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RebuildStatus {
+    /// A build runs, since then.
+    pub building_since_ms: Option<i64>,
+    /// The host changed then; a build starts once it stays unchanged for [`REBUILD_DEBOUNCE`].
+    pub pending_since_ms: Option<i64>,
+    /// When that build starts.
+    pub starts_at_ms: Option<i64>,
+    /// How long the last build took (an estimate for the next).
+    pub last_build_secs: Option<u64>,
+    /// The last build's error.
+    pub last_error: Option<String>,
+}
+
+fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Whether the host's fingerprint is due: every [`FINGERPRINT_EVERY`], at once without a base,
+/// and at every tick while the host has `dockerd` and the current base has none, so that a
+/// Docker installed on the host reaches new bases after the debounce, not up to half an hour
+/// later (SPEC-203 HST-016).
+#[must_use]
+pub fn fingerprint_due(
+    checked: Option<Duration>,
+    has_base: bool,
+    base_lacks_dockerd: bool,
+) -> bool {
+    !has_base || base_lacks_dockerd || checked.is_none_or(|ago| ago >= FINGERPRINT_EVERY)
 }
 
 /// A summary for logs, the status panel and `yulius doctor`.
@@ -756,6 +818,22 @@ impl Manager {
     #[must_use]
     pub fn base(&self) -> Option<BaseInfo> {
         self.bases.current()
+    }
+
+    /// Where the base's rebuild stands (SPEC-203 HST-014).
+    #[must_use]
+    pub fn rebuild(&self) -> RebuildStatus {
+        let build = lock(&self.build);
+        let debounce = i64::try_from(REBUILD_DEBOUNCE.as_millis()).unwrap_or(i64::MAX);
+        RebuildStatus {
+            building_since_ms: build
+                .building_since_ms
+                .filter(|_| self.building.load(Ordering::SeqCst)),
+            pending_since_ms: build.pending_at_ms,
+            starts_at_ms: build.pending_at_ms.map(|at| at.saturating_add(debounce)),
+            last_build_secs: build.last_build.map(|d| d.as_secs()),
+            last_error: build.last_error.clone(),
+        }
     }
 
     /// Status (see [`IsolationStatus`]).
@@ -1273,12 +1351,17 @@ impl Manager {
             return;
         }
         let current = self.bases.current();
+        let base_lacks_dockerd = current.as_ref().is_some_and(|base| {
+            crate::docker_status::has_dockerd(Path::new("/"))
+                && !crate::docker_status::has_dockerd(&self.bases.path(&base.id))
+        });
         let fingerprint = {
             let mut build = lock(&self.build);
-            let due = build
-                .checked
-                .is_none_or(|at| at.elapsed() >= FINGERPRINT_EVERY)
-                || current.is_none();
+            let due = fingerprint_due(
+                build.checked.map(|at| at.elapsed()),
+                current.is_some(),
+                base_lacks_dockerd,
+            );
             if !due {
                 return;
             }
@@ -1288,7 +1371,9 @@ impl Manager {
         let wanted = match &current {
             None => true,
             Some(base) if base.fingerprint == fingerprint => {
-                lock(&self.build).pending = None;
+                let mut build = lock(&self.build);
+                build.pending = None;
+                build.pending_at_ms = None;
                 false
             }
             Some(_) => {
@@ -1299,6 +1384,7 @@ impl Manager {
                     }
                     _ => {
                         build.pending = Some((fingerprint, Instant::now()));
+                        build.pending_at_ms = Some(epoch_ms());
                         // Check again after the debounce instead of waiting a full interval.
                         build.checked =
                             Instant::now().checked_sub(FINGERPRINT_EVERY - REBUILD_DEBOUNCE);
@@ -1317,6 +1403,8 @@ impl Manager {
         if self.building.swap(true, Ordering::SeqCst) {
             return;
         }
+        lock(&self.build).building_since_ms = Some(epoch_ms());
+        let started = Instant::now();
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             tracing::info!("building the sandbox base (a copy of the host system)");
@@ -1355,8 +1443,13 @@ impl Manager {
                 Err(error) => tracing::warn!(%error, "sandbox base build failed"),
             }
             let mut build = lock(&manager.build);
+            if result.is_ok() {
+                build.last_build = Some(started.elapsed());
+            }
             build.last_error = result.err();
             build.pending = None;
+            build.pending_at_ms = None;
+            build.building_since_ms = None;
             drop(build);
             manager.building.store(false, Ordering::SeqCst);
         });
@@ -1525,6 +1618,18 @@ fn measure_sandbox(dir: &Path, sysroot: &Path) -> Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-203 HST-016: a base without the host's `dockerd` is checked at every tick, not every
+    /// half hour.
+    #[test]
+    fn a_base_without_the_hosts_dockerd_checks_the_host_at_every_tick() {
+        let soon = Some(Duration::from_secs(30));
+        assert!(!fingerprint_due(soon, true, false));
+        assert!(fingerprint_due(soon, true, true));
+        assert!(fingerprint_due(soon, false, false));
+        assert!(fingerprint_due(None, true, false));
+        assert!(fingerprint_due(Some(FINGERPRINT_EVERY), true, false));
+    }
 
     #[test]
     fn sizes_read_like_a_person_writes_them() {

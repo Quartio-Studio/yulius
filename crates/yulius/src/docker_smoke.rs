@@ -37,9 +37,10 @@ const WAIT: Duration = Duration::from_secs(90);
 
 /// Why the smoke cannot run: its throwaway sandbox has only the current base's system. It builds
 /// and composes, so the host install brings buildx and compose (SPEC-201 DBX-002).
-const NO_DOCKERD_IN_BASE: &str = "the current sandbox base has no `dockerd`: an operator installs \
-    Docker on the host (docker-ce with docker-buildx-plugin and docker-compose-plugin), waits \
-    until `yulius doctor` shows the base rebuilt, and runs the smoke test again";
+const NO_DOCKERD_IN_BASE: &str = "the current sandbox base has no `dockerd`: an operator runs \
+    `sudo yulius host setup`, which installs Docker on the host (docker-ce with \
+    docker-buildx-plugin and docker-compose-plugin) and rebuilds the base, and runs the smoke \
+    test again";
 
 const DOCKERFILE: &str =
     "FROM busybox\nRUN echo built-in-the-sandbox > /built\nCMD [\"cat\", \"/built\"]\n";
