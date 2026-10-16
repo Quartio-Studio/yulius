@@ -2601,6 +2601,7 @@ button.task-group-head:hover { color: var(--text); }
 @keyframes working-turn { to { transform: translateY(-100%); } }
 /* The light runs through the words' own box, from just left of them to just right (WRK-002). */
 .watch-working-text { display: inline-block; color: transparent; background: linear-gradient(90deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; animation: working-sweep 2s linear infinite; }
+.watch-working-time { color: var(--session-dim); }
 @keyframes working-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
 @media (prefers-reduced-motion: reduce) {

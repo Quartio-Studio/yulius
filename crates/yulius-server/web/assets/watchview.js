@@ -19,21 +19,32 @@ const FOLLOW_SLACK = 32;
 /** The frames of Claude Code's spinner, there and back; `styles.css` steps through 12. */
 const SPINNER_FRAMES = '·✢✳✶✻✽✽✻✶✳✢·';
 
+/** How long the agent has worked, as Claude Code's spinner says it: "12s", "4m 5s", "1h 20m". */
+export function workingFor(ms) {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 /**
  * Mount the live transcript of a task owned by someone else. `task()` is the task as the view knows
  * it now, `owner()` its owner's login, `emptyMessage(task)` what a session without lines yet means
  * ({title, text, busy} or null) and `sessionPath(docId)` the Sessions page of the whole session.
  * Returns {el, start(), update(), destroy()}; `el.dataset.reading` says whether it reads on
  * (`live`), waits for the page to be shown (`paused`) or has read an ended task (`ended`).
- * `timer` stands in for setTimeout and clearTimeout in tests.
+ * `timer` (the reads) and `ticker` (the Working line's clock) stand in for setTimeout and
+ * clearTimeout in tests, and `now` for Date.now.
  */
-export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessionPath, timer: clock = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) } }) {
+export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessionPath, timer: clock = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) }, ticker = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) }, now = () => Date.now() }) {
   const transcript = transcriptEntries();
   const earlier = h('p', { class: 'watch-earlier ss-dim small', hidden: true });
   const empty = h('div', { class: 'watch-empty', role: 'status', hidden: true });
+  const time = h('span', { class: 'watch-working-time' });
   // Claude Code's spinner (SPEC-190): the mark turns through the TUI's frames, a strip moved by CSS.
   const spinner = h('span', { class: 'ss-mark watch-spinner', 'aria-hidden': 'true' }, h('span', { class: 'watch-spinner-frames' }, [...SPINNER_FRAMES].map((frame) => h('span', null, frame))));
-  const working = h('div', { class: 'watch-working ss-line', hidden: true }, spinner, h('span', { class: 'ss-line-body' }, h('span', { class: 'watch-working-text' }, 'Working…')));
+  const working = h('div', { class: 'watch-working ss-line', hidden: true }, spinner, h('span', { class: 'ss-line-body' }, h('span', { class: 'watch-working-text' }, 'Working…'), time));
   const lockedText = h('span', { class: 'ss-line-body' });
   // Where the TUI's prompt box was: who types, and that this person watches (not a control).
   const locked = h('div', { class: 'ss-locked' }, h('span', { class: 'ss-mark ss-mark-prompt', 'aria-hidden': 'true' }, '>'), lockedText, icon('lock', { size: 14 }));
@@ -46,6 +57,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   let alive = true;
   let started = false;
   let timer = null;
+  let tick = null; // the Working line's next second
   let reading = null; // the AbortController of the read in flight
   let failed = false;
   let again = false; // the task changed during a read: read once more after it
@@ -81,11 +93,28 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     const live = isLive(current.status);
     lockedText.textContent = live ? `@${who} is at the keyboard · you are watching` : `@${who} owns this task · you are watching`;
     working.hidden = !(current.status === 'running' && current.activity === 'working');
+    showTime();
     if (failed) return; // the box says why the first read failed, with Try again
     const blank = seen.loaded && !transcript.el.children.length;
     const message = blank ? (emptyMessage(current) || { title: 'Nothing written yet', text: live ? 'The session’s messages appear here as it writes them.' : 'This session has no messages to show.' }) : null;
     empty.hidden = !message;
     setChildren(empty, message ? [h('p', { class: 'term-empty-title' }, message.title), message.text ? h('p', { class: 'term-empty-text' }, message.text) : null] : null);
+  }
+
+  // The time worked, from the working stretch's start (the sidebar's "working 4m"), on each second
+  // while the line shows (WRK-003).
+  function showTime() {
+    ticker.clear(tick);
+    tick = null;
+    const current = task();
+    const since = Date.parse(current.working_since ?? current.state_since ?? '');
+    if (!alive || working.hidden || Number.isNaN(since)) {
+      time.textContent = '';
+      return;
+    }
+    const ms = Math.max(0, now() - since);
+    time.textContent = ` (${workingFor(ms)})`;
+    tick = ticker.set(showTime, 1000 - (ms % 1000));
   }
 
   function state() {
@@ -204,6 +233,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     destroy() {
       alive = false;
       clock.clear(timer);
+      ticker.clear(tick);
       if (reading) reading.abort();
       if (sizes) sizes.disconnect();
       transcript.destroy();

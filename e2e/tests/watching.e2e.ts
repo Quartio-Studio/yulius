@@ -588,3 +588,59 @@ test('the light of the Working words runs through the words themselves, left to 
   expect(sweep!.share, 'the light is over the words most of the cycle').toBeGreaterThanOrEqual(0.6);
   expect(sweep!.rising, 'it moves left to right').toBe(true);
 });
+
+// Claude Code's spinner says how long the turn has taken; a watcher sees how long the agent has
+// worked, the same measure as the sidebar's "working 4m" (`working_since`), to the second.
+test('the Working line counts how long the agent has worked, and the count goes on by itself', async ({ app, browser }) => {
+  await watchWorking(app, browser, { working_since: new Date(Date.now() - 75_000).toISOString() });
+  const time = () => browser.evaluate(() => document.querySelector('.watch .watch-working-time')?.textContent ?? null);
+  await expect.poll(time).toMatch(/^ \(1m (1[5-9]|2\d)s\)$/);
+  expect(await browser.evaluate(() => document.querySelector('.watch .watch-working .ss-line-body')!.textContent)).toMatch(/^Working… \(1m \d+s\)$/);
+  const first = await time();
+  await expect.poll(time, { message: 'the count goes up without a task event' }).not.toBe(first);
+});
+
+test('the Working time reads as Claude Code’s, is never negative, and ticks only while it shows (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/watchview.js';
+    const { createWatchView, workingFor } = await import(url);
+    const formats = [0, 59_000, 61_000, 3_599_000, 4_800_000, -5_000].map((ms) => workingFor(ms));
+    const page = { session_id: 's', doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
+    const pending = new Map<number, () => void>();
+    let ids = 0;
+    const ticker = { set: (fn: () => void) => { ids += 1; pending.set(ids, fn); return ids; }, clear: (id: number) => { pending.delete(id); } };
+    const quiet = { set: () => 0, clear: () => {} };
+    const now = 1_000_000;
+    const task: Record<string, unknown> = { id: 't', status: 'running', activity: 'working', working_since: new Date(now - 5_000).toISOString() };
+    const options = { taskId: 't', task: () => task, owner: () => 'anna-q', emptyMessage: () => null, sessionPath: () => '/x', timer: quiet, ticker, now: () => now };
+    const view = createWatchView({ api: { get: async () => page } }, options);
+    const shown = () => view.el.querySelector('.watch-working-time')?.textContent ?? null;
+    const working = shown();
+    const ticking = pending.size;
+    // Without a time to count from: no time.
+    delete task.working_since;
+    view.update();
+    const timeless = shown();
+    task.state_since = new Date(now - 2_000).toISOString();
+    view.update();
+    const fromState = shown();
+    // Not working: the line hides and nothing ticks.
+    task.activity = 'idle';
+    view.update();
+    const idle = pending.size;
+    task.activity = 'working';
+    view.update();
+    const again = pending.size;
+    view.destroy();
+    return { formats, working, ticking, timeless, fromState, idle, again, destroyed: pending.size };
+  });
+  expect(result.formats).toEqual(['0s', '59s', '1m 1s', '59m 59s', '1h 20m', '0s']);
+  expect(result.working).toBe(' (5s)');
+  expect(result.ticking, 'one tick waits while the line shows').toBe(1);
+  expect(result.timeless).toBe('');
+  expect(result.fromState, 'state_since when working_since is missing').toBe(' (2s)');
+  expect(result.idle, 'a hidden line does not tick').toBe(0);
+  expect(result.again).toBe(1);
+  expect(result.destroyed, 'leaving stops the tick').toBe(0);
+});
