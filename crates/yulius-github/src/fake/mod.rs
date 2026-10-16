@@ -1657,6 +1657,16 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": target, "type": "commit"}}),
             )
         }
+        ("GET", ["git", "ref", "heads", branch @ ..]) => {
+            let branch = branch.join("/");
+            match repo.branches.get(&branch) {
+                Some(sha) => reply(
+                    200,
+                    json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": sha, "type": "commit"}}),
+                ),
+                None => error(404, "Not Found"),
+            }
+        }
         ("GET", ["compare", basehead @ ..]) => {
             let joined = basehead.join("/");
             let Some((base, head)) = joined.split_once("...") else {
