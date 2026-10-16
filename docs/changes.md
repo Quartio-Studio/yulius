@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-16
+
+- A watched task follows its newest lines, with no octopus and less padding (SPEC-185, ADR-0149,
+  task #170, fixes #575). The live transcript of someone else's task stopped scrolling down once
+  "✻ Working…" showed, the card above changed or the window resized, and then sat behind "New
+  messages". Following is now a state that only scrolling up ends, kept at the bottom through every
+  change of height. The pixel octopus and its lane are gone, and the transcript is inset 16 px, as
+  the card above it.
+
 ## 2026-10-15
 
 - Someone else's task is watched as its live transcript, not a broken terminal (SPEC-179,

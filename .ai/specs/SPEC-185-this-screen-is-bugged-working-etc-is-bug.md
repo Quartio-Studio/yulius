@@ -10,14 +10,16 @@ Date: 2026-10-16
 Owner: Yulius task #170
 Scope authorization: task #170: "this screen is bugged - "working" etc is bugged, it isn't
 scrolled down automatically. And remove the octopus, it was an overkill" (with a screenshot of a
-watched task, SPEC-179: working, "New messages" shown, the octopus at the top).
+watched task, SPEC-179: working, "New messages" shown, the octopus at the top); then "also reduce
+horizontal padding in this view".
 Fixes #575.
 
 ## Goal
 
 Someone watching another person's task (SPEC-179) sees its newest lines while the agent works: as
 long as they have not scrolled up, the live transcript stays at its bottom whatever changes its
-height. The pixel octopus along the transcript's top goes, with its lane.
+height. The pixel octopus along the transcript's top goes, with its lane, and the transcript sits
+closer to the view's sides.
 
 ## Context
 
@@ -56,13 +58,17 @@ height. The pixel octopus along the transcript's top goes, with its lane.
   AC-WAT-3).
 - **OCT-001 No octopus.** A watched task shows no octopus and no lane: the transcript starts at the
   top of its well. `octopus.js`, its preload, the `--octo-*` tokens and their CSS are removed.
+- **PAD-001 Less padding.** The watched transcript is inset 16 px at its sides, as the control card
+  above it (its left edge lines up with the card's), not the 32 px of a past session's page; at
+  phone width it keeps 12 px. Past sessions are unchanged.
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [ ] Fix the cause until the regression test and every gate pass
-- [ ] The watched transcript has no octopus, its docs and tests updated
+- [x] The watched transcript has no octopus, its docs and tests updated
+- [x] The watched transcript is inset 16 px, as the card above it
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Merged into dev on green CI
 
@@ -76,11 +82,13 @@ height. The pixel octopus along the transcript's top goes, with its lane.
   and "New messages" jumps down; a late result alone shows no button.
 - **AC-OCT-1.** e2e: a watched task has no `.octo` and no `.watch-lane`; its first line is at the
   top of the transcript's well. Past sessions keep the spider.
+- **AC-PAD-1.** e2e: the watched transcript's side padding is 16 px and its left edge is 16 px left
+  of the card's; 12 px at phone width; a past session keeps 32 px. Fails before the change (32 px).
 
 ## Test plan
 
 - `e2e/tests/watching.e2e.ts`: the AC-FOL-1 regression test (written first, seen failing), the
-  AC-OCT-1 test replacing the octopus tests; the rest of the file unchanged.
+  AC-OCT-1 test replacing the octopus tests, the AC-PAD-1 test; the rest of the file unchanged.
 - Gates: `scripts/dev ci`, `scripts/dev security`, the full e2e suite.
 
 ## Decisions
@@ -94,6 +102,9 @@ height. The pixel octopus along the transcript's top goes, with its lane.
   answers with a scroll (anchoring moving the view down, the end clamping it up) never does.
 - **The octopus goes whole (ADR-0149 amends ADR-0145).** Removing the lane with it gives the 80 px
   back to the transcript. The spider and cockroach of past sessions stay (not asked).
+- **16 px, as the card.** The control card above the transcript sits 16 px from the view's edges;
+  the transcript takes the same inset so both start on one line. Past sessions keep the Sessions
+  page's 32 px (the request was about this view).
 
 ## Evidence
 
