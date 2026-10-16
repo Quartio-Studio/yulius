@@ -21,14 +21,15 @@ to fix it, and the only fix it could suggest was a host change made by a person.
 ## Decision
 
 - **The sandbox's own system decides.** A front serves an engine when the sandbox's system has
-  `dockerd` (`usr/bin`, `usr/sbin` or `usr/local/bin`). The decision is
+  `dockerd` (`usr/local/sbin`, `usr/local/bin`, `usr/sbin` or `usr/bin`). The decision is
   `manager::system_has_dockerd`:
   - an entry in the sandbox's upper layer decides;
   - with no entry there, the holder's base decides.
 
   `IsolationConfig.docker` carries only `YULIUS_SANDBOX_DOCKER`.
-- **The upper layer is read as untrusted.** Each path component is read with `lstat` and no link
-  is followed:
+- **The upper layer is read as untrusted.** It is walked from one directory descriptor to the
+  next (`openat` with `O_PATH | O_NOFOLLOW`, then `fstatat` without following), so no path is
+  looked up twice and no link is followed, even if the sandbox swaps one in meanwhile:
   - a link at `dockerd` counts, since it resolves inside the sandbox;
   - anything else over a path (a whiteout, a directory, a link over a parent) hides the base's
     `dockerd`.
@@ -54,8 +55,10 @@ to fix it, and the only fix it could suggest was a host change made by a person.
 
 ## Consequences
 
-- An agent gets Docker in its sandbox on its own, and a sandbox keeps the engine its base had
-  whatever happens to the host's packages.
+- An agent gets Docker in its sandbox on its own. A sandbox keeps its base's `dockerd` until its
+  holder next starts on a newer base; one installed in the sandbox itself stays. A running engine
+  is never cut because `dockerd` left the sandbox's system for a moment (a package swap): the
+  front stays an engine until the holder starts again.
 - An engine may now run a `dockerd` the sandbox installed itself. This grants nothing new:
   - the sandbox's root could already replace the base's `dockerd` in its upper layer;
   - agents can already run `--privileged` containers on their engine.

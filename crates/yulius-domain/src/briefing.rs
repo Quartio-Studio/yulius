@@ -834,7 +834,7 @@ fn containers(input: &BriefingInput<'_>) -> String {
     }
     if input.docker {
         return "## Containers\n\nDocker works here and in CI (own engine, disk quota; `docker info` \
-                checks). Mount paths in the sandbox directory, publish ports in your range. Egress \
+                checks; no `dockerd`: `sudo apt-get install -y docker.io`). Mount paths in the sandbox directory, publish ports in your range. Egress \
                 proxy: `host.docker.internal` with \
                 `--add-host=host.docker.internal:host-gateway`.\n\n"
             .to_owned();
@@ -2105,6 +2105,8 @@ mod tests {
             "Docker works here and in CI",
             "own engine",
             "`docker info` checks",
+            // SPEC-199 (review round 1, low): a sandbox whose system lacks `dockerd` installs it.
+            "no `dockerd`: `sudo apt-get install -y docker.io`",
             "disk quota",
             "sandbox directory",
             "ports in your range",
@@ -2117,7 +2119,7 @@ mod tests {
             assert!(!text.contains(absent), "{absent} in {text}");
         }
         let section = containers(&docker);
-        assert!(section.len() <= 257, "{} bytes: {section}", section.len());
+        assert!(section.len() <= 300, "{} bytes: {section}", section.len());
         let plain = build_briefing(
             &BriefingInput {
                 docker: true,

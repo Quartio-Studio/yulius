@@ -87,18 +87,20 @@ pub const DOCKER_WRITABLE_EXE: &str = "the `yulius` executable is owned or writa
     service user, which an engine could rewrite; an operator installs it owned by root, mode 755";
 
 /// Where a system layer has `dockerd` (`docker-ce` puts it in `usr/bin`, `docker.io` in
-/// `usr/sbin`).
-pub const DOCKERD_PATHS: [&str; 3] = [
-    "usr/bin/dockerd",
-    "usr/sbin/dockerd",
+/// `usr/sbin`; `usr/local/sbin` comes first on the engine's `PATH`).
+pub const DOCKERD_PATHS: [&str; 4] = [
+    "usr/local/sbin/dockerd",
     "usr/local/bin/dockerd",
+    "usr/sbin/dockerd",
+    "usr/bin/dockerd",
 ];
 
 /// Whether the system a sandbox's engine runs has `dockerd` (SPEC-199 DSY-002): the sandbox's
 /// overlay `upper` layer decides where it has an entry, else its `base`. The upper layer is the
-/// sandbox's to write, so it is read without following links: a link at `dockerd` counts (it
-/// resolves inside the sandbox), and anything else over a path (a whiteout, a directory, a link
-/// over a parent) hides the base's.
+/// sandbox's to write, so it is walked from one directory descriptor to the next without
+/// following links (no path is looked up twice): a link at `dockerd` counts (it resolves inside
+/// the sandbox), and anything else over a path (a whiteout, a directory, a link over a parent)
+/// hides the base's.
 #[must_use]
 pub fn system_has_dockerd(base: &Path, upper: &Path) -> bool {
     DOCKERD_PATHS
@@ -108,19 +110,36 @@ pub fn system_has_dockerd(base: &Path, upper: &Path) -> bool {
 
 /// What an overlay upper layer says about the file at `relative`: `Some(true)` it provides one,
 /// `Some(false)` it hides the lower one, `None` it has no entry on the way. Never follows a link.
+#[cfg(target_os = "linux")]
 fn upper_has(upper: &Path, relative: &str) -> Option<bool> {
-    let mut path = upper.to_path_buf();
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, statat};
+    use rustix::io::Errno;
+    let walk = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut dir = openat(rustix::fs::CWD, upper, walk, Mode::empty()).ok()?;
     let mut parts = relative.split('/').peekable();
     while let Some(part) = parts.next() {
-        path.push(part);
-        let kind = std::fs::symlink_metadata(&path).ok()?.file_type();
         if parts.peek().is_none() {
-            return Some(kind.is_file() || kind.is_symlink());
+            return match statat(&dir, part, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => Some(matches!(
+                    FileType::from_raw_mode(stat.st_mode),
+                    FileType::RegularFile | FileType::Symlink
+                )),
+                Err(_) => None,
+            };
         }
-        if !kind.is_dir() {
-            return Some(false);
-        }
+        dir = match openat(&dir, part, walk, Mode::empty()) {
+            Ok(next) => next,
+            // A link or a file (a whiteout too) over the directory hides the lower one.
+            Err(Errno::LOOP | Errno::NOTDIR) => return Some(false),
+            Err(_) => return None,
+        };
     }
+    None
+}
+
+/// Sandboxes are Linux only: elsewhere the base decides.
+#[cfg(not(target_os = "linux"))]
+fn upper_has(_upper: &Path, _relative: &str) -> Option<bool> {
     None
 }
 
@@ -1422,6 +1441,11 @@ fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe
         Some(front) if front.mode == wanted.kind() && front.reason.as_ref() == reason => {
             FrontAction::Keep
         }
+        // `dockerd` gone from the sandbox's system for a moment (a package swap) never cuts a
+        // running engine and its containers (SPEC-199); a new holder decides again.
+        Some(front) if front.mode == "engine" && reason.is_some_and(|r| r == DOCKER_NO_DOCKERD) => {
+            FrontAction::Keep
+        }
         Some(_) => FrontAction::Replace(wanted),
         None => FrontAction::Start(wanted),
     }
@@ -1850,6 +1874,18 @@ while True:
         assert!(!engine(mode("base-0")), "a planted link was followed");
         assert!(!engine(mode("base-1")), "a link over usr hides the base's");
         std::fs::remove_file(upper.join("usr"))?;
+        // Review round 1 (low): what every sandbox that ran `apt-get` has, directories on the
+        // way without `dockerd`, leaves the base's.
+        std::fs::create_dir_all(upper.join("usr/bin"))?;
+        std::fs::create_dir_all(upper.join("usr/sbin"))?;
+        std::fs::create_dir_all(upper.join("usr/local/bin"))?;
+        assert!(engine(mode("base-1")));
+        assert!(!engine(mode("base-0")));
+        // `/usr/local/sbin` comes first on the engine's PATH.
+        std::fs::create_dir_all(upper.join("usr/local/sbin"))?;
+        std::fs::write(upper.join("usr/local/sbin/dockerd"), "")?;
+        assert!(engine(mode("base-0")));
+        std::fs::remove_file(upper.join("usr/local/sbin/dockerd"))?;
 
         // `apt-get install docker.io` in the sandbox: /usr/sbin/dockerd in its upper layer.
         std::fs::create_dir_all(upper.join("usr/sbin"))?;
@@ -1861,7 +1897,8 @@ while True:
         assert!(engine(mode("base-0")));
         std::fs::remove_file(upper.join("usr/sbin/dockerd"))?;
 
-        // Anything else over the base's `dockerd` (a whiteout is a character device) removes it.
+        // Anything else over the base's `dockerd` removes it: a directory here, the same branch
+        // as a whiteout (a character device, which this test cannot make).
         std::fs::create_dir_all(upper.join("usr/bin/dockerd"))?;
         assert!(!engine(mode("base-1")));
         Ok(())
@@ -1935,6 +1972,16 @@ while True:
         assert_eq!(
             front_action(Some((&refusing, true)), engine()),
             FrontAction::Replace(engine())
+        );
+        // SPEC-199 review round 1 (nit): `dockerd` gone from the sandbox's system for a moment
+        // (a docker.io → docker-ce swap) never cuts a running engine and its containers.
+        assert_eq!(
+            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD)),
+            FrontAction::Keep
+        );
+        assert_eq!(
+            front_action(None, refuse(DOCKER_NO_DOCKERD)),
+            FrontAction::Start(refuse(DOCKER_NO_DOCKERD))
         );
     }
 

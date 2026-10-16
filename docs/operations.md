@@ -505,8 +505,8 @@ from a sandbox, and no daemon needs to run on the host.
     Docker installed on the host (`docker-ce` or `docker.io`) gives it to every new base, which
     copies `dockerd`, `containerd`, `runc`, `docker-proxy` and the CLI plugins. Without it, an
     agent installs it in its own sandbox (`sudo apt-get install -y docker.io`) and the front
-    starts an engine at the next tick (30 s); a sandbox keeps the `dockerd` its base had even if
-    Docker later leaves the host. The host does not need to run its own Docker daemon.
+    starts an engine at the next tick (30 s). A sandbox keeps its base's `dockerd` until its
+    holder next starts on a newer base (after the idle time); one installed in the sandbox stays. The host does not need to run its own Docker daemon.
   - The cgroup delegation (§3).
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
