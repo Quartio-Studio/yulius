@@ -461,9 +461,10 @@ previous containment: read-only host system, the host's network, no limits.
 
 Optional (SPEC-002 ADR-16). With a TypeSafe Jev key, Yulius offers to split new tasks that mix
 separate workstreams (the proposal comes from one headless `claude -p` run on a connected
-account), it holds prompts typed into a running task that add, drop or replace its scope until
+account), to run broad work started another way as a supertask (SPEC-188; Jev's `breadth`
+question, fixed 85 % threshold, no setting), it holds prompts typed into a running task that add, drop or replace its scope until
 someone decides in the task view, and it chooses a new task's mode and workflow when the composer
-leaves them on Auto (the default). Without a key the split and scope checks are off, and Auto
+leaves them on Auto (the default). Without a key the split, breadth (supertask proposal) and scope checks are off, and Auto
 always takes its defaults: Goal, with the workflow named "Feature" (none when there is no such
 workflow, and none for a prompt-mode task). The Auto thresholds are fixed (75 % for the mode,
 60 % for the workflow) and have no setting.
@@ -485,7 +486,7 @@ wins over the file.
 - The start log says `task intake is on (Jev jev-1.13.0, key saved in settings)` (or `… key from
   YULIUS_JEV_API_KEY_FILE`) or `task intake is off: no Jev key`.
 - Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
-  question: for a split check or an Auto choice, the new task's prompt (the workflow question also
+  question: for a split or breadth check (both asked at once) or an Auto choice, the new task's prompt (the workflow question also
   carries the sandbox's workflow names, descriptions, when to use them and step titles); for a
   typed prompt, the task's title, prompt and step titles plus the typed text.
 - Every Auto decision is in the audit log (`task.auto_choice`, for example `mode goal (jev 91%),

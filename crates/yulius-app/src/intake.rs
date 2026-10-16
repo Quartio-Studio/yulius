@@ -20,8 +20,8 @@ use yulius_contracts::hooks::{HookInput, HookOutput};
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::intake::{
-    self as policy, ChoiceAnswer, PromptClass, Proposal, SCOPE_QUESTION, SPLIT_QUESTION,
-    SplitVerdict,
+    self as policy, BREADTH_QUESTION, ChoiceAnswer, PromptClass, Proposal, SCOPE_QUESTION,
+    SPLIT_QUESTION, SplitVerdict,
 };
 use yulius_domain::permission::Action;
 use yulius_domain::steps::StepStatus;
@@ -213,6 +213,21 @@ fn short(text: &str, max: usize) -> String {
     out
 }
 
+/// One question about a new task's request, within the check deadline; a failure is no answer.
+async fn ask_new_task(
+    jev: &dyn ChoiceEvaluator,
+    state: &str,
+    question: &policy::ChoiceQuestion<'static>,
+) -> Option<ChoiceAnswer> {
+    match jev.evaluate(state, question, SPLIT_CHECK_DEADLINE).await {
+        Ok(answer) => Some(answer),
+        Err(failure) => {
+            tracing::info!(%failure, question = question.id, "intake check skipped");
+            None
+        }
+    }
+}
+
 fn percent(answer: &ChoiceAnswer, key: &str) -> u32 {
     // 0..=100 after the clamp, so the cast is exact.
     (answer.probability(key) * 100.0).round().clamp(0.0, 100.0) as u32
@@ -251,8 +266,11 @@ impl App {
         Some(runtime.typed_by.lock().ok().and_then(|who| who.clone()))
     }
 
-    /// `POST /api/sandboxes/{sid}/intake/check` (TSK-011): whether a new task's prompt mixes
-    /// separate workstreams. Short prompts, no Jev key and every Jev failure answer "one".
+    /// `POST /api/sandboxes/{sid}/intake/check` (TSK-011, SPEC-188): whether a new task's
+    /// prompt mixes separate workstreams, and whether it is broad work to propose as a
+    /// supertask. Jev gets both questions at once; a prompt under 40 words is not asked about a
+    /// split, one under 3 words not at all. No Jev key and every Jev failure answer "one", no
+    /// supertask.
     ///
     /// # Errors
     /// Access errors; `Invalid` for an oversized prompt.
@@ -270,35 +288,37 @@ impl App {
                 "the prompt must be 1 byte to 64 KiB".into(),
             ));
         }
-        let one = |checked| IntakeVerdict {
+        let unchecked = IntakeVerdict {
             verdict: SplitVerdict::One.as_str().to_owned(),
-            checked,
+            checked: false,
+            supertask: false,
         };
-        if !policy::needs_split_check(prompt) {
-            return Ok(one(false));
+        if !policy::needs_breadth_check(prompt) {
+            return Ok(unchecked);
         }
         let Some((jev, services)) = self.jev() else {
-            return Ok(one(false));
+            return Ok(unchecked);
         };
-        match jev
-            .evaluate(
-                &policy::split_state(prompt),
-                &SPLIT_QUESTION,
-                SPLIT_CHECK_DEADLINE,
-            )
-            .await
-        {
-            Ok(answer) => Ok(IntakeVerdict {
-                verdict: policy::split_verdict(&answer, services.split_threshold)
-                    .as_str()
-                    .to_owned(),
-                checked: true,
-            }),
-            Err(failure) => {
-                tracing::info!(%failure, "split check skipped");
-                Ok(one(false))
+        let state = policy::split_state(prompt);
+        let split = async {
+            if policy::needs_split_check(prompt) {
+                ask_new_task(jev.as_ref(), &state, &SPLIT_QUESTION).await
+            } else {
+                None
             }
-        }
+        };
+        let breadth = ask_new_task(jev.as_ref(), &state, &BREADTH_QUESTION);
+        let (split, breadth) = tokio::join!(split, breadth);
+        let verdict = split.as_ref().map_or(SplitVerdict::One, |answer| {
+            policy::split_verdict(answer, services.split_threshold)
+        });
+        Ok(IntakeVerdict {
+            verdict: verdict.as_str().to_owned(),
+            checked: split.is_some() || breadth.is_some(),
+            supertask: breadth.as_ref().is_some_and(|answer| {
+                policy::supertask_proposed(answer, policy::BROAD_THRESHOLD, verdict)
+            }),
+        })
     }
 
     /// `POST /api/sandboxes/{sid}/intake/proposal` (TSK-011): Claude's smallest split of the
