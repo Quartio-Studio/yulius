@@ -82,8 +82,9 @@ flattened before the fix is not rewritten; its managers see that it must be past
 
 ## Test plan
 
-- Domain unit tests: `flattened_key` (spaces, stripped breaks, mismatched labels, escaped keys,
-  ordinary values) and `check_agent_value` refusing a flattened key.
+- Domain unit tests: `flattened_key` (spaces, stripped breaks, a key and certificate bundle,
+  escaped keys, ordinary values), `check_agent_value` refusing a flattened key, and `key_block`,
+  `line` and `key_lines` for a key and certificate bundle.
 - Integration (`crates/yulius/tests/secrets.rs`): the API refuses a flattened key on create and on
   update; a record stored flattened directly in the store lists `flattened: true` to a manager,
   `false` to a reader, and keeps its value.
@@ -136,6 +137,10 @@ Round 3 (head `c7b50e58`): request changes, own code, fixed here.
 | 2 | nit | `docs/api.md` and the ADR index described the refused shape as same-label | Any labels |
 | 3 | nit | Over-long lines from round 2 | Rewrapped |
 | 4 | nit, pre-existing in the change | JS `trim()` strips U+FEFF, Rust's does not (mock only) | Left: the mock alone differs, on a value no one pastes |
+
+Round 4 (head `b8ba3e58`): approve. Own-code doc nits fixed here (the ADR's first Decision bullet
+and its index line say any label; the Test plan names the bundle test). The widened `key_lines`
+over-redaction (text between a bundle's blocks) joins #599.
 
 ## Evidence
 

@@ -21,7 +21,7 @@ answered `different` for each original file and a `.env` copy would have been an
 ## Decision
 
 - **The field escapes a pasted key.** A paste that is a key block (`-----BEGIN <label>-----` on
-  its first line, `-----END <label>-----` on its last, LF, CRLF or CR breaks) is inserted at the
+  its first line, `-----END <label>-----` (any label) on its last, LF, CRLF or CR breaks) is inserted at the
   cursor, or over the selection, undoably, with each break written as literal `\n`; spaces around
   each line and blank lines around the key are dropped (a key file's final break comes back in a
   `.env` copy, and `secret_verify` accepts the file with it). Any other text pastes as the browser
