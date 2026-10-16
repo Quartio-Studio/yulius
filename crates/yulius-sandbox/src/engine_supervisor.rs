@@ -31,6 +31,9 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(60);
 pub const STOP_GRACE: Duration = Duration::from_secs(30);
 /// How often the holder looks whether the engine is idle.
 pub const IDLE_CHECK: Duration = Duration::from_secs(30);
+/// A failed start is the answer this long, so clients queued behind it do not each start the
+/// engine again.
+pub const FAILURE_HOLD: Duration = Duration::from_secs(5);
 /// The engine log is started afresh beyond this size.
 const LOG_MAX_BYTES: u64 = 8 << 20;
 /// Longest request head read before an error answer.
@@ -53,6 +56,7 @@ pub struct Supervisor {
     start_timeout: Duration,
     prepare: Prepare,
     running: tokio::sync::Mutex<Option<Child>>,
+    failed: Mutex<Option<(Instant, String)>>,
     connections: AtomicUsize,
     last_activity: Mutex<Instant>,
 }
@@ -92,6 +96,7 @@ impl Supervisor {
             start_timeout,
             prepare,
             running: tokio::sync::Mutex::new(None),
+            failed: Mutex::new(None),
             connections: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),
         })
@@ -143,20 +148,40 @@ impl Supervisor {
             return Ok(stream);
         }
         if !alive {
-            *running = Some(self.spawn()?);
+            let failed = self.failed.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((at, reason)) = failed.as_ref()
+                && at.elapsed() < FAILURE_HOLD
+            {
+                return Err(reason.clone());
+            }
+            drop(failed);
+            match self.spawn() {
+                Ok(child) => *running = Some(child),
+                Err(reason) => return Err(self.failure(reason)),
+            }
         }
         let Some(child) = running.as_mut() else {
             return Err("the engine is gone".into());
         };
         match self.wait_ready(child).await {
-            Ok(stream) => Ok(stream),
+            Ok(stream) => {
+                *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                Ok(stream)
+            }
             Err(reason) => {
                 if let Some(mut child) = running.take() {
                     let _ = child.kill().await;
                 }
-                Err(format!("{reason}{}", log_tail(&self.log)))
+                Err(self.failure(format!("{reason}{}", log_tail(&self.log))))
             }
         }
+    }
+
+    /// Keeps `reason` as the answer for [`FAILURE_HOLD`] and returns it.
+    fn failure(&self, reason: String) -> String {
+        *self.failed.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((Instant::now(), reason.clone()));
+        reason
     }
 
     fn spawn(&self) -> Result<Child, String> {
@@ -558,6 +583,49 @@ open(stopped, "w").write("stopped")
         })
         .await?;
         assert!(!supervisor.running().await);
+        Ok(())
+    }
+
+    /// Review of SPEC-187 (low): clients queued behind a start that fails share its answer
+    /// instead of starting the engine again one after the other (N × the start bound).
+    #[tokio::test]
+    async fn clients_queued_behind_a_failed_start_share_its_answer() -> io::Result<()> {
+        let f = Fixture::new()?;
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!(
+                "echo start >> {}; exec sleep 30",
+                f.path("starts").display()
+            ),
+        ];
+        let supervisor = Supervisor::with_start_timeout(
+            command,
+            f.path("control.sock"),
+            f.path("engine.log"),
+            f.path("cg"),
+            Duration::from_secs(300),
+            ok(),
+            Duration::from_millis(700),
+        );
+        let started = Instant::now();
+        let mut clients = Vec::new();
+        for _ in 0..4 {
+            let supervisor = Arc::clone(&supervisor);
+            clients.push(tokio::spawn(
+                async move { supervisor.connect().await.err() },
+            ));
+        }
+        for client in clients {
+            let reason = client.await.map_err(io::Error::other)?.unwrap_or_default();
+            assert!(reason.contains("did not answer"), "{reason}");
+        }
+        assert_eq!(f.starts(), 1, "one start for the queue");
+        assert!(
+            started.elapsed() < Duration::from_millis(2_000),
+            "{:?}",
+            started.elapsed()
+        );
         Ok(())
     }
 
