@@ -361,6 +361,27 @@ mod tests {
         }
     }
 
+    /// SPEC-193 (review round 3): a key and its certificate in one file (`cat key.pem cert.pem`),
+    /// which the Secrets page stores escaped, is a key block too: written as its file, both
+    /// bodies redaction needles.
+    #[test]
+    fn a_key_and_certificate_bundle_is_written_as_its_file() -> Result<(), VaultError> {
+        let key = key_file("SYNTHETIC KEY", &["c3ludGhldGljLWtleS1ib2R5"]);
+        let cert = key_file("CERTIFICATE", &["c3ludGhldGljLWNlcnQtYm9keQ=="]);
+        let file = format!("{key}{cert}");
+        let stored = file.trim_end().replace('\n', "\\n");
+        assert_eq!(key_block(&stored), Some(file.clone()));
+        assert_eq!(line("BUNDLE", &stored)?, format!("BUNDLE='{file}'"));
+        assert_eq!(
+            key_lines(&stored),
+            vec![
+                "c3ludGhldGljLWtleS1ib2R5".to_owned(),
+                "c3ludGhldGljLWNlcnQtYm9keQ==".to_owned()
+            ]
+        );
+        Ok(())
+    }
+
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
     /// written as the key file it stands for, with its final line break, whether or not the
     /// stored value ends with a literal `\n`; `sh` and dotenv readers read single quotes
