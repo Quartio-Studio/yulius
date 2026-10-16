@@ -1,11 +1,11 @@
 ---
 yulius-task: e6f60efa-0ed5-494a-8c00-b829a33a3748
-status: in-progress
+status: done
 ---
 
 # SPEC-188: Supertask names one-shotting the product, and Jev proposes it for broad work
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #173
 Scope authorization: task #173, "Under the supertask add '...one-shotting the product etc' (make
@@ -62,8 +62,8 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
 - [x] The Supertask description names one-shotting the product, in the menu, the tool and the docs
 - [x] Jev answers whether a new task is broad work, in the intake check
 - [x] The composer stops a broad task started another way and offers Supertask
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -139,3 +139,29 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
 - **The check now runs for short prompts too.** Broad requests are often short ("Harden the
   security of the whole product"). The breadth question needs 3 words; the split question still
   needs 40. Without a Jev key the server answers at once.
+
+## Evidence
+
+Run at 1c2d0b99 (current with `origin/dev` at 812db09e), 2026-10-16:
+
+| Command | Result |
+| --- | --- |
+| `scripts/dev ci` (repository check, fmt, clippy, nextest, doctests, deny, shear, doc) | exit 0; nextest 1915 passed, 18 skipped |
+| `cd e2e && npx e2e run` (whole suite) | 572 passed, 1 skipped, 2 failed in files this change does not touch: `update.e2e.ts` "a rolled-back update is said plainly" and `watching.e2e.ts` "at the bottom the view keeps following…". Each passed alone 3/3 (33/33). Load flakes, tracked in #581, as earlier runs' `onboarding.e2e.ts` and `watching.e2e.ts` failures (also 3/3 alone; #525 holds similar ones) |
+| `npx e2e run tests/intake.e2e.ts tests/menus.e2e.ts tests/supertask.e2e.ts tests/prepared.e2e.ts tests/start-change.e2e.ts tests/automations.e2e.ts` | all passed (intake 17, menus 29, the rest unchanged) |
+| `scripts/dev security` | **not run**: exit 2, Vidoc rejects the key (HTTP 401, #470). Per ADR-0104 this is unrun, not passed. The diff adds no endpoint, secret or permission: one more fixed Jev question on the existing check, a response field, and composer DOM built with `h()` |
+
+Test-first record:
+- The SPEC-094 menu test with the new text failed on the unchanged menu ("…such as security
+  hardening."); `mcp::tests::task_create_names_the_supertask_examples_of_the_start_menu` failed on
+  the old description. The literal addition then failed SPEC-102's 1280 × 800 menu test
+  (`{"scrolls":true,"ruleInside":false}`), which led to the three-line wording.
+- The domain tests for `BREADTH_QUESTION` and `supertask_proposed` did not compile without them.
+  `intake::intake_check_proposes_a_supertask_for_broad_work_that_does_not_split` failed on the
+  unchanged check (`{"checked":false,"verdict":"one"}`, no `supertask`).
+- The three composer tests failed before the card existed (no "Supertask proposal" region).
+- Review round 1: `intake_check_asks_split_and_breadth_at_once` failed with a sequential check
+  (the barrier timed out, so `several` was lost); the menu wording and `aria-describedby` tests
+  failed before their fixes. Review round 2: "changing the start choice closes the supertask
+  proposal" failed before `startChanged()` (the card stayed).
+
