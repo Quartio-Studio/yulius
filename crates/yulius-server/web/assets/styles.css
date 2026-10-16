@@ -2649,6 +2649,21 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .update-outcome-ok > .row .icon { color: var(--ok); }
 .update-outcome-danger { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger-fg-strong); }
 .update-log { max-height: 240px; overflow: auto; margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--surface-3); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: pre-wrap; }
+/* Sandbox Docker (SPEC-203): the verdict, the rebuild, the smoke check's lines. */
+.sandbox-docker-body { gap: 12px; padding: 16px 20px; }
+.sandbox-docker-detail { margin: 0; overflow-wrap: anywhere; }
+.sandbox-docker-recheck .icon { color: var(--ok); vertical-align: -2px; }
+.sandbox-docker-recheck ul, .sandbox-docker-own ul { margin: 4px 0 0; padding-left: 18px; }
+.sandbox-docker-smoke { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.sandbox-docker-smoke-passed { border-color: var(--ok-border); }
+.sandbox-docker-smoke-passed > .row .icon { color: var(--ok); }
+.sandbox-docker-smoke-failed { border-color: var(--danger-border); }
+.sandbox-docker-checks { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.sandbox-docker-checks li { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 8px; align-items: baseline; font-size: var(--fs-sm); }
+.sandbox-docker-checks li .icon { align-self: center; }
+.sandbox-docker-checks li.ok .icon { color: var(--ok); }
+.sandbox-docker-checks li.failed .icon { color: var(--danger); }
+.sandbox-docker-checks li .mono { grid-column: 2; overflow-wrap: anywhere; }
 .update-confirm-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }

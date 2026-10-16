@@ -1,13 +1,15 @@
 // Instance (superadmin; SPEC-001 OPS-006..OPS-009, ADM-002): the version this server runs, the
 // update offered from main (checked when the page opens, SPEC-149) with its new commits, "Update
 // now" and the update's progress (building → pausing tasks → restarting → resuming, with a
-// failure or rollback said plainly), and the Jev and Vidoc keys.
+// failure or rollback said plainly, and the new version's re-check of sandboxes' Docker), whether
+// sandboxes get Docker (SPEC-203), and the Jev and Vidoc keys.
 
 import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { keySettingsCard } from '../instancekeys.js';
+import { sandboxDockerCard } from '../sandboxdocker.js';
 import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
 
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
@@ -79,25 +81,36 @@ function outcome(run) {
       h('strong', null, title), h('span', { class: 'muted small' }, [when, run.requested_by ? `started by ${run.requested_by}` : null].filter(Boolean).join(' · '))),
     run.state === 'rolled_back' ? h('p', { class: 'small' }, 'The previous version and its database were restored and run again. Tasks continued.') : null,
     run.error ? h('p', { class: 'small' }, run.error) : null,
+    dockerRecheck(run.docker),
     run.log_tail && run.log_tail.length
       ? h('details', null, h('summary', { class: 'muted small' }, 'Last lines of the helper’s output'), h('pre', { class: 'update-log mono' }, run.log_tail.join('\n')))
       : null);
 }
 
-/** Superadmin: version, updates, the Jev and Vidoc keys. */
+/** The new version's re-check of sandboxes' Docker after the install (SPEC-203 HST-012). */
+function dockerRecheck(report) {
+  if (!report) return null;
+  if (report.ok) return h('p', { class: 'muted small' }, icon('check', { size: 14 }), ' Sandboxes still get Docker.');
+  const problems = [report.error, ...(report.lines || []).filter((l) => l.outcome === 'failed').map((l) => `${l.name}: ${l.detail}`)].filter(Boolean);
+  return h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }),
+    h('div', { class: 'banner-text' }, h('strong', null, 'Sandboxes may have lost Docker with this update.'), h('ul', null, problems.map((p) => h('li', null, p)))));
+}
+
+/** Superadmin: version, updates, sandboxes' Docker, the Jev and Vidoc keys. */
 export function mountInstancePage(ctx) {
   if (!ctx.isSuperadmin()) {
     const frame = pageFrame({ title: 'Instance' });
     frame.body.append(h('div', { class: 'card placeholder' }, 'Only the superadmin manages updates and the instance keys.'));
     return { el: frame.el };
   }
-  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, the Jev and Vidoc keys' });
+  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, sandboxes’ Docker, the Jev and Vidoc keys' });
   const updatesBody = h('div', { class: 'settings-body instance-body' }, skeleton('Loading updates…', 3, { block: true }));
   const checkButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => checkNow() }, icon('refresh', { size: 14 }), 'Check now');
   const updatesCard = h('section', { class: 'settings-section', 'aria-labelledby': 'updates-title' },
     h('div', { class: 'settings-head' }, icon('download', { size: 16 }), h('h2', { id: 'updates-title' }, 'Updates'), h('span', { class: 'muted small' }, 'from main of Quartio-Studio/yulius'), h('span', { class: 'spacer' }), checkButton),
     updatesBody);
-  frame.body.append(updatesCard, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
+  const docker = sandboxDockerCard(ctx);
+  frame.body.append(updatesCard, docker.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
   function render(view) {
     if (!view) return;
@@ -201,6 +214,7 @@ export function mountInstancePage(ctx) {
     el: frame.el,
     destroy() {
       off();
+      docker.destroy();
       if (ctx.updates) ctx.updates.setQuiet(false);
     },
   };
