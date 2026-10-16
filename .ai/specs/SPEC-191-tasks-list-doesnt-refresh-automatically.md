@@ -104,10 +104,12 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
   and a pause left on an older attempt does nothing.
 - **PER-005 Time does not run against it.** While a person's pause holds, the launch-goal watch
   does not count (as for an update), and a switch is refused ("Resume the task first").
-- **PER-006 Buttons.** The task view's step strip has Pause beside Stop for a running task, and
-  Resume (primary) in its place while paused; the Tasks page's row menu has Pause / Resume. Both
-  call the routes and show the server's error as a toast. What a person types into a paused
-  task's terminal waits in it until the task resumes.
+- **PER-006 Buttons.** The task menu (the task view's Task actions, the sidebar's and the Tasks
+  list's row menu) has Pause for a running task (unavailable otherwise, saying why) and Resume in
+  its place while a person's pause holds it. A paused task's view says why above the terminal
+  ("Paused by @user. What you type waits until it resumes.") with Resume (primary). Both call the
+  routes and show the server's error as a toast. What a person types into a paused task's terminal
+  waits in it until the task resumes.
 
 ## Plan
 

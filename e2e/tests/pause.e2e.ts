@@ -33,3 +33,36 @@ test('a task an update holds reads Paused in the list, the sidebar and its view'
   await expect(browser.locator('.strip-status')).toContainText('Working');
   await expect(sidebar).toHaveAttribute('title', /— Working/);
 });
+
+test('a person pauses a task from its menu and resumes it from its view', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(browser.locator('.strip-status')).toContainText('Working');
+
+  await screen.getByRole('button', 'Task actions').click();
+  await screen.getByRole('menuitem', 'Pause').click();
+  await expect(browser.locator('.strip-status')).toContainText('Paused');
+  const notice = browser.locator('.attention-bar:has-text("Paused by @mkarp")');
+  await expect(notice).toContainText('What you type waits until it resumes.');
+
+  await screen.getByRole('button', 'Resume').click();
+  await expect(browser.locator('.strip-status')).toContainText('Working');
+  await expect(notice).toBeHidden();
+});
+
+test('the Tasks list row menu pauses and resumes a task', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  const row = '.tl-row[data-task-id="tsk_studio_12"]';
+  const menuOf = async (css: string) => { await browser.locator(css).hover(); await browser.locator(`${css} .tl-actions .tl-action:last-child`).click(); };
+  await menuOf(row);
+  await screen.getByRole('menuitem', 'Pause').click();
+  await expect(browser.locator(`${row} [role="img"][aria-label="Paused"]`)).toBeVisible();
+  await expect(browser.locator(row)).toContainText('Paused by @mkarp');
+
+  await menuOf(row);
+  await screen.getByRole('menuitem', 'Resume').click();
+  await expect(browser.locator(`${row} [role="img"][aria-label="Working"]`)).toBeVisible();
+
+  // Only a running task can be paused: a queued one's Pause is not offered as available.
+  await menuOf('.tl-row[data-task-id="tsk_studio_8"]');
+  await expect(browser.locator('[role="menuitem"]:has-text("Pause")')).toHaveAttribute('aria-disabled', 'true');
+});

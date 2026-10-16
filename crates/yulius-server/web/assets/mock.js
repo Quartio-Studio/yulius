@@ -1177,6 +1177,22 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return summary(task);
 });
+// A person pauses a running task and resumes it (SPEC-191 PER-001/002): its run is frozen.
+route('POST', `/api/tasks/${ID}/pause`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'running') fail(409, 'conflict', 'Only a running task can be paused.');
+  if (!task.pause || task.pause.by !== 'person') {
+    touch(db, task, { pause: { by: 'person', user: { login: db.me.user.login }, since: new Date().toISOString(), pending: false } });
+  }
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/resume`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.pause && task.pause.by === 'person') touch(db, task, { pause: null });
+  return summary(task);
+});
 route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);

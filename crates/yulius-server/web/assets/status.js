@@ -378,6 +378,10 @@ export function taskActions(task, access, pr, me) {
     // A stopping task can be stopped again: a stop whose session could not be ended is retried
     // (SPEC-065).
     stop: write && (live || chained),
+    // A person pauses a running task and resumes it (SPEC-191 PER-006); an update's pause ends
+    // by itself.
+    pause: write && task.status === 'running' && !task.pause,
+    resume: write && Boolean(task.pause && task.pause.by === 'person'),
     startNow: write && chained,
     schedule: write && prepared,
     continue: write && ended && !task.archived,
