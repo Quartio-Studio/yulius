@@ -90,9 +90,12 @@ longer report a job that already ended, such as PR #600's real Vidoc scan, as st
   - It is also where the run already decides whether to stop the sibling jobs.
   - Publishing from the store layer instead, on each job's state change, would race the final
     publish.
-- **Two jobs ending at once.** Their publishes can land in either order, so for a moment the
-  status may show a lower count. Both are `pending` and the next publish corrects the count, so
-  no lock is added for this.
+- **Two jobs ending at once.** Each publish reads the jobs from the store when it builds the
+  status, so without care two publishes could land in either order. GitHub would then show a
+  lower count until the next publish, which may be the run's end. One `tokio` mutex per run
+  makes the job-end publishes take turns, so the count on GitHub never goes back.
+  - Rejected: no lock. The count could show 1 of 3 although 2 had ended.
+  - Rejected: a lock in `ci_publish` for every caller. It is wider than this fix needs.
 - **Volume.** At most one extra status per job. GitHub allows 1000 statuses per commit and
   context. The retry loop (`ci_retry_statuses`) already republishes a status that failed.
 - No ADR: this makes the existing commit-status contract (SPEC-162, ADR-0133) true while a run

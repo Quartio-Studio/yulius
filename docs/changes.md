@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- A running CI run's commit status counts the jobs that already ended (SPEC-198, task #184, fixes
+  #604). GitHub kept "Running on Yulius: 0 of 3 jobs passed" until a run ended, so the Superagent
+  took PR #600's finished Vidoc scan for a running one and answered that no PR had been scanned.
+  Each job that passes or ends skipped now publishes the status again. The stale issue #470 is closed.
 - Vidoc is built into Yulius, and the security scan runs on vidoc-1 (SPEC-195, ADR-0157,
   task #181).
   - **The instance key.** An optional instance Vidoc key, managed like the Jev key: sealed,
