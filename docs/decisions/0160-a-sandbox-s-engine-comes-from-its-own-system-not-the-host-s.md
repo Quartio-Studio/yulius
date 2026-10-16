@@ -6,7 +6,8 @@ Accepted. Specified in [SPEC-199](../../.ai/specs/SPEC-199-i-got-this.md); task 
 [0151](0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md) and
 [0158](0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md).
 Amended on 2026-10-16 by [SPEC-201](../../.ai/specs/SPEC-201-analyse-what-happened-in-185-task-and-fi.md)
-(task #186, #610): the install names buildx and compose.
+(task #186, #610): the install names buildx and compose. Amended by [0162](0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)
+(task #188): the host hint names `yulius host setup`; a sandbox on its own `docker.io` is listed.
 
 ## Context
 
