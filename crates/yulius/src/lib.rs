@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod doctor;
+pub mod remove_cli;
 pub mod sandbox_cli;
 pub mod security_scan;
 pub mod serve;

@@ -466,3 +466,189 @@ test('handing a task away while typing in its terminal leaves the keyboard on it
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('watch-scroll') ?? false)).toBe(true);
 });
+
+// Task #175: "this animation on request-control should be better" (SPEC-190). The line standing for
+// Claude Code's spinner moves as that spinner does: its mark turns through the TUI's frames.
+const WORKING_FRAMES = '·✢✳✶✻✽✽✻✶✳✢·';
+
+async function watchWorking(app: { open: (url: string) => Promise<unknown> }, browser: Browser, changes: Record<string, unknown> = {}): Promise<void> {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' }, status: 'running', activity: 'working', ...changes });
+  await expect(browser.locator('.taskview .watch .watch-working')).toBeVisible();
+}
+
+test('the Working mark turns through Claude Code’s spinner frames, one character wide', async ({ app, browser }) => {
+  await watchWorking(app, browser);
+  const turning = await browser.evaluate(() => {
+    const mark = document.querySelector('.watch .watch-working .ss-mark') as HTMLElement;
+    const animations = mark.getAnimations({ subtree: true });
+    const turn = animations[0];
+    const timing = turn?.effect?.getComputedTiming();
+    const duration = Number(timing?.duration ?? 0);
+    const frames: string[] = [];
+    if (turn) {
+      turn.pause();
+      const box = mark.getBoundingClientRect();
+      for (let i = 0; i < 12; i += 1) {
+        turn.currentTime = (i + 0.5) * duration / 12;
+        // The frame in the mark's box: the one whose middle is inside it.
+        const shown = [...mark.querySelectorAll('*')].filter((el) => !el.children.length).find((el) => {
+          const r = el.getBoundingClientRect();
+          const middle = r.top + r.height / 2;
+          return middle > box.top && middle < box.bottom;
+        });
+        frames.push(shown?.textContent ?? '');
+      }
+    }
+    const ch = (() => {
+      const probe = document.createElement('span');
+      probe.style.cssText = 'position:absolute;width:1ch;font:inherit';
+      mark.parentElement!.append(probe);
+      const w = probe.getBoundingClientRect().width;
+      probe.remove();
+      return w;
+    })();
+    return { animations: animations.length, running: turn ? (turn.play(), turn.playState) : null, duration, frames: frames.join(''), width: Math.round(mark.getBoundingClientRect().width), ch: Math.round(ch), clips: getComputedStyle(mark).overflow };
+  });
+  expect(turning.animations, 'the mark has an animation').toBe(1);
+  expect(turning.running).toBe('running');
+  expect(turning.duration, '12 frames of 120 ms').toBe(1440);
+  expect(turning.frames).toBe(WORKING_FRAMES);
+  expect(turning.width, 'one character wide').toBe(turning.ch);
+  expect(turning.clips).toBe('hidden');
+});
+
+test('under reduced motion the Working mark stands still on ✻ and the words do not shimmer', async ({ app, browser }) => {
+  await watchWorking(app, browser);
+  // The harness cannot emulate the media query: read its rules, and lay the mark's out by hand.
+  const still = await browser.evaluate(() => {
+    const reduced: CSSStyleRule[] = [];
+    const visit = (rules: CSSRuleList, inside: boolean) => {
+      for (const rule of rules) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, inside || rule.conditionText.includes('prefers-reduced-motion: reduce'));
+        else if (inside && rule instanceof CSSStyleRule && rule.style.animationName === 'none') reduced.push(rule);
+      }
+    };
+    for (const sheet of document.styleSheets) visit(sheet.cssRules, false);
+    const stops = (el: Element) => reduced.find((rule) => el.matches(rule.selectorText));
+    const mark = document.querySelector('.watch .watch-working .ss-mark') as HTMLElement;
+    const strip = mark.firstElementChild as HTMLElement | null;
+    const words = document.querySelector('.watch .watch-working-text')!;
+    const rule = strip ? stops(strip) : undefined;
+    let shown = '';
+    if (strip && rule) {
+      strip.style.cssText = rule.style.cssText;
+      const box = mark.getBoundingClientRect();
+      shown = [...strip.children].find((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2 > box.top && r.top + r.height / 2 < box.bottom;
+      })?.textContent ?? '';
+    }
+    return { mark: Boolean(rule), words: Boolean(stops(words)), shown };
+  });
+  expect(still).toEqual({ mark: true, words: true, shown: '✻' });
+});
+
+// The light ran over the whole line (the words' box was `flex: 1`) and, with the shared loading
+// keyframes, crossed it for about an eighth of each cycle: a flash, then still grey words.
+test('the light of the Working words runs through the words themselves, left to right, most of each cycle', async ({ app, browser }) => {
+  await watchWorking(app, browser);
+  const sweep = await browser.evaluate(() => {
+    const words = document.querySelector('.watch .watch-working-text') as HTMLElement;
+    const run = words.getAnimations()[0];
+    if (!run) return null;
+    run.pause();
+    const duration = Number(run.effect!.getComputedTiming().duration);
+    const box = words.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(words);
+    const text = range.getBoundingClientRect();
+    const [from, to] = [text.left - box.left, text.right - box.left];
+    // The brightest point is the middle of the symmetric gradient: where it lies along the box.
+    const width = words.clientWidth;
+    const centres: number[] = [];
+    const samples = 40;
+    for (let i = 0; i < samples; i += 1) {
+      run.currentTime = (i / samples) * duration;
+      const style = getComputedStyle(words);
+      const size = style.backgroundSize.split(' ')[0]!;
+      const image = size.endsWith('%') ? (Number.parseFloat(size) / 100) * width : Number.parseFloat(size);
+      const x = style.backgroundPositionX;
+      const offset = x.endsWith('%') ? (Number.parseFloat(x) / 100) * (width - image) : Number.parseFloat(x);
+      centres.push(offset + image / 2);
+    }
+    run.play();
+    const over = centres.filter((c) => c >= from && c <= to);
+    const rising = over.every((c, i) => i === 0 || c > over[i - 1]!);
+    return { share: over.length / samples, rising, words: Math.round(to - from), box: Math.round(box.width) };
+  });
+  expect(sweep, 'the words shimmer').not.toBeNull();
+  expect(sweep!.box, 'the shimmering box is the words, not the line').toBeLessThanOrEqual(sweep!.words + 2);
+  expect(sweep!.share, 'the light is over the words most of the cycle').toBeGreaterThanOrEqual(0.6);
+  expect(sweep!.rising, 'it moves left to right').toBe(true);
+});
+
+// Claude Code's spinner says how long the turn has taken; a watcher sees how long the agent has
+// worked, the same measure as the sidebar's "working 4m" (`working_since`), to the second.
+test('the Working line counts how long the agent has worked, and the count goes on by itself', async ({ app, browser }) => {
+  await watchWorking(app, browser, { working_since: new Date(Date.now() - 75_000).toISOString() });
+  const time = () => browser.evaluate(() => document.querySelector('.watch .watch-working-time')?.textContent ?? null);
+  await expect.poll(time).toMatch(/^ \(1m (1[5-9]|2\d)s\)$/);
+  expect(await browser.evaluate(() => document.querySelector('.watch .watch-working .ss-line-body')!.textContent)).toMatch(/^Working… \(1m \d+s\)$/);
+  const first = await time();
+  await expect.poll(time, { message: 'the count goes up without a task event' }).not.toBe(first);
+});
+
+test('the Working time reads as Claude Code’s, is never negative, and ticks only while it shows (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/watchview.js';
+    const { createWatchView, workingFor } = await import(url);
+    const formats = [0, 59_000, 61_000, 3_599_000, 4_800_000, -5_000].map((ms) => workingFor(ms));
+    const page = { session_id: 's', doc_id: null, entries: [], next: null, end: 0, bytes: 0, earlier: false, skipped_lines: 0 };
+    const pending = new Map<number, { fn: () => void, ms: number }>();
+    let ids = 0;
+    const ticker = { set: (fn: () => void, ms: number) => { ids += 1; pending.set(ids, { fn, ms }); return ids; }, clear: (id: number) => { pending.delete(id); } };
+    const quiet = { set: () => 0, clear: () => {} };
+    let now = 1_000_000;
+    // 5.3 s worked: the next second flips in 700 ms.
+    const task: Record<string, unknown> = { id: 't', status: 'running', activity: 'working', working_since: new Date(now - 5_300).toISOString() };
+    const options = { taskId: 't', task: () => task, owner: () => 'anna-q', emptyMessage: () => null, sessionPath: () => '/x', timer: quiet, ticker, now: () => now };
+    const view = createWatchView({ api: { get: async () => page } }, options);
+    const shown = () => view.el.querySelector('.watch-working-time')?.textContent ?? null;
+    const working = shown();
+    const ticking = pending.size;
+    const firstDelay = [...pending.values()][0]?.ms ?? null;
+    // The tick comes: the time reads the next second, and one tick waits for the one after.
+    now += 700;
+    [...pending.values()][0]?.fn();
+    const ticked = { shown: shown(), waiting: pending.size, delay: [...pending.values()][0]?.ms ?? null };
+    // Without a time to count from: no time.
+    delete task.working_since;
+    view.update();
+    const timeless = shown();
+    task.state_since = new Date(now - 2_000).toISOString();
+    view.update();
+    const fromState = shown();
+    // Not working: the line hides and nothing ticks.
+    task.activity = 'idle';
+    view.update();
+    const idle = pending.size;
+    task.activity = 'working';
+    view.update();
+    const again = pending.size;
+    view.destroy();
+    return { formats, working, ticking, firstDelay, ticked, timeless, fromState, idle, again, destroyed: pending.size };
+  });
+  expect(result.formats).toEqual(['0s', '59s', '1m 1s', '59m 59s', '1h 20m', '0s']);
+  expect(result.working).toBe(' (5s)');
+  expect(result.ticking, 'one tick waits while the line shows').toBe(1);
+  expect(result.firstDelay, 'the tick comes when the next second flips').toBe(700);
+  expect(result.ticked).toEqual({ shown: ' (6s)', waiting: 1, delay: 1000 });
+  expect(result.timeless).toBe('');
+  expect(result.fromState, 'state_since when working_since is missing').toBe(' (2s)');
+  expect(result.idle, 'a hidden line does not tick').toBe(0);
+  expect(result.again).toBe(1);
+  expect(result.destroyed, 'leaving stops the tick').toBe(0);
+});

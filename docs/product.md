@@ -144,7 +144,8 @@ watching, steering and unblocking.
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets a person allowed for each, and shows each run on the CD
-  (deployment) page. A merge deploys nothing: a person or an agent
+  (deployment) page; a confirmed deploy opens its dialog at once, saying what it checks and
+  promotes, and that dialog becomes the run. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
@@ -183,7 +184,8 @@ watching, steering and unblocking.
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
-  `yulius wait`, `ci_status` and `delivery_status`.
+  `yulius wait`, `ci_status` and `delivery_status`. An agent removes the files its task created
+  with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent

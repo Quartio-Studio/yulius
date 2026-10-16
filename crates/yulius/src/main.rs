@@ -72,6 +72,14 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<std::ffi::OsString>,
     },
+    /// In a task's session: remove files this task created (untracked or ignored paths of its
+    /// worktree, paths of the session's own `/`, `/tmp`, `/run` and `/dev/shm`), refusing anything
+    /// else.
+    Remove {
+        /// Files or directories to remove; a link is removed, not what it points to.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
     /// Internal: a sandbox's namespace holder (SPEC-002 ADR-22).
     #[command(name = "sandbox-host", hide = true)]
     SandboxHost {
@@ -224,6 +232,11 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SecurityScan { args } => yulius::security_scan::run(&args),
+        Command::Remove { paths } => {
+            let code =
+                yulius::remove_cli::run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
         Command::GhToken => {
             let code = yulius_git::run_gh_token(&mut std::io::stdout(), &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
