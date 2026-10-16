@@ -127,6 +127,30 @@ never the repository), and an environment with nothing to deploy yet is an empty
 `promote = true`. Yulius reads them from the protected branches and only a person deploys \
 production. A credential or machine only a person can give: ask with needs_you and go on.";
 
+/// The security scan at onboarding (SPEC-195 VIB-002), skill infra-bootstrap: with an instance
+/// Vidoc key, the `security` CI job and the rule to scan before delivery; without one, nothing,
+/// said in the summary.
+#[must_use]
+pub fn security_setup(vidoc: bool) -> &'static str {
+    if vidoc {
+        "Security scan, skill infra-bootstrap: this instance has a Vidoc key, so add the \
+         `security` CI job to yulius.toml: `[[ci.jobs]]` with `name = \"security\"`, \
+         `secrets = \"VIDOC_API_KEY\"` and `command = \"yulius security-scan --ci\"` (it scans pull \
+         request heads with Vidoc's vidoc-1; open critical or high findings fail it, a scan that \
+         cannot run ends skipped). Add the AGENTS.md rule that every change runs `yulius \
+         security-scan` before delivery and fixes its critical and high findings test-first: exit \
+         2 is not run, never passed, and a false positive goes into `.config/vidoc.toml` as an \
+         `[[ignore]]` with its reason once the reviewer agrees. Say in AGENTS.md that the scan \
+         sends the changed code to Vidoc. Do not scan the existing code here: `yulius \
+         security-scan --all` is a broad audit for its own task."
+    } else {
+        "Security scan: there is no Vidoc key on this instance, so add no security CI job, and say \
+         in your summary that the Vidoc scan was skipped (no Vidoc key on this instance): once a \
+         superadmin adds one in Settings, Instance, a task following skill infra-bootstrap adds \
+         it."
+    }
+}
+
 /// Title of the onboarding task of a repository that already follows the Yulius format.
 pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
 
@@ -513,7 +537,10 @@ impl App {
         let mut prompt = if report.is_valid() {
             environment_prompt(&repo, &profile)
         } else {
-            onboarding_prompt(&repo, &profile, report)
+            let mut prompt = onboarding_prompt(&repo, &profile, report);
+            prompt.push_str("\n\n");
+            prompt.push_str(security_setup(self.vidoc_key().is_some()));
+            prompt
         };
         if let Some(warning) = self.production_branch_warning(sandbox).await {
             prompt.push_str(&format!(
@@ -1661,6 +1688,49 @@ mod tests {
             "`secret_copy_to_env`",
         ] {
             assert!(skill.contains(wording), "{wording}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-195 VIB-002: the onboarding prompt, the infra-bootstrap skill and its workflow add
+    /// the security scan only when the instance has a Vidoc key.
+    #[test]
+    fn the_bootstrap_adds_the_security_scan_only_with_a_vidoc_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let with = security_setup(true);
+        for wording in [
+            "this instance has a Vidoc key",
+            "`command = \"yulius security-scan --ci\"`",
+            "`secrets = \"VIDOC_API_KEY\"`",
+            "runs `yulius security-scan` before delivery",
+            "[[ignore]]",
+        ] {
+            assert!(with.contains(wording), "{wording}");
+        }
+        let without = security_setup(false);
+        assert!(
+            without.contains("no Vidoc key on this instance"),
+            "{without}"
+        );
+        assert!(!without.contains("security-scan --ci"), "{without}");
+        let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let skill = crate::skills::pack::PACKS
+            .iter()
+            .flat_map(|pack| pack.files.iter())
+            .find(|(rel, _)| *rel == "infra-bootstrap/SKILL.md")
+            .map(|(_, bytes)| flat(&String::from_utf8_lossy(bytes)))
+            .ok_or("infra-bootstrap is bundled")?;
+        let workflow = flat(include_str!(
+            "../../../catalog/workflows/infra-bootstrap.md"
+        ));
+        for text in [&skill, &workflow] {
+            for wording in [
+                "## Security scan",
+                "yulius security-scan --ci",
+                "no Vidoc key on this instance",
+            ] {
+                assert!(text.contains(wording), "{wording} not in {text}");
+            }
         }
         Ok(())
     }

@@ -220,6 +220,8 @@ pub struct App {
     pub instance_tag: String,
     /// Task intake (Jev, split proposals); unset means nothing is checked (SPEC-002 ADR-16).
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
+    /// The instance Vidoc key (SPEC-195); unset means Vidoc is off.
+    pub(crate) vidoc: OnceLock<crate::vidoc_key::VidocServices>,
     /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
     pub(crate) updates: crate::updates::UpdateState,
     /// Secrets vault runtime state (SPEC-002 ADR-20).
@@ -265,6 +267,7 @@ impl App {
             uploads: crate::uploads::UploadState::default(),
             attachment_reads: crate::task_prompt::AttachmentReads::default(),
             intake: OnceLock::new(),
+            vidoc: OnceLock::new(),
             updates: crate::updates::UpdateState::default(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),

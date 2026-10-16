@@ -164,7 +164,7 @@ test('members see no offer and no instance page', async ({ app, browser, screen 
   await expect(screen.getByText(/Only the superadmin manages updates/)).toBeVisible();
 });
 
-test('setup asks for the Jev key as an optional last step', async ({ app, browser, screen }) => {
+test('setup asks for the Jev key, then the Vidoc key, both optional', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&setup=1&signedout=1'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Set up this instance');
   await screen.getByLabel('Setup token').fill('YUL-SETUP-1234');
@@ -181,6 +181,32 @@ test('setup asks for the Jev key as an optional last step', async ({ app, browse
   await screen.getByRole('button', 'Save and test').click();
   await expect(screen.getByText(/the key works/)).toBeVisible();
   await screen.getByRole('button', 'Continue').click();
+
+  // SPEC-195 VDK-004: the Vidoc key is the last optional step, and skipping it changes nothing.
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Security scans with Vidoc');
+  await expect(screen.getByText(/The code being scanned is sent to Vidoc/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Skip for now').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await app.open(mock('/admin/instance'));
+  await expect(screen.getByText(/No key: security scans are off/)).toBeVisible();
+});
+
+test('the Vidoc setup step saves and tests a key', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&setup=1&signedout=1'));
+  await screen.getByLabel('Setup token').fill('YUL-SETUP-1234');
+  await browser.locator('input[autocomplete="new-password"]').nth(0).fill('a long enough password');
+  await browser.locator('input[autocomplete="new-password"]').nth(1).fill('a long enough password');
+  await browser.locator('#ack-recover').check();
+  await browser.locator('#ack-stored').check();
+  await screen.getByRole('button', 'Create superadmin').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Task intake with Jev');
+  await screen.getByRole('button', 'Skip for now').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Security scans with Vidoc');
+  await browser.locator('#setup-vidoc').fill('vidoc-good-key-0001');
+  await screen.getByRole('button', 'Save and test').click();
+  await expect(screen.getByText(/vidoc-1 is available/)).toBeVisible();
+  await screen.getByRole('button', 'Continue').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
 });
 
@@ -188,16 +214,38 @@ test('the superadmin sets, tests, replaces and removes the Jev key', async ({ ap
   await app.open(mock('/admin/instance'));
   await expect(screen.getByText(/No key: task intake checks nothing/)).toBeVisible();
   await browser.locator('#settings-jev').fill('jev-bad-key-0001');
-  await screen.getByRole('button', 'Save').click();
+  await screen.getByRole('region', 'Jev key').getByRole('button', 'Save').click();
   await expect(screen.getByText(/Jev refused this key/)).toBeVisible();
   await browser.locator('#settings-jev').fill('jev-good-key-0002');
-  await screen.getByRole('button', 'Replace').click();
+  await screen.getByRole('region', 'Jev key').getByRole('button', 'Replace').click();
   await expect(screen.getByText(/the key works/)).toBeVisible();
   await expect(screen.getByText(/In use: saved here/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  await screen.getByRole('button', 'Remove').click();
+  await screen.getByRole('region', 'Jev key').getByRole('button', 'Remove').click();
   await screen.getByRole('dialog', 'Remove the Jev key?').getByRole('button', 'Remove').click();
   await expect(screen.getByText(/No key: task intake checks nothing/)).toBeVisible();
+});
+
+test('the superadmin sets, tests, replaces and removes the Vidoc key', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance'));
+  await expect(screen.getByText(/No key: security scans are off/)).toBeVisible();
+  await browser.locator('#settings-vidoc').fill('vidoc-bad-key-0001');
+  await screen.getByRole('region', 'Vidoc key').getByRole('button', 'Save').click();
+  await expect(screen.getByText(/Vidoc refused this key/)).toBeVisible();
+  await browser.locator('#settings-vidoc').fill('vidoc-good-key-0002');
+  await screen.getByRole('region', 'Vidoc key').getByRole('button', 'Replace').click();
+  await expect(screen.getByText(/vidoc-1 is available/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('region', 'Vidoc key').getByRole('button', 'Remove').click();
+  await screen.getByRole('dialog', 'Remove the Vidoc key?').getByRole('button', 'Remove').click();
+  await expect(screen.getByText(/No key: security scans are off/)).toBeVisible();
+});
+
+test('a Vidoc key file shows as config and moves into settings in one click', async ({ app, screen }) => {
+  await app.open(mock('/admin/instance', '&vidoc=config'));
+  await expect(screen.getByText(/YULIUS_VIDOC_API_KEY_FILE/)).toBeVisible();
+  await screen.getByRole('region', 'Vidoc key').getByRole('button', 'Save it here').click();
+  await expect(screen.getByRole('region', 'Vidoc key').getByText(/In use: saved here/)).toBeVisible();
 });
 
 test('a key file shows as config and moves into settings in one click', async ({ app, screen }) => {

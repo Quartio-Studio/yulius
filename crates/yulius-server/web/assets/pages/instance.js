@@ -1,13 +1,13 @@
 // Instance (superadmin; SPEC-001 OPS-006..OPS-009, ADM-002): the version this server runs, the
 // update offered from main (checked when the page opens, SPEC-149) with its new commits, "Update
 // now" and the update's progress (building → pausing tasks → restarting → resuming, with a
-// failure or rollback said plainly), and the Jev key.
+// failure or rollback said plainly), and the Jev and Vidoc keys.
 
 import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
-import { jevSettingsCard } from '../jevkey.js';
+import { keySettingsCard } from '../instancekeys.js';
 import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
 
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
@@ -84,20 +84,20 @@ function outcome(run) {
       : null);
 }
 
-/** Superadmin: version, updates and the Jev key. */
+/** Superadmin: version, updates, the Jev and Vidoc keys. */
 export function mountInstancePage(ctx) {
   if (!ctx.isSuperadmin()) {
     const frame = pageFrame({ title: 'Instance' });
-    frame.body.append(h('div', { class: 'card placeholder' }, 'Only the superadmin manages updates and the Jev key.'));
+    frame.body.append(h('div', { class: 'card placeholder' }, 'Only the superadmin manages updates and the instance keys.'));
     return { el: frame.el };
   }
-  const frame = pageFrame({ title: 'Instance', sub: 'version, updates and the Jev key' });
+  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, the Jev and Vidoc keys' });
   const updatesBody = h('div', { class: 'settings-body instance-body' }, skeleton('Loading updates…', 3, { block: true }));
   const checkButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => checkNow() }, icon('refresh', { size: 14 }), 'Check now');
   const updatesCard = h('section', { class: 'settings-section', 'aria-labelledby': 'updates-title' },
     h('div', { class: 'settings-head' }, icon('download', { size: 16 }), h('h2', { id: 'updates-title' }, 'Updates'), h('span', { class: 'muted small' }, 'from main of Quartio-Studio/yulius'), h('span', { class: 'spacer' }), checkButton),
     updatesBody);
-  frame.body.append(updatesCard, jevSettingsCard(ctx));
+  frame.body.append(updatesCard, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
   function render(view) {
     if (!view) return;

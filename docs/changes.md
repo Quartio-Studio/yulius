@@ -6,6 +6,23 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- Vidoc is built into Yulius, and the security scan runs on vidoc-1 (SPEC-195, ADR-0157,
+  task #181).
+  - **The instance key.** An optional instance Vidoc key, managed like the Jev key: sealed,
+    `YULIUS_VIDOC_API_KEY_FILE`, a card on the Instance page (set, test, replace, remove, adopt) and
+    a skippable setup step. Agents and CI jobs granted `VIDOC_API_KEY` get its placeholder. The
+    egress proxy adds the key toward `model.vidocsecurity.com` only, and a project's own secret
+    wins.
+  - **The new scanner.** `scripts/vidoc_scan.py` replaces the dead Vidoc CLI and `api.vidoc.dev`.
+    It sends `HEAD`'s changed files, or the whole repository with `--all`, in bounded chunks to
+    `/v1/messages` and fails on open critical or high findings. Exit 2 means not run.
+    `.config/vidoc.toml` gains `exclude` and committed `[[ignore]]` false positives.
+  - **Every project.** The binary embeds the scanner as `yulius security-scan`, which agents run
+    through their shim and CI jobs find on their PATH.
+  - **Infra bootstrap.** The briefing and onboarding add the `security` job only when the instance
+    has a key.
+  - **This project.** The `security` job runs `python3 scripts/vidoc_scan.py --ci`, so pull
+    requests are really scanned again.
 - A multi-line key pasted as an agent secret keeps its line breaks (SPEC-193, ADR-0156, task #179,
   fixes #591). The value field is one line, and the browser turned a pasted PEM or OpenSSH key's
   line breaks into spaces without a word.

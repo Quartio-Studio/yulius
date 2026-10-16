@@ -46,17 +46,17 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 name = "e2e"
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
-# The Vidoc scan (ADR-0104, ADR-0116) on pull request heads only: dev and main have nothing of
-# their own to scan, so there the job ends skipped. Findings (exit 1) fail it. Exit 2 (the scan
-# could not run: no key, a rejected one, #470, or a missing host binding) ends it skipped
-# (SPEC-162, ADR-0133): it exits with the $YULIUS_CI_SKIP_CODE Yulius gives its jobs, so it reads
-# Skipped, never Passed, and blocks no pull request over what only a person can fix (an instance
-# that gives no skip code passes it: exit 0). It gets VIDOC_API_KEY as a placeholder through the
-# egress proxy, never the value (SPEC-142).
+# The Vidoc security scan on vidoc-1 (SPEC-195, ADR-0157) of pull request heads: the files the pull
+# request changed against dev, read from its commits. Findings (exit 1) fail the job. A scan that
+# could not run (no key, a refused one, Vidoc unreachable or out of quota) and every other head end
+# skipped with $YULIUS_CI_SKIP_CODE (ADR-0133), never passed. The job runs the pull request's own
+# scanner; other projects run the instance's, `yulius security-scan --ci`. VIDOC_API_KEY is a
+# placeholder the egress proxy replaces for model.vidocsecurity.com: this project's agent secret,
+# else the instance's Vidoc key (ADR-0116).
 [[ci.jobs]]
 name = "security"
 secrets = "VIDOC_API_KEY"
-command = 'case "$YULIUS_CI_REF" in pr/*) python3 scripts/bootstrap.py --install-rustup && { scripts/dev security; code=$?; if [ "$code" -eq 2 ]; then echo "[yulius] security scan skipped: it could not run (exit 2, reason above), so nothing was scanned"; code="${YULIUS_CI_SKIP_CODE:-0}"; fi; exit "$code"; } ;; *) echo "Not a pull request head: Vidoc scans pull requests only (ADR-0116); skipped."; exit "${YULIUS_CI_SKIP_CODE:-0}" ;; esac'
+command = "python3 scripts/vidoc_scan.py --ci"
 
 # CD (deployment), SPEC-134: Yulius runs these from the protected branches, inside the sandbox
 # (CD page, `cd_deploy`). Both are explicit, even when one deploys nothing yet. A merge deploys
@@ -70,4 +70,4 @@ promote = true
 
 # Build caches beyond the recognised ones (SPEC-008): pruned for tasks that do not work.
 [disk]
-caches = "e2e/node_modules tools/vidoc/node_modules"
+caches = "e2e/node_modules"

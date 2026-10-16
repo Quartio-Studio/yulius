@@ -6,7 +6,7 @@ Accepted. Specified in [SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-job
 task #140, issue #466. Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md):
 Yulius CI runs the Vidoc scan on pull request heads. Amended by
 [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the `security` job is granted its key
-and ends skipped when the scan cannot run.
+and ends skipped when the scan cannot run. Its Vidoc CLI parts (`vidoc ci`, `tools/vidoc`, `api.vidoc.dev`) are superseded by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the scan runs on vidoc-1 through `model.vidocsecurity.com`.
 
 ## Context
 

@@ -46,7 +46,17 @@ example when it starts deploying for real), and record every change as a decisio
    - `yulius.toml` `[commands]`: `test`, `lint`, `build`, and `gate` (the entry point), or
      `[[ci.jobs]]` entries (`name`, `command`, optional `matrix`) when parallel jobs pay off;
    - in a monorepo, a CI job for every project (each app, client, package or service with its own
-     build) running its own checks, so no project is left without CI.
+     build) running its own checks, so no project is left without CI;
+   - **the security scan, only when the instance has a Vidoc key** (the briefing then has a
+     `## Security scan` section): a `[[ci.jobs]]` entry with `name = "security"`,
+     `secrets = "VIDOC_API_KEY"` and `command = "yulius security-scan --ci"` (Vidoc's vidoc-1
+     scans each pull request's changed files; open critical or high findings fail it, a scan that
+     cannot run ends skipped, never passed), and the AGENTS.md rule that every change runs
+     `yulius security-scan` before delivery. Exit 2 is not run, never passed; a false positive
+     goes into `.config/vidoc.toml` as an `[[ignore]]` with its reason once the reviewer agrees;
+     AGENTS.md says the scan sends the changed code to Vidoc. `yulius security-scan --all` scans
+     the whole repository, an audit for a task of its own. Without that section add neither, and
+     say in your summary that the scan was skipped: no Vidoc key on this instance.
 2. **CI on our own machines.** Translate every `.github/workflows/*.yml` job into the Yulius CI
    configuration so nothing is lost (in Yulius, `ci_setup` lists the workflows, jobs, steps and
    matrices to translate): each job's run steps become the gate script or a `[[ci.jobs]]` entry,
@@ -164,6 +174,8 @@ example when it starts deploying for real), and record every change as a decisio
 - The gate passes from a clean checkout and fails on a deliberately broken test.
 - No GitHub Actions workflow is left; `[commands] gate` (or `[[ci.jobs]]`) is set and Yulius CI
   reports on it.
+- With a Vidoc key on the instance, the `security` job runs `yulius security-scan --ci` and
+  AGENTS.md asks for the scan before delivery; without one, the summary says it was skipped.
 - `[cd.dev]` and `[cd.prod]` are defined (empty with an `about` when nothing deploys yet), and
   each one that deploys has a deploy and a verify script that passed on a real run.
 - The docs describe the project as it is, and each choice has an ADR.

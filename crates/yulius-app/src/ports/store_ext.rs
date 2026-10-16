@@ -381,7 +381,8 @@ pub trait IntakeStore: Send + Sync {
     ) -> AppResult<Option<crate::auto_choice::AutoChoiceRecord>>;
 }
 
-/// Instance updates (SPEC-002 ADR-18) and the saved Jev key (SPEC-001 ADM-002).
+/// Instance updates (SPEC-002 ADR-18), the saved Jev key (SPEC-001 ADM-002) and the saved Vidoc
+/// key (SPEC-195 VDK-001).
 #[async_trait]
 pub trait UpdateStore: Send + Sync {
     /// Inserts a run; `false` when another run is open (at most one at a time).
@@ -406,6 +407,14 @@ pub trait UpdateStore: Send + Sync {
     async fn jev_key(&self) -> AppResult<Option<crate::jev_key::StoredJevKey>>;
     /// Saves the sealed Jev key set by `by` (`Some`) or removes it (`None`).
     async fn set_jev_key(
+        &self,
+        key: Option<(&crate::model::Sealed, &str)>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// The saved instance Vidoc key, sealed, with when and by whom it was set (SPEC-195).
+    async fn vidoc_key(&self) -> AppResult<Option<crate::vidoc_key::StoredVidocKey>>;
+    /// Saves the sealed Vidoc key set by `by` (`Some`) or removes it (`None`).
+    async fn set_vidoc_key(
         &self,
         key: Option<(&crate::model::Sealed, &str)>,
         at: Timestamp,
