@@ -586,6 +586,47 @@ mod tests {
         assert!(!cd.iter().any(|a| a == "/run/docker.sock"), "{cd:?}");
     }
 
+    /// SPEC-196 DKL-001 (#597): a joined run sees the sandbox's Docker *directory*, so a socket
+    /// recreated inside it reaches the run, finds it at `/var/run/docker.sock` through a link,
+    /// and has `DOCKER_HOST`. A production CD run gets none of it.
+    #[test]
+    fn a_joined_run_binds_the_docker_directory_and_sets_docker_host() {
+        let dir = "/data/runtime/sandboxes/s1/docker";
+        let argv = bwrap_argv(&joined(Some(dir), None), &["sh".into()], "/");
+        let bind = position(&argv, &["--bind", dir, "/run/yulius/docker"]);
+        let link = position(
+            &argv,
+            &["--symlink", "yulius/docker/docker.sock", "/run/docker.sock"],
+        );
+        let run = position(&argv, &["--tmpfs", "/run"]);
+        let private = position(&argv, &["--tmpfs", "/data"]);
+        assert!(
+            bind.is_some() && run < bind && private < bind && run < link,
+            "{argv:?}"
+        );
+        assert!(
+            position(
+                &argv,
+                &[
+                    "--setenv",
+                    "DOCKER_HOST",
+                    "unix:///run/yulius/docker/docker.sock"
+                ]
+            )
+            .is_some(),
+            "{argv:?}"
+        );
+        let cd = bwrap_argv(
+            &joined(Some(dir), Some("/data/runs/cd-r/work/resolv.conf")),
+            &["sh".into()],
+            "/",
+        );
+        assert!(
+            !cd.iter().any(|a| a.contains("docker") || a == "DOCKER_HOST"),
+            "{cd:?}"
+        );
+    }
+
     #[test]
     fn network_is_unshared_unless_requested() {
         let mut no_net = spec();

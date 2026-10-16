@@ -1092,12 +1092,12 @@ mod tests {
         }
     }
 
-    /// Review of SPEC-187 (medium): whether a sandbox's agents are told Docker works follows
-    /// that sandbox's holder: one adopted from before engines, or whose socket failed, serves
-    /// none, whatever the setting says.
+    /// SPEC-196 DKL-003 (#597): a holder adopted from before engines, or whose socket failed,
+    /// gets a front of its own, so its agents are told Docker works as with a fresh holder. (It
+    /// used to serve none for as long as it lived: SPEC-187 asserted that here.)
     #[tokio::test]
-    async fn docker_is_told_per_sandbox_from_its_holder() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn every_holder_gives_its_runs_docker_whatever_its_age()
+    -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let off = manager(data.path(), 1);
         assert!(!off.docker_for("s1").await, "the setting is off");
@@ -1113,8 +1113,8 @@ mod tests {
             relays: Vec::new(),
         });
         assert!(
-            !manager.docker_for("s1").await,
-            "a holder without an engine"
+            manager.docker_for("s1").await,
+            "a holder from before engines gains one"
         );
         entry.lock().await.live = Some(Live {
             record: live_record(true),
