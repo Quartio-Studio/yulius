@@ -477,13 +477,17 @@ from a sandbox, and no daemon needs to run on the host.
   the sandbox's egress, and they reach the egress proxy at `host.docker.internal:<internal port>`
   (with `--add-host=host.docker.internal:host-gateway`). A port published in the sandbox's port
   range is relayed like a dev server's.
-- **Prerequisites.** The `yulius` executable owned by root, as installed by §2, not by the
-  service user. The engine's read-only binds are not locked, so an executable the sandbox's root
-  owns could be remounted and rewritten. With one, sandboxes get no engine. Docker installed on the host (`docker-ce` or `docker.io`: the base copies
-  `dockerd`, `containerd`, `runc`, `docker-proxy` and the CLI plugins), the cgroup delegation (§3),
-  and these kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
-  nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
-  `yulius doctor` checks all three ("sandbox Docker"):
+- **Prerequisites.**
+  - Docker installed on the host (`docker-ce` or `docker.io`). The base copies `dockerd`,
+    `containerd`, `runc`, `docker-proxy` and the CLI plugins.
+  - The cgroup delegation (§3).
+  - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
+    nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
+  - The `yulius` executable owned by root and writable by no group or other, as §2 installs it.
+    The engine's read-only binds are not locked, so an executable the service user owns or may
+    write could be remounted and rewritten. With one, sandboxes get no engine.
+
+  `yulius doctor` checks the first three ("sandbox Docker"):
 
   ```sh
   printf '%s\n' overlay bridge veth nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack \
@@ -493,20 +497,22 @@ from a sandbox, and no daemon needs to run on the host.
 
 - **Disk.** Images, containers and volumes live in `<data>/sysroots/<sandbox>/docker` and count
   toward the sandbox's soft quota as "containers". This is a lower bound: directories that a
-  container's own users keep private (mode 0700, a database's data, for example) are not entered. From 90 % of the quota, Yulius prunes the build
-  cache and the images no container uses through the engine, before the caches of idle tasks.
-  Containers and volumes are never pruned.
+  container's own users keep private (mode 0700, a database's data, for example) are not entered.
+  From 90 % of the quota, while the engine runs, Yulius prunes its build cache and the images no
+  container uses, before the caches of idle tasks. A stopped engine is never started for that,
+  so it keeps its images until the next use. Containers and volumes are never pruned.
 - **Lifetime.** The engine stops after `YULIUS_SANDBOX_IDLE_MINUTES` without a client and without
   a running container. While it runs, the holder stays. It survives Yulius restarts and updates
   with the holder. Containers stop when the holder stops; those with a restart policy come back
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
-  capabilities do not raise privileges inside containers (`no_new_privs`). Per-container resource
-  flags (`docker run -m`, `--cpus`, compose `mem_limit`) are not applied: the engine lives in its
-  group, so the cgroup rules keep controllers from being passed below it. The sandbox's own limits
-  still bound every container. A bind mount resolves in
-  the engine's view: the sandbox directory, the system layer and `/tmp` of the engine, not a
-  run's own `/tmp`, a Shell user's home or run directories.
+  capabilities do not raise privileges inside containers (`no_new_privs`).
+  - Per-container resource flags (`docker run -m`, `--cpus`, compose `mem_limit` or `cpus`) are
+    not supported; leave them out. The engine lives in its own group, so cgroup v2 passes no
+    controller below it: memory flags are discarded, and CPU flags may make the container fail
+    to start. The sandbox's own limits still bound every container.
+  - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
+    engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
   last lines of `<data>/runtime/sandboxes/<sandbox>/engine.log`.
 

@@ -293,7 +293,7 @@ impl Supervisor {
 /// containers, which may bind the directory) put there: the holder sees the whole host, so the
 /// name is opened with `O_PATH | O_NOFOLLOW`, must be a socket, and is connected through
 /// `/proc/self/fd`, which names exactly that inode (no second lookup to race).
-async fn connect_control(path: &Path) -> io::Result<UnixStream> {
+pub(crate) async fn connect_control(path: &Path) -> io::Result<UnixStream> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _};
     let flags = nix::fcntl::OFlag::O_PATH | nix::fcntl::OFlag::O_NOFOLLOW;

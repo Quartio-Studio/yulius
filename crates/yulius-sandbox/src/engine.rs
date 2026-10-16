@@ -226,9 +226,11 @@ pub const PRUNE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Longest prune answer read.
 const PRUNE_ANSWER_MAX: u64 = 16 << 20;
 
-/// Prunes the engine behind `socket` (SPEC-187 DKR-006): the build cache, then images no
-/// container uses. Containers and volumes are never touched. Returns the bytes the engine
-/// reclaimed (each call's `SpaceReclaimed`).
+/// Prunes the engine behind its control socket `socket` (SPEC-187 DKR-006): the build cache,
+/// then images no container uses. Containers and volumes are never touched. Returns the bytes the
+/// engine reclaimed (each call's `SpaceReclaimed`). The socket is reached without following a
+/// link (the engine can write its directory), and only while the engine runs: nothing here
+/// starts it.
 ///
 /// # Errors
 /// Both calls failed (the engine is not reachable or refused).
@@ -261,7 +263,7 @@ pub async fn prune(socket: &std::path::Path) -> std::io::Result<u64> {
 /// `SpaceReclaimed` of a 200 answer.
 async fn post(socket: &std::path::Path, path: &str) -> std::io::Result<u64> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    let mut stream = crate::engine_supervisor::connect_control(socket).await?;
     let request = format!("POST {path} HTTP/1.0\r\nHost: docker\r\nContent-Length: 0\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
     let mut answer = Vec::new();

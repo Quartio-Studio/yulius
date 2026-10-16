@@ -60,8 +60,9 @@ What each part of ADR-22 means for an engine:
 - **Its own cgroup.** `sandboxes/<sid>/engine` has CPU weight 100 beside `system`, `agents` and
   `ci`.
 - **Its own storage.** `sysroots/<sid>/docker` counts toward the soft quota as "containers". Under
-  disk pressure, unused images and the build cache are pruned through the engine. Containers and
-  volumes are never pruned.
+  disk pressure, a running engine's unused images and build cache are pruned through its own
+  control socket. A stopped engine is never started for that. Containers and volumes are never
+  pruned.
 - **The egress proxy for containers.** With the engine on, the forward relays listen on every IPv4
   address of the sandbox's network, so containers reach the egress proxy at
   `host.docker.internal:<port>`.
@@ -99,11 +100,12 @@ What each part of ADR-22 means for an engine:
 - The engine's read-only binds (`/sys`, the `yulius` executable) are made by `bwrap` in the
   sandbox's own user namespace, so they are not locked: the engine could remount them read-write.
   This is safe only for files the sandbox's root does not own. Host-root-owned sysfs files and the
-  root-owned installed executable qualify. A server whose executable the service user owns
-  therefore gets no engine.
-- Per-container resource flags (`-m`, `--cpus`) are not applied. The engine lives in its own
-  group, and cgroup v2 passes no controller below a group that holds processes. The sandbox's
-  limits still bound every container.
+  root-owned installed executable qualify. A server whose executable the service user owns,
+  or which its group or anyone may write, therefore gets no engine.
+- Per-container resource flags (`-m`, `--cpus`) are not supported: memory flags are discarded,
+  and CPU flags may make the container fail to start. The engine lives in its own group, and
+  cgroup v2 passes no controller below a group that holds processes. The sandbox's limits still
+  bound every container.
 - A `--privileged` container is as strong as the engine (root of the sandbox with the engine's
   view and filter), never more. Paths outside the engine's view (another user's home in a Shell,
   run directories) do not exist for `-v`.

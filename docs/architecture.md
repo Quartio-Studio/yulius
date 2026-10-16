@@ -98,8 +98,9 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
   `setns` and `pivot_root`) bounds every container.
 - **Idle stop.** The engine stops after the idle time with no client and no container.
-- **Disk.** Its storage counts toward the quota, and its unused images and build cache are pruned
-  under pressure.
+- **Disk.** Its storage counts toward the quota. Under pressure, a running engine's unused images
+  and build cache are pruned through its own control socket; a stopped engine is never started
+  for that.
 - **When the prerequisites are missing** (`dockerd` on the host, the cgroup delegation), the
   briefing's `## Containers` section keeps saying there is no engine.
 
@@ -113,7 +114,7 @@ flowchart LR
     C -->|"NAT in the sandbox's network"| T["tap0"]
   end
   T --> S["slirp4netns (host loopback off)"] --> I["Internet"]
-  M["server: disk upkeep"] -->|"prune build cache, unused images"| H
+  M["server: disk upkeep"] -->|"running engine only: prune build cache, unused images"| E
 ```
 
 ## Disk

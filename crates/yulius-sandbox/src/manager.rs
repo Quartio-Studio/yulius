@@ -252,14 +252,16 @@ impl Manager {
     }
 
     /// Whether sandboxes get a Docker engine: the setting, the cgroup delegation, and a `yulius`
-    /// executable the sandbox's root does not own (the engine's read-only binds are not locked,
-    /// so an engine could remount and rewrite one it owns; ADR-0151).
+    /// executable the sandbox's root neither owns nor may write through its group or as anyone
+    /// (the engine's read-only binds are not locked, so an engine could remount and rewrite it;
+    /// ADR-0151).
     #[must_use]
     pub fn docker(&self) -> bool {
         use std::os::unix::fs::MetadataExt as _;
-        let exe_owned = std::fs::metadata(&self.config.exe)
-            .is_ok_and(|meta| meta.uid() == self.config.uid.host);
-        self.config.docker && self.config.delegation.is_some() && !exe_owned
+        // Owned by the sandbox's root, or writable by its group (the service group) or anyone.
+        let exe_writable = std::fs::metadata(&self.config.exe)
+            .is_ok_and(|meta| meta.uid() == self.config.uid.host || meta.mode() & 0o022 != 0);
+        self.config.docker && self.config.delegation.is_some() && !exe_writable
     }
 
     /// Whether `sandbox`'s runs reach a Docker engine: its live holder serves one, or, without a
@@ -704,9 +706,11 @@ impl Manager {
         self.maybe_build(in_use);
     }
 
-    /// Prunes `sandbox`'s Docker engine through its live holder's socket (the engine starts if
-    /// it was stopped): build cache and unused images (SPEC-187 DKR-006). `None` without a live
-    /// holder that serves one, or when the engine could not prune.
+    /// Prunes `sandbox`'s Docker engine when it runs, through its own control socket: build cache
+    /// and unused images (SPEC-187 DKR-006). Never through the sandbox's socket, which would
+    /// start a stopped engine and reset its idle time, keeping it and the holder up for as long
+    /// as the disk is under pressure. `None` without a live holder serving one, with the engine
+    /// stopped, or when it could not prune.
     pub async fn prune_engine(&self, sandbox: &str) -> Option<u64> {
         let socket = {
             let entry = self.entry(sandbox);
@@ -714,7 +718,9 @@ impl Manager {
             if !state.live.as_ref()?.record.engine {
                 return None;
             }
-            StatePaths::new(self.state_dir(sandbox)).engine_socket()
+            StatePaths::new(self.state_dir(sandbox))
+                .engine_control()
+                .join(yulius_contracts::sandbox::ENGINE_SOCKET)
         };
         match crate::engine::prune(&socket).await {
             Ok(bytes) => {
@@ -1106,8 +1112,8 @@ mod tests {
     }
 
     /// Review of SPEC-187 (low): the engine's read-only binds are not locked (same user
-    /// namespace), so an executable the sandbox's root owns could be remounted and rewritten.
-    /// Such a host gets no engine.
+    /// namespace), so an executable the sandbox's root owns, or that its group or anyone may
+    /// write, could be remounted and rewritten. Such a host gets no engine.
     #[test]
     fn an_executable_the_sandbox_owns_gets_no_engine() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::MetadataExt as _;
@@ -1123,24 +1129,35 @@ mod tests {
         let mut other = owned.clone();
         other.uid.host = owner.wrapping_add(1);
         assert!(!Manager::new(owned).docker());
-        assert!(Manager::new(other).docker());
+        let set_mode = |mode| {
+            std::fs::set_permissions(
+                &other.exe,
+                std::os::unix::fs::PermissionsExt::from_mode(mode),
+            )
+        };
+        set_mode(0o755)?;
+        assert!(Manager::new(other.clone()).docker());
+        // Review round 2 (low): writable by the service group (root's group inside) or anyone.
+        for mode in [0o775, 0o757] {
+            set_mode(mode)?;
+            assert!(!Manager::new(other.clone()).docker(), "{mode:o}");
+        }
         Ok(())
     }
 
-    /// SPEC-187 DKR-006: pruning goes through a live holder's Docker socket, and only when
-    /// that holder serves one.
-    #[tokio::test]
-    async fn the_engine_is_pruned_through_a_live_holders_socket()
-    -> Result<(), Box<dyn std::error::Error>> {
+    /// An API answering every request with `SpaceReclaimed: 500`, counting its connections.
+    fn fake_api(
+        listener: tokio::net::UnixListener,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let data = tempfile::tempdir()?;
-        let manager = manager(data.path(), 1);
-        assert_eq!(manager.prune_engine("s1").await, None, "no holder");
-        let state = StatePaths::new(manager.state_dir("s1"));
-        std::fs::create_dir_all(&state.dir)?;
-        let listener = tokio::net::UnixListener::bind(state.engine_socket())?;
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
         let server = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf).await;
                 let _ = stream
@@ -1148,10 +1165,24 @@ mod tests {
                     .await;
             }
         });
-        let record = live_record;
+        (server, count)
+    }
+
+    /// SPEC-187 DKR-006, review round 2 (medium): pruning reaches only an engine that already
+    /// runs, through its own control socket: never through the sandbox's socket, which would
+    /// start a stopped engine and keep it (and the holder) from idling; never through a link.
+    #[tokio::test]
+    async fn only_a_running_engine_is_pruned_through_its_control_socket()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        assert_eq!(manager.prune_engine("s1").await, None, "no holder");
+        let state = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(state.engine_control())?;
+        let (front, front_hits) = fake_api(tokio::net::UnixListener::bind(state.engine_socket())?);
         let entry = manager.entry("s1");
         entry.lock().await.live = Some(Live {
-            record: record(false),
+            record: live_record(false),
             relays: Vec::new(),
         });
         assert_eq!(
@@ -1160,11 +1191,29 @@ mod tests {
             "a holder without an engine"
         );
         entry.lock().await.live = Some(Live {
-            record: record(true),
+            record: live_record(true),
             relays: Vec::new(),
         });
+        assert_eq!(manager.prune_engine("s1").await, None, "a stopped engine");
+        // A link the engine planted at its control socket is not followed.
+        let decoy_path = data.path().join("decoy.sock");
+        let (decoy, decoy_hits) = fake_api(tokio::net::UnixListener::bind(&decoy_path)?);
+        let control = state.engine_control().join("docker.sock");
+        std::os::unix::fs::symlink(&decoy_path, &control)?;
+        assert_eq!(manager.prune_engine("s1").await, None, "a link");
+        std::fs::remove_file(&control)?;
+        let (engine, engine_hits) = fake_api(tokio::net::UnixListener::bind(&control)?);
         assert_eq!(manager.prune_engine("s1").await, Some(1000));
-        server.abort();
+        assert_eq!(engine_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            front_hits.load(Ordering::SeqCst),
+            0,
+            "never the sandbox's socket"
+        );
+        assert_eq!(decoy_hits.load(Ordering::SeqCst), 0);
+        for server in [front, decoy, engine] {
+            server.abort();
+        }
         Ok(())
     }
 

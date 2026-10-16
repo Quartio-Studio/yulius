@@ -71,7 +71,7 @@ another sandbox or the host's Docker.
 | DKR-003 | The engine runs in the sandbox's user, network and cgroup namespaces and never in the holder's mount namespace. It gets a run's file view (the system layer, the sandbox directory at its host path, a tmpfs over the data directory), plus only: its storage, its control socket's directory, a fresh read-only sysfs of the sandbox's network, the engine's own cgroup subtree at `/sys/fs/cgroup` (its cgroup namespace's root), the sandbox's Docker socket and the `yulius` executable read-only. No host Docker socket, no host `/sys`, no host cgroup tree, no `runtime/` or other sandboxes. |
 | DKR-004 | The engine has every capability of the sandbox's user namespace under the engine seccomp profile. It is the run profile plus the mount APIs, `umount2`, `pivot_root` and `setns`, with the keyring calls answering `ENOSYS`. Nested user namespaces, `bpf`, `io_uring`, `perf_event_open`, modules, kexec, `userfaultfd`, `open_by_handle_at` and the other refusals stay. A seccomp filter is inherited and cannot be removed, so every container, `--privileged` included, is bound by it. Environment: cleared, then `PATH`, `HOME=/root`. Its read-only binds are not locked (same user namespace), so a server whose `yulius` executable the sandbox's root (the service user) owns gets no engine. |
 | DKR-005 | Containers are limited by the sandbox's cgroup. The engine lives in `sandboxes/<sid>/engine` (CPU weight 100 beside `system`, `agents`, `ci`), and containers are created below it, so the sandbox's `memory.max`, `pids.max` and `cpu.max` bound them. Per-container flags (`-m`, `--cpus`) are not applied: no controller passes below a group holding the engine (documented). |
-| DKR-006 | Engine storage (`sysroots/<sid>/docker`, outside the sandbox directory and never bound into runs) counts toward the sandbox's soft disk quota as the consumer "containers". When disk upkeep must free space (≥ 90 % of the quota or a refused start) and the holder is live, the build cache and images that no container uses are pruned through the engine, reported and audited like the other build caches. Containers and volumes are never pruned. |
+| DKR-006 | Engine storage (`sysroots/<sid>/docker`, outside the sandbox directory and never bound into runs) counts toward the sandbox's soft disk quota as the consumer "containers". When disk upkeep must free space (≥ 90 % of the quota or a refused start) and the engine runs, its build cache and the images no container uses are pruned through its own control socket, reported and audited like the other build caches. A stopped engine is never started for it, so a pressed sandbox never keeps an engine or its holder from idling. Containers and volumes are never pruned. |
 | DKR-007 | Container traffic leaves through the sandbox's network namespace and its egress (`slirp4netns` with host loopback off), like a run's. With the engine on, the relays of the internal listener and `YULIUS_SANDBOX_FORWARD` listen on every IPv4 address of the sandbox's network, not only its loopback. A container then reaches the egress proxy and its secret injection at `host.docker.internal:<port>` (`--add-host=host.docker.internal:host-gateway`). Nothing outside the sandbox can connect in: `slirp4netns` forwards no port inward. |
 | DKR-008 | A port a container publishes inside the sandbox's dev-server range is relayed to the host's loopback like a dev server's, because `docker-proxy` listens in the sandbox's network. |
 | DKR-009 | From a container: the host's loopback (`10.0.2.2`, a host loopback port), another sandbox's dev server and the host's Docker are unreachable. The socket a container mounts is its own sandbox's engine. |
@@ -181,6 +181,17 @@ another sandbox or the host's Docker.
     - doctor text with a run of spaces (asserted);
     - the `--privileged` probe now uses `--cgroupns=host`;
     - per-container resource flags and the storage undercount are documented.
+- **Review round 2** (fresh session, request changes). The round-1 fixes were all confirmed. Own
+  code, fixed test-first:
+  - *Medium:* pruning went through the sandbox's socket, so under disk pressure it started a
+    stopped engine every 5 minutes and kept it and the holder from idling. Now it prunes only a
+    running engine, through its control socket, with no link followed
+    (`only_a_running_engine_is_pruned_through_its_control_socket` failed with `Some(1000)` for a
+    stopped engine).
+  - *Low:*
+    - a group- or world-writable executable also gets no engine (the test failed for mode 775);
+    - the docs say per-container CPU flags may fail, not that they are ignored;
+    - the docs are rewrapped.
   - *Pre-existing:* `sysroots/<sandbox>` is never deleted for removed sandboxes: #582.
   - A flaky test of this change (`a_command_that_ignores_term_is_killed_after_the_grace` raced the
     shell's `trap`, gate run 1) was fixed to wait on a ready file, and passed 8 runs in a row.
