@@ -309,8 +309,8 @@ const ACTIONS = {
 // ---------------------------------------------------------------- agent secrets
 
 /**
- * A pasted key block (PEM, OpenSSH: `-----BEGIN X-----` on its first line, `-----END X-----` on
- * its last) on one line, its line breaks written as literal `\n`: an agent secret never spans
+ * A pasted key block (PEM, OpenSSH: `-----BEGIN X-----` on its first line, `-----END Y-----` on
+ * its last, Y being X or, for a key and its certificate in one file, another label) on one line, its line breaks written as literal `\n`: an agent secret never spans
  * lines, and the vault reads that form back as the key file (SPEC-193 MLK-001). Spaces around
  * each line and blank lines around the key are dropped (a key file's final line break comes back
  * when it is copied). `null` for any other text: its `\n` would mean nothing to its readers.
@@ -320,14 +320,14 @@ function escapedKey(text) {
   while (lines.length && !lines[0]) lines.shift();
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   const begin = /^-----BEGIN ([^-]+)-----$/.exec(lines[0] || '');
-  const ok = lines.length >= 3 && begin && lines[lines.length - 1] === `-----END ${begin[1]}-----`;
+  const ok = lines.length >= 3 && begin && /^-----END [^-]+-----$/.test(lines[lines.length - 1]);
   return ok ? lines.join('\\n') : null;
 }
 
 /**
  * Keeps the line breaks of a key pasted into a one-line `input` as `\n`: the browser would turn
- * them into spaces or drop them (#591). Any other text pastes as usual. The paste is one undo
- * step where the browser can insert text as typed.
+ * them into spaces or drop them (#591). Any other text pastes as usual. The paste can be undone
+ * where the browser can insert text as typed.
  */
 function pasteKeysEscaped(input) {
   input.addEventListener('paste', (event) => {

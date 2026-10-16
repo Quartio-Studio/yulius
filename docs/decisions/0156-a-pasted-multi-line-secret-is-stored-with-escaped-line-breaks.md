@@ -20,14 +20,14 @@ answered `different` for each original file and a `.env` copy would have been an
 ## Decision
 
 - **The field escapes a pasted key.** A paste that is a key block (`-----BEGIN <label>-----` on its
-  first line, `-----END <label>-----` on its last, LF, CRLF or CR breaks) is inserted at the cursor,
-  or over the selection, as one undo step, with each break written as literal `\n`; spaces around
+  first line, `-----END <label>-----` on its last, any label since a key and its certificate share
+  a file, LF, CRLF or CR breaks) is inserted at the cursor, or over the selection, undoably, with each break written as literal `\n`; spaces around
   each line and blank lines around the key are dropped (a key file's final break comes back in a
   `.env` copy, and `secret_verify` accepts the file with it). Any other text pastes as the browser
   pastes it: only a key block's `\n` is read back as line breaks (`dotenv::key_block`), and in other
   text, such as pretty-printed JSON, a `\n` outside a string would break it where a space does not.
 - **The server refuses a flattened key.** `check_agent_value` refuses a value that opens with
-  `-----BEGIN <label>-----`, closes with `-----END <label>-----`, has something between and no
+  `-----BEGIN <label>-----`, closes with `-----END <label>-----` (any label), has something between and no
   literal `\n`: a one-line key block is never a usable key file, whatever path it came by (a drag,
   an autofill, the API). The message says how to keep the breaks.
 - **Older flattened keys are marked, not repaired.** The agent secrets list says `flattened: true`

@@ -47,7 +47,8 @@ pub fn key_block(value: &str) -> Option<String> {
 }
 
 /// Whether `value` is a key flattened onto one line (SPEC-193 MLK-002): it opens with
-/// `-----BEGIN <label>-----` and closes with `-----END <label>-----`, something is between them
+/// `-----BEGIN <label>-----` and closes with `-----END <label>-----` (any label: a key and its
+/// certificate share a file), something is between them
 /// and no literal `\n` marks its line breaks, which a single-line field replaced with spaces or
 /// dropped. A one-line key block is never a usable key file.
 #[must_use]
@@ -59,14 +60,16 @@ pub fn flattened_key(value: &str) -> bool {
     let Some(rest) = text.strip_prefix("-----BEGIN ") else {
         return false;
     };
-    let Some((label, rest)) = rest.split_once("-----") else {
+    let Some((label, body)) = rest.split_once("-----") else {
         return false;
     };
-    let end = format!("-----END {label}-----");
+    // The last armour closes it, whatever its label: a key and its certificate share a file.
+    let Some((body, end)) = body.rsplit_once("-----END ") else {
+        return false;
+    };
     armour(&format!("-----BEGIN {label}-----"), "BEGIN").is_some()
-        && rest
-            .strip_suffix(end.as_str())
-            .is_some_and(|body| !body.trim().is_empty())
+        && armour(&format!("-----END {end}"), "END").is_some()
+        && !body.trim().is_empty()
 }
 
 /// The lines of a key block's file that hold key material (its armour excluded): a copied key

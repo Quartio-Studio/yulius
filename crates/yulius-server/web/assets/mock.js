@@ -2391,7 +2391,7 @@ const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** A key whose line breaks were lost: `dotenv::flattened_key` (SPEC-193 MLK-002). */
 function flattenedKey(value) {
   const match = /^-----BEGIN ([^-]+)-----(.*)-----END ([^-]+)-----$/s.exec(String(value || '').trim());
-  return Boolean(match) && match[1] === match[3] && !value.includes('\\n') && match[2].trim() !== '';
+  return Boolean(match) && !value.includes('\\n') && match[2].trim() !== '';
 }
 
 function validateAgent(body, creating) {
