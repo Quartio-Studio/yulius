@@ -32,7 +32,12 @@ test('the CD page shows dev and production as their branches define them', async
   // Dev needs a secret nobody allowed yet: nothing runs, and the page says why.
   await dev.getByRole('button', 'Deploy dev').click();
   await screen.getByRole('dialog', 'Deploy dev?').getByRole('button', 'Deploy dev').click();
-  await expect(screen.getByText(/DEV_HOST allows using it outside the proxy/)).toBeVisible();
+  // SPEC-189 CDS-003: the refusal is said in the Deploy dialog the confirmation opened.
+  const refused = screen.getByRole('dialog', 'Deploy');
+  await expect(refused.getByText(/DEV_HOST allows using it outside the proxy/)).toBeVisible();
+  await expect(refused.getByText('Not started')).toBeVisible();
+  await expect(refused.getByText('Starting')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // Task #145 (SPEC-151): "make CI/CD one tab with a tab like in secrets team/agent". One sidebar
@@ -118,6 +123,10 @@ test('a tab left behind draws nothing when its answers come late', async ({ app,
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   await confirm.getByRole('button', 'Deploy production').click();
   await expect(confirm).toBeHidden();
+  // The starting deploy's dialog is modal (SPEC-189): the person closes it, then leaves.
+  await expect(screen.getByRole('dialog', 'Deploy')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(screen.getByRole('dialog', 'Deploy')).toBeHidden();
   await screen.getByRole('radio', 'CI (tests)').click();
   await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
   await browser.evaluate(() => { (window as unknown as { __releaseDeploy: () => void }).__releaseDeploy(); });
@@ -141,14 +150,85 @@ test('production deploys only after the project slug is typed', async ({ app, br
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   expect(await axeViolations(browser)).toEqual([]);
   await go.click();
-  await expect(screen.getByText('Deploying production.')).toBeVisible();
+  const run = screen.getByRole('dialog', 'Deploy');
+  await expect(run.getByText('Deploying')).toBeVisible();
+  await expect(run.getByText(/promoted the integration branch|by mkarp/)).toBeVisible();
   // The time the person kept the confirmation open goes with it, as the run's confirmation wait
   // (SPEC-137 STG-302).
   const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm_ms?: number } } }).__yuliusMock.lastCdDeploy?.confirm_ms ?? null);
   expect(typeof sent === 'number' && sent > 0).toBe(true);
-  const run = screen.getByRole('dialog', 'Deploy');
-  await expect(run.getByText('Deploying')).toBeVisible();
-  await expect(run.getByText(/promoted the integration branch|by mkarp/)).toBeVisible();
+});
+
+type Held = Window & { __yuliusMock: { holdCdDeploy?: Promise<void> }; __releaseDeploy?: () => void; __startDialog?: Element | null };
+const holdDeploy = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const w = window as unknown as Held;
+  w.__yuliusMock.holdCdDeploy = new Promise((resolve) => { w.__releaseDeploy = resolve; });
+});
+const releaseDeploy = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => { (window as unknown as Held).__releaseDeploy!(); });
+const elapsedSeconds = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const text = document.querySelector('.cd-starting-elapsed')?.textContent || '';
+  const m = /(\d+) s/.exec(text);
+  return m ? Number(m[1]) : null;
+});
+
+// Task #174 (SPEC-189, #585): "when I clicked deploy nothing happened for a while and I thought it
+// broke". The server answers a deploy after its checks and promotion (seconds to a minute); the
+// page says at once that it is starting and what it does, then shows the run in the same dialog.
+test('a confirmed deploy opens its dialog at once and says what is starting', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/cd'));
+  await holdDeploy(browser);
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+
+  // Before any answer: what is starting, what it does now, and time that moves.
+  const dialog = screen.getByRole('dialog', 'Deploy');
+  await expect(dialog.getByText('Starting')).toBeVisible();
+  await expect(dialog.getByText(/Checking, then promoting quartio at 9f3c2a1 into main/)).toBeVisible();
+  await expect(dialog.getByText(/stages and output appear here/)).toBeVisible();
+  expect(await elapsedSeconds(browser)).not.toBeNull();
+  const first = (await elapsedSeconds(browser))!;
+  await expect.poll(() => elapsedSeconds(browser), { timeout: 5000 }).toBeGreaterThan(first);
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.evaluate(() => { (window as unknown as Held).__startDialog = document.querySelector('dialog[open]'); });
+
+  // The answer turns the same dialog into the run, without a toast over it.
+  await releaseDeploy(browser);
+  await expect(dialog.getByText('Deploying')).toBeVisible();
+  await expect(browser.locator('.run-output')).toHaveText(/to production/);
+  await expect(dialog.getByText('Starting')).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_\d+$/);
+  expect(await browser.evaluate(() => {
+    const kept = (window as unknown as Held).__startDialog;
+    return Boolean(kept && kept.isConnected && kept.querySelector('.run-output'));
+  })).toBe(true);
+  await expect(screen.getByText('Deploying production.')).toBeHidden();
+  expect(await browser.evaluate(() => document.querySelector('.cd-starting-elapsed') === null)).toBe(true);
+});
+
+test('a starting deploy closed meanwhile goes on, and its toast opens it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/cd'));
+  await holdDeploy(browser);
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  const dialog = screen.getByRole('dialog', 'Deploy');
+  await expect(dialog.getByText('Starting')).toBeVisible();
+  await expect(dialog.getByText(/Closing this does not stop it/)).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  await releaseDeploy(browser);
+  await expect(screen.getByText('Deploying production.')).toBeVisible();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.item-card:has-text("Production")').first()).toContainText('Deploying');
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  await browser.locator('.toast:has-text("Deploying production.") button:has-text("Open")').click();
+  await expect(dialog.getByText('Deploying')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_\d+$/);
 });
 
 test('members deploy dev but never production, and an empty dev says so', async ({ app, screen }) => {
