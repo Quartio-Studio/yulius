@@ -458,10 +458,10 @@ pub struct SandboxJoin {
     /// shown at the host's resolver path (where `/etc/resolv.conf` really points).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_system: Option<String>,
-    /// The sandbox's Docker socket on the host (ADR-0151), bound at
-    /// [`crate::sandbox::ENGINE_SOCKET_IN_RUNS`]; never for a host-system run.
+    /// The sandbox's Docker directory on the host (`<state>/docker`, ADR-0158), bound at
+    /// [`crate::sandbox::DOCKER_DIR_IN_RUNS`] with `DOCKER_HOST` set; never for a host-system run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine_socket: Option<String>,
+    pub docker_dir: Option<String>,
 }
 
 /// A bind mount at a different path inside the sandbox.
@@ -744,7 +744,7 @@ fn validate_bubblewrap(spec: &BubblewrapSpec) -> Result<(), LaunchSpecError> {
             && join.cgroup.as_deref().is_none_or(valid_abs_path)
             && join.exec_shim.as_deref().is_none_or(valid_abs_path)
             && join.host_system.as_deref().is_none_or(valid_abs_path)
-            && join.engine_socket.as_deref().is_none_or(valid_abs_path)
+            && join.docker_dir.as_deref().is_none_or(valid_abs_path)
             && join.private_dirs.len() <= 8
             && join
                 .private_dirs
@@ -1718,7 +1718,7 @@ mod tests {
                 exec_shim: Some("/usr/local/bin/yulius".into()),
                 private_dirs: vec!["/data".into()],
                 host_system: None,
-                engine_socket: None,
+                docker_dir: None,
             })),
         });
         spec.validate()?;
@@ -1806,7 +1806,7 @@ mod tests {
                             exec_shim: None,
                             private_dirs: Vec::new(),
                             host_system: None,
-                            engine_socket: None,
+                            docker_dir: None,
                         })),
                     });
                 },

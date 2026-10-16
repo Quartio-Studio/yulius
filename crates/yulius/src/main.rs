@@ -96,6 +96,10 @@ enum Command {
         /// Join this cgroup directory first.
         #[arg(long)]
         cgroup: Option<std::path::PathBuf>,
+        /// Join the sandbox described by this file first (a `SandboxJoin`, as the ptyhost does;
+        /// `yulius doctor --docker-smoke`).
+        #[arg(long)]
+        join: Option<std::path::PathBuf>,
         /// `bwrap` and its arguments, after `--`.
         #[arg(last = true, required = true)]
         argv: Vec<std::ffi::OsString>,
@@ -159,6 +163,10 @@ enum Command {
     },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
+        /// Prove that sandboxes get Docker on this host, end to end, in a throwaway sandbox
+        /// (SPEC-196): run it as root or the service user; it uses the current base.
+        #[arg(long)]
+        docker_smoke: bool,
         /// Data directory.
         #[arg(
             long = "data-dir",
@@ -245,8 +253,9 @@ fn main() -> ExitCode {
         Command::SandboxExec {
             engine,
             cgroup,
+            join,
             argv,
-        } => yulius::sandbox_cli::exec(engine, cgroup.as_deref(), &argv),
+        } => yulius::sandbox_cli::exec(engine, cgroup.as_deref(), join.as_deref(), &argv),
         Command::SandboxBase { action } => yulius::sandbox_cli::base(action),
         Command::Login { server } => yulius::cli::login(&server),
         Command::Onboard {
@@ -277,6 +286,12 @@ fn main() -> ExitCode {
             no_color,
         }),
         Command::Doctor {
+            docker_smoke: true,
+            data,
+            ..
+        } => yulius::docker_smoke::main(&data),
+        Command::Doctor {
+            docker_smoke: false,
             data,
             contained,
             contained_readonly,

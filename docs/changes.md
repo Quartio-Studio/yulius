@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- Docker works in every sandbox and session, without a restart or a new session (SPEC-196,
+  ADR-0158, task #182, fixes #597). After #583, sandboxes busy during the upgrade kept no engine,
+  and sessions started before had no socket and no reason.
+  - A Docker front beside every holder, adopted ones included, serves the socket: the engine on
+    demand, a relay to a holder that already runs one, or a Docker-API error naming the missing
+    prerequisite and the operator's fix.
+  - Runs bind the directory `/run/yulius/docker` with `DOCKER_HOST` and a `/var/run/docker.sock`
+    link, so a recreated socket reaches them. Sessions started without it get the directory
+    moved into their mount namespace within one upkeep tick.
+  - The briefing says `docker info` checks the engine or says why there is none; `yulius doctor`
+    uses the same reasons.
+  - `sudo yulius doctor --docker-smoke` proves it on a host: a throwaway sandbox goes through an
+    upgrade, then hello-world, a build, compose, a recreated socket and a new run. The host test
+    `isolation_docker_live` runs the same scenario. Neither can run in a sandbox or in Yulius CI.
+
 - Vidoc is built into Yulius, and the security scan runs on vidoc-1 (SPEC-195, ADR-0157,
   task #181).
   - **The instance key.** An optional instance Vidoc key, managed like the Jev key: sealed,

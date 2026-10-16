@@ -11,6 +11,9 @@
 //! | `in.sock` | the holder (inside the sandbox's network) | relay into the sandbox ([`INBOUND_CONNECT`], [`INBOUND_PORTS`]) |
 //! | `out.sock` | the server | relay out of the sandbox (a [`u16`] port, then bytes) |
 //! | `root/` | the holder's mount namespace | the merged system layer (empty on the host) |
+//! | `docker.json` | server | [`DockerFrontSpec`] (ADR-0158) |
+//! | `docker-front.json` | server | [`DockerFrontRecord`] once the front serves |
+//! | `docker/docker.sock` | the Docker front | the sandbox's Docker socket, `docker/` bound into runs |
 //!
 //! Relay frames: a client of `in.sock` sends [`INBOUND_CONNECT`] and the port (big-endian `u16`);
 //! the holder answers one status byte ([`RELAY_OK`], [`RELAY_REFUSED`], [`RELAY_FORBIDDEN`]) and
@@ -60,8 +63,25 @@ pub const ENGINE_CONTROL_DIR: &str = "engine";
 pub const ENGINE_SYSFS_DIR: &str = "sys";
 /// The engine's output.
 pub const ENGINE_LOG_FILE: &str = "engine.log";
-/// Where runs and the engine see the sandbox's Docker socket (`/var/run` links to `/run`).
+/// Where runs and the engine find the sandbox's Docker socket by default (`/var/run` links to
+/// `/run`): a link to [`DOCKER_SOCKET_LINK`].
 pub const ENGINE_SOCKET_IN_RUNS: &str = "/run/docker.sock";
+/// The sandbox's Docker directory in the state directory (ADR-0158): it holds only the socket the
+/// Docker front serves, and is bound into runs as a directory, so a recreated socket reaches
+/// them.
+pub const DOCKER_DIR: &str = "docker";
+/// Where runs and the engine see the Docker directory.
+pub const DOCKER_DIR_IN_RUNS: &str = "/run/yulius/docker";
+/// Target of the link at [`ENGINE_SOCKET_IN_RUNS`], relative to `/run`.
+pub const DOCKER_SOCKET_LINK: &str = "yulius/docker/docker.sock";
+/// `DOCKER_HOST` of runs.
+pub const DOCKER_HOST_IN_RUNS: &str = "unix:///run/yulius/docker/docker.sock";
+/// The server's spec of the sandbox's Docker front.
+pub const DOCKER_FRONT_SPEC_FILE: &str = "docker.json";
+/// The running front's record.
+pub const DOCKER_FRONT_RECORD_FILE: &str = "docker-front.json";
+/// The front's diagnostics.
+pub const DOCKER_FRONT_LOG_FILE: &str = "docker-front.log";
 /// Where the engine sees its control directory.
 pub const ENGINE_CONTROL_IN_ENGINE: &str = "/run/yulius-engine";
 
@@ -133,9 +153,11 @@ pub struct HolderSpec {
     /// operator's extra forwards).
     #[serde(default)]
     pub forwards: Vec<u16>,
-    /// The sandbox's Docker engine (ADR-0151); `None`: no engine and no Docker socket.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine: Option<EngineSpec>,
+    /// Containers may run in the sandbox (ADR-0151): forwarded ports listen on every IPv4
+    /// address of its network, so containers reach them at `host.docker.internal`. The engine
+    /// itself is the Docker front's (ADR-0158).
+    #[serde(default)]
+    pub containers: bool,
 }
 
 /// How the holder starts the sandbox's Docker engine on demand (ADR-0151).
@@ -247,11 +269,117 @@ impl HolderSpec {
         if self.forwards.len() > 16 || self.forwards.contains(&0) {
             return Err(spec_err("forwards", "at most 16 ports, none 0"));
         }
-        if let Some(engine) = &self.engine {
-            engine.validate()?;
-        }
         Ok(())
     }
+}
+
+/// How the sandbox's Docker front serves its socket (ADR-0158).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum DockerServe {
+    /// The sandbox's own engine, started on the first connection.
+    Engine {
+        /// How it starts.
+        engine: EngineSpec,
+    },
+    /// A holder that serves an engine itself (SPEC-187): bytes go to its socket.
+    Relay {
+        /// That socket (`<state>/docker.sock`).
+        socket: String,
+    },
+    /// No engine is possible: every request is answered with this reason.
+    Refuse {
+        /// Why, and the operator's fix.
+        reason: String,
+    },
+}
+
+impl DockerServe {
+    /// `engine`, `relay` or `refuse`.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Engine { .. } => "engine",
+            Self::Relay { .. } => "relay",
+            Self::Refuse { .. } => "refuse",
+        }
+    }
+}
+
+/// What the server asks of a sandbox's Docker front (`docker.json`). Paths are absolute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerFrontSpec {
+    /// Record version ([`HOLDER_RECORD_VERSION`]).
+    pub version: u32,
+    /// Sandbox identifier.
+    pub sandbox: String,
+    /// The holder's state directory.
+    pub state_dir: String,
+    /// The holder process, whose user, network and mount namespaces the front joins.
+    pub holder_pid: u32,
+    /// Expected inode of its user namespace.
+    pub user_ns: u64,
+    /// Expected inode of its network namespace.
+    pub net_ns: u64,
+    /// Expected inode of its mount namespace.
+    pub mnt_ns: u64,
+    /// The sandbox's `system` group, joined first; `None` without delegation.
+    #[serde(default)]
+    pub cgroup: Option<String>,
+    /// The mode.
+    pub serve: DockerServe,
+    /// Forwarded ports the front also serves on the engine's bridge gateway, for a holder whose
+    /// forwards listen on loopback only (started before engines).
+    #[serde(default)]
+    pub bridge_forwards: Vec<u16>,
+}
+
+impl DockerFrontSpec {
+    /// Validates every field.
+    ///
+    /// # Errors
+    /// The first offending field.
+    pub fn validate(&self) -> Result<(), LaunchSpecError> {
+        if self.version != HOLDER_RECORD_VERSION {
+            return Err(spec_err("version", "unsupported record version"));
+        }
+        if !valid_sandbox_id(&self.sandbox) {
+            return Err(spec_err("sandbox", "must be 1-64 of [A-Za-z0-9_-]"));
+        }
+        if !abs(&self.state_dir) || self.cgroup.as_deref().is_some_and(|p| !abs(p)) {
+            return Err(spec_err("paths", "must be absolute and not /"));
+        }
+        if self.holder_pid <= 1 {
+            return Err(spec_err("holder_pid", "must be a process"));
+        }
+        if self.bridge_forwards.len() > 16 || self.bridge_forwards.contains(&0) {
+            return Err(spec_err("bridge_forwards", "at most 16 ports, none 0"));
+        }
+        match &self.serve {
+            DockerServe::Engine { engine } => engine.validate(),
+            DockerServe::Relay { socket } if !abs(socket) => {
+                Err(spec_err("serve.socket", "must be absolute and not /"))
+            }
+            DockerServe::Refuse { reason } if reason.is_empty() || reason.len() > 2000 => {
+                Err(spec_err("serve.reason", "1 to 2000 bytes"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A running Docker front (`docker-front.json`), written by the server once it serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerFrontRecord {
+    /// The front process.
+    pub pid: u32,
+    /// Its mode ([`DockerServe::kind`]).
+    pub mode: String,
+    /// The refusal's reason in refuse mode.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// When it started serving (ms since the epoch).
+    pub started_at_ms: i64,
 }
 
 /// A running holder (`host.json`), written once it is ready.
@@ -282,8 +410,9 @@ pub struct HolderRecord {
     pub started_at_ms: i64,
     /// The merged system layer inside the holder's mount namespace.
     pub system_root: String,
-    /// The holder serves the sandbox's Docker socket (ADR-0151); `false` in records of holders
-    /// started before engines.
+    /// The holder itself serves an engine at `<state>/docker.sock` (SPEC-187 holders): their
+    /// Docker front relays to it. `false` for holders from before engines and since ADR-0158,
+    /// whose front runs the engine.
     #[serde(default)]
     pub engine: bool,
 }
@@ -328,7 +457,7 @@ mod tests {
             port_first: 20_000,
             port_last: 20_019,
             forwards: vec![8081],
-            engine: None,
+            containers: false,
         }
     }
 
@@ -344,19 +473,43 @@ mod tests {
         }
     }
 
-    /// SPEC-187: a spec with an engine round-trips, and a holder record written before engines
-    /// (no `engine` field) still reads, as no engine.
-    #[test]
-    fn an_engine_is_optional_and_validated() -> Result<(), Box<dyn std::error::Error>> {
-        let mut with = spec();
-        with.engine = Some(engine());
-        with.validate()?;
-        let json = serde_json::to_string(&with)?;
-        assert_eq!(serde_json::from_str::<HolderSpec>(&json)?, with);
-        let without = serde_json::to_string(&spec())?;
-        assert!(!without.contains("engine"), "{without}");
-        assert_eq!(serde_json::from_str::<HolderSpec>(&without)?.engine, None);
+    fn front(serve: DockerServe) -> DockerFrontSpec {
+        DockerFrontSpec {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: "s1".into(),
+            state_dir: "/data/runtime/sandboxes/s1".into(),
+            holder_pid: 4242,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: Some("/sys/fs/cgroup/yulius.service/sandboxes/s1/system".into()),
+            serve,
+            bridge_forwards: vec![8081],
+        }
+    }
 
+    /// SPEC-196 DKL-002: a front spec round-trips in each mode, its engine is validated as in
+    /// SPEC-187, and a SPEC-187 `holder.json` (with `engine`) still reads.
+    #[test]
+    fn a_front_spec_is_validated_in_each_mode() -> Result<(), Box<dyn std::error::Error>> {
+        for serve in [
+            DockerServe::Engine { engine: engine() },
+            DockerServe::Relay {
+                socket: "/data/runtime/sandboxes/s1/docker.sock".into(),
+            },
+            DockerServe::Refuse {
+                reason: "off".into(),
+            },
+        ] {
+            let spec = front(serve);
+            spec.validate()?;
+            let json = serde_json::to_string(&spec)?;
+            assert!(
+                json.contains(&format!("\"mode\":\"{}\"", spec.serve.kind())),
+                "{json}"
+            );
+            assert_eq!(serde_json::from_str::<DockerFrontSpec>(&json)?, spec);
+        }
         for (field, change) in [
             (
                 "engine.command",
@@ -375,12 +528,30 @@ mod tests {
                 Box::new(|e: &mut EngineSpec| e.idle_secs = 5),
             ),
         ] {
-            let mut s = spec();
             let mut e = engine();
             change(&mut e);
-            s.engine = Some(e);
-            assert_eq!(s.validate().map_err(|e| e.field), Err(field));
+            let spec = front(DockerServe::Engine { engine: e });
+            assert_eq!(spec.validate().map_err(|e| e.field), Err(field));
         }
+        let mut bad = front(DockerServe::Refuse {
+            reason: String::new(),
+        });
+        assert_eq!(bad.validate().map_err(|e| e.field), Err("serve.reason"));
+        bad.serve = DockerServe::Relay {
+            socket: "rel".into(),
+        };
+        assert_eq!(bad.validate().map_err(|e| e.field), Err("serve.socket"));
+        bad.serve = DockerServe::Refuse { reason: "r".into() };
+        bad.holder_pid = 1;
+        assert_eq!(bad.validate().map_err(|e| e.field), Err("holder_pid"));
+
+        let mut old = serde_json::to_value(spec())?;
+        old["engine"] = serde_json::to_value(engine())?;
+        if let Some(map) = old.as_object_mut() {
+            map.remove("containers");
+        }
+        let read: HolderSpec = serde_json::from_value(old)?;
+        assert!(!read.containers);
         Ok(())
     }
 

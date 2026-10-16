@@ -57,9 +57,9 @@ pub struct SandboxJoin {
     /// Run on the host's read-only system instead of the system layer, in the holder's network
     /// (a production CD run, SPEC-134); the resolver file shown at the host's resolver path.
     pub host_system: Option<PathBuf>,
-    /// The sandbox's Docker socket on the host (ADR-0151), shown to the run at `/run/docker.sock`;
-    /// `None` without an engine and for a host-system run.
-    pub engine_socket: Option<PathBuf>,
+    /// The sandbox's Docker directory on the host (ADR-0158), shown to the run at
+    /// `/run/yulius/docker` with `DOCKER_HOST`; `None` for a host-system run.
+    pub docker_dir: Option<PathBuf>,
 }
 
 /// The CPUs and memory every sandbox may use, where the adapter enforces them (SPEC-082

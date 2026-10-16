@@ -83,8 +83,8 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                         .host_system
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
-                    engine_socket: j
-                        .engine_socket
+                    docker_dir: j
+                        .docker_dir
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
                 })
@@ -413,7 +413,7 @@ mod tests {
 
     /// SPEC-187 DKR-001: the sandbox's Docker socket reaches a joined run's `bwrap` argv.
     #[test]
-    fn a_joined_run_gets_the_sandboxs_docker_socket() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_joined_run_gets_the_sandboxs_docker_directory() -> Result<(), Box<dyn std::error::Error>> {
         let join = yulius_app::ports::isolation::SandboxJoin {
             holder_pid: 4242,
             user_ns: 1,
@@ -429,7 +429,7 @@ mod tests {
             system_passwd: None,
             system_group: None,
             host_system: None,
-            engine_socket: Some("/data/runtime/sandboxes/s1/docker.sock".into()),
+            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
         };
         let containment = Containment::Bubblewrap {
             sandbox_root: "/data/sandboxes/s1".into(),
@@ -447,9 +447,9 @@ mod tests {
         assert!(
             argv.windows(3).any(|w| w
                 == [
-                    "--bind",
-                    "/data/runtime/sandboxes/s1/docker.sock",
-                    "/run/docker.sock"
+                    "--ro-bind",
+                    "/data/runtime/sandboxes/s1/docker",
+                    "/run/yulius/docker"
                 ]),
             "{argv:?}"
         );
@@ -477,7 +477,7 @@ mod tests {
             system_group: None,
             host_system: None,
             // The sandbox has an engine; a production CD run still gets none (SPEC-187).
-            engine_socket: Some("/data/runtime/sandboxes/s1/docker.sock".into()),
+            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
         };
         let containment = yulius_app::ci::cd::production_containment(
             std::path::Path::new("/data/runs/cd-r/work"),

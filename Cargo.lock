@@ -3371,6 +3371,7 @@ name = "yulius-sandbox"
 version = "0.1.0"
 dependencies = [
  "nix 0.31.3",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
