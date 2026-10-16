@@ -109,7 +109,11 @@ mod tests {
         assert!(!docs.prompt.contains("automations_list"));
         let issues = template("open-issues").ok_or("issues template")?;
         // Wording is matched on one line, so a reflowed prompt keeps it.
-        let one_line = issues.prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+        let one_line = issues
+            .prompt
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(issues.prompt.contains("Never create a new issue"));
         for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
             assert!(issues.prompt.contains(association), "{association}");
