@@ -4,7 +4,7 @@
 
 import { h, icon, field, setChildren, toast, skeleton } from '../dom.js';
 import { BRAND } from '../brand.js';
-import { jevSetupCard } from '../jevkey.js';
+import { keySetupCard } from '../instancekeys.js';
 
 /** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
 function brandLockup() {
@@ -63,7 +63,7 @@ function passwordChecks(password, confirm, prefix) {
 
 /**
  * Setup wizard: token, password + confirmation, non-recoverable warning (ACC-002), the recovery
- * code, then the optional Jev key (ADM-001).
+ * code, then the optional Jev key (ADM-001) and the optional Vidoc key (SPEC-195 VDK-004).
  */
 export function mountSetup(ctx, { onDone }) {
   const token = h('input', { class: 'input mono', type: 'text', autocomplete: 'one-time-code', spellcheck: 'false', placeholder: 'printed on the VM by `yulius serve`', autofocus: true });
@@ -118,9 +118,10 @@ export function mountSetup(ctx, { onDone }) {
       confirm.value = '';
       const code = me && me.recovery_code;
       if (me) delete me.recovery_code;
-      // The session exists now: the optional Jev step saves through the superadmin's API.
+      // The session exists now: the optional key steps save through the superadmin's API.
       if (me && me.csrf_token) ctx.api.setCsrf(me.csrf_token);
-      const jevStep = () => setChildren(root, jevSetupCard(ctx, { header: brandLockup(), onDone: () => onDone(me) }));
+      const vidocStep = () => setChildren(root, keySetupCard(ctx, 'vidoc', { header: brandLockup(), step: 'Optional · last step', onDone: () => onDone(me) }));
+      const jevStep = () => setChildren(root, keySetupCard(ctx, 'jev', { header: brandLockup(), step: 'Optional · 1 of 2', onDone: vidocStep }));
       if (code) {
         setChildren(root, recoveryCodeCard(code, { onContinue: jevStep }));
       } else {
