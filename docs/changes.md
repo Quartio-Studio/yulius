@@ -13,6 +13,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   untracked or ignored paths of its worktree and paths of its session's own `/`, `/tmp`, `/run`
   and `/dev/shm`; anything shared is refused with the reason. Task runs also get `TMPDIR=/tmp`,
   so `$TMPDIR/x` no longer lands at `/x`.
+- A confirmed deploy answers at once (SPEC-189, task #174, fixes #585). After "Deploy production…"
+  the page showed nothing while the server checked and promoted (13 s on Yulius's own instance), so
+  the click looked broken. The Deploy dialog now opens on confirmation, "Starting", with what it
+  does ("Checking, then promoting quartio at 9f3c2a1 into main…") and the seconds so far, then
+  shows the run in place; a refusal is said there. Closed meanwhile, the deploy goes on and a toast
+  with "Open" announces it.
 - The watched task's Working line moves as Claude Code's spinner (SPEC-190, ADR-0153, task #175).
   Under someone else's task, `✻ Working…` stood still: the mark never moved and the shimmer
   flashed over the whole line for a fraction of each cycle. Now the mark turns through

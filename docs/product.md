@@ -137,7 +137,8 @@ watching, steering and unblocking.
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets a person allowed for each, and shows each run on the CD
-  (deployment) page. A merge deploys nothing: a person or an agent
+  (deployment) page; a confirmed deploy opens its dialog at once, saying what it checks and
+  promotes, and that dialog becomes the run. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass

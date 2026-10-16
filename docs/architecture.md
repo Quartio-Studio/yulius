@@ -708,7 +708,11 @@ the sandbox's containment, production in the sandbox's network only on the host'
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it.
+you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
+after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
+dialog as soon as the person confirms, saying what is being checked and promoted with the time so
+far, and turns it into the run's view when the answer comes, or shows the refusal in it
+([SPEC-189](../.ai/specs/SPEC-189-when-i-clicked-deploy-nothing-happened-f.md)).
 
 ```mermaid
 sequenceDiagram

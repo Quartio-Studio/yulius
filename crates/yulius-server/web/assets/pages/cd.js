@@ -3,6 +3,8 @@
 // [cd.prod] from what production deploys), what each runs, the secrets it needs, what is
 // deployed, and the runs with their output. Dev deploys after a confirmation (people with write
 // access; agents use cd_deploy); production only by an administrator who types the project's slug.
+// A confirmed deploy opens its dialog at once, saying what starts, while the server checks and
+// promotes (SPEC-189); the same dialog then shows the run.
 // "Set up CD with an agent" starts an Infra bootstrap task, so CD is configured through the harness.
 
 import { enc } from '../api.js';
@@ -38,7 +40,14 @@ const POLL_IDLE_MS = 30000;
 
 const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const shortSha = (sha) => String(sha || '').slice(0, 7);
+/** The integration branch: the dev environment's branch (SPEC-152). */
+const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');
 const title = (env) => (env.name === 'dev' ? 'Dev' : 'Production');
+/** How long a deploy has been starting: "12 s so far", "1 min 5 s so far". */
+const soFar = (s) => {
+  const n = Math.floor(s);
+  return `${n < 60 ? `${n} s` : `${Math.floor(n / 60)} min ${n % 60} s`} so far`;
+};
 
 /** What a person asks an agent when CD is set up through the harness. */
 const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and scripts/cd/ (skill infra-bootstrap, step 3).
@@ -119,7 +128,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const facts = [];
     if (env.promote) {
       // What a deploy promotes (SPEC-152): the integration branch is the dev environment's branch.
-      const integration = (overview.environments || []).find((e) => e.name === 'dev');
+      const integration = integrationOf(overview);
       facts.push(['Promotes', [integration ? h('code', null, integration.branch) : 'the integration branch',
         env.promotes_from ? h('span', { class: 'muted' }, ` at ${shortSha(env.promotes_from)}`) : null, ` into ${env.branch}`]]);
     }
@@ -183,7 +192,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       message: `Runs [cd.dev] from ${env.branch}${env.head ? ` at ${shortSha(env.head)}` : ''}: ${[env.deploy && 'the deploy command', env.verify && 'then the verify command'].filter(Boolean).join(', ')}.`,
       confirmLabel: 'Deploy dev',
     });
-    if (ok) await start('dev', null, env.head);
+    if (ok) await start(env, null, null, env.head);
   }
 
   async function deployProd(env, overview) {
@@ -201,26 +210,73 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       danger: true,
       typeToConfirm: overview.slug,
     });
-    if (ok) await start('prod', overview.slug, env.promote ? env.promotes_from : env.head, Math.round(performance.now() - opened));
+    if (ok) await start(env, overview, overview.slug, env.promote ? env.promotes_from : env.head, Math.round(performance.now() - opened));
   }
 
-  async function start(env, confirm, expect, confirmMs) {
+  async function start(env, overview, confirm, expect, confirmMs) {
+    const what = env.name === 'dev' ? 'dev' : 'production';
+    // The server answers after its checks and the promotion, seconds to a minute (SPEC-189).
+    const starting = startingDialog(env, overview);
     try {
       // The commit the person saw: the server refuses if the branch moved since.
       const body = {};
       if (confirm) body.confirm = confirm;
       if (expect) body.expect = expect;
       if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
-      const run = await ctx.api.post(`${base}/cd/${env}/deploy`, body);
+      const run = await ctx.api.post(`${base}/cd/${env.name}/deploy`, body);
+      starting.stop();
       // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens there.
       if (destroyed) return;
-      toast(env === 'dev' ? 'Deploying dev.' : 'Deploying production.', { kind: 'ok' });
       reload({ quiet: true });
-      showRun(run.run_id);
+      // Still watched, the dialog becomes the run; closed meanwhile, a toast says it went out.
+      if (starting.open()) showRun(run.run_id, starting.modal);
+      else toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
-      errorToast(error, env === 'dev' ? 'Couldn’t deploy dev' : 'Couldn’t deploy production');
-      reload({ quiet: true });
+      starting.stop();
+      if (starting.open()) starting.refused(error, what);
+      else errorToast(error, `Couldn’t deploy ${what}`);
+      if (!destroyed) reload({ quiet: true });
     }
+  }
+
+  /**
+   * The Deploy dialog before its run exists (SPEC-189): what starts, what the server does now (the
+   * checks, and production's promotion, as the confirmation listed them) and the time it has taken.
+   */
+  function startingDialog(env, overview) {
+    const prod = env.name === 'prod';
+    const integration = integrationOf(overview);
+    const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
+    const who = `${env.branch}${me ? ` · by ${me}` : ''}`;
+    const doing = prod && env.promote
+      ? `Checking, then promoting ${integration ? integration.branch : 'the integration branch'}${env.promotes_from ? ` at ${shortSha(env.promotes_from)}` : ''} into ${env.branch}…`
+      : `Checking ${env.branch}${env.head ? ` at ${shortSha(env.head)}` : ''} and what it needs…`;
+    const head = h('div', { class: 'row-wrap' }, badge('Starting', 'warn'), h('strong', null, title(env)), h('span', { class: 'muted small' }, who));
+    const elapsed = h('span', { class: 'muted small cd-starting-elapsed' }, soFar(0));
+    // A live region is read when it changes, not when it appears: it is filled once it exists.
+    const state = h('div', { class: 'stack-sm', role: 'status' });
+    const row = h('div', { class: 'cd-starting-row' },
+      h('div', { class: 'cd-starting' }, h('span', { class: 'cd-starting-spinner', 'aria-hidden': 'true' }), state), elapsed);
+    const modal = deployDialog(h('div', { class: 'stack' }, head, row));
+    requestAnimationFrame(() => setChildren(state,
+      h('p', null, h('span', { class: 'sr-only' }, 'Starting: '), doing),
+      h('p', { class: 'muted small' }, 'Its stages and output appear here as soon as it starts. Closing this does not stop it.')));
+    const since = performance.now();
+    const tick = setInterval(() => { elapsed.textContent = soFar((performance.now() - since) / 1000); }, 1000);
+    const stop = () => { clearInterval(tick); elapsed.remove(); };
+    modal.stop = stop;
+    return {
+      modal,
+      stop,
+      open: () => openRun === modal,
+      refused(error, what) {
+        const message = error && error.message ? error.message : String(error);
+        if (error && error.code) console.warn(`Couldn’t deploy ${env.name}: ${error.code}`, error);
+        setChildren(head, badge('Not started', 'danger'), h('strong', null, title(env)), h('span', { class: 'muted small' }, who));
+        row.replaceWith(h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn', { size: 16 }),
+          h('span', { class: 'banner-text' }, `Couldn’t deploy ${what}: ${message}`)));
+      },
+    };
   }
 
   async function cancel(run) {
@@ -234,22 +290,36 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     }
   }
 
-  /** A run's output in a dialog, refreshed while it runs. */
-  function showRun(id) {
-    if (destroyed) return;
+  /** A run from a toast: here while the CD tab shows, else through its address (SPEC-189). */
+  function openLater(id) {
+    if (destroyed) ctx.navigate(`${page}&run=${encodeURIComponent(id)}`);
+    else showRun(id);
+  }
+
+  /** The Deploy dialog, one at a time: `modal.stop()` ends what refreshes it when it closes. */
+  function deployDialog(body) {
     if (openRun) openRun.close();
+    const modal = openModal({
+      title: 'Deploy', wide: true, body,
+      actions: [{ label: 'Close' }],
+      onClose: () => { modal.stop(); openRun = null; if (!destroyed) replaceQuietly(page); },
+    });
+    modal.stop = () => {};
+    openRun = modal;
+    return modal;
+  }
+
+  /** A run's output in a dialog, refreshed while it runs; `into` is its starting dialog (SPEC-189). */
+  function showRun(id, into) {
+    if (destroyed) return;
+    const modal = into && into === openRun ? into : deployDialog(placeholder('Loading the deploy…', 'loading'));
     let poll = null;
+    modal.stop = () => clearTimeout(poll);
     const head = h('div', { class: 'row-wrap' });
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
     // Its stages (SPEC-137): checks, promotion, deploy, verify and what their output names.
     const stages = h('div', { class: 'run-stages' });
     const body = h('div', { class: 'stack' }, head, stages, output);
-    const modal = openModal({
-      title: 'Deploy', wide: true, body: placeholder('Loading the deploy…', 'loading'),
-      actions: [{ label: 'Close' }],
-      onClose: () => { clearTimeout(poll); openRun = null; if (!destroyed) replaceQuietly(page); },
-    });
-    openRun = modal;
     replaceQuietly(`${page}&run=${encodeURIComponent(id)}`);
     let first = true;
     const load = async () => {
