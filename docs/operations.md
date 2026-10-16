@@ -477,7 +477,9 @@ from a sandbox, and no daemon needs to run on the host.
   the sandbox's egress, and they reach the egress proxy at `host.docker.internal:<internal port>`
   (with `--add-host=host.docker.internal:host-gateway`). A port published in the sandbox's port
   range is relayed like a dev server's.
-- **Prerequisites.** Docker installed on the host (`docker-ce` or `docker.io`: the base copies
+- **Prerequisites.** The `yulius` executable owned by root, as installed by §2, not by the
+  service user. The engine's read-only binds are not locked, so an executable the sandbox's root
+  owns could be remounted and rewritten. With one, sandboxes get no engine. Docker installed on the host (`docker-ce` or `docker.io`: the base copies
   `dockerd`, `containerd`, `runc`, `docker-proxy` and the CLI plugins), the cgroup delegation (§3),
   and these kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
   nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
@@ -490,7 +492,8 @@ from a sandbox, and no daemon needs to run on the host.
   ```
 
 - **Disk.** Images, containers and volumes live in `<data>/sysroots/<sandbox>/docker` and count
-  toward the sandbox's soft quota as "containers". From 90 % of the quota, Yulius prunes the build
+  toward the sandbox's soft quota as "containers". This is a lower bound: directories that a
+  container's own users keep private (mode 0700, a database's data, for example) are not entered. From 90 % of the quota, Yulius prunes the build
   cache and the images no container uses through the engine, before the caches of idle tasks.
   Containers and volumes are never pruned.
 - **Lifetime.** The engine stops after `YULIUS_SANDBOX_IDLE_MINUTES` without a client and without
@@ -498,7 +501,10 @@ from a sandbox, and no daemon needs to run on the host.
   with the holder. Containers stop when the holder stops; those with a restart policy come back
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
-  capabilities do not raise privileges inside containers (`no_new_privs`). A bind mount resolves in
+  capabilities do not raise privileges inside containers (`no_new_privs`). Per-container resource
+  flags (`docker run -m`, `--cpus`, compose `mem_limit`) are not applied: the engine lives in its
+  group, so the cgroup rules keep controllers from being passed below it. The sandbox's own limits
+  still bound every container. A bind mount resolves in
   the engine's view: the sandbox directory, the system layer and `/tmp` of the engine, not a
   run's own `/tmp`, a Shell user's home or run directories.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the

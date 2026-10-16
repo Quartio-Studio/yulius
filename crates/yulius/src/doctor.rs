@@ -357,14 +357,16 @@ fn docker_check(
         return check(
             NAME,
             Level::Warn,
-            "no engine in sandboxes: install Docker (`dockerd`, containerd, runc) on the host;              the sandboxes' base copies it",
+            "no engine in sandboxes: install Docker (`dockerd`, containerd, runc) on the host; \
+             the sandboxes' base copies it",
         );
     }
     if !delegated {
         return check(
             NAME,
             Level::Warn,
-            "no engine in sandboxes: it needs the cgroup delegation (Delegate=yes,              DelegateSubgroup=server on yulius.service)",
+            "no engine in sandboxes: it needs the cgroup delegation (Delegate=yes, \
+             DelegateSubgroup=server on yulius.service)",
         );
     }
     let mut present: Vec<String> = loaded
@@ -671,6 +673,9 @@ mod tests {
             "{}",
             missing.detail
         );
+        for warned in [&none, &undelegated, &missing] {
+            assert!(!warned.detail.contains("  "), "{}", warned.detail);
+        }
     }
 
     #[test]

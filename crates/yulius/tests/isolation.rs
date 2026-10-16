@@ -1021,11 +1021,12 @@ async fn docker_end_to_end(
     assert!(!out.contains("seen-"), "{out}");
     assert!(out.contains("hidden-master.key"), "{out}");
 
-    // `--privileged` stays inside the sandbox: its user namespace, no nested one, only its own
-    // cgroup tree.
+    // `--privileged` stays inside the sandbox: its user namespace, no nested one, and even in the
+    // engine's cgroup namespace (`--cgroupns=host`) only the engine's tree, not the sandbox's
+    // other groups or other sandboxes.
     let out = run(
         &mut sh,
-        "docker run --rm --privileged busybox sh -c 'cat /proc/self/uid_map; unshare -U true 2>/dev/null && echo userns-open || echo userns-refused; mkdir -p /m && (mount -t cgroup2 none /m 2>/dev/null && (ls /m | grep -q -e sandboxes -e agents && echo cgroup-wide || echo cgroup-own) || echo cgroup-mount-refused)'",
+        "docker run --rm --privileged --cgroupns=host busybox sh -c 'cat /proc/self/uid_map; unshare -U true 2>/dev/null && echo userns-open || echo userns-refused; mkdir -p /m && (mount -t cgroup2 none /m 2>/dev/null && (ls /m | grep -q -x -e sandboxes -e agents -e system -e ci && echo cgroup-wide || echo cgroup-own) || echo cgroup-mount-refused)'",
         APT_WAIT,
     )
     .await?;

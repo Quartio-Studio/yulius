@@ -96,6 +96,14 @@ What each part of ADR-22 means for an engine:
   `pivot_root` and `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` are reachable inside the sandbox's user
   namespace. Kernel bugs reachable that way are in scope of the existing "not a defence against
   kernel exploits" (ADR-22, §8). gVisor remains the upgrade.
+- The engine's read-only binds (`/sys`, the `yulius` executable) are made by `bwrap` in the
+  sandbox's own user namespace, so they are not locked: the engine could remount them read-write.
+  This is safe only for files the sandbox's root does not own. Host-root-owned sysfs files and the
+  root-owned installed executable qualify. A server whose executable the service user owns
+  therefore gets no engine.
+- Per-container resource flags (`-m`, `--cpus`) are not applied. The engine lives in its own
+  group, and cgroup v2 passes no controller below a group that holds processes. The sandbox's
+  limits still bound every container.
 - A `--privileged` container is as strong as the engine (root of the sandbox with the engine's
   view and filter), never more. Paths outside the engine's view (another user's home in a Shell,
   run directories) do not exist for `-v`.

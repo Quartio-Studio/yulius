@@ -42,6 +42,19 @@ pub const SLIRP_TIMEOUT: Duration = Duration::from_secs(10);
 pub const STOP_GRACE: Duration = Duration::from_secs(3);
 /// Largest record read.
 const MAX_RECORD_BYTES: u64 = 1 << 20;
+/// The holder's readiness report when it serves everything asked of it.
+const READY: &str = "ready";
+/// The report when it serves all but the sandbox's Docker socket (the sandbox still works).
+const READY_WITHOUT_DOCKER: &str = "ready without docker.sock";
+
+/// Whether a readiness report means ready, and whether the Docker socket is served then.
+fn readiness(line: &str) -> Option<bool> {
+    match line {
+        READY => Some(true),
+        READY_WITHOUT_DOCKER => Some(false),
+        _ => None,
+    }
+}
 
 /// Reads a JSON record (bounded).
 ///
@@ -271,11 +284,11 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         let _ = child.wait();
         Err(format!("{message} ({})", log_tail(&paths.log())))
     };
-    match read_line_with_timeout(ready_read, READY_TIMEOUT) {
-        Ok(line) if line == "ready" => {}
+    let docker = match read_line_with_timeout(ready_read, READY_TIMEOUT) {
+        Ok(line) if readiness(&line).is_some() => readiness(&line) == Some(true),
         Ok(line) => return fail(&mut child, format!("holder failed: {line}")),
         Err(e) => return fail(&mut child, format!("holder: {e}")),
-    }
+    };
     let slirp_pid = match &spec.slirp4netns {
         None => None,
         Some(program) => match start_slirp(program, inner_pid, &log) {
@@ -297,7 +310,7 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         boot_id: boot_id(),
         started_at_ms: now_ms(),
         system_root: paths.root().to_string_lossy().into_owned(),
-        engine: spec.engine.is_some() && paths.engine_socket().exists(),
+        engine: spec.engine.is_some() && docker,
     };
     write_json(&paths.record(), &record).map_err(|e| format!("host.json: {e}"))?;
     Ok(record)
@@ -421,7 +434,12 @@ pub fn inner(spec_path: &Path, ready_fd: i32) -> Result<(), String> {
                 .map_err(|e| eprintln!("yulius: no Docker socket in this sandbox: {e}"))
                 .ok()
         });
-        let _ = writeln!(ready, "ready");
+        let report = if spec.engine.is_some() && engine.is_none() {
+            READY_WITHOUT_DOCKER
+        } else {
+            READY
+        };
+        let _ = writeln!(ready, "{report}");
         drop(ready);
         wait_for_termination().await;
         if let Some(engine) = engine {
@@ -648,6 +666,16 @@ pub fn restart_egress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review of SPEC-187 (low): whether the holder serves the Docker socket comes from the
+    /// holder's own readiness report, never from a socket file a crashed holder may have left.
+    #[test]
+    fn the_readiness_line_says_whether_the_docker_socket_is_served() {
+        assert_eq!(readiness(READY), Some(true));
+        assert_eq!(readiness(READY_WITHOUT_DOCKER), Some(false));
+        assert_eq!(readiness("mount the system layer: EPERM"), None);
+        assert_ne!(READY, READY_WITHOUT_DOCKER);
+    }
 
     #[test]
     fn layer_paths_must_fit_overlay_options() {
