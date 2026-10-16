@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -79,7 +80,18 @@ class FakeVidoc:
             def log_message(self, *args):
                 pass
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class Server(http.server.ThreadingHTTPServer):
+            # Handler threads are joined on close, so none outlives its test (a daemon thread
+            # writing to stderr at interpreter shutdown aborts Python).
+            daemon_threads = False
+            block_on_close = True
+
+            def handle_error(self, request, client_address):
+                # A client that gave up (a deadline test) is expected; anything else is shown.
+                if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+                    super().handle_error(request, client_address)
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -88,8 +100,16 @@ class FakeVidoc:
         return f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def close(self):
+        self.release()
         self.server.shutdown()
         self.server.server_close()
+        self.thread.join(10)
+
+    def release(self):
+        """Wakes handlers waiting on `stalled` (set by a test), before the server closes."""
+        stalled = getattr(self, "stalled", None)
+        if stalled is not None:
+            stalled.set()
 
     def scanned(self):
         return sorted({p for _, _, body in self.requests for p in files_of(body["messages"][0]["content"])})
@@ -362,15 +382,16 @@ class Service(Scanning):
         # Review M1: a request already in flight cannot outlive the deadline (each request's
         # timeout is what is left of it, and nothing is retried past it).
         release = threading.Event()
-        self.addCleanup(release.set)
 
         def stall(body, headers):
             release.wait(30)
             return judge(body)
 
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        server = self.fake(stall)
+        server.stalled = release
         started = time.monotonic()
-        code, output = self.run_scan(repo, self.fake(stall), "--deadline-minutes", "0.02")
+        code, output = self.run_scan(repo, server, "--deadline-minutes", "0.02")
         self.assertLess(time.monotonic() - started, 15, "bounded by the deadline")
         self.assertEqual(code, 2, output)
         self.assertIn("deadline", output)
@@ -387,6 +408,9 @@ class Service(Scanning):
         class Broken:
             def read(self, n=-1):
                 raise OSError("connection reset")
+
+            def close(self):
+                pass
 
         error = urllib.error.HTTPError("http://x", 401, "no", {}, Broken())
         client = vidoc_scan.Client("http://127.0.0.1:9", KEY, lambda s: None)
