@@ -71,8 +71,8 @@ pub enum BaseAction {
             default_value = "/var/lib/yulius"
         )]
         data_dir: PathBuf,
-        /// Bases still used by running holders (comma-separated), kept when old bases are
-        /// removed.
+        /// More bases to keep (comma-separated) when old bases are removed. The current base
+        /// and every base a live holder has mounted are always kept.
         #[arg(long, value_delimiter = ',')]
         keep: Vec<String>,
     },

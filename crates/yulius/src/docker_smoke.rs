@@ -1,11 +1,11 @@
 //! `yulius doctor --docker-smoke` (SPEC-196 DKL-007): proves on this host that sandboxes get
 //! Docker, end to end, the way an update meets them.
 //!
-//! It needs the service user and a delegated cgroup. Started as root outside one, it runs itself
-//! again through `systemd-run --uid=<the data directory's owner> -p Delegate=yes -p
-//! DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone else outside one it
-//! says so. Inside, with the current base, it creates a throwaway sandbox (`docker-smoke-<pid>`,
-//! next to the real ones but adopted by nobody else) and:
+//! It needs the service user and a delegated cgroup. Started as root, wherever, it runs itself
+//! again (SPEC-202 RSB-001) through `systemd-run --uid=<the data directory's owner> -p
+//! Delegate=yes -p DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone
+//! else outside one it says so. Inside, with the current base, it creates a throwaway sandbox
+//! (`docker-smoke-<pid>`, next to the real ones but adopted by nobody else) and:
 //!
 //! 1. starts its holder with Docker off, and a run that has no Docker directory (a run started
 //!    before ADR-0158); the run must get the directory and the refusal must name the reason;
@@ -106,20 +106,66 @@ pub fn systemd_run_argv(exe: &Path, data_dir: &Path, uid: u32) -> Vec<OsString> 
     argv
 }
 
+/// How the smoke starts, by who runs it.
+#[derive(Debug, PartialEq, Eq)]
+enum Start<D> {
+    /// The checks run here, in the delegation `D`.
+    Here(D),
+    /// The smoke runs again as this uid in a delegated transient unit.
+    AsOwner(u32),
+    /// It cannot run: why.
+    Refused(String),
+}
+
+/// Decides how the smoke starts. `owner` is the data directory's owner, `delegation` this
+/// process's delegated cgroup, prepared for sandboxes.
+///
+/// Root always runs it again as the owner, without looking at its own cgroup: root can write
+/// any cgroup's files, so a root login slice would pass as delegated, get a `sandboxes/` group
+/// and run the checks as uid 0, which has no subordinate ids (SPEC-202 RSB-001, #617).
+fn start<D>(
+    root: bool,
+    owner: impl FnOnce() -> Result<u32, String>,
+    delegation: impl FnOnce() -> Result<D, String>,
+) -> Start<D> {
+    if root {
+        return match owner() {
+            Ok(0) => Start::Refused(
+                "the data directory is owned by root: sandboxes run as the service user that \
+                 owns it, with a subordinate id range (docs/operations.md)"
+                    .into(),
+            ),
+            Ok(uid) => Start::AsOwner(uid),
+            Err(why) => Start::Refused(why),
+        };
+    }
+    match delegation() {
+        Ok(delegation) => Start::Here(delegation),
+        Err(why) => Start::Refused(format!(
+            "the smoke test needs a delegated cgroup ({why}); run it as root \
+             (`sudo yulius doctor --docker-smoke`), which starts it as the service user in a \
+             transient unit"
+        )),
+    }
+}
+
 /// Body of `yulius doctor --docker-smoke`.
 #[must_use]
 pub fn main(data_dir: &Path) -> ExitCode {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yulius"));
-    let delegation = match crate::wiring::sandbox::delegation() {
-        Ok(delegation) => delegation,
-        Err(why) if nix::unistd::geteuid().is_root() => {
-            let Ok(owner) = std::fs::metadata(data_dir).map(|m| m.uid()) else {
-                eprintln!("yulius: {} is not readable", data_dir.display());
-                return ExitCode::from(2);
-            };
-            eprintln!(
-                "not in a delegated cgroup ({why}): running in a transient unit as uid {owner}"
-            );
+    let owner = || {
+        std::fs::metadata(data_dir)
+            .map(|m| m.uid())
+            .map_err(|e| format!("{}: {e}", data_dir.display()))
+    };
+    let delegation = match start(
+        nix::unistd::geteuid().is_root(),
+        owner,
+        crate::wiring::sandbox::delegation,
+    ) {
+        Start::Here(delegation) => delegation,
+        Start::AsOwner(owner) => {
+            eprintln!("running in a delegated transient unit as uid {owner}");
             let argv = systemd_run_argv(&exe, data_dir, owner);
             return match std::process::Command::new(&argv[0])
                 .args(&argv[1..])
@@ -132,12 +178,8 @@ pub fn main(data_dir: &Path) -> ExitCode {
                 }
             };
         }
-        Err(why) => {
-            eprintln!(
-                "yulius: the smoke test needs a delegated cgroup ({why}); run it as root \
-                 (`sudo yulius doctor --docker-smoke`), which starts it as the service user in a \
-                 transient unit"
-            );
+        Start::Refused(why) => {
+            eprintln!("yulius: {why}");
             return ExitCode::from(2);
         }
     };
@@ -290,6 +332,7 @@ async fn phases(
     report: &mut dyn FnMut(&Check),
 ) -> Result<(), String> {
     let mut check = |name, ok, detail: String| {
+        let detail = printable(&detail);
         let check = Check { name, ok, detail };
         report(&check);
         checks.push(check);
@@ -370,23 +413,30 @@ async fn phases(
     std::fs::write(probe.join("go-engine"), "").map_err(|e| e.to_string())?;
     let done = wait_line(&out, "engine-done", PULL_WAIT).await.is_ok();
     let log = read(&out);
-    for (name, word, file) in [
+    for (name, word, file, detail) in [
         (
             "docker run --rm hello-world in the old run",
             "hello-ok",
             "hello.txt",
+            last_line as fn(&str) -> String,
         ),
-        ("docker build in the old run", "build-ok", "build.txt"),
+        (
+            "docker build in the old run",
+            "build-ok",
+            "build.txt",
+            last_line,
+        ),
         (
             "docker compose up (two services) in the old run",
             "compose-ok",
             "compose.txt",
+            compose_detail,
         ),
     ] {
         check(
             name,
             done && log.contains(word),
-            last_line(&read(&probe.join(file))),
+            detail(&read(&probe.join(file))),
         );
     }
 
@@ -474,26 +524,121 @@ fn spawn_run(
         .map_err(|e| format!("cannot start a run: {e}"))
 }
 
+/// Longest detail printed.
+const DETAIL_CHARS: usize = 200;
+
+/// `text` as one line a terminal prints as it is (SPEC-202 RSB-003): escape sequences,
+/// control characters and invisible or direction-changing marks removed, of each line rewritten
+/// with carriage returns only its last text (as a terminal shows it), lines joined by spaces,
+/// then cut to [`DETAIL_CHARS`].
+fn printable(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            line.split('\r')
+                .map(|segment| plain(segment).trim().to_owned())
+                .rfind(|segment| !segment.is_empty())
+                .unwrap_or_default()
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(DETAIL_CHARS)
+        .collect()
+}
+
+/// `segment` (no line break or carriage return) without escape sequences, control characters and
+/// invisible or direction-changing marks; tabs become spaces.
+fn plain(segment: &str) -> String {
+    let mut out = String::new();
+    let mut chars = segment.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters up to a final byte.
+                Some('[') => skip_csi(&mut chars),
+                // OSC, DCS, SOS, PM, APC: a string up to BEL or ST.
+                Some(']' | 'P' | 'X' | '^' | '_') => skip_string(&mut chars),
+                // Intermediate bytes (charset selection, `ESC # 8`, `ESC SP F`), then the final.
+                Some(' '..='/') => {
+                    for c in chars.by_ref() {
+                        if !(' '..='/').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            // 8-bit CSI and strings.
+            '\u{9b}' => skip_csi(&mut chars),
+            '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
+            '\t' => out.push(' '),
+            '\u{61c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{feff}' => {}
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Skips a control string up to its end: BEL, ST (`ESC \\`, or 8-bit) or the text's end.
+fn skip_string(chars: &mut impl Iterator<Item = char>) {
+    while let Some(c) = chars.next() {
+        if c == '\u{7}' || c == '\u{9c}' || (c == '\u{1b}' && chars.next().is_some()) {
+            break;
+        }
+    }
+}
+
+/// Skips a CSI sequence's parameters and final byte.
+fn skip_csi(chars: &mut impl Iterator<Item = char>) {
+    for c in chars {
+        if ('@'..='~').contains(&c) {
+            break;
+        }
+    }
+}
+
+/// The compose check's detail (SPEC-202 RSB-004): the probe service's last line (`probe-1 …`),
+/// which says whether it reached the web service; compose's own last line is the web
+/// container's expected stop by `--abort-on-container-exit`. Without one, the last line.
+fn compose_detail(text: &str) -> String {
+    let lines: Vec<String> = text.lines().map(printable).collect();
+    let probe = lines.iter().rev().find(|line| {
+        line.split_whitespace()
+            .next()
+            .and_then(|word| word.strip_prefix("probe-"))
+            .is_some_and(|replica| replica.chars().all(|c| c.is_ascii_digit()))
+    });
+    probe
+        .or_else(|| lines.iter().rev().find(|line| !line.is_empty()))
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+/// The first line with printable text (whole: [`printable`] cuts it after cleaning).
 fn first_line(text: &str) -> String {
     text.lines()
-        .next()
+        .find(|line| !printable(line).is_empty())
         .unwrap_or_default()
-        .chars()
-        .take(200)
-        .collect()
+        .to_owned()
 }
 
+/// The last line with printable text (whole: [`printable`] cuts it after cleaning).
 fn last_line(text: &str) -> String {
     text.lines()
-        .last()
+        .rfind(|line| !printable(line).is_empty())
         .unwrap_or_default()
-        .chars()
-        .take(200)
-        .collect()
+        .to_owned()
 }
 
 /// Waits (polling a file the run writes) until `path` has the line `line`.
@@ -551,6 +696,49 @@ mod tests {
         );
     }
 
+    /// SPEC-202 RSB-001 (#617): root runs the smoke as the data directory's owner even when its
+    /// own cgroup (a root login slice, whose files root can always write) would pass as
+    /// delegated, and never prepares that cgroup.
+    #[test]
+    fn root_always_runs_the_smoke_as_the_owner_without_touching_its_own_cgroup() {
+        let looked = std::cell::Cell::new(false);
+        let started = start(
+            true,
+            || Ok(999),
+            || {
+                looked.set(true);
+                Ok("user.slice/user-0.slice")
+            },
+        );
+        assert_eq!(started, Start::AsOwner(999));
+        assert!(!looked.get(), "root prepared its own cgroup");
+    }
+
+    /// SPEC-202 RSB-001: a root-owned data directory is refused, not run again as root (which
+    /// has no subordinate ids, and would start itself again forever).
+    #[test]
+    fn root_refuses_a_data_directory_owned_by_root() {
+        let started = start(true, || Ok(0), || Ok(()));
+        let Start::Refused(why) = started else {
+            panic!("{started:?}");
+        };
+        assert!(why.contains("owned by root"), "{why}");
+    }
+
+    /// A user other than root runs the checks in its delegated cgroup, or is asked for root.
+    #[test]
+    fn a_service_user_runs_here_or_is_asked_for_root() {
+        assert_eq!(start(false, || Ok(999), || Ok("unit")), Start::Here("unit"));
+        let started = start::<()>(false, || Ok(999), || Err("not delegated".into()));
+        let Start::Refused(why) = started else {
+            panic!("{started:?}");
+        };
+        assert!(
+            why.contains("not delegated") && why.contains("sudo"),
+            "{why}"
+        );
+    }
+
     /// An interrupted smoke test's sandbox is found by name and dead process; a live one, this
     /// one and real sandboxes are left alone.
     #[test]
@@ -591,6 +779,87 @@ mod tests {
         assert!(
             !NO_DOCKERD_IN_BASE.contains("docker.io"),
             "{NO_DOCKERD_IN_BASE}"
+        );
+    }
+
+    /// SPEC-202 RSB-003: a detail never moves the terminal's cursor: escapes and control
+    /// characters go, and a line rewritten with carriage returns keeps its last text.
+    #[test]
+    fn details_are_one_printable_line() {
+        assert_eq!(
+            printable("\u{1b}[36mprobe-1  |\u{1b}[0m compose-web"),
+            "probe-1  | compose-web"
+        );
+        assert_eq!(printable("Pulling 10%\rPulling 100%\r"), "Pulling 100%");
+        assert_eq!(
+            printable("\u{1b}]0;title\u{7}a\u{1b}[2K\u{1b}[1Ab\u{8}c\td\u{7f}"),
+            "abc d"
+        );
+        assert_eq!(printable(&"x".repeat(500)).len(), 200);
+    }
+
+    /// SPEC-202 RSB-003, review round 1: carriage returns rewrite their own line only, every
+    /// kind of escape goes whole, and a long rewritten line is cleaned before it is cut.
+    #[test]
+    fn details_survive_every_escape_and_line_ending() {
+        // Windows line endings and a rewrite on the second line only.
+        assert_eq!(printable("x\r\ny\r\n"), "x y");
+        assert_eq!(printable("a\nb\rc"), "a c");
+        // OSC ended by ESC \, escapes left open at the end.
+        assert_eq!(printable("\u{1b}]0;t\u{1b}\\ok"), "ok");
+        assert_eq!(printable("ok\u{1b}]0;unterminated"), "ok");
+        assert_eq!(printable("ok\u{1b}[1"), "ok");
+        // Charset selection (`tput sgr0`), device control strings, 8-bit CSI.
+        assert_eq!(printable("\u{1b}(Bok\u{1b}[m"), "ok");
+        assert_eq!(
+            printable("a\u{1b}Pq#0;2;0;0;0\u{1b}\\b\u{1b}_apc\u{7}c"),
+            "abc"
+        );
+        assert_eq!(printable("a\u{9b}2Kb"), "ab");
+        // An ESC before a line break keeps the break.
+        assert_eq!(printable("a\u{1b}\nb"), "a b");
+        // Text direction overrides and invisible marks go.
+        assert_eq!(printable("a\u{202e}b\u{200b}c\u{2066}d"), "abcd");
+        // The hello and build details: the last line, cleaned before it is cut.
+        let progress = "Pulling 1%\r".repeat(50) + "done";
+        assert_eq!(printable(&last_line(&progress)), "done");
+    }
+
+    /// SPEC-202 RSB-003, review round 2: a last line that is only an escape leaves the detail
+    /// to the line before; escapes with intermediate bytes and 8-bit strings go whole.
+    #[test]
+    fn details_skip_empty_last_lines_and_rarer_escapes() {
+        assert_eq!(
+            printable(&last_line("step 1\nERROR: failed to solve\n\u{1b}[0m\n")),
+            "ERROR: failed to solve"
+        );
+        assert_eq!(
+            printable(&first_line("\u{1b}[0m\nfirst words\n")),
+            "first words"
+        );
+        assert_eq!(printable("\u{1b}#8a\u{1b}%Gb\u{1b} Fc"), "abc");
+        assert_eq!(printable("a\u{9d}0;title\u{9c}b\u{90}q\u{9c}c"), "abc");
+        assert_eq!(printable("a\u{61c}b\u{2060}c\u{2028}d"), "abcd");
+    }
+
+    /// SPEC-202 RSB-004: the compose check shows the probe's result, not the web container's
+    /// expected stop by `--abort-on-container-exit`, even when compose colours and rewrites
+    /// its lines.
+    #[test]
+    fn the_compose_detail_is_the_probes_result() {
+        let output = " Network probe_default  Creating\r Network probe_default  Created\n\
+             \u{1b}[1A\u{1b}[2K Container probe-web-1  Started\n\
+             Attaching to probe-1, web-1\n\
+             \u{1b}[36mprobe-1  |\u{1b}[0m compose-web\n\
+             \u{1b}[36mprobe-1 exited with code 0\u{1b}[0m\n\
+             Aborting on container exit...\n \
+             Container probe-probe-1  Stopped\n\
+             \u{1b}[33mweb-1 exited with code 137\u{1b}[0m\n";
+        assert_eq!(compose_detail(output), "probe-1 exited with code 0");
+        // Without the probe (compose failed before it ran): the last line, printable.
+        assert_eq!(
+            compose_detail("no configuration file provided: not found\r\n"),
+            "no configuration file provided: not found"
         );
     }
 
