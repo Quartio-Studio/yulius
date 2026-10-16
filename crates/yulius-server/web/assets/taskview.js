@@ -324,7 +324,7 @@ export function mountTaskView(ctx, sandbox, task) {
       // Its run is paused (SPEC-191): by an update, which ends by itself, or by a person, who
       // resumes it here. What is typed meanwhile waits in the terminal.
       const byPerson = info.paused.by === 'person';
-      content = [icon('st-paused', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `${pauseLine(info.paused)}. `),
+      content = [icon('st-paused', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `${pauseLine(info.paused).replace(/\.?$/, '.')} `),
         byPerson ? 'What you type waits until it resumes.' : ''),
       can.resume ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => resumeTask(ctx, current) }, 'Resume') : null];
     } else if (info.held) {

@@ -262,3 +262,115 @@ async fn a_restart_freezes_the_live_run_s_pause_again_and_ignores_an_old_one() -
     assert_eq!(pause_of(&f).await?["pending"], false);
     Ok(())
 }
+
+/// Review M1 (PER-001/002): a resume that lands while the pause's freeze is under way never
+/// leaves the run frozen without a pause.
+#[tokio::test]
+async fn a_resume_during_the_pause_s_freeze_leaves_nothing_frozen() -> TestResult {
+    let f = Arc::new(fixture().await?);
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    *f.host.entered.lock().map_err(|_| "lock")? = Some(entered_tx);
+    *f.host.gate.lock().map_err(|_| "lock")? = Some(gate);
+    let pausing = {
+        let f = Arc::clone(&f);
+        tokio::spawn(async move {
+            post(&f, "/api/tasks/t1/pause", &f.alice)
+                .await
+                .map(|r| r.0)
+                .map_err(|e| e.to_string())
+        })
+    };
+    tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(30))).await??;
+    // The freeze is under way: the owner resumes.
+    let resuming = {
+        let f = Arc::clone(&f);
+        tokio::spawn(async move {
+            post(&f, "/api/tasks/t1/resume", &f.alice)
+                .await
+                .map(|r| r.0)
+                .map_err(|e| e.to_string())
+        })
+    };
+    // Without serialization the resume would finish here, before the freeze.
+    let early = tokio::time::timeout(Duration::from_millis(200), async {
+        while !resuming.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    release.send(()).map_err(|_| "release")?;
+    assert_eq!(pausing.await??, StatusCode::OK);
+    assert_eq!(resuming.await??, StatusCode::OK);
+    let _ = early;
+    assert_eq!(f.h.store.person_pause(&f.task).await?, None);
+    assert!(
+        f.host.frozen().is_empty(),
+        "left frozen: {:?}",
+        f.host.frozen()
+    );
+    Ok(())
+}
+
+/// Review M2 (PER-005): a paused task is not switched, and the launch-goal watch does not count
+/// the time it is paused.
+#[tokio::test]
+async fn a_paused_task_is_not_switched_and_its_launch_goal_waits() -> TestResult {
+    let f = fixture().await?;
+    assert!(!f.h.app.launch_goal_held(&f.task).await);
+    let (status, _) = post(&f, "/api/tasks/t1/pause", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        f.h.app.launch_goal_held(&f.task).await,
+        "paused time is not counted"
+    );
+    let r = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/switch",
+        Some(json!({})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert!(
+        r.body.to_string().contains("Resume the task first"),
+        "{}",
+        r.body
+    );
+    let (status, _) = post(&f, "/api/tasks/t1/resume", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!f.h.app.launch_goal_held(&f.task).await);
+    Ok(())
+}
+
+/// Review M2 (PER-004): closing a paused task (TSK-014) thaws its run first and clears the pause.
+#[tokio::test]
+async fn closing_a_paused_task_thaws_it_first() -> TestResult {
+    let f = fixture().await?;
+    let (status, _) = post(&f, "/api/tasks/t1/pause", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK);
+    let _ = f.h.app.close_task_now(&f.task).await;
+    assert_eq!(f.host.thawed(), vec![RUN.to_owned()]);
+    assert_eq!(f.h.store.person_pause(&f.task).await?, None);
+    Ok(())
+}
+
+/// Review L4 (PER-001): a run that cannot be frozen and waits at its prompt is paused already:
+/// it makes no hook call until someone types, which the hold then catches.
+#[tokio::test]
+async fn an_idle_run_that_cannot_be_frozen_is_paused_at_once() -> TestResult {
+    let f = fixture().await?;
+    f.host.answer(RUN, RunFreeze::Unsupported);
+    f.h.store
+        .set_activity(
+            &f.task,
+            Some(yulius_domain::task::Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    let (status, body) = post(&f, "/api/tasks/t1/pause", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["pause"]["pending"], false, "{body}");
+    Ok(())
+}

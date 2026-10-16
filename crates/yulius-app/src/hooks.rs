@@ -166,7 +166,7 @@ impl App {
         // A person paused a run that could not be frozen: it waits here, after the update's
         // hold (the drain sees its pause point) and before any rotation (SPEC-191 PER-001).
         if matches!(event, events::STOP | events::USER_PROMPT_SUBMIT)
-            && let Some(newly) = self.hold_for_person(&ctx.task.id, &ctx.attempt.id).await
+            && let Some(newly) = self.hold_for_person(&ctx.task, &ctx.attempt.id).await
         {
             if newly {
                 self.publish_task(&ctx.task.id).await;

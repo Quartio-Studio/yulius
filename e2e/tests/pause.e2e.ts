@@ -27,6 +27,10 @@ test('a task an update holds reads Paused in the list, the sidebar and its view'
 
   await app.open(mock('/s/studio/t/12'));
   await expect(browser.locator('.strip-status')).toContainText('Paused');
+  // The notice says it once, with no doubled full stop (review L2).
+  const notice = await browser.evaluate(() => document.querySelector('.attention-bar')?.textContent ?? '');
+  expect(notice).toContain('Paused for a Yulius update. It continues by itself.');
+  expect(notice).not.toContain('..');
 
   // Released: it works again.
   await touch(browser, { pause: null });
@@ -65,4 +69,15 @@ test('the Tasks list row menu pauses and resumes a task', async ({ app, browser,
   // Only a running task can be paused: a queued one's Pause is not offered as available.
   await menuOf('.tl-row[data-task-id="tsk_studio_8"]');
   await expect(browser.locator('[role="menuitem"]:has-text("Pause")')).toHaveAttribute('aria-disabled', 'true');
+});
+
+test('a paused task of someone else says who paused it, not an update (review L3)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await touch(browser, { owner: { login: 'anna-q' }, pause: { by: 'person', user: { login: 'anna-q' }, since: new Date().toISOString(), pending: false } });
+  await expect(browser.locator('.strip-status')).toContainText('Paused');
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  const pause = browser.locator('[role="menuitem"]:has-text("Pause")');
+  await expect(pause).toHaveAttribute('aria-disabled', 'true');
+  await expect(pause).toContainText('@anna-q owns this task');
+  await expect(screen.getByRole('button', 'Resume')).toBeHidden();
 });

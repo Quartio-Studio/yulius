@@ -1397,7 +1397,7 @@ open in the editor, only to people with write access to that sandbox; SPEC-127),
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
-for one beat when it is shown again or back online, takes the connection for dead and reconnects,
+for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
 which resyncs; SPEC-191).
 
 `TaskSummary.pause` is null or `{"by":"update|person","user":{"login"}|null,"since"|null,"pending"}`

@@ -410,8 +410,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     sandboxBySlug: (slug) => state.sandboxes.find((s) => s.slug === slug) || null,
     sandboxById: (id) => state.sandboxes.find((s) => s.id === id) || null,
     retryEvents: () => events && events.retry(),
-    /** Replace a stream that looks open but heard nothing for a beat (the tab shown again, online). */
-    checkEvents: () => Boolean(events && events.checkAlive(eventsHeartbeatMs())),
+    /**
+     * Replace a stream that looks open but missed its beat (the tab shown again, online): silent
+     * for 1.5 beats, so a tab shown just as a beat is due does not reconnect for nothing.
+     */
+    checkEvents: () => Boolean(events && events.checkAlive(1.5 * eventsHeartbeatMs())),
     /** Keeps the sandbox's pull requests fresh while a view shows them; returns a stop function. */
     watchPulls,
     /** The sandbox's pull requests by task id: the last overview read, or the stored one before it. */

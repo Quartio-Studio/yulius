@@ -1717,12 +1717,7 @@ impl App {
                     return;
                 }
                 tokio::time::sleep(step).await;
-                // A prompt held for capacity, an update or a person's pause is not refused: it
-                // waits.
-                let held = app.held_for_update(&task_id)
-                    || matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_)))
-                    || app.is_paused_by_person(&task_id).await;
-                if !held {
+                if !app.launch_goal_held(&task_id).await {
                     waited += step;
                 }
             }
@@ -2555,6 +2550,14 @@ impl App {
                     .await;
             }
         });
+    }
+
+    /// Whether the launch goal's watch of `task` does not count now: a prompt held for capacity,
+    /// an update or a person's pause is not refused, it waits (SPEC-191 PER-005).
+    pub async fn launch_goal_held(&self, task: &TaskId) -> bool {
+        self.held_for_update(task)
+            || matches!(self.deps.store.open_pause(task).await, Ok(Some(_)))
+            || self.is_paused_by_person(task).await
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.

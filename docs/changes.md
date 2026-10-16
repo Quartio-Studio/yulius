@@ -10,7 +10,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (SPEC-191, ADR-0154, task #176). The event stream had no heartbeat, so a connection that died
   without a close (a laptop asleep, a network change, a dropped proxy connection) stayed open in
   the page and the lists froze until a reload; the server now beats every 20 s and the page
-  replaces a stream silent for 50 s (or one beat when shown again or back online) and resyncs.
+  replaces a stream silent for 50 s (30 s when shown again or back online) and resyncs.
   `TaskSummary.pause` says why a live run is paused (an update, or a person) and the lists show
   Paused with why. A task's owner pauses it from the task menu (`POST /api/tasks/{tid}/pause`):
   its run is frozen as an update freezes it, or held at its turn boundary; Resume

@@ -402,7 +402,8 @@ impl App {
                 }
                 RunFreeze::Freezing => {
                     tracing::warn!(task = %attempt.task_id, "the run did not freeze; it pauses at its turn boundary");
-                    self.thaw_run(&attempt.run_dir).await;
+                    let kept = self.person_frozen_runs().await.unwrap_or_default();
+                    self.thaw_run(&attempt.run_dir, &kept).await;
                     FreezeState::Refused
                 }
                 RunFreeze::Unsupported => FreezeState::Refused,
@@ -497,15 +498,20 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let kept = self.person_frozen_runs().await.unwrap_or_default();
         for run in runs {
-            self.thaw_run(&run).await;
+            self.thaw_run(&run, &kept).await;
         }
     }
 
-    /// Freezes `run_dir` for a person's pause, never during an update's freeze pass or thaw
-    /// (SPEC-191 PER-001).
-    pub(crate) async fn freeze_run_now(&self, run_dir: &str) -> RunFreeze {
-        let _pass = self.updates.freezing.lock().await;
+    /// The lock that serializes freezing and thawing runs: the update's freeze passes and thaws,
+    /// and a person's pause and resume (SPEC-191), each with the check that decides it.
+    pub(crate) async fn freeze_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.updates.freezing.lock().await
+    }
+
+    /// Freezes one run (blocking work off the runtime); the caller holds [`Self::freeze_lock`].
+    pub(crate) async fn host_freeze(&self, run_dir: &str) -> RunFreeze {
         let host = Arc::clone(&self.deps.session_host);
         let dir = PathBuf::from(run_dir);
         tokio::task::spawn_blocking(move || host.freeze(&dir))
@@ -513,26 +519,17 @@ impl App {
             .unwrap_or(RunFreeze::Unsupported)
     }
 
-    /// Thaws `run_dir` when a person's pause ends, under the same lock (SPEC-191 PER-002).
-    pub(crate) async fn thaw_run_now(&self, run_dir: &str) {
-        let _pass = self.updates.freezing.lock().await;
-        self.host_thaw(run_dir).await;
-    }
-
-    /// Thaws one run for an update (blocking work off the runtime), never one a person paused
-    /// (SPEC-191 PER-003).
-    async fn thaw_run(&self, run_dir: &str) {
-        if self
-            .person_frozen_runs()
-            .await
-            .is_ok_and(|kept| kept.iter().any(|run| run == run_dir))
-        {
+    /// Thaws one run for an update, never one a person paused (`kept`, from
+    /// [`Self::person_frozen_runs`], SPEC-191 PER-003); the caller holds [`Self::freeze_lock`].
+    async fn thaw_run(&self, run_dir: &str, kept: &[String]) {
+        if kept.iter().any(|run| run == run_dir) {
             return;
         }
         self.host_thaw(run_dir).await;
     }
 
-    async fn host_thaw(&self, run_dir: &str) {
+    /// Thaws one run (blocking work off the runtime).
+    pub(crate) async fn host_thaw(&self, run_dir: &str) {
         let host = Arc::clone(&self.deps.session_host);
         let dir = PathBuf::from(run_dir);
         if tokio::task::spawn_blocking(move || host.thaw(&dir))
@@ -557,8 +554,9 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let kept = self.person_frozen_runs().await.unwrap_or_default();
         for run in runs {
-            self.thaw_run(&run).await;
+            self.thaw_run(&run, &kept).await;
         }
         self.sweep_frozen_runs().await;
     }
@@ -1353,9 +1351,14 @@ impl App {
             if let Ok(mut released) = self.updates.released.lock() {
                 released.insert(task.clone());
             }
-            // Released first: its first hook after the thaw is not held.
-            for attempt in attempts.iter().filter(|a| a.task_id == *task) {
-                self.thaw_run(&attempt.run_dir).await;
+            // Released first: its first hook after the thaw is not held. Under the lock, so a
+            // person's pause cannot land between its check and the thaw.
+            {
+                let _pass = self.freeze_lock().await;
+                let kept = self.person_frozen_runs().await.unwrap_or_default();
+                for attempt in attempts.iter().filter(|a| a.task_id == *task) {
+                    self.thaw_run(&attempt.run_dir, &kept).await;
+                }
             }
             if let Ok(mut frozen) = self.updates.frozen.lock() {
                 frozen.remove(task);

@@ -57,7 +57,7 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
 - **LIV-002 Watchdog.** The browser's event stream counts as dead when nothing (event or
   heartbeat) arrived for 2.5 × the heartbeat (50 s): it closes the socket and reconnects, and the
   reconnect resyncs the lists (existing `resync`). When the tab is shown again or the browser goes
-  back online, a stream silent for longer than one heartbeat is replaced at once. The watchdog is
+  back online, a stream silent for longer than 1.5 heartbeats is replaced at once. The watchdog is
   an option of `ReconnectingSocket` that only the event stream sets: terminals and the browser
   stream get no heartbeat and keep their behaviour.
 - **LIV-003 Healthy means heard.** A connection that delivered a heartbeat resets the backoff, so

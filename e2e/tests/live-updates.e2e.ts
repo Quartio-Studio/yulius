@@ -27,3 +27,22 @@ test('a stream that dies without a close is replaced and the lists catch up', as
   await expect(sidebar).toHaveAttribute('title', /— Needs your action/);
   await expect(screen.getByText('Can’t reach Yulius', { exact: false })).toBeHidden();
 });
+
+test('a tab shown again replaces a silent stream before the watchdog would', async ({ app, browser }) => {
+  // Beats every 2 s: the watchdog gives up after 5 s, a tab shown again after 3 s of silence.
+  await app.open(mock('/s/studio/tasks', '&heartbeat=2000'));
+  const mark = (label: string) => browser.locator(`.tl-row[data-task-id="tsk_studio_12"] [role="img"][aria-label="${label}"]`);
+  await expect(mark('Working')).toBeVisible();
+  const silencedAt = await browser.evaluate(() => {
+    (window as unknown as Mocked).__yuliusMock.silenceEvents();
+    (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 12, { activity: 'needs_attention' });
+    return Date.now();
+  });
+  // The tab is shown again (and again) until the lists caught up.
+  await expect.poll(async () => browser.evaluate(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+    return Boolean(document.querySelector('.tl-row[data-task-id="tsk_studio_12"] [role="img"][aria-label="Needs your action"]'));
+  }), { timeout: 4500, intervals: [200] }).toBe(true);
+  const caughtUp = await browser.evaluate(() => Date.now());
+  expect(caughtUp - silencedAt).toBeLessThan(5000);
+});

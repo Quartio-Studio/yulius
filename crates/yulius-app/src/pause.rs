@@ -54,7 +54,7 @@ impl App {
                     login: self.login_of(&pause.by).await,
                 }),
                 since: Some(rfc3339(pause.at)),
-                pending: !self.person_pause_holds(&task.id),
+                pending: !self.person_pause_holds(task),
             });
         }
         self.held_for_update(&task.id).then(|| TaskPause {
@@ -78,14 +78,20 @@ impl App {
         self.current_person_pause(task).await.is_some()
     }
 
-    /// Whether a person's pause of `task` took hold: frozen, or its hook held lately.
-    fn person_pause_holds(&self, task: &TaskId) -> bool {
-        let runtime = self.runtime(task);
-        if runtime.person_freeze.load(Ordering::SeqCst) == FROZEN {
-            return true;
+    /// Whether a person's pause of `task` took hold: frozen, or, paused at its turn boundary, its
+    /// hook held lately or its agent idle (it makes no hook call until someone types, which the
+    /// hold catches), as an update's pause point.
+    fn person_pause_holds(&self, task: &TaskRecord) -> bool {
+        let runtime = self.runtime(&task.id);
+        match runtime.person_freeze.load(Ordering::SeqCst) {
+            FROZEN => true,
+            AT_TURN_END => {
+                let held = runtime.person_held_ms.load(Ordering::SeqCst);
+                let recently = held > 0 && self.now().0.saturating_sub(held) <= HELD_FRESH_MS;
+                yulius_domain::update::at_pause_point(task.status, task.activity, recently)
+            }
+            _ => false,
         }
-        let held = runtime.person_held_ms.load(Ordering::SeqCst);
-        held > 0 && self.now().0.saturating_sub(held) <= HELD_FRESH_MS
     }
 
     /// `POST /api/tasks/{tid}/pause` (PER-001): the owner pauses a running task.
@@ -147,8 +153,7 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let store = &self.deps.store;
-        if let Some(pause) = store.person_pause(&task.id).await? {
-            store.clear_person_pause(&task.id, self.now()).await?;
+        if self.clear_and_thaw(&task.id).await? {
             let _ = store
                 .audit(
                     self.now(),
@@ -158,7 +163,6 @@ impl App {
                     None,
                 )
                 .await;
-            self.unfreeze_for_person(&task.id, &pause.attempt).await;
             self.publish_task(&task.id).await;
         }
         let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
@@ -174,13 +178,21 @@ impl App {
         run_dir: &str,
     ) {
         let runtime = self.runtime(task);
-        runtime.person_held_ms.store(0, Ordering::SeqCst);
-        let state = match self.freeze_run_now(run_dir).await {
-            RunFreeze::Frozen => FROZEN,
-            RunFreeze::Freezing => FREEZING,
-            RunFreeze::Unsupported => AT_TURN_END,
+        // The check and the freeze are one step: a resume or a stop cannot land between them.
+        let state = {
+            let _pass = self.freeze_lock().await;
+            if !self.still_paused(task, attempt).await {
+                return;
+            }
+            runtime.person_held_ms.store(0, Ordering::SeqCst);
+            let state = match self.host_freeze(run_dir).await {
+                RunFreeze::Frozen => FROZEN,
+                RunFreeze::Freezing => FREEZING,
+                RunFreeze::Unsupported => AT_TURN_END,
+            };
+            runtime.person_freeze.store(state, Ordering::SeqCst);
+            state
         };
-        runtime.person_freeze.store(state, Ordering::SeqCst);
         if state != FREEZING {
             return;
         }
@@ -190,14 +202,21 @@ impl App {
             let pass = Duration::from_millis(app.config.person_freeze_pass_ms.max(1));
             for _ in 1..FREEZE_PASSES {
                 tokio::time::sleep(pass).await;
-                if !app.still_paused(&task, &attempt).await {
-                    return;
-                }
-                match app.freeze_run_now(&run_dir).await {
-                    RunFreeze::Frozen => {
+                let answer = {
+                    let _pass = app.freeze_lock().await;
+                    if !app.still_paused(&task, &attempt).await {
+                        return;
+                    }
+                    let answer = app.host_freeze(&run_dir).await;
+                    if answer == RunFreeze::Frozen {
                         app.runtime(&task)
                             .person_freeze
                             .store(FROZEN, Ordering::SeqCst);
+                    }
+                    answer
+                };
+                match answer {
+                    RunFreeze::Frozen => {
                         app.publish_task(&task).await;
                         return;
                     }
@@ -205,16 +224,19 @@ impl App {
                     RunFreeze::Unsupported => break,
                 }
             }
-            if !app.still_paused(&task, &attempt).await {
-                return;
+            {
+                let _pass = app.freeze_lock().await;
+                if !app.still_paused(&task, &attempt).await {
+                    return;
+                }
+                tracing::warn!(task = %task, "the run did not freeze; it pauses at its turn boundary");
+                if !app.held_for_update(&task) {
+                    app.host_thaw(&run_dir).await;
+                }
+                app.runtime(&task)
+                    .person_freeze
+                    .store(AT_TURN_END, Ordering::SeqCst);
             }
-            tracing::warn!(task = %task, "the run did not freeze; it pauses at its turn boundary");
-            if !app.held_for_update(&task) {
-                app.thaw_run_now(&run_dir).await;
-            }
-            app.runtime(&task)
-                .person_freeze
-                .store(AT_TURN_END, Ordering::SeqCst);
             app.publish_task(&task).await;
         });
     }
@@ -223,31 +245,43 @@ impl App {
         matches!(self.deps.store.person_pause(task).await, Ok(Some(p)) if p.attempt == *attempt)
     }
 
-    /// Ends a person's pause of `attempt` in memory and thaws its run, unless an update holds
-    /// the task (it thaws it with the others) or nothing was frozen.
-    async fn unfreeze_for_person(&self, task: &TaskId, attempt: &AttemptId) {
+    /// Ends a person's pause of `task`, if any, and thaws its run, unless an update holds the
+    /// task (it thaws it with the others) or nothing was frozen; in one step with the freeze, so
+    /// a pause being frozen meanwhile is thawed after it. Whether there was a pause.
+    async fn clear_and_thaw(&self, task: &TaskId) -> AppResult<bool> {
+        let _pass = self.freeze_lock().await;
+        let store = &self.deps.store;
+        let Some(pause) = store.person_pause(task).await? else {
+            return Ok(false);
+        };
+        store.clear_person_pause(task, self.now()).await?;
         let runtime = self.runtime(task);
         let state = runtime.person_freeze.swap(NOT_ASKED, Ordering::SeqCst);
         runtime.person_held_ms.store(0, Ordering::SeqCst);
         if state == AT_TURN_END || self.held_for_update(task) {
-            return;
+            return Ok(true);
         }
-        if let Ok(Some(live)) = self.deps.store.live_attempt(task).await
-            && live.id == *attempt
+        if let Some(live) = store.live_attempt(task).await?
+            && live.id == pause.attempt
         {
-            self.thaw_run_now(&live.run_dir).await;
+            self.host_thaw(&live.run_dir).await;
         }
+        Ok(true)
     }
 
     /// Whether a hook of the agent's run `attempt` is held for a person's pause (`Some`), and
     /// whether the hold just took it (`Some(true)`: worth publishing). Records it.
-    pub(crate) async fn hold_for_person(&self, task: &TaskId, attempt: &AttemptId) -> Option<bool> {
-        if !self.still_paused(task, attempt).await {
+    pub(crate) async fn hold_for_person(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptId,
+    ) -> Option<bool> {
+        if !self.still_paused(&task.id, attempt).await {
             return None;
         }
         let newly = !self.person_pause_holds(task);
         let now = self.now().0;
-        let runtime = self.runtime(task);
+        let runtime = self.runtime(&task.id);
         runtime.person_held_ms.store(now, Ordering::SeqCst);
         // Polled: a capacity pause of the same task must not take the hold as given up.
         runtime.hold_polled_ms.store(now, Ordering::SeqCst);
@@ -294,14 +328,8 @@ impl App {
     /// Before Yulius ends a run (stop, close, a switch's restart, PER-004): a person's pause of it
     /// ends and its run is thawed, so the agent takes the interrupt as it would unpaused.
     pub(crate) async fn end_person_pause(&self, task: &TaskId) {
-        let store = &self.deps.store;
-        let Ok(Some(pause)) = store.person_pause(task).await else {
-            return;
-        };
-        if let Err(err) = store.clear_person_pause(task, self.now()).await {
-            tracing::warn!(error = %err, task = %task, "cannot clear the pause of an ending run");
-            return;
+        if let Err(err) = self.clear_and_thaw(task).await {
+            tracing::warn!(error = %err, task = %task, "cannot end the pause of an ending run");
         }
-        self.unfreeze_for_person(task, &pause.attempt).await;
     }
 }
