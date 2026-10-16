@@ -1,6 +1,7 @@
 //! Disk upkeep without a person (SPEC-008, SPEC-001 NFR-009): build caches of tasks that do not
 //! work are removed, the worktrees of closed and cancelled tasks are cleaned up, and a sandbox
-//! near its quota gets the caches of idle tasks pruned too, before a start is refused. Each
+//! near its quota gets its Docker engine's unused images and build cache (SPEC-187) and the
+//! caches of idle tasks pruned too, before a start is refused. Each
 //! removal is audited; the agents are not told (SPEC-028 MSR-002).
 //!
 //! Safety: only directories the rules name (recognised tooling or `[disk] caches` of the
@@ -46,7 +47,8 @@ const REMOVED_SANDBOX_KEEP_MS: i64 = 24 * 60 * 60 * 1000;
 /// What a round did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiskReport {
-    /// Bytes freed by removing caches (worktrees removed whole are counted by their caches).
+    /// Bytes freed by removing caches (worktrees removed whole are counted by their caches) and
+    /// by pruning the sandbox's Docker engine.
     pub freed: u64,
     /// Cache directories removed.
     pub caches: usize,
@@ -192,6 +194,25 @@ impl App {
             None => None,
         };
         let need = usage.map_or(0, |usage| bytes_to_free(usage.used, usage.limit));
+        // The engine's unused images and build cache go first: rebuilt or pulled again, never
+        // a task's (SPEC-187 DKR-006).
+        let engine_freed = match isolation {
+            Some(isolation) if need > 0 => isolation.prune_engine(&reference).await.unwrap_or(0),
+            _ => 0,
+        };
+        if engine_freed > 0 {
+            self.dlv_audit(
+                "yulius",
+                "disk.prune",
+                &sandbox.slug,
+                &format!(
+                    "unused container images and build cache: {}",
+                    human(engine_freed)
+                ),
+            )
+            .await;
+        }
+        let need = need.saturating_sub(engine_freed);
         let cap = usage.map(|usage| job_cache_cap(usage.limit));
         let scan = self.disk_scan(sandbox, pressure || need > 0, cap).await?;
         let candidates: Vec<Candidate> = scan
@@ -203,7 +224,8 @@ impl App {
             })
             .collect();
         let chosen = plan_prune(&candidates, need, need > 0);
-        let report = self.prune(sandbox, &scan, &chosen).await;
+        let mut report = self.prune(sandbox, &scan, &chosen).await;
+        report.freed = report.freed.saturating_add(engine_freed);
         if (report.freed > 0 || report.worktrees > 0)
             && let Some(isolation) = isolation
         {
