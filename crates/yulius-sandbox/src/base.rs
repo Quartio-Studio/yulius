@@ -11,8 +11,8 @@
 //!    sandbox-base chown`, [`apply_owners`]);
 //! 4. renames the directory into place and points `system/current.json` at it.
 //!
-//! A build is redone when the host's system changes ([`fingerprint`]). Bases no holder uses are
-//! removed ([`collect`]).
+//! A build is redone when the host's system changes ([`fingerprint`]). Bases no live holder uses
+//! are removed ([`collect`]), whoever runs the build.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -666,9 +666,41 @@ pub fn make_writable(path: &Path) {
     }
 }
 
-/// Removes bases that are neither current nor in `in_use`.
+/// Holder state directories read at most when looking for live holders (as many as adoption).
+const MAX_HOLDERS: usize = 10_000;
+
+/// The bases of the live holders recorded under `<data>/runtime/sandboxes/*/`, judged as the
+/// server judges them ([`crate::holder::alive`]).
+fn live_holder_bases(data_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("runtime").join("sandboxes")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .take(MAX_HOLDERS)
+        .filter_map(|entry| {
+            read_json::<yulius_contracts::sandbox::HolderRecord>(
+                &entry
+                    .path()
+                    .join(yulius_contracts::sandbox::HOLDER_RECORD_FILE),
+            )
+            .ok()
+        })
+        .filter(crate::holder::alive)
+        .map(|record| record.base_id)
+        .collect()
+}
+
+/// Removes bases that are neither current, in `in_use` nor mounted by a live holder (SPEC-202
+/// RSB-002, ADR-0161): whoever builds, a hand-run `yulius sandbox-base build` without `--keep`
+/// included, a running sandbox keeps its lower layer.
 pub fn collect(bases: &Bases, in_use: &[String], mapper: &Mapper, exe: &Path) {
     let current = bases.current().map(|b| b.id);
+    let live = bases
+        .dir
+        .parent()
+        .map(live_holder_bases)
+        .unwrap_or_default();
     for entry in std::fs::read_dir(&bases.dir)
         .into_iter()
         .flatten()
@@ -677,7 +709,7 @@ pub fn collect(bases: &Bases, in_use: &[String], mapper: &Mapper, exe: &Path) {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("base-")
             || current.as_deref() == Some(name.as_str())
-            || in_use.iter().any(|id| id == &name)
+            || in_use.iter().chain(&live).any(|id| id == &name)
         {
             continue;
         }
@@ -899,6 +931,85 @@ mod tests {
             },
         )?;
         assert_eq!(bases.current().map(|b| b.id).as_deref(), Some("base-3"));
+        Ok(())
+    }
+
+    /// A holder record under `<data>/runtime/sandboxes/<sandbox>/` on `base_id`, alive when it
+    /// names this test process's own boot and namespaces.
+    fn holder_record(data: &Path, sandbox: &str, base_id: &str, live: bool) -> TestResult {
+        let pid = std::process::id();
+        let ns = |kind| crate::holder::ns_inode(pid, kind).unwrap_or(0);
+        let record = yulius_contracts::sandbox::HolderRecord {
+            version: yulius_contracts::sandbox::HOLDER_RECORD_VERSION,
+            sandbox: sandbox.into(),
+            base_id: base_id.into(),
+            inner_pid: pid,
+            bwrap_pid: pid,
+            slirp_pid: None,
+            user_ns: ns("user"),
+            net_ns: ns("net"),
+            mnt_ns: ns("mnt"),
+            boot_id: if live {
+                crate::holder::boot_id()
+            } else {
+                "an-earlier-boot".into()
+            },
+            started_at_ms: 1,
+            system_root: "/run/yulius/system".into(),
+            engine: false,
+        };
+        let dir = data.join("runtime").join("sandboxes").join(sandbox);
+        std::fs::create_dir_all(&dir)?;
+        write_json(
+            &dir.join(yulius_contracts::sandbox::HOLDER_RECORD_FILE),
+            &record,
+        )?;
+        Ok(())
+    }
+
+    /// SPEC-202 RSB-002 (#618): a build run by hand (no `--keep`) keeps the base a live holder
+    /// has mounted, and still removes the bases nobody uses, a dead holder's included.
+    #[test]
+    fn collection_keeps_the_bases_of_live_holders_without_keep() -> TestResult {
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        for id in ["base-1", "base-2", "base-3", "base-4", "base-5"] {
+            std::fs::create_dir_all(bases.path(id).join("usr/lib"))?;
+        }
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-5".into(),
+                fingerprint: "f".into(),
+                built_at_ms: 1,
+                format: BASE_FORMAT,
+            },
+        )?;
+        holder_record(data.path(), "s1", "base-2", true)?;
+        holder_record(data.path(), "s2", "base-3", false)?;
+        // Not a holder's state directory: ignored.
+        std::fs::create_dir_all(data.path().join("runtime/sandboxes/s3"))?;
+        let mapper = Mapper {
+            bwrap: "/nonexistent/bwrap".into(),
+            newuidmap: "/nonexistent/newuidmap".into(),
+            newgidmap: "/nonexistent/newgidmap".into(),
+            uid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+            gid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+        };
+        collect(&bases, &["base-4".into()], &mapper, Path::new("/nonexistent/yulius"));
+        let left: Vec<bool> = ["base-1", "base-2", "base-3", "base-4", "base-5"]
+            .iter()
+            .map(|id| bases.path(id).is_dir())
+            .collect();
+        assert_eq!(left, [false, true, false, true, true]);
         Ok(())
     }
 }
