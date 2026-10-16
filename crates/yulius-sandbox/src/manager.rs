@@ -707,23 +707,36 @@ impl Manager {
     }
 
     /// Prunes `sandbox`'s Docker engine when it runs, through its own control socket: build cache
-    /// and unused images (SPEC-187 DKR-006). Never through the sandbox's socket, which would
+    /// and unused images (SPEC-187 DKR-006). The bytes credited are the engine's figure, at most
+    /// the engine storage last measured (0 when unmeasured or not among the largest consumers, so
+    /// the other caches are pruned as before): the engine controls its answer. Never through the sandbox's socket, which would
     /// start a stopped engine and reset its idle time, keeping it and the holder up for as long
     /// as the disk is under pressure. `None` without a live holder serving one, with the engine
     /// stopped, or when it could not prune.
     pub async fn prune_engine(&self, sandbox: &str) -> Option<u64> {
-        let socket = {
+        let (socket, measured) = {
             let entry = self.entry(sandbox);
             let state = entry.lock().await;
             if !state.live.as_ref()?.record.engine {
                 return None;
             }
-            StatePaths::new(self.state_dir(sandbox))
-                .engine_control()
-                .join(yulius_contracts::sandbox::ENGINE_SOCKET)
+            let measured = state.usage.as_ref().map_or(0, |(usage, _)| {
+                usage
+                    .largest
+                    .iter()
+                    .find(|(name, _)| name == "containers")
+                    .map_or(0, |(_, bytes)| *bytes)
+            });
+            (
+                StatePaths::new(self.state_dir(sandbox))
+                    .engine_control()
+                    .join(yulius_contracts::sandbox::ENGINE_SOCKET),
+                measured,
+            )
         };
         match crate::engine::prune(&socket).await {
-            Ok(bytes) => {
+            Ok(reported) => {
+                let bytes = reported.min(measured);
                 tracing::info!(sandbox, freed = %human(bytes), "pruned the sandbox's Docker engine");
                 Some(bytes)
             }
@@ -1203,8 +1216,24 @@ mod tests {
         assert_eq!(manager.prune_engine("s1").await, None, "a link");
         std::fs::remove_file(&control)?;
         let (engine, engine_hits) = fake_api(tokio::net::UnixListener::bind(&control)?);
+        let measured = |containers: u64| crate::usage::Usage {
+            bytes: containers,
+            largest: vec![("containers".into(), containers)],
+            ..crate::usage::Usage::default()
+        };
+        entry.lock().await.usage = Some((measured(5_000), Instant::now()));
         assert_eq!(manager.prune_engine("s1").await, Some(1000));
         assert_eq!(engine_hits.load(Ordering::SeqCst), 2);
+        // Review round 3 (low): the engine's figure is credited at most up to the storage last
+        // measured, so a forged answer cannot spare the other caches.
+        entry.lock().await.usage = Some((measured(300), Instant::now()));
+        assert_eq!(manager.prune_engine("s1").await, Some(300));
+        entry.lock().await.usage = None;
+        assert_eq!(
+            manager.prune_engine("s1").await,
+            Some(0),
+            "nothing measured"
+        );
         assert_eq!(
             front_hits.load(Ordering::SeqCst),
             0,

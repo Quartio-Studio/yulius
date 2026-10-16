@@ -221,8 +221,10 @@ pub fn supervise_with(
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }
 
-/// Bound on one prune call (a large build cache takes a while).
-pub const PRUNE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Bound on pruning one engine, both calls together: the disk upkeep visits sandboxes one after
+/// another, and the engine (or a container that replaced its control socket) decides when it
+/// answers.
+pub const PRUNE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// Longest prune answer read.
 const PRUNE_ANSWER_MAX: u64 = 16 << 20;
 
@@ -233,8 +235,17 @@ const PRUNE_ANSWER_MAX: u64 = 16 << 20;
 /// starts it.
 ///
 /// # Errors
-/// Both calls failed (the engine is not reachable or refused).
+/// Both calls failed (the engine is not reachable or refused), or [`PRUNE_TIMEOUT`] passed.
 pub async fn prune(socket: &std::path::Path) -> std::io::Result<u64> {
+    prune_within(socket, PRUNE_TIMEOUT).await
+}
+
+/// [`prune`] with both calls bounded together by `limit`.
+///
+/// # Errors
+/// As [`prune`].
+pub async fn prune_within(socket: &std::path::Path, limit: Duration) -> std::io::Result<u64> {
+    let deadline = tokio::time::Instant::now() + limit;
     let calls = [
         "/build/prune?all=1",
         // `{"dangling":["false"]}`: every unused image, not only untagged ones.
@@ -244,7 +255,7 @@ pub async fn prune(socket: &std::path::Path) -> std::io::Result<u64> {
     let mut last_error = None;
     let mut succeeded = false;
     for path in calls {
-        match tokio::time::timeout(PRUNE_TIMEOUT, post(socket, path)).await {
+        match tokio::time::timeout_at(deadline, post(socket, path)).await {
             Ok(Ok(bytes)) => {
                 succeeded = true;
                 freed = freed.saturating_add(bytes);
@@ -476,6 +487,36 @@ mod tests {
         server.abort();
         let none = dir.path().join("none.sock");
         assert!(prune(&none).await.is_err());
+        Ok(())
+    }
+
+    /// Review round 3 (low): an engine (or a container that replaced its control socket) that
+    /// accepts and never answers holds the upkeep only until one short deadline for both calls.
+    #[tokio::test]
+    async fn a_silent_engine_holds_pruning_only_until_its_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        let silent = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let started = Instant::now();
+        assert!(
+            prune_within(&socket, Duration::from_millis(400))
+                .await
+                .is_err()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(PRUNE_TIMEOUT <= Duration::from_secs(120));
+        silent.abort();
         Ok(())
     }
 
