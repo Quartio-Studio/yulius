@@ -293,25 +293,42 @@ mod tests {
         vec!["/bin/sh".into(), "-c".into(), script.into()]
     }
 
+    /// Closes `write` (the command's stop signal) once the command wrote `ready`: its trap is
+    /// set by then, so the signal never races it.
+    fn close_when_ready(
+        write: std::os::fd::OwnedFd,
+        ready: std::path::PathBuf,
+    ) -> std::thread::JoinHandle<bool> {
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !ready.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            drop(write);
+            ready.exists()
+        })
+    }
+
     #[test]
     fn closing_stdin_stops_the_command_gracefully() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
-        let marker = dir.path().join("term");
+        let (marker, ready) = (dir.path().join("term"), dir.path().join("ready"));
         let (read, write) = crate::userns::cloexec_pipe()?;
         let script = format!(
-            "trap 'echo term > {}; exit 0' TERM; while :; do sleep 0.05; done",
-            marker.display()
+            "trap 'echo term > {}; exit 0' TERM; touch {}; while :; do sleep 0.05; done",
+            marker.display(),
+            ready.display()
         );
-        let closer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            drop(write);
-        });
+        let closer = close_when_ready(write, ready);
         let code = supervise_with(
             &sh(&script),
             std::fs::File::from(read),
             Duration::from_secs(20),
         )?;
-        closer.join().map_err(|_| "closer panicked")?;
+        assert!(
+            closer.join().map_err(|_| "closer panicked")?,
+            "the command got ready"
+        );
         assert_eq!(code, 0);
         assert_eq!(std::fs::read_to_string(&marker)?.trim(), "term");
         Ok(())
@@ -320,16 +337,25 @@ mod tests {
     #[test]
     fn a_command_that_ignores_term_is_killed_after_the_grace()
     -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let ready = dir.path().join("ready");
         let (read, write) = crate::userns::cloexec_pipe()?;
-        drop(write);
+        let closer = close_when_ready(write, ready.clone());
         let started = Instant::now();
         let code = supervise_with(
-            &sh("trap '' TERM; while :; do sleep 0.05; done"),
+            &sh(&format!(
+                "trap '' TERM; touch {}; while :; do sleep 0.05; done",
+                ready.display()
+            )),
             std::fs::File::from(read),
             Duration::from_millis(300),
         )?;
+        assert!(
+            closer.join().map_err(|_| "closer panicked")?,
+            "the command got ready"
+        );
         assert_eq!(code, 128 + 9);
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_secs(20));
         Ok(())
     }
 
