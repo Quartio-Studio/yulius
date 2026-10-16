@@ -787,7 +787,11 @@ fn tools(playground: bool) -> String {
         .map(|(name, _)| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ");
-    let wait = " In the shell, `yulius wait` waits for your checks, your merge or your delivery.";
+    // SPEC-192: Claude Code's removal check asks a person even with approvals bypassed.
+    // `yulius wait` is in "Git and delivery"; Claude Code's removal check asks a person even
+    // with approvals bypassed (SPEC-192).
+    let wait = " In the shell, `yulius remove` removes files this task made when `rm` asks for a \
+                person.";
     format!(
         "## Yulius tools\n\nThe `yulius` MCP server (each tool's description says when to use \
          it): {names}.{wait}\n\n"
@@ -2121,5 +2125,20 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    /// SPEC-192 RMV-007: the shell tools name `yulius remove`, for the task's own files, so a
+    /// removal Claude Code stops never goes to a person.
+    #[test]
+    fn the_tools_name_yulius_remove_for_the_tasks_own_files() {
+        for playground in [false, true] {
+            let rendered = tools(playground);
+            assert!(
+                rendered.contains(
+                    "`yulius remove` removes files this task made when `rm` asks for a person"
+                ),
+                "{rendered}"
+            );
+        }
     }
 }

@@ -289,6 +289,31 @@ sequenceDiagram
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```
 
+## A task's own files
+
+Claude Code's removal check asks a person even with approvals bypassed (a root-level path, a path
+in a variable, a `sh -c` script). A task removes the files it created itself with
+`yulius remove <path>…`, run in its own run, which alone sees the run's private tmpfs
+([SPEC-192](../.ai/specs/SPEC-192-claude-sessions-asks-me-to-delete-someth.md),
+[decision 0155](decisions/0155-a-task-removes-its-own-files-with-yulius-remove.md)). It judges
+ownership by location: an untracked or ignored path of the task's worktree
+(`YULIUS_TASK_WORKTREE`), or a path on the run's own tmpfs (`/`, `/tmp`, `/run`, `/dev/shm`) of a
+contained run; mount points, directories holding one and the root's links are refused, and a
+link is removed as a link. Task runs get `TMPDIR=/tmp`, so `$TMPDIR/x` is not `/x`.
+
+```mermaid
+flowchart TD
+    P[path: directory resolved, last component not followed] --> M{a mount point or holds one?}
+    M -- yes --> R[refused]
+    M -- no --> W{in the task's worktree?}
+    W -- yes --> T{the worktree, .git, or tracked by git?}
+    T -- yes --> R
+    T -- no --> D[removed]
+    W -- no --> C{contained run and on its tmpfs at /, /tmp, /run or /dev/shm?}
+    C -- "yes, not /bin, /sbin, /lib, /lib64" --> D
+    C -- no --> R
+```
+
 ## Task start
 
 A task's agent is a native Claude Code session, and its first message is in before a person can
