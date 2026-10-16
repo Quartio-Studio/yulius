@@ -1,11 +1,11 @@
 ---
 yulius-task: 64fb05de-4847-4a1e-a1af-da782f8943ba
-status: in-progress
+status: done
 ---
 
 # SPEC-201: The in-sandbox Docker install brings buildx and compose
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: task #186
 Scope authorization: task #186 (requested by MrFishPL): "Analyse what happened in #185 task and
@@ -92,9 +92,9 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
 - [x] Fix the cause until the regression test and every gate pass
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Reproduce the pruned engine cgroup after a restart and find its cause
-- [ ] Regression tests: the front and the tick restore a missing engine leaf
-- [ ] The front and the tick recreate the engine leaf; docs and gate green
-- [ ] Independent review of the engine-leaf fix, findings fixed test-first
+- [x] Regression tests: the front and the tick restore a missing engine leaf
+- [x] The front and the tick recreate the engine leaf; docs and gate green
+- [x] Independent review of the engine-leaf fix, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -209,3 +209,19 @@ starts again after `yulius.service` restarts, whatever state its cgroup leaf was
     visible under `/var/lib/yulius/sandboxes`);
   - a host install of Docker, which is a person's decision (the host has had no Docker since
     2026-10-12).
+- **Part 2, reproduced** in this task's sandbox: after the instance update at 18:10:49Z (CD run
+  `185f8886`), `docker info` answered "the engine exited (exit status: 1); engine log: … yulius:
+  cannot join /sys/fs/cgroup/system.slice/yulius.service/sandboxes/d62be476-…/engine: No such
+  file or directory". The engine's last activity was at 18:54 local, so it had stopped as idle
+  before the update. The person's screenshot shows the same in the product sandbox. Filed as
+  #614.
+- **Part 2 tests that failed before the fix** (commit `9168d8cb`):
+  - `engine_supervisor::tests::a_start_recreates_the_engine_leaf_a_restart_pruned`: "the engine
+    exited (exit status: 1); engine log: cannot join …/sandbox/engine";
+  - `manager::tests::a_kept_engine_front_gets_its_pruned_leaf_back`: "the engine's leaf is back".
+
+  `cgroup::tests::a_pruned_leaf_is_restored_under_its_parent` was written with `restore_leaf`.
+- **Part 2 gate:** `scripts/dev ci` exit 0 at `771f9dc4` (2040 passed, 18 skipped). An earlier
+  run at `21fe1657` passed every test but failed `cargo doc`: the new doc comment linked the
+  private `LEAVES`. The link became plain code.
+- **Part 2 review:** the verdict on the final head is recorded in the pull request.
