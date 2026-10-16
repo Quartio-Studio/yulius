@@ -1434,8 +1434,8 @@ impl<'a> Run<'a> {
     }
 }
 
-/// The start of a range of [`SUB_ID_RANGE`] ids past every range in the subordinate id files'
-/// `texts`, at least [`SUB_ID_FLOOR`] (as `useradd` would give, and the reference VM's
+/// The start of a range of 65,536 ids past every range in the subordinate id files'
+/// `texts`, at least 100,000 (as `useradd` would give, and the reference VM's
 /// 231072 after 100000–231071); `None` when no such range fits below 2³².
 #[must_use]
 pub fn free_sub_range(texts: &[&str]) -> Option<u32> {
