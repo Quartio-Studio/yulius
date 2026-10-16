@@ -938,12 +938,15 @@ Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
 [decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
 embedded at build time. Enable copies one into an ordinary automation; a project's automation of
-the same name counts as the template's.
+the same name counts as the template's. The Automations page lists every shipped automation first,
+as Defaults (the project's automation of its name, or the shipped one switched off until its switch
+enables it), then the project's others as Custom ([SPEC-197](../.ai/specs/SPEC-197-those-2-automations-should-be-defaults-l.md),
+[decision 0159](decisions/0159-shipped-automations-are-the-automations-page-defaults.md)).
 
 ```mermaid
 flowchart LR
   CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
-  UI["Automations page: Ready-made"] -->|"GET automation-templates"| TPL
+  UI["Automations page: Defaults"] -->|"GET automation-templates"| TPL
   UI -->|"POST …/enable"| EN["App::enable_automation_template"]
   EN -->|"same name exists"| UPD["re-enable it"]
   EN -->|"else"| INS["insert automation (enabled)"]

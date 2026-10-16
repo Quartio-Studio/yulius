@@ -4,28 +4,176 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-// Ready-made automations (SPEC-042 AUT-009, AC-AUT-8): the Automations page offers the
-// automations Yulius ships, each enabled with one click, after which it is an ordinary automation.
+// Default automations (SPEC-042 AUT-009, SPEC-197 AUT-032..036): the automations Yulius ships come
+// first, as the default workflows do, each switched on or off in place; the project's others are
+// Custom. A shipped automation an agent created by name is a default, not "Created by an agent".
 
-test('a ready-made automation is enabled in one click and joins the list', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/automations'));
+/** The names of the automation cards in one section, in order. */
+const namesIn = (browser, section: string) => browser.evaluate((id) => [...document.querySelectorAll(`section[aria-labelledby="${id}"] .item-card .item-name`)].map((n) => n.textContent), section);
+
+/** The badges and button labels of one automation card. */
+const cardOf = (browser, name: string) => browser.evaluate((title) => {
+  const card = [...document.querySelectorAll('.item-card')].find((c) => c.querySelector('.item-name')?.textContent === title);
+  return card ? { badges: [...card.querySelectorAll('.item-title .badge')].map((b) => b.textContent.trim()), buttons: [...card.querySelectorAll('.item-controls button')].map((b) => b.getAttribute('aria-label') || b.textContent.trim()), opens: Boolean(card.querySelector('.item-open')) } : null;
+}, name);
+
+const CUSTOM = ['Daily customer feedback', 'Weekly dependency audit'];
+const DEFAULTS = ['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night'];
+
+test('the shipped automations are the defaults, switched on in place, and Delete resets one (AC-AUT-31..33)', async ({ app, browser, screen }) => {
+  // Its enable waits for `release()`, so a second press surely lands while it is being enabled.
+  await app.open(mock('/s/studio/automations', '&holdpost=/api/sandboxes/sb_studio/automation-templates/docs-up-to-date/enable'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Automations');
-  await expect(screen.getByRole('heading', /^Ready-made/)).toBeVisible();
-  await expect(screen.getByText('Keep the docs up to date')).toBeVisible();
-  await expect(screen.getByText('Work through open issues')).toBeVisible();
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Ready-made/)).toBeHidden();
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+  // An agent created this one by name: it is a default all the same.
+  const issues = await cardOf(browser, 'Work through open issues');
+  expect(issues!.badges).toEqual(['Default']);
+  expect(issues!.buttons).toContain('Run now');
+  expect(issues!.opens).toBe(true);
+  // Custom automations keep their own badges.
+  expect((await cardOf(browser, 'Daily customer feedback'))!.badges).toEqual(['Created by an agent']);
+  // Not added yet: off, with nothing else to press.
+  const docs = screen.getByRole('switch', 'Keep the docs up to date runs on schedule');
+  await expect(docs).not.toBeChecked();
+  expect((await cardOf(browser, 'Keep the docs up to date'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
   expect(await axeViolations(browser)).toEqual([]);
 
-  await screen.getByRole('button', 'Enable Keep the docs up to date').click();
+  // The switch turns it on (from the keyboard): it is created, enabled, and is an ordinary
+  // automation from then on, still a default, with the keyboard still on its switch.
+  await docs.focus();
+  await browser.keyboard.press('Space');
+  // A second press while it is being enabled keeps it on: one automation per switch (AUT-034).
+  await browser.keyboard.press('Space');
+  expect(await browser.evaluate(() => (document.activeElement as HTMLInputElement).checked)).toBe(true);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await expect(screen.getByText('Keep the docs up to date enabled.')).toBeVisible();
-  // Now an ordinary automation: its schedule switch is on and it is no longer suggested.
+  await expect(screen.getByRole('button', 'Run history of Keep the docs up to date')).toBeVisible();
   await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeChecked();
-  await expect(screen.getByRole('button', 'Enable Keep the docs up to date')).toBeHidden();
-  await expect(screen.getByRole('button', 'Enable Work through open issues')).toBeVisible();
+  await expect(screen.getByRole('switch', 'Keep the docs up to date runs on schedule')).toBeFocused();
+  const docsOn = await cardOf(browser, 'Keep the docs up to date');
+  expect(docsOn!.badges).toEqual(['Default']);
+  expect(docsOn!.buttons).toContain('Run now');
+  expect(docsOn!.opens).toBe(true);
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+  await screen.getByRole('switch', 'Keep the docs up to date runs on schedule').click();
+  await expect(screen.getByText('Keep the docs up to date paused.')).toBeVisible();
 
-  await screen.getByRole('button', 'Enable Work through open issues').click();
-  await expect(screen.getByRole('switch', 'Work through open issues runs on schedule')).toBeChecked();
-  // Nothing left to suggest: the section goes away.
-  await expect(screen.getByRole('heading', /^Ready-made/)).toBeHidden();
+  // Delete resets a default: it stays listed, off, to be switched on again from the shipped version.
+  await screen.getByRole('button', 'Delete Work through open issues').click();
+  const dialog = screen.getByRole('dialog', 'Delete automation “Work through open issues”?');
+  await expect(dialog.getByText(/stays among the defaults, off/)).toBeVisible();
+  await expect(dialog.getByText(/changes made here are lost/)).toBeVisible();
+  await dialog.getByRole('button', 'Delete').click();
+  await expect(screen.getByRole('button', 'Delete Work through open issues')).toBeHidden();
+  await expect(screen.getByRole('switch', 'Work through open issues runs on schedule')).not.toBeChecked();
+  expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
+  expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
+  expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+});
+
+test('the builder’s Delete of a default says it is reset, of a custom one not (AUT-035)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/aut_3'));
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  const dialog = screen.getByRole('dialog', 'Delete automation “Work through open issues”?');
+  await expect(dialog.getByText(/stays among the defaults, off/)).toBeVisible();
+  await dialog.getByRole('button', 'Cancel').click();
+
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_2'; });
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Weekly dependency audit');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  const custom = screen.getByRole('dialog', 'Delete automation “Weekly dependency audit”?');
+  await expect(custom.getByText('Future runs are cancelled. Tasks it already created stay.')).toBeVisible();
+  await expect(custom.getByText(/stays among the defaults/)).toBeHidden();
+});
+
+test('a double click on the builder’s Delete asks once, also while it looks up the default (final review)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/aut_3', '&hold=/api/sandboxes/sb_studio/automation-templates'));
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  // A press reaches the mock at once (no await before the request): the second asked nothing.
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { asked: Record<string, number> } }).__yuliusMock.asked['/api/sandboxes/sb_studio/automation-templates'] ?? 0)).toBe(1);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('dialog', 'Delete automation “Work through open issues”?')).toBeVisible();
+});
+
+test('the builder’s Delete asks nothing once the builder is left during its lookup (final review)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/aut_3', '&hold=/api/sandboxes/sb_studio/automation-templates'));
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  const waiting = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldWaiting?: number } }).__yuliusMock.heldWaiting ?? 0);
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  // The builder's lookup waits at the hold, then the list's too; both are answered together.
+  await expect.poll(waiting).toBe(1);
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations'; });
+  await expect.poll(waiting).toBe(2);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('[role="dialog"], dialog[open]').length)).toBe(0);
+  // Back in the builder, Delete asks again; a question left over from the first visit, answered
+  // before this one, would make two dialogs of this name.
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_3'; });
+  await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
+  await browser.locator('.wf-head .btn-quiet-danger').click();
+  await expect(screen.getByRole('dialog', 'Delete automation “Work through open issues”?')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('[role="dialog"], dialog[open]').length)).toBe(1);
+});
+
+test('a reload keeps focus on the same labelled control, wherever it moved (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/automations'));
+  const focused = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { h, keepFocus } = await import(url);
+    const container = h('div');
+    document.body.append(container);
+    const card = (labels: string[]) => labels.map((label) => h('button', { type: 'button', 'aria-label': label }, label));
+    container.append(...card(['a', 'switch']));
+    (container.lastChild as HTMLElement).focus();
+    // The rebuilt card gains a control before the switch (an added default's open button).
+    keepFocus(container, () => { container.replaceChildren(...card(['open', 'a', 'switch'])); });
+    const byLabel = document.activeElement?.getAttribute('aria-label') ?? null;
+    // Labels that are not unique fall back to the position.
+    container.replaceChildren(...card(['x', 'x']));
+    (container.firstChild as HTMLElement).focus();
+    keepFocus(container, () => { container.replaceChildren(...card(['y', 'x', 'x'])); });
+    const byPlace = document.activeElement?.getAttribute('aria-label') ?? null;
+    // A unique label gone after the rebuild falls back to the position too.
+    container.replaceChildren(...card(['p', 'q']));
+    (container.lastChild as HTMLElement).focus();
+    keepFocus(container, () => { container.replaceChildren(...card(['r', 's', 't'])); });
+    const gone = document.activeElement?.getAttribute('aria-label') ?? null;
+    container.remove();
+    return [byLabel, byPlace, gone];
+  });
+  expect(focused).toEqual(['switch', 'y', 's']);
+});
+
+test('without the shipped list every automation shows under Custom (AC-AUT-35)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations', '&fail=/api/sandboxes/sb_studio/automation-templates'));
+  await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeHidden();
+  expect(await namesIn(browser, 'automations-custom')).toEqual(['Daily customer feedback', 'Weekly dependency audit', 'Work through open issues']);
+  expect((await cardOf(browser, 'Work through open issues'))!.badges).toEqual(['Created by an agent']);
+});
+
+test('a failed switch-on stays off and says why; read access cannot switch (AC-AUT-32, AC-AUT-34)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations', '&failpost=/api/sandboxes/sb_studio/automation-templates/nightly-dev-deploy/enable'));
+  await screen.getByRole('switch', 'Deploy dev every night runs on schedule').click();
+  await expect(screen.getByText(/Couldn’t enable automation/)).toBeVisible();
+  await expect(screen.getByRole('switch', 'Deploy dev every night runs on schedule')).not.toBeChecked();
+  await expect(screen.getByRole('switch', 'Deploy dev every night runs on schedule')).toBeEnabled();
+
+  await browser.evaluate(() => { location.hash = '#/s/sandbox-3/automations'; });
+  await expect(screen.getByRole('heading', /^Defaults/)).toBeVisible();
+  for (const name of ['Keep the docs up to date', 'Work through open issues', 'Deploy dev every night']) {
+    await expect(screen.getByRole('switch', `${name} runs on schedule`)).toBeDisabled();
+  }
+  await expect(screen.getByText('No custom automations yet')).toBeVisible();
 });
 
 // How an automation's tasks start (SPEC-078, SPEC-093 AUT-020..024): one chip in the action bar,

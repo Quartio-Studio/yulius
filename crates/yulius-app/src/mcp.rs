@@ -333,7 +333,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_template_enable".into(),
-            description: "Enable a ready-made automation by its id from automations_list's ready_made (e.g. docs-up-to-date), as Enable on the Automations page: it is added enabled with its catalog name, schedule, workflow and prompt, or, when the project already has an automation of that name, that one is enabled unchanged. Never creates a duplicate.".into(),
+            description: "Enable a ready-made automation by its id from automations_list's ready_made (e.g. docs-up-to-date), as its switch under Defaults on the Automations page: it is added enabled with its catalog name, schedule, workflow and prompt, or, when the project already has an automation of that name, that one is enabled unchanged. Never creates a duplicate.".into(),
             input_schema: schema(json!({
                 "template": {"type": "string", "description": "Ready-made automation id"}
             }), &["template"]),

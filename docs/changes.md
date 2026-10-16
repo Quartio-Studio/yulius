@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- The automations Yulius ships are the Automations page's defaults (SPEC-197, ADR-0159, task #183).
+  They sat below the list as "Ready-made automations" with Enable, and two an agent had created by
+  name read "Created by an agent". The page now opens with Defaults, as Workflows does: all three
+  shipped automations badged "Default" with what they do, each switched on or off in place, then
+  Custom for the project's own. Deleting a default resets it: it stays listed, off, and switching it
+  on again starts from the shipped version.
 - A running CI run's commit status counts the jobs that already ended (SPEC-198, task #184, fixes
   #604). GitHub kept "Running on Yulius: 0 of 3 jobs passed" until a run ended, so the Superagent
   took PR #600's finished Vidoc scan for a running one and answered that no PR had been scanned.
