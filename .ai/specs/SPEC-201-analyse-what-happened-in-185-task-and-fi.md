@@ -53,7 +53,7 @@ installs them in its own sandbox, without a person or a host change.
 | --- | --- |
 | DBX-001 | The `DOCKER_NO_DOCKERD` refusal and `yulius doctor`'s warning without a host `dockerd` tell an agent to run `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` in the sandbox. |
 | DBX-002 | Every host install hint (the refusal, doctor, the smoke test's reason) names the plugins: `docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`, or `docker.io` with `docker-buildx` and `docker-compose-v2`. |
-| DBX-003 | The briefing's `## Containers` section with an engine says that a missing engine, buildx or compose is installed in this sandbox with `sudo apt install docker.io docker-buildx docker-compose-v2`, and that no host change is needed. The tight-budget renderings keep the section whole. |
+| DBX-003 | The briefing's `## Containers` section with an engine names the install for missing parts in this sandbox (`missing parts: sudo apt install docker.io docker-buildx docker-compose-v2 here`). The section stays within its 270 bytes, so the tight-budget renderings keep it whole: "own engine" goes, and the egress proxy is named by its `--add-host` flag alone. |
 | DBX-004 | ADR-0160, `docs/operations.md`, `docs/architecture.md` and `docs/changes.md` name the full install. |
 
 ## Plan
@@ -69,7 +69,7 @@ installs them in its own sandbox, without a person or a host change.
   `docker.io docker-buildx docker-compose-v2` (fails before: only `docker.io`).
 - The host hints in the refusal, doctor and the smoke reason contain `docker-buildx-plugin` and
   `docker-compose-plugin`.
-- The briefing says the install happens in this sandbox, with no host change. The tight-budget
+- The briefing names that install for missing parts "here" (in this sandbox). The tight-budget
   tests still find the section whole.
 
 ## Test plan

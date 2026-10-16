@@ -403,11 +403,11 @@ fn docker_check(
 }
 
 /// The host has no `dockerd` (SPEC-199 DSY-004): new bases copy none, but a sandbox's engine
-/// runs its own system's, so it can install one itself.
+/// runs its own system's, so it can install one itself, with buildx and compose (SPEC-201).
 const NO_HOST_DOCKERD: &str = "the host has no `dockerd`, so new sandbox bases have none: a \
-    sandbox gets its engine once Docker is installed in it (`sudo apt-get install -y docker.io`), \
-    or an operator installs Docker on the host (docker-ce or docker.io) so every new base copies \
-    it";
+    sandbox gets its engine once Docker is installed in it (`sudo apt-get install -y docker.io \
+    docker-buildx docker-compose-v2`), or an operator installs Docker on the host (docker-ce with \
+    docker-buildx-plugin and docker-compose-plugin) so every new base copies it";
 
 fn delegation_check() -> Check {
     if let Ok(found) = crate::wiring::sandbox::delegation_detect() {

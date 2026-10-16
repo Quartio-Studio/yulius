@@ -70,11 +70,13 @@ const BIND_DONE: u8 = u8::MAX;
 pub const DOCKER_OFF: &str = "Docker is turned off on this Yulius server \
     (YULIUS_SANDBOX_DOCKER=off); an operator removes that setting and restarts Yulius";
 /// Why: the sandbox's system has no `dockerd` (SPEC-199 DSY-003). Its front switches to an engine
-/// at the next tick after one is installed in the sandbox.
+/// at the next tick after one is installed in the sandbox. Ubuntu's `docker.io` only suggests
+/// buildx and compose, so both installs name them (SPEC-201 DBX-001/002).
 pub const DOCKER_NO_DOCKERD: &str = "this sandbox's system has no `dockerd`: install Docker in the \
-    sandbox (`sudo apt-get install -y docker.io`) and the engine starts within a minute, or an \
-    operator installs Docker on the host (docker-ce or docker.io) and the sandbox gets it when its \
-    holder next starts on a newer base";
+    sandbox (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`) and the engine \
+    starts within a minute, or an operator installs Docker on the host (docker-ce with \
+    docker-buildx-plugin and docker-compose-plugin) and the sandbox gets it when its holder next \
+    starts on a newer base";
 /// Why: no cgroup delegation.
 pub const DOCKER_NO_DELEGATION: &str = "the Yulius server has no cgroup delegation; an operator \
     sets Delegate=yes and DelegateSubgroup=server on yulius.service and restarts it \

@@ -502,10 +502,12 @@ from a sandbox, and no daemon needs to run on the host.
 - **Prerequisites.**
   - `dockerd` in the sandbox's system
     ([ADR-0160](decisions/0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md)).
-    Docker installed on the host (`docker-ce` or `docker.io`) gives it to every new base, which
-    copies `dockerd`, `containerd`, `runc`, `docker-proxy` and the CLI plugins. Without it, an
-    agent installs it in its own sandbox (`sudo apt-get install -y docker.io`) and the front
-    starts an engine at the next tick (30 s). A sandbox keeps its base's `dockerd` until its
+    Docker installed on the host (`docker-ce` with `docker-buildx-plugin` and
+    `docker-compose-plugin`) gives it to every new base, which copies `dockerd`, `containerd`,
+    `runc`, `docker-proxy` and the CLI plugins. Without it, an agent installs it in its own
+    sandbox (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`) and the front
+    starts an engine at the next tick (30 s). Ubuntu's `docker.io` alone has no buildx or compose
+    (SPEC-201); the same command adds a missing plugin to a sandbox that has an engine. A sandbox keeps its base's `dockerd` until its
     holder next starts on a newer base (after the idle time); one installed in the sandbox stays. The host does not need to run its own Docker daemon.
   - The cgroup delegation (§3).
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
