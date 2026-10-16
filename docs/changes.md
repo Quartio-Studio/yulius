@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- A task removes the files it created itself, instead of asking a person (SPEC-192, ADR-0155,
+  task #177). Claude Code stops some `rm` commands for a person's approval even with approvals
+  bypassed (a file at `/`, a path in a variable); the session terminal asked and the agent then
+  left the removal to the person. `yulius remove <path>…` removes what is provably the task's:
+  untracked or ignored paths of its worktree and paths of its session's own `/`, `/tmp`, `/run`
+  and `/dev/shm`; anything shared is refused with the reason. Task runs also get `TMPDIR=/tmp`,
+  so `$TMPDIR/x` no longer lands at `/x`.
 - A confirmed deploy answers at once (SPEC-189, task #174, fixes #585). After "Deploy production…"
   the page showed nothing while the server checked and promoted (13 s on Yulius's own instance), so
   the click looked broken. The Deploy dialog now opens on confirmation, "Starting", with what it
