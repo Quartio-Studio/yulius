@@ -16,16 +16,19 @@ For Rust/tooling changes run `scripts/dev ci`. For isolated prose changes run
 protocol or UI checks only when the change's behavior requires them. Ordinary
 checks must not need model credentials or production infrastructure.
 
-For every change, after committing and before the review, run `scripts/dev security`. Vidoc scans
-the branch through the agent secret `VIDOC_API_KEY` (ADR-0104). If it reports findings, fix them
-test-first. A false positive is ignored in Vidoc with the reason only after the independent
-reviewer agrees, and it is listed in the spec's Evidence. Exit 2 means unrun: if `secrets_list`
-shows no bound host, request `api.vidoc.dev` with `secret_request_hosts` and report the scan as
-unrun, never as passed. When `.config/vidoc.toml` sets `enabled = false` (ADR-0107), the gate
-prints "Security scan disabled" and exits 0: report the scan as disabled, never as passed.
-Yulius CI's `security` job runs the same gate on every pull request head (ADR-0116): its findings
-fail the check. When a scan cannot run (#470) its exit 2 ends the job **skipped** ("security scan
-skipped", ADR-0133): read the job's output, and report that scan as unrun, never as passed.
+For every change, after committing and before the review, run `scripts/dev security`. Vidoc's
+vidoc-1 reviews the files the branch changed against `dev`, read from `HEAD` (ADR-0157). It gets
+`VIDOC_API_KEY` as a placeholder: the project's agent secret, else the instance's Vidoc key. If it
+reports findings, fix them test-first. A false positive becomes an `[[ignore]]` entry, with its
+reason, in `.config/vidoc.toml`, only after the independent reviewer agrees, and it is listed in
+the spec's Evidence. Exit 2 means unrun (no key, a refused key, no quota, Vidoc unreachable):
+report the scan as unrun, never as passed. When `.config/vidoc.toml` sets `enabled = false`
+(ADR-0107), the gate prints "Security scan disabled" and exits 0: report the scan as disabled,
+never as passed. `scripts/dev security --all --report FILE` is the broad scan of the whole
+repository, for an audit task. Yulius CI's `security` job runs the change scan on every pull
+request head (ADR-0116): its findings fail the check, and a scan that cannot run ends the job
+**skipped** ("security scan skipped", ADR-0133). Read the job's output, and report that scan as
+unrun, never as passed.
 
 If a command fails, distinguish missing prerequisite/network failure from product
 or test defects. Record the exact failing command and output location. Repair

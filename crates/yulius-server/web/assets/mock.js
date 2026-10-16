@@ -11,7 +11,7 @@
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
+// jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
@@ -152,6 +152,8 @@ function seed(params) {
       run: null,
     },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
+    // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
+    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
     // `failedReads` counts the GET requests failed on purpose.
@@ -3326,6 +3328,35 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   if (!key) return { ok: false, result: 'none', message: 'No Jev key is set.', latency_ms: null };
   if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Jev refused this key. Check it and save it again.', latency_ms: 210 };
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
+});
+
+// The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
+function vidocView(db) {
+  const v = db.vidoc;
+  const source = v.key ? 'settings' : v.config ? 'config' : null;
+  return { configured: Boolean(source), source, set_at: v.key ? v.setAt : null, set_by: v.key ? v.setBy : null, config_present: v.config, config_error: null };
+}
+route('GET', '/api/admin/vidoc', ({ db }) => { superadminOnly(db); return vidocView(db); });
+route('PUT', '/api/admin/vidoc', ({ db, body }) => {
+  superadminOnly(db);
+  const key = String(body.key || '').trim();
+  if (key.length < 8 || /\s/.test(key)) fail(422, 'invalid', 'the Vidoc key must be 8-4096 printable characters without spaces');
+  Object.assign(db.vidoc, { key, setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return vidocView(db);
+});
+route('DELETE', '/api/admin/vidoc', ({ db }) => { superadminOnly(db); db.vidoc.key = null; return vidocView(db); });
+route('POST', '/api/admin/vidoc/adopt', ({ db }) => {
+  superadminOnly(db);
+  if (!db.vidoc.config) fail(409, 'conflict', 'YULIUS_VIDOC_API_KEY_FILE holds no usable key');
+  Object.assign(db.vidoc, { key: 'from-config', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return vidocView(db);
+});
+route('POST', '/api/admin/vidoc/test', ({ db }) => {
+  superadminOnly(db);
+  const key = db.vidoc.key || (db.vidoc.config ? 'from-config' : null);
+  if (!key) return { ok: false, result: 'none', message: 'No Vidoc key is set.', latency_ms: null };
+  if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Vidoc refused this key. Check it and save it again.', latency_ms: 180 };
+  return { ok: true, result: 'ok', message: 'Vidoc answered: the key works and vidoc-1 is available.', latency_ms: 160 };
 });
 
 // The pool's tokens over 7 rolling days (SPEC-110), priced as Opus 5.5 ($4 in, $20 out, $0.20

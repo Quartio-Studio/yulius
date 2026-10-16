@@ -17,3 +17,4 @@ pub mod split;
 pub mod system;
 pub mod update_files;
 pub mod usage;
+pub mod vidoc;

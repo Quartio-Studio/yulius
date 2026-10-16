@@ -1,4 +1,13 @@
-# The Vidoc security gate, `scripts/dev security` (SPEC-131, ADR-0107). With `enabled = false` it
-# exits 0 at once and says nothing was scanned; agents then report the scan as disabled, never as
-# passed. Turn it off in a reviewed pull request that says why. Without this file the gate is on.
+# The Vidoc security scan, `scripts/dev security` (SPEC-131, ADR-0107; SPEC-195, ADR-0157). With
+# `enabled = false` it exits 0 at once and says nothing was scanned; agents then report the scan as
+# disabled, never as passed. Turn it off in a reviewed pull request that says why. Without this
+# file the scan is on. `exclude` (globs) and `[[ignore]]` (path, title, reason) are reviewed like
+# code.
 enabled = true
+# mock.js is the web UI's in-browser fake backend for the e2e tests (`?mock=1`, loaded only by
+# `import('./mock.js')` then): its "missing authorization" holds fake data in the viewer's own
+# browser and guards nothing. The real API's checks are in yulius-app and are scanned. (Its first
+# scan, PR #600, reported 3 high findings of that kind there.) `?mock=1` also works on a real
+# origin, so this holds only while mock.js has no DOM sink (innerHTML, eval, document.write,
+# location assignment): rendering stays in scanned code. Remove the exclusion if it gains one.
+exclude = ["crates/yulius-server/web/assets/mock.js"]

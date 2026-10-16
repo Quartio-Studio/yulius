@@ -1013,7 +1013,7 @@ mod tests {
                     "skipped",
                     Some(78),
                     None,
-                    "Security scan not run: No Vidoc API key",
+                    "Security scan not run: No Vidoc key",
                 ),
             ],
         ))?;
@@ -1023,7 +1023,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("Security scan not run: No Vidoc API key"),
+            text.contains("Security scan not run: No Vidoc key"),
             "{text}"
         );
         assert!(!text.contains("PASS a"), "{text}");

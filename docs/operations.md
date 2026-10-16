@@ -77,6 +77,8 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 # Optional: a Jev key file (see "Task intake (Jev)" below); the superadmin can also set the key in
 # Settings → Instance, which wins over the file.
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
+# Optional: a Vidoc key file (see "Security scans (Vidoc)" below); Settings → Instance wins too.
+#Environment=YULIUS_VIDOC_API_KEY_FILE=/var/lib/yulius/vidoc.key
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
 # Recommended behind the proxy: the secret it shares with Yulius, so sign-in limits are per client
@@ -586,14 +588,49 @@ wins over the file.
   task=… verdict=context|new_scope|drops_scope|redirect percent=…`; a held prompt is also audited
   as `prompt.held`. `journalctl -u yulius | grep 'scope check'` shows whether intake runs.
 
+### Security scans (Vidoc)
+
+Optional ([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
+ADR-0157). With a Vidoc key, every project's agents and granted CI jobs can run
+`yulius security-scan`. Vidoc's `vidoc-1` model reviews the files a branch changed (or, with
+`--all`, the whole repository) and the scan fails on open critical or high findings. **The scanned
+code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key the scan says "not run",
+and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
+
+The key is managed like the Jev key:
+
+- **Setup** offers it as an optional step after the Jev step.
+- **Settings → Instance** lets the superadmin set, replace, test and remove it. The test is one
+  `GET /v1/models` request, which must list `vidoc-1`.
+- **At rest** it is sealed with `master.key`, takes effect at once, is audited as `vidoc.key_set` and
+  `vidoc.key_removed`, and is never logged or returned.
+- **A key file** (`YULIUS_VIDOC_API_KEY_FILE`, owner-only, mode `0600`) is honoured while no key is
+  saved, and **Save it here** moves it into settings.
+
+Agents and CI jobs never get the key. They get `VIDOC_API_KEY=yulius-secret-VIDOC_API_KEY`, and the
+egress proxy replaces it toward `model.vidocsecurity.com` only. CI jobs get it only when their
+`yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). A project's own agent secret named
+`VIDOC_API_KEY` wins over the instance key. Each use is in the secrets audit (`instance:vidoc`).
+Projects onboarded with a key get a `security` CI job, `yulius security-scan --ci`. The scan needs
+`python3` 3.11 or later in the sandboxes. Agents and CI jobs start with an environment of their own,
+so `YULIUS_PYTHON`, which names another interpreter, is set in the job's command or in the session,
+not on the service.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--vidoc-api-key-file` / `YULIUS_VIDOC_API_KEY_FILE` | unset | File holding the instance's Vidoc API key, owned by the service user, mode `0600`. Used while no key is saved in settings; read at start. |
+
+The start log says `Vidoc is on (instance key saved in settings)` (or `… from
+YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
+
 ## 5. First run
 
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
 2. Open the public URL, enter the token, choose the superadmin password (twice) and confirm both
    warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
-   shown next. The last step asks for the Jev API key (optional; skip it to add it later in
-   Settings → Instance).
+   shown next. The last two steps ask for the Jev API key and the Vidoc API key (both optional;
+   skip them to add them later in Settings → Instance).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
@@ -1029,6 +1066,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   moved to `legacy/`. Files written in either mode belong to the service user, so repositories,
   worktrees and homes need no migration. Each sandbox's system layer starts empty. No database
   migration.
+- Upgrading to the instance Vidoc key (SPEC-195, 2026-10-16): migration 0034 adds the instance's
+  sealed Vidoc key. Without a key nothing changes. A project's agent secret `VIDOC_API_KEY` keeps
+  working, and wins over the instance key.
 - Upgrading to updates from main and the Jev key in settings (ADR-18, 2026-10-10): migration 0008
   adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
   configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save

@@ -1,12 +1,13 @@
-//! Instance updates and the Jev key (SPEC-001 OPS-006..OPS-009, ADM-001, ADM-002; SPEC-002
-//! ADR-18). Every route needs a session; everything but `GET /api/update` is superadmin-only.
+//! Instance updates, the Jev key and the Vidoc key (SPEC-001 OPS-006..OPS-009, ADM-001, ADM-002;
+//! SPEC-002 ADR-18; SPEC-195 VDK-002). Every route needs a session; everything but `GET /api/update` is superadmin-only.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use yulius_app::model::Secret;
 use yulius_contracts::api::updates::{
-    JevKeyView, JevTestResult, SetJevKey, StartUpdate, UpdateView,
+    JevKeyView, JevTestResult, SetJevKey, SetVidocKey, StartUpdate, UpdateView, VidocKeyView,
+    VidocTestResult,
 };
 use yulius_contracts::update::VersionInfo;
 
@@ -82,6 +83,44 @@ pub async fn test_jev(
     Auth(ctx): Auth,
 ) -> ApiResult<Json<JevTestResult>> {
     Ok(Json(app.test_jev_key(&ctx).await?))
+}
+
+/// `GET /api/admin/vidoc` (SPEC-195 VDK-002).
+pub async fn vidoc(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<VidocKeyView>> {
+    Ok(Json(app.vidoc_key_view(&ctx).await?))
+}
+
+/// `PUT /api/admin/vidoc`.
+pub async fn set_vidoc(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SetVidocKey>,
+) -> ApiResult<Json<VidocKeyView>> {
+    Ok(Json(app.set_vidoc_key(&ctx, &Secret(req.key)).await?))
+}
+
+/// `DELETE /api/admin/vidoc`.
+pub async fn remove_vidoc(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<VidocKeyView>> {
+    Ok(Json(app.remove_vidoc_key(&ctx).await?))
+}
+
+/// `POST /api/admin/vidoc/adopt`: saves the key of `YULIUS_VIDOC_API_KEY_FILE` in settings.
+pub async fn adopt_vidoc(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<VidocKeyView>> {
+    Ok(Json(app.adopt_config_vidoc_key(&ctx).await?))
+}
+
+/// `POST /api/admin/vidoc/test`.
+pub async fn test_vidoc(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<VidocTestResult>> {
+    Ok(Json(app.test_vidoc_key(&ctx).await?))
 }
 
 /// `GET /internal/version` (internal listener): the build commit the update helper's health

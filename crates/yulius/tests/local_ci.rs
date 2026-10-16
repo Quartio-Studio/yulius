@@ -120,6 +120,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let yulius_exe = exe.clone();
     // Launch the freshly built binary once before anything is timed: macOS scans a new binary
     // on its first launch (XProtect), which can take tens of seconds on a CI runner and would
     // otherwise land inside a job's start or timeout.
@@ -132,6 +133,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
             config.ci.job_timeout = Duration::from_secs(8);
             config.ci.max_jobs = 3;
             config.contained = contained;
+            config.yulius_exe = yulius_exe;
         })),
         ..HarnessOptions::default()
     })?;
@@ -1563,6 +1565,134 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
             "{outputs:?}"
         );
     }
+    Ok(())
+}
+
+/// SPEC-195 VSC-001, VSC-011: every project's CI job runs Yulius's embedded scanner as
+/// `yulius security-scan --ci`; without a Vidoc key it says why and ends skipped, never passed.
+#[tokio::test]
+async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = \"yulius security-scan --ci\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("Security scan not run: No Vidoc key"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|r| r["sha"] == pr_sha.as_str()))
+        .ok_or("run")?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    assert_eq!(detail["jobs"][0]["state"], "skipped", "{detail}");
+    Ok(())
+}
+
+/// SPEC-195 VSC-001 (review round 1): inside the containment too, a job finds `yulius` (bound
+/// read-only) and runs the embedded scan.
+#[tokio::test]
+async fn a_contained_ci_job_runs_the_embedded_security_scan() -> TestResult {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED a_contained_ci_job_runs_the_embedded_security_scan: bubblewrap cannot run here"
+        );
+        return Ok(());
+    }
+    let f = fixture_with(true, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"yulius security-scan --ci\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// A Vidoc connector whose tests always pass (the CI tests need only the key in use).
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// SPEC-195 VDK-005: a job granted `VIDOC_API_KEY` gets the instance key's placeholder when the
+/// sandbox has no such agent secret of its own, its output says where the key comes from, and the
+/// value never reaches it.
+#[tokio::test]
+async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() -> TestResult {
+    const INSTANCE_KEY: &str = "vidoc-instance-key-0123456789";
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = 'echo \"key=${VIDOC_API_KEY:-none} proxy=${HTTPS_PROXY:+set} base=${YULIUS_INTEGRATION_BRANCH:-none}\"'\n\n[[ci.jobs]]\nname = \"plain\"\ncommand = 'echo \"key=${VIDOC_API_KEY:-none}\"'\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("key=yulius-secret-VIDOC_API_KEY proxy=set base=dev"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] agent secrets: VIDOC_API_KEY (the instance's Vidoc key)"),
+        "{security}"
+    );
+    assert!(!security.contains(INSTANCE_KEY), "{security}");
+    let plain = output_of(&outputs, "plain")?;
+    assert!(
+        plain.contains("key=none"),
+        "an ungranted job gets nothing: {plain}"
+    );
     Ok(())
 }
 

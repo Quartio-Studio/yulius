@@ -15,6 +15,7 @@ pub mod system;
 pub mod updates;
 pub mod usage;
 pub mod vault;
+pub mod vidoc;
 
 use yulius_domain::time::Timestamp;
 
