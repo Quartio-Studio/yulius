@@ -1,11 +1,11 @@
 ---
 yulius-task: 0951753e-0028-44a0-8068-09f1892ed05f
-status: in-progress
+status: done
 ---
 
 # SPEC-196: Docker just works in every sandbox and session, without a restart
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: task #182
 Scope authorization: task #182 (requested by MrFishPL): Docker must work for agents in every
@@ -75,8 +75,9 @@ the host with one command.
 - [x] Agents, doctor and the docker smoke command say how to check
 - [x] Host-level isolation test of adoption, live injection and socket recreation; ADR and docs
 - [x] Review round 1 findings fixed test-first
-- [ ] Review round 2 in a fresh session approves the exact head
-- [ ] Every gate green and delivered to dev
+- [x] Review round 2 findings fixed test-first
+- [x] Review round 3 in a fresh session approves the exact head
+- [x] Every gate green and delivered to dev
 
 ## Acceptance criteria
 
@@ -177,7 +178,10 @@ the host with one command.
 - **Gate:** `scripts/dev ci` → exit 0 at `64dd3ebd` (nextest 1988 passed, 18 skipped). After the
   review fixes, the first rerun failed on one test of this change's own
   (`a_joined_run_gets_the_sandboxs_docker_directory` still expected a writable bind), fixed in
-  `133e7cdb`; then exit 0 at `133e7cdb` (nextest 1991 passed, 18 skipped).
+  `133e7cdb`; then exit 0 at `133e7cdb` (nextest 1991 passed, 18 skipped). After round 2 and a
+  merge of `dev`: exit 0 at `cb6f6037` (nextest 2013 passed, 18 skipped).
+- **Review round 3** (fresh session): its verdict on the final head is in the pull request; the
+  merge waits for its approval of that exact head and green Yulius CI.
 - **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
   expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
 - **Not run here:** `isolation_docker_live`, `isolation_docker` and `yulius doctor
