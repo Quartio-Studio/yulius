@@ -2707,6 +2707,12 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .cd-secrets li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cd-steps { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
 .cd-setup { width: 100%; font-family: var(--font-mono); font-size: var(--fs-sm); }
+/* A deploy before its run exists (SPEC-189): what the server does now, with the time so far. */
+.cd-starting-row { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface-2); }
+.cd-starting { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 12px; overflow-wrap: anywhere; }
+.cd-starting p { margin: 0; }
+.cd-starting-spinner { flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; border: 2px solid var(--text-2); border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
+.cd-starting-elapsed { flex: none; font-variant-numeric: tabular-nums; }
 
 
 /* Stages (SPEC-137): the waterfall of one run, task or deployment, and the Pipeline page. */

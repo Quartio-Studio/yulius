@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-16
 
+- A confirmed deploy answers at once (SPEC-189, task #174, fixes #585). After "Deploy production…"
+  the page showed nothing while the server checked and promoted (13 s on Yulius's own instance), so
+  the click looked broken. The Deploy dialog now opens on confirmation, "Starting", with what it
+  does ("Checking, then promoting quartio at 9f3c2a1 into main…") and the seconds so far, then
+  shows the run in place; a refusal is said there. Closed meanwhile, the deploy goes on and a toast
+  with "Open" announces it.
 - The Superagent uses agent secrets as a task's agent does, and sees new tools without a restart
   (SPEC-186, ADR-0150, task #171). It runs behind the egress proxy with its own bearer, so its
   requests to a secret's bound hosts carry it (`$NAME` holds the placeholder); it copies allowed
