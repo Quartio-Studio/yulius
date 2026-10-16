@@ -1447,6 +1447,205 @@ mod tests {
         }
     }
 
+    /// Stands in for `yulius sandbox-host docker`: serves the spec's socket, answering every
+    /// connection with its mode (and reason), until killed. `bind-docker` does nothing.
+    const FAKE_FRONT: &str = r#"#!/usr/bin/env python3
+import json, os, socket, sys
+if sys.argv[2] != "docker":
+    sys.exit(0)
+spec = json.load(open(sys.argv[4]))
+path = os.path.join(spec["state_dir"], "docker", "docker.sock")
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(16)
+print("ready", flush=True)
+serve = spec["serve"]
+answer = ("mode:" + serve["mode"] + ":" + serve.get("reason", "")).encode()
+while True:
+    c, _ = s.accept()
+    c.sendall(answer)
+    c.close()
+"#;
+
+    /// A manager with Docker possible (or not, `docker`) whose executable is [`FAKE_FRONT`],
+    /// and an adopted "holder" that is this test process (its namespaces are alive). Never
+    /// stop that holder: it is this process.
+    fn adopting(
+        data: &Path,
+        docker: Result<(), String>,
+        engine: bool,
+    ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let exe = data.join("fake-yulius");
+        if !exe.exists() {
+            std::fs::write(&exe, FAKE_FRONT)?;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
+        }
+        let mut config = config(data, 1 << 40);
+        config.exe = exe.clone();
+        config.uid.host = std::fs::metadata(&exe)?.uid().wrapping_add(1);
+        config.docker = docker;
+        config.delegation = Some(delegation(data)?);
+        let manager = Manager::new(config);
+        let state = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(&state.dir)?;
+        let me = std::process::id();
+        let ns = |kind| crate::holder::ns_inode(me, kind).ok_or("no namespace");
+        let record = HolderRecord {
+            inner_pid: me,
+            bwrap_pid: 0,
+            user_ns: ns("user")?,
+            net_ns: ns("net")?,
+            mnt_ns: ns("mnt")?,
+            boot_id: crate::holder::boot_id(),
+            ..live_record(engine)
+        };
+        write_json(&state.record(), &record)?;
+        Ok(manager)
+    }
+
+    async fn ask_front(manager: &Manager) -> std::io::Result<String> {
+        use tokio::io::AsyncReadExt as _;
+        let socket = StatePaths::new(manager.state_dir("s1")).docker_socket();
+        let mut stream = tokio::net::UnixStream::connect(socket).await?;
+        let mut text = String::new();
+        tokio::time::timeout(Duration::from_secs(10), stream.read_to_string(&mut text))
+            .await
+            .map_err(|_| std::io::Error::other("no answer"))??;
+        Ok(text)
+    }
+
+    async fn front_of(manager: &Manager) -> Option<DockerFrontRecord> {
+        let entry = manager.entry("s1");
+        let state = entry.lock().await;
+        state.live.as_ref().and_then(|live| live.front.clone())
+    }
+
+    fn kill(pid: u32) {
+        crate::holder::signal(pid, nix::sys::signal::Signal::SIGKILL);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while crate::holder::exists(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// SPEC-196 DKL-003 (#597), the upgrade: a holder kept from before engines (adopted after
+    /// a restart, its runs untouched) gains a front serving the engine; a dead front is started
+    /// again; a server with Docker off replaces it with a refusal, and one with Docker on again
+    /// brings the engine back, each time at the same socket path.
+    #[tokio::test]
+    async fn an_adopted_holder_from_before_engines_gains_an_engine_front()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let front = front_of(&manager).await.ok_or("no front")?;
+        assert_eq!(front.mode, "engine");
+        assert_eq!(ask_front(&manager).await?, "mode:engine:");
+        let state = StatePaths::new(manager.state_dir("s1"));
+        let spec: DockerFrontSpec = read_json(&state.docker_spec())?;
+        assert_eq!(spec.holder_pid, std::process::id());
+        assert!(
+            spec.cgroup.is_some_and(|c| c.contains("sandboxes/s1")),
+            "the sandbox's group"
+        );
+        assert!(matches!(spec.serve, DockerServe::Engine { .. }));
+
+        kill(front.pid);
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        let again = front_of(&manager).await.ok_or("not restarted")?;
+        assert_ne!(again.pid, front.pid);
+        assert_eq!(ask_front(&manager).await?, "mode:engine:");
+
+        // Another server process with Docker off adopts the holder and its running front.
+        let off = adopting(data.path(), Err(DOCKER_OFF.into()), false)?;
+        assert_eq!(off.adopt().await, 1);
+        let refusing = front_of(&off).await.ok_or("no front")?;
+        assert_eq!(refusing.mode, "refuse");
+        assert!(
+            !crate::holder::exists(again.pid),
+            "the engine front was stopped"
+        );
+        assert_eq!(ask_front(&off).await?, format!("mode:refuse:{DOCKER_OFF}"));
+        // And the next with Docker on: the engine again, the refusal gone.
+        let on = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(on.adopt().await, 1);
+        let back = front_of(&on).await.ok_or("no front")?;
+        assert_eq!(back.mode, "engine");
+        assert_eq!(ask_front(&on).await?, "mode:engine:");
+        // An unchanged front is kept across server restarts.
+        let same = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(same.adopt().await, 1);
+        assert_eq!(front_of(&same).await.map(|f| f.pid), Some(back.pid));
+        kill(back.pid);
+        Ok(())
+    }
+
+    /// SPEC-196 DKL-002/005: a SPEC-187 holder serving its own engine gets a relay to it; a
+    /// missing prerequisite a refusal that names it; and runs see the Docker directory.
+    #[tokio::test]
+    async fn the_front_mode_follows_the_holder_and_the_prerequisites()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let request = request(data.path());
+        let on = adopting(data.path(), Ok(()), true)?;
+        assert!(matches!(
+            on.front_mode(&request, &live_record(true)),
+            DockerServe::Relay { socket } if socket.ends_with("runtime/sandboxes/s1/docker.sock")
+        ));
+        assert!(matches!(
+            on.front_mode(&request, &live_record(false)),
+            DockerServe::Engine { .. }
+        ));
+        let off = adopting(data.path(), Err(DOCKER_OFF.into()), true)?;
+        assert_eq!(
+            off.front_mode(&request, &live_record(true)),
+            DockerServe::Refuse {
+                reason: DOCKER_OFF.into()
+            }
+        );
+        let mut undelegated = config(data.path(), 1);
+        undelegated.docker = Ok(());
+        let undelegated = Manager::new(undelegated);
+        assert_eq!(
+            undelegated.docker_unavailable().as_deref(),
+            Some(DOCKER_NO_DELEGATION)
+        );
+        // Forwards of a holder from before engines listen on loopback only: the front serves
+        // them on the bridge for containers. SPEC-187 and newer holders listen everywhere.
+        let mut forwarding = config(data.path(), 1);
+        forwarding.forwards = BTreeMap::from([(8081, "127.0.0.1:8081".parse()?)]);
+        let forwarding = Manager::new(forwarding);
+        let spec_file = StatePaths::new(forwarding.state_dir("s1")).spec();
+        for (json, expected) in [
+            ("{}", vec![8081]),
+            (r#"{"containers": false}"#, vec![8081]),
+            (r#"{"containers": true}"#, vec![]),
+            (r#"{"engine": {"command": []}}"#, vec![]),
+        ] {
+            std::fs::write(&spec_file, json)?;
+            assert_eq!(forwarding.bridge_forwards("s1"), expected, "{json}");
+        }
+        for reason in [
+            DOCKER_OFF,
+            DOCKER_NO_DOCKERD,
+            DOCKER_NO_DELEGATION,
+            DOCKER_WRITABLE_EXE,
+        ] {
+            assert!(reason.contains("an operator"), "{reason}");
+            assert!(!reason.contains("  "), "{reason}");
+        }
+        Ok(())
+    }
+
     /// SPEC-196 DKL-003 (#597): a holder adopted from before engines, or whose socket failed,
     /// gets a front of its own, so its agents are told Docker works as with a fresh holder. (It
     /// used to serve none for as long as it lived: SPEC-187 asserted that here.)
