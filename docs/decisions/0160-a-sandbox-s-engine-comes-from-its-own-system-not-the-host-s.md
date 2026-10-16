@@ -45,10 +45,13 @@ to fix it, and the only fix it could suggest was a host change made by a person.
 - **The install brings buildx and compose** (amendment, SPEC-201). Ubuntu's `docker.io` only
   *suggests* `docker-buildx` and `docker-compose-v2`, so it alone gave an engine on which
   `docker buildx build` was an unknown command. The refusal, `yulius doctor`, the smoke test and
-  the briefing (`missing parts: sudo apt install docker.io docker-buildx docker-compose-v2 here`)
-  name all three packages. The same command adds a missing plugin to a sandbox that already has an
-  engine. It writes to the sandbox's own system, so every session, CI job and dev deploy there
-  gets the plugins, with no host change.
+  the briefing (`missing parts: sudo apt-get install -y docker.io docker-buildx
+  docker-compose-v2 here`) name all three packages. The same command adds a missing plugin to a
+  sandbox whose engine is Ubuntu's. On a base copied from a `docker-ce` host, `docker.io`
+  conflicts with `docker-ce` and would replace it, so a missing plugin there is
+  `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin` (`docker-ce-cli` recommends
+  both, so such bases normally have them). Either install writes to the sandbox's own system, so
+  every session, CI job and dev deploy there gets the plugins, with no host change.
 - **The host's `dockerd` is advice.** `yulius doctor` warns without it, since new bases then have
   none, and still checks the delegation and the kernel modules. The smoke test needs it, because
   its throwaway sandbox has only the current base.

@@ -835,8 +835,8 @@ fn containers(input: &BriefingInput<'_>) -> String {
     if input.docker {
         // SPEC-201 DBX-003: Ubuntu's `docker.io` alone has no buildx or compose.
         return "## Containers\n\nDocker works here and in CI (disk quota; `docker info` checks; \
-                missing parts: `sudo apt install docker.io docker-buildx docker-compose-v2` here). \
-                Mount the sandbox dir, your ports. Egress proxy: \
+                missing parts: `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` \
+                here). Mount the sandbox dir, your ports. Egress proxy: \
                 `--add-host=host.docker.internal:host-gateway`.\n\n"
             .to_owned();
     }

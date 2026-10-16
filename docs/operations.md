@@ -507,8 +507,11 @@ from a sandbox, and no daemon needs to run on the host.
     `runc`, `docker-proxy` and the CLI plugins. Without it, an agent installs it in its own
     sandbox (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`) and the front
     starts an engine at the next tick (30 s). Ubuntu's `docker.io` alone has no buildx or compose
-    (SPEC-201); the same command adds a missing plugin to a sandbox that has an engine. A sandbox keeps its base's `dockerd` until its
-    holder next starts on a newer base (after the idle time); one installed in the sandbox stays. The host does not need to run its own Docker daemon.
+    (SPEC-201); the same command adds a missing plugin to a sandbox whose engine is Ubuntu's. On a
+    base copied from a `docker-ce` host it would replace `docker-ce`, so a missing plugin there is
+    `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`. A sandbox keeps its
+    base's `dockerd` until its holder next starts on a newer base (after the idle time); one
+    installed in the sandbox stays. The host does not need to run its own Docker daemon.
   - The cgroup delegation (§3).
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.

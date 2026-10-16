@@ -10,7 +10,9 @@ Date: 2026-10-16
 Owner: task #185
 Scope authorization: task #185 (requested by MrFishPL): after #602 was promoted, `docker` in a
 sandbox answers "the host has no `dockerd`; an operator installs Docker … on the host", and the
-agent can only hand the person a host change. Amends SPEC-196 DKL-005 and ADR-0158.
+agent can only hand the person a host change. Amends SPEC-196 DKL-005 and ADR-0158. Amended by
+[SPEC-201](SPEC-201-analyse-what-happened-in-185-task-and-fi.md) (task #186, #610): every install
+hint (DSY-003, DSY-004, DSY-006) names buildx and compose with the engine.
 
 ## Goal
 

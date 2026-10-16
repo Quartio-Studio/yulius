@@ -1,11 +1,11 @@
 ---
 yulius-task: 64fb05de-4847-4a1e-a1af-da782f8943ba
-status: in-progress
+status: done
 ---
 
 # SPEC-201: The in-sandbox Docker install brings buildx and compose
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: task #186
 Scope authorization: task #186 (requested by MrFishPL): "Analyse what happened in #185 task and
@@ -52,16 +52,16 @@ installs them in its own sandbox, without a person or a host change.
 | ID | Requirement |
 | --- | --- |
 | DBX-001 | The `DOCKER_NO_DOCKERD` refusal and `yulius doctor`'s warning without a host `dockerd` tell an agent to run `sudo apt-get install -y docker.io docker-buildx docker-compose-v2` in the sandbox. |
-| DBX-002 | Every host install hint (the refusal, doctor, the smoke test's reason) names the plugins: `docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`, or `docker.io` with `docker-buildx` and `docker-compose-v2`. |
-| DBX-003 | The briefing's `## Containers` section with an engine names the install for missing parts in this sandbox (`missing parts: sudo apt install docker.io docker-buildx docker-compose-v2 here`). The section stays within its 270 bytes, so the tight-budget renderings keep it whole: "own engine" goes, and the egress proxy is named by its `--add-host` flag alone. |
+| DBX-002 | Every host install hint (the refusal, doctor, the smoke test's reason) names the same install: `docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`. |
+| DBX-003 | The briefing's `## Containers` section with an engine names the install for missing parts in this sandbox (`missing parts: sudo apt-get install -y docker.io docker-buildx docker-compose-v2 here`). The section stays within its 270 bytes, so the tight-budget renderings keep it whole: "own engine" goes, and the egress proxy is named by its `--add-host` flag alone. |
 | DBX-004 | ADR-0160, `docs/operations.md`, `docs/architecture.md` and `docs/changes.md` name the full install. |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -87,10 +87,55 @@ installs them in its own sandbox, without a person or a host change.
 - **Name the full package set in every hint**, over:
   - (a) Yulius detecting a missing buildx per sandbox and telling the briefing. This needs a new
     per-sandbox probe in the briefing input. `apt-get install` of the full set is idempotent, so
-    one command fixes a missing engine, a missing plugin or both.
+    one command fixes a missing engine, a missing plugin or both on a sandbox whose engine is
+    Ubuntu's. On a base copied from a `docker-ce` host it would replace `docker-ce`; the docs name
+    `docker-buildx-plugin docker-compose-plugin` for that case, which is rare (`docker-ce-cli`
+    recommends both).
   - (b) Yulius installing the plugins itself, rejected in ADR-0160 (files owned by the service
     user, a pinned download to maintain).
   - (c) Telling agents to drop the plugin into `~/.docker/cli-plugins`. That is a hand-made binary
     with no updates, and the system install already reaches every joined run.
 - ADR-0160 is amended in place, with a dated note. The decision (the sandbox's own system
   provides Docker) stands; only its install command was incomplete.
+
+## Evidence
+
+- **Reproduced** in this task's sandbox, whose engine works (Docker 29.9 from its `docker-ce`
+  base): `docker buildx build` of a two-line Dockerfile succeeded, so the engine and plugin path
+  are sound. In `ubuntu:24.04` on that engine, `apt-get install -y docker.io` (29.1.3) left only
+  `docker-trust` in `/usr/libexec/docker/cli-plugins`, and `docker buildx version` answered
+  "unknown command: docker buildx". After `apt-get install -y docker-buildx docker-compose-v2`,
+  buildx 0.30.1 and compose 2.40.3 worked. `apt-cache show docker.io`: both plugins are only in
+  `Suggests`. Filed as #610.
+- **Tests that failed before the fix** (commit `6fdcf3ba`):
+  - `manager::tests::the_front_mode_follows_the_holder_and_the_prerequisites`;
+  - `doctor::tests::the_docker_check_names_what_sandboxes_lack`;
+  - `docker_smoke::tests::the_host_install_it_asks_for_brings_buildx_and_compose`;
+  - `briefing::tests::a_sandbox_with_an_engine_is_told_docker_works_and_how`.
+
+  All four failed on the missing package names. The first longer briefing text (356, then
+  311 bytes) also failed the section's 270-byte bound and two tight-budget tests, so the section
+  was reworded to fit (266 bytes).
+- **Gate:** `scripts/dev ci` exit 0 at `4505a9dc` (2037 passed, 18 skipped). The run on the final
+  head is recorded below.
+- **Security:** `scripts/dev security` exit 2: Vidoc refused the key (HTTP 401). The scan was
+  **not run** (not passed). It sent nothing for the four changed code files.
+- **Review round 1** (fresh session, at `4505a9dc`): APPROVE, with four low findings in own code
+  and three nits.
+  - L1: the briefing's `apt install` without `-y` aborts at the prompt with no terminal. It is now
+    `apt-get install -y`, test first (449dd4eb).
+  - L2: on a base copied from a `docker-ce` host, `docker.io` conflicts with `docker-ce`. ADR-0160,
+    the operations doc and the Decisions section now name `docker-buildx-plugin
+    docker-compose-plugin` for that case.
+  - L3: SPEC-199 now says it is amended by SPEC-201.
+  - L4: this section was added, and the Plan is ticked.
+  - Nit 5: the smoke's host advice now matches the refusal and doctor (`docker-ce` with its
+    plugins), test first.
+  - Nit 7: the long operations line is rewrapped.
+  - Nit 6 is left: the briefing says "your ports", not "ports in your range". The 270-byte budget
+    has no room once `-y` is added. The `## Dev servers` section names the range.
+- **Not testable here:**
+  - running the hint in the product sandbox, which this task cannot reach (only this sandbox is
+    visible under `/var/lib/yulius/sandboxes`);
+  - a host install of Docker, which is a person's decision (the host has had no Docker since
+    2026-10-12).
