@@ -221,8 +221,11 @@ and resume it later: the agent stops where it is, is not told, and goes on from 
   3/3 without the visibility path); the race test asserts the resume waits; ADR-0154 says what a
   permission prompt does to a turn-boundary pause.
 - `scripts/dev ci` (doctor, repository check, script tests, check, fmt, clippy `-D warnings`,
-  nextest, doctests, deny, shear, doc): exit 0 on `15a721e3`, 1939 tests passed, 18 skipped.
-- e2e, full suite: 580 passed, 1 skipped on `15a721e3` (`agent.e2e.ts` needs a model key).
+  nextest, doctests, deny, shear, doc): exit 0 on `15a721e3`, 1939 tests passed, 18 skipped; and
+  on `e413aa93` (the round-2 fixes, `origin/dev` merged: #583, #589, #590), 1978 passed, 18
+  skipped.
+- e2e, full suite: 580 passed, 1 skipped on `15a721e3`; 588 passed, 1 skipped on `e413aa93`
+  (`agent.e2e.ts` needs a model key).
 - `scripts/dev security`: not run, exit 2. Vidoc rejects the key (HTTP 401, #470); per ADR-0104
   this is unrun, not passed.
 - Not testable here: a real cgroup freeze of a person's pause (no delegated cgroup in this
