@@ -46,7 +46,8 @@ flattened before the fix is not rewritten; its managers see that it must be past
   around each line and blank lines around the key are dropped (a key file's final line break: the
   `.env` copy adds it back, `secret_verify` accepts the file with it). Any other text (one line, an
   already escaped value, pretty-printed JSON whose `\n` would break it) pastes as the browser
-  pastes it (review round 1).
+  pastes it (review round 1). `dotenv::key_block` (SPEC-186 SAV-005) takes any END label too, so
+  a key and certificate bundle is written to a `.env` as its file (review round 3).
 - MLK-002 (refuse): Creating or updating an agent secret whose value is a key flattened onto one
   line (it opens with `-----BEGIN <label>-----` and closes with `-----END <label>-----`, any
   label, with something between and no literal `\n`) is refused with a message saying its line
@@ -127,6 +128,15 @@ pre-existing nit filed.
 | 2 | nit | "One undo step": Chromium merges the paste with typing just before it | Worded "can be undone" |
 | 3 | nit, pre-existing | `key_lines` makes encrypted PEM header lines redaction needles (SPEC-186) | #599 |
 
+Round 3 (head `c7b50e58`): request changes, own code, fixed here.
+
+| # | Severity | Finding | Answer |
+| --- | --- | --- | --- |
+| 1 | medium | A bundle was stored escaped, but `key_block` needed matching labels, so `secret_copy_to_env` refused it | `key_block` takes any END label (domain test: the bundle's file, `line`, both bodies as `key_lines`); ADR-0156 records the widening of ADR-0150 |
+| 2 | nit | `docs/api.md` and the ADR index described the refused shape as same-label | Any labels |
+| 3 | nit | Over-long lines from round 2 | Rewrapped |
+| 4 | nit, pre-existing in the change | JS `trim()` strips U+FEFF, Rust's does not (mock only) | Left: the mock alone differs, on a value no one pastes |
+
 ## Evidence
 
 - Regression tests failed before the fix (commit `07b461aa`): the domain tests
@@ -134,7 +144,8 @@ pre-existing nit filed.
   test `secrets::a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers` (201 for a
   flattened key) and the e2e test (`expected "" to be "-----BEGIN MOCK PRIVATE KEY-----\\n…"`).
   The review-round cases failed before their fixes too (commit `e6133bcb`: JSON was escaped;
-  the round 2 commit: a key and certificate bundle was neither escaped nor recognised as flattened).
+  the round 2 commit: a key and certificate bundle was neither escaped nor recognised as flattened;
+  the round 3 commit: `key_block` returned `None` for the bundle).
 - Real keys (generated in the session scratchpad, never in the repository): `ssh-keygen -t
   ed25519`, `ssh-keygen -t rsa -b 2048`, `openssl genpkey` ed25519 and RSA 2048, plus CRLF copies
   of the OpenSSH ed25519 and PEM RSA keys. Each was escaped by the page's own function (extracted

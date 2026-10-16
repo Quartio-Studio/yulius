@@ -6,7 +6,8 @@ Accepted. Specified in [SPEC-193](../../.ai/specs/SPEC-193-creating-multiline-ke
 task #179, fixes #591. Builds on [ADR-0150](0150-the-superagent-uses-agent-secrets-as-a-task-does.md)
 (a key block stored with literal `\n` is written to a `.env` as its file) and
 [ADR-0144](0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)
-(`secret_verify` answers `escaped_newlines`).
+(`secret_verify` answers `escaped_newlines`). Widens ADR-0150's key block to any END label (its
+SPEC-186 review had asked for matching labels).
 
 ## Context
 
@@ -19,17 +20,22 @@ answered `different` for each original file and a `.env` copy would have been an
 
 ## Decision
 
-- **The field escapes a pasted key.** A paste that is a key block (`-----BEGIN <label>-----` on its
-  first line, `-----END <label>-----` on its last, any label since a key and its certificate share
-  a file, LF, CRLF or CR breaks) is inserted at the cursor, or over the selection, undoably, with each break written as literal `\n`; spaces around
+- **The field escapes a pasted key.** A paste that is a key block (`-----BEGIN <label>-----` on
+  its first line, `-----END <label>-----` on its last, LF, CRLF or CR breaks) is inserted at the
+  cursor, or over the selection, undoably, with each break written as literal `\n`; spaces around
   each line and blank lines around the key are dropped (a key file's final break comes back in a
   `.env` copy, and `secret_verify` accepts the file with it). Any other text pastes as the browser
   pastes it: only a key block's `\n` is read back as line breaks (`dotenv::key_block`), and in other
   text, such as pretty-printed JSON, a `\n` outside a string would break it where a space does not.
 - **The server refuses a flattened key.** `check_agent_value` refuses a value that opens with
-  `-----BEGIN <label>-----`, closes with `-----END <label>-----` (any label), has something between and no
-  literal `\n`: a one-line key block is never a usable key file, whatever path it came by (a drag,
-  an autofill, the API). The message says how to keep the breaks.
+  `-----BEGIN <label>-----`, closes with `-----END <label>-----` (any label), has something between
+  and no literal `\n`: a one-line key block is never a usable key file, whatever path it came by (a
+  drag, an autofill, the API). The message says how to keep the breaks.
+- **Any END label closes a key block.** A key and its certificate in one file (`cat key.pem
+  cert.pem`) starts `-----BEGIN PRIVATE KEY-----` and ends `-----END CERTIFICATE-----`: the page
+  escapes it, the server refuses it flattened, and `dotenv::key_block` (ADR-0150) writes it to a
+  `.env` as its file, so every line between the armours, the certificate's included, is a
+  redaction needle (review rounds 2 and 3).
 - **Older flattened keys are marked, not repaired.** The agent secrets list says `flattened: true`
   for one, worked out from the decrypted value, to the people who manage it only; the page shows
   "Paste again" and says to edit it and paste the key again.
