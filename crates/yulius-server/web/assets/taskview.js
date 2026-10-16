@@ -1111,6 +1111,16 @@ export function mountComposer(ctx, sandbox) {
     ]);
   }
 
+  /**
+   * A new start choice: an open split or supertask card answered the old one (it names "After
+   * #12" and its buttons would start the task differently), so it closes (SPEC-188).
+   */
+  function startChanged() {
+    if (split) clearSplit();
+    renderChips();
+    prompt.focus();
+  }
+
   function openAfterMenu(anchor) {
     openStartMenu(anchor, ctx, sandbox, {
       kind: startKind({ supertask, afterTaskId, rule: startRule, prepare }),
@@ -1121,8 +1131,7 @@ export function mountComposer(ctx, sandbox) {
         startRule = null;
         supertask = kind === 'supertask';
         prepare = kind === 'prepared' ? { at: null } : null;
-        renderChips();
-        prompt.focus();
+        startChanged();
       },
       onRule: openRuleDialog,
       onTime: openTimeDialog,
@@ -1139,8 +1148,7 @@ export function mountComposer(ctx, sandbox) {
         afterTaskId = '';
         supertask = false;
         prepare = null;
-        renderChips();
-        prompt.focus();
+        startChanged();
       },
     });
   }
@@ -1160,8 +1168,7 @@ export function mountComposer(ctx, sandbox) {
         afterTaskId = '';
         startRule = null;
         supertask = false;
-        renderChips();
-        prompt.focus();
+        startChanged();
       },
     });
   }

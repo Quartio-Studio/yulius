@@ -129,6 +129,13 @@ MDS-004 and extends task intake (SPEC-001 TSK-011, TSK-018; SPEC-002 ADR-16).
   subject is the supertask) became "the rest wait", measured at three lines; the card's action is
   described by its question and reason (`aria-describedby`); the card names "After #?" like the
   chip while the tasks are read; a test line that could not fail checks the opened task instead.
+- **Review round 2 (fresh session, head 6997854d, approve with minors and nits, all own
+  code).** Fixed: SPEC-094 MDS-004 notes the amendment; this spec gains its Evidence; the ADR
+  index keeps number order; the e2e README lists the new tests. Fixed test-first: changing the
+  start choice while the split or supertask card is open closes the card, so it never names a
+  stale "After #12" (`startChanged()`). Not taken: "with Run after, the split question is a
+  wasted call". The split answer is what keeps a broad request that splits from being proposed
+  as a supertask, so it still decides the breadth verdict when a task or rule is chosen.
 - **The check now runs for short prompts too.** Broad requests are often short ("Harden the
   security of the whole product"). The breadth question needs 3 words; the split question still
   needs 40. Without a Jev key the server answers at once.

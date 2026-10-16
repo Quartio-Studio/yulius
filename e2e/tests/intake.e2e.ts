@@ -143,6 +143,23 @@ test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ a
   await expect(screen.getByRole('link', /^After #12$/)).toHaveCount(0);
 });
 
+test('changing the start choice closes the supertask proposal, so it never names a stale choice (SPEC-188)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
+  await screen.getByRole('textbox', 'Task prompt').fill(BROAD);
+  await screen.getByRole('button', 'Start task').click();
+  const card = screen.getByRole('region', 'Supertask proposal');
+  await expect(card).toHaveText(/It replaces “After #12”\./);
+  await screen.getByRole('button', /Run after: After #12/).click();
+  await screen.getByRole('menuitemradio', /^Supertask/).click();
+  await expect(card).toHaveCount(0);
+  await screen.getByRole('button', 'Start task').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await expect(browser.locator('.supertask-chip')).toHaveText('Supertask');
+});
+
 test('a broad task prepared "When I decide" is never stopped (SPEC-188)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
