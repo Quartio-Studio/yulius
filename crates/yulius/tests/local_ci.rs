@@ -120,6 +120,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let yulius_exe = exe.clone();
     // Launch the freshly built binary once before anything is timed: macOS scans a new binary
     // on its first launch (XProtect), which can take tens of seconds on a CI runner and would
     // otherwise land inside a job's start or timeout.
@@ -132,6 +133,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
             config.ci.job_timeout = Duration::from_secs(8);
             config.ci.max_jobs = 3;
             config.contained = contained;
+            config.yulius_exe = yulius_exe;
         })),
         ..HarnessOptions::default()
     })?;
@@ -1563,6 +1565,42 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
             "{outputs:?}"
         );
     }
+    Ok(())
+}
+
+/// SPEC-195 VSC-001, VSC-011: every project's CI job runs Yulius's embedded scanner as
+/// `yulius security-scan --ci`; without a Vidoc key it says why and ends skipped, never passed.
+#[tokio::test]
+async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = \"yulius security-scan --ci\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("Security scan not run: No Vidoc key"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|r| r["sha"] == pr_sha.as_str()))
+        .ok_or("run")?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    assert_eq!(detail["jobs"][0]["state"], "skipped", "{detail}");
     Ok(())
 }
 

@@ -62,6 +62,16 @@ enum Command {
         #[arg(long, default_value_t = 90)]
         minutes: u64,
     },
+    /// Scan this repository with Vidoc's vidoc-1 (SPEC-195): the branch's changes against the
+    /// integration branch, or the whole repository with --all; exit 0 passed, 1 failed, 2 not run.
+    /// `yulius security-scan --help` lists the options.
+    #[command(name = "security-scan", disable_help_flag = true)]
+    SecurityScan {
+        /// The scanner's options (--all, --base REF, --ci, --report FILE, --max-bytes N,
+        /// --deadline-minutes N, --jobs N, --help).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Internal: a sandbox's namespace holder (SPEC-002 ADR-22).
     #[command(name = "sandbox-host", hide = true)]
     SandboxHost {
@@ -213,6 +223,7 @@ fn main() -> ExitCode {
                 yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
+        Command::SecurityScan { args } => yulius::security_scan::run(&args),
         Command::GhToken => {
             let code = yulius_git::run_gh_token(&mut std::io::stdout(), &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))

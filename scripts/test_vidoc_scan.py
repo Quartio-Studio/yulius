@@ -236,7 +236,9 @@ class BroadScan(Scanning):
                  for line in body["messages"][0]["content"].splitlines()
                  if line.startswith(vidoc_scan.FILE_MARK + " src/big.py")]
         self.assertGreater(len(parts), 2, "the big file is split into line ranges")
-        self.assertIn("lines 1-", parts[0])
+        # Chunks are reviewed several at a time, so requests arrive in any order.
+        self.assertEqual(sum("lines 1-" in part for part in parts), 1)
+        self.assertEqual(sum(part.endswith("-3000 of 3000") for part in parts), 1)
         self.assertIn("broad scan", output)
         self.assertIn("[critical] src/run.py:5", output)
         self.assertIn("skipped 3 file(s)", output)
@@ -332,6 +334,14 @@ class Service(Scanning):
         code, output = self.run_scan(repo, server)
         self.assertEqual(code, 1, output)
         self.assertEqual(len(server.requests), 1)
+
+    def test_an_old_python_is_not_run(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        saved, vidoc_scan.tomllib = vidoc_scan.tomllib, None
+        self.addCleanup(setattr, vidoc_scan, "tomllib", saved)
+        code, output = self.run_scan(repo, self.fake())
+        self.assertEqual(code, 2, output)
+        self.assertIn("Python 3.11", output)
 
     def test_no_key_is_not_run(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})

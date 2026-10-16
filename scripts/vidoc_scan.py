@@ -35,7 +35,10 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
+try:
+    import tomllib
+except ImportError:  # Python 3.10 or older: the scan says it cannot run (exit 2).
+    tomllib = None
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -565,6 +568,9 @@ def arguments(argv):
 
 
 def run(args, env, root, sleep, out):
+    if tomllib is None:
+        raise Usage(f"the scan needs Python 3.11 or later, not {sys.version.split()[0]} "
+                    "(YULIUS_PYTHON names another interpreter for yulius security-scan)")
     git = Git(root)
     toplevel = git.text("rev-parse", "--show-toplevel", check=False)
     if not toplevel:

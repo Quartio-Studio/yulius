@@ -106,17 +106,19 @@ exec "$real" "$@"
     )
 }
 
-/// The `yulius` command of agent runs (SPEC-011): only `yulius wait`, which blocks until the
-/// checks at the agent's head finish, its delivery moves or an armed merge is decided.
+/// The `yulius` command of agent runs (SPEC-011): `yulius wait`, which blocks until the checks
+/// at the agent's head finish, its delivery moves or an armed merge is decided, and
+/// `yulius security-scan`, Vidoc's scan of the repository (SPEC-195).
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\'', "'\\''");
     format!(
         r#"#!/bin/sh
-# Yulius agent command: `yulius wait [--minutes N]` (start it with run_in_background).
+# Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background) and
+# `yulius security-scan [--all]` (Vidoc's scan of this repository).
 case "${{1:-}}" in
-  wait) exec '{exe}' "$@" ;;
-  *) echo "In a task's session yulius offers: yulius wait [--minutes N]" >&2; exit 2 ;;
+  wait|security-scan) exec '{exe}' "$@" ;;
+  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius security-scan [--all]" >&2; exit 2 ;;
 esac
 "#
     )
@@ -847,6 +849,42 @@ mod tests {
         let exe = dir.join("yulius");
         write_file(&exe, format!("#!/bin/sh\n{body}\n").as_bytes(), 0o755)?;
         Ok(exe)
+    }
+
+    /// SPEC-195 VSC-001: the agent's `yulius` offers `wait` and `security-scan`, passing their
+    /// arguments through, and nothing else.
+    #[test]
+    fn the_agent_yulius_shim_offers_wait_and_the_security_scan() -> TestResult {
+        let exe = fake_exe(r#"echo "ran $*"; exit 3"#)?;
+        let dir = unique_dir("yulius-agent-shim");
+        std::fs::create_dir_all(&dir)?;
+        let shim = dir.join("yulius");
+        write_file(&shim, agent_yulius_shim(&exe).as_bytes(), 0o755)?;
+        let run = |args: &[&str]| -> Result<(i32, String), Box<dyn std::error::Error>> {
+            let out = std::process::Command::new("/bin/sh")
+                .arg(&shim)
+                .args(args)
+                .output()?;
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            Ok((out.status.code().unwrap_or(-1), text))
+        };
+        assert_eq!(
+            run(&["wait", "--minutes", "5"])?,
+            (3, "ran wait --minutes 5\n".into())
+        );
+        assert_eq!(
+            run(&["security-scan", "--all", "--report", "r.json"])?,
+            (3, "ran security-scan --all --report r.json\n".into())
+        );
+        let (code, text) = run(&["serve"])?;
+        assert_eq!(code, 2);
+        assert!(text.contains("yulius security-scan"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
