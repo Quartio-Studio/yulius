@@ -7,6 +7,7 @@ task #172, #551. Amends [0003](0003-sandbox-isolation.md) (SPEC-002 ADR-22). Sup
 [0140](0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md). Amended by
 [0158](0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md): the
 socket is a Docker front's beside every holder, runs bind its directory, and live runs get it.
+Amended by [0160](0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md): `dockerd` comes from the sandbox's own system, not the host's.
 
 ## Context
 
@@ -68,8 +69,8 @@ What each part of ADR-22 means for an engine:
 - **The egress proxy for containers.** With the engine on, the forward relays listen on every IPv4
   address of the sandbox's network, so containers reach the egress proxy at
   `host.docker.internal:<port>`.
-- **Off switch and prerequisites.** `YULIUS_SANDBOX_DOCKER=off` turns it off. It needs `dockerd` on
-  the host and the cgroup delegation. `yulius doctor` names what is missing, including kernel
+- **Off switch and prerequisites.** `YULIUS_SANDBOX_DOCKER=off` turns it off. It needs `dockerd` in
+  the sandbox's system (ADR-0160; the host's only seeds new bases) and the cgroup delegation. `yulius doctor` names what is missing, including kernel
   modules a sandbox cannot load.
 
 ## Alternatives
