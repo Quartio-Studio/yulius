@@ -194,6 +194,21 @@ pub async fn smoke(
         return Err(format!("sandboxes get no engine here: {reason}"));
     }
     drop(docker_on);
+    // The smoke's holder runs on the current base: one copied before Docker was installed has
+    // no engine to start until the server rebuilds it (review round 3).
+    let bases = yulius_sandbox::base::Bases::new(data_dir);
+    let base = bases.current().map(|base| bases.path(&base.id));
+    if base.is_some_and(|base| {
+        ![
+            "usr/bin/dockerd",
+            "usr/sbin/dockerd",
+            "usr/local/bin/dockerd",
+        ]
+        .iter()
+        .any(|path| base.join(path).is_file())
+    }) {
+        return Err(yulius_sandbox::manager::DOCKER_OLD_BASE.into());
+    }
     // A smoke test that was interrupted (Ctrl-C, a crash) left its sandbox: remove it first.
     for stale in stale_smokes(data_dir) {
         eprintln!("removing {stale}, left by an interrupted smoke test");
@@ -334,10 +349,21 @@ async fn phases(
     let after = Manager::new(config.clone());
     let adopted = after.adopt_one(&request.id).await;
     let front = after.docker_front(&request.id).await;
+    // A refusal's reason is the answer the operator needs (review round 3), as the sandbox is
+    // removed at the end.
+    let detail = match &front {
+        Some(front) if front.mode == "engine" => format!("pid {}", front.pid),
+        Some(front) => format!(
+            "{}: {}",
+            front.mode,
+            front.reason.as_deref().unwrap_or("no reason")
+        ),
+        None => "no front: see docker-front.log of the sandbox".into(),
+    };
     check(
         "the adopted holder gets an engine front",
-        adopted && front.as_ref().is_some_and(|(_, mode)| mode == "engine"),
-        format!("{front:?}"),
+        adopted && front.as_ref().is_some_and(|f| f.mode == "engine"),
+        detail,
     );
     std::fs::write(probe.join("go-engine"), "").map_err(|e| e.to_string())?;
     let done = wait_line(&out, "engine-done", PULL_WAIT).await.is_ok();
@@ -363,13 +389,13 @@ async fn phases(
     }
 
     // 3. The front ends; the next upkeep recreates the socket; the old run keeps working.
-    if let Some((pid, _)) = front {
+    if let Some(pid) = front.map(|f| f.pid) {
         let _ = nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap_or(0)),
             nix::sys::signal::Signal::SIGKILL,
         );
         let deadline = Instant::now() + WAIT;
-        while after.docker_front(&request.id).await.map(|f| f.0) == Some(pid)
+        while after.docker_front(&request.id).await.map(|f| f.pid) == Some(pid)
             && Instant::now() < deadline
         {
             after.tick().await;

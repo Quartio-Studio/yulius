@@ -180,8 +180,12 @@ the host with one command.
   (`a_joined_run_gets_the_sandboxs_docker_directory` still expected a writable bind), fixed in
   `133e7cdb`; then exit 0 at `133e7cdb` (nextest 1991 passed, 18 skipped). After round 2 and a
   merge of `dev`: exit 0 at `cb6f6037` (nextest 2013 passed, 18 skipped).
-- **Review round 3** (fresh session): its verdict on the final head is in the pull request; the
-  merge waits for its approval of that exact head and green Yulius CI.
+- **Review round 3** (fresh session, request changes at `bc1f1cf0`): every round-2 fix
+  confirmed; one low in own code, fixed test-first: when the smoke's front refused (a base copied
+  before Docker), the operator saw only the mode. `Manager::docker_front` now returns the record
+  with its reason, the smoke prints it, and the smoke stops up front on a base without `dockerd`
+  (`DOCKER_OLD_BASE`). The final verdict on the head is in the pull request; the merge waits for
+  approval of that exact head and green Yulius CI.
 - **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
   expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
 - **Not run here:** `isolation_docker_live`, `isolation_docker` and `yulius doctor

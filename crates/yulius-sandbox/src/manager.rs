@@ -994,12 +994,11 @@ impl Manager {
         }
     }
 
-    /// The Docker front `sandbox`'s live holder has (pid, mode).
-    pub async fn docker_front(&self, sandbox: &str) -> Option<(u32, String)> {
+    /// The Docker front `sandbox`'s live holder has: its pid, mode and refusal reason.
+    pub async fn docker_front(&self, sandbox: &str) -> Option<DockerFrontRecord> {
         let entry = self.entry(sandbox);
         let state = entry.lock().await;
-        let front = state.live.as_ref()?.front.as_ref()?;
-        Some((front.pid, front.mode.clone()))
+        state.live.as_ref()?.front.clone()
     }
 
     /// Processes in `net_ns` other than `exclude` (the holder and its Docker front): the
@@ -1692,7 +1691,10 @@ while True:
         assert_eq!(refusing.mode, "refuse");
         // Review round 3 (low): the reason reaches whoever asks for the front (the smoke).
         assert_eq!(
-            off.docker_front("s1").await.and_then(|f| f.reason).as_deref(),
+            off.docker_front("s1")
+                .await
+                .and_then(|f| f.reason)
+                .as_deref(),
             Some(DOCKER_OFF)
         );
         assert!(
