@@ -74,7 +74,8 @@ the host with one command.
 - [x] Runs already running get the Docker directory without a restart
 - [x] Agents, doctor and the docker smoke command say how to check
 - [x] Host-level isolation test of adoption, live injection and socket recreation; ADR and docs
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Review round 1 findings fixed test-first
+- [ ] Review round 2 in a fresh session approves the exact head
 - [ ] Every gate green and delivered to dev
 
 ## Acceptance criteria
@@ -160,8 +161,10 @@ the host with one command.
     - a base from before Docker gets a refusal saying so (tested);
     - this spec's Plan and Evidence were unfilled.
   - *Nit:* `docs/operations.md` named the holder for the engine's start.
-- **Gate:** `scripts/dev ci` → exit 0 at `64dd3ebd` (nextest 1988 passed, 18 skipped); rerun
-  after the review fixes, see the pull request.
+- **Gate:** `scripts/dev ci` → exit 0 at `64dd3ebd` (nextest 1988 passed, 18 skipped). After the
+  review fixes, the first rerun failed on one test of this change's own
+  (`a_joined_run_gets_the_sandboxs_docker_directory` still expected a writable bind), fixed in
+  `133e7cdb`; then exit 0 at `133e7cdb` (nextest 1991 passed, 18 skipped).
 - **Security:** `scripts/dev security` → exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
   expired token)". The scan did not run (#470); per ADR-0104 that is unrun, not passed.
 - **Not run here:** `isolation_docker_live`, `isolation_docker` and `yulius doctor
