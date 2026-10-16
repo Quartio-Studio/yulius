@@ -276,8 +276,9 @@ pub trait SessionHost: Send + Sync {
     /// Thaws a run [`Self::freeze`] froze; nothing for a run that is not frozen (OPS-013).
     fn thaw(&self, _run_dir: &Path) {}
     /// Thaws every run this host left frozen, also those of a server that stopped before it
-    /// thawed them; returns how many (OPS-013).
-    fn thaw_all(&self) -> usize {
+    /// thawed them, but the runs in `keep` (a person paused them, SPEC-191 PER-003); returns how
+    /// many (OPS-013).
+    fn thaw_all(&self, _keep: &[PathBuf]) -> usize {
         0
     }
 }

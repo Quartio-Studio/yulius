@@ -308,11 +308,18 @@ fn run_groups(unit: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Thaws every frozen run group under the unit's sandboxes and removes the empty ones; returns
-/// how many were thawed.
-pub fn thaw_all(unit: &Path) -> usize {
+/// Thaws every frozen run group under the unit's sandboxes but those named in `keep` (the runs
+/// a person paused, SPEC-191) and removes the empty ones; returns how many were thawed.
+pub fn thaw_all(unit: &Path, keep: &HashSet<String>) -> usize {
     let mut thawed = 0;
     for group in run_groups(unit) {
+        if group
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| keep.contains(n))
+        {
+            continue;
+        }
         let freeze = group.join("cgroup.freeze");
         let frozen = std::fs::read_to_string(&freeze).is_ok_and(|t| t.trim() == "1");
         if frozen {
@@ -492,13 +499,40 @@ mod tests {
         }
         // Not run groups: left alone.
         std::fs::write(agents.join("cgroup.freeze"), "1")?;
-        assert_eq!(thaw_all(&tree.unit), 2);
+        assert_eq!(thaw_all(&tree.unit, &HashSet::new()), 2);
         assert_eq!(std::fs::read_to_string(frozen.join("cgroup.freeze"))?, "0");
         assert_eq!(std::fs::read_to_string(single.join("cgroup.freeze"))?, "0");
         assert_eq!(std::fs::read_to_string(agents.join("cgroup.freeze"))?, "1");
         // A fake empty group still holds its files; the kernel's would be removed.
         assert!(empty.is_dir() || !empty.exists());
-        assert_eq!(thaw_all(&tree.unit), 0, "nothing left frozen");
+        assert_eq!(
+            thaw_all(&tree.unit, &HashSet::new()),
+            0,
+            "nothing left frozen"
+        );
+        Ok(())
+    }
+
+    /// SPEC-191 PER-003: the groups of runs a person paused stay frozen.
+    #[test]
+    fn thaw_all_spares_the_groups_it_is_told_to_keep() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, tree, agents) = tree()?;
+        for name in ["run-a1", "run-a2"] {
+            let group = agents.join(name);
+            std::fs::create_dir_all(&group)?;
+            std::fs::write(group.join("cgroup.freeze"), "1")?;
+            std::fs::write(group.join("cgroup.procs"), "100\n")?;
+        }
+        let keep = HashSet::from(["run-a2".to_owned()]);
+        assert_eq!(thaw_all(&tree.unit, &keep), 1);
+        assert_eq!(
+            std::fs::read_to_string(agents.join("run-a1/cgroup.freeze"))?,
+            "0"
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.join("run-a2/cgroup.freeze"))?,
+            "1"
+        );
         Ok(())
     }
 

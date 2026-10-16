@@ -1717,9 +1717,11 @@ impl App {
                     return;
                 }
                 tokio::time::sleep(step).await;
-                // A prompt held for capacity or an update is not refused: it waits.
+                // A prompt held for capacity, an update or a person's pause is not refused: it
+                // waits.
                 let held = app.held_for_update(&task_id)
-                    || matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_)));
+                    || matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_)))
+                    || app.is_paused_by_person(&task_id).await;
                 if !held {
                     waited += step;
                 }
@@ -1961,6 +1963,7 @@ impl App {
         if ending {
             // The stop may have come before this run existed, so it armed no escalation for it.
             self.arm_escalation(task_id, Some(attempt.id.clone()));
+            self.end_person_pause(task_id).await;
             request_shutdown(&runtime).await;
         }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
@@ -2431,6 +2434,7 @@ impl App {
             *intent = Some(EndIntent::Close);
         }
         self.arm_escalation(task_id, closed);
+        self.end_person_pause(task_id).await;
         request_shutdown(&runtime).await;
         Ok(())
     }
@@ -2628,6 +2632,7 @@ impl App {
         // The run this stop ends; without it (a store error) nothing is escalated.
         let stopped = self.live_attempt_id(task_id).await;
         self.arm_escalation(task_id, stopped);
+        self.end_person_pause(task_id).await;
         request_shutdown(&runtime).await;
         Ok(())
     }
@@ -2821,6 +2826,8 @@ impl App {
         });
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
+            // A paused run takes the end as it would unpaused (SPEC-191 PER-004).
+            self.end_person_pause(task_id).await;
             let (tx, rx) = oneshot::channel();
             if let Ok(mut intent) = runtime.intent.lock() {
                 *intent = Some(EndIntent::Switch(tx));

@@ -167,6 +167,10 @@ pub struct FreezingHost {
     pub thawed: Mutex<Vec<String>>,
     /// [`SessionHost::thaw_all`] calls.
     pub sweeps: AtomicUsize,
+    /// The runs the last sweep kept frozen.
+    pub kept: Mutex<Vec<String>>,
+    /// [`SessionHost::freeze`] calls.
+    pub freezes: AtomicUsize,
     /// Told when the next freeze starts.
     pub entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     /// The next freeze waits for this.
@@ -180,6 +184,8 @@ impl FreezingHost {
             frozen: Mutex::new(Vec::new()),
             thawed: Mutex::new(Vec::new()),
             sweeps: AtomicUsize::new(0),
+            kept: Mutex::new(Vec::new()),
+            freezes: AtomicUsize::new(0),
             entered: Mutex::new(None),
             gate: Mutex::new(None),
         })
@@ -226,6 +232,7 @@ impl SessionHost for FreezingHost {
         UnavailableSessionHost.terminate(run_dir)
     }
     fn freeze(&self, run_dir: &Path) -> RunFreeze {
+        self.freezes.fetch_add(1, Ordering::SeqCst);
         if let Some(entered) = self.entered.lock().ok().and_then(|mut e| e.take()) {
             let _ = entered.send(());
         }
@@ -264,10 +271,16 @@ impl SessionHost for FreezingHost {
             thawed.push(dir);
         }
     }
-    /// Counts the sweep; frozen runs stay recorded, so a test sees which ones were thawed
-    /// one by one.
-    fn thaw_all(&self) -> usize {
+    /// Counts the sweep and records what it kept; frozen runs stay recorded, so a test sees
+    /// which ones were thawed one by one.
+    fn thaw_all(&self, keep: &[std::path::PathBuf]) -> usize {
         self.sweeps.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut kept) = self.kept.lock() {
+            *kept = keep
+                .iter()
+                .map(|k| k.to_string_lossy().into_owned())
+                .collect();
+        }
         0
     }
 }

@@ -937,3 +937,85 @@ async fn an_update_s_pause_is_in_the_task_summary_and_published() -> TestResult 
     }
     Ok(())
 }
+
+/// AC-PER-2 (SPEC-191 PER-002/003): a task a person paused stays frozen through an update: the
+/// install, the restart, the release one by one and every sweep leave its run frozen, while the
+/// other task thaws; the restarted server freezes it again.
+#[tokio::test]
+async fn an_update_never_wakes_a_task_a_person_paused() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    i.h.github
+        .set_perm("alice", "acme/fixture", support::perms("write"));
+    let r = post(&i, "/api/tasks/t-working/pause", None, &i.member).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["pause"]["by"], "person");
+    assert_eq!(host.frozen(), vec![RUN_WORKING.to_owned()]);
+
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    assert_eq!(install.action, HelperAction::Install);
+    assert_eq!(
+        pause_of(&i, &working).await?["by"],
+        "person",
+        "a person's pause wins"
+    );
+    i.helper
+        .report(&install, HelperState::Running, "stopping", None);
+
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(NEW, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let freezes = host.freezes.load(Ordering::SeqCst);
+    restarted.restore_person_pauses().await;
+    assert!(
+        host.freezes.load(Ordering::SeqCst) > freezes,
+        "the restarted server freezes it again"
+    );
+    i.helper
+        .report(&install, HelperState::Done, "succeeded", None);
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    assert_eq!(
+        host.thawed(),
+        vec![RUN_IDLE.to_owned()],
+        "only the other task thawed"
+    );
+    assert_eq!(host.frozen(), vec![RUN_WORKING.to_owned()]);
+    assert!(host.sweeps.load(Ordering::SeqCst) >= 1);
+    assert_eq!(
+        host.kept.lock().map(|k| k.clone()).unwrap_or_default(),
+        vec![RUN_WORKING.to_owned()],
+        "the sweep kept it"
+    );
+
+    Ok(())
+}
+
+/// AC-PER-4 (SPEC-191 PER-002): resumed while an update holds it, a task stays frozen until the
+/// update releases it with the others.
+#[tokio::test]
+async fn a_task_resumed_during_an_update_waits_for_the_update() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    i.h.github
+        .set_perm("alice", "acme/fixture", support::perms("write"));
+    let r = post(&i, "/api/tasks/t-working/pause", None, &i.member).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let r = post(&i, "/api/tasks/t-working/resume", None, &i.member).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(host.thawed().is_empty(), "the update keeps it paused");
+    assert_eq!(pause_of(&i, &working).await?["by"], "update");
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(
+        host.thawed().contains(&RUN_WORKING.to_owned()),
+        "released with the others: {:?}",
+        host.thawed()
+    );
+    Ok(())
+}

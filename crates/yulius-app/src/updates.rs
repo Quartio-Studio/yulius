@@ -516,11 +516,23 @@ impl App {
     /// Thaws `run_dir` when a person's pause ends, under the same lock (SPEC-191 PER-002).
     pub(crate) async fn thaw_run_now(&self, run_dir: &str) {
         let _pass = self.updates.freezing.lock().await;
-        self.thaw_run(run_dir).await;
+        self.host_thaw(run_dir).await;
     }
 
-    /// Thaws one run (blocking work off the runtime).
+    /// Thaws one run for an update (blocking work off the runtime), never one a person paused
+    /// (SPEC-191 PER-003).
     async fn thaw_run(&self, run_dir: &str) {
+        if self
+            .person_frozen_runs()
+            .await
+            .is_ok_and(|kept| kept.iter().any(|run| run == run_dir))
+        {
+            return;
+        }
+        self.host_thaw(run_dir).await;
+    }
+
+    async fn host_thaw(&self, run_dir: &str) {
         let host = Arc::clone(&self.deps.session_host);
         let dir = PathBuf::from(run_dir);
         if tokio::task::spawn_blocking(move || host.thaw(&dir))
@@ -551,10 +563,18 @@ impl App {
         self.sweep_frozen_runs().await;
     }
 
-    /// Thaws every run group the process host finds frozen.
+    /// Thaws every run group the process host finds frozen, but those of runs a person paused;
+    /// nothing when it cannot tell which those are (SPEC-191 PER-003).
     async fn sweep_frozen_runs(&self) {
+        let keep: Vec<PathBuf> = match self.person_frozen_runs().await {
+            Ok(runs) => runs.into_iter().map(PathBuf::from).collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot read the tasks people paused; nothing is thawed");
+                return;
+            }
+        };
         let host = Arc::clone(&self.deps.session_host);
-        match tokio::task::spawn_blocking(move || host.thaw_all()).await {
+        match tokio::task::spawn_blocking(move || host.thaw_all(&keep)).await {
             Ok(0) => {}
             Ok(thawed) => tracing::info!(thawed, "thawed runs left frozen by an update"),
             Err(_) => tracing::warn!("thawing left-over runs panicked"),

@@ -211,3 +211,54 @@ async fn a_freeze_that_never_settles_falls_back_to_the_turn_boundary() -> TestRe
     assert_eq!(pause_of(&f).await?["pending"], false);
     Ok(())
 }
+
+/// AC-PER-4 (PER-004): stopping a paused task thaws its run before the agent is asked to end, and
+/// clears the pause.
+#[tokio::test]
+async fn stopping_a_paused_task_thaws_it_first() -> TestResult {
+    let f = fixture().await?;
+    let (status, body) = post(&f, "/api/tasks/t1/pause", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(&f, "/api/tasks/t1/stop", &f.alice).await?;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(
+        f.host.thawed(),
+        vec![RUN.to_owned()],
+        "thawed before the stop"
+    );
+    assert_eq!(
+        f.h.store.person_pause(&f.task).await?,
+        None,
+        "the pause is cleared"
+    );
+    Ok(())
+}
+
+/// AC-PER-4 (PER-003/004): a pause left on an older attempt is not shown and freezes nothing at
+/// start; a pause of the live run is frozen again by a restarted server.
+#[tokio::test]
+async fn a_restart_freezes_the_live_run_s_pause_again_and_ignores_an_old_one() -> TestResult {
+    use yulius_domain::ids::{AttemptId, UserId};
+    let f = fixture().await?;
+    let alice = UserId::parse("u-a")?;
+    f.h.store
+        .set_person_pause(&f.task, &alice, &AttemptId::parse("a-old")?, f.h.app.now())
+        .await?;
+    assert_eq!(pause_of(&f).await?, Value::Null, "an older run's pause");
+    f.h.app.restore_person_pauses().await;
+    assert!(f.host.frozen().is_empty(), "nothing frozen for it");
+
+    f.h.store.clear_person_pause(&f.task, f.h.app.now()).await?;
+    f.h.store
+        .set_person_pause(&f.task, &alice, &AttemptId::parse("a-t1")?, f.h.app.now())
+        .await?;
+    assert_eq!(
+        pause_of(&f).await?["pending"],
+        true,
+        "not frozen by this server yet"
+    );
+    f.h.app.restore_person_pauses().await;
+    assert_eq!(f.host.frozen(), vec![RUN.to_owned()]);
+    assert_eq!(pause_of(&f).await?["pending"], false);
+    Ok(())
+}

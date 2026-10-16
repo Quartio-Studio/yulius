@@ -73,6 +73,11 @@ impl App {
         (attempt.id == pause.attempt).then_some(pause)
     }
 
+    /// Whether a person paused `task`'s live run.
+    pub(crate) async fn is_paused_by_person(&self, task: &TaskId) -> bool {
+        self.current_person_pause(task).await.is_some()
+    }
+
     /// Whether a person's pause of `task` took hold: frozen, or its hook held lately.
     fn person_pause_holds(&self, task: &TaskId) -> bool {
         let runtime = self.runtime(task);
@@ -247,5 +252,56 @@ impl App {
         // Polled: a capacity pause of the same task must not take the hold as given up.
         runtime.hold_polled_ms.store(now, Ordering::SeqCst);
         Some(newly)
+    }
+
+    /// At start (PER-003): the live runs people paused are frozen again (idempotent), as this
+    /// server knows nothing of them yet.
+    pub async fn restore_person_pauses(self: &Arc<Self>) {
+        let paused = match self.deps.store.person_paused_tasks().await {
+            Ok(paused) => paused,
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot read the tasks people paused");
+                return;
+            }
+        };
+        for (task, pause) in paused {
+            if let Ok(Some(live)) = self.deps.store.live_attempt(&task).await
+                && live.id == pause.attempt
+            {
+                self.freeze_for_person(&task, &live.id, &live.run_dir).await;
+            }
+        }
+    }
+
+    /// The run directories of live runs a person paused that an update must leave frozen (all
+    /// but those paused at their turn boundary, which the update's thaw does not wake). An error
+    /// when the pauses cannot be read.
+    pub(crate) async fn person_frozen_runs(&self) -> AppResult<Vec<String>> {
+        let mut runs = Vec::new();
+        for (task, pause) in self.deps.store.person_paused_tasks().await? {
+            if self.runtime(&task).person_freeze.load(Ordering::SeqCst) == AT_TURN_END {
+                continue;
+            }
+            if let Some(live) = self.deps.store.live_attempt(&task).await?
+                && live.id == pause.attempt
+            {
+                runs.push(live.run_dir);
+            }
+        }
+        Ok(runs)
+    }
+
+    /// Before Yulius ends a run (stop, close, a switch's restart, PER-004): a person's pause of it
+    /// ends and its run is thawed, so the agent takes the interrupt as it would unpaused.
+    pub(crate) async fn end_person_pause(&self, task: &TaskId) {
+        let store = &self.deps.store;
+        let Ok(Some(pause)) = store.person_pause(task).await else {
+            return;
+        };
+        if let Err(err) = store.clear_person_pause(task, self.now()).await {
+            tracing::warn!(error = %err, task = %task, "cannot clear the pause of an ending run");
+            return;
+        }
+        self.unfreeze_for_person(task, &pause.attempt).await;
     }
 }
