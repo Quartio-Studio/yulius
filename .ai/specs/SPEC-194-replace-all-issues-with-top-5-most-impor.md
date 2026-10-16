@@ -51,15 +51,15 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 | TOP-004 | It verifies in rank order, at most five at a time, each next batch only as large as the places still free (5 minus those found), and stops as soon as 5 issues are real and actionable or the list ends; it never verifies, comments on or closes issues ranked below that point. | `templates.rs` unit test |
 | TOP-005 | It starts exactly one task for each of those (at most 5), most important first, with SPEC-042's title, prompt and `Taken by task #N.` rules, and its summary lists the ranking it used and how many issues wait for a later run. | `templates.rs` unit test |
 | TOP-006 | This project's existing "Work through open issues" automation gets the new prompt (it was added from the old template and is not updated by a release). | `automations_list` after the merge |
-| TOP-007 | Before ranking, it drops every issue a running task owns; owned issues never count toward the 5 and get no comment. Running tasks are `tasks_list` scope `active` with `limit` 200 (queued, chained, prepared, starting, running, switching, waiting_capacity, stopping). A task owns an issue when its title ends with `(#<number>)`, its prompt (`task_get`) refers to the GitHub issue (`issues/<number>`, `issue #<number>`, `Fixes #<number>`, `Part of #<number>`), or the issue's `Taken by task #N.` comment names it; a task number (`task #<number>`, `after #<number>`, the number a branch starts with) never counts. An open pull request whose description says `Fixes`, `Closes` or `Resolves #<number>` owns it too. | `templates.rs` unit test |
+| TOP-007 | Before ranking, it drops every issue a running task owns; owned issues never count toward the 5 and get no comment. Running tasks are `tasks_list` scope `active` with `limit` 200 (queued, chained, prepared, starting, running, switching, waiting_capacity, stopping). A task owns an issue when its title ends with `(#<number>)`, its prompt (`task_get`) refers to the GitHub issue (`issues/<number>`, `issue #<number>`, `Fixes #<number>`, `Part of #<number>`), or the issue's `Taken by task #N.` comment names it; a task number (`task #<number>`, `after #<number>`, the number a branch starts with) never counts. An open pull request whose description puts a GitHub closing keyword (any case) before `#<number>` owns it too; all open pull requests are listed (`--limit 1000`, not gh's default 30). The comments the drop rules read come from one repository-wide call. | `templates.rs` unit test |
 | TOP-008 | `tasks_list` scope `active` also lists tasks paused for capacity (`waiting_capacity`): they still own their work. | `coordination.rs` unit test |
 | TOP-009 | A real but not actionable verdict is the comment `Not actionable yet:` with what is missing; the next runs drop that issue until a person comments after it, so the top of the ranking is not re-verified every night. | `templates.rs` unit test |
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The open-issues template ranks the issues and solves only the 5 most important actionable ones
-- [ ] The mock, product summary and changes log describe the top-5 automation
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The open-issues template ranks the issues and solves only the 5 most important actionable ones
+- [x] The mock, product summary and changes log describe the top-5 automation
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 - [ ] This project's enabled automation carries the new prompt
@@ -70,8 +70,9 @@ out), and starts one task for each. Issues it did not reach are left untouched f
   verifies in rank order until 5 are actionable, and starts at most 5 tasks; it still parses and
   fits `MAX_PROMPT_BYTES`.
 - The prompt no longer asks to verify each remaining issue.
-- An issue named by a running task's title, branch or prompt, or taken by it, is never among the
-  5 and is not commented on.
+- An issue owned by a running task (its title ends with `(#N)`, its prompt refers to the issue,
+  or it took the issue) or by an open pull request that closes it is never among the 5 and is not
+  commented on; a task whose number merely equals the issue's does not own it.
 - The Automations page (mock) shows the new description.
 - `automations_list` on this project shows the new prompt for automation `1a189dfa`.
 
@@ -80,7 +81,7 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 - Unit: `active_lists_tasks_at_work_or_waiting_to_work` in `crates/yulius-app/src/coordination.rs`
   (TOP-008) failed on `WaitingCapacity` before the fix.
 - Unit: `the_shipped_catalog_is_valid` in `crates/yulius-app/src/automations/templates.rs` gains
-  assertions for TOP-001, TOP-003..005 and TOP-007 (running tasks' title, branch, prompt via `task_get`; ranking wording, `reactions`, "5 most important", "stop",
+  assertions for TOP-001, TOP-003..005 and TOP-007 (title suffix, issue references in the prompt via `task_get`, every open pull request with `--limit 1000`, the comments fetched in one call; ranking wording, `reactions`, "5 most important", "stop",
   untouched lower-ranked issues) and that the old "verify each one" wording is gone; it fails
   against the old catalog file, passes with the new one.
 - Existing integration tests (`tests/automations.rs`, `manage_tools.rs`, `cockpit.rs`) and the e2e
@@ -102,9 +103,13 @@ out), and starts one task for each. Issues it did not reach are left untouched f
 - **Ownership is matched on issue references, not bare numbers** (review round 1). Branches start
   with the task's own number and prompts say `task #N` or `after #N`; task and issue numbers
   overlap, so a bare `#<number>` match would silently skip unrelated issues.
+- **Open pull requests by their description, all of them** (review round 2): the sandbox's `gh`
+  has no `closingIssuesReferences` field, so the description's closing keywords decide; the
+  list asks for 1000 because gh stops at 30 by default.
 - **`waiting_capacity` counts as active** (review round 1, a pre-existing gap fixed here): a task
   paused for capacity at 03:00 still owns its issue; leaving it out would start a duplicate task
-  and post a wrong `Needs a person:` comment.
+  and post a wrong `Needs a person:` comment. `tasks_list` now uses the same
+  `App::is_active_status` as the automation scheduler, so the two cannot drift.
 - **Untouched issues wait.** Issues below the cut get no comment, so a later run ranks them again
   as the list changes; no state is stored outside GitHub.
 - **Update this project's automation directly** with `automation_update` (same text as the

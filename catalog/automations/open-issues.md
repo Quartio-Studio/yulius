@@ -24,10 +24,13 @@ others: they wait, untouched, for a later run. Never create a new issue (no `iss
    to the GitHub issue (`issues/<number>`, `issue #<number>`, `Fixes #<number>`,
    `Part of #<number>`), or when the issue's `Taken by task #N.` comment names it. A task number
    is not an issue number: `task #<number>`, `after #<number>` and the number a branch starts
-   with name tasks, not issues. An open pull request whose description closes the issue
-   (`Fixes`, `Closes` or `Resolves #<number>`; list them once with
-   `gh pr list --state open --json number,body`) owns it too. Also drop, unless a person (not
-   this automation or its tasks) commented since:
+   with name tasks, not issues. An open pull request whose description closes the issue owns it
+   too: one of GitHub's closing keywords, in any case, before `#<number>` (`Fixes`, `Closes` or
+   `Resolves`, and their forms such as `fix`, `closed`, `resolved`); list them all once with
+   `gh pr list --state open --limit 1000 --json number,body`. The
+   comments the rules below read come in one call for the whole repository:
+   `gh api "repos/{owner}/{repo}/issues/comments?per_page=100&sort=created" --paginate --jq '.[] | {issue: (.issue_url | split("/") | last), author: .user.login, body: (.body | .[:120]), created_at}'`.
+   Also drop, unless a person (not this automation or its tasks) commented since:
    - an issue that an earlier run gave to a task (its `Taken by task #N.` comment) that is no
      longer running while the issue is still open: retrying it every night would loop. Comment
      `Needs a person: task #N did not solve it.` on it once (skip that when the comment is

@@ -144,6 +144,15 @@ mod tests {
             "`task_get`",
             "never count toward the 5",
             "`Closes`",
+            "`issues/<number>`",
+            "`issue #<number>`",
+            "`Part of #<number>`",
+            // Every open pull request, not gh's default 30, and every closing keyword.
+            "gh pr list --state open --limit 1000 --json number,body",
+            "closing keywords, in any case",
+            // The comments the drop rules read, fetched once for the whole repository.
+            "issues/comments?per_page=100",
+            "whose latest verdict is a `Not actionable yet:` comment",
             // A high-ranked issue that needs a person is not re-verified every night.
             "`Not actionable yet:`",
             "Rank the rest",
