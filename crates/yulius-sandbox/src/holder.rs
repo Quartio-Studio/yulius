@@ -297,6 +297,7 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         boot_id: boot_id(),
         started_at_ms: now_ms(),
         system_root: paths.root().to_string_lossy().into_owned(),
+        engine: spec.engine.is_some(),
     };
     write_json(&paths.record(), &record).map_err(|e| format!("host.json: {e}"))?;
     Ok(record)
@@ -608,6 +609,7 @@ pub fn stop(state: &StatePaths, record: &HolderRecord) {
     }
     let _ = std::fs::remove_file(state.record());
     let _ = std::fs::remove_file(state.inbound());
+    let _ = std::fs::remove_file(state.engine_socket());
 }
 
 /// `slirp4netns` of `record` still runs (egress works).

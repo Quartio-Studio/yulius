@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 use yulius_contracts::ptyhost::SandboxJoin;
-use yulius_contracts::sandbox::{HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap};
+use yulius_contracts::sandbox::{
+    EngineSpec, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap,
+};
 
 use crate::base::{BaseInfo, Bases};
 use crate::cgroup::{Delegation, Limits, SandboxGroups};
@@ -93,6 +95,8 @@ pub struct IsolationConfig {
     pub idle: IdleConfig,
     /// Build bases automatically (off in tests that bring their own).
     pub auto_build: bool,
+    /// Give each sandbox a Docker engine (ADR-0151); it also needs the cgroup delegation.
+    pub docker: bool,
 }
 
 /// A sandbox asking to be entered.
@@ -247,6 +251,43 @@ impl Manager {
         self.config.data_dir.join("sysroots").join(sandbox)
     }
 
+    /// Whether sandboxes get a Docker engine (the setting and the cgroup delegation).
+    #[must_use]
+    pub fn docker(&self) -> bool {
+        self.config.docker && self.config.delegation.is_some()
+    }
+
+    /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
+    fn engine_spec(&self, request: &SandboxRequest, cgroup: &Path) -> EngineSpec {
+        let state = StatePaths::new(self.state_dir(&request.id));
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let view = crate::engine::EngineView {
+            bwrap: text(&self.config.bwrap),
+            exe: text(&self.config.exe),
+            hostname: request.hostname.clone(),
+            state_dir: text(&state.dir),
+            system_root: text(&state.root()),
+            data_dir: text(&self.config.data_dir),
+            sandbox_dir: text(&request.dir),
+            storage: text(&self.sysroot(&request.id).join("docker")),
+            cgroup: text(cgroup),
+        };
+        let mut command = vec![
+            text(&self.config.exe),
+            "sandbox-exec".into(),
+            "--engine".into(),
+            "--cgroup".into(),
+            text(cgroup),
+            "--".into(),
+        ];
+        command.extend(crate::engine::bwrap_argv(&view));
+        EngineSpec {
+            command,
+            cgroup: text(cgroup),
+            idle_secs: self.config.idle.stop_after.as_secs().clamp(60, 86_400),
+        }
+    }
+
     fn entry(&self, sandbox: &str) -> Arc<tokio::sync::Mutex<SandboxState>> {
         Arc::clone(lock(&self.sandboxes).entry(sandbox.to_owned()).or_default())
     }
@@ -348,7 +389,12 @@ impl Manager {
                 exec_shim: Some(self.config.exe.to_string_lossy().into_owned()),
                 private_dirs: vec![self.config.data_dir.to_string_lossy().into_owned()],
                 host_system: None,
-                engine_socket: None,
+                engine_socket: record.engine.then(|| {
+                    StatePaths::new(self.state_dir(&request.id))
+                        .engine_socket()
+                        .to_string_lossy()
+                        .into_owned()
+                }),
             },
         }))
     }
@@ -396,11 +442,17 @@ impl Manager {
     ) -> Result<HolderRecord, String> {
         let state = StatePaths::new(self.state_dir(&request.id));
         let sysroot = self.sysroot(&request.id);
+        let groups = self.cgroup_of(&request.id);
+        let engine = groups
+            .as_ref()
+            .filter(|_| self.config.docker)
+            .map(|groups| self.engine_spec(request, &groups.engine));
         for dir in [
             state.dir.clone(),
             state.root(),
             sysroot.join("upper"),
             sysroot.join("work"),
+            sysroot.join("docker"),
         ] {
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
@@ -428,13 +480,11 @@ impl Manager {
                 .map(|p| p.to_string_lossy().into_owned()),
             uid: self.config.uid,
             gid: self.config.gid,
-            cgroup: self
-                .cgroup_of(&request.id)
-                .map(|g| g.system.to_string_lossy().into_owned()),
+            cgroup: groups.map(|g| g.system.to_string_lossy().into_owned()),
             port_first: request.port_first,
             port_last: request.port_last,
             forwards: self.config.forwards.keys().copied().collect(),
-            engine: None,
+            engine,
         };
         spec.validate().map_err(|e| e.to_string())?;
         write_json(&state.spec(), &spec).map_err(|e| e.to_string())?;
@@ -464,6 +514,7 @@ impl Manager {
             base = %record.base_id,
             holder = record.inner_pid,
             egress = record.slirp_pid.is_some(),
+            docker = record.engine,
             "sandbox holder started"
         );
         Ok(record)
@@ -903,6 +954,7 @@ mod tests {
                 stop_after: Duration::from_secs(300),
             },
             auto_build: false,
+            docker: false,
         });
         let request = SandboxRequest {
             id: "s1".into(),
@@ -941,7 +993,54 @@ mod tests {
                 stop_after: Duration::from_secs(300),
             },
             auto_build: false,
+            docker: false,
         })
+    }
+
+    /// SPEC-187 DKR-001/003/005: the engine the holder starts is `sandbox-exec --engine`, which
+    /// joins the engine's group and then execs the engine's `bwrap` (its storage under the
+    /// sandbox's sysroot, the sandbox directory, the system layer).
+    #[test]
+    fn the_engine_joins_its_group_and_keeps_its_storage_by_the_system_layer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        let cgroup = PathBuf::from("/sys/fs/cgroup/yulius.service/sandboxes/s1/engine");
+        let spec = manager.engine_spec(&request(data.path()), &cgroup);
+        let d = data.path().to_string_lossy().into_owned();
+        assert_eq!(
+            spec.command[..6],
+            [
+                "/usr/local/bin/yulius",
+                "sandbox-exec",
+                "--engine",
+                "--cgroup",
+                "/sys/fs/cgroup/yulius.service/sandboxes/s1/engine",
+                "--",
+            ]
+        );
+        assert_eq!(spec.command[6], "/usr/bin/bwrap");
+        let has = |window: &[String]| spec.command.windows(window.len()).any(|w| w == window);
+        assert!(has(&[
+            "--bind".into(),
+            format!("{d}/sysroots/s1/docker"),
+            "/var/lib/docker".into()
+        ]));
+        assert!(has(&[
+            "--bind".into(),
+            format!("{d}/sandboxes/s1"),
+            format!("{d}/sandboxes/s1")
+        ]));
+        assert!(has(&[
+            "--bind-try".into(),
+            format!("{d}/runtime/sandboxes/s1/root/usr"),
+            "/usr".into()
+        ]));
+        assert!(has(&["--tmpfs".into(), d.clone()]));
+        assert!(has(&["--hostname".into(), "s1".into()]));
+        assert_eq!(spec.cgroup, cgroup.to_string_lossy());
+        assert_eq!(spec.idle_secs, 300);
+        Ok(())
     }
 
     fn request(data: &Path) -> SandboxRequest {

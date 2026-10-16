@@ -282,6 +282,10 @@ pub struct HolderRecord {
     pub started_at_ms: i64,
     /// The merged system layer inside the holder's mount namespace.
     pub system_root: String,
+    /// The holder serves the sandbox's Docker socket (ADR-0151); `false` in records of holders
+    /// started before engines.
+    #[serde(default)]
+    pub engine: bool,
 }
 
 /// Answer to [`INBOUND_PORTS`]: ports of the sandbox's range something listens on inside.

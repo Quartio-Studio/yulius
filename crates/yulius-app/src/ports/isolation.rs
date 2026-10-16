@@ -119,6 +119,11 @@ pub trait SandboxIsolation: Send + Sync {
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 
+    /// Whether isolated sandboxes have a Docker engine of their own (ADR-0151).
+    fn docker(&self) -> bool {
+        false
+    }
+
     /// The limits every sandbox runs under; none where nothing enforces them (no cgroup
     /// delegation).
     fn limits(&self) -> SandboxLimits {
