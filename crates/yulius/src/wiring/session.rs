@@ -442,7 +442,7 @@ mod tests {
         assert!(
             argv.windows(3).any(|w| w
                 == [
-                    "--bind",
+                    "--ro-bind",
                     "/data/runtime/sandboxes/s1/docker",
                     "/run/yulius/docker"
                 ]),
