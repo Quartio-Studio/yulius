@@ -204,11 +204,15 @@ test('a pasted multi-line key keeps its line breaks as \\n, and a flattened one 
   expect(await browserPastes('{\n  "type": "service_account",\n  "project_id": "mock-project"\n}\n')).toBe(true);
   expect(await browserPastes(`${keyFile('MOCK PRIVATE KEY', pemBody, '\n')} trailing words\n`)).toBe(true);
   // CR alone is a line break too; blank lines around the key and spaces around each line (a key
-  // indented in YAML or Markdown) are dropped, and the paste is one step to undo.
+  // indented in YAML or Markdown) are dropped, and the paste can be undone.
   const indented = `\n    ${keyFile('MOCK PRIVATE KEY', pemBody, '\r    ')}\t\r\n \n`;
   expect(await pasteValue(browser, indented)).toBe(pemStored);
   await screen.getByLabel('Value').press('Control+z');
   expect(await browser.evaluate(() => (document.querySelector('dialog.modal input[aria-label="Value"]') as HTMLInputElement).value)).toBe('');
+  // A key and its certificate in one file (`cat key.pem cert.pem`) is a key block too (review
+  // round 2).
+  const bundle = [keyFile('MOCK PRIVATE KEY', pemBody, '\n'), keyFile('CERTIFICATE', ['bW9jay1jZXJ0'], '\n')].join('\n');
+  expect(await pasteValue(browser, `${bundle}\n`)).toBe(bundle.replaceAll('\n', '\\n'));
 });
 
 // SPEC-121 ASH-005: the hosts an agent asked for wait on the Secrets page for a person to allow.

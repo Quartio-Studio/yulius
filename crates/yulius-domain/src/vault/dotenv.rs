@@ -323,6 +323,14 @@ mod tests {
         }
         let pem = key_file("SYNTHETIC KEY", &["c3ludGhldGljLXBlbS1ib2R5"]);
         assert!(flattened_key(&pem.trim_end().replace('\n', " ")));
+        // A key and its certificate in one file (`cat key.pem cert.pem`, review round 2).
+        assert!(flattened_key(&format!(
+            "{} c3ludGhldGlj {} {} Y2VydA== {}",
+            armour("BEGIN", "KEY"),
+            armour("END", "KEY"),
+            armour("BEGIN", "CERTIFICATE"),
+            armour("END", "CERTIFICATE")
+        )));
         for kept in [
             file.replace('\n', "\\n"),
             format!("{}\\n", file.replace('\n', "\\n")),
@@ -334,9 +342,9 @@ mod tests {
             ),
             "sk_synthetic_value_7781".to_owned(),
             format!(
-                "{} c3ludGhldGlj {}",
+                "{} c3ludGhldGlj {} tail",
                 armour("BEGIN", "KEY"),
-                armour("END", "CERTIFICATE")
+                armour("END", "KEY")
             ),
             format!("{} {}", armour("BEGIN", "KEY"), armour("END", "KEY")),
             format!(
