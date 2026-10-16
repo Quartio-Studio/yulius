@@ -69,17 +69,16 @@ const BIND_DONE: u8 = u8::MAX;
 /// Why sandboxes get no engine: `YULIUS_SANDBOX_DOCKER=off` (SPEC-196 DKL-005).
 pub const DOCKER_OFF: &str = "Docker is turned off on this Yulius server \
     (YULIUS_SANDBOX_DOCKER=off); an operator removes that setting and restarts Yulius";
-/// Why: the host has no `dockerd`.
-pub const DOCKER_NO_DOCKERD: &str = "the host has no `dockerd`; an operator installs Docker \
-    (dockerd, containerd, runc) on the host, then the sandboxes' base copies it";
+/// Why: the sandbox's system has no `dockerd` (SPEC-199 DSY-003). Its front switches to an engine
+/// at the next tick after one is installed in the sandbox.
+pub const DOCKER_NO_DOCKERD: &str = "this sandbox's system has no `dockerd`: install Docker in the \
+    sandbox (`sudo apt-get install -y docker.io`) and the engine starts within a minute, or an \
+    operator installs Docker on the host (docker-ce or docker.io) and the sandbox gets it when its \
+    holder next starts on a newer base";
 /// Why: no cgroup delegation.
 pub const DOCKER_NO_DELEGATION: &str = "the Yulius server has no cgroup delegation; an operator \
     sets Delegate=yes and DelegateSubgroup=server on yulius.service and restarts it \
     (docs/operations.md)";
-/// Why: the holder runs on a base copied before Docker was installed on the host.
-pub const DOCKER_OLD_BASE: &str = "this sandbox's system was copied from the host before Docker \
-    was installed there; it gets an engine when its holder starts again on the newer base, once \
-    the sandbox has been idle for YULIUS_SANDBOX_IDLE_MINUTES";
 /// Why: the sandbox's cgroup could not be prepared.
 pub const DOCKER_NO_CGROUP: &str = "the sandbox's cgroup could not be prepared (the Yulius \
     server's log says why); an operator checks the delegation with `yulius doctor`";
@@ -165,8 +164,8 @@ pub struct IsolationConfig {
     pub idle: IdleConfig,
     /// Build bases automatically (off in tests that bring their own).
     pub auto_build: bool,
-    /// Give each sandbox a Docker engine (ADR-0151), or why not ([`DOCKER_OFF`],
-    /// [`DOCKER_NO_DOCKERD`]); it also needs the cgroup delegation.
+    /// Give each sandbox a Docker engine (ADR-0151), or why not ([`DOCKER_OFF`]); it also needs
+    /// the cgroup delegation and `dockerd` in the sandbox's system ([`system_has_dockerd`]).
     pub docker: Result<(), String>,
 }
 
@@ -349,9 +348,9 @@ impl Manager {
 
     /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they may (each one
     /// that has `dockerd` in its own system, SPEC-199): the setting, the cgroup delegation, and a
-    /// `yulius` executable the sandbox's root neither
-    /// owns nor may write through its group or as anyone (the engine's read-only binds are not
-    /// locked, so an engine could remount and rewrite it; ADR-0151).
+    /// `yulius` executable the sandbox's root neither owns nor may write through its group or as
+    /// anyone (the engine's read-only binds are not locked, so an engine could remount and
+    /// rewrite it; ADR-0151).
     #[must_use]
     pub fn docker_unavailable(&self) -> Option<String> {
         use std::os::unix::fs::MetadataExt as _;
@@ -395,7 +394,7 @@ impl Manager {
         let base = self.bases.path(&record.base_id);
         if !system_has_dockerd(&base, &self.sysroot(&request.id).join("upper")) {
             return DockerServe::Refuse {
-                reason: DOCKER_OLD_BASE.to_owned(),
+                reason: DOCKER_NO_DOCKERD.to_owned(),
             };
         }
         match self.group_paths(&request.id) {
@@ -1764,13 +1763,23 @@ while True:
             on.front_mode(&request, &live_record(false)),
             DockerServe::Engine { .. }
         ));
-        // Review round 1 (low): a base copied before Docker was installed has no `dockerd`.
+        // Review round 1 (low): a system without `dockerd` (SPEC-199 DSY-003: the agent can
+        // install it in the sandbox, or an operator on the host for new bases).
         let mut older = live_record(false);
         older.base_id = "base-0".into();
-        assert!(matches!(
+        assert_eq!(
             on.front_mode(&request, &older),
-            DockerServe::Refuse { reason } if reason.contains("before Docker was installed")
-        ));
+            DockerServe::Refuse {
+                reason: DOCKER_NO_DOCKERD.into()
+            }
+        );
+        for needle in [
+            "sudo apt-get install -y docker.io",
+            "on the host",
+            "newer base",
+        ] {
+            assert!(DOCKER_NO_DOCKERD.contains(needle), "{needle}");
+        }
         let off = adopting(data.path(), Err(DOCKER_OFF.into()), true)?;
         assert_eq!(
             off.front_mode(&request, &live_record(true)),
@@ -1809,7 +1818,6 @@ while True:
         ] {
             assert!(reason.contains("an operator"), "{reason}");
             assert!(!reason.contains("  "), "{reason}");
-            assert!(!DOCKER_OLD_BASE.contains("  "));
         }
         Ok(())
     }
