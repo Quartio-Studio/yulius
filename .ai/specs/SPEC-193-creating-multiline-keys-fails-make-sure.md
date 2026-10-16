@@ -1,11 +1,11 @@
 ---
 yulius-task: d14805d5-b16c-4a05-84d8-e78ab1b3e874
-status: in-progress
+status: done
 ---
 
 # SPEC-193: A multi-line agent secret pasted into the Secrets page keeps its line breaks
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #179 (fixes #591)
 Scope authorization: task #179, requested by MrFishPL: "Creating multiline keys fails. Make sure
@@ -63,8 +63,8 @@ flattened before the fix is not rewritten; its managers see that it must be past
 - [x] Pasted line breaks are stored as \n in Add and Edit
 - [x] Flattened keys are refused on save and marked on the Secrets page
 - [x] Real PEM and OpenSSH keys round-trip through secret_verify and the .env copy
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -105,7 +105,7 @@ flattened before the fix is not rewritten; its managers see that it must be past
 ## Review
 
 Independent review in a fresh session (round 1, head `6d766e16`): request changes, all findings
-own code, all fixed in this change.
+own code, all fixed in this change. Round 2 reviews the head that carries this section.
 
 | # | Severity | Finding | Answer |
 | --- | --- | --- | --- |
