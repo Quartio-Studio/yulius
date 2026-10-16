@@ -1,11 +1,11 @@
 ---
 yulius-task: 0be731e0-8df7-4122-b641-57f1b95712f3
-status: in-progress
+status: done
 ---
 
 # SPEC-185: The watched transcript follows the bottom, and has no octopus
 
-Status: in-progress
+Status: done
 Date: 2026-10-16
 Owner: Yulius task #170
 Scope authorization: task #170: "this screen is bugged - "working" etc is bugged, it isn't
@@ -66,10 +66,10 @@ closer to the view's sides.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Fix the cause until the regression test and every gate pass
 - [x] The watched transcript has no octopus, its docs and tests updated
 - [x] The watched transcript is inset 16 px, as the card above it
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
@@ -112,4 +112,25 @@ closer to the view's sides.
 
 ## Evidence
 
-(Filled at the end.)
+- Reproduction (e2e mock, before the fix, `7f13a96b`): with lines 24 px and scroll anchoring off,
+  "Working…" appearing left the view 36 px above the bottom, three runs out of three; a shorter
+  view left it 537 px above. With Chromium's anchoring on, the view sometimes moved along (the
+  anchoring scrolled by the line's height), which is why SPEC-179's tests passed.
+- Test-first: AC-FOL-1 failed before `d32c5945` and passes after (3/3); AC-OCT-1 failed before
+  `99f28d1f` (an `.octo` was there); AC-PAD-1 failed before `508ef040` (32 px); the review's
+  AC-FOL-3 failed before `9c9faa9d` (54 px above the bottom, 3/3) and passes after (3/3).
+- `scripts/dev ci` (doctor, repository check, script tests, check, fmt, clippy `-D warnings`,
+  nextest, doctests, deny, shear, doc): exit 0 on `3734d40f` and on `0e890e36` (after the review
+  fixes): 1909 tests passed, 18 skipped.
+- e2e, full suite: 567 passed, 1 skipped on `3734d40f`; 568 passed, 1 skipped on `0e890e36`
+  (`agent.e2e.ts` needs a model key).
+- Visual check in Chromium (desktop, dark): the watched transcript at its bottom with "Working…"
+  shown, no octopus, its entries starting on the card's left edge.
+- `scripts/dev security`: not run. Vidoc rejects the key (HTTP 401, #470); per ADR-0104 this is
+  unrun, not passed.
+- Independent review (`om-code-review`, fresh session): round 1 approved `3734d40f` with two minors
+  (untested paths: the Working line hiding while following, following resumed by hand; SPEC-179
+  still stating the octopus) and two nits (a reader a shrink leaves within the slack; the
+  alignment check passing before the change), all fixed, the code ones test-first.
+- `origin/dev` (#577, GitHub adapter only) merged cleanly after the gates; Yulius CI runs the gate
+  on the merged head.
