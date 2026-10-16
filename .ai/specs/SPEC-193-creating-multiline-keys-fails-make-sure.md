@@ -56,10 +56,10 @@ flattened before the fix is not rewritten; its managers see that it must be past
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Pasted line breaks are stored as \n in Add and Edit
-- [ ] Flattened keys are refused on save and marked on the Secrets page
-- [ ] Real PEM and OpenSSH keys round-trip through secret_verify and the .env copy
+- [x] Write the fix spec and the regression test that fails
+- [x] Pasted line breaks are stored as \n in Add and Edit
+- [x] Flattened keys are refused on save and marked on the Secrets page
+- [x] Real PEM and OpenSSH keys round-trip through secret_verify and the .env copy
 - [ ] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
