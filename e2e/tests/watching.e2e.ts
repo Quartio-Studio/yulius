@@ -466,3 +466,86 @@ test('handing a task away while typing in its terminal leaves the keyboard on it
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('watch-scroll') ?? false)).toBe(true);
 });
+
+// Task #175: "this animation on request-control should be better" (SPEC-190). The line standing for
+// Claude Code's spinner moves as that spinner does: its mark turns through the TUI's frames.
+const WORKING_FRAMES = '·✢✳✶✻✽✽✻✶✳✢·';
+
+async function watchWorking(app: { open: (url: string) => Promise<unknown> }, browser: Browser, changes: Record<string, unknown> = {}): Promise<void> {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' }, status: 'running', activity: 'working', ...changes });
+  await expect(browser.locator('.taskview .watch .watch-working')).toBeVisible();
+}
+
+test('the Working mark turns through Claude Code’s spinner frames, one character wide', async ({ app, browser }) => {
+  await watchWorking(app, browser);
+  const turning = await browser.evaluate(() => {
+    const mark = document.querySelector('.watch .watch-working .ss-mark') as HTMLElement;
+    const animations = mark.getAnimations({ subtree: true });
+    const turn = animations[0];
+    const timing = turn?.effect?.getComputedTiming();
+    const duration = Number(timing?.duration ?? 0);
+    const frames: string[] = [];
+    if (turn) {
+      turn.pause();
+      const box = mark.getBoundingClientRect();
+      for (let i = 0; i < 12; i += 1) {
+        turn.currentTime = (i + 0.5) * duration / 12;
+        // The frame in the mark's box: the one whose middle is inside it.
+        const shown = [...mark.querySelectorAll('*')].filter((el) => !el.children.length).find((el) => {
+          const r = el.getBoundingClientRect();
+          const middle = r.top + r.height / 2;
+          return middle > box.top && middle < box.bottom;
+        });
+        frames.push(shown?.textContent ?? '');
+      }
+    }
+    const ch = (() => {
+      const probe = document.createElement('span');
+      probe.style.cssText = 'position:absolute;width:1ch;font:inherit';
+      mark.parentElement!.append(probe);
+      const w = probe.getBoundingClientRect().width;
+      probe.remove();
+      return w;
+    })();
+    return { animations: animations.length, running: turn ? (turn.play(), turn.playState) : null, duration, frames: frames.join(''), width: Math.round(mark.getBoundingClientRect().width), ch: Math.round(ch), clips: getComputedStyle(mark).overflow };
+  });
+  expect(turning.animations, 'the mark has an animation').toBe(1);
+  expect(turning.running).toBe('running');
+  expect(turning.duration, '12 frames of 120 ms').toBe(1440);
+  expect(turning.frames).toBe(WORKING_FRAMES);
+  expect(turning.width, 'one character wide').toBe(turning.ch);
+  expect(turning.clips).toBe('hidden');
+});
+
+test('under reduced motion the Working mark stands still on ✻ and the words do not shimmer', async ({ app, browser }) => {
+  await watchWorking(app, browser);
+  // The harness cannot emulate the media query: read its rules, and lay the mark's out by hand.
+  const still = await browser.evaluate(() => {
+    const reduced: CSSStyleRule[] = [];
+    const visit = (rules: CSSRuleList, inside: boolean) => {
+      for (const rule of rules) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, inside || rule.conditionText.includes('prefers-reduced-motion: reduce'));
+        else if (inside && rule instanceof CSSStyleRule && rule.style.animationName === 'none') reduced.push(rule);
+      }
+    };
+    for (const sheet of document.styleSheets) visit(sheet.cssRules, false);
+    const stops = (el: Element) => reduced.find((rule) => el.matches(rule.selectorText));
+    const mark = document.querySelector('.watch .watch-working .ss-mark') as HTMLElement;
+    const strip = mark.firstElementChild as HTMLElement | null;
+    const words = document.querySelector('.watch .watch-working-text')!;
+    const rule = strip ? stops(strip) : undefined;
+    let shown = '';
+    if (strip && rule) {
+      strip.style.cssText = rule.style.cssText;
+      const box = mark.getBoundingClientRect();
+      shown = [...strip.children].find((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2 > box.top && r.top + r.height / 2 < box.bottom;
+      })?.textContent ?? '';
+    }
+    return { mark: Boolean(rule), words: Boolean(stops(words)), shown };
+  });
+  expect(still).toEqual({ mark: true, words: true, shown: '✻' });
+});

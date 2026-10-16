@@ -2594,9 +2594,17 @@ button.task-group-head:hover { color: var(--text); }
 .watch-earlier[hidden], .watch-empty[hidden], .watch-working[hidden], .watch-jump[hidden] { display: none; }
 .watch-empty { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 48px 24px; text-align: center; font-family: var(--font); }
 .watch-working { position: relative; margin-top: 12px; padding: 0 1ch; }
+/* Claude Code's spinner (SPEC-190): one line of a strip of 12 frames, stepped through. */
+.watch-spinner { height: 1lh; overflow: hidden; color: var(--session-fg); }
+.watch-spinner-frames { display: flex; flex-direction: column; animation: working-turn 1.44s steps(12) infinite; }
+.watch-spinner-frames > span { height: 1lh; text-align: center; }
+@keyframes working-turn { to { transform: translateY(-100%); } }
 .watch-working-text { color: transparent; background: linear-gradient(100deg, var(--session-dim) 40%, var(--session-fg) 50%, var(--session-dim) 60%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; animation: shimmer var(--duration-pulse) linear infinite; }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
-@media (prefers-reduced-motion: reduce) { .watch-working-text { animation: none; color: var(--session-dim); background: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .watch-working-text { animation: none; color: var(--session-dim); background: none; }
+  .watch-spinner-frames { animation: none; transform: translateY(calc(-100% * 4 / 12)); } /* ✻ */
+}
 
 /* instance updates (updates.js, pages/instance.js; SPEC-002 ADR-18) and the Jev key (jevkey.js) */
 .update-banner { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: min(460px, 36vw); height: var(--control-md); padding: 0 6px 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
