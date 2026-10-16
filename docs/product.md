@@ -18,7 +18,9 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
-  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
+  contained sandbox with its own system layer, Docker engine (SPEC-187: `docker build`, `run` and
+  `compose` work for agents, the Superagent, shells and CI jobs), home, shells per user, browser
+  and editor. The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and

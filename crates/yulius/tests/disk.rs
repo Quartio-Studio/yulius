@@ -722,3 +722,61 @@ async fn a_refusal_names_the_largest_consumers() -> BoxResult<()> {
     );
     Ok(())
 }
+
+/// A quota whose sandbox has a Docker engine with `prunable` bytes of unused images and build
+/// cache.
+struct EngineQuota {
+    used: AtomicU64,
+    limit: u64,
+    prunable: u64,
+    prunes: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for EngineQuota {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+        Some(DiskUsage {
+            used: self.used.load(Ordering::SeqCst),
+            limit: self.limit,
+        })
+    }
+    async fn measure_disk(&self, r: &SandboxRef) -> Option<DiskUsage> {
+        self.disk(r).await
+    }
+    async fn prune_engine(&self, _: &SandboxRef) -> Option<u64> {
+        self.prunes.fetch_add(1, Ordering::SeqCst);
+        Some(self.prunable)
+    }
+    fn release(&self, _: &SandboxId) {}
+}
+
+/// SPEC-187 DKR-006: the engine's unused images and build cache are pruned when the upkeep must
+/// free space, reported like the other caches, and left alone otherwise.
+#[tokio::test]
+async fn engine_images_and_build_cache_are_pruned_only_under_pressure() -> BoxResult<()> {
+    let w = world().await?;
+    let quota = Arc::new(EngineQuota {
+        used: AtomicU64::new(10 * BIG as u64),
+        limit: 100 * BIG as u64,
+        prunable: 7 * BIG as u64,
+        prunes: AtomicU64::new(0),
+    });
+    assert!(w.h.app.set_isolation(quota.clone()));
+    let calm = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(quota.prunes.load(Ordering::SeqCst), 0, "{calm:?}");
+    assert_eq!(calm.freed, 0);
+
+    quota.used.store(95 * BIG as u64, Ordering::SeqCst);
+    let pressed = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(quota.prunes.load(Ordering::SeqCst), 1);
+    assert_eq!(pressed.freed, 7 * BIG as u64, "{pressed:?}");
+
+    // A refused start presses too.
+    quota.used.store(101 * BIG as u64, Ordering::SeqCst);
+    w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert_eq!(quota.prunes.load(Ordering::SeqCst), 2);
+    Ok(())
+}

@@ -6,9 +6,9 @@
 //! policy, steps of similar effort, tests, decisions), the delivery pipeline from the delivery
 //! profile, the docs index to read before building, Yulius tools, dev-server ports, the task
 //! with its workflow and steps (with progress and nudges), the project's missing foundations
-//! (infra bootstrap), the project summary, the architecture pointer, in an isolated sandbox the
-//! missing container engine (SPEC-173), the decision index, recent changes and parallel tasks
-//! with their scope claims.
+//! (infra bootstrap), the project summary, the architecture pointer, in an isolated sandbox its
+//! Docker engine (SPEC-187) or the missing one (SPEC-173), the decision index, recent changes and
+//! parallel tasks with their scope claims.
 //!
 //! Mandatory parts (role, discipline, git, docs index, tools, ports, task header, foundations,
 //! architecture pointer, containers when isolated) are always included; user-controlled strings
@@ -303,8 +303,10 @@ pub struct BriefingInput<'a> {
     /// CI tests a task's head merged into the integration branch (SPEC-163).
     pub playground: bool,
     /// Runs join the sandbox's namespace holder (SPEC-002 ADR-22), whose containment leaves no
-    /// container engine (SPEC-173).
+    /// container engine (SPEC-173) unless the sandbox has its own (`docker`).
     pub isolated: bool,
+    /// The isolated sandbox has a Docker engine of its own (SPEC-187, ADR-0151).
+    pub docker: bool,
 }
 
 fn floor_boundary(text: &str, max: usize) -> usize {
@@ -813,12 +815,25 @@ fn ports(input: &BriefingInput<'_>) -> String {
     format!("## Dev servers\n\n{body}\n\n")
 }
 
-/// What an isolated sandbox cannot run (SPEC-173 CTR-001): its containment (SPEC-002 ADR-22) leaves
-/// no container engine, whatever `docker` client its base copied from the host. The last mandatory
-/// part, so a tight budget cuts it before the task or the architecture pointer (CTR-002).
+/// The end of the engine's section, whole only when nothing cut it (tests).
+#[cfg(test)]
+const DOCKER_SECTION_END: &str = "host-gateway`.";
+
+/// Containers in an isolated sandbox: with its own Docker engine (SPEC-187 DKR-010), how to use
+/// it; without one (SPEC-173 CTR-001: the containment of SPEC-002 ADR-22 alone leaves none,
+/// whatever `docker` client its base copied from the host), what works instead. The last
+/// mandatory part, so a tight budget cuts it before the task or the architecture pointer
+/// (CTR-002).
 fn containers(input: &BriefingInput<'_>) -> String {
     if !input.isolated {
         return String::new();
+    }
+    if input.docker {
+        return "## Containers\n\nDocker works here and in CI: this sandbox's own engine, images in \
+                its disk quota. Mount paths in the sandbox directory, publish ports in your range. \
+                Egress proxy: `host.docker.internal` with \
+                `--add-host=host.docker.internal:host-gateway`.\n\n"
+            .to_owned();
     }
     "## Containers\n\nNo container engine here, in Yulius CI or CD, whatever `docker` says: use one \
      on another machine (`DOCKER_HOST=ssh://…`), keeping images and rollback images there or in a \
@@ -1294,6 +1309,7 @@ mod tests {
             now: Timestamp(1_791_352_800_000),
             playground: false,
             isolated: false,
+            docker: false,
         })
     }
 
@@ -1613,6 +1629,23 @@ mod tests {
         );
         for heading in MANDATORY_HEADINGS.into_iter().chain(["## Containers"]) {
             assert!(isolated.contains(heading), "isolated: missing {heading}");
+        }
+        // SPEC-187: the same with the engine's section.
+        let docker = build_briefing(
+            &BriefingInput {
+                isolated: true,
+                docker: true,
+                ..input.clone()
+            },
+            DEFAULT_BUDGET_BYTES,
+        );
+        assert!(
+            docker.len() <= DEFAULT_BUDGET_BYTES,
+            "{} bytes",
+            docker.len()
+        );
+        for heading in MANDATORY_HEADINGS.into_iter().chain(["## Containers"]) {
+            assert!(docker.contains(heading), "docker: missing {heading}");
         }
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(text.len() <= DEFAULT_BUDGET_BYTES, "{} bytes", text.len());
@@ -1981,6 +2014,48 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-187 DKR-010 (task #172): with an engine of the sandbox's own, the section says Docker
+    /// works and how: the engine, bind mounts, the disk quota, previews and the egress proxy, in
+    /// no more room than the no-engine section took (CTR-002). Without isolation an engine flag
+    /// claims nothing.
+    #[test]
+    fn a_sandbox_with_an_engine_is_told_docker_works_and_how() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let docker = BriefingInput {
+            isolated: true,
+            docker: true,
+            ..base(&profile, &layout)?
+        };
+        let text = build_briefing(&docker, DEFAULT_BUDGET_BYTES);
+        for present in [
+            "## Containers",
+            "Docker works here and in CI",
+            "own engine",
+            "disk quota",
+            "sandbox directory",
+            "ports in your range",
+            "Egress proxy: `host.docker.internal`",
+            DOCKER_SECTION_END,
+        ] {
+            assert!(text.contains(present), "{present} not in {text}");
+        }
+        for absent in ["No container engine", "DOCKER_HOST=ssh://"] {
+            assert!(!text.contains(absent), "{absent} in {text}");
+        }
+        let section = containers(&docker);
+        assert!(section.len() <= 257, "{} bytes: {section}", section.len());
+        let plain = build_briefing(
+            &BriefingInput {
+                docker: true,
+                ..base(&profile, &layout)?
+            },
+            DEFAULT_BUDGET_BYTES,
+        );
+        assert!(!plain.contains("## Containers"), "{plain}");
+        Ok(())
+    }
+
     /// #555 (SPEC-174): at a budget lowered by 1.7 KB of workflow instructions (a margin over the
     /// 1,444 bytes `workflows/catalog.rs` caps them at), a 600-byte goal shrinks its quote instead
     /// of pushing out the mandatory parts after it, and the optional parts keep their headings.
@@ -1989,9 +2064,10 @@ mod tests {
         let profile = DeliveryProfile::standard();
         let layout = DocsLayout::default();
         let budget = DEFAULT_BUDGET_BYTES - 1_700;
-        for isolated in [false, true] {
+        for (isolated, docker) in [(false, false), (true, false), (true, true)] {
             let mut input = base(&profile, &layout)?;
             input.isolated = isolated;
+            input.docker = docker;
             input.project_name = "Quartio-Studio/yulius".to_owned();
             input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
             input.task.title = "i got this from a different projectfix".to_owned();
@@ -2031,8 +2107,13 @@ mod tests {
             }
             assert_eq!(
                 text.contains("start them yourself."),
-                isolated,
-                "the Containers section is whole exactly when isolated\n{text}"
+                isolated && !docker,
+                "the no-engine section is whole exactly when isolated without one\n{text}"
+            );
+            assert_eq!(
+                text.contains(DOCKER_SECTION_END),
+                docker,
+                "the engine's section is whole exactly with one\n{text}"
             );
         }
         Ok(())
@@ -2092,35 +2173,39 @@ mod tests {
             input.task.spec_path =
                 ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
             let plain = build_briefing(&input, budget);
-            let isolated = build_briefing(
-                &BriefingInput {
-                    isolated: true,
-                    ..input.clone()
-                },
-                budget,
-            );
-            assert!(isolated.len() <= budget, "{} bytes", isolated.len());
-            for needle in [
-                "## Your task",
-                "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
-                "Spec: `.ai/specs/SPEC-173-",
-                "## Architecture",
-            ] {
-                // With a short goal the plain briefing keeps them all, so the check is not empty.
-                assert!(
-                    goal_len != 80 || plain.contains(needle),
-                    "goal {goal_len}: {needle} not in the plain {plain}"
+            for (docker, end) in [(false, "start them yourself."), (true, DOCKER_SECTION_END)] {
+                let isolated = build_briefing(
+                    &BriefingInput {
+                        isolated: true,
+                        docker,
+                        ..input.clone()
+                    },
+                    budget,
                 );
-                assert!(
-                    !plain.contains(needle) || isolated.contains(needle),
-                    "goal {goal_len}: {needle} lost in {isolated}"
-                );
-            }
-            if goal_len == 80 {
-                assert!(
-                    isolated.contains("start them yourself."),
-                    "goal {goal_len}: section cut in {isolated}"
-                );
+                assert!(isolated.len() <= budget, "{} bytes", isolated.len());
+                for needle in [
+                    "## Your task",
+                    "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+                    "Spec: `.ai/specs/SPEC-173-",
+                    "## Architecture",
+                ] {
+                    // With a short goal the plain briefing keeps them all, so the check is not
+                    // empty.
+                    assert!(
+                        goal_len != 80 || plain.contains(needle),
+                        "goal {goal_len}: {needle} not in the plain {plain}"
+                    );
+                    assert!(
+                        !plain.contains(needle) || isolated.contains(needle),
+                        "goal {goal_len}, docker {docker}: {needle} lost in {isolated}"
+                    );
+                }
+                if goal_len == 80 {
+                    assert!(
+                        isolated.contains(end),
+                        "goal {goal_len}, docker {docker}: section cut in {isolated}"
+                    );
+                }
             }
         }
         Ok(())

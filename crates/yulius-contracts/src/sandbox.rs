@@ -38,6 +38,33 @@ pub const OUTBOUND_SOCKET: &str = "out.sock";
 /// Mount point of the merged system layer inside the holder's mount namespace.
 pub const SYSTEM_ROOT_DIR: &str = "root";
 
+/// System directories a joined run (and the engine) gets writable from the sandbox's system
+/// layer.
+pub const SYSTEM_LAYER_DIRS: [&str; 9] = [
+    "/usr", "/etc", "/var", "/opt", "/root", "/home", "/srv", "/mnt", "/media",
+];
+
+/// The merged-`/usr` links of a joined run's root: (target, link).
+pub const ROOT_LINKS: [(&str, &str); 4] = [
+    ("usr/bin", "/bin"),
+    ("usr/sbin", "/sbin"),
+    ("usr/lib", "/lib"),
+    ("usr/lib64", "/lib64"),
+];
+
+/// The sandbox's Docker socket in the state directory, served by the holder (ADR-0151).
+pub const ENGINE_SOCKET: &str = "docker.sock";
+/// The engine's own control directory in the state directory (its `docker.sock`).
+pub const ENGINE_CONTROL_DIR: &str = "engine";
+/// Mount point of the engine's sysfs in the state directory (holder's mount namespace).
+pub const ENGINE_SYSFS_DIR: &str = "sys";
+/// The engine's output.
+pub const ENGINE_LOG_FILE: &str = "engine.log";
+/// Where runs and the engine see the sandbox's Docker socket (`/var/run` links to `/run`).
+pub const ENGINE_SOCKET_IN_RUNS: &str = "/run/docker.sock";
+/// Where the engine sees its control directory.
+pub const ENGINE_CONTROL_IN_ENGINE: &str = "/run/yulius-engine";
+
 /// `in.sock` request: connect to a port inside the sandbox.
 pub const INBOUND_CONNECT: u8 = b'C';
 /// `in.sock` request: the ports listening inside the sandbox within its range.
@@ -106,6 +133,45 @@ pub struct HolderSpec {
     /// operator's extra forwards).
     #[serde(default)]
     pub forwards: Vec<u16>,
+    /// The sandbox's Docker engine (ADR-0151); `None`: no engine and no Docker socket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSpec>,
+}
+
+/// How the holder starts the sandbox's Docker engine on demand (ADR-0151).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineSpec {
+    /// Program (absolute) and arguments: `yulius sandbox-exec --engine --cgroup … -- bwrap …`.
+    pub command: Vec<String>,
+    /// The engine's cgroup directory; a process in a group below it is a running container.
+    pub cgroup: String,
+    /// Seconds without a client and without a container before the engine stops.
+    pub idle_secs: u64,
+}
+
+impl EngineSpec {
+    fn validate(&self) -> Result<(), LaunchSpecError> {
+        let program_ok = self.command.first().is_some_and(|p| abs(p));
+        if !program_ok
+            || self.command.len() > 512
+            || self
+                .command
+                .iter()
+                .any(|a| a.contains('\0') || a.len() > 4096)
+        {
+            return Err(spec_err(
+                "engine.command",
+                "an absolute program and at most 512 arguments",
+            ));
+        }
+        if !abs(&self.cgroup) {
+            return Err(spec_err("engine.cgroup", "must be absolute and not /"));
+        }
+        if !(60..=86_400).contains(&self.idle_secs) {
+            return Err(spec_err("engine.idle_secs", "between 60 and 86400"));
+        }
+        Ok(())
+    }
 }
 
 fn spec_err(field: &'static str, reason: &'static str) -> LaunchSpecError {
@@ -181,6 +247,9 @@ impl HolderSpec {
         if self.forwards.len() > 16 || self.forwards.contains(&0) {
             return Err(spec_err("forwards", "at most 16 ports, none 0"));
         }
+        if let Some(engine) = &self.engine {
+            engine.validate()?;
+        }
         Ok(())
     }
 }
@@ -213,6 +282,10 @@ pub struct HolderRecord {
     pub started_at_ms: i64,
     /// The merged system layer inside the holder's mount namespace.
     pub system_root: String,
+    /// The holder serves the sandbox's Docker socket (ADR-0151); `false` in records of holders
+    /// started before engines.
+    #[serde(default)]
+    pub engine: bool,
 }
 
 /// Answer to [`INBOUND_PORTS`]: ports of the sandbox's range something listens on inside.
@@ -255,7 +328,60 @@ mod tests {
             port_first: 20_000,
             port_last: 20_019,
             forwards: vec![8081],
+            engine: None,
         }
+    }
+
+    fn engine() -> EngineSpec {
+        EngineSpec {
+            command: vec![
+                "/usr/local/bin/yulius".into(),
+                "sandbox-exec".into(),
+                "--engine".into(),
+            ],
+            cgroup: "/sys/fs/cgroup/yulius.service/sandboxes/s1/engine".into(),
+            idle_secs: 300,
+        }
+    }
+
+    /// SPEC-187: a spec with an engine round-trips, and a holder record written before engines
+    /// (no `engine` field) still reads, as no engine.
+    #[test]
+    fn an_engine_is_optional_and_validated() -> Result<(), Box<dyn std::error::Error>> {
+        let mut with = spec();
+        with.engine = Some(engine());
+        with.validate()?;
+        let json = serde_json::to_string(&with)?;
+        assert_eq!(serde_json::from_str::<HolderSpec>(&json)?, with);
+        let without = serde_json::to_string(&spec())?;
+        assert!(!without.contains("engine"), "{without}");
+        assert_eq!(serde_json::from_str::<HolderSpec>(&without)?.engine, None);
+
+        for (field, change) in [
+            (
+                "engine.command",
+                Box::new(|e: &mut EngineSpec| e.command.clear()) as Box<dyn Fn(&mut EngineSpec)>,
+            ),
+            (
+                "engine.command",
+                Box::new(|e: &mut EngineSpec| e.command[0] = "yulius".into()),
+            ),
+            (
+                "engine.cgroup",
+                Box::new(|e: &mut EngineSpec| e.cgroup = "relative".into()),
+            ),
+            (
+                "engine.idle_secs",
+                Box::new(|e: &mut EngineSpec| e.idle_secs = 5),
+            ),
+        ] {
+            let mut s = spec();
+            let mut e = engine();
+            change(&mut e);
+            s.engine = Some(e);
+            assert_eq!(s.validate().map_err(|e| e.field), Err(field));
+        }
+        Ok(())
     }
 
     #[test]

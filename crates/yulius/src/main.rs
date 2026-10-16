@@ -80,6 +80,12 @@ enum Command {
     /// Internal: exec `bwrap` with the sandbox's seccomp filter.
     #[command(name = "sandbox-exec", hide = true)]
     SandboxExec {
+        /// The sandbox's container engine: its seccomp profile (ADR-0151).
+        #[arg(long)]
+        engine: bool,
+        /// Join this cgroup directory first.
+        #[arg(long)]
+        cgroup: Option<std::path::PathBuf>,
         /// `bwrap` and its arguments, after `--`.
         #[arg(last = true, required = true)]
         argv: Vec<std::ffi::OsString>,
@@ -225,7 +231,11 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SandboxHost { action } => yulius::sandbox_cli::host(action),
-        Command::SandboxExec { argv } => yulius::sandbox_cli::exec(&argv),
+        Command::SandboxExec {
+            engine,
+            cgroup,
+            argv,
+        } => yulius::sandbox_cli::exec(engine, cgroup.as_deref(), &argv),
         Command::SandboxBase { action } => yulius::sandbox_cli::base(action),
         Command::Login { server } => yulius::cli::login(&server),
         Command::Onboard {
