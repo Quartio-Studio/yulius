@@ -133,16 +133,16 @@ pub fn ensure_claude_config(
 /// file that is not a JSON object is left to Claude Code: the style never blocks a launch.
 fn default_output_style(config_dir: &Path) {
     let path = config_dir.join(CLAUDE_USER_SETTINGS);
-    let mut map = match read_small(&path) {
-        // Present but larger than 8 MiB (or a dangling link): not Yulius's to rewrite.
-        Ok(None) if path.symlink_metadata().is_ok() => return,
-        Ok(None) => Map::new(),
-        Ok(Some(text)) if text.trim().is_empty() => Map::new(),
-        Ok(Some(text)) => match serde_json::from_str::<Value>(&text) {
+    let Some(text) = read_regular(&path) else {
+        return;
+    };
+    let mut map = if text.trim().is_empty() {
+        Map::new()
+    } else {
+        match serde_json::from_str::<Value>(&text) {
             Ok(Value::Object(map)) => map,
             _ => return,
-        },
-        Err(_) => return,
+        }
     };
     let (key, style) = OUTPUT_STYLE;
     if map.contains_key(key) {
@@ -250,6 +250,35 @@ fn plugin_store_file(id: &str) -> String {
     let digest = Sha256::digest(id.as_bytes());
     let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
     format!("{name}-{hex}.json")
+}
+
+/// The text of the regular file at `path`, empty when there is none; `None` for anything else (a
+/// link, a FIFO, a directory, a file that is not UTF-8 or larger than [`MAX_CONFIG_BYTES`]). The
+/// agent owns its config dir: opened without following a link and without blocking, so a link
+/// cannot make the host copy another file into it and a FIFO cannot hold the launch.
+fn read_regular(path: &Path) -> Option<String> {
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            // A dangling link is no missing file: nothing is created through it.
+            return path.symlink_metadata().is_err().then(String::new);
+        }
+        Err(_) => return None,
+    };
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text)
 }
 
 /// The file at `path` when it exists and fits in [`MAX_CONFIG_BYTES`].
@@ -551,6 +580,47 @@ mod tests {
         std::fs::write(&settings, "\n")?;
         ensure_claude_config(&config, dir.path(), false)?;
         assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
+        Ok(())
+    }
+
+    /// SPEC-210 CON-003: only a regular file (or none) is read or replaced. The agent owns its
+    /// config dir: a link would make the host copy another file into it, and a FIFO would block
+    /// the launch.
+    #[test]
+    fn the_output_style_default_touches_only_a_regular_settings_file() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        std::fs::create_dir_all(&config)?;
+        let settings = config.join(CLAUDE_USER_SETTINGS);
+        let outside = dir.path().join("outside.json");
+        std::fs::write(&outside, r#"{"private":"host"}"#)?;
+        symlink(&outside, &settings)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(settings.symlink_metadata()?.file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&outside)?, r#"{"private":"host"}"#);
+        // A dangling link is not created through either.
+        std::fs::remove_file(&settings)?;
+        symlink(dir.path().join("missing.json"), &settings)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(!dir.path().join("missing.json").exists());
+        std::fs::remove_file(&settings)?;
+        // A FIFO returns at once instead of waiting for a writer.
+        let status = std::process::Command::new("mkfifo")
+            .arg(&settings)
+            .status()?;
+        assert!(status.success());
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(!settings.metadata()?.is_file());
+        std::fs::remove_file(&settings)?;
+        // A directory and a file that is not UTF-8 are left as they are.
+        std::fs::create_dir(&settings)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(settings.is_dir());
+        std::fs::remove_dir(&settings)?;
+        std::fs::write(&settings, b"{\"a\":\"\xff\"}")?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(std::fs::read(&settings)?, b"{\"a\":\"\xff\"}");
         Ok(())
     }
 

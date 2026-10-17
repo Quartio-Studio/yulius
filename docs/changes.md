@@ -10,7 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Superagent start in Claude Code's built-in Concise output style: the first sentence gives the
   result, without lead-in, narration or recap, while the work stays as thorough. Each launch adds
   `"outputStyle": "Concise"` to the sandbox's Claude Code user settings when they name no style;
-  `/output-style` still switches a session (and is remembered), and a style a repository commits
+  `/output-style` still switches a session (Claude Code keeps that choice for the worktree, so
+  the Superagent keeps it and a new task starts concise again), and a style a repository commits
   in `.claude/settings.json` wins.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the

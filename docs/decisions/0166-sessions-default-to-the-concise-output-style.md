@@ -36,6 +36,10 @@ settings never set `outputStyle`.
 - New and existing sandboxes answer concisely from their next launch; a session already running
   keeps its style until it starts again.
 - `/output-style`, `/config` and a committed project style work as Claude Code documents.
+  `/output-style` writes the working directory's `.claude/settings.local.json`: the Superagent keeps
+  the choice, and each new task worktree starts concise again.
+- The settings file is read only when it is a regular file, never through a link and never
+  blocking on a FIFO, since the agent owns its config dir.
 - Setting `"outputStyle": "default"` in the sandbox's user settings opts out for good; deleting the
   key brings Concise back at the next launch.
 - Subagents other than forks keep their own prompts (Claude Code applies no style to them).

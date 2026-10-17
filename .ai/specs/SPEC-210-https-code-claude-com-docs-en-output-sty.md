@@ -24,7 +24,9 @@ the case-sensitive `outputStyle` setting. Yulius starts Claude Code in two place
 `crates/yulius-harness/src/launch.rs`: `plan_claude` (task runs, `--settings <run dir>/claude-settings.json`)
 and `plan_cockpit` (the Superagent, inline `--settings` only when there is something to set).
 Before either launch, `claude_config::ensure_claude_config` merges Yulius's keys into the config
-dir's `.claude.json` (onboarding, trust, theme, diff pane).
+dir's `.claude.json` (onboarding, trust, theme, diff pane). Two other `claude` processes are no
+conversation and stay as they are: the split proposer (`claude -p --json-schema` in a throwaway
+config dir, `crates/yulius/src/wiring/split.rs`) and sign-in (`claude setup-token`).
 
 Measured on 2.1.292 in this sandbox (`claude -p "/output-style"`):
 
@@ -48,8 +50,10 @@ that stays so; "everywhere" means every session Yulius launches.
   the 0700 config dir) when missing.
 - CON-002: An existing `outputStyle` value (any style, including `default`) is kept, and every other
   key of the file is kept.
-- CON-003: A `settings.json` that is not a JSON object, or is larger than 8 MiB, is left untouched and
-  the launch goes on (Claude Code reports its own settings errors).
+- CON-003: A `settings.json` that is not a regular file (a link, dangling or not, a FIFO, a
+  directory), not UTF-8, not a JSON object, or larger than 8 MiB, is left untouched and the launch
+  goes on at once (Claude Code reports its own settings errors). The file is opened without
+  following links or blocking: the agent owns its config dir, which the host prepares.
 - CON-004: Run settings (`--settings`) do not set `outputStyle`, so `/output-style` and a project's
   committed `outputStyle` keep working.
 
@@ -66,15 +70,20 @@ that stays so; "everywhere" means every session Yulius launches.
 - A fresh config dir gets `settings.json` with `outputStyle: "Concise"` after `ensure_claude_config`.
 - A config dir whose `settings.json` has other keys gets `outputStyle` added and keeps the others.
 - A `settings.json` with `outputStyle: "Explanatory"` or `"default"` is unchanged.
-- A corrupt `settings.json` is unchanged and `ensure_claude_config` still succeeds.
+- A corrupt `settings.json`, a link, a FIFO or a directory in its place is unchanged and
+  `ensure_claude_config` still succeeds at once.
+- Neither launch's `--settings` holds `outputStyle`.
 - `claude -p "/output-style"` with that config dir reports Concise as current (measured live).
 
 ## Test plan
 
 Unit tests in `crates/yulius-harness/src/claude_config.rs` beside the existing `.claude.json`
 tests (temporary dirs, no Claude Code): fresh dir, merge with other keys, a kept style, a kept
-`default`, corrupt and non-object files untouched. Task-run and Superagent launches both already
-call `ensure_claude_config` (`crates/yulius/src/wiring/harness.rs`), so one function covers both.
+`default`, corrupt, non-object, oversized, non-UTF-8 files, a symlink (its target untouched), a
+dangling link, a FIFO and a directory untouched. `crates/yulius/src/wiring/harness.rs` plans a task
+run and a Superagent through the real adapter and reads `settings.json` of each config dir
+(CON-001 on both paths). `crates/yulius-harness/tests/launch.rs` asserts that neither the task
+run's settings file nor the Superagent's inline settings carry `outputStyle` (CON-004).
 Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a prepared dir.
 
 ## Decisions
