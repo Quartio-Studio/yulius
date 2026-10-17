@@ -10,8 +10,6 @@
 //! the key file it stands for, in single quotes across lines, which those readers take literally
 //! (SPEC-186 SAV-005).
 
-use zeroize::Zeroizing;
-
 use super::VaultError;
 
 /// Characters a bare value may hold.
@@ -81,11 +79,11 @@ pub fn flattened_key(value: &str) -> bool {
 /// lines around dropped, the spaces around each line trimmed and each break written as literal
 /// `\n`, as the Secrets page stores a pasted key (ADR-0156). The result passes
 /// [`super::check_agent_value`]; a file holding one line that opens a key (cut or flattened) does
-/// not. The value is wiped from memory when dropped.
+/// not. Callers hold the value in a wiping wrapper; a refused one is overwritten here.
 ///
 /// # Errors
 /// [`VaultError::Value`] naming the rule, never quoting the text.
-pub fn agent_value_from_file(text: &str) -> Result<Zeroizing<String>, VaultError> {
+pub fn agent_value_from_file(text: &str) -> Result<String, VaultError> {
     let text = text
         .strip_suffix('\n')
         .map_or(text, |rest| rest.strip_suffix('\r').unwrap_or(rest));
@@ -93,8 +91,9 @@ pub fn agent_value_from_file(text: &str) -> Result<Zeroizing<String>, VaultError
         let lines: Vec<&str> = text.split('\n').map(str::trim).collect();
         let first = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
         let last = lines.iter().rposition(|l| !l.is_empty()).unwrap_or(0);
-        let joined = Zeroizing::new(lines.get(first..=last).unwrap_or_default().join("\\n"));
+        let joined = lines.get(first..=last).unwrap_or_default().join("\\n");
         if key_block(&joined).is_none() {
+            wipe(joined);
             return Err(VaultError::Value(
                 "an agent secret cannot span lines (a PEM or OpenSSH key can), and this is not a \
                  key"
@@ -108,10 +107,21 @@ pub fn agent_value_from_file(text: &str) -> Result<Zeroizing<String>, VaultError
             "the file holds a key on one line: a PEM or OpenSSH key spans lines".into(),
         ));
     } else {
-        Zeroizing::new(text.to_owned())
+        text.to_owned()
     };
-    super::check_agent_value(&value)?;
+    if let Err(err) = super::check_agent_value(&value) {
+        wipe(value);
+        return Err(err);
+    }
     Ok(value)
+}
+
+/// Overwrites a refused value's bytes before they are freed (best effort: the domain has no
+/// `zeroize`; `black_box` keeps the writes from being dropped as dead).
+fn wipe(value: String) {
+    let mut bytes = value.into_bytes();
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
 }
 
 /// The lines of a key block's file that hold key material (its armour excluded): a copied key
@@ -592,7 +602,7 @@ mod tests {
             format!("{token}\n"),
             format!("{token}\r\n"),
         ] {
-            assert_eq!(agent_value_from_file(&file)?.as_str(), token, "{file:?}");
+            assert_eq!(agent_value_from_file(&file)?, token, "{file:?}");
         }
         let openssh = key_file(
             &format!("{} PRIVATE KEY", "OPENSSH"),
@@ -610,7 +620,7 @@ mod tests {
             openssh.replace('\n', "  \n"),
         ] {
             let value = agent_value_from_file(&file)?;
-            assert_eq!(*value, stored, "{file:?}");
+            assert_eq!(value, stored, "{file:?}");
             assert_eq!(key_block(&value).as_deref(), Some(openssh.as_str()));
         }
         let secret = "synthetic-content-never-shown";

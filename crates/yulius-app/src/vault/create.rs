@@ -196,8 +196,10 @@ impl App {
             Root::Home => format!("~/{}", folder.path_of(file_name)),
         };
         let text = read_secret_file(&folder, file_name)?;
-        let value = agent_value_from_file(&text)
-            .map_err(|err| AppError::Invalid(format!("{shown}: {err}")))?;
+        let value = Zeroizing::new(
+            agent_value_from_file(&text)
+                .map_err(|err| AppError::Invalid(format!("{shown}: {err}")))?,
+        );
         drop(text);
         let payload = AgentPayload {
             username: None,

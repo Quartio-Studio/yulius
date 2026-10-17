@@ -494,7 +494,7 @@ fn agent_value(entry: &DotenvEntry) -> Class {
     let value = if raw.contains('\n') {
         // A key file is stored as the Secrets page stores it: its line breaks as literal `\n`.
         match dotenv::agent_value_from_file(raw) {
-            Ok(value) => Secret::new(String::clone(&value)),
+            Ok(value) => Secret::new(value),
             Err(e) => return Class::Invalid(e.to_string()),
         }
     } else {
