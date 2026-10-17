@@ -70,7 +70,7 @@ that stays so; "everywhere" means every session Yulius launches.
 - [x] Final review round approves the exact head
 - [x] Every gate green, docs and the changes log updated
 - [x] Host reads of the agent-owned config dir open regular files only
-- [ ] Review of the read fix approves the exact head
+- [x] Review of the read fix approves the exact head
 
 ## Acceptance criteria
 
@@ -144,4 +144,15 @@ Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a p
     `.claude.json` link was followed.
   - The fix is one `open_regular` (`O_NOFOLLOW | O_NONBLOCK`, then an fstat regular-file check),
     used by every reader, and the test now passes.
+- Review of the read fix approved `fa832b7a`. Its own-code minors are fixed in `9debbbc3` and the
+  later commits:
+  - the ELOOP error names the file;
+  - the tests cover a linked `commondir` and a FIFO `.git`;
+  - the changes wording is corrected.
+  Still open in #634 (pre-existing): a config dir that is itself a link, and the host-side
+  `canonicalize` of `commondir`.
+- Final head, after merging `origin/dev` at `2b2e76ed`:
+  - `scripts/dev ci` exit 0, 2137 passed, 18 skipped;
+  - `scripts/dev security` reports no open critical or high finding (one low: the `commondir`
+    canonicalize, #634).
 - Not tested here: a full task run in the web UI after deployment (no deploy in this task).
