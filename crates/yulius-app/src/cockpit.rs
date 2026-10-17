@@ -55,7 +55,8 @@ pub const REFRESH_NOTICE: &str = "Yulius was updated: the Superagent restarts to
 /// Bump when a Cockpit's launch changes in a way a running one must get (its environment,
 /// settings or the tools it runs without asking): running ones then start again (SPEC-186
 /// SAV-006). Its MCP instructions and tools are part of the digest by themselves.
-const COCKPIT_LAUNCH_REVISION: u32 = 1;
+/// 2: contained ones bypass approvals (SPEC-208).
+const COCKPIT_LAUNCH_REVISION: u32 = 2;
 /// An adopted Cockpit that needs no new start.
 pub(crate) const REFRESH_NONE: u8 = 0;
 /// An adopted Cockpit that starts again once its conversation is idle.
@@ -730,6 +731,7 @@ impl App {
             )),
             project_mcp_servers,
             mcp,
+            contained: self.config.contained,
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));

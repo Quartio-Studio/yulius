@@ -625,7 +625,12 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
         bypass_permissions: false,
         ..request
     })?;
-    assert!(!plain.argv.iter().any(|a| a == "--dangerously-skip-permissions"));
+    assert!(
+        !plain
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions")
+    );
     assert!(!plain.env.iter().any(|(k, _)| k == "IS_SANDBOX"));
     Ok(())
 }
