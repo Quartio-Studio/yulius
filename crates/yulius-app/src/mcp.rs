@@ -27,7 +27,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// MGT-006, SPEC-066 MGT-012) and using its agent vault as a task's agent does, but the project
 /// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150). Everything else belongs to a
 /// task.
-pub const COCKPIT_TOOLS: [&str; 19] = [
+pub const COCKPIT_TOOLS: [&str; 20] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -47,10 +47,11 @@ pub const COCKPIT_TOOLS: [&str; 19] = [
     "secret_verify",
     "secret_copy_to_env",
     "secret_request_hosts",
+    "secret_create_from_file",
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, and secret_verify tells whether a value the person holds is one of them, from its SHA-256; secrets_list names them and says how. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.";
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -402,6 +403,16 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             }), &["secrets"]),
         },
         ToolDescriptor {
+            name: "secret_create_from_file".into(),
+            description: "Store a secret that is in a file (a key you generated with ssh-keygen, a token a CLI wrote, a key in ~/.ssh) as an agent secret of this project, without anyone seeing it: Yulius reads the file itself, so never print it, cat it or pass its value to any tool. Write a value you need to make into a file without printing it (umask 077; openssl rand -hex 32 > token.txt), then name the file here. The file is relative to the folder you work in or ~/path in your home (no other paths; follows no links); a one-line value (its final line break dropped) or a PEM/OpenSSH key file. The secret starts with no hosts and is not allowed in .env files: request them with secret_request_hosts and secret_copy_to_env; a person allows each. An existing name is never replaced (a person rotates on the Secrets page). Needs write access of the person you work for. Audited.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "NAME for the secret: A-Z, 0-9 and _, starting with a letter, e.g. DEPLOY_SSH_KEY"},
+                "file": {"type": "string", "description": "The file holding the value: relative to the folder you work in, or ~/path in your home, e.g. ~/.ssh/deploy_key"},
+                "description": {"type": "string", "description": "What it is and what it is for (agents and people read it), never the value"},
+                "delete_file": {"type": "boolean", "description": "Delete the file once the secret is stored, so the vault holds the only copy (default false)"}
+            }), &["name", "file"]),
+        },
+        ToolDescriptor {
             name: "browser_fill_secret".into(),
             description: "Type an agent secret into the project browser without seeing it: its value (password or key) or, when the secret stores them (Basic credentials, older secrets), its user name or current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
             input_schema: schema(json!({
@@ -535,6 +546,10 @@ impl App {
                     self.tool_secret_copy_to_env(SecretUser::Superagent(caller), &args)
                         .await
                 }
+                McpCaller::Cockpit(caller) if name == "secret_create_from_file" => {
+                    self.tool_secret_create_from_file(SecretUser::Superagent(caller), &args)
+                        .await
+                }
                 McpCaller::Cockpit(caller) if name == "secret_request_hosts" => {
                     self.tool_secret_request_hosts(SecretUser::Superagent(caller), &args)
                         .await
@@ -601,6 +616,10 @@ impl App {
             }
             "secret_copy_to_env" => {
                 self.tool_secret_copy_to_env(SecretUser::Task(ctx), &args)
+                    .await
+            }
+            "secret_create_from_file" => {
+                self.tool_secret_create_from_file(SecretUser::Task(ctx), &args)
                     .await
             }
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),

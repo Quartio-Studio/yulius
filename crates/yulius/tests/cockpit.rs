@@ -1322,6 +1322,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_update",
             "automations_list",
             "secret_copy_to_env",
+            "secret_create_from_file",
             "secret_request_hosts",
             "secret_verify",
             "secrets_list",
@@ -2484,6 +2485,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
+        "secret_create_from_file",
         "$NAME",
         "/s/fixture/secrets?section=agents",
     ] {
@@ -2503,6 +2505,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
+        "secret_create_from_file",
     ] {
         assert!(served.contains(&tool), "{tool}: {served:?}");
     }
@@ -3317,5 +3320,79 @@ async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult 
     std::fs::write(&transcript, &text)?;
     other_cockpit(&g, &id).await?;
     g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-211 SCF-001, SCF-002, SCF-004 (AC-7): the Superagent stores a key in its person's home as
+/// an agent secret without seeing it, created by the person and audited as their Superagent; the
+/// stored value is the key file with literal `\n` (`secret_verify` matches the file's hash).
+#[tokio::test]
+async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
+    use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let home = f.data.join("users/u-alice/home");
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    let key = crate::secrets_env::openssh_key(4);
+    std::fs::write(home.join(".ssh/operator"), &key)?;
+
+    let (created, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_create_from_file",
+        json!({
+            "name": "DO_SSH_PRIVATE_KEY",
+            "file": "~/.ssh/operator",
+            "description": "operator SSH key (ed25519)"
+        }),
+    )
+    .await?;
+    assert!(!is_error, "{created}");
+    assert_eq!(created["created"], "DO_SSH_PRIVATE_KEY", "{created}");
+    assert_eq!(created["file"], "~/.ssh/operator", "{created}");
+    assert_eq!(created["deleted"], false, "{created}");
+    for line in key.lines().skip(1).take(5) {
+        assert!(!created.to_string().contains(line), "{created}");
+    }
+    assert!(home.join(".ssh/operator").exists(), "kept unless asked");
+
+    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    let record = records
+        .iter()
+        .find(|r| r.name == "DO_SSH_PRIVATE_KEY")
+        .ok_or("stored")?;
+    assert_eq!(record.sandbox_id, Some(sid()));
+    assert!(record.hosts.is_empty());
+    assert_eq!(record.env_files, EnvFiles::No);
+    assert!(!record.cd_prod);
+    assert_eq!(record.created_by, "u-alice");
+    assert_eq!(record.description, "operator SSH key (ed25519)");
+
+    let (verified, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "DO_SSH_PRIVATE_KEY", "sha256": f.h.app.deps.crypto.sha256_hex(key.as_bytes())}),
+    )
+    .await?;
+    assert!(!is_error, "{verified}");
+    assert_eq!(verified["match"], "escaped_newlines", "{verified}");
+    assert_eq!(verified["lines"], 7, "{verified}");
+
+    let audit = audited(&f, "vault.agent.create").await?;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0]["actor"], "cockpit:alice", "{audit:?}");
+    let detail = audit[0]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("from a file, by alice's Superagent"),
+        "{detail}"
+    );
+    f.h.app.end_all_shells().await;
     Ok(())
 }

@@ -98,7 +98,7 @@ pub fn agent_value_from_file(text: &str) -> Result<Zeroizing<String>, VaultError
             return Err(VaultError::Value(
                 "an agent secret cannot span lines (a PEM or OpenSSH key can), and this is not a \
                  key"
-                    .into(),
+                .into(),
             ));
         }
         joined

@@ -58,6 +58,7 @@ mod recovery;
 mod run_metrics;
 mod sandbox_docker;
 mod secrets;
+mod secrets_create;
 mod secrets_env;
 mod secrets_redaction;
 mod self_update;
