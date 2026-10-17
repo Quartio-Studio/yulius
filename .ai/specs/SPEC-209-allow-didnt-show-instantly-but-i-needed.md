@@ -1,11 +1,11 @@
 ---
 yulius-task: 995d1b5e-0316-4e75-8bdc-9ee68849708b
-status: in-progress
+status: done
 ---
 
 # SPEC-209: An agent's secret request shows on an open Secrets page at once
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #196
 Scope authorization: task #196 (requested by MrFishPL): "Allow didnt show instantly but i needed
@@ -57,9 +57,9 @@ reloading the page.
 ## Plan
 
 - [x] Spec and issue for the stale Allow
-- [ ] Agent requests publish a secrets.updated event
-- [ ] Agent secrets page reloads on the event
-- [ ] Docs, gates and independent review
+- [x] Agent requests publish a secrets.updated event
+- [x] Agent secrets page reloads on the event
+- [x] Docs, gates and independent review
 
 ## Acceptance criteria
 
@@ -99,3 +99,22 @@ reloading the page.
   (SPEC-121).
 - **Polling rejected.** A timer would add load on every open page and still lag, while the event
   stream is already there.
+
+## Evidence
+
+- Regression tests written first and seen failing without the fix (no `secrets.updated` arrived:
+  `left: []`, `right: [Some("s1")]`):
+  `secrets::an_agents_host_request_is_announced_to_open_secrets_pages`,
+  `secrets_env::an_env_request_is_announced_to_open_secrets_pages`, and
+  `cockpit::the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env` (the reported
+  Superagent case). The e2e tests `an agent’s host request shows its Allow on the open page at
+  once` and `a request made while the stream was down shows once it reconnects` failed on the
+  missing Allow before the page fix. All pass with it.
+- `scripts/dev ci`: exit 0, 2131 tests run, 2131 passed (18 skipped), with clippy, fmt, doctests
+  and repository contracts.
+- `cd e2e && npx e2e run`: 59 files passed (1 skipped), 608 tests passed (1 skipped). After
+  merging `origin/dev` (#630 also changed the Secrets page), `tests/secrets.e2e.ts` was run again:
+  17 passed. `scripts/check_repository.py` passed.
+- `scripts/dev security`: exit 0, no open critical or high finding. One low finding is in
+  `requester()` (`vault/requests.rs`, joining askers on `", "`). This change does not touch that
+  code, and its inputs (GitHub logins, sandbox slugs, `#N`) cannot contain `", "`.
