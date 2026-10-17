@@ -49,7 +49,8 @@ for any secret an agent did not create.
 
 - SCF-001 (tool): `secret_create_from_file {name, file, description?, delete_file?}` is served to
   task agents and to the Superagent. For the Superagent it is not among the tools it runs without
-  asking: Claude Code asks the person first.
+  asking: on an uncontained server Claude Code asks the person first; on a contained one the
+  Superagent bypasses approvals (ADR-0165), as tasks do.
 - SCF-002 (where the file may be): `file` relative to the folder the caller works in (a task's
   worktree, the Superagent's sandbox repository) or starting with `~/` for the caller's home (a
   task's: the sandbox home; the Superagent's: its person's home, shared by their projects).
@@ -109,7 +110,7 @@ for any secret an agent did not create.
 - AC-5: A task whose person can only read the sandbox is refused, and nothing is created.
 - AC-6: With `delete_file: true` the file is gone after the secret is stored; without it the
   file stays.
-- AC-7: The Superagent is served the tool, Claude Code asks before it runs, and it stores a key
+- AC-7: The Superagent is served the tool, which is not among those it runs without asking, and it stores a key
   from its person's home, audited as `cockpit:<login>`.
 - AC-8: Right after the call, a tool result holding the value shows `[secret:NAME]`.
 

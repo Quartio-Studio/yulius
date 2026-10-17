@@ -9,14 +9,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Agents create agent secrets from a file without seeing them (SPEC-211, ADR-0167, task #198).
   A Superagent that had to store an SSH key sitting in `~/.ssh` asked the person to `cat` it in
   their own terminal and paste it into the Secrets page. The new tool `secret_create_from_file`,
-  for tasks and the Superagent (which asks first), takes a name and a file in the work folder or
-  `~/`. Yulius reads the file itself (no absolute paths, no links, a regular file of at most
+  for tasks and the Superagent (asking the person first on an uncontained server), takes a name
+  and a file in the work folder or `~/`. Yulius reads the file itself (no absolute paths, no links, a regular file of at most
   16 KiB) and stores it as an agent secret of the sandbox: a key file with literal `\n`, as the
   Secrets page does. The secret starts with no hosts and no `.env` allowance, an existing name is
   never replaced (nor `VIDOC_API_KEY`, which would hide the instance's Vidoc key), the person's
   write access is required, the audit names the agent, and the file is deleted only when asked.
   The CLI import shares the conversion: a quoted value whose only line break ends it is now
   stored without it, and spaces around a key's lines are dropped.
+- The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
+  ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
+  check blocked commands the person asked for and its "Teach auto mode about your environment?"
+  dialog interrupted the panel. It now starts with `--dangerously-skip-permissions` and
+  `IS_SANDBOX=1` (it is root of its sandbox), the bypass warning already accepted; running
+  Superagents restart into it once idle. Tasks already ran this way (checked on this instance's
+  transcripts); an uncontained server still bypasses nothing.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,

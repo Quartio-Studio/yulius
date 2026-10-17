@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-021](../../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md).
+Amended by [0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md): on a contained
+server it starts with the approval bypass, as task runs do.
 Amended by [0029](0029-cockpit-manages-through-mcp.md): the Cockpit gets the Yulius MCP server with
 the management tools; everything else below still holds.
 Its UI (a page first in the sidebar) is replaced by [0036](0036-agent-in-the-right-panel.md): the

@@ -56,9 +56,12 @@ vault key), so anything it reads on an agent's behalf must stay where the agent 
 - **Deleting only on request.** With `delete_file: true`, Yulius removes the file through the
   folder handle it read it from, once the secret is stored. A failed removal keeps the secret and
   says so.
-- **The Superagent asks first.** The tool is not among those it runs without asking. Its
-  instructions and `secrets_list` say to use it instead of asking a person to paste a key the
-  agent can reach. Running Superagents get it through the launch digest (ADR-0150).
+- **Not among the tools run without asking.** The tool is not in `COCKPIT_READ_ONLY_TOOLS`, so
+  on an uncontained server Claude Code asks the person before each call. On a contained server
+  the Superagent bypasses approvals (ADR-0165), as tasks do; there the safeguards are the ones
+  above (a person still allows every use). Its instructions and `secrets_list` say to use it
+  instead of asking a person to paste a key the agent can reach. Running Superagents get it
+  through the launch digest (ADR-0150).
 
 ## Alternatives
 

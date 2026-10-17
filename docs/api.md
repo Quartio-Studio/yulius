@@ -1091,10 +1091,11 @@ resolves to nothing, the run gets the server without that variable or token.
   it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
-    <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
+    <newest conversation>] --model claude-opus-5-5 --effort high [--dangerously-skip-permissions]`
+    (SPEC-023; the bypass with `IS_SANDBOX=1` on a contained server, SPEC-208) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
-    terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
+    terminal's environment (Git as the caller); no Yulius hooks or settings. It
     gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
@@ -1102,7 +1103,8 @@ resolves to nothing, the run gets the server without that variable or token.
     `task_create`, `task_stop`, `task_archive`, `task_delete`, `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
-    for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
+    for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
+    tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     A usage limit Claude Code records in its conversation after it started is recorded on its
     subscription, and the Cockpit starts again on one with capacity, resuming the conversation
@@ -1472,7 +1474,7 @@ task; other hooks answer as usual.
   its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), not `browser_fill_secret`;
   the egress proxy accepts its bearer as `yulius:ck_…`.
 - MCP `secret_create_from_file {name, file, description?, delete_file?}` (SPEC-211, tasks and the
-  Superagent, which asks first) → `{created, file, deleted, hosts: [], link, next, warning?}`:
+  Superagent, not run without asking where approvals apply) → `{created, file, deleted, hosts: [], link, next, warning?}`:
   Yulius reads `file` (relative to the folder the caller works in, or `~/…` in its home), anchored
   on the sandbox folder (the Superagent's home: its person's folder) and opened one folder at a
   time without links, a regular UTF-8 file of at most 16 KiB, and stores it as an agent secret of
