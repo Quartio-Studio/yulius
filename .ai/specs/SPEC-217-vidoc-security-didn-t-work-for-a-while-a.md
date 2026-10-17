@@ -345,8 +345,9 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   change: the built-in job's detection could be spoofed. Tracing it showed a real bypass. A pull
   request that changes the CI jobs is tested with its own jobs, which replaced the gate together
   with the built-in security job, and its own job named `security` was even granted the key's
-  placeholder. Fixed test-first: `local_ci::a_pull_request_with_its_own_jobs_cannot_drop_the_security_job`
-  failed (the fake job ran), and passes with `keep_security_jobs`, which also has a domain test.
+  placeholder. Fixed test-first:
+  `local_ci::a_pull_request_with_its_own_jobs_cannot_drop_the_security_job` failed (the fake job
+  ran), and passes with `keep_security_jobs`, which also has a domain test.
 
 ### Not tested here
 
