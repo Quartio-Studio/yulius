@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- An answered secret request ends the task's "Needs your action" (SPEC-213, task #200, fixes #633).
+  An agent waiting for a person to allow a `.env` copy, a CD secret or a secret's hosts flagged its
+  task, and the flag outlived the answer: the task read "Needs your action", with "The agent needs
+  your attention" over its terminal, while its agent worked on for minutes, until the turn ended.
+  Allowing or dismissing the last request a task waits for now makes it Working at once; a task
+  with another request waiting, or flagged by something else, keeps its flag.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,

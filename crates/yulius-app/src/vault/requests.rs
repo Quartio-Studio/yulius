@@ -272,6 +272,7 @@ impl App {
             &format!("{} → {} (asked by {by})", record.name, asked.join(", ")),
         )
         .await?;
+        self.settle_secret_waits(record.sandbox_id.as_ref()).await;
         self.agent_view(&record, true).await
     }
 }
@@ -279,6 +280,11 @@ impl App {
 /// Whether two lists name the same hosts, in any order.
 fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
     a.len() == b.len() && a.iter().all(|h| b.contains(h))
+}
+
+/// Whether `asker` (as [`requester`] writes it) is among the askers `by` of a request.
+pub(super) fn among_askers(by: Option<&str>, asker: &str) -> bool {
+    by.is_some_and(|by| by.split(", ").any(|e| e == asker))
 }
 
 /// Who asks: `asker` (`#N`, `<login>'s Superagent`), with the sandbox for a secret of every
@@ -295,7 +301,7 @@ pub(super) fn requester(
         None => asker.to_owned(),
     };
     match earlier {
-        Some(earlier) if waiting && earlier.split(", ").any(|e| e == me) => earlier.to_owned(),
+        Some(earlier) if waiting && among_askers(Some(earlier), &me) => earlier.to_owned(),
         Some(earlier) if waiting => format!("{earlier}, {me}"),
         _ => me,
     }

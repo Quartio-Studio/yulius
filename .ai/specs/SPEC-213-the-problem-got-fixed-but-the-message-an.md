@@ -1,11 +1,11 @@
 ---
 yulius-task: a604d603-742b-4b73-bc40-be923fb2a698
-status: draft
+status: in-progress
 ---
 
 # SPEC-213: an answered secret request ends the task's "Needs your action"
 
-Status: draft
+Status: in-progress
 Date: 2026-10-17
 Owner: Yulius task #200
 Scope authorization: the person's request (task #200), "the problem got fixed but the message and
