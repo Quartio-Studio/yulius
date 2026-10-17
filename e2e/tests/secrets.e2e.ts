@@ -272,13 +272,19 @@ test('a secret agents use offers no production allowance, and a production secre
   // STRIPE_KEY is sent to api.stripe.com: no button, no warning, and what to do instead.
   const stripe = browser.locator('.item-card:has-text("STRIPE_KEY")');
   await expect(stripe.getByText(/Production deploys never get a secret agents use/)).toBeVisible();
+  await expect(stripe.getByText(/remove its hosts and \.env copies, or add a separate secret/)).toBeVisible();
+  await expect(stripe.getByText(/^Not for production$/)).toBeVisible();
   await expect(screen.getByRole('button', 'Let production deploys (CD) get STRIPE_KEY')).toBeHidden();
   await expect(browser.locator('.item-card:has-text("STRIPE_KEY") .badge-warn:has-text("Production")')).toBeHidden();
-  // PROD_API_TOKEN is a production secret an agent asked to copy into .env: Dismiss only.
+  // PROD_API_TOKEN is a production secret an agent asked to send to a host and copy into .env:
+  // Dismiss only, said once, and nothing about what allowing would do.
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
   await expect(prod.getByText(/Task #112 asks to copy its value/)).toBeVisible();
-  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await expect(prod.getByText(/Allowing lets/)).toBeHidden();
+  await expect(prod.getByText(/production secret: agents never get it\. Dismiss the request/)).toBeVisible();
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.item-card')].find((c) => (c.textContent || '').includes('PROD_API_TOKEN'))!.textContent!.split('agents never get it').length - 1)).toBe(1);
   await expect(screen.getByRole('button', 'Allow copying PROD_API_TOKEN into .env files')).toBeHidden();
+  await expect(screen.getByRole('button', 'Allow api.prod.test for PROD_API_TOKEN')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files').click();
   await expect(prod.getByText(/asks to copy/)).toBeHidden();
@@ -290,6 +296,16 @@ test('a secret agents use offers no production allowance, and a production secre
   await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeHidden();
   await screen.getByRole('button', 'Dismiss the hosts asked for VIDOC_API_KEY').click();
   await expect(vidoc.getByText(/asks to send it to/)).toBeHidden();
+});
+
+// SPEC-204 review: someone who cannot manage a production secret learns why its requests wait,
+// without being told to dismiss them.
+test('a member sees why a production secret’s requests wait, without a Dismiss to press', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents', '&role=member'));
+  const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
+  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await expect(prod.getByText(/Dismiss the request/)).toBeHidden();
+  await expect(screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files')).toBeHidden();
 });
 
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and

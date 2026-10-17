@@ -2369,8 +2369,9 @@ function vaultOf(db) {
       agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#111' },
         // SPEC-121: added with a name, a value and a description; an agent asked for its host.
         { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null },
-        // SPEC-204: a production secret (SPEC-134) an agent asked to copy into .env before it became one.
-        { id: 'as_prodtoken', sandbox: 'sb_studio', scope: 'sandbox', name: 'PROD_API_TOKEN', description: 'Token production deploys use', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-4', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#112', cd_prod: true },
+        // SPEC-204: a production secret (SPEC-134) an agent asked to send to a host and copy into
+        // .env before it became one.
+        { id: 'as_prodtoken', sandbox: 'sb_studio', scope: 'sandbox', name: 'PROD_API_TOKEN', description: 'Token production deploys use', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-4', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: ['api.prod.test'], requested_by: '#112', env_files: 'asked', env_requested_by: '#112', cd_prod: true },
         // SPEC-193 MLK-003: a key pasted before #591 was fixed, its line breaks turned into spaces.
         { id: 'as_olddeploy', sandbox: 'sb_studio', scope: 'sandbox', name: 'OLD_DEPLOY_KEY', description: 'Deploy key for the staging server', hosts: [], injection: 'none', header_name: null, username: null, value: '-----BEGIN MOCK OPENSSH PRIVATE KEY----- bW9jay1mbGF0LTAx bW9jay1mbGF0LTAy -----END MOCK OPENSSH PRIVATE KEY-----', created_by: 'mkarp', updated_at: iso(2 * DAY), value_updated_at: iso(2 * DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
@@ -2535,9 +2536,10 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   const asked = secret.requested_hosts;
   const seen = (body.hosts || []).map((h) => String(h).toLowerCase());
   if (seen.length !== asked.length || !asked.every((h) => seen.includes(h))) fail(409, 'conflict', `an agent changed the request meanwhile: reload to see the hosts that wait (${asked.join(', ')})`);
+  // In the server's order (requests.rs, env_files.rs): a production secret right after the conflict.
+  if (body.allow && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
   const hosts = [...new Set([...secret.hosts, ...asked])];
   if (body.allow && hosts.length > 16) fail(422, 'invalid', 'at most 16 hosts');
-  if (body.allow && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
   if (body.allow) secret.hosts = hosts;
   secret.requested_hosts = [];
   secret.requested_by = null;
@@ -2550,8 +2552,8 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   const state = secret.env_files || 'no';
   if (body.env_files !== state || (body.env_requested_by || null) !== (secret.env_requested_by || null)) fail(409, 'conflict', 'the secret changed since you looked: reload and answer again');
-  if (state === 'no') fail(409, 'conflict', 'no agent asks to copy this secret into .env files');
   if (body.allow && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
+  if (state === 'no') fail(409, 'conflict', 'no agent asks to copy this secret into .env files');
   if (state === 'allowed' && body.allow) return agentView(db, secret, sandbox);
   audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);
   secret.env_files = body.allow ? 'allowed' : 'no';
