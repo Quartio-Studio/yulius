@@ -147,7 +147,9 @@ and it leaves the sidebar's Needs you list.
 - Independent review in fresh sessions: round 1 requested changes (one major: a later flag of
   another cause was cleared; four minors), all fixed test-first; round 2 approved with one minor
   race, fixed in 0d9fd70e; round 3 approved with two minor races, fixed with the per-task lock;
-  round 4 approved with one minor race and two nits, fixed (Decisions); the delivered head is
-  reviewed again.
+  round 4 approved with one minor race and two nits, fixed (Decisions); round 5 approved with one
+  minor (a store error on the re-read failed the agent's tool call; now logged, like the rest)
+  and two nits (no probe test for the interleavings, argued under Decisions; two fully spelled
+  `TaskId` paths in `hooks.rs` that predate this change, left as they are).
 - Not testable here: the live UI banner itself (the tests read the task's activity, which the
   banner and the Needs you list render from), and the interleavings argued under Decisions.

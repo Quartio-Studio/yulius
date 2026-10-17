@@ -102,7 +102,7 @@ impl App {
     /// its own (SPEC-213 SRA-003).
     ///
     /// # Errors
-    /// Store failures reading the task.
+    /// None: a flag that cannot be raised or ended is logged, and the request stands.
     pub(super) async fn flag_secret_wait(&self, user: SecretUser<'_>, what: &str) -> AppResult<()> {
         let SecretUser::Task(ctx) = user else {
             return Ok(());
@@ -112,11 +112,15 @@ impl App {
         }
         // A person who answered between the request and its flag found no flag to end: it ends
         // now, as nothing waits any more (review round 4).
-        if let Some(task) = self.deps.store.task(&ctx.task.id).await?
-            && task.activity == Some(Activity::NeedsAttention)
-            && let Err(err) = self.settle_secret_wait(&task).await
-        {
-            tracing::warn!(task = %task.id, error = %err, "could not end the flag of its answered secret request");
+        let settled = match self.deps.store.task(&ctx.task.id).await {
+            Ok(Some(task)) if task.activity == Some(Activity::NeedsAttention) => {
+                self.settle_secret_wait(&task).await
+            }
+            Ok(_) => Ok(()),
+            Err(err) => Err(err),
+        };
+        if let Err(err) = settled {
+            tracing::warn!(task = %ctx.task.id, error = %err, "could not end the flag of its answered secret request");
         }
         Ok(())
     }
