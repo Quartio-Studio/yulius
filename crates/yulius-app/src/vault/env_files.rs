@@ -184,7 +184,13 @@ enum Writing {
 }
 
 /// Writes `text` to `name` in `folder` with `mode`, never following a link.
-fn write_in(folder: &Folder, name: &str, text: &str, mode: u32, how: &Writing) -> AppResult<()> {
+fn write_in(
+    folder: &Folder,
+    name: &str,
+    text: &str,
+    mode: nix::libc::mode_t,
+    how: &Writing,
+) -> AppResult<()> {
     let mode = Mode::from_bits_truncate(mode);
     let flags = OFlag::O_WRONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     let write = |fd: OwnedFd| -> AppResult<()> {
@@ -592,16 +598,12 @@ impl App {
             .unwrap_or(false);
         if !added.is_empty() {
             // The template keeps the mode it was committed with; a new one is 0644.
-            #[allow(
-                clippy::useless_conversion,
-                reason = "mode_t is u32 on Linux but u16 on macOS"
-            )]
             let mode = nix::sys::stat::fstatat(
                 &folder.fd,
                 EXAMPLE,
                 nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
             )
-            .map_or(0o644, |st| u32::from(st.st_mode) & 0o777);
+            .map_or(0o644, |st| st.st_mode & 0o777);
             let how = self.writing(worktree, folder, EXAMPLE).await;
             if let Err(err) = write_in(folder, EXAMPLE, &text, mode, &how) {
                 return (
