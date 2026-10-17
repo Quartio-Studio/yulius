@@ -4,6 +4,7 @@
 mod device;
 mod end_to_end;
 mod repo;
+mod secrets;
 mod sessions;
 mod snapshot;
 mod support;

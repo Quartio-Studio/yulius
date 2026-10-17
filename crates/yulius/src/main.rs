@@ -161,6 +161,12 @@ enum Command {
         #[arg(long)]
         no_color: bool,
     },
+    /// Manage the vault from this computer.
+    Secrets {
+        /// What to do.
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
         /// Prove that sandboxes get Docker on this host, end to end, in a throwaway sandbox
@@ -199,6 +205,34 @@ enum Command {
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretsAction {
+    /// Import secrets from a dotenv file, stdin or typed prompts (SPEC-205): team secrets for
+    /// people, or agent secrets of a sandbox. Names are shown, values never; a secret that exists
+    /// is skipped, never overwritten; nothing is sent before you type yes at the terminal.
+    Import {
+        /// Team secrets (for people) or agent secrets (for agents, who never see them).
+        #[arg(long, value_enum)]
+        to: yulius::cli::VaultChoice,
+        /// A dotenv file (NAME=value lines; a comment above a key becomes its description), `-`
+        /// for stdin; without it, type each name and its hidden value.
+        file: Option<PathBuf>,
+        /// The sandbox of agent secrets: owner/name, slug or id (default: this checkout's GitHub
+        /// repository).
+        #[arg(long)]
+        sandbox: Option<String>,
+        /// Agent secrets for every sandbox (instance administrators).
+        #[arg(long)]
+        instance: bool,
+        /// Yulius URL (default: the only server you signed in to).
+        #[arg(long, env = "YULIUS_SERVER")]
+        server: Option<String>,
+        /// No colours (also NO_COLOR=1).
+        #[arg(long)]
+        no_color: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -403,6 +437,24 @@ fn main() -> ExitCode {
             show_redactions,
             playground,
             playground_name: name,
+            no_color,
+        }),
+        Command::Secrets {
+            action:
+                SecretsAction::Import {
+                    to,
+                    file,
+                    sandbox,
+                    instance,
+                    server,
+                    no_color,
+                },
+        } => yulius::cli::secrets_import(yulius::cli::SecretsImportArgs {
+            to,
+            file,
+            sandbox,
+            instance,
+            server,
             no_color,
         }),
         Command::Doctor {

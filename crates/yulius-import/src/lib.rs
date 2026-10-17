@@ -15,6 +15,7 @@
 //!   is what it shows and asks ([`TerminalUi`] with progress bars, [`PlainUi`] for pipes).
 
 mod device;
+mod dotenv;
 mod git;
 mod hash;
 mod http;
@@ -23,6 +24,7 @@ mod process;
 mod redact;
 mod run;
 mod secret;
+mod secrets_import;
 mod sessions;
 mod since;
 mod snapshot;
@@ -32,6 +34,7 @@ mod ui;
 mod upload;
 
 pub use device::{DeviceError, DeviceLoginOptions, MAX_DEVICE_WAIT, device_login};
+pub use dotenv::{DotenvEntry, DotenvError, MAX_DOTENV_BYTES, MAX_DOTENV_ENTRIES, parse_dotenv};
 pub use git::{
     GitHubRemote, RepoError, RepoInfo, UnpublishedRef, create_bundle, create_full_bundle,
     discover_playground_checkout, discover_repo, parse_github_remote, unpublished_refs,
@@ -45,6 +48,10 @@ pub use run::{
     TerminalIo, UploadTuning, run_import,
 };
 pub use secret::Secret;
+pub use secrets_import::{
+    PreparedTarget, SecretsImportError, SecretsImportOptions, SecretsIo, SecretsSummary,
+    SecretsTarget, VaultClient, import_secrets, prepare_target, prompt_secrets,
+};
 pub use sessions::{DiscoveredSession, SessionFile, discover_claude_sessions};
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};
 pub use snapshot::{
