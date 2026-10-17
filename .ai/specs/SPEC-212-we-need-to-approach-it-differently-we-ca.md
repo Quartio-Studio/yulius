@@ -138,6 +138,13 @@ points at a file in the sandbox home.
   - A cut no longer leaves half a file marker (test-first: it failed at pad 3558).
   - A long comment was re-wrapped.
   The reviewer did not run the Vidoc scan.
+- **Review round 2** approved d59554e6. Two minor findings and one nit were fixed test-first;
+  the new tests failed before:
+  - A cut could still leave the start of a marker (`[fil…`) or the part of a path before a `]`.
+    `goal_condition` now cuts at the byte ranges `render_spans` records for each file.
+  - A request with neither text nor files names its request file again.
+  The nit about the briefing's Read-tool line also showing in prompt mode is declined: the
+  briefing has no task mode, and the line is true there too.
 - **The request file stays.** It is the full record for a cut request and the fallback of the typed
   goal, and SPEC-011 tools may read it. Writing it costs nothing.
 

@@ -235,7 +235,17 @@ impl Request {
     /// `parts` as text, each file written by `file` (from its number and path), kept off the
     /// word before it and a word after it by a space (an `@` mention needs one before it).
     fn render_with(&self, parts: &[Part], file: impl Fn(usize, &str) -> String) -> String {
+        self.render_spans(parts, file).0
+    }
+
+    /// [`Self::render_with`], with the byte range each file takes in the text.
+    fn render_spans(
+        &self,
+        parts: &[Part],
+        file: impl Fn(usize, &str) -> String,
+    ) -> (String, Vec<std::ops::Range<usize>>) {
         let mut out = String::new();
+        let mut spans = Vec::new();
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::Text(text) => out.push_str(text),
@@ -246,7 +256,9 @@ impl Request {
                     if out.ends_with(|c: char| !c.is_whitespace()) {
                         out.push(' ');
                     }
+                    let start = out.len();
                     out.push_str(&file(*n, path));
+                    spans.push(start..out.len());
                     if let Some(Part::Text(next)) = parts.get(i + 1)
                         && next.starts_with(char::is_alphanumeric)
                     {
@@ -255,7 +267,7 @@ impl Request {
                 }
             }
         }
-        out
+        (out, spans)
     }
 }
 
@@ -518,27 +530,31 @@ pub fn request_markdown(
 /// its request file (WHL-002); the condition is never longer.
 #[must_use]
 pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefinition) -> String {
-    let text = request.render_with(&request.parts, |n, path| {
+    let (rendered, files) = request.render_spans(&request.parts, |n, path| {
         format!("[file {}: {path}]", n + 1)
     });
-    let text = text.trim();
+    let lead = rendered.len() - rendered.trim_start().len();
+    let text = rendered.trim();
     let done = done.short();
     if text.is_empty() {
-        return take_units(&done, GOAL_MAX_UNITS).to_owned();
+        let named = format!("Everything requested in {request_path} is done. {done}");
+        return take_units(&named, GOAL_MAX_UNITS).to_owned();
     }
     let whole = format!("{text}\n\n{done}");
     if utf16_len(&whole) <= GOAL_MAX_UNITS {
         return whole;
     }
     let tail = format!("\u{2026}\n\n(The request continues in {request_path}.)\n\n{done}");
-    let mut cut = take_units(text, GOAL_MAX_UNITS.saturating_sub(utf16_len(&tail)));
-    // Never half a file marker: that file is named whole in the request file.
-    if let Some(open) = cut.rfind("[file ")
-        && !cut[open..].contains(']')
+    let mut end = take_units(text, GOAL_MAX_UNITS.saturating_sub(utf16_len(&tail))).len();
+    // Never part of a file marker: that file is named whole in the request file.
+    if let Some(file) = files
+        .iter()
+        .map(|span| span.start.saturating_sub(lead)..span.end.saturating_sub(lead))
+        .find(|span| span.start < end && end < span.end)
     {
-        cut = &cut[..open];
+        end = file.start;
     }
-    let cut = cut.trim_end();
+    let cut = text[..end].trim_end();
     // An unusually long path or branch names: the cap still holds.
     take_units(&format!("{cut}{tail}"), GOAL_MAX_UNITS).to_owned()
 }
@@ -964,6 +980,19 @@ mod tests {
         );
     }
 
+    /// A request with neither text nor files (only control characters) names its file.
+    #[test]
+    fn an_empty_request_names_its_file() {
+        let goal = goal_condition(&Request::parse("\u{7}\n\u{1b}"), PATH, &done(&[]));
+        assert_eq!(
+            goal,
+            format!(
+                "Everything requested in {PATH} is done. {}",
+                done(&[]).short()
+            )
+        );
+    }
+
     /// SPEC-212 WHL-001: control characters other than line breaks and tabs are dropped, as
     /// everywhere a request goes; the request's own blank edges go.
     #[test]
@@ -1007,22 +1036,25 @@ mod tests {
         assert_eq!(goal, format!("{fits}\n\n{done_text}"));
         let over = "x".repeat(room + 1);
         assert!(goal_condition(&Request::parse(&over), PATH, &done(&[])).contains(PATH));
-        // A cut never leaves half a file marker: the file goes whole to the request file.
-        for pad in 3_450..3_700 {
-            let request = Request::parse(&format!(
-                "{} @'/srv/{}/shot.png' {}",
-                "x".repeat(pad),
-                "d".repeat(80),
-                "y".repeat(400)
-            ));
-            let goal = goal_condition(&request, PATH, &done(&[]));
-            assert!(units(&goal) <= GOAL_MAX_UNITS, "{pad}");
-            let text = &goal[..goal.find('\u{2026}').unwrap_or(goal.len())];
-            assert!(
-                text.rfind("[file ")
-                    .is_none_or(|at| text[at..].contains(']')),
-                "{pad}: {text}"
-            );
+        // A cut never leaves part of a file marker, even a path holding `]`: the file goes whole
+        // to the request file.
+        for path in [
+            "/srv/dddddddddddddddddddddddddddddddddddddddd/shot.png",
+            "/srv/a]b/shot.png",
+        ] {
+            for pad in 3_450..3_700 {
+                let request = Request::parse(&format!(
+                    "{} @'{path}' {}",
+                    "x".repeat(pad),
+                    "y".repeat(400)
+                ));
+                let goal = goal_condition(&request, PATH, &done(&[]));
+                assert!(units(&goal) <= GOAL_MAX_UNITS, "{pad}");
+                let text = &goal[..goal.find('\u{2026}').ok_or("not cut").unwrap_or_default()];
+                let marker = format!("[file 1: {path}]");
+                let kept = text.trim_end().ends_with('x') || text.contains(&marker);
+                assert!(kept, "{pad}: {}", &text[text.len().saturating_sub(80)..]);
+            }
         }
         // Whatever the names, never over the cap.
         let huge = DoneDefinition {
