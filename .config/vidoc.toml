@@ -349,5 +349,5 @@ reason = "owner/name are GitHub's own names (letters, digits, '.', '-', '_'), ch
 
 [[ignore]]
 path = "crates/yulius-github/src/fake/mod.rs"
-title = "Hardcoded credentials"
+title = "credentials"
 reason = "the in-process fake GitHub for tests (feature fake); its constants are synthetic"

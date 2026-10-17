@@ -96,7 +96,7 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   be a valid finding:
   - severity medium or low;
   - a file of at most 512 bytes that is a repository path: relative and `/`-separated, with no
-    empty, `.` or `..` segment, no leading `-`, no `\`, and not in `.git`;
+    empty, `.`, `..` or `.git` segment, no leading `-` and no `\`;
   - a 16-hex fingerprint;
   - a title and detail, cut to 200 and 2000 bytes.
 
@@ -321,6 +321,12 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
     `a_reported_finding_whose_issue_was_deleted_is_filed_again` (it failed first), with the
     store's `forget_security_finding`;
   - the VSI-001 path rule in this spec, and line lengths.
+
+  These were fixed in a406a6c1 and 7837d6c4. The change scan at 7837d6c4 exited 0, with one
+  **low finding in the change** for the executor to decide: `repository_path` refused `.git`
+  only as the first segment. I fixed it test-first (a `sub/.git/config` case). The fake-GitHub
+  fixture's ignore entry was widened to `credentials`, because Vidoc worded its title
+  differently on that run.
 
 ### Not tested here
 

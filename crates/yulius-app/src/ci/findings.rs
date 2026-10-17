@@ -53,15 +53,14 @@ fn cut(text: &str, max: usize) -> String {
     text[..end].to_owned()
 }
 
-/// A path as Git names a tracked file: relative, `/`-separated, no empty, `.` or `..` segment,
-/// not starting with `-` and not in `.git`. Only such a path is read from the integration branch.
+/// A path as Git names a tracked file: relative, `/`-separated, no empty, `.`, `..` or `.git`
+/// segment, not starting with `-`. Only such a path is read from the integration branch.
 fn repository_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('-')
+    !path.starts_with('-')
         && !path.contains('\\')
-        && path.split('/').enumerate().all(|(index, part)| {
-            !part.is_empty() && part != "." && part != ".." && !(index == 0 && part == ".git")
-        })
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && part != ".git")
 }
 
 fn valid(mut finding: Finding) -> Option<Finding> {
@@ -654,6 +653,11 @@ mod tests {
                 "{FINDING_MARK}{}",
                 serde_json::json!({"severity": "low", "file": ".git/config", "line": 1,
                     "title": "t", "detail": "d", "fingerprint": "9999999999999999"})
+            ),
+            format!(
+                "{FINDING_MARK}{}",
+                serde_json::json!({"severity": "low", "file": "sub/.git/config", "line": 1,
+                    "title": "t", "detail": "d", "fingerprint": "aaaaaaaaaaaaaaaa"})
             ),
         ]
         .join("\n");
