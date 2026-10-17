@@ -57,7 +57,7 @@ points at a file in the sandbox home.
 | WHL-001 | A fresh goal session's launch condition is the person's request as written, all its lines kept, each attached file at its place as `[file N: <path>]` (a file after all the text on its own line), followed by a blank line and the short definition of done (`Done = …`). Control characters other than line breaks and tabs are dropped (`Request::parse`, as everywhere a request goes). No request-file path appears unless the request is cut (WHL-002). A request with no text is its files. | `request.rs` unit tests |
 | WHL-002 | The launch condition is at most 4000 UTF-16 code units, Claude Code's own measure. A longer request is cut at a character boundary, and the condition says where the rest is: `…` and `(The request continues in <request file>.)`, then the definition of done. The request file is still written for every goal task, unchanged. | `request.rs` unit tests |
 | WHL-003 | The condition typed into a resumed goal session is one line of at most 700 UTF-16 code units: the request on one line, then ` | Done = …`, when that fits. Otherwise it is `Everything requested in <request file> is done. Done = …`, cut to the bound. It names no attached files: the request file lists them. | `request.rs` unit tests; `task_done.rs` typed-goal tests |
-| WHL-004 | The briefing's task section carries the definition of done natively: `Definition of done: <short definition of done> End with a short summary: what changed, how it was verified, and what could not be tested in this environment.`. A request with attached files adds that each is opened with the Read tool (it shows images). Both are mandatory parts, so they are never cut. | `briefing.rs` unit tests |
+| WHL-004 | What the request file said beyond the condition reaches the agent natively. The definition of done in the condition says what the closing summary holds: `closing summary given (what changed, how it was verified, what could not be tested)`. The briefing's task section, for a request with attached files, says that each is a path in the request to open with the Read tool (it shows images); it is a mandatory part, so it is never cut. The delivery path and the waiting rule were already in the briefing's Git and delivery section. | `request.rs`, `briefing.rs` unit tests |
 | WHL-005 | Nothing else about starting a goal task changes: one launch prompt, nothing typed, the launch-goal watch, the trust dialog handling, prompt mode, queued messages and the request file (SPEC-117 ONE-001, ONE-003 to ONE-007). | existing `task_done.rs`, `first_message.rs`, `supervision.rs` tests |
 
 ## Acceptance criteria
@@ -65,7 +65,7 @@ points at a file in the sandbox home.
 - AC-WHL-1: a goal task created with `Fix the header\n\nIt overlaps @'/srv/a.png' on mobile.`
   launches Claude Code with the prompt `/goal Fix the header\n\nIt overlaps [file 1: /srv/a.png] on
   mobile.\n\nDone = repository changes merged into dev on green Yulius CI, …`, and its briefing
-  carries `Definition of done:` and the Read-tool line.
+  carries the Read-tool line.
 - AC-WHL-2: a 6000-character request launches with a condition of at most 4000 UTF-16 units that
   ends with the request-file pointer and `Done = …`.
 - AC-WHL-3: a resumed goal session of the same task gets a one-line condition of at most 700 units
@@ -90,8 +90,9 @@ points at a file in the sandbox home.
   that fits; a long request is cut within 4000 UTF-16 units (emoji counted twice) with the pointer
   and the definition of done; control characters go; a request of only files. The typed condition is
   one line, at most 700 units, falls back to the named form, and never lists files.
-- Unit (`briefing.rs`): the task section has the definition of done (with deploys, and the playground
-  form). The Read-tool line shows only with attached files. Both survive a tight budget.
+- Unit (`briefing.rs`): the Read-tool line shows only with attached files and survives a tight
+  budget. Unit (`request.rs`): every definition of done says what the summary holds; the
+  definition of done follows the delivery profile's environments.
 - Integration (`crates/yulius/tests/task_done.rs`, fake agent): the launch prompt of a goal task is
   `/goal <request>\n\nDone = …` with no request-file path. The typed goal of a resumed session is one
   line. Existing goal-start tests updated to the new form.
@@ -122,5 +123,12 @@ points at a file in the sandbox home.
   (measured). A line break would submit it early. A resumed session already holds the whole request
   in its conversation, so naming the request file there costs nothing. This also fixes the typed
   form of today, which could reach 2000 characters with attached files.
+- **The briefing gains one line, only with attached files.** A "Definition of done" paragraph
+  (about 350 bytes), then a summary line (about 110), was tried first. The briefing is at its
+  9,500-byte budget, and the tight-budget tests (#555, containers) showed that either displaced
+  mandatory or optional parts. The definition of done already reaches the agent and the judge in
+  the condition, and the delivery path and the waiting rule were already in the briefing. So the
+  summary's content went into `Done = …`, where the judge rules on it. Only the Read-tool line,
+  needed only with files, went into the briefing.
 - **The request file stays.** It is the full record for a cut request and the fallback of the typed
   goal, and SPEC-011 tools may read it. Writing it costs nothing.

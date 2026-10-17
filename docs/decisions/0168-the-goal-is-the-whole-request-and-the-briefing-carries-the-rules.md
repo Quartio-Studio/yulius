@@ -28,9 +28,10 @@ Measured on Claude Code 2.1.292 against a local mock of the Messages API:
 - The launch condition is the person's request as written: every line kept, each attached file at
   its place as `[file N: <path>]`. A blank line and the short `Done = …` follow. It is cut only past
   4000 UTF-16 code units, and then it points at the request file for the rest.
-- The rules travel natively in the SessionStart briefing, which the agent and the judge both read:
-  the definition of done, the closing summary and, when files are attached, that the Read tool opens
-  them. The Git and delivery and waiting rules were already there.
+- The rules travel natively. The `Done = …` clause also says what the closing summary holds, since
+  the judge rules on it. The SessionStart briefing, which the agent and the judge both read, already
+  carries the delivery path and the waiting rule. For a request with files it now adds that each is
+  a path to open with the Read tool. The briefing is at its budget, so nothing more goes there.
 - A goal typed into a resumed session is one line of at most 700 code units: the request when it
   fits, else `Everything requested in <request file> is done. Done = …`.
 - The request file is still written for every goal task.

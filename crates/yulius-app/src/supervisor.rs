@@ -1406,19 +1406,7 @@ impl App {
             DoneDefinition, Request, goal_condition, request_markdown, typed_goal_condition,
         };
         let profile = crate::delivery::delivery_profile(sandbox);
-        let done = DoneDefinition {
-            integration_branch: profile.integration_branch.clone(),
-            production_branch: profile.production_branch.clone(),
-            integration_environments: profile
-                .environments
-                .iter()
-                .filter(|e| {
-                    e.after == yulius_domain::delivery::Stage::Integration && e.command.is_some()
-                })
-                .map(|e| e.name.clone())
-                .collect(),
-            playground: sandbox.is_playground(),
-        };
+        let done = DoneDefinition::for_profile(&profile, sandbox.is_playground());
         let author = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) => user.github_login.unwrap_or(user.display_name),
             _ => "a person".to_owned(),

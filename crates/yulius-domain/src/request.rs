@@ -351,15 +351,36 @@ fn one_line(text: &str) -> String {
         .join(" ")
 }
 
+/// The closing summary a definition of done asks for (SPEC-212 WHL-004).
+const SUMMARY: &str =
+    "closing summary given (what changed, how it was verified, what could not be tested)";
+
 impl DoneDefinition {
-    /// The definition of done in one short sentence (part of the goal condition).
+    /// The definition of done of a sandbox's delivery profile: the environments after
+    /// integration that have a deploy command are the agent's to deploy and verify.
+    #[must_use]
+    pub fn for_profile(profile: &crate::delivery::DeliveryProfile, playground: bool) -> Self {
+        Self {
+            integration_branch: profile.integration_branch.clone(),
+            production_branch: profile.production_branch.clone(),
+            integration_environments: profile
+                .environments_after(crate::delivery::Stage::Integration)
+                .filter(|e| e.command.is_some())
+                .map(|e| e.name.clone())
+                .collect(),
+            playground,
+        }
+    }
+
+    /// The definition of done in one short sentence (part of the goal condition), with what the
+    /// closing summary holds (SPEC-212 WHL-004).
     #[must_use]
     pub fn short(&self) -> String {
         if self.playground {
             return format!(
                 "Done = repository changes merged into {} of this playground with delivery_merge \
                  on green Yulius CI after your own gates and the review, or work needing no change \
-                 reported; closing summary given.",
+                 reported; {SUMMARY}.",
                 self.integration_branch
             );
         }
@@ -373,7 +394,7 @@ impl DoneDefinition {
         };
         format!(
             "Done = repository changes merged into {} on green Yulius CI{deploy}, or work needing \
-             no change reported; closing summary given; never promote to {} unless asked.",
+             no change reported; {SUMMARY}; never promote to {} unless asked.",
             self.integration_branch, self.production_branch
         )
     }
@@ -1029,6 +1050,47 @@ mod tests {
         // The bound is under what Claude Code 2.1.292 still takes as typing (measured: 693
         // characters were the command, 828 a paste).
         assert!(TYPED_GOAL_MAX_UNITS + "/goal ".len() < 800);
+    }
+
+    /// The definition of done follows the delivery profile: integration environments with a
+    /// command are deployed and verified; a manual one is not the agent's.
+    #[test]
+    fn the_definition_of_done_comes_from_the_delivery_profile() {
+        use crate::delivery::{DeliveryProfile, Environment, Stage, Verify};
+        let mut profile = DeliveryProfile::standard();
+        let env = |name: &str, after, command: Option<&str>| Environment {
+            name: name.to_owned(),
+            after,
+            command: command.map(str::to_owned),
+            verify: Verify::Manual,
+        };
+        profile.environments = vec![
+            env("dev", Stage::Integration, Some("scripts/deploy dev")),
+            env("qa", Stage::Integration, None),
+            env("prod", Stage::Production, Some("scripts/deploy prod")),
+        ];
+        assert_eq!(DoneDefinition::for_profile(&profile, false), done(&["dev"]));
+        assert!(DoneDefinition::for_profile(&profile, true).playground);
+    }
+
+    /// SPEC-212 WHL-004: the goal's definition of done says what the closing summary holds, as
+    /// the request file did; the goal's judge rules on it.
+    #[test]
+    fn the_definition_of_done_says_what_the_summary_holds() {
+        let playground = DoneDefinition {
+            playground: true,
+            ..done(&[])
+        };
+        for done in [done(&[]), done(&["dev"]), playground] {
+            assert!(
+                done.short().contains(
+                    "closing summary given (what changed, how it was verified, what could not be \
+                     tested)"
+                ),
+                "{}",
+                done.short()
+            );
+        }
     }
 
     #[test]
