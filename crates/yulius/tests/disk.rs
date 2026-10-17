@@ -246,6 +246,45 @@ async fn idle_tasks_lose_their_caches_only_under_pressure_and_the_largest_first(
     Ok(())
 }
 
+/// SPEC-215 LFT-005 (ADR-0170): a done task loses its caches after 30 quiet minutes, keeps its
+/// worktree and uncommitted work; a waiting task keeps its caches for 4 hours.
+#[tokio::test]
+async fn a_done_task_loses_its_caches_after_half_an_hour_and_keeps_its_worktree() -> BoxResult<()>
+{
+    let w = world().await?;
+    let done = w
+        .task("t-done", TaskStatus::Running, Some(Activity::Done))
+        .await?;
+    std::fs::write(done.join("notes.txt"), "uncommitted")?;
+    let waiting = w
+        .task("t-wait", TaskStatus::Running, Some(Activity::Waiting))
+        .await?;
+
+    w.h.clock.0.fetch_add(20 * 60 * 1000, Ordering::SeqCst);
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(
+        done.join("target").exists(),
+        "20 quiet minutes: a done task keeps its caches"
+    );
+
+    w.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(
+        !done.join("target").exists() && !done.join("out").exists(),
+        "31 quiet minutes: a done task's caches go ({report:?})"
+    );
+    assert!(
+        done.join("notes.txt").exists() && done.join("src/lib.rs").exists(),
+        "its worktree and uncommitted work stay"
+    );
+    assert!(
+        waiting.join("target").exists(),
+        "a waiting task keeps its caches for 4 hours"
+    );
+    assert_eq!(report.worktrees, 0, "{report:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_cache_that_is_a_link_is_never_followed() -> BoxResult<()> {
     let w = world().await?;
