@@ -1,11 +1,11 @@
 ---
 yulius-task: 15a3e4fd-ba52-4b0b-92a1-01b47a465db5
-status: in-progress
+status: done
 ---
 
 # SPEC-211: Agents create agent secrets from a file, never seeing the value
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: Yulius task #198
 Scope authorization: task #198, requested by MrFishPL: "yulius should be able to create secrets
@@ -85,12 +85,12 @@ for any secret an agent did not create.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A key file's text becomes a stored agent-secret value (domain, shared with the CLI import)
-- [ ] Yulius reads a file from the caller's folder or home without following links
-- [ ] secret_create_from_file creates the secret for a task and the Superagent, audited, optionally deleting the file
-- [ ] Docs: ADR, architecture, product, instructions and briefing name the tool
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A key file's text becomes a stored agent-secret value (domain, shared with the CLI import)
+- [x] Yulius reads a file from the caller's folder or home without following links
+- [x] secret_create_from_file creates the secret for a task and the Superagent, audited, optionally deleting the file
+- [x] Docs: ADR, architecture, product, instructions and briefing name the tool
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -141,3 +141,38 @@ for any secret an agent did not create.
   surprise a person who keeps a key in `~/.ssh` for SSH itself.
 - **The person's write access gates it.** An agent acts for its person; one who could not add the
   secret on the Secrets page cannot add it through an agent.
+
+## Evidence
+
+- `scripts/dev ci` on `2eb6210e`: exit 0 (repository checks, script unit tests, `cargo check`,
+  `fmt --check`, `clippy -D warnings`, every nextest suite, doctests, `deny`, `shear`).
+- `scripts/dev security` on `2eb6210e`: exit 0, "no open critical or high finding in the change
+  scan". The three low findings are recorded, not fixed here:
+  - The capacity check in `insert_agent_secret` is not in the insert's transaction. That check
+    moved unchanged from `create_agent_secret`; only the count can be exceeded, never a value.
+  - The proxy URL format in `vault/runtime.rs`, which this change does not touch.
+  - `eval` in a test fake in `tests/cockpit.rs`, which this change does not touch.
+- New tests:
+  - `vault::dotenv::tests::a_file_becomes_the_stored_agent_value` (AC-1).
+  - `vault::create::tests::{paths_name_the_work_folder_or_the_home,
+    only_a_small_regular_text_file_is_read}` (AC-3, SCF-006 failed delete).
+  - `secrets_create::{a_task_stores_files_as_agent_secrets_without_seeing_them,
+    files_yulius_must_not_read_are_refused, names_in_use_and_readers_are_refused,
+    a_root_swapped_for_a_link_and_reserved_names_are_refused}` (AC-2..AC-6, AC-8, review 1 and 3).
+  - `cockpit::the_superagent_stores_a_key_from_its_persons_home` (AC-7, review 1).
+  - `manage_tools::the_cockpit_asks_before_every_changing_tool` (AC-7).
+  - The CLI import's `TRAILING` case (SCF-003).
+- Mutation check: following links when opening the file, and checking `Action::View` instead of
+  `Configure`, each made `files_yulius_must_not_read_are_refused` and
+  `names_in_use_and_readers_are_refused` fail. The anchor tests failed before the anchoring fix.
+- Independent review:
+  - Round 1 (head `5bfdbf91`) requested changes. Critical: a home or repository swapped for a
+    link was followed. Also: `zeroize` in the domain, the reserved `VIDOC_API_KEY`, and low items.
+    All own-code findings are fixed test-first.
+  - Round 2 (head `a2636757`) approved, with one low own-code finding (error paths showed the
+    anchor's folders), fixed in `2eb6210e`.
+  - Pre-existing findings outside this change: #635 (the Superagent's `secret_copy_to_env` root
+    is not anchored) and #638 (reserved environment names).
+- Not tested here: a contained run (bubblewrap) end to end. The anchors match the containment
+  binds (`sandboxes/<id>` at its own path, the person's home at `/home/<login>`), which review
+  round 2 checked by reading `containment.rs` and `identity.rs`.
