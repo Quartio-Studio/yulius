@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Agents create agent secrets from a file without seeing them (SPEC-211, ADR-0167, task #198).
+  A Superagent that had to store an SSH key sitting in `~/.ssh` asked the person to `cat` it in
+  their own terminal and paste it into the Secrets page. The new tool `secret_create_from_file`,
+  for tasks and the Superagent (which asks first), takes a name and a file in the work folder or
+  `~/`. Yulius reads the file itself (no absolute paths, no links, a regular file of at most
+  16 KiB) and stores it as an agent secret of the sandbox: a key file with literal `\n`, as the
+  Secrets page does. The secret starts with no hosts and no `.env` allowance, an existing name is
+  never replaced, the person's write access is required, the audit names the agent, and the file
+  is deleted only when asked.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,
