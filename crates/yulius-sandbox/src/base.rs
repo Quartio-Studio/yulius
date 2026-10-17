@@ -728,29 +728,40 @@ fn live_holder_bases(data_dir: &Path) -> Vec<String> {
 /// RSB-002, ADR-0161): whoever builds, a hand-run `yulius sandbox-base build` without `--keep`
 /// included, a running sandbox keeps its lower layer.
 pub fn collect(bases: &Bases, in_use: &[String], mapper: &Mapper, exe: &Path) {
+    for path in unused(bases, in_use) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        let name = name.unwrap_or_default();
+        match remove_tree(mapper, exe, &path) {
+            Ok(()) => tracing::info!(base = %name, "removed an unused sandbox base"),
+            Err(error) => tracing::warn!(base = %name, %error, "cannot remove an unused base"),
+        }
+    }
+}
+
+/// The bases [`collect`] removes: neither current, in `in_use` nor mounted by a live holder
+/// (the leftovers list shows them too, SPEC-215).
+#[must_use]
+pub fn unused(bases: &Bases, in_use: &[String]) -> Vec<PathBuf> {
     let current = bases.current().map(|b| b.id);
     let live = bases
         .dir
         .parent()
         .map(live_holder_bases)
         .unwrap_or_default();
-    for entry in std::fs::read_dir(&bases.dir)
+    let mut found: Vec<PathBuf> = std::fs::read_dir(&bases.dir)
         .into_iter()
         .flatten()
         .flatten()
-    {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("base-")
-            || current.as_deref() == Some(name.as_str())
-            || in_use.iter().chain(&live).any(|id| id == &name)
-        {
-            continue;
-        }
-        match remove_tree(mapper, exe, &entry.path()) {
-            Ok(()) => tracing::info!(base = %name, "removed an unused sandbox base"),
-            Err(error) => tracing::warn!(base = %name, %error, "cannot remove an unused base"),
-        }
-    }
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("base-")
+                && current.as_deref() != Some(name.as_str())
+                && !in_use.iter().chain(&live).any(|id| id == &name)
+        })
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
 }
 
 #[cfg(test)]

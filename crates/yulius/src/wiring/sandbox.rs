@@ -367,6 +367,18 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.prune_engine(sandbox.id.as_str()).await
     }
 
+    async fn holder_live(&self, name: &str) -> bool {
+        self.manager.holder_live(name).await
+    }
+
+    async fn remove_owned_tree(&self, path: &std::path::Path) -> Result<(), String> {
+        self.manager.remove_owned_tree(path).await
+    }
+
+    async fn unused_bases(&self) -> Vec<PathBuf> {
+        self.manager.unused_bases().await
+    }
+
     async fn docker(&self, sandbox: &SandboxRef) -> bool {
         self.manager.docker_for(sandbox.id.as_str()).await
     }
