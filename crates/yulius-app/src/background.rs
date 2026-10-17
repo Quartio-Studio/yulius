@@ -92,6 +92,8 @@ impl App {
         // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
         self.start_ci();
         self.start_disk_upkeep();
+        // Leftovers at every start (so after every update) and hourly (SPEC-215 LFT-009).
+        self.start_leftovers_rounds();
         // Account usage in its own loop: a slow provider never delays queue draining.
         let app = Arc::clone(self);
         tokio::spawn(async move {

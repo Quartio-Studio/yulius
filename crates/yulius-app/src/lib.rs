@@ -35,6 +35,7 @@ pub mod intake;
 pub mod integration_merges;
 pub mod isolation;
 pub mod jev_key;
+pub mod leftovers;
 pub mod lifecycle;
 pub mod manage;
 pub mod mcp;

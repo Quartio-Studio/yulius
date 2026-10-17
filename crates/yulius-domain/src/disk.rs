@@ -12,6 +12,10 @@ pub const TARGET_PERCENT: u64 = 80;
 /// A task idle this long has its caches pruned whatever the quota (F 2026-10-12: "agents leave
 /// old compiles and worktrees ... it should keep things clean"); continuing rebuilds them.
 pub const IDLE_PRUNE_AFTER_MS: i64 = 4 * 60 * 60 * 1000;
+/// A task whose goal Claude Code recorded as achieved (activity done) has its caches pruned once
+/// it has not moved this long (SPEC-215 LFT-005, ADR-0170): it is rarely continued, and its
+/// `target/` held 11–23 GB. Its worktree stays.
+pub const DONE_PRUNE_AFTER_MS: i64 = 30 * 60 * 1000;
 /// Names of ignored directories that only hold what a build or an install recreates: a worktree
 /// whose ignored files are all such directories loses nothing when it is removed.
 pub const REBUILDABLE: [&str; 14] = [
@@ -44,7 +48,7 @@ pub enum Owner {
 
 /// Whose caches a task's are, by what it is doing; `None` for a task that works (or is
 /// starting, switching or stopping, or idles while its background shells still run a build):
-/// its caches are never touched. An idle task that has not moved for [`IDLE_PRUNE_AFTER_MS`]
+/// its caches are never touched. An idle task that has not moved for [`prune_after`] its activity
 /// (`quiet_ms`) counts as ended.
 #[must_use]
 pub fn owner_of(
@@ -54,7 +58,7 @@ pub fn owner_of(
     quiet_ms: i64,
 ) -> Option<Owner> {
     let idle = || {
-        if quiet_ms >= IDLE_PRUNE_AFTER_MS {
+        if quiet_ms >= prune_after(activity) {
             Owner::Ended
         } else {
             Owner::Idle
@@ -73,6 +77,17 @@ pub fn owner_of(
         | TaskStatus::Starting
         | TaskStatus::Switching
         | TaskStatus::Stopping => None,
+    }
+}
+
+/// How long an idle task with `activity` stays quiet before its caches count as ended:
+/// [`DONE_PRUNE_AFTER_MS`] for a done one, [`IDLE_PRUNE_AFTER_MS`] otherwise.
+#[must_use]
+pub fn prune_after(activity: Option<Activity>) -> i64 {
+    if activity == Some(Activity::Done) {
+        DONE_PRUNE_AFTER_MS
+    } else {
+        IDLE_PRUNE_AFTER_MS
     }
 }
 
@@ -327,6 +342,36 @@ mod tests {
             owner_of(TaskStatus::Chained, None, false, IDLE_PRUNE_AFTER_MS - 1),
             Some(Owner::Idle)
         );
+    }
+
+    #[test]
+    fn a_done_task_s_caches_go_after_half_an_hour_a_waiting_one_s_after_four_hours() {
+        let done = |quiet| owner_of(TaskStatus::Running, Some(Activity::Done), false, quiet);
+        assert_eq!(done(DONE_PRUNE_AFTER_MS - 1), Some(Owner::Idle));
+        assert_eq!(done(DONE_PRUNE_AFTER_MS), Some(Owner::Ended));
+        assert_eq!(
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                false,
+                DONE_PRUNE_AFTER_MS
+            ),
+            Some(Owner::Idle),
+            "a waiting task keeps the 4 h rule"
+        );
+        assert_eq!(
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Done),
+                true,
+                IDLE_PRUNE_AFTER_MS
+            ),
+            None,
+            "background shells keep a done task's caches"
+        );
+        assert_eq!(prune_after(Some(Activity::Done)), DONE_PRUNE_AFTER_MS);
+        assert_eq!(prune_after(Some(Activity::Waiting)), IDLE_PRUNE_AFTER_MS);
+        assert_eq!(prune_after(None), IDLE_PRUNE_AFTER_MS);
     }
 
     #[test]

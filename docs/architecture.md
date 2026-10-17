@@ -290,6 +290,38 @@ the request is kept in `playground_purges`, and its `origin` and sandbox directo
 only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
 once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
 
+**Leftovers** ([SPEC-215](../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md),
+[decision 0170](decisions/0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md)).
+Every path under the data directory has an owner record and a rule for when it is garbage (the
+inventory in SPEC-215). `yulius-domain::leftovers` holds the kinds and their policy (safe
+automatically, needs a person, report only). `yulius-app::leftovers` scans by kind: removed
+sandboxes from `SandboxStore::removed_sandboxes`, live sandboxes' ended caches (from the disk
+upkeep's own scan), worktrees no task owns, unused CI checkouts, Git records of vanished
+worktrees, and instance directories no record owns. It deletes one item at a time after its
+**guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
+`still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
+`holder_live` is false, and a CI claim is held while checkouts go. Trees whose files belong to a
+sandbox's mapped ids go through the isolation's `remove_owned_tree` (`base::remove_tree` as root
+of a mapped namespace). No link is followed: an item reached through one is never listed, and the
+removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
+the opened directory, so a link a sandbox swaps in after the check fails the removal. The automatic round runs at every start and hourly. People reach the
+same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
+loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
+
+```mermaid
+flowchart LR
+  T["start + hourly round"] --> SC["scan by kind"]
+  UI["Settings → Instance → Leftovers"] -->|"/api/admin/leftovers*"| SC
+  CLI["yulius leftovers (root, service user)"] -->|"/internal/leftovers* + key file"| SC
+  SC --> ST[("store: sandboxes, removed sandboxes, tasks, attempts, CI runs")]
+  SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, runs/, transcripts/, system/"]
+  SC --> L["items: kind, path, size, owner, reason, safe?"]
+  L -->|"safe only (round) or chosen (person)"| G{"guard again: removed 10 min, nothing runs, no deploy, holder stopped, CI claimed"}
+  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then through the opened directory; or isolation remove_owned_tree"]
+  G -->|"no longer holds"| K["kept, reported"]
+  D --> A[("audit: leftovers.delete / leftovers.failed")]
+```
+
 A playground moves to GitHub
 ([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
 [decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty

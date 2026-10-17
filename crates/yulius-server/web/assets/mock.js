@@ -156,6 +156,8 @@ function seed(params) {
     // dockerd and is being rebuilt; a sandbox on its own docker.io; the update's re-check found a
     // problem), `docker=legacy` (sandboxes not isolated); `smoke=fail` (the smoke's pull fails).
     docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null },
+    // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
+    leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
@@ -3393,6 +3395,77 @@ route('POST', '/api/admin/sandbox-docker/smoke', ({ db }) => {
     }, 1000 * (i + 1));
   });
   return json(202, sandboxDockerView(db));
+});
+
+// Leftovers (SPEC-215): a removed product sandbox's parts, a done task's build cache, a worktree
+// no task owns, everything else of the removed sandbox and the host's Docker data.
+const GB = 1e9;
+function leftoverItems() {
+  const product = '/var/lib/yulius/sandboxes/6b76ccc7-0000-4000-8000-000000000001';
+  const item = (id, kind, path, bytes, auto, reason, extra = {}) => ({ id, kind, path, bytes, auto, deletable: kind !== 'host-docker', reason, sandbox: null, task: null, ...extra });
+  return [
+    item('a1', 'removed-worktrees', `${product}/worktrees`, 48 * GB, true, 'the sandbox product was removed', { sandbox: 'product' }),
+    item('a2', 'removed-system', '/var/lib/yulius/sysroots/6b76ccc7-0000-4000-8000-000000000001', 31 * GB, true, 'the sandbox product was removed', { sandbox: 'product' }),
+    item('a3', 'task-cache', '/var/lib/yulius/sandboxes/d62be476/worktrees/de8d2402/target', 23 * GB, true, 'target of task #193: done, quiet for 30 minutes', { sandbox: 'yulius', task: 193 }),
+    item('m1', 'removed-sandbox', product, 6 * GB, false, 'everything of the removed sandbox product: its clone, sessions, transcripts and export, kept unless a person deletes them', { sandbox: 'product' }),
+    item('m2', 'orphan-worktree', '/var/lib/yulius/sandboxes/d62be476/worktrees/wt-206', 2.7 * GB, false, 'a worktree no task owns (it may hold uncommitted work)', { sandbox: 'yulius' }),
+    item('h1', 'host-docker', '/var/lib/docker', null, false, 'the host’s own Docker data (docker-ce): Yulius does not use it; remove it on the host if nothing else does'),
+  ];
+}
+
+function leftoversView(db) {
+  const l = db.leftovers;
+  const items = l.items || [];
+  const deletable = items.filter((i) => i.deletable);
+  return {
+    items: clone(items), scanned_at: l.scannedAt, data_dir: '/var/lib/yulius',
+    total_bytes: deletable.reduce((n, i) => n + (i.bytes || 0), 0),
+    safe_bytes: deletable.filter((i) => i.auto).reduce((n, i) => n + (i.bytes || 0), 0),
+    disk_used: 312 * 1024 ** 3, disk_total: 386 * 1024 ** 3,
+    job: clone(l.job), next_auto_at: isoIn(40 * MIN),
+  };
+}
+
+function leftoverJob(db, action, total) {
+  const l = db.leftovers;
+  if (l.job && l.job.running) fail(409, 'conflict', 'a leftovers scan or deletion runs');
+  l.job = { action, running: true, actor: db.me.user.login, total, done: 0, deleted: 0, freed: 0, kept: [], failed: [], started_at: new Date().toISOString(), ended_at: null };
+  return l.job;
+}
+
+route('GET', '/api/admin/leftovers', ({ db }) => { superadminOnly(db); return leftoversView(db); });
+route('POST', '/api/admin/leftovers/scan', ({ db }) => {
+  superadminOnly(db);
+  const job = leftoverJob(db, 'scan', 0);
+  later(() => {
+    db.leftovers.items = db.leftovers.none ? [] : leftoverItems();
+    db.leftovers.scannedAt = new Date().toISOString();
+    Object.assign(job, { running: false, ended_at: new Date().toISOString() });
+  }, 800);
+  return leftoversView(db);
+});
+route('POST', '/api/admin/leftovers/delete', ({ db, body }) => {
+  superadminOnly(db);
+  const l = db.leftovers;
+  const items = l.items || [];
+  const chosen = body.all_safe ? items.filter((i) => i.auto) : items.filter((i) => (body.ids || []).includes(i.id));
+  if (!body.all_safe && chosen.length !== (body.ids || []).length) fail(422, 'invalid', 'not in the last scan (scan again)');
+  if (!chosen.length) fail(422, 'invalid', 'nothing to delete');
+  const job = leftoverJob(db, 'delete', chosen.length);
+  chosen.forEach((item, i) => {
+    later(() => {
+      job.done += 1;
+      if (item.deletable) {
+        job.deleted += 1;
+        job.freed += item.bytes || 0;
+        l.items = l.items.filter((x) => x.id !== item.id);
+      } else {
+        job.kept.push(`${item.path}: reported only: the host's own data`);
+      }
+      if (i === chosen.length - 1) Object.assign(job, { running: false, ended_at: new Date().toISOString() });
+    }, 600 * (i + 1));
+  });
+  return leftoversView(db);
 });
 
 function jevView(db) {

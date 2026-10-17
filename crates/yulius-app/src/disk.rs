@@ -1,7 +1,8 @@
 //! Disk upkeep without a person (SPEC-008, SPEC-001 NFR-009): build caches of tasks that do not
 //! work are removed, the worktrees of closed and cancelled tasks are cleaned up, and a sandbox
 //! near its quota gets its Docker engine's unused images and build cache (SPEC-187) and the
-//! caches of idle tasks pruned too, before a start is refused. Each
+//! caches of idle tasks pruned too, before a start is refused. A removed sandbox's files and
+//! other leftovers are the leftovers module's (SPEC-215). Each
 //! removal is audited; the agents are not told (SPEC-028 MSR-002).
 //!
 //! Safety: only directories the rules name (recognised tooling or `[disk] caches` of the
@@ -14,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_domain::disk::{
-    Candidate, IDLE_PRUNE_AFTER_MS, Owner, bytes_to_free, cache_paths, human, job_cache_cap,
-    only_rebuildable, owner_of, plan_prune,
+    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
+    plan_prune, prune_after,
 };
 use yulius_domain::ids::TaskId;
 use yulius_domain::spec_format::parse_yulius_toml_caches;
@@ -40,9 +41,6 @@ const MAX_TOML_BYTES: u64 = 64 * 1024;
 /// A directory under `worktrees/` that belongs to no task (an agent's own `git worktree add`)
 /// untouched this long is treated as ended (F 2026-10-12: `wt-206` kept 2.7 GB).
 const ORPHAN_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
-/// A removed sandbox keeps its worktrees and CI checkouts this long, then they go (its home with
-/// the sessions and its clone stay).
-const REMOVED_SANDBOX_KEEP_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// What a round did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,6 +52,18 @@ pub struct DiskReport {
     pub caches: usize,
     /// Worktrees removed (tasks closed or cancelled).
     pub worktrees: usize,
+}
+
+/// A cache [`App::ended_caches`] found.
+pub(crate) struct EndedCache {
+    /// Its task; `None` for a worktree no task owns.
+    pub task: Option<TaskRecord>,
+    /// "task #12" or "worktree wt-206".
+    pub label: String,
+    pub path: PathBuf,
+    /// Relative to the worktree.
+    pub relative: String,
+    pub bytes: u64,
 }
 
 struct Found {
@@ -77,7 +87,7 @@ struct Scan {
 }
 
 /// Allocated bytes under `path` (links not followed), bounded in entries.
-fn dir_size(path: &Path) -> u64 {
+pub(crate) fn dir_size(path: &Path) -> u64 {
     let mut bytes = 0u64;
     let mut entries = 0u64;
     let mut stack = vec![path.to_path_buf()];
@@ -148,14 +158,9 @@ impl App {
                 let Ok(sandboxes) = app.deps.store.sandboxes().await else {
                     continue;
                 };
-                for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+                for sandbox in &sandboxes {
                     if let Err(err) = app.disk_upkeep(sandbox, false).await {
                         tracing::warn!(sandbox = %sandbox.id, error = %err, "disk upkeep failed");
-                    }
-                }
-                for sandbox in &sandboxes {
-                    if let Some(removed) = sandbox.removed_at {
-                        app.purge_removed_sandbox(sandbox, removed.0).await;
                     }
                 }
                 // Removed playgrounds whose code was asked to go, once nothing of them runs
@@ -478,50 +483,41 @@ impl App {
     /// moved. An idle running task is probed afresh (SPEC-059 DSK-201): a background shell or
     /// subagent keeps its caches, and so does a probe that cannot answer (#245: a cached
     /// "unknown" read as "none" under a running gate). Without `pressure` an idle task that moved
-    /// within [`IDLE_PRUNE_AFTER_MS`] is idle whatever it runs (its caches stay anyway), so it is
-    /// not probed: each probe can take up to the probe timeout.
+    /// within [`prune_after`] its activity is idle whatever it runs (its caches stay anyway), so
+    /// it is not probed: each probe can take up to the probe timeout.
     async fn cache_owner(&self, task: &TaskRecord, pressure: bool) -> Option<Owner> {
         let quiet_ms = self.now().0 - task.updated_at.0;
         let idle =
             task.status == TaskStatus::Running && task.activity.is_some_and(Activity::is_idle);
-        let probe = idle && (pressure || quiet_ms >= IDLE_PRUNE_AFTER_MS);
+        let probe = idle && (pressure || quiet_ms >= prune_after(task.activity));
         let busy = probe && self.background_work_now(&task.id).await != Some(false);
         owner_of(task.status, task.activity, busy, quiet_ms)
     }
 
-    /// The worktrees and CI checkouts of a sandbox removed more than a day ago (its home with
-    /// the sessions and its clone stay): nothing can use them any more.
-    async fn purge_removed_sandbox(&self, sandbox: &SandboxRecord, removed_ms: i64) {
-        if self.now().0 - removed_ms < REMOVED_SANDBOX_KEEP_MS {
-            return;
-        }
-        let dir = self.sandbox_dir(&sandbox.id);
-        for part in ["worktrees", "ci"] {
-            let path = dir.join(part);
-            if !path.exists() {
-                continue;
-            }
-            let target = path.clone();
-            let bytes = tokio::task::spawn_blocking(move || {
-                let bytes = dir_size(&target);
-                std::fs::remove_dir_all(&target).map(|()| bytes)
+    /// The caches the upkeep removes without pressure (SPEC-215 `task-cache`): of tasks that
+    /// ended or are done and quiet, past their grace, and of worktrees no task owns.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn ended_caches(&self, sandbox: &SandboxRecord) -> AppResult<Vec<EndedCache>> {
+        let scan = self.disk_scan(sandbox, false, None).await?;
+        Ok(scan
+            .found
+            .into_iter()
+            .filter(|f| !f.ci && f.owner == Owner::Ended)
+            .map(|f| EndedCache {
+                task: f.task,
+                label: f.label,
+                path: f.path,
+                relative: f.relative,
+                bytes: f.bytes,
             })
-            .await;
-            match bytes {
-                Ok(Ok(bytes)) => {
-                    self.dlv_audit(
-                        "yulius",
-                        "disk.purge",
-                        &sandbox.slug,
-                        &format!("{part} of the removed sandbox: {}", human(bytes)),
-                    )
-                    .await;
-                }
-                _ => {
-                    tracing::warn!(path = %path.display(), "a removed sandbox's directory could not be purged")
-                }
-            }
-        }
+            .collect())
+    }
+
+    /// Whether `task`'s caches still count as ended (checked again right before a deletion).
+    pub(crate) async fn cache_still_ended(&self, task: &TaskId) -> bool {
+        self.owner_is(task, Owner::Ended).await
     }
 
     async fn still_ended(&self, task: &TaskId) -> bool {
