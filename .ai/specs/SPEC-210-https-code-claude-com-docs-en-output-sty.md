@@ -62,7 +62,8 @@ that stays so; "everywhere" means every session Yulius launches.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Sessions default to the Concise style through the sandbox's user settings
 - [x] Docs, ADR and the changes log describe the Concise default
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 2 approves the exact head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
