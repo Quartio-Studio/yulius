@@ -271,6 +271,14 @@ Reviewed head `a1ac1831` (task branch `feat/202-leftovers-are-found-and-cleaned-
   - The last scan's notes on `base.rs`, `manager.rs` and `purge.rs` concern existing code. Its note
     on the route's key comparison is a false positive: the comparison happens in the app, over
     SHA-256 digests in constant time.
+- **Yulius CI on PR #651 at `277fdfd7`:** the security job failed with one high finding: "Path
+  traversal via sandbox id in retire/state_dir" (`yulius-sandbox` manager). The code is SPEC-206's,
+  in a file this change touches. The server's ids were already restricted, but the manager now
+  defends itself: a name outside the ids' alphabet maps to the fixed component `.invalid` in the
+  state, system, sandbox and cgroup paths, and `retire` and `holder_live` refuse it. Fixed in
+  `b29820f9` with `a_name_outside_the_id_alphabet_never_leaves_its_tree` (failed before, passes;
+  109 yulius-sandbox tests pass). The local Vidoc rerun at `b29820f9` finds no critical or high
+  finding.
 - **e2e:** the full suite at `a1ac1831` (`cd e2e && npx e2e run`): 61 files, 615 tests passed and 1
   skipped, exit 0. That includes `tests/leftovers.e2e.ts` (4) and `tests/sandbox-docker.e2e.ts`
   (6).
