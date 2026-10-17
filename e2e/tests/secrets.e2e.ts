@@ -421,8 +421,9 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
   const notes = `${'x'.repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n')}`;
   await browser.evaluate((text: string) => {
     (window as any).__yuliusMock.vault.team[0].notes = text;
-    (window as any).__fail = false;
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { if ((window as any).__fail) throw new Error('Clipboard blocked'); } } });
+    (window as any).__fail = 0;
+    // Each failure names its number, so the test waits for the toast of the copy it just made.
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { if ((window as any).__fail) throw new Error(`Clipboard blocked ${(window as any).__fail++}`); } } });
   }, notes);
   await screen.getByRole('button', 'Show Shared Gmail').click();
   await setUpTwoFactor(screen, browser);
@@ -432,9 +433,12 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
   // A copy that worked shows the check; one that fails right after brings the copy icon back.
   await copy.click();
   await expect(copy).toHaveAttribute('title', 'Copied');
-  await browser.evaluate(() => { (window as any).__fail = true; });
-  await copy.click();
-  await expect(screen.getByText(/Couldn’t copy/).first()).toBeVisible();
+  // The failing copy follows in the same round trip, well inside the check's 2 s.
+  await browser.evaluate(() => {
+    (window as any).__fail = 1;
+    (document.querySelector('dialog.modal .secret-eye + .secret-copy') as HTMLButtonElement).click();
+  });
+  await expect(screen.getByText(/Couldn’t copy: Clipboard blocked 1/)).toBeVisible();
   // Read at once, not waited on: the check of the first copy would clear by itself after 2 s.
   expect(await browser.evaluate(() => {
     const button = document.querySelector('dialog.modal .secret-eye + .secret-copy')!;
@@ -442,8 +446,11 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
   })).toEqual({ title: 'Copy value', icon: true });
   // A first copy that fails never shows the check.
   await shown.getByRole('button', 'Copy notes').click();
-  await expect(browser.locator('dialog.modal button[aria-label="Copy notes"]')).toHaveAttribute('title', 'Copy notes');
-  await expect(browser.locator('dialog.modal button[aria-label="Copy notes"] svg.icon-copy')).toBeVisible();
+  await expect(screen.getByText(/Couldn’t copy: Clipboard blocked 2/)).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const button = document.querySelector('dialog.modal button[aria-label="Copy notes"]')!;
+    return { title: button.getAttribute('title'), icon: button.querySelector('svg')!.classList.contains('icon-copy') };
+  })).toEqual({ title: 'Copy notes', icon: true });
 
   // Long notes wrap (no sideways scroll) and scroll past 240 px, inside the dialog at 390 px.
   await browser.setViewport({ width: 390, height: 844 });

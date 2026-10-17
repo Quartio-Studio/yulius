@@ -105,6 +105,10 @@ not only in a toast.
   found that axe flags the notes scroller as not focusable (the pre-existing nit), so the notes
   take focus (`tabindex="0"`); the setup dialog asserts its single copy; SPEC-114's PWV-003 and
   PWV-004 are marked superseded; this Evidence section.
+- **Review round 2 (request changes at 69d90ad9).** Taken: the failing first copy waited on a
+  state already true before the click, so it is now read once after its own numbered error toast
+  ("Clipboard blocked 2"), and the failing copy after a successful one is clicked in the same round
+  trip as the check is confirmed; `e2e/README.md` lists the new test.
 - **Not taken:** a read-only `<input>` for the value (announced as an editable field, ADR-0093);
   a text "Copy" button inside the box (wider, and it squeezes the value at 390 px).
 
@@ -114,7 +118,9 @@ not only in a toast.
   14 (no copy without hover, a second `Copy value` after the box, no key or notes box); after the
   change 14 of 14 passed. The review's failure test failed first on the stale check
   (`{"title":"Copied","icon":false}`) and on axe `scrollable-region-focusable: pre`, then passed:
-  15 of 15.
+  15 of 15. Round 2 mutations: a failed copy that shows the check (and lets the timer clear it)
+  fails the value check; one that shows it only on a first copy fails the notes check
+  (`{"title":"Copied","icon":false}`); with the code restored, 15 of 15.
 - Screenshots in the Yulius browser (mock mode, 1280 px) checked by eye: the setup key in its box
   with a copy icon; the value box with dots, eye and copy, and the check after a copy; the notes in
   a framed box with their copy.
