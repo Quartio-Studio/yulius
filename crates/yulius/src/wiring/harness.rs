@@ -537,4 +537,50 @@ mod tests {
         launch::plan_launch(&request)?;
         Ok(())
     }
+
+    /// SPEC-210 CON-001: a task run and a Superagent both start with their config dir's user
+    /// settings defaulted to the Concise output style.
+    #[test]
+    fn every_claude_code_launch_defaults_to_the_concise_output_style()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::Secret;
+        let style = |config: &Path| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let text = std::fs::read_to_string(config.join("settings.json"))?;
+            Ok(serde_json::from_str::<serde_json::Value>(&text)?["outputStyle"].clone())
+        };
+        let dir = tempfile::tempdir()?;
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let home = dir.path().join("home");
+        adapter.plan(&HarnessLaunch {
+            harness: Harness::ClaudeCode,
+            mode: SessionMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: dir.path().to_path_buf(),
+            sandbox_home: home.clone(),
+            run_dir: dir.path().join("run"),
+            model: None,
+            effort: None,
+            contained: false,
+            mcp: Vec::new(),
+            credential: Secret("token".into()),
+        })?;
+        assert_eq!(style(&home.join(".claude"))?, "Concise");
+        let config = dir.path().join("cockpit");
+        adapter.plan_cockpit(&CockpitLaunch {
+            cwd: dir.path().to_path_buf(),
+            config_dir: config.clone(),
+            config_dir_host: config.clone(),
+            resume: None,
+            continue_interrupted: false,
+            credential: Secret("token".into()),
+            yulius: None,
+            project_mcp_servers: Vec::new(),
+            mcp: Vec::new(),
+            contained: false,
+        })?;
+        assert_eq!(style(&config)?, "Concise");
+        Ok(())
+    }
 }

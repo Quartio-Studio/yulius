@@ -46,7 +46,9 @@ watching, steering and unblocking.
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
   the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
-  writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
+  writing code, belongs in a task, and its panel says so. Like task runs, it answers in Claude
+  Code's Concise output style unless someone picks another with `/output-style` (SPEC-210).
+  `/clear` starts over, it cannot be
   deleted and comes back with its conversation. On a contained server it runs in Claude Code's
   bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the

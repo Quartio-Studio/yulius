@@ -393,7 +393,7 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
         // SPEC-117 ONE-001: the session's only first message is its goal, the launch prompt.
         let launch = first_launch(&app, &id).await?;
         assert!(
-            launch.contains("prompt: Some(\"/goal Tidy the parser and verify it | Done = "),
+            launch.contains("prompt: Some(\"/goal Tidy the parser and verify it\\n\\nDone = "),
             "{launch}"
         );
         wait_for("Done", Duration::from_secs(20), || async {
@@ -836,9 +836,10 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
     Ok(())
 }
 
-/// SPEC-011, SPEC-117 ONE-001/ONE-002: a goal task starts from its request file (the request, its
-/// attached files and the definition of done) and a `/goal` that names it and its attached
-/// files, given as the launch prompt: one first message, nothing typed into the session.
+/// SPEC-011, SPEC-117 ONE-001, SPEC-212 WHL-001: a goal task writes its request file (the request,
+/// its attached files and the definition of done) and starts from a `/goal` that is the whole
+/// request, each attached file at its place, then the definition of done, given as the launch
+/// prompt: one first message, nothing typed into the session.
 #[test]
 fn a_goal_task_starts_from_its_request_file() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -887,14 +888,17 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         );
         assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
         assert!(request.contains("## Definition of done"), "{request}");
-        // The launch prompt is the goal: it names the request file and the attached files.
+        // The launch prompt is the goal: the whole request, each file at its place, and no
+        // request-file path.
         let launch = first_launch(&app, &id).await?;
-        let goal = format!(
-            "prompt: Some(\"/goal Everything requested in {} is done. Attached files (open each \
-             with the Read tool; it shows images): /srv/shots/header.png, /srv/notes.txt. Done = ",
-            file.to_string_lossy()
+        assert!(
+            launch.contains(
+                "prompt: Some(\"/goal Make the header blue\\n\\n[file 1: /srv/shots/header.png]\\n\
+                 [file 2: /srv/notes.txt]\\n\\nDone = "
+            ),
+            "{launch}"
         );
-        assert!(launch.contains(&goal), "{launch}");
+        assert!(!launch.contains(&*file.to_string_lossy()), "{launch}");
         // Nothing was typed before the goal: no first message, no `/goal`.
         let screen = app.runtime(&id).hub.screen_text();
         let set = screen.find("GOAL SET").ok_or_else(|| screen.clone())?;
@@ -902,7 +906,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         assert!(!screen[..set].contains("/goal"), "{screen}");
         // Nor after it: the goal turn's own echo is the only answer, and the goal is set once.
         wait_for("the goal turn's answer", Duration::from_secs(30), || {
-            screen_contains(&app, &id, "ECHO: /goal Everything requested in")
+            screen_contains(&app, &id, "ECHO: /goal Make the header blue")
         })
         .await?;
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1059,7 +1063,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
 
 /// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a goal session whose turn a usage limit cut moves to
 /// another subscription by a continued resume; Claude Code redoes the cut turn first, and the goal
-/// is typed again after that turn's Stop, not during it, and once.
+/// is typed again after that turn's Stop, not during it, and once, as one line (SPEC-212 WHL-003).
 #[test]
 fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1096,7 +1100,8 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
             .create_task_internal(NewTask {
                 sandbox: sandbox.clone(),
                 created_by: user.clone(),
-                prompt: "Make the header blue".into(),
+                // SPEC-212 WHL-003: more than one line; the typed goal is one.
+                prompt: "Make the header blue\n\nand the footer".into(),
                 harness: Harness::ClaudeCode,
                 title: Some("Blue header".into()),
                 workflow_id: None,
@@ -1149,6 +1154,17 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
             "the goal was typed during the continued turn:\n{screen}"
         );
         assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        // The whole condition reached the goal as one line: none of it was submitted apart.
+        wait_for("the typed goal's turn", Duration::from_secs(30), || {
+            screen_contains(
+                &app,
+                &id,
+                "ECHO: /goal Make the header blue and the footer | Done = ",
+            )
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        assert!(!screen.contains("ECHO: and the footer"), "{screen}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1267,8 +1283,17 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
             })
             .await?
             .id;
+        // The answer spans lines: wait for all of it, not its first line (under load the
+        // lines after `ECHO: Make it blue` reached the screen after it was read).
         wait_for("the first message", Duration::from_secs(90), || {
-            screen_contains(&app, &id, "ECHO: Make it blue")
+            let app = app.clone();
+            let id = id.clone();
+            async move {
+                let screen = app.runtime(&id).hub.screen_text();
+                screen
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|echo| screen[echo..].contains("@\"/srv/notes.txt\""))
+            }
         })
         .await?;
         let launch = first_launch(&app, &id).await?;

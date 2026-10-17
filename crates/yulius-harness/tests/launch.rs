@@ -146,6 +146,9 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
     }
 
     let settings = json_of(file(&plan, "claude-settings.json")?)?;
+    // SPEC-210 CON-004: the output style is the user settings' default, never forced here, where
+    // it would outrank `/output-style`.
+    assert!(settings.get("outputStyle").is_none(), "{settings}");
     // The turn boundaries may be held while no subscription has capacity (ADR-17): their CLI
     // timeout outlasts the hook client's 8-day hold; the others keep 15 s.
     for (event, timeout) in [
@@ -736,6 +739,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         .position(|a| a == "--settings")
         .ok_or("--settings")?;
     let settings: serde_json::Value = serde_json::from_str(&plan.argv[at + 1])?;
+    // Exactly these keys: no `outputStyle` either (SPEC-210 CON-004).
     assert_eq!(
         settings,
         serde_json::json!({ "disabledMcpjsonServers": [
@@ -803,6 +807,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
     );
     let settings = value_of("--settings")?;
     assert_eq!(settings["disabledMcpjsonServers"], json!(["apify"]));
+    assert!(settings.get("outputStyle").is_none(), "{settings}");
     assert_eq!(
         settings["hooks"],
         json!({ "PostToolUse": [{ "matcher": "*", "hooks": [{
