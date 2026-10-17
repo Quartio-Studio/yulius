@@ -92,7 +92,7 @@ for any secret an agent did not create.
 - [x] A key file's text becomes a stored agent-secret value (domain, shared with the CLI import)
 - [x] Yulius reads a file from the caller's folder or home without following links
 - [x] secret_create_from_file creates the secret for a task and the Superagent, audited, optionally deleting the file
-- [x] Docs: ADR, architecture, product, API and the Superagent's instructions and `secrets_list` name the tool
+- [x] Docs: the ADR, architecture, API, the Superagent's instructions and `secrets_list` name the tool; product describes it
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
 
