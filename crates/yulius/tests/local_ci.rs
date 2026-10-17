@@ -267,6 +267,22 @@ impl Fixture {
         git(&self.work, &["rev-parse", "HEAD"])
     }
 
+    /// Commits `file` (`None` deletes it) on dev and pushes it; the work tree stays on feat/one.
+    fn push_dev(&self, file: &str, contents: Option<&str>) -> BoxResult<String> {
+        git(&self.work, &["checkout", "-q", "dev"])?;
+        git(&self.work, &["pull", "-q", "origin", "dev"])?;
+        match contents {
+            Some(text) => std::fs::write(self.work.join(file), text)?,
+            None => std::fs::remove_file(self.work.join(file))?,
+        }
+        git(&self.work, &["add", "-A"])?;
+        git(&self.work, &["commit", "-q", "-m", "dev change"])?;
+        git(&self.work, &["push", "-q", "origin", "dev"])?;
+        let sha = git(&self.work, &["rev-parse", "HEAD"])?;
+        git(&self.work, &["checkout", "-q", "feat/one"])?;
+        Ok(sha)
+    }
+
     fn last_status(&self, sha: &str) -> Option<(String, String, String)> {
         self.h
             .github
@@ -1773,47 +1789,64 @@ fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
     )
 }
 
-/// SPEC-217 VSI-004: a filed finding's issue follows the code. Closed while Vidoc still reports
-/// the finding, it is reopened; once no line of its file on the integration branch has its
-/// fingerprint (here: the file is gone), it is closed; while its line is still there, it stays
-/// open.
+/// SPEC-217 VSI-004 (review round 1, M2): a filed finding's issue follows the integration branch.
+/// Closed while Vidoc still reports the finding and its code is on dev, it is reopened; once its
+/// line is gone from dev, it is closed, also when a branch behind dev still reports it, and that
+/// stale report reopens nothing; a finding already gone from dev is never filed.
 #[tokio::test]
 async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_gone() -> TestResult {
     let f = fixture_with(false, |_| {
         "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
     })
     .await?;
-    // `# app` is README.md's line on dev; src/gone.rs is not on dev.
-    let readme = "8464a81d5a585dd2";
-    let both = finding_line("medium", "README.md", readme)
-        + &finding_line("low", "src/gone.rs", "fedcba9876543210");
-    f.push_feature("findings.txt", Some(&both))?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    // README.md's `# app` and lib.rs's `fn danger() {}` are on dev; src/never.rs is not.
+    let (readme, lib, never) = ("8464a81d5a585dd2", "c6b08d3eced1a57c", "0000000000000001");
+    let all = finding_line("medium", "README.md", readme)
+        + &finding_line("low", "lib.rs", lib)
+        + &finding_line("low", "src/never.rs", never);
+    let first = f.push_feature("findings.txt", Some(&all))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
-    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 2);
-    // A person closes #101 without fixing it; the next head reports only that finding.
+    let titles = |f: &Fixture| -> BoxResult<Vec<String>> {
+        Ok(f.h
+            .github
+            .issues
+            .lock()
+            .map_err(|_| "issues")?
+            .iter()
+            .map(|(_, issue)| issue.title.clone())
+            .collect())
+    };
+    assert_eq!(
+        titles(&f)?,
+        [
+            "security: Weak check in README.md",
+            "security: Weak check in lib.rs"
+        ],
+        "src/never.rs is not on dev: not filed"
+    );
+    let outputs = job_outputs(&f, &first).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("1 finding(s) outside the change not followed"),
+        "{security}"
+    );
+    // A person closes #101 without fixing it; dev drops lib.rs; the branch, behind dev, still
+    // reports both.
     f.h.github
         .closed_issues
         .lock()
         .map_err(|_| "closed")?
         .insert(101, vec!["won't fix".into()]);
-    let sha = f.push_feature(
-        "findings.txt",
-        Some(&finding_line("medium", "README.md", readme)),
-    )?;
+    f.push_dev("lib.rs", None)?;
+    let second = f.push_feature("findings.txt", Some(&(all.clone() + "\n")))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
-    let outputs = job_outputs(&f, &sha).await?;
+    let outputs = job_outputs(&f, &second).await?;
     let security = output_of(&outputs, "security")?;
     assert!(
-        security.contains(&format!(
-            "reopened issue #101: finding {readme} is reported again"
-        )),
-        "{security}"
-    );
-    assert!(
-        security
-            .contains("closed issue #102: the code of finding fedcba9876543210 is gone from dev"),
+        security.contains("reopened issue #101: finding 8464a81d5a585dd2 is reported again"),
         "{security}"
     );
     let closed: Vec<u64> =
@@ -1824,19 +1857,23 @@ async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_go
             .keys()
             .copied()
             .collect();
-    assert_eq!(closed, [102], "#101 reopened, #102 closed");
+    assert_eq!(
+        closed,
+        [102],
+        "#101 reopened, #102 closed (by this run or dev's)"
+    );
     // A head that reports nothing: README.md's line is still on dev, so #101 stays open.
-    let quiet = f.push_feature("findings.txt", Some("nothing\n"))?;
+    f.push_feature("findings.txt", Some("nothing\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
-    let outputs = job_outputs(&f, &quiet).await?;
-    let security = output_of(&outputs, "security")?;
-    assert!(!security.contains("closed issue #101"), "{security}");
-    assert_eq!(
-        f.h.github.issues.lock().map_err(|_| "issues")?.len(),
-        2,
-        "nothing refiled"
+    assert!(
+        !f.h.github
+            .closed_issues
+            .lock()
+            .map_err(|_| "closed")?
+            .contains_key(&101)
     );
+    assert_eq!(titles(&f)?.len(), 2, "nothing refiled");
     assert_eq!(
         f.h.github
             .issue_comments
@@ -1846,6 +1883,37 @@ async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_go
         2,
         "one reopening, one closing"
     );
+    Ok(())
+}
+
+/// SPEC-217 VSI-002 (review round 1, m8): when GitHub refuses an issue, the claim is released and
+/// a later run files it.
+#[tokio::test]
+async fn a_finding_github_did_not_take_is_filed_by_a_later_run() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.h.github
+        .fail_issues
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = finding_line("medium", "README.md", "8464a81d5a585dd2");
+    let sha = f.push_feature("findings.txt", Some(&lines))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("finding 8464a81d5a585dd2 not filed"),
+        "{security}"
+    );
+    f.h.github
+        .fail_issues
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    f.push_feature("findings.txt", Some(&(lines.clone() + "\n")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 1);
     Ok(())
 }
 
@@ -1860,8 +1928,8 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
             .to_owned()
     })
     .await?;
-    let lines = finding_line("medium", "src/a.rs", "0123456789abcdef")
-        + &finding_line("low", "src/b.rs", "fedcba9876543210")
+    let lines = finding_line("medium", "README.md", "8464a81d5a585dd2")
+        + &finding_line("low", "yulius.toml", "f4778e0b243b2c7b")
         + &finding_line("high", "src/c.rs", "1111111111111111");
     f.push_feature("findings.txt", Some(&lines))?;
     let sha = f.push_feature(
@@ -1886,8 +1954,8 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
     assert_eq!(
         issues.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
         [
-            "security: Weak check in src/a.rs",
-            "security: Weak check in src/b.rs"
+            "security: Weak check in README.md",
+            "security: Weak check in yulius.toml"
         ],
         "one issue per valid finding of the security job only: {security}"
     );
@@ -1901,7 +1969,7 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
         ]
     );
     assert!(
-        security.contains("[yulius] filed issue #101 for the medium finding 0123456789abcdef"),
+        security.contains("[yulius] filed issue #101 for the medium finding 8464a81d5a585dd2"),
         "{security}"
     );
     // The next head reports the same findings: nothing is filed again.

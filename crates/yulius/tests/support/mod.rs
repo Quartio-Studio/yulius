@@ -78,6 +78,8 @@ pub struct FakeGitHub {
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
     /// Issues opened (DLV-008).
     pub issues: Mutex<Vec<(String, NewIssue)>>,
+    /// When set, opening an issue fails as with GitHub down.
+    pub fail_issues: std::sync::atomic::AtomicBool,
     /// Issues closed (number to the comments said, in order) by `set_issue_state`; any other
     /// issue is open.
     pub closed_issues: Mutex<HashMap<u64, Vec<String>>>,
@@ -275,6 +277,9 @@ impl GitHubPort for FakeGitHub {
         repo: &str,
         issue: &NewIssue,
     ) -> AppResult<GhIssue> {
+        if self.fail_issues.load(Ordering::SeqCst) {
+            return Err(AppError::Upstream("github down".into()));
+        }
         let mut issues = self.issues.lock().map_err(AppError::internal)?;
         issues.push((login_of(token), issue.clone()));
         let number = u64::try_from(issues.len()).unwrap_or(0) + 100;

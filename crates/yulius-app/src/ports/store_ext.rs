@@ -494,7 +494,7 @@ pub trait CiStore: Send + Sync {
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
     /// Claims a Vidoc finding (`fingerprint` in `file`; `anchored` when it names a line's text)
     /// for `sandbox` before its issue is opened (SPEC-217 VSI-002); `false` when it was claimed or
-    /// filed before.
+    /// filed before, unless that claim got no issue within an hour (its process stopped).
     async fn claim_security_finding(
         &self,
         sandbox: &SandboxId,
@@ -507,7 +507,8 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         fingerprint: &str,
     ) -> AppResult<Option<crate::ci::FiledFinding>>;
-    /// The filed findings of `sandbox` not resolved yet, oldest first, at most `limit`.
+    /// The filed findings of `sandbox` not resolved yet, at most `limit`, a random sample (so
+    /// findings past the limit are looked at too).
     async fn unresolved_security_findings(
         &self,
         sandbox: &SandboxId,

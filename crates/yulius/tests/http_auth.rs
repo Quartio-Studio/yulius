@@ -493,9 +493,6 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
     Ok(())
 }
 
-/// The same-window case (F 2026-10-09): the browser's GitHub account is refused, GitHub's
-/// account picker is offered, and a reload or a denial lands on the sign-in page, never on a raw
-/// error (ACC-004, AC-ACC-3).
 /// SPEC-217 audit (Vidoc, high): an account linked to one GitHub user is never taken over by
 /// another GitHub user who holds its login now (GitHub frees a renamed account's login); the
 /// login admits only a user not linked yet.
@@ -520,7 +517,9 @@ async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResu
         Some("/s/studio"),
         "alice links id 11"
     );
-    // alice renames her GitHub account; someone else registers `alice` (another id).
+    // alice renames her GitHub account; someone else registers `alice` (another id). The fake
+    // finds a token's user by login, so the rename replaces alice's entry first.
+    h.github.add_user("code-alice", 11, "alice-renamed");
     h.github.add_user("code-squatter", 31, "alice");
     let squatter = github_login(&h, "code-squatter").await?;
     assert_eq!(
@@ -533,12 +532,16 @@ async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResu
     assert_eq!(linked.github_id, Some(11), "the link is kept");
     assert!(h.store.user_by_github_id(31).await?.is_none());
     // alice, under her new login, still signs in by her id.
-    h.github.add_user("code-renamed", 11, "alice-renamed");
-    let renamed = github_login(&h, "code-renamed").await?;
+    let renamed = github_login(&h, "code-alice").await?;
     assert_eq!(renamed.location.as_deref(), Some("/s/studio"));
+    let linked = h.store.user_by_github_id(11).await?.ok_or("alice")?;
+    assert_eq!(linked.github_login.as_deref(), Some("alice-renamed"));
     Ok(())
 }
 
+/// The same-window case (F 2026-10-09): the browser's GitHub account is refused, GitHub's
+/// account picker is offered, and a reload or a denial lands on the sign-in page, never on a raw
+/// error (ACC-004, AC-ACC-3).
 #[tokio::test]
 async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() -> TestResult {
     let h = harness()?;

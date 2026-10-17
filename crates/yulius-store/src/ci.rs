@@ -14,6 +14,10 @@ use crate::{SqliteStore, bad_column, db, to_u32};
 
 const RUN_COLS: &str = "id, sandbox_id, reference, sha, source, state, reason, requested_by, \
     status_for, status_note, status_attempts, queued_at, started_at, ended_at";
+/// How long a claim without an issue holds (SPEC-217 VSI-002): a claim left by a process that
+/// stopped between claiming and filing is taken over after it.
+const SECURITY_CLAIM_TTL_MS: i64 = 60 * 60 * 1000;
+
 const FINDING_COLS: &str = "fingerprint, file, anchored, issue_number, resolved_at";
 
 fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<FiledFinding> {
@@ -442,10 +446,22 @@ impl CiStore for SqliteStore {
         self.call(move |c| {
             let added = c
                 .execute(
-                    "INSERT OR IGNORE INTO security_findings \
+                    "INSERT INTO security_findings \
                      (sandbox_id, fingerprint, file, anchored, claimed_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![sandbox, fingerprint, file, anchored, at.0],
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT (sandbox_id, fingerprint) DO UPDATE SET \
+                     claimed_at = excluded.claimed_at, file = excluded.file, \
+                     anchored = excluded.anchored \
+                     WHERE security_findings.issue_number IS NULL \
+                     AND security_findings.claimed_at < ?6",
+                    params![
+                        sandbox,
+                        fingerprint,
+                        file,
+                        anchored,
+                        at.0,
+                        at.0.saturating_sub(SECURITY_CLAIM_TTL_MS)
+                    ],
                 )
                 .map_err(db)?;
             Ok(added == 1)
@@ -485,7 +501,7 @@ impl CiStore for SqliteStore {
                 .prepare(&format!(
                     "SELECT {FINDING_COLS} FROM security_findings \
                      WHERE sandbox_id = ?1 AND issue_number IS NOT NULL AND resolved_at IS NULL \
-                     ORDER BY claimed_at, fingerprint LIMIT ?2"
+                     ORDER BY random() LIMIT ?2"
                 ))
                 .map_err(db)?;
             statement
@@ -798,6 +814,12 @@ mod tests {
             None,
             "not filed yet"
         );
+        assert!(
+            store
+                .claim_security_finding(&two, finding, Timestamp(5 + 60 * 60 * 1000 + 1))
+                .await?,
+            "a claim left without an issue is taken over after an hour"
+        );
         store.settle_security_finding(&one, print, None).await?;
         assert!(
             store.claim_security_finding(&one, finding, at).await?,
@@ -808,6 +830,11 @@ mod tests {
         assert!(
             !store.claim_security_finding(&one, finding, at).await?,
             "filed stays"
+        );
+        let later = Timestamp(at.0 + 2 * 60 * 60 * 1000);
+        assert!(
+            !store.claim_security_finding(&one, finding, later).await?,
+            "a filed finding is never taken over"
         );
         let filed = FiledFinding {
             fingerprint: print.into(),
