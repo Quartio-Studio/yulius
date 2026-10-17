@@ -43,14 +43,22 @@ def fetch(url, digest, shared, cache, opener):
         (unpacked / shared.name).rename(shared)
 
 
-def install(pins, cache, bin_dir, root, machine, opener):
-    """Links the pinned zig and the macOS check's wrappers into `bin_dir`; returns what it did.
-    A host without a pinned tarball is skipped (`scripts/dev macos` then fails on its own)."""
-    version = pins["version"]
+def host_key(machine, pins):
+    """The `.config/tools.toml` key of this Linux host's zig tarball, or None when none is pinned."""
     machine = MACHINES.get(machine.lower(), machine.lower())
     host = f"{machine}-linux"
-    if host not in pins:
-        return f"zig skipped: no pinned zig for {host} in .config/tools.toml; scripts/dev macos will not run"
+    return host if host in pins else None
+
+
+def install(pins, cache, bin_dir, root, machine, opener):
+    """Links the pinned zig and the macOS check's wrappers into `bin_dir`; returns what it did.
+    A host without a pinned tarball is skipped (`scripts/dev doctor` then says why)."""
+    version = pins["version"]
+    host = host_key(machine, pins)
+    if host is None:
+        host = f"{MACHINES.get(machine.lower(), machine.lower())}-linux"
+        return (f"zig skipped: no pinned zig for {host} in .config/tools.toml; "
+                "scripts/dev doctor and ci fail until one is pinned")
     name = f"zig-{host}-{version}"
     shared = cache / f"zig-{version}" / name
     cache.mkdir(parents=True, exist_ok=True)

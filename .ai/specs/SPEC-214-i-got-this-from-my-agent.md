@@ -1,11 +1,11 @@
 ---
 yulius-task: 85082c48-c2db-498e-8518-e72973747852
-status: in-progress
+status: done
 ---
 
 # SPEC-214: Yulius builds on macOS again, and the gate keeps it so
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #201
 Scope authorization: task #201 (requested by MrFishPL), quoting their agent: "The current Yulius
@@ -61,7 +61,7 @@ namespaces and containment stay Linux-only, as before #620.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -102,7 +102,7 @@ namespaces and containment stay Linux-only, as before #620.
   medium/low findings are in code this change did not modify (`env_files.rs:125` and `:433`,
   `bootstrap.py:23`'s rustup installer).
 - `scripts/dev ci` (doctor, check with 90 Python tests, lint, macos, test, deps, docs): exit 0;
-  nextest 2131 passed, 18 skipped.
+  nextest 2131 passed, 18 skipped (round 1's head `b0ab8f8a`).
 - Independent review, round 1 (fresh session, `4e4ce7c2..b0ab8f8a`): APPROVE with three minors
   and five nits, all own code, all answered in this change: bootstrap's zig install moved to
   `scripts/zig_install.py` with tests (committed failing first), which unpacks with `tar` where
@@ -111,3 +111,13 @@ namespaces and containment stay Linux-only, as before #620.
   wrappers and the installed target; the control socket's link test is Linux-only; ADR-0169's
   consequences name the toolchain-file download and ziglang.org (mirrors left as is: one
   download per home).
+- `scripts/dev ci` at `ef03dcd2` (round 1's fixes, `origin/dev` merged): exit 0; 97 Python tests,
+  nextest 2133 passed, 18 skipped.
+- Independent review, round 2 (fresh session, head `ef03dcd2`): APPROVE, every round-1 finding
+  verified fixed; one minor and three nits, own code, answered here test-first: doctor on a Linux
+  architecture without a pinned zig now fails saying so (`No pinned zig for riscv64-linux …`,
+  checked with `platform.machine` patched) instead of on a missing file, through the shared
+  `zig_install.host_key`; tests added for the lzma fallback, the host key and the URL of a
+  normalized machine name; ADR-0169 says doctor fails there. After them only Python and docs
+  changed: `python3 -m unittest discover -s scripts -p 'test_*.py'` OK (99 tests) and
+  `scripts/dev doctor` passes; Yulius CI runs the full gate at the head.

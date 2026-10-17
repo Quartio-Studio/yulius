@@ -46,8 +46,9 @@ Mac the stage uses the Mac's own compiler. The Rust target is listed in `rust-to
   `target/aarch64-apple-darwin` on disk; bootstrap downloads 57 MB once per home.
 - Linking and running on macOS stay unchecked (no Apple SDK on Linux); a release still deserves a
   real Mac build.
-- A Linux host architecture without a pinned tarball skips zig in bootstrap (it says so) and its
-  `scripts/dev macos` fails; pinning one is adding its SHA-256 to `.config/tools.toml`.
+- A Linux host architecture without a pinned tarball skips zig in bootstrap (it says so) and
+  `scripts/dev doctor`, so `ci`, fails saying why; pinning one is adding its SHA-256 to
+  `.config/tools.toml`.
 - Listing the target in `rust-toolchain.toml` makes every rustup-managed checkout (the update
   helper's included) fetch the `aarch64-apple-darwin` standard library once.
 - zig comes from ziglang.org itself, which prefers that automated users use mirrors; it is fetched

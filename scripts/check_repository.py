@@ -413,7 +413,13 @@ def doctor():
         print(result)
     if sys.platform == "linux":
         # The macOS check's C compiler (ADR-0169).
-        version = tomllib.loads((ROOT / ".config/tools.toml").read_text())["zig"]["version"]
+        import platform
+        from zig_install import host_key
+        pins = tomllib.loads((ROOT / ".config/tools.toml").read_text())["zig"]
+        if host_key(platform.machine(), pins) is None:
+            raise ValueError(f"No pinned zig for {platform.machine()}-linux in .config/tools.toml: "
+                             "the macOS check cannot run here")
+        version = pins["version"]
         result = output([str(ROOT / ".tools/bin/zig"), "version"])
         if result != version:
             raise ValueError(f"zig: expected {version}, got {result}; rerun bootstrap")
