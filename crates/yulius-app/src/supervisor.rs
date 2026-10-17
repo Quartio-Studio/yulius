@@ -551,6 +551,14 @@ fn trust_prompt_shown(screen: &str) -> bool {
 /// The Claude Code command that sets a session's goal, followed by its condition.
 const GOAL_COMMAND: &str = "/goal ";
 
+/// A goal task's `/goal` conditions (SPEC-212).
+struct TaskGoal {
+    /// The launch prompt's: the whole request, then the definition of done (WHL-001).
+    launch: String,
+    /// The one typed into a resumed session: one short line (WHL-003).
+    typed: String,
+}
+
 /// Upper bound for waiting until the TUI took one paste of a typed first message (SPEC-030).
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Quiet time after a paste changed the screen before the next one is written.
@@ -1090,17 +1098,17 @@ impl App {
                     RunStart::Resume { prompt } | RunStart::Fresh { prompt } => prompt.clone(),
                     RunStart::AfterLimit => None,
                 };
-                // In goal mode the task starts with its `/goal` as the launch prompt: the request
-                // file, the attached files and the definition of done in one first message, with
-                // nothing typed (SPEC-011, SPEC-117). Otherwise the request is the first message:
-                // images are pasted into it and other files mentioned, so Claude Code attaches
-                // them natively (SPEC-025, SPEC-030).
+                // In goal mode the task starts with its `/goal` as the launch prompt: the whole
+                // request, each attached file at its place, and the definition of done in one
+                // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
+                // request is the first message: images are pasted into it and other files
+                // mentioned, so Claude Code attaches them natively (SPEC-025, SPEC-030).
                 use yulius_domain::request::{Opening, Request};
                 let prompt = match prompt {
                     Some(prompt) => Some(prompt),
                     None if goal_mode => {
                         match self.write_task_request(&sandbox, &task, &home).await {
-                            Ok(condition) => Some(format!("{GOAL_COMMAND}{condition}")),
+                            Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
                             Err(err) => {
                                 tracing::error!(task = %task.id, error = %err, "could not write the task request");
                                 request_unwritten = true;
@@ -1348,8 +1356,8 @@ impl App {
                 .await;
         } else if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
-                Ok(condition) => {
-                    self.spawn_goal(&task.id, &attempt_id, &condition, typed_before);
+                Ok(goal) => {
+                    self.spawn_goal(&task.id, &attempt_id, &goal.typed, typed_before);
                 }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
@@ -1394,29 +1402,19 @@ impl App {
     }
 
     /// Writes the task's request file into the sandbox home (`.yulius/tasks/<number>.md`: the
-    /// request, its attached files and the definition of done, SPEC-011) and returns the `/goal`
-    /// condition that names it.
+    /// request, its attached files and the definition of done, SPEC-011) and returns the task's
+    /// `/goal` conditions (SPEC-212).
     async fn write_task_request(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskRecord,
         home: &Path,
-    ) -> AppResult<String> {
-        use yulius_domain::request::{DoneDefinition, Request, goal_condition, request_markdown};
-        let profile = crate::delivery::delivery_profile(sandbox);
-        let done = DoneDefinition {
-            integration_branch: profile.integration_branch.clone(),
-            production_branch: profile.production_branch.clone(),
-            integration_environments: profile
-                .environments
-                .iter()
-                .filter(|e| {
-                    e.after == yulius_domain::delivery::Stage::Integration && e.command.is_some()
-                })
-                .map(|e| e.name.clone())
-                .collect(),
-            playground: sandbox.is_playground(),
+    ) -> AppResult<TaskGoal> {
+        use yulius_domain::request::{
+            DoneDefinition, Request, goal_condition, request_markdown, typed_goal_condition,
         };
+        let profile = crate::delivery::delivery_profile(sandbox);
+        let done = DoneDefinition::for_profile(&profile, sandbox.is_playground());
         let author = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) => user.github_login.unwrap_or(user.display_name),
             _ => "a person".to_owned(),
@@ -1433,7 +1431,11 @@ impl App {
         .await
         .map_err(AppError::internal)?
         .map_err(AppError::internal)?;
-        Ok(goal_condition(&request, &path.to_string_lossy(), &done))
+        let path = path.to_string_lossy();
+        Ok(TaskGoal {
+            launch: goal_condition(&request, &path, &done),
+            typed: typed_goal_condition(&request, &path, &done),
+        })
     }
 
     /// The goal was never taken by the session: the task needs a person, said in its terminal.

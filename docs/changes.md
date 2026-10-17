@@ -13,6 +13,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Allowing or dismissing the last request a task waits for, or deleting the secret, now makes it
   Working at once; a task with another request waiting, or flagged by something else, keeps its
   flag.
+- A goal task's first message is the person's whole request (SPEC-212, ADR-0168, task #199). It
+  read `/goal Everything requested in /var/lib/yulius/…/tasks/1.md is done. Done = …`, so the
+  request hid behind a path in the sandbox home. The launch `/goal` is now the request as written,
+  its lines kept and each attached file at its place as `[file N: <path>]`, followed by the
+  definition of done, which now also says what the closing summary holds. Claude Code 2.1.292 has
+  no other goal entry point, and its goal's judge reads the SessionStart briefing (measured
+  against a mock API). So the rest of Yulius's rules stay in the briefing, which now says to open
+  attached files with the Read tool. A request past Claude Code's 4000-unit cap is cut and points
+  at the request file. A goal typed into a resumed session is one line of at most 700 units. It
+  could reach 2000 characters before, and Claude Code takes a write of about 800 as a paste, which
+  sets no goal.
+- Claude Code sessions answer concisely (SPEC-210, ADR-0166, task #197). Task runs and the
+  Superagent start in Claude Code's built-in Concise output style: the first sentence gives the
+  result, without lead-in, narration or recap, while the work stays as thorough. Each launch adds
+  `"outputStyle": "Concise"` to the sandbox's Claude Code user settings when they name no style;
+  `/output-style` still switches a session (Claude Code keeps that choice for the worktree, so
+  the Superagent keeps it and a new task starts concise again), and a style a repository commits
+  in `.claude/settings.json` wins. Before a launch the host now opens the files of the sandbox's
+  Claude config and the worktree's `.git` without following a link or blocking on a FIFO; a
+  config dir that is itself a link is still open in #634.
 - Yulius builds on macOS again, and CI keeps it so (SPEC-214, ADR-0169, task #201, fixes #636).
   #620 had put Linux-only calls in the sandbox and app crates (a build lock through a Linux-only
   crate, the Docker engine's `O_PATH` socket, a file mode's width), so the `yulius` CLI could not

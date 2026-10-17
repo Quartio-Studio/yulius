@@ -884,12 +884,23 @@ fn task_header(input: &BriefingInput<'_>, goal_bytes: usize) -> String {
         SpecPolicy::NotRequired => "not required",
         SpecPolicy::ByChange => "required for changes beyond documentation",
     };
+    // What the request file adds to the goal, injected natively: the goal's judge reads this
+    // context too (SPEC-212 WHL-004, ADR-0168).
+    let files = if crate::request::Request::parse(&task.goal)
+        .attachments
+        .is_empty()
+    {
+        ""
+    } else {
+        "Files attached to the request are paths in it: open each with the Read tool (it shows \
+         images).\n"
+    };
     format!(
         "## Your task\n\n\
          Task #{}: {}\n\
          Task id: `{}` · Branch: {} · Workflow: {workflow}\n\
          Spec: {} ({spec})\n\n\
-         Goal:\n{goal}\n",
+         Goal:\n{goal}\n{files}",
         task.number,
         inline(&task.title, 200),
         task.id,
@@ -1759,6 +1770,25 @@ mod tests {
         assert!(text.contains("- D99\n- … and 50 more (truncated)\n"));
         assert!(text.contains("`src/9/**`, … (truncated)"));
         assert!(text.contains("`docs/7.md`, … (truncated)."));
+        Ok(())
+    }
+
+    /// SPEC-212 WHL-004: the task section says how to open attached files when the request has
+    /// some (the goal names them by path only); it is mandatory, so a tight budget keeps it.
+    #[test]
+    fn the_task_section_says_how_to_open_attached_files() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let mut input = base(&profile, &layout)?;
+        let files = "Files attached to the request are paths in it: open each with the Read tool \
+                     (it shows images).\n";
+        assert!(!build_briefing(&input, DEFAULT_BUDGET_BYTES).contains(files));
+        input.task.goal = "This part @'/srv/a.png' looks wrong".to_owned();
+        for budget in [DEFAULT_BUDGET_BYTES, DEFAULT_BUDGET_BYTES - 1_700] {
+            let text = build_briefing(&input, budget);
+            let task = &text[text.find("## Your task").ok_or("no task section")?..];
+            assert!(task.contains(files), "{budget}: {task}");
+        }
         Ok(())
     }
 

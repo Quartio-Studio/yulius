@@ -1,23 +1,25 @@
 //! What a task asks its agent to do (SPEC-001 TSK-010, DLV-009; SPEC-011): the request with its
-//! attached files, the definition of done Yulius holds the task to, and the one-line `/goal`
-//! condition Claude Code keeps the session working towards.
+//! attached files, the definition of done Yulius holds the task to, and the `/goal` condition
+//! Claude Code keeps the session working towards.
 //!
-//! The request is written to a file the agent reads (no length limit), and the goal condition
-//! names it, so a long request is never the condition itself. A goal session's only first message
-//! is its `/goal` (SPEC-117, ADR-0095): the condition names the attached files, which the agent
-//! opens with its Read tool, since a `/goal` carries no image block. In prompt mode the attached
+//! A goal session's only first message is its `/goal` (SPEC-117, ADR-0095), and its condition is
+//! the person's whole request followed by the definition of done (SPEC-212, ADR-0168): each
+//! attached file sits at its place as a path the agent opens with its Read tool, since a `/goal`
+//! carries no image block. The request is also written to a file (no length limit), which a cut
+//! condition and the short goal typed into a resumed session point at. In prompt mode the attached
 //! files reach the first message natively: an image pasted into the TUI (`[Image #N]`, SPEC-030,
 //! ADR-0026), another file mentioned as `@path` (SPEC-025, ADR-0022).
 //!
 //! A file keeps its place in the text (SPEC-124, ADR-0101): the composer writes it there as a
 //! quoted mention `@'/path'`, and the request file and the first message carry it at that place.
 
-/// Longest goal condition Yulius gives (Claude Code 2.1.292 caps goal conditions at 4000
-/// characters; half of it leaves room for a lower cap again).
-pub const GOAL_MAX_CHARS: usize = 2000;
+/// Longest launch goal condition, in UTF-16 code units: Claude Code 2.1.292's own cap, which it
+/// compares with the JavaScript string length (SPEC-212 WHL-002).
+pub const GOAL_MAX_UNITS: usize = 4000;
 
-/// Longest request text quoted inside the goal condition; a longer one is only named by its file.
-const INLINE_REQUEST_MAX_CHARS: usize = 150;
+/// Longest goal condition typed into a resumed session, in UTF-16 code units: Claude Code 2.1.292
+/// takes a longer write as a paste, and a pasted `/goal` is no command (SPEC-212 WHL-003).
+pub const TYPED_GOAL_MAX_UNITS: usize = 700;
 
 /// The delivery a task's work goes through, as far as its definition of done needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,7 +235,17 @@ impl Request {
     /// `parts` as text, each file written by `file` (from its number and path), kept off the
     /// word before it and a word after it by a space (an `@` mention needs one before it).
     fn render_with(&self, parts: &[Part], file: impl Fn(usize, &str) -> String) -> String {
+        self.render_spans(parts, file).0
+    }
+
+    /// [`Self::render_with`], with the byte range each file takes in the text.
+    fn render_spans(
+        &self,
+        parts: &[Part],
+        file: impl Fn(usize, &str) -> String,
+    ) -> (String, Vec<std::ops::Range<usize>>) {
         let mut out = String::new();
+        let mut spans = Vec::new();
         for (i, part) in parts.iter().enumerate() {
             match part {
                 Part::Text(text) => out.push_str(text),
@@ -244,7 +256,9 @@ impl Request {
                     if out.ends_with(|c: char| !c.is_whitespace()) {
                         out.push(' ');
                     }
+                    let start = out.len();
                     out.push_str(&file(*n, path));
+                    spans.push(start..out.len());
                     if let Some(Part::Text(next)) = parts.get(i + 1)
                         && next.starts_with(char::is_alphanumeric)
                     {
@@ -253,7 +267,7 @@ impl Request {
                 }
             }
         }
-        out
+        (out, spans)
     }
 }
 
@@ -349,15 +363,36 @@ fn one_line(text: &str) -> String {
         .join(" ")
 }
 
+/// The closing summary a definition of done asks for (SPEC-212 WHL-004).
+const SUMMARY: &str =
+    "closing summary given (what changed, how it was verified, what could not be tested)";
+
 impl DoneDefinition {
-    /// The definition of done in one short sentence (part of the goal condition).
+    /// The definition of done of a sandbox's delivery profile: the environments after
+    /// integration that have a deploy command are the agent's to deploy and verify.
+    #[must_use]
+    pub fn for_profile(profile: &crate::delivery::DeliveryProfile, playground: bool) -> Self {
+        Self {
+            integration_branch: profile.integration_branch.clone(),
+            production_branch: profile.production_branch.clone(),
+            integration_environments: profile
+                .environments_after(crate::delivery::Stage::Integration)
+                .filter(|e| e.command.is_some())
+                .map(|e| e.name.clone())
+                .collect(),
+            playground,
+        }
+    }
+
+    /// The definition of done in one short sentence (part of the goal condition), with what the
+    /// closing summary holds (SPEC-212 WHL-004).
     #[must_use]
     pub fn short(&self) -> String {
         if self.playground {
             return format!(
                 "Done = repository changes merged into {} of this playground with delivery_merge \
                  on green Yulius CI after your own gates and the review, or work needing no change \
-                 reported; closing summary given.",
+                 reported; {SUMMARY}.",
                 self.integration_branch
             );
         }
@@ -371,7 +406,7 @@ impl DoneDefinition {
         };
         format!(
             "Done = repository changes merged into {} on green Yulius CI{deploy}, or work needing \
-             no change reported; closing summary given; never promote to {} unless asked.",
+             no change reported; {SUMMARY}; never promote to {} unless asked.",
             self.integration_branch, self.production_branch
         )
     }
@@ -488,38 +523,81 @@ pub fn request_markdown(
     out
 }
 
-/// The `/goal` condition for a task: the request itself when it is short (with no attached
-/// file), else the request file and the attached files (when they fit), followed by the
-/// definition of done. Never longer than [`GOAL_MAX_CHARS`].
+/// The `/goal` condition a fresh goal session is launched with (SPEC-212 WHL-001): the request as
+/// the person wrote it, its lines kept and each attached file at its place as `[file N: <path>]`,
+/// then a blank line and the definition of done. Yulius's other rules reach the agent and the
+/// goal's judge in the briefing (ADR-0168). A request past [`GOAL_MAX_UNITS`] is cut and points at
+/// its request file (WHL-002); the condition is never longer.
 #[must_use]
 pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefinition) -> String {
-    let text = one_line(&request.text);
+    let (rendered, files) = request.render_spans(&request.parts, |n, path| {
+        format!("[file {}: {path}]", n + 1)
+    });
+    let lead = rendered.len() - rendered.trim_start().len();
+    let text = rendered.trim();
     let done = done.short();
-    let inline = format!("{text} | {done} | Full request: {request_path}");
-    if request.attachments.is_empty()
-        && !text.is_empty()
-        && text.chars().count() <= INLINE_REQUEST_MAX_CHARS
-        && inline.chars().count() <= GOAL_MAX_CHARS
-    {
-        return inline;
+    if text.is_empty() {
+        let named = format!("Everything requested in {request_path} is done. {done}");
+        return take_units(&named, GOAL_MAX_UNITS).to_owned();
     }
-    let named = format!("Everything requested in {request_path} is done. {done}");
-    if !request.attachments.is_empty() {
-        // As they are: an attachment path holds no control character (`attachment_path`).
-        let files = request.attachments.join(", ");
-        let with_files = format!(
-            "Everything requested in {request_path} is done. Attached files (open each with the \
-             Read tool; it shows images): {files}. {done}"
-        );
-        if with_files.chars().count() <= GOAL_MAX_CHARS {
-            return with_files;
+    let whole = format!("{text}\n\n{done}");
+    if utf16_len(&whole) <= GOAL_MAX_UNITS {
+        return whole;
+    }
+    let tail = format!("\u{2026}\n\n(The request continues in {request_path}.)\n\n{done}");
+    let mut end = take_units(text, GOAL_MAX_UNITS.saturating_sub(utf16_len(&tail))).len();
+    // Never part of a file marker: that file is named whole in the request file.
+    if let Some(file) = files
+        .iter()
+        .map(|span| span.start.saturating_sub(lead)..span.end.saturating_sub(lead))
+        .find(|span| span.start < end && end < span.end)
+    {
+        end = file.start;
+    }
+    let cut = text[..end].trim_end();
+    // An unusually long path or branch names: the cap still holds.
+    take_units(&format!("{cut}{tail}"), GOAL_MAX_UNITS).to_owned()
+}
+
+/// The `/goal` condition typed into a resumed session (SPEC-212 WHL-003): one line of at most
+/// [`TYPED_GOAL_MAX_UNITS`], since it is typed as keystrokes (a line break would submit it, a long
+/// write is a paste). The request and the definition of done when the request has no attached
+/// file and fits, else the request file named; its conversation already holds the whole request.
+#[must_use]
+pub fn typed_goal_condition(
+    request: &Request,
+    request_path: &str,
+    done: &DoneDefinition,
+) -> String {
+    let done = one_line(&done.short());
+    let text = one_line(&request.text);
+    if request.attachments.is_empty() && !text.is_empty() {
+        let inline = format!("{text} | {done}");
+        if utf16_len(&inline) <= TYPED_GOAL_MAX_UNITS {
+            return inline;
         }
     }
-    if named.chars().count() <= GOAL_MAX_CHARS {
-        return named;
+    let named = one_line(&format!(
+        "Everything requested in {request_path} is done. {done}"
+    ));
+    take_units(&named, TYPED_GOAL_MAX_UNITS).to_owned()
+}
+
+/// Length in UTF-16 code units, as JavaScript (and so Claude Code) counts a string.
+fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// The longest prefix of `text` of at most `max` UTF-16 code units, at a character boundary.
+fn take_units(text: &str, max: usize) -> &str {
+    let mut units = 0;
+    for (i, c) in text.char_indices() {
+        units += c.len_utf16();
+        if units > max {
+            return &text[..i];
+        }
     }
-    // An unusually long path or branch names: keep the request file, cut the rest.
-    named.chars().take(GOAL_MAX_CHARS).collect()
+    text
 }
 
 #[cfg(test)]
@@ -844,79 +922,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_short_request_is_the_goal_with_the_definition_of_done() {
-        let goal = goal_condition(
-            &Request::parse("Stopped tasks flash Working, fix"),
-            PATH,
-            &done(&[]),
-        );
-        assert!(goal.starts_with("Stopped tasks flash Working, fix | Done = repository changes merged into dev on green Yulius CI, or work"));
-        assert!(goal.contains("never promote to main unless asked"));
-        assert!(goal.ends_with(PATH));
-        assert!(
-            goal.chars().count() <= GOAL_MAX_CHARS,
-            "{}",
-            goal.chars().count()
-        );
+    fn units(text: &str) -> usize {
+        text.encode_utf16().count()
     }
 
+    /// SPEC-212 WHL-001: the launch condition is the request as written, its lines kept, then the
+    /// definition of done; no request-file path when it fits.
     #[test]
-    fn a_long_request_or_one_with_files_is_named_by_its_file() {
-        let long = Request::parse(&"word ".repeat(200));
-        for request in [long, Request::parse("Short\n@/srv/a.png")] {
-            let goal = goal_condition(&request, PATH, &done(&["dev"]));
-            assert!(goal.starts_with(&format!("Everything requested in {PATH} is done.")));
-            assert!(goal.contains(" Done = "), "{goal}");
-            assert!(goal.contains("deployed to dev and verified"));
-            assert!(
-                goal.chars().count() <= GOAL_MAX_CHARS,
-                "{}",
-                goal.chars().count()
-            );
-        }
-        // Never over the cap, whatever the names.
-        let huge = DoneDefinition {
-            integration_branch: "b".repeat(300),
-            ..done(&[])
-        };
-        assert!(
-            goal_condition(&Request::parse("x"), PATH, &huge)
-                .chars()
-                .count()
-                <= GOAL_MAX_CHARS
-        );
-    }
-
-    /// SPEC-117 ONE-002: the goal is the session's only first message, so it names the attached
-    /// files (images too: a `/goal` carries no image block), as plain paths in order.
-    #[test]
-    fn the_goal_names_the_attached_files() {
+    fn the_goal_is_the_whole_request_then_the_definition_of_done() {
         let request =
-            Request::parse("Make it blue\n@/srv/a.png\n@'/srv/my shot.JPG'\n@/srv/notes.txt");
+            Request::parse("Fix the header\n\nIt overlaps the logo, `nav` too.\n- on \"mobile\"");
+        let goal = goal_condition(&request, PATH, &done(&["dev"]));
+        assert_eq!(
+            goal,
+            format!(
+                "Fix the header\n\nIt overlaps the logo, `nav` too.\n- on \"mobile\"\n\n{}",
+                done(&["dev"]).short()
+            )
+        );
+        assert!(goal.contains("deployed to dev and verified"));
+        assert!(!goal.contains(PATH), "{goal}");
+        // A long request that fits is whole too: no 150-character quote any more.
+        let long = "word ".repeat(600);
+        let goal = goal_condition(&Request::parse(&long), PATH, &done(&[]));
+        assert!(goal.starts_with(long.trim_end()), "{goal}");
+        assert!(!goal.contains(PATH));
+    }
+
+    /// SPEC-212 WHL-001: each attached file sits where it was, as `[file N: <path>]`; a file
+    /// after all the text is on its own line; a request of files only is its files.
+    #[test]
+    fn the_goal_has_each_attached_file_at_its_place() {
+        let request = Request::parse(
+            "This part @'/srv/a.png' looks wrong,\nwhile here@'/srv/my b.png'.\n@/srv/c.txt",
+        );
         let goal = goal_condition(&request, PATH, &done(&[]));
         assert_eq!(
             goal,
             format!(
-                "Everything requested in {PATH} is done. Attached files (open each with the Read \
-                 tool; it shows images): /srv/a.png, /srv/my shot.JPG, /srv/notes.txt. {}",
+                "This part [file 1: /srv/a.png] looks wrong,\nwhile here [file 2: /srv/my b.png].\n\
+                 [file 3: /srv/c.txt]\n\n{}",
                 done(&[]).short()
             )
         );
         assert!(!goal.contains('@'), "{goal}");
-        // A path is named as it is, its spaces kept.
-        let spaced = goal_condition(&Request::parse("Look\n@'/srv/a  b.png'"), PATH, &done(&[]));
-        assert!(spaced.contains(": /srv/a  b.png. Done"), "{spaced}");
-        // Without files, a short request is still quoted and a long one named.
-        assert!(!goal_condition(&Request::parse("Short"), PATH, &done(&[])).contains("Attached"));
+        let files = goal_condition(
+            &Request::parse("@/srv/a.png\n@/srv/b.png"),
+            PATH,
+            &done(&[]),
+        );
+        assert_eq!(
+            files,
+            format!(
+                "[file 1: /srv/a.png]\n[file 2: /srv/b.png]\n\n{}",
+                done(&[]).short()
+            )
+        );
     }
 
+    /// A request with neither text nor files (only control characters) names its file.
     #[test]
-    fn attached_files_that_would_pass_the_cap_are_left_to_the_request_file() {
-        let many: String = (0..40)
-            .map(|i| format!("\n@/srv/attachments/{}/shot-{i}.png", "x".repeat(60)))
-            .collect();
-        let goal = goal_condition(&Request::parse(&format!("Look{many}")), PATH, &done(&[]));
+    fn an_empty_request_names_its_file() {
+        let goal = goal_condition(&Request::parse("\u{7}\n\u{1b}"), PATH, &done(&[]));
         assert_eq!(
             goal,
             format!(
@@ -924,22 +991,162 @@ mod tests {
                 done(&[]).short()
             )
         );
-        // A few files of a real sandbox fit.
-        let few: String = (0..4)
-            .map(|i| {
-                format!(
-                    "\n@/var/lib/yulius/sandboxes/{}/attachments/pasted-{i}.png",
-                    "d".repeat(36)
-                )
-            })
-            .collect();
+    }
+
+    /// SPEC-212 WHL-001: control characters other than line breaks and tabs are dropped, as
+    /// everywhere a request goes; the request's own blank edges go.
+    #[test]
+    fn the_goal_carries_no_control_characters() {
         let goal = goal_condition(
-            &Request::parse(&format!("Look{few}")),
+            &Request::parse("\n  Make it\u{1b}[31m red\r\n\tnow\u{7}  \n\n"),
             PATH,
-            &done(&["dev"]),
+            &done(&[]),
         );
-        assert!(goal.contains("pasted-3.png. Done = "), "{goal}");
-        assert!(goal.chars().count() <= GOAL_MAX_CHARS);
+        assert!(goal.starts_with("Make it[31m red\n\tnow"), "{goal:?}");
+        assert!(
+            !goal
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{goal:?}"
+        );
+    }
+
+    /// SPEC-212 WHL-002: never over Claude Code's 4000 UTF-16 code units; a longer request is cut
+    /// and points at the request file, and the definition of done is kept.
+    #[test]
+    fn a_request_past_the_cap_is_cut_and_points_at_its_file() {
+        for unit in ["word ", "\u{1f600} ", "\u{17c}\u{f3}\u{142}w "] {
+            let request = Request::parse(&unit.repeat(3000));
+            let goal = goal_condition(&request, PATH, &done(&["dev"]));
+            assert!(units(&goal) <= GOAL_MAX_UNITS, "{}", units(&goal));
+            assert!(units(&goal) > GOAL_MAX_UNITS - 20, "{}", units(&goal));
+            assert!(
+                goal.ends_with(&format!(
+                    "\u{2026}\n\n(The request continues in {PATH}.)\n\n{}",
+                    done(&["dev"]).short()
+                )),
+                "{goal}"
+            );
+        }
+        // Exactly at the cap it is whole.
+        let done_text = done(&[]).short();
+        let room = GOAL_MAX_UNITS - units(&done_text) - 2;
+        let fits = "x".repeat(room);
+        let goal = goal_condition(&Request::parse(&fits), PATH, &done(&[]));
+        assert_eq!(goal, format!("{fits}\n\n{done_text}"));
+        let over = "x".repeat(room + 1);
+        assert!(goal_condition(&Request::parse(&over), PATH, &done(&[])).contains(PATH));
+        // A cut never leaves part of a file marker, even a path holding `]`: the file goes whole
+        // to the request file.
+        for path in [
+            "/srv/dddddddddddddddddddddddddddddddddddddddd/shot.png",
+            "/srv/a]b/shot.png",
+        ] {
+            for pad in 3_450..3_700 {
+                let request = Request::parse(&format!(
+                    "{} @'{path}' {}",
+                    "x".repeat(pad),
+                    "y".repeat(400)
+                ));
+                let goal = goal_condition(&request, PATH, &done(&[]));
+                assert!(units(&goal) <= GOAL_MAX_UNITS, "{pad}");
+                let text = &goal[..goal.find('\u{2026}').ok_or("not cut").unwrap_or_default()];
+                let marker = format!("[file 1: {path}]");
+                let kept = text.trim_end().ends_with('x') || text.contains(&marker);
+                assert!(kept, "{pad}: {}", &text[text.len().saturating_sub(80)..]);
+            }
+        }
+        // Whatever the names, never over the cap.
+        let huge = DoneDefinition {
+            integration_branch: "b".repeat(5000),
+            ..done(&[])
+        };
+        assert!(units(&goal_condition(&Request::parse("x"), PATH, &huge)) <= GOAL_MAX_UNITS);
+    }
+
+    /// SPEC-212 WHL-003: a goal typed into a resumed session is one line, short enough that
+    /// Claude Code takes it as typing (a longer write is a paste, which is no command).
+    #[test]
+    fn a_typed_goal_is_one_short_line() {
+        let short = Request::parse("Fix the header\n\nIt overlaps\tthe logo");
+        assert_eq!(
+            typed_goal_condition(&short, PATH, &done(&[])),
+            format!(
+                "Fix the header It overlaps the logo | {}",
+                done(&[]).short()
+            )
+        );
+        // A request that does not fit, or has attached files, is named by its file, which lists
+        // the files.
+        let long = Request::parse(&"word ".repeat(200));
+        for request in [long, Request::parse("Look @'/srv/a.png' here\n@/srv/b.txt")] {
+            let goal = typed_goal_condition(&request, PATH, &done(&["dev"]));
+            assert_eq!(
+                goal,
+                format!(
+                    "Everything requested in {PATH} is done. {}",
+                    done(&["dev"]).short()
+                )
+            );
+            assert!(!goal.contains("/srv/"), "{goal}");
+        }
+        // Never a line break, never over the bound, whatever the names.
+        let huge = DoneDefinition {
+            integration_branch: "b".repeat(5000),
+            ..done(&[])
+        };
+        for (request, done) in [
+            (Request::parse("x"), huge.clone()),
+            (Request::parse(&"\u{1f600}".repeat(300)), done(&[])),
+        ] {
+            let goal = typed_goal_condition(&request, PATH, &done);
+            assert!(units(&goal) <= TYPED_GOAL_MAX_UNITS, "{}", units(&goal));
+            assert!(!goal.contains('\n'), "{goal}");
+        }
+        // The bound is what Claude Code 2.1.292 still takes as typing: `/goal ` and 700 units
+        // were the command in ASCII, in two-byte letters and in emoji; 828 characters were a
+        // paste (SPEC-212 Evidence).
+    }
+
+    /// The definition of done follows the delivery profile: integration environments with a
+    /// command are deployed and verified; a manual one is not the agent's.
+    #[test]
+    fn the_definition_of_done_comes_from_the_delivery_profile() {
+        use crate::delivery::{DeliveryProfile, Environment, Stage, Verify};
+        let mut profile = DeliveryProfile::standard();
+        let env = |name: &str, after, command: Option<&str>| Environment {
+            name: name.to_owned(),
+            after,
+            command: command.map(str::to_owned),
+            verify: Verify::Manual,
+        };
+        profile.environments = vec![
+            env("dev", Stage::Integration, Some("scripts/deploy dev")),
+            env("qa", Stage::Integration, None),
+            env("prod", Stage::Production, Some("scripts/deploy prod")),
+        ];
+        assert_eq!(DoneDefinition::for_profile(&profile, false), done(&["dev"]));
+        assert!(DoneDefinition::for_profile(&profile, true).playground);
+    }
+
+    /// SPEC-212 WHL-004: the goal's definition of done says what the closing summary holds, as
+    /// the request file did; the goal's judge rules on it.
+    #[test]
+    fn the_definition_of_done_says_what_the_summary_holds() {
+        let playground = DoneDefinition {
+            playground: true,
+            ..done(&[])
+        };
+        for done in [done(&[]), done(&["dev"]), playground] {
+            assert!(
+                done.short().contains(
+                    "closing summary given (what changed, how it was verified, what could not be \
+                     tested)"
+                ),
+                "{}",
+                done.short()
+            );
+        }
     }
 
     #[test]

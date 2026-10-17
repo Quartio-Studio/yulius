@@ -3317,6 +3317,7 @@ dependencies = [
 name = "yulius-harness"
 version = "0.1.0"
 dependencies = [
+ "nix 0.31.3",
  "serde_json",
  "sha2",
  "tempfile",
