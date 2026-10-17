@@ -274,7 +274,8 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
 
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
-  with 18 skipped, plus lint, macOS, doctests, deps and docs. The final head's gate: GATE_LINE.
+  with 18 skipped, plus lint, macOS, doctests, deps and docs. At
+  e93af855, the last code change, it passed with 2211 tests (18 skipped).
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
@@ -326,7 +327,8 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   **low finding in the change** for the executor to decide: `repository_path` refused `.git`
   only as the first segment. I fixed it test-first (a `sub/.git/config` case). The fake-GitHub
   fixture's ignore entry was widened to `credentials`, because Vidoc worded its title
-  differently on that run.
+  differently on that run. The change scan at e93af855 exited 0: nothing fails, no low finding in the
+  change, and one low finding outside it (`briefing.rs:877`) for CI to file.
 
 ### Not tested here
 
