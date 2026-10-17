@@ -1,11 +1,11 @@
 ---
 yulius-task: b8380045-3c62-46bd-add3-7fcf66a39101
-status: in-progress
+status: done
 ---
 
 # SPEC-210: Claude Code sessions start in the Concise output style
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #197
 Scope authorization: task #197 (requested by MrFishPL): "https://code.claude.com/docs/en/output-styles#concise
@@ -63,8 +63,8 @@ that stays so; "everywhere" means every session Yulius launches.
 - [x] Sessions default to the Concise style through the sandbox's user settings
 - [x] Docs, ADR and the changes log describe the Concise default
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 2 approves the exact head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Final review round approves the exact head
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -130,4 +130,6 @@ Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a p
   - `CockpitLaunch.contained` from dev.
   Round 2 also agreed that the folder-trust finding is a false positive, on condition the title
   was narrowed.
+- Review round 3 approved `79fd93d6`: all round-2 fixes verified, and CON-004 holds after dev's
+  SPEC-208 merge. Its one nit, the name of the review step in this Plan, is applied here.
 - Not tested here: a full task run in the web UI after deployment (no deploy in this task).
