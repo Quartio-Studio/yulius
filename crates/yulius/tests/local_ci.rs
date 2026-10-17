@@ -460,8 +460,9 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     Ok(())
 }
 
-/// SPEC-206 RMV-002 (#624): removing a sandbox cancels its CI runs, the running one (its jobs
-/// killed) and the queued one: they went on to their end and published their statuses.
+/// SPEC-206 RMV-002 (#624): removing a sandbox cancels its CI runs (here a running one, its jobs
+/// killed; a queued one takes `ci_cancel`'s queued path): they went on to their end and
+/// published their statuses.
 #[tokio::test]
 async fn removing_the_sandbox_cancels_its_ci_runs() -> TestResult {
     let f = fixture().await?;

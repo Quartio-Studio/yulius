@@ -679,6 +679,7 @@ impl App {
             Ok(reader) => {
                 self.start_pump(runtime, reader);
                 tracing::info!(shell = %runtime.id, sandbox = %record.slug, user = %ctx.user.id, "sandbox shell started");
+                self.end_if_removed(runtime);
                 Ok(runtime.info())
             }
             Err(err) => {
@@ -1050,6 +1051,20 @@ impl App {
             ShellKind::Cockpit if runtime.switching.load(Ordering::SeqCst) => {}
             ShellKind::Cockpit => runtime.hub.notice(COCKPIT_NOT_ENDED),
         }
+    }
+
+    /// Ends a shell that just started, in the background, when its sandbox was removed meanwhile
+    /// (SPEC-206): the removal ended the shells registered before it was recorded, and this one
+    /// registered first and reads the removal after, so one of the two ends it.
+    pub(crate) fn end_if_removed(self: &Arc<Self>, runtime: &Arc<ShellRuntime>) {
+        let app = Arc::clone(self);
+        let shell = Arc::clone(runtime);
+        tokio::spawn(async move {
+            if app.sandbox_removed(&shell.sandbox).await {
+                tracing::info!(shell = %shell.id, sandbox = %shell.sandbox, "ending a shell of a removed sandbox");
+                app.end_shells(&[shell]).await;
+            }
+        });
     }
 
     /// Ends shells: every shell is asked first, then all are awaited against one deadline.

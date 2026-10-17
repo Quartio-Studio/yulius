@@ -269,7 +269,7 @@ async fn a_removed_sandbox_gets_no_browser_from_its_stopping_task() -> TestResul
             json!({"url": "https://docs.example"}),
         )
         .await?;
-        assert_eq!(opened["result"]["isError"], true, "{opened}");
+        assert_eq!(opened["isError"], true, "{opened}");
         assert!(
             f.h.app
                 .deps

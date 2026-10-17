@@ -68,6 +68,10 @@ pub const BIND_TRIES: u8 = 3;
 const BIND_DONE: u8 = u8::MAX;
 /// The marker a removed sandbox's state directory gets ([`Manager::retire`], SPEC-206 RMV-004).
 const RETIRED: &str = "retired";
+/// How long a retired sandbox's holder outlives its retirement: its tasks' stop escalation
+/// (about 20 s) and its shells' exit grace end their runs first, with egress and the engine
+/// still there (SPEC-206 RMV-004).
+pub const RETIRE_GRACE: Duration = Duration::from_secs(60);
 
 /// Why sandboxes get no engine: `YULIUS_SANDBOX_DOCKER=off` (SPEC-196 DKL-005).
 pub const DOCKER_OFF: &str = "Docker is turned off on this Yulius server \
@@ -259,6 +263,9 @@ pub enum PrepareError {
     /// The holder could not start.
     #[error("the sandbox could not be prepared: {0}")]
     Holder(String),
+    /// The sandbox was removed ([`Manager::retire`]): nothing runs in it any more.
+    #[error("the sandbox was removed")]
+    Retired,
 }
 
 struct Live {
@@ -865,6 +872,9 @@ impl Manager {
     /// # Errors
     /// Over the disk quota, or the holder cannot start.
     pub async fn prepare(&self, request: &SandboxRequest) -> Result<Option<Joined>, PrepareError> {
+        if self.retired(&request.id) {
+            return Err(PrepareError::Retired);
+        }
         let Some(base) = self.bases.current() else {
             return Ok(None);
         };
@@ -968,10 +978,11 @@ impl Manager {
         state.last_used = Some(Instant::now());
     }
 
-    /// Retires `sandbox` (it was removed, SPEC-206 RMV-004): [`Manager::tick`] stops its holder,
-    /// with every process in it (its Docker engine, containers, leftovers), once no run holds a
-    /// lease, and [`Manager::adopt_one`] stops it instead of adopting it. A marker in its state
-    /// directory keeps it across restarts.
+    /// Retires `sandbox` (it was removed, SPEC-206 RMV-004): [`Manager::prepare`] refuses it,
+    /// [`Manager::tick`] stops its holder (with its Docker engine and containers, and egress)
+    /// [`RETIRE_GRACE`] after this once no run holds a lease, whatever still runs in it, and
+    /// [`Manager::adopt_one`] stops it instead of adopting it. A marker in its state directory
+    /// keeps it across restarts; its time is the retirement's.
     pub async fn retire(&self, sandbox: &str) {
         let dir = self.state_dir(sandbox);
         let marked = tokio::task::spawn_blocking(move || {
@@ -992,6 +1003,14 @@ impl Manager {
     /// Whether `sandbox` was retired ([`Manager::retire`]).
     fn retired(&self, sandbox: &str) -> bool {
         self.state_dir(sandbox).join(RETIRED).exists()
+    }
+
+    /// How long ago `sandbox` was retired; `None` when it was not.
+    fn retired_for(&self, sandbox: &str) -> Option<Duration> {
+        let modified = std::fs::metadata(self.state_dir(sandbox).join(RETIRED))
+            .and_then(|meta| meta.modified())
+            .ok()?;
+        Some(modified.elapsed().unwrap_or_default())
     }
 
     fn cgroup_of(&self, sandbox: &str) -> Option<SandboxGroups> {
@@ -1262,7 +1281,7 @@ impl Manager {
                         .as_ref()
                         .is_some_and(|base| base.id != record.base_id);
                     let stop = holder_stops(
-                        self.retired(&sandbox),
+                        self.retired_for(&sandbox),
                         state.leases,
                         runs,
                         idle_for,
@@ -1574,14 +1593,12 @@ enum FrontAction {
     Replace(DockerServe),
 }
 
-/// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
-/// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
-/// a running engine.
 /// Whether [`Manager::tick`] stops a live holder: never while a run holds a lease; a retired
-/// sandbox's at once, whatever else still runs in it (SPEC-206 RMV-004); any other once nothing
-/// runs in it and it was idle for `stop_after` (a minute when its base was superseded).
+/// sandbox's once it was retired for [`RETIRE_GRACE`], whatever else still runs in it (SPEC-206
+/// RMV-004); any other once nothing runs in it and it was idle for `stop_after` (a minute when
+/// its base was superseded).
 fn holder_stops(
-    retired: bool,
+    retired_for: Option<Duration>,
     leases: usize,
     runs: usize,
     idle_for: Duration,
@@ -1589,11 +1606,14 @@ fn holder_stops(
     superseded: bool,
 ) -> bool {
     leases == 0
-        && (retired
+        && (retired_for.is_some_and(|retired| retired >= RETIRE_GRACE)
             || (runs == 0
                 && (idle_for >= stop_after || (superseded && idle_for >= Duration::from_secs(60)))))
 }
 
+/// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
+/// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
+/// a running engine.
 fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe) -> FrontAction {
     let running = current
         .filter(|(_, running)| *running)
@@ -2537,33 +2557,62 @@ while True:
         Ok(())
     }
 
-    /// SPEC-206 RMV-004: a retired sandbox's holder stops as soon as no run holds a lease,
-    /// whatever else runs in it; any other stops only once nothing runs and it was idle.
+    /// SPEC-206 RMV-004: a retired sandbox's holder stops once it was retired for the grace and
+    /// no run holds a lease, whatever else runs in it; any other stops only once nothing runs
+    /// and it was idle.
     #[test]
-    fn a_retired_holder_stops_once_no_lease_is_left() {
+    fn a_retired_holder_stops_after_its_grace_once_no_lease_is_left() {
         let after = Duration::from_secs(300);
         let now = Duration::ZERO;
+        let retired = Some(RETIRE_GRACE);
         assert!(
-            holder_stops(true, 0, 5, now, after, false),
+            holder_stops(retired, 0, 5, now, after, false),
             "leftovers do not hold it up"
         );
         assert!(
-            !holder_stops(true, 1, 0, now, after, false),
+            !holder_stops(retired, 1, 0, now, after, false),
             "a run still holds a lease"
         );
         assert!(
-            !holder_stops(false, 0, 5, after, after, false),
+            !holder_stops(Some(Duration::from_secs(5)), 0, 5, now, after, false),
+            "its runs are still ending"
+        );
+        assert!(
+            !holder_stops(None, 0, 5, after, after, false),
             "something runs in it"
         );
         assert!(
-            !holder_stops(false, 0, 0, now, after, false),
+            !holder_stops(None, 0, 0, now, after, false),
             "not idle long enough"
         );
-        assert!(holder_stops(false, 0, 0, after, after, false));
+        assert!(holder_stops(None, 0, 0, after, after, false));
         assert!(
-            holder_stops(false, 0, 0, Duration::from_secs(60), after, true),
+            holder_stops(None, 0, 0, Duration::from_secs(60), after, true),
             "superseded"
         );
+    }
+
+    /// SPEC-206 RMV-004 (review of #193): a start under way at the removal starts no holder for
+    /// the removed sandbox.
+    #[tokio::test]
+    async fn a_retired_sandbox_is_not_prepared() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 40);
+        manager.retire("s1").await;
+        assert_eq!(
+            manager.prepare(&request(data.path())).await.err(),
+            Some(PrepareError::Retired)
+        );
+        Ok(())
+    }
+
+    /// Dates the retirement of `s1` `ago` back.
+    fn retired_ago(manager: &Manager, ago: Duration) -> Result<(), Box<dyn std::error::Error>> {
+        let marker = std::fs::File::options()
+            .write(true)
+            .open(manager.state_dir("s1").join(RETIRED))?;
+        marker.set_modified(std::time::SystemTime::now() - ago)?;
+        Ok(())
     }
 
     /// A manager whose adopted holder of `s1` is a child `sleep` of this process (its namespaces
@@ -2592,8 +2641,8 @@ while True:
     }
 
     /// SPEC-206 RMV-004 (#624): a removed sandbox's holder stopped only once nothing ran in its
-    /// namespaces, so a leftover process (here this test itself) kept it and its Docker engine
-    /// up for good. Retired, the next tick stops it.
+    /// namespaces, so a process there (here this test itself; in a sandbox its Docker engine and
+    /// containers) kept it up for good. Retired, a tick after the grace stops it.
     #[tokio::test]
     async fn the_tick_stops_a_retired_holder_while_other_processes_run_in_it()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2612,11 +2661,17 @@ while True:
 
         manager.retire("s1").await;
         manager.tick().await;
+        assert!(
+            crate::holder::exists(pid),
+            "within the grace: its runs are still ending"
+        );
+
+        retired_ago(&manager, RETIRE_GRACE)?;
+        manager.tick().await;
         let stopped = gone(pid);
         kill(pid);
         assert!(stopped, "the retired holder is stopped");
         assert!(manager.entry("s1").lock().await.live.is_none());
-        assert_eq!(manager.processes("s1").await, 0);
         Ok(())
     }
 

@@ -119,18 +119,39 @@ impl App {
                 .is_ok()
     }
 
-    /// The sandbox's browser, started on first use.
+    /// The sandbox's browser, started on first use; never for a removed sandbox (SPEC-206): its
+    /// removal is checked again once the browser runs, so a start racing the removal's own stop
+    /// is stopped too.
     ///
     /// # Errors
-    /// [`BrowserFailure`] when Chromium is missing or fails to start.
+    /// [`BrowserFailure`] when Chromium is missing or fails to start, or the sandbox was removed.
     pub async fn browser_session(
         &self,
         sandbox: &SandboxId,
     ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
-        self.deps
+        let removed =
+            || BrowserFailure::new(BrowserFailureKind::NotFound, "the sandbox was removed");
+        if self.sandbox_removed(sandbox).await {
+            return Err(removed());
+        }
+        let session = self
+            .deps
             .browser
             .ensure(sandbox, &self.browser_profile_dir(sandbox))
-            .await
+            .await?;
+        if self.sandbox_removed(sandbox).await {
+            self.deps.browser.stop(sandbox).await;
+            return Err(removed());
+        }
+        Ok(session)
+    }
+
+    /// Whether `sandbox` was removed (or cannot be read: nothing starts for it then).
+    pub(crate) async fn sandbox_removed(&self, sandbox: &SandboxId) -> bool {
+        !matches!(
+            self.deps.store.sandbox(sandbox).await,
+            Ok(Some(record)) if record.removed_at.is_none()
+        )
     }
 
     async fn agent_browser(&self, ctx: &AgentContext) -> AppResult<Arc<dyn BrowserSession>> {

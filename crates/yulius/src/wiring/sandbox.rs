@@ -317,6 +317,8 @@ impl SandboxIsolation for NamespaceIsolation {
                     .into(),
             )),
             Ok(None) => Ok(None),
+            // Never the previous containment: nothing runs for a removed sandbox (SPEC-206).
+            Err(PrepareError::Retired) => Err(AppError::NotFound),
             Err(error @ PrepareError::OverQuota { .. }) => {
                 Err(AppError::Conflict(error.to_string()))
             }

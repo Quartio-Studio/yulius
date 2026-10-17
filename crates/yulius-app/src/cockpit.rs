@@ -347,6 +347,7 @@ impl App {
                     self.start_pump(&runtime, reader);
                     self.start_cockpit_watch(&runtime);
                     tracing::info!(shell = %id, sandbox = %record.slug, user = %user.id, account = %account.id, continue_interrupted, "cockpit started");
+                    self.end_if_removed(&runtime);
                     Ok(runtime.info())
                 }
                 Err(err) => {
