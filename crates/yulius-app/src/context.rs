@@ -238,6 +238,8 @@ pub struct App {
     pub(crate) supertask_holds: crate::supertask::Holds,
     /// The last Docker smoke test started from Settings → Instance (SPEC-203 HST-015).
     pub(crate) docker_smoke: crate::sandbox_docker::SmokeState,
+    /// The last leftovers scan and the running or last deletion (SPEC-215).
+    pub(crate) leftovers: crate::leftovers::LeftoverState,
 }
 
 impl App {
@@ -278,6 +280,7 @@ impl App {
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),
+            leftovers: crate::leftovers::LeftoverState::default(),
         })
     }
 

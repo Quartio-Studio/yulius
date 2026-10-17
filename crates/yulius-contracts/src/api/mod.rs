@@ -12,6 +12,7 @@ pub mod common;
 pub mod files;
 pub mod git;
 pub mod intake;
+pub mod leftovers;
 pub mod mcp;
 pub mod notes;
 pub mod sandboxes;

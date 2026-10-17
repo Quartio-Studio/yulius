@@ -23,7 +23,10 @@ watching, steering and unblocking.
   before too, `yulius doctor --docker-smoke` proves it on a host; SPEC-203: `sudo yulius host
   setup` installs what it needs on a fresh host, every update re-checks it, and Settings →
   Instance shows whether sandboxes get Docker and runs the smoke check), home, shells per user,
-  browser and editor. The CLI
+  browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
+  layer, a done task's build cache) are deleted by themselves after every start and hourly, and
+  the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
+  `yulius leftovers` (SPEC-215). The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and

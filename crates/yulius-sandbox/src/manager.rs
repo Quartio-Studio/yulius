@@ -32,8 +32,8 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use yulius_contracts::ptyhost::SandboxJoin;
 use yulius_contracts::sandbox::{
-    DockerFrontRecord, DockerFrontSpec, DockerServe, EngineSpec, HOLDER_RECORD_VERSION,
-    HolderRecord, HolderSpec, IdMap,
+    DockerFrontRecord, DockerFrontSpec, DockerServe, EngineSpec, HOLDER_RECORD_FILE,
+    HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap,
 };
 
 use crate::base::{BaseInfo, Bases};
@@ -399,6 +399,22 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Whether `name` is a sandbox name as the server makes them (its ids' alphabet: ASCII letters,
+/// digits, `-` and `_`, at most 64): one path component that cannot leave its directory.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The path component of the sandbox `name`: the name itself, or for anything else a fixed
+/// component no sandbox has (`.invalid`), so a path built from it never leaves its tree.
+pub(crate) fn path_name(name: &str) -> &str {
+    if valid_name(name) { name } else { ".invalid" }
+}
+
 /// Bytes as "12.3 GB".
 #[must_use]
 pub fn human(bytes: u64) -> String {
@@ -432,11 +448,14 @@ impl Manager {
             .data_dir
             .join("runtime")
             .join("sandboxes")
-            .join(sandbox)
+            .join(path_name(sandbox))
     }
 
     fn sysroot(&self, sandbox: &str) -> PathBuf {
-        self.config.data_dir.join("sysroots").join(sandbox)
+        self.config
+            .data_dir
+            .join("sysroots")
+            .join(path_name(sandbox))
     }
 
     /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they may (each one
@@ -514,7 +533,11 @@ impl Manager {
             hostname: spec
                 .as_ref()
                 .map_or_else(|| sandbox.to_owned(), |s| s.hostname.clone()),
-            dir: self.config.data_dir.join("sandboxes").join(sandbox),
+            dir: self
+                .config
+                .data_dir
+                .join("sandboxes")
+                .join(path_name(sandbox)),
             port_first: spec.as_ref().map_or(0, |s| s.port_first),
             port_last: spec.as_ref().map_or(0, |s| s.port_last),
         }
@@ -970,6 +993,101 @@ impl Manager {
         .unwrap_or(1)
     }
 
+    /// Whether `sandbox`'s holder runs, ended while processes still use its namespaces (and its
+    /// overlay mount), holds a lease, or is recorded alive in its state directory: its system
+    /// layer and state are never deleted then (SPEC-215 LFT-002). A record that cannot be read
+    /// counts as alive; only a missing one counts as none.
+    pub async fn holder_live(&self, sandbox: &str) -> bool {
+        if !valid_name(sandbox) {
+            return false;
+        }
+        let entry = lock(&self.sandboxes).get(sandbox).cloned();
+        if let Some(entry) = entry {
+            let state = entry.lock().await;
+            if state.live.is_some() || state.leases > 0 {
+                return true;
+            }
+            if let Some(stale) = state.stale.clone() {
+                let runs = tokio::task::spawn_blocking(move || Self::runs_in(stale.net_ns, &[]))
+                    .await
+                    .unwrap_or(1);
+                if runs > 0 {
+                    return true;
+                }
+            }
+        }
+        let record = self.state_dir(sandbox).join(HOLDER_RECORD_FILE);
+        tokio::task::spawn_blocking(move || {
+            // A record that is there but cannot be read (a partial write, a newer format) may
+            // describe a live holder: kept, never guessed dead.
+            match read_json::<HolderRecord>(&record) {
+                Ok(record) => alive(&record),
+                Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+            }
+        })
+        .await
+        .unwrap_or(true)
+    }
+
+    /// Removes `path`, under `sysroots/`, `runtime/sandboxes/`, `system/` or `sandboxes/` of the
+    /// data directory, as root of a mapped namespace where the service user cannot (its files belong
+    /// to a sandbox's mapped ids; SPEC-215).
+    ///
+    /// # Errors
+    /// `path` lies elsewhere, or the removal failed.
+    pub async fn remove_owned_tree(&self, path: &Path) -> Result<(), String> {
+        let data = &self.config.data_dir;
+        let allowed = [
+            data.join("sysroots"),
+            data.join("runtime").join("sandboxes"),
+            data.join("system"),
+            data.join("sandboxes"),
+        ]
+        .iter()
+        .any(|root| path.starts_with(root) && path != root.as_path())
+            && !path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+        if !allowed {
+            return Err(format!("{} is not a sandbox's system tree", path.display()));
+        }
+        let mapper = crate::userns::Mapper {
+            bwrap: self.config.bwrap.clone(),
+            newuidmap: self.config.newuidmap.clone(),
+            newgidmap: self.config.newgidmap.clone(),
+            uid: self.config.uid,
+            gid: self.config.gid,
+        };
+        let exe = self.config.exe.clone();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || crate::base::remove_tree(&mapper, &exe, &path))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Bases that are not current and that no holder of this manager or recorded alive mounts
+    /// (ADR-0161); none while a build runs.
+    pub async fn unused_bases(&self) -> Vec<PathBuf> {
+        if self.building.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
+        let entries: Vec<_> = lock(&self.sandboxes).values().cloned().collect();
+        let mut in_use = Vec::new();
+        for entry in entries {
+            let state = entry.lock().await;
+            if let Some(live) = &state.live {
+                in_use.push(live.record.base_id.clone());
+            }
+            if let Some(stale) = &state.stale {
+                in_use.push(stale.base_id.clone());
+            }
+        }
+        let bases = self.bases.clone();
+        tokio::task::spawn_blocking(move || crate::base::unused(&bases, &in_use))
+            .await
+            .unwrap_or_default()
+    }
+
     /// Ends a lease taken by [`Manager::prepare`].
     pub async fn release(&self, sandbox: &str) {
         let entry = self.entry(sandbox);
@@ -984,6 +1102,10 @@ impl Manager {
     /// [`Manager::adopt_one`] stops it instead of adopting it. A marker in its state directory
     /// keeps it across restarts; its time is the retirement's.
     pub async fn retire(&self, sandbox: &str) {
+        if !valid_name(sandbox) {
+            tracing::warn!(sandbox, "not a sandbox name: nothing retired");
+            return;
+        }
         let dir = self.state_dir(sandbox);
         let marked = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&dir)?;
@@ -2672,6 +2794,149 @@ while True:
         kill(pid);
         assert!(stopped, "the retired holder is stopped");
         assert!(manager.entry("s1").lock().await.live.is_none());
+        Ok(())
+    }
+
+    /// SPEC-215 LFT-002: a holder recorded alive or adopted is live; once it stopped and
+    /// nothing uses its namespaces any more, it is not, and its system may go.
+    #[tokio::test]
+    async fn a_holder_is_live_until_it_stopped_and_nothing_uses_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let (manager, pid) = adopting_child(data.path())?;
+        assert!(!manager.holder_live("other").await, "no holder");
+        let unreadable = manager.state_dir("torn");
+        std::fs::create_dir_all(&unreadable)?;
+        std::fs::write(unreadable.join(HOLDER_RECORD_FILE), "{\"inner_pid\": 4")?;
+        assert!(
+            manager.holder_live("torn").await,
+            "an unreadable record is never guessed dead"
+        );
+        assert!(manager.holder_live("s1").await, "recorded alive");
+        assert!(manager.adopt_one("s1").await);
+        assert!(manager.holder_live("s1").await, "adopted");
+        manager.retire("s1").await;
+        retired_ago(&manager, RETIRE_GRACE)?;
+        manager.tick().await;
+        let stopped = gone(pid);
+        kill(pid);
+        assert!(stopped, "the retired holder is stopped");
+        // The stand-in shares this test's namespaces: the test itself still uses them.
+        let stale = manager.entry("s1").lock().await.stale.clone();
+        if let Some(stale) = stale {
+            assert_eq!(
+                manager.holder_live("s1").await,
+                Manager::runs_in(stale.net_ns, &[]) > 0,
+                "an ended holder is live while processes use its namespaces"
+            );
+            manager.entry("s1").lock().await.stale = Some(HolderRecord {
+                net_ns: u64::MAX,
+                ..stale
+            });
+        }
+        assert!(!manager.holder_live("s1").await, "stopped and unused");
+        Ok(())
+    }
+
+    /// Security scan (high): a sandbox name is one path component of the id alphabet; any other
+    /// name never reaches outside the state and system trees, and retiring it writes nothing.
+    #[tokio::test]
+    async fn a_name_outside_the_id_alphabet_never_leaves_its_tree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 30);
+        let states = data.path().join("runtime/sandboxes");
+        for name in ["../../etc", "..", "/tmp", "a/b", "", "x\0"] {
+            assert!(manager.state_dir(name).starts_with(&states), "{name:?}");
+            assert_eq!(
+                manager.state_dir(name).parent(),
+                Some(states.as_path()),
+                "{name:?}"
+            );
+            assert!(
+                manager
+                    .sysroot(name)
+                    .starts_with(data.path().join("sysroots")),
+                "{name:?}"
+            );
+            assert!(!manager.holder_live(name).await, "{name:?}");
+        }
+        manager.retire("../../escaped").await;
+        assert!(!data.path().join("escaped").exists());
+        assert!(!data.path().join("runtime/escaped").exists());
+        assert_eq!(
+            manager.state_dir("s-1_A"),
+            states.join("s-1_A"),
+            "a real id is kept"
+        );
+        Ok(())
+    }
+
+    /// SPEC-215: only a system tree of the data directory is removed through the mapped
+    /// namespace; a tree the service user owns goes without it.
+    #[tokio::test]
+    async fn only_a_sandbox_s_system_tree_is_removed() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 30);
+        let d = data.path();
+        for refused in [
+            d.join("master.key"),
+            d.join("users/u1"),
+            d.join("sandboxes"),
+            d.join("sysroots"),
+            d.join("sysroots/../sandboxes/s1"),
+            PathBuf::from("/tmp"),
+        ] {
+            assert!(
+                manager.remove_owned_tree(&refused).await.is_err(),
+                "{}",
+                refused.display()
+            );
+        }
+        std::fs::create_dir_all(d.join("sandboxes/s1"))?;
+        for tree in [
+            "sysroots/s1/upper/usr",
+            "runtime/sandboxes/s1/engine",
+            "system/base-0/usr",
+        ] {
+            std::fs::create_dir_all(d.join(tree))?;
+            std::fs::write(d.join(tree).join("f"), "x")?;
+        }
+        for root in ["sysroots/s1", "runtime/sandboxes/s1", "system/base-0"] {
+            manager.remove_owned_tree(&d.join(root)).await?;
+            assert!(!d.join(root).exists(), "{root} removed");
+        }
+        assert!(d.join("sandboxes/s1").exists());
+        manager.remove_owned_tree(&d.join("sysroots/s1")).await?;
+        Ok(())
+    }
+
+    /// SPEC-215 / ADR-0161: a base that is neither current nor mounted by a live holder is
+    /// unused; the current one and a live holder's are not.
+    #[tokio::test]
+    async fn unused_bases_are_neither_current_nor_mounted() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let data = tempfile::tempdir()?;
+        let (manager, pid) = adopting_child(data.path())?;
+        for base in ["base-0", "base-2"] {
+            std::fs::create_dir_all(manager.bases.path(base))?;
+        }
+        write_json(
+            &manager.bases.dir.join("current.json"),
+            &crate::base::BaseInfo {
+                id: "base-2".into(),
+                fingerprint: "f".into(),
+                built_at_ms: 1,
+                format: crate::base::BASE_FORMAT,
+            },
+        )?;
+        let unused = manager.unused_bases().await;
+        kill(pid);
+        assert_eq!(
+            unused,
+            vec![manager.bases.path("base-0")],
+            "base-1 is the live holder's, base-2 is current"
+        );
         Ok(())
     }
 
