@@ -124,6 +124,7 @@ esac"#,
             cargo: bin.join("cargo"),
             git: PathBuf::from("git"),
             systemctl: bin.join("systemctl"),
+            host_check: None,
         };
         Ok(Self {
             a: commits[0].clone(),
@@ -622,5 +623,142 @@ fn install_needs_the_staged_build_of_that_commit() -> TestResult {
         "the service was not touched"
     );
     assert_eq!(std::fs::read_to_string(&env.args.binary)?, OLD);
+    Ok(())
+}
+
+/// A fake `yulius host check` that records its arguments and prints `report` (exit `code`).
+fn host_check(env: &mut Env, report: &str, code: i32) -> TestResult {
+    let program = env.bin("host-check");
+    script(
+        &program,
+        &format!(
+            "echo \"$@\" > \"$(dirname \"$0\")/host-check.args\"\necho 'progress noise'\necho '{report}'\nexit {code}"
+        ),
+    )?;
+    env.args.host_check = Some(program);
+    Ok(())
+}
+
+/// SPEC-203 HST-012: after a healthy install the new version re-checks the host; the report is
+/// in the status and kept in `host-check.json`.
+#[test]
+fn a_healthy_install_re_checks_the_host_with_the_new_version() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    host_check(
+        &mut env,
+        r#"{"ok":true,"lines":[{"name":"sandbox Docker","outcome":"ok","detail":"each isolated sandbox gets its own engine"}]}"#,
+        0,
+    )?;
+    env.stage(&env.c)?;
+    env.request("run-0020-install", HelperAction::Install, &env.c)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
+    let report = status.host_check.ok_or("no host check in the status")?;
+    assert!(report.ok, "{report:?}");
+    assert_eq!(report.commit.as_deref(), Some(env.c.as_str()));
+    assert!(report.checked_at > 0);
+    let args = std::fs::read_to_string(env.bin("host-check.args"))?;
+    assert_eq!(
+        args.trim(),
+        format!(
+            "host check --json --data-dir {} --service yqa-test.service --update-state {}",
+            env.args.data_dir.display(),
+            env.args.state_dir.display()
+        )
+    );
+    let kept: HostCheckReport =
+        serde_json::from_slice(&std::fs::read(env.args.state_dir.join(HOST_CHECK_FILE))?)?;
+    assert_eq!(kept, report);
+    Ok(())
+}
+
+/// SPEC-203 HST-012: a re-check that finds sandboxes without Docker is a regression in the
+/// status, with its reason, but the update stands (no rollback).
+#[test]
+fn a_docker_regression_is_reported_not_rolled_back() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    host_check(
+        &mut env,
+        r#"{"ok":false,"lines":[{"name":"Docker Engine","outcome":"failed","detail":"no Docker on the host; run `sudo yulius host setup`"},{"name":"sandbox Docker","outcome":"failed","detail":"the host has no dockerd"}]}"#,
+        1,
+    )?;
+    env.stage(&env.c)?;
+    env.request("run-0021-install", HelperAction::Install, &env.c)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
+    assert_eq!(std::fs::read_to_string(&env.args.binary)?, env.c);
+    let report = status.host_check.ok_or("no host check")?;
+    assert!(!report.ok);
+    let problems = report.problems().join("\n");
+    assert!(
+        problems.contains("Docker Engine: no Docker on the host"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("sandbox Docker: the host has no dockerd"),
+        "{problems}"
+    );
+    Ok(())
+}
+
+/// A version without `host check` (or one that answers nothing) is "not re-checked", said
+/// plainly, never passed.
+#[test]
+fn a_version_without_host_check_is_not_checked() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    let program = env.bin("old-yulius");
+    script(
+        &program,
+        "echo \"error: unrecognized subcommand 'host'\" >&2\nexit 2",
+    )?;
+    env.args.host_check = Some(program);
+    env.stage(&env.c)?;
+    env.request("run-0022-install", HelperAction::Install, &env.c)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
+    let report = status.host_check.ok_or("no host check")?;
+    assert!(!report.ok);
+    let error = report.error.unwrap_or_default();
+    assert!(error.contains("not re-checked"), "{error}");
+    assert!(error.contains("unrecognized subcommand 'host'"), "{error}");
+    assert!(error.contains("sudo yulius host check"), "{error}");
+    Ok(())
+}
+
+/// Review of SPEC-203: whatever the new version prints, the status stays readable by the server
+/// (under `MAX_STATUS_BYTES`): every field of the report is bounded.
+#[test]
+fn an_oversized_report_is_bounded() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    // Under the 1 MiB the helper reads, so the report is parsed and must be bounded itself.
+    let huge = "\\u0001".repeat(20_000) + &"x".repeat(100_000);
+    let lines: Vec<String> = (0..60)
+        .map(|_| format!(r#"{{"name":"{huge}","outcome":"failed","detail":"{huge}"}}"#))
+        .collect();
+    host_check(
+        &mut env,
+        &format!(
+            r#"{{"ok":false,"error":"{huge}","lines":[{}]}}"#,
+            lines[..3].join(",")
+        ),
+        1,
+    )?;
+    env.stage(&env.c)?;
+    env.request("run-0023-install", HelperAction::Install, &env.c)?;
+    let status = env.run()?;
+    let bytes = std::fs::read(env.args.state_dir.join(STATUS_FILE))?;
+    assert!(
+        (bytes.len() as u64) < yulius_contracts::update::MAX_STATUS_BYTES,
+        "{} bytes",
+        bytes.len()
+    );
+    let report = status.host_check.ok_or("no host check")?;
+    assert!(!report.ok);
+    assert!(report.lines.iter().all(|l| l.name.len() <= 200));
+    assert!(report.error.as_deref().is_some_and(|e| e.len() <= 2000));
     Ok(())
 }

@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use clap::Args;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::isolation::{
-    DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+    DiskUsage, DockerStatus, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef, SmokeCheck,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
@@ -363,6 +363,21 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.docker_for(sandbox.id.as_str()).await
     }
 
+    async fn docker_status(&self) -> Option<DockerStatus> {
+        let manager = Arc::clone(&self.manager);
+        tokio::task::spawn_blocking(move || docker_status(&manager))
+            .await
+            .ok()
+    }
+
+    async fn docker_smoke(
+        &self,
+        report: &(dyn Fn(SmokeCheck) + Send + Sync),
+    ) -> Result<bool, String> {
+        let config = self.manager.config();
+        run_smoke(&config.exe, &config.data_dir, SMOKE_TIMEOUT, report).await
+    }
+
     /// The limits apply only through the cgroup delegation (SPEC-082 RES-001).
     fn limits(&self) -> SandboxLimits {
         let config = self.manager.config();
@@ -374,6 +389,120 @@ impl SandboxIsolation for NamespaceIsolation {
             memory_bytes: config.limits.memory_max,
         }
     }
+}
+
+/// Longest smoke test started from Settings → Instance (it pulls images; SPEC-203 HST-015).
+pub const SMOKE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
+
+/// The "sandbox Docker" verdict as this server's manager sees it (SPEC-203 HST-014).
+fn docker_status(manager: &Manager) -> DockerStatus {
+    use yulius_sandbox::docker_status::{Facts, own_engines, verdict};
+    let config = manager.config();
+    let rebuild = manager.rebuild();
+    let facts = Facts::read(
+        &config.data_dir,
+        &config.exe,
+        config.docker.clone(),
+        config.delegation.is_some(),
+        rebuild.building_since_ms.is_some(),
+    );
+    let verdict = verdict(&facts);
+    DockerStatus {
+        ok: verdict.ok,
+        detail: verdict.detail,
+        base: facts.base.map(|b| (b.id, b.dockerd)),
+        host_dockerd: facts.host_dockerd,
+        building_since_ms: rebuild.building_since_ms,
+        pending_since_ms: rebuild.pending_since_ms,
+        starts_at_ms: rebuild.starts_at_ms,
+        last_build_secs: rebuild.last_build_secs,
+        build_error: rebuild.last_error,
+        own_engines: own_engines(&config.data_dir)
+            .into_iter()
+            .map(|o| (o.sandbox, o.dockerd.to_owned()))
+            .collect(),
+    }
+}
+
+/// Runs `<exe> doctor --docker-smoke --json` as this server's child (in its delegated cgroup,
+/// as the service user), reporting each check line as it arrives; bounded by `timeout`, after
+/// which its process group is killed (the next smoke removes its sandbox).
+///
+/// # Errors
+/// It could not start, ended without a check (its last error line), or timed out.
+pub async fn run_smoke(
+    exe: &Path,
+    data_dir: &Path,
+    timeout: Duration,
+    report: &(dyn Fn(SmokeCheck) + Send + Sync),
+) -> Result<bool, String> {
+    use tokio::io::AsyncBufReadExt as _;
+    let mut child = tokio::process::Command::new(exe)
+        .args(["doctor", "--docker-smoke", "--json", "--data-dir"])
+        .arg(data_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("cannot start the smoke test: {e}"))?;
+    let stdout = child.stdout.take().ok_or("no output")?;
+    let stderr = child.stderr.take().ok_or("no error output")?;
+    let errors = tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        let mut last = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if !line.trim().is_empty() {
+                last = line.chars().take(2000).collect();
+            }
+        }
+        last
+    });
+    let pid = child.id();
+    let work = async {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut checks = 0usize;
+        let mut all_ok = true;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(check) =
+                serde_json::from_str::<yulius_contracts::api::updates::DockerSmokeCheck>(&line)
+            else {
+                continue;
+            };
+            checks += 1;
+            all_ok &= check.ok;
+            report(SmokeCheck {
+                name: check.name,
+                ok: check.ok,
+                detail: check.detail,
+            });
+        }
+        let status = child.wait().await;
+        (checks, all_ok, status)
+    };
+    let Ok((checks, all_ok, status)) = tokio::time::timeout(timeout, work).await else {
+        if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) {
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        return Err(format!(
+            "the smoke test did not finish within {} minutes",
+            timeout.as_secs() / 60
+        ));
+    };
+    let last_error = errors.await.unwrap_or_default();
+    let status = status.map_err(|e| e.to_string())?;
+    if checks == 0 {
+        return Err(if last_error.is_empty() {
+            format!("the smoke test ended ({status}) without a check")
+        } else {
+            last_error.trim_start_matches("yulius: ").to_owned()
+        });
+    }
+    Ok(all_ok && status.success())
 }
 
 /// Sets up isolation for a contained server: resolves the prerequisites, prepares the cgroup
@@ -456,5 +585,69 @@ mod tests {
             docker_setting(DockerMode::Off),
             Err(yulius_sandbox::manager::DOCKER_OFF.to_owned())
         );
+    }
+
+    /// SPEC-203 HST-015: the smoke started by the server reports each JSON check line as it
+    /// arrives (other output ignored), names why it could not run, and is bounded.
+    #[tokio::test]
+    async fn the_servers_smoke_reads_check_lines_and_is_bounded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let script = |name: &str, body: &str| -> std::io::Result<PathBuf> {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n"))?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+            Ok(path)
+        };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let report = |check: SmokeCheck| {
+            if let Ok(mut seen) = seen.lock() {
+                seen.push((check.name, check.ok));
+            }
+        };
+        let checks = script(
+            "checks",
+            r#"[ "$*" = "doctor --docker-smoke --json --data-dir /d" ] || exit 9
+echo 'running in a delegated transient unit'
+echo '{"name":"socket","ok":true,"detail":"ok"}'
+echo '{"name":"hello-world","ok":false,"detail":"pull rate limit"}'
+exit 1"#,
+        )?;
+        let passed = run_smoke(&checks, Path::new("/d"), Duration::from_secs(30), &report).await;
+        assert_eq!(passed, Ok(false));
+        assert_eq!(
+            seen.lock().map(|s| s.clone()).unwrap_or_default(),
+            vec![
+                ("socket".to_owned(), true),
+                ("hello-world".to_owned(), false)
+            ]
+        );
+
+        let refused = script(
+            "refused",
+            "echo 'yulius: no sandbox base yet: the server builds it in the background' >&2\nexit 1",
+        )?;
+        let error = run_smoke(&refused, Path::new("/d"), Duration::from_secs(30), &report).await;
+        assert_eq!(
+            error,
+            Err("no sandbox base yet: the server builds it in the background".to_owned())
+        );
+
+        let stuck = script(
+            "stuck",
+            "echo '{\"name\":\"a\",\"ok\":true,\"detail\":\"\"}'\nsleep 600",
+        )?;
+        let started = std::time::Instant::now();
+        let timed_out =
+            run_smoke(&stuck, Path::new("/d"), Duration::from_millis(500), &report).await;
+        assert!(
+            timed_out
+                .as_ref()
+                .is_err_and(|e| e.contains("did not finish")),
+            "{timed_out:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(60));
+        Ok(())
     }
 }

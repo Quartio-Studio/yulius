@@ -11,8 +11,8 @@
 //!    sandbox-base chown`, [`apply_owners`]);
 //! 4. renames the directory into place and points `system/current.json` at it.
 //!
-//! A build is redone when the host's system changes ([`fingerprint`]). Bases no holder uses are
-//! removed ([`collect`]).
+//! A build is redone when the host's system changes ([`fingerprint`]). Bases no live holder uses
+//! are removed ([`collect`]), whoever runs the build.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -526,6 +526,26 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// Takes the lock of base builds under `dir` (`.build.lock`), waiting for the build that holds
+/// it: the server's build, a hand-run one and `yulius host setup`'s may overlap on a running
+/// instance, and a second build would remove the first one's partial tree and reuse its id
+/// (SPEC-203). Released when the file is dropped (also when the process dies).
+///
+/// # Errors
+/// The lock file cannot be opened or locked.
+pub fn lock_builds(dir: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(dir.join(".build.lock"))?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
+    Ok(file)
+}
+
 /// Builds a new base (see the module docs) and makes it current.
 ///
 /// # Errors
@@ -533,6 +553,9 @@ fn now_ms() -> i64 {
 pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
     std::fs::create_dir_all(&bases.dir).map_err(|e| e.to_string())?;
     let _ = std::fs::set_permissions(&bases.dir, std::fs::Permissions::from_mode(0o700));
+    // One build at a time: a partial tree left now is a dead build's.
+    let asked = now_ms();
+    let _lock = lock_builds(&bases.dir).map_err(|e| format!("the build lock: {e}"))?;
     for entry in std::fs::read_dir(&bases.dir)
         .into_iter()
         .flatten()
@@ -547,6 +570,16 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
         }
     }
     let fingerprint = fingerprint(&config.host_root, &config.sudo_shim);
+    // A build this one waited for may have made the same base meanwhile (review of SPEC-203).
+    // Only that one is reused: a base from before the call is rebuilt, since the fingerprint
+    // does not see every file and an operator may be replacing a damaged base.
+    if let Some(current) = bases
+        .current()
+        .filter(|c| c.fingerprint == fingerprint && c.built_at_ms >= asked)
+    {
+        tracing::info!(base = %current.id, "the sandbox base already matches the host");
+        return Ok(current);
+    }
     let id = bases.next_id();
     let partial = bases.dir.join(format!(".building-{id}"));
     let (mut owners, stats) =
@@ -666,9 +699,41 @@ pub fn make_writable(path: &Path) {
     }
 }
 
-/// Removes bases that are neither current nor in `in_use`.
+/// Holder state directories read at most when looking for live holders (as many as adoption).
+const MAX_HOLDERS: usize = 10_000;
+
+/// The bases of the live holders recorded under `<data>/runtime/sandboxes/*/`, judged as the
+/// server judges them ([`crate::holder::alive`]).
+fn live_holder_bases(data_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("runtime").join("sandboxes")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .take(MAX_HOLDERS)
+        .filter_map(|entry| {
+            read_json::<yulius_contracts::sandbox::HolderRecord>(
+                &entry
+                    .path()
+                    .join(yulius_contracts::sandbox::HOLDER_RECORD_FILE),
+            )
+            .ok()
+        })
+        .filter(crate::holder::alive)
+        .map(|record| record.base_id)
+        .collect()
+}
+
+/// Removes bases that are neither current, in `in_use` nor mounted by a live holder (SPEC-202
+/// RSB-002, ADR-0161): whoever builds, a hand-run `yulius sandbox-base build` without `--keep`
+/// included, a running sandbox keeps its lower layer.
 pub fn collect(bases: &Bases, in_use: &[String], mapper: &Mapper, exe: &Path) {
     let current = bases.current().map(|b| b.id);
+    let live = bases
+        .dir
+        .parent()
+        .map(live_holder_bases)
+        .unwrap_or_default();
     for entry in std::fs::read_dir(&bases.dir)
         .into_iter()
         .flatten()
@@ -677,7 +742,7 @@ pub fn collect(bases: &Bases, in_use: &[String], mapper: &Mapper, exe: &Path) {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("base-")
             || current.as_deref() == Some(name.as_str())
-            || in_use.iter().any(|id| id == &name)
+            || in_use.iter().chain(&live).any(|id| id == &name)
         {
             continue;
         }
@@ -899,6 +964,226 @@ mod tests {
             },
         )?;
         assert_eq!(bases.current().map(|b| b.id).as_deref(), Some("base-3"));
+        Ok(())
+    }
+
+    /// A holder record under `<data>/runtime/sandboxes/<sandbox>/` on `base_id`, alive when it
+    /// names this test process's own boot and namespaces.
+    fn holder_record(data: &Path, sandbox: &str, base_id: &str, live: bool) -> TestResult {
+        let pid = std::process::id();
+        let ns = |kind| crate::holder::ns_inode(pid, kind).unwrap_or(0);
+        let record = yulius_contracts::sandbox::HolderRecord {
+            version: yulius_contracts::sandbox::HOLDER_RECORD_VERSION,
+            sandbox: sandbox.into(),
+            base_id: base_id.into(),
+            inner_pid: pid,
+            bwrap_pid: pid,
+            slirp_pid: None,
+            user_ns: ns("user"),
+            net_ns: ns("net"),
+            mnt_ns: ns("mnt"),
+            boot_id: if live {
+                crate::holder::boot_id()
+            } else {
+                "an-earlier-boot".into()
+            },
+            started_at_ms: 1,
+            system_root: "/run/yulius/system".into(),
+            engine: false,
+        };
+        let dir = data.join("runtime").join("sandboxes").join(sandbox);
+        std::fs::create_dir_all(&dir)?;
+        write_json(
+            &dir.join(yulius_contracts::sandbox::HOLDER_RECORD_FILE),
+            &record,
+        )?;
+        Ok(())
+    }
+
+    /// SPEC-202 RSB-002 (#618): a build run by hand (no `--keep`) keeps the base a live holder
+    /// has mounted, and still removes the bases nobody uses, a dead holder's included.
+    #[test]
+    fn collection_keeps_the_bases_of_live_holders_without_keep() -> TestResult {
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        for id in ["base-1", "base-2", "base-3", "base-4", "base-5"] {
+            std::fs::create_dir_all(bases.path(id).join("usr/lib"))?;
+        }
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-5".into(),
+                fingerprint: "f".into(),
+                built_at_ms: 1,
+                format: BASE_FORMAT,
+            },
+        )?;
+        holder_record(data.path(), "s1", "base-2", true)?;
+        holder_record(data.path(), "s2", "base-3", false)?;
+        // Not a holder's state directory: ignored.
+        std::fs::create_dir_all(data.path().join("runtime/sandboxes/s3"))?;
+        let mapper = Mapper {
+            bwrap: "/nonexistent/bwrap".into(),
+            newuidmap: "/nonexistent/newuidmap".into(),
+            newgidmap: "/nonexistent/newgidmap".into(),
+            uid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+            gid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+        };
+        collect(
+            &bases,
+            &["base-4".into()],
+            &mapper,
+            Path::new("/nonexistent/yulius"),
+        );
+        let left: Vec<bool> = ["base-1", "base-2", "base-3", "base-4", "base-5"]
+            .iter()
+            .map(|id| bases.path(id).is_dir())
+            .collect();
+        assert_eq!(left, [false, true, false, true, true]);
+        Ok(())
+    }
+
+    /// SPEC-203 (review): the setup's build and the server's may overlap on a running instance.
+    /// A build waits for the one running, and never removes its partial tree meanwhile.
+    #[test]
+    fn a_build_waits_for_the_running_one() -> TestResult {
+        let host = host()?;
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        std::fs::create_dir_all(&bases.dir)?;
+        let running = bases.dir.join(".building-base-1");
+        std::fs::create_dir_all(&running)?;
+        std::fs::write(running.join("first-build"), "")?;
+        let lock = lock_builds(&bases.dir)?;
+        let config = BuildConfig {
+            host_root: host.path().to_path_buf(),
+            data_dir: data.path().to_path_buf(),
+            sudo_shim: "#!/bin/sh\n".into(),
+            mapper: Mapper {
+                bwrap: "/nonexistent/bwrap".into(),
+                newuidmap: "/nonexistent/newuidmap".into(),
+                newgidmap: "/nonexistent/newgidmap".into(),
+                uid: yulius_contracts::sandbox::IdMap {
+                    host: 1,
+                    sub_start: 100_000,
+                    count: 65_536,
+                },
+                gid: yulius_contracts::sandbox::IdMap {
+                    host: 1,
+                    sub_start: 100_000,
+                    count: 65_536,
+                },
+            },
+            exe: "/nonexistent/yulius".into(),
+        };
+        let (done, ended) = std::sync::mpsc::channel();
+        let waiting = bases.clone();
+        let builder = std::thread::spawn(move || {
+            let _ = done.send(build(&config, &waiting).map(|b| b.id));
+        });
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "the second build waits"
+        );
+        assert!(
+            running.join("first-build").is_file(),
+            "the running build's tree is kept"
+        );
+        drop(lock);
+        let _result = ended.recv_timeout(std::time::Duration::from_secs(60))?;
+        // The waiting build removed the dead build's tree (and then made its own, which the
+        // fake mapper stopped).
+        assert!(
+            !running.join("first-build").exists(),
+            "a stale partial tree goes"
+        );
+        builder.join().map_err(|_| "builder panicked")?;
+        Ok(())
+    }
+
+    /// Review rounds 2 and 3 of SPEC-203: a build that waited for another one, which made a base
+    /// matching the host meanwhile, builds nothing; a base built before the call is rebuilt even
+    /// when its fingerprint matches (the fingerprint does not see every file, and an operator may
+    /// replace a damaged base).
+    #[test]
+    fn only_a_build_finished_during_the_wait_is_reused() -> TestResult {
+        let host = host()?;
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        std::fs::create_dir_all(bases.path("base-1"))?;
+        let shim = "#!/bin/sh\n";
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-1".into(),
+                fingerprint: fingerprint(host.path(), shim),
+                built_at_ms: 1,
+                format: BASE_FORMAT,
+            },
+        )?;
+        let unusable = Mapper {
+            bwrap: "/nonexistent/bwrap".into(),
+            newuidmap: "/nonexistent/newuidmap".into(),
+            newgidmap: "/nonexistent/newgidmap".into(),
+            uid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+            gid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+        };
+        let config = BuildConfig {
+            host_root: host.path().to_path_buf(),
+            data_dir: data.path().to_path_buf(),
+            sudo_shim: shim.into(),
+            mapper: unusable,
+            exe: "/nonexistent/yulius".into(),
+        };
+        // Built before the call: rebuilt (here the fake mapper stops it after the copy).
+        assert!(build(&config, &bases).is_err());
+        assert!(bases.dir.join(".building-base-2").is_dir());
+
+        // Finished while this build waited: reused.
+        let lock = lock_builds(&bases.dir)?;
+        let (done, ended) = std::sync::mpsc::channel();
+        let waiting = bases.clone();
+        let waiting_config = config.clone();
+        let builder = std::thread::spawn(move || {
+            let _ = done.send(build(&waiting_config, &waiting).map(|b| b.id));
+        });
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+        std::fs::create_dir_all(bases.path("base-2"))?;
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-2".into(),
+                fingerprint: fingerprint(host.path(), shim),
+                built_at_ms: now_ms(),
+                format: BASE_FORMAT,
+            },
+        )?;
+        drop(lock);
+        let reused = ended.recv_timeout(std::time::Duration::from_secs(60))?;
+        assert_eq!(reused, Ok("base-2".to_owned()));
+        builder.join().map_err(|_| "builder panicked")?;
         Ok(())
     }
 }

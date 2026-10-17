@@ -20,8 +20,10 @@ watching, steering and unblocking.
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
   contained sandbox with its own system layer, Docker engine (SPEC-187: `docker build`, `run` and
   `compose` work for agents, the Superagent, shells and CI jobs; SPEC-196: in sessions started
-  before too, `yulius doctor --docker-smoke` proves it on a host), home, shells per user, browser
-  and editor. The CLI
+  before too, `yulius doctor --docker-smoke` proves it on a host; SPEC-203: `sudo yulius host
+  setup` installs what it needs on a fresh host, every update re-checks it, and Settings →
+  Instance shows whether sandboxes get Docker and runs the smoke check), home, shells per user,
+  browser and editor. The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and
@@ -204,7 +206,11 @@ watching, steering and unblocking.
   there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
   pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands
   in the `.env` as its file, byte for byte (SPEC-186, SPEC-193). A key saved before that, its line
-  breaks lost, is marked "Paste again" for the people who manage it.
+  breaks lost, is marked "Paste again" for the people who manage it. From a computer, `yulius
+  secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once:
+  every name is listed first, nothing that exists is overwritten, nothing is sent before the
+  person types `yes`, and no value is ever shown, passed as an argument or written down
+  (SPEC-205).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the

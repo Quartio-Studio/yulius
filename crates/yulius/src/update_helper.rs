@@ -30,8 +30,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use clap::Args;
 use yulius_contracts::update::{
-    HelperAction, HelperProgress, HelperRequest, HelperState, HelperStatus, LOG_TAIL_LINES,
-    MAX_REQUEST_BYTES, REQUEST_TTL_MS, VERSION, VersionInfo,
+    HelperAction, HelperProgress, HelperRequest, HelperState, HelperStatus, HostCheckReport,
+    LOG_TAIL_LINES, MAX_REQUEST_BYTES, REQUEST_TTL_MS, VERSION, VersionInfo,
 };
 use yulius_domain::update::{BRANCH, is_commit, short};
 
@@ -49,6 +49,17 @@ const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const KEEP_BACKUPS: usize = 3;
 /// Requests handled in one run (a request written while the helper was busy is picked up).
 const MAX_REQUESTS_PER_RUN: usize = 3;
+/// Longest `yulius host check` after an install (its commands are bounded to 30 s each, or 2
+/// minutes for stopping the host's Docker; tasks resume once it ends).
+const HOST_CHECK_TIMEOUT: Duration = Duration::from_secs(4 * 60);
+/// Where the last re-check is kept (the status is replaced by the next request).
+pub const HOST_CHECK_FILE: &str = "host-check.json";
+/// Lines of a re-check kept, and characters of each detail.
+const HOST_CHECK_LINES: usize = 40;
+const HOST_CHECK_DETAIL: usize = 1000;
+const HOST_CHECK_NAME: usize = 100;
+const HOST_CHECK_ERROR: usize = 2000;
+
 /// Status writes while building, at most one per this.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 
@@ -103,6 +114,10 @@ pub struct HelperArgs {
     /// systemctl.
     #[arg(long, env = "YULIUS_UPDATE_SYSTEMCTL", default_value = "systemctl")]
     pub systemctl: PathBuf,
+    /// The program whose `host check --json` re-checks the host after an install (SPEC-203
+    /// HST-012); the installed binary when unset.
+    #[arg(long, env = "YULIUS_UPDATE_HOST_CHECK", hide = true)]
+    pub host_check: Option<PathBuf>,
 }
 
 /// `yulius update-helper`: handles the pending request, if any. Exit 0 also when a request was
@@ -486,6 +501,7 @@ impl Helper {
             error: Some(format!("The request was refused: {reason}.")),
             previous: None,
             log_tail: Vec::new(),
+            host_check: None,
             updated_at: now_ms(),
         };
         self.write_status(&status);
@@ -524,6 +540,7 @@ impl Helper {
             error: None,
             previous: None,
             log_tail: Vec::new(),
+            host_check: None,
             updated_at: 0,
         });
         if status.id != request.id {
@@ -535,6 +552,7 @@ impl Helper {
                 error: None,
                 previous: None,
                 log_tail: Vec::new(),
+                host_check: None,
                 ..status.clone()
             };
         }
@@ -864,6 +882,73 @@ impl Helper {
         ))
     }
 
+    /// Runs the installed version's `host check --json` (bounded) and reads its report; a
+    /// version without it, or one that fails to answer, is "not checked".
+    fn host_check(&self, commit: &str) -> HostCheckReport {
+        let program = self
+            .args
+            .host_check
+            .clone()
+            .unwrap_or_else(|| self.args.binary.clone());
+        let not_checked = |why: String| HostCheckReport {
+            ok: false,
+            lines: Vec::new(),
+            error: Some(format!(
+                "The host was not re-checked ({why}); run `sudo yulius host check` on the server."
+            )),
+            commit: None,
+            checked_at: 0,
+        };
+        let output = run_bounded(
+            Command::new(&program)
+                .args(["host", "check", "--json", "--data-dir"])
+                .arg(&self.args.data_dir)
+                .arg("--service")
+                .arg(&self.args.service)
+                .arg("--update-state")
+                .arg(&self.args.state_dir),
+            HOST_CHECK_TIMEOUT,
+            "yulius host check",
+        );
+        let mut report = match output {
+            Ok(output) => output
+                .stdout
+                .lines()
+                .rev()
+                .find(|l| l.trim_start().starts_with('{'))
+                .and_then(|l| serde_json::from_str::<HostCheckReport>(l).ok())
+                .unwrap_or_else(|| {
+                    not_checked(format!(
+                        "the new version gave no report: {}",
+                        last_line(&output.stderr)
+                    ))
+                }),
+            Err(err) => not_checked(err),
+        };
+        // The new version is untrusted here: every field is bounded, so the status stays under
+        // what the server reads (`MAX_STATUS_BYTES`).
+        // Control characters would serialize as six bytes each: replaced, so the bounds hold
+        // in bytes too.
+        let cut = |text: &mut String, max: usize| {
+            *text = text
+                .chars()
+                .take(max)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+        };
+        report.lines.truncate(HOST_CHECK_LINES);
+        for line in &mut report.lines {
+            cut(&mut line.name, HOST_CHECK_NAME);
+            cut(&mut line.detail, HOST_CHECK_DETAIL);
+        }
+        if let Some(error) = report.error.as_mut() {
+            cut(error, HOST_CHECK_ERROR);
+        }
+        report.commit = Some(commit.to_owned());
+        report.checked_at = now_ms();
+        report
+    }
+
     fn data_owner(&self) -> Result<(u32, u32), String> {
         let meta = std::fs::metadata(&self.args.data_dir).map_err(|e| e.to_string())?;
         Ok((meta.uid(), meta.gid()))
@@ -962,7 +1047,29 @@ impl Helper {
                 {
                     eprintln!("yulius update-helper: cannot record the installed commit: {err}");
                 }
-                self.report(HelperState::Done, "succeeded", |_| {});
+                // The new version knows what it needs: its `host check` re-checks the host and
+                // applies only safe fixes (SPEC-203 HST-012). A regression is reported, never
+                // rolled back: the server itself is healthy.
+                self.step("checking_host");
+                let host_check = self.host_check(commit);
+                if !host_check.ok {
+                    eprintln!(
+                        "yulius update-helper: sandboxes' Docker after the update: {}",
+                        host_check.problems().join("; ")
+                    );
+                }
+                match serde_json::to_vec_pretty(&host_check) {
+                    Ok(bytes) => {
+                        if let Err(err) = write_atomic(&self.state(HOST_CHECK_FILE), &bytes, 0o644)
+                        {
+                            eprintln!("yulius update-helper: cannot keep the host check: {err}");
+                        }
+                    }
+                    Err(err) => eprintln!("yulius update-helper: {err}"),
+                }
+                self.report(HelperState::Done, "succeeded", |s| {
+                    s.host_check = Some(host_check);
+                });
                 eprintln!("yulius update-helper: {} installed", short(commit));
                 Ok(())
             }

@@ -2,7 +2,7 @@
 //! update helper that builds and installs a commit.
 
 use async_trait::async_trait;
-use yulius_contracts::update::{HelperRequest, HelperStatus};
+use yulius_contracts::update::{HelperRequest, HelperStatus, HostCheckReport};
 use yulius_domain::update::Relation;
 
 use crate::model::Secret;
@@ -83,4 +83,8 @@ pub trait UpdateHelper: Send + Sync {
     fn status(&self) -> Option<HelperStatus>;
     /// Removes the request file (the run it belongs to ended).
     fn clear_request(&self);
+    /// The last update's re-check of the host (SPEC-203 HST-012), kept by the helper.
+    fn host_check(&self) -> Option<HostCheckReport> {
+        None
+    }
 }

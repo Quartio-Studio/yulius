@@ -2,10 +2,13 @@
 
 use std::fmt;
 
+use zeroize::Zeroize;
+
 /// A bearer token or other credential.
 ///
 /// `Debug` prints `Secret(<redacted>)` and there is no `Display` or `Serialize`, so the value
-/// cannot reach output by accident; [`Secret::expose`] is used only where the value is sent.
+/// cannot reach output by accident; [`Secret::expose`] is used only where the value is sent. The
+/// value is wiped from memory when it is dropped (SPEC-205 SIM-008).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret(String);
 
@@ -26,6 +29,12 @@ impl Secret {
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Secret(<redacted>)")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 

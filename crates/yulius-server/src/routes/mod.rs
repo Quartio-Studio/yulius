@@ -201,6 +201,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/admin/update/check", post(updates::check))
         .route("/api/admin/update/cancel", post(updates::cancel))
         .route("/api/admin/update/proceed", post(updates::proceed))
+        // Whether sandboxes get Docker, and the smoke test (SPEC-203).
+        .route("/api/admin/sandbox-docker", get(updates::sandbox_docker))
+        .route(
+            "/api/admin/sandbox-docker/smoke",
+            post(updates::sandbox_docker_smoke),
+        )
         .route(
             "/api/admin/jev",
             get(updates::jev)

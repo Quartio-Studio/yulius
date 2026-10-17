@@ -135,6 +135,32 @@ flowchart LR
   K -->|"bind-docker: move the directory into runs without it"| R
 ```
 
+**The host's part** ([SPEC-203](../.ai/specs/SPEC-203-docker-in-sandboxes-works-out-of-the-box.md),
+[decision 0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+`yulius host setup` (root, `crates/yulius/src/host_setup.rs`) brings a host to what sandboxes
+need for Docker: Docker Engine for the bases to copy, the host's own daemon stopped, the
+modules, the service user and its ids, the unit's delegation, a root-owned binary, a current
+base. Each item reads the host through a `Host` trait, so the same items run against a fake host
+in tests. `yulius host check` is the same list with only the safe fixes. After each healthy
+install, the update helper runs the **new** binary's `host check --json` and keeps the report.
+One verdict, `yulius_sandbox::docker_status::verdict`, gives "sandbox Docker" to the doctor, the
+setup and the server. The server's isolation adapter adds the base's rebuild and the sandboxes
+on their own Docker. Settings → Instance reads it all from `GET /api/admin/sandbox-docker`, and
+`POST …/smoke` runs `yulius doctor --docker-smoke --json` as the server's child.
+
+```mermaid
+flowchart LR
+  OP["operator: sudo yulius host setup"] --> HS["host items: needrestart rule, packages, Docker Engine, host units off, modules, user + ids, unit drop-in, binary owner, base build"]
+  HS --> V["verdict: sandbox Docker"]
+  HS --> SM["doctor --contained, doctor --docker-smoke"]
+  UH["update helper (root), after a healthy install"] -->|"new binary: host check --json (safe fixes)"| HC["status.host_check, host-check.json"]
+  SRV["server: isolation adapter"] --> V
+  SRV -->|"child in its delegated cgroup"| SMJ["doctor --docker-smoke --json"]
+  HC --> UI["Settings → Instance: update outcome, Sandbox Docker card"]
+  V --> UI
+  SMJ -->|"one check per line"| UI
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -630,6 +656,28 @@ key block's line breaks as literal `\n`; `check_agent_value` refuses a key flatt
 for the people who manage it
 ([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
 [decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
+
+`yulius secrets import` (`crates/yulius/src/cli.rs`, `yulius-import`'s `secrets_import` and
+`dotenv`) adds secrets from a computer through the same create calls as the Secrets page, with
+the CLI's bearer token: it reads a dotenv file, stdin or hidden prompts, lists the caller's
+existing team titles or a sandbox's agent names, classifies each secret, asks for `yes` at
+`/dev/tty` and posts the new ones once each (no retry). Values stay in `Secret` (redacted `Debug`,
+wiped on drop) and never reach its output
+([SPEC-205](../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md),
+[decision 0163](decisions/0163-the-cli-imports-secrets-after-a-typed-yes-and-shows-no-value.md)).
+
+```mermaid
+sequenceDiagram
+    participant P as Person
+    participant C as yulius secrets import
+    participant App as Yulius (vault API)
+    P->>C: --to agent .env (or stdin, or hidden prompts)
+    C->>App: GET /api/sandboxes, GET agent-secrets (names only)
+    C-->>P: names: new / exists (skipped) / skipped with reason
+    P->>C: yes (typed at /dev/tty)
+    C->>App: POST agent-secrets per new name (hosts [], once, audited by name)
+    C-->>P: imported / failed per name, summary
+```
 
 Claude Code reads the Yulius tools once per connection, so each Cockpit's `shell.json` keeps the
 launch digest it started with (`App::cockpit_launch_digest`: its MCP instructions, tool

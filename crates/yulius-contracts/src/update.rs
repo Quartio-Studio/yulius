@@ -111,7 +111,7 @@ pub struct HelperStatus {
     /// Running, done, failed or rolled back.
     pub state: HelperState,
     /// Current step: `fetching`, `verifying`, `compiling`, `built`, `stopping`, `backing_up`,
-    /// `installing`, `starting`, `checking`, `succeeded`, `rolling_back`, `rolled_back`,
+    /// `installing`, `starting`, `checking`, `checking_host`, `succeeded`, `rolling_back`, `rolled_back`,
     /// `failed`.
     pub step: String,
     /// Compilation progress.
@@ -126,8 +126,73 @@ pub struct HelperStatus {
     /// The last lines of output (no progress bars, no credentials).
     #[serde(default)]
     pub log_tail: Vec<String>,
+    /// After a healthy install: the installed binary's `host check` (SPEC-203 HST-012).
+    #[serde(default)]
+    pub host_check: Option<HostCheckReport>,
     /// Last write (ms since the epoch).
     pub updated_at: i64,
+}
+
+/// What one item of `yulius host setup` or `yulius host check` did (SPEC-203).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostOutcome {
+    /// It holds; left alone.
+    Ok,
+    /// It was changed (or, in a dry run, would be).
+    Changed,
+    /// Left to the operator, for the reason given.
+    Manual,
+    /// It does not hold and could not be fixed.
+    Failed,
+}
+
+/// One item of a host setup or check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostLine {
+    /// What was checked ("Docker Engine", "kernel modules", "sandbox Docker", …).
+    pub name: String,
+    /// What happened.
+    pub outcome: HostOutcome,
+    /// What holds, what changed, or why not.
+    pub detail: String,
+}
+
+/// `yulius host check --json`: the host's prerequisites of Docker in sandboxes after an update,
+/// with only safe fixes applied (SPEC-203 HST-012). The update helper keeps the last one in
+/// `<helper state>/host-check.json` and in [`HelperStatus::host_check`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostCheckReport {
+    /// Every item failed nothing and the "sandbox Docker" verdict holds.
+    pub ok: bool,
+    /// One line per item, the verdict last.
+    #[serde(default)]
+    pub lines: Vec<HostLine>,
+    /// Why the check could not run (the installed binary has no `host check`, it timed out);
+    /// `ok` is false then.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The commit whose binary ran it, when known.
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// When it ran (ms since the epoch).
+    #[serde(default)]
+    pub checked_at: i64,
+}
+
+impl HostCheckReport {
+    /// The items that are not fine, as one sentence each (empty when `ok`).
+    #[must_use]
+    pub fn problems(&self) -> Vec<String> {
+        let mut problems: Vec<String> = self.error.iter().cloned().collect();
+        problems.extend(
+            self.lines
+                .iter()
+                .filter(|l| l.outcome == HostOutcome::Failed)
+                .map(|l| format!("{}: {}", l.name, l.detail)),
+        );
+        problems
+    }
 }
 
 /// `GET /internal/version` on the internal listener: what the helper's health check reads.

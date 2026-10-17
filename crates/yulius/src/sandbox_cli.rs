@@ -71,8 +71,8 @@ pub enum BaseAction {
             default_value = "/var/lib/yulius"
         )]
         data_dir: PathBuf,
-        /// Bases still used by running holders (comma-separated), kept when old bases are
-        /// removed.
+        /// More bases to keep (comma-separated) when old bases are removed. The current base
+        /// and every base a live holder has mounted are always kept.
         #[arg(long, value_delimiter = ',')]
         keep: Vec<String>,
     },
@@ -231,7 +231,12 @@ pub fn base(action: BaseAction) -> ExitCode {
             let started = std::time::Instant::now();
             match yulius_sandbox::base::build(&config, &bases) {
                 Ok(info) => {
-                    yulius_sandbox::base::collect(&bases, &keep, &mapper, &exe);
+                    // Under the build lock, so another build's base is never collected between
+                    // its rename and its `current.json` (review of SPEC-203).
+                    match yulius_sandbox::base::lock_builds(&bases.dir) {
+                        Ok(_lock) => yulius_sandbox::base::collect(&bases, &keep, &mapper, &exe),
+                        Err(error) => eprintln!("yulius: old bases kept: the build lock: {error}"),
+                    }
                     println!(
                         "sandbox base {} ready in {} s",
                         info.id,

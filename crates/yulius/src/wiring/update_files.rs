@@ -7,7 +7,9 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use yulius_app::ports::updates::UpdateHelper;
-use yulius_contracts::update::{HelperRequest, HelperStatus, MAX_STATUS_BYTES, VERSION};
+use yulius_contracts::update::{
+    HelperRequest, HelperStatus, HostCheckReport, MAX_STATUS_BYTES, VERSION,
+};
 
 /// Name of the request file in `<data>/update/`.
 pub const REQUEST_FILE: &str = "request.json";
@@ -104,6 +106,12 @@ impl UpdateHelper for FileUpdateHelper {
     fn clear_request(&self) {
         let _ = std::fs::remove_file(&self.request);
     }
+
+    fn host_check(&self) -> Option<HostCheckReport> {
+        let path = self.state_dir.join(crate::update_helper::HOST_CHECK_FILE);
+        let bytes = read_bounded(&path, MAX_STATUS_BYTES).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +171,7 @@ mod tests {
             error: None,
             previous: None,
             log_tail: Vec::new(),
+            host_check: None,
             updated_at: 5,
         };
         std::fs::write(state.join(STATUS_FILE), serde_json::to_vec(&status)?)?;

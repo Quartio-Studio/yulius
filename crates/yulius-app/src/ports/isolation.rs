@@ -81,6 +81,42 @@ pub struct DiskUsage {
     pub limit: u64,
 }
 
+/// Whether sandboxes get Docker on this server (SPEC-203 HST-014), from the isolation adapter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DockerStatus {
+    /// The verdict holds.
+    pub ok: bool,
+    /// The verdict's words.
+    pub detail: String,
+    /// The current base: id, and whether it has `dockerd`.
+    pub base: Option<(String, bool)>,
+    /// The host has `dockerd`.
+    pub host_dockerd: bool,
+    /// A build runs since (ms since the epoch).
+    pub building_since_ms: Option<i64>,
+    /// The host changed then; a build waits.
+    pub pending_since_ms: Option<i64>,
+    /// When that build starts.
+    pub starts_at_ms: Option<i64>,
+    /// The last build's duration.
+    pub last_build_secs: Option<u64>,
+    /// The last build's error.
+    pub build_error: Option<String>,
+    /// Sandboxes on their own Docker: (sandbox id, its `dockerd`).
+    pub own_engines: Vec<(String, String)>,
+}
+
+/// One check of the Docker smoke test as it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmokeCheck {
+    /// Name.
+    pub name: String,
+    /// It held.
+    pub ok: bool,
+    /// What was seen.
+    pub detail: String,
+}
+
 /// See the module docs.
 #[async_trait]
 pub trait SandboxIsolation: Send + Sync {
@@ -130,6 +166,24 @@ pub trait SandboxIsolation: Send + Sync {
     /// one.
     async fn docker(&self, _sandbox: &SandboxRef) -> bool {
         false
+    }
+
+    /// Whether sandboxes get Docker, why not, the base's rebuild and the sandboxes on their own
+    /// Docker (SPEC-203 HST-014); `None` where the adapter cannot tell.
+    async fn docker_status(&self) -> Option<DockerStatus> {
+        None
+    }
+
+    /// Runs the Docker smoke test (`yulius doctor --docker-smoke`) in a throwaway sandbox,
+    /// reporting each check as it ends; `Ok(passed)`, or why it could not run (SPEC-203 HST-015).
+    ///
+    /// # Errors
+    /// It could not start or did not finish.
+    async fn docker_smoke(
+        &self,
+        _report: &(dyn Fn(SmokeCheck) + Send + Sync),
+    ) -> Result<bool, String> {
+        Err("this server cannot run the Docker smoke test".into())
     }
 
     /// The limits every sandbox runs under; none where nothing enforces them (no cgroup

@@ -4,8 +4,51 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-17
+
+- Secrets can be imported from the CLI (SPEC-205, ADR-0163, task #192). `yulius secrets import
+  --to team|agent [FILE|-]` reads a dotenv file, stdin or hidden prompts and creates team secrets
+  or a sandbox's agent secrets (`--sandbox`, `--instance`) through the existing vault API. It lists
+  every name as new, existing (skipped, never overwritten) or invalid with the reason, and sends
+  nothing until `yes` is typed at the terminal; no flag skips that. Values never appear in
+  arguments, output, errors or files, and are wiped from memory when dropped. A comment above a key
+  becomes its description or notes (a commented-out old key never does), and a PEM or OpenSSH key
+  is stored as the Secrets page stores it.
+- The Secrets page offers the production allowance only where it can be given (SPEC-204, task
+  #191, fixes #621). A secret agents use, through its hosts or `.env` copies, showed a warning
+  badge and an "Allow for production deploys" button. The server always refused that button,
+  since a production secret is exclusive (ADR-0109). The card now says that production deploys
+  never get a secret agents use, and that production needs a separate secret. A production
+  secret whose host or `.env` request still waits offers Dismiss only. The web mock now refuses
+  what the server refuses.
+- Docker in sandboxes works out of the box (SPEC-203, ADR-0162, task #188). `sudo yulius host
+  setup` is now the install path after the binary. It checks and fixes, in one order: a
+  needrestart rule, written before any install, so installs never restart `yulius.service`; Git
+  and the isolation packages; Docker Engine with buildx and compose from Docker's repository; the
+  host's own Docker units stopped, unless they run containers; the kernel modules, persisted for
+  every boot; the service user and its ids; the unit's delegation, by drop-in; a root-owned
+  binary; and a base build that keeps live bases. It ends with the contained doctor and the smoke
+  test, and a second run changes nothing. Every update then runs the new version's `yulius host
+  check`, which applies only safe fixes, and a regression shows in the update's outcome and on a
+  new Sandbox Docker card in Settings → Instance. The card gives the doctor's verdict, when a
+  rebuilt base will be ready, the sandboxes running their own `docker.io` with the way back, and
+  a Run smoke check button with each check as it ends. `yulius doctor` now names a writable
+  binary and a base without `dockerd`, and without `--contained` it says that flag adds the
+  check. A real fresh install in an Ubuntu 24.04 container found two bugs, both fixed: Docker's
+  packages had no install candidate (apt's lists were read before the source was added), and a
+  unit systemd did not report would have been rewritten.
+
 ## 2026-10-16
 
+- The two documented Docker operator commands are safe (SPEC-202, ADR-0161, task #187, fixes #617
+  and #618). A hand-run `yulius sandbox-base build` no longer deletes the base that running
+  sandboxes have mounted: base collection reads the live holders' records itself, whoever builds,
+  instead of trusting `--keep`, which only the server filled (on the VM it emptied every
+  sandbox's `/usr/lib` until the service was restarted). `sudo yulius doctor --docker-smoke` from a
+  root SSH shell now always runs as the service user in a delegated transient unit; root's own
+  login slice passed as delegated, got a `sandboxes/` group and ran the checks as uid 0. The
+  smoke's check lines are plain text, so compose's escapes no longer overwrite them, and the
+  compose check shows the probe's result instead of the web container's expected exit 137.
 - A sandbox's Docker engine starts again after Yulius restarts (SPEC-201 part 2, task #186,
   fixes #614). After the instance updated, every sandbox whose engine had stopped as idle
   answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory". systemd

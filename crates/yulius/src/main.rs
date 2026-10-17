@@ -161,12 +161,21 @@ enum Command {
         #[arg(long)]
         no_color: bool,
     },
+    /// Manage the vault from this computer.
+    Secrets {
+        /// What to do.
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
         /// Prove that sandboxes get Docker on this host, end to end, in a throwaway sandbox
         /// (SPEC-196): run it as root or the service user; it uses the current base.
         #[arg(long)]
         docker_smoke: bool,
+        /// With --docker-smoke: one JSON line per check (what Settings → Instance reads).
+        #[arg(long, requires = "docker_smoke")]
+        json: bool,
         /// Data directory.
         #[arg(
             long = "data-dir",
@@ -185,11 +194,156 @@ enum Command {
         #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
         proxy_secret_file: Option<PathBuf>,
     },
+    /// Bring this host to every prerequisite of Docker in sandboxes (run as root; SPEC-203).
+    Host {
+        /// What to do.
+        #[command(subcommand)]
+        action: HostAction,
+    },
     /// Print build information.
     Version,
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretsAction {
+    /// Import secrets from a dotenv file, stdin or typed prompts (SPEC-205): team secrets for
+    /// people, or agent secrets of a sandbox. Names are shown, values never; a secret that exists
+    /// is skipped, never overwritten; nothing is sent before you type yes at the terminal.
+    Import {
+        /// Team secrets (for people) or agent secrets (for agents, who never see them).
+        #[arg(long, value_enum)]
+        to: yulius::cli::VaultChoice,
+        /// A dotenv file (NAME=value lines; a comment above a key becomes its description), `-`
+        /// for stdin; without it, type each name and its hidden value.
+        file: Option<PathBuf>,
+        /// The sandbox of agent secrets: owner/name, slug or id (default: this checkout's GitHub
+        /// repository).
+        #[arg(long)]
+        sandbox: Option<String>,
+        /// Agent secrets for every sandbox (instance administrators).
+        #[arg(long)]
+        instance: bool,
+        /// Yulius URL (default: the only server you signed in to).
+        #[arg(long, env = "YULIUS_SERVER")]
+        server: Option<String>,
+        /// No colours (also NO_COLOR=1).
+        #[arg(long)]
+        no_color: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HostAction {
+    /// Install and fix what sandboxes need for Docker (Docker Engine with buildx and compose, the
+    /// host's own Docker units stopped, kernel modules, a needrestart rule, the service user and
+    /// its ids, the unit's delegation, the binary's owner, the base), then run the contained
+    /// doctor and the Docker smoke test. Idempotent; safe while sandboxes run.
+    Setup {
+        /// Data directory.
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
+        data: PathBuf,
+        /// The service user to create when the data directory does not exist yet.
+        #[arg(long, default_value = "yulius")]
+        user: String,
+        /// The public URL, to write yulius.service when it is not installed.
+        #[arg(long)]
+        public_url: Option<String>,
+        /// Change nothing; print what would change.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the Docker smoke test at the end (it pulls from Docker Hub).
+        #[arg(long)]
+        no_smoke: bool,
+        /// The server's systemd unit.
+        #[arg(long, env = "YULIUS_UPDATE_SERVICE", default_value = "yulius.service")]
+        service: String,
+        /// The update helper's state directory: the report is kept there when it exists.
+        #[arg(
+            long,
+            env = "YULIUS_UPDATE_STATE",
+            default_value = "/var/lib/yulius-update"
+        )]
+        update_state: PathBuf,
+    },
+    /// Check the same prerequisites, applying only safe fixes (the update helper runs it after
+    /// each update).
+    Check {
+        /// Data directory.
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
+        data: PathBuf,
+        /// Print one JSON report instead of lines.
+        #[arg(long)]
+        json: bool,
+        /// The server's systemd unit.
+        #[arg(long, env = "YULIUS_UPDATE_SERVICE", default_value = "yulius.service")]
+        service: String,
+        /// The update helper's state directory: the report is kept there when it exists.
+        #[arg(
+            long,
+            env = "YULIUS_UPDATE_STATE",
+            default_value = "/var/lib/yulius-update"
+        )]
+        update_state: PathBuf,
+    },
+}
+
+fn host(action: HostAction) -> ExitCode {
+    use yulius::host_setup::{Mode, Options, main};
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/local/bin/yulius"));
+    match action {
+        HostAction::Setup {
+            data,
+            user,
+            public_url,
+            dry_run,
+            no_smoke,
+            service,
+            update_state,
+        } => main(
+            if dry_run { Mode::DryRun } else { Mode::Setup },
+            Options {
+                data_dir: data,
+                user,
+                public_url,
+                exe,
+                smoke: !no_smoke,
+                service,
+                update_state: Some(update_state),
+            },
+            false,
+        ),
+        HostAction::Check {
+            data,
+            json,
+            service,
+            update_state,
+        } => main(
+            Mode::Check,
+            Options {
+                data_dir: data,
+                user: "yulius".into(),
+                public_url: None,
+                exe,
+                smoke: false,
+                service,
+                update_state: Some(update_state),
+            },
+            json,
+        ),
+    }
 }
 
 fn main() -> ExitCode {
@@ -285,23 +439,44 @@ fn main() -> ExitCode {
             playground_name: name,
             no_color,
         }),
+        Command::Secrets {
+            action:
+                SecretsAction::Import {
+                    to,
+                    file,
+                    sandbox,
+                    instance,
+                    server,
+                    no_color,
+                },
+        } => yulius::cli::secrets_import(yulius::cli::SecretsImportArgs {
+            to,
+            file,
+            sandbox,
+            instance,
+            server,
+            no_color,
+        }),
         Command::Doctor {
             docker_smoke: true,
             data,
+            json,
             ..
-        } => yulius::docker_smoke::main(&data),
+        } => yulius::docker_smoke::main(&data, json),
         Command::Doctor {
             docker_smoke: false,
             data,
             contained,
             contained_readonly,
             proxy_secret_file,
+            ..
         } => yulius::doctor::doctor(
             &data,
             contained,
             &contained_readonly,
             proxy_secret_file.as_deref(),
         ),
+        Command::Host { action } => host(action),
         Command::Version => {
             let commit = env!("YULIUS_BUILD_COMMIT");
             if commit.is_empty() {
