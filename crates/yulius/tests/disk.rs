@@ -249,8 +249,7 @@ async fn idle_tasks_lose_their_caches_only_under_pressure_and_the_largest_first(
 /// SPEC-215 LFT-005 (ADR-0170): a done task loses its caches after 30 quiet minutes, keeps its
 /// worktree and uncommitted work; a waiting task keeps its caches for 4 hours.
 #[tokio::test]
-async fn a_done_task_loses_its_caches_after_half_an_hour_and_keeps_its_worktree() -> BoxResult<()>
-{
+async fn a_done_task_loses_its_caches_after_half_an_hour_and_keeps_its_worktree() -> BoxResult<()> {
     let w = world().await?;
     let done = w
         .task("t-done", TaskStatus::Running, Some(Activity::Done))
