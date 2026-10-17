@@ -12,7 +12,8 @@
 //!   - restarts a dead `slirp4netns`;
 //!   - keeps a Docker front beside every live holder, whatever its age, and moves the Docker
 //!     directory into runs that started without it (ADR-0158);
-//!   - stops holders idle for [`IdleConfig::stop_after`];
+//!   - stops holders idle for [`IdleConfig::stop_after`], and a retired sandbox's holder
+//!     ([`Manager::retire`]) as soon as no lease is left, whatever still runs in it;
 //!   - refreshes disk usage (at most every [`USAGE_EVERY`] per sandbox);
 //!   - builds a new base when the host changed for [`REBUILD_DEBOUNCE`], one build at a time,
 //!     as a child process.
@@ -65,6 +66,8 @@ pub const BIND_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BIND_TRIES: u8 = 3;
 /// Marks a mount namespace that needs nothing more.
 const BIND_DONE: u8 = u8::MAX;
+/// The marker a removed sandbox's state directory gets ([`Manager::retire`], SPEC-206 RMV-004).
+const RETIRED: &str = "retired";
 
 /// Why sandboxes get no engine: `YULIUS_SANDBOX_DOCKER=off` (SPEC-196 DKL-005).
 pub const DOCKER_OFF: &str = "Docker is turned off on this Yulius server \
@@ -965,6 +968,32 @@ impl Manager {
         state.last_used = Some(Instant::now());
     }
 
+    /// Retires `sandbox` (it was removed, SPEC-206 RMV-004): [`Manager::tick`] stops its holder,
+    /// with every process in it (its Docker engine, containers, leftovers), once no run holds a
+    /// lease, and [`Manager::adopt_one`] stops it instead of adopting it. A marker in its state
+    /// directory keeps it across restarts.
+    pub async fn retire(&self, sandbox: &str) {
+        let dir = self.state_dir(sandbox);
+        let marked = tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(RETIRED), b"")
+        })
+        .await
+        .unwrap_or_else(|error| Err(std::io::Error::other(error)));
+        match marked {
+            Ok(()) => tracing::info!(
+                sandbox,
+                "sandbox retired: its holder stops once its runs end"
+            ),
+            Err(error) => tracing::warn!(sandbox, %error, "the sandbox could not be retired"),
+        }
+    }
+
+    /// Whether `sandbox` was retired ([`Manager::retire`]).
+    fn retired(&self, sandbox: &str) -> bool {
+        self.state_dir(sandbox).join(RETIRED).exists()
+    }
+
     fn cgroup_of(&self, sandbox: &str) -> Option<SandboxGroups> {
         let delegation = self.config.delegation.as_ref()?;
         match delegation.sandbox_group(sandbox, &self.config.limits) {
@@ -1120,7 +1149,8 @@ impl Manager {
 
     /// Adopts `sandbox`'s holder when it still runs, with its Docker front (kept when it still
     /// serves this holder in the right mode, else started; SPEC-196 DKL-003); removes the record
-    /// of a dead one. Returns whether a holder was adopted.
+    /// of a dead one, and stops a retired sandbox's (SPEC-206 RMV-004). Returns whether a holder
+    /// was adopted.
     pub async fn adopt_one(&self, sandbox: &str) -> bool {
         let state = StatePaths::new(self.state_dir(sandbox));
         let Ok(record) = read_json::<HolderRecord>(&state.record()) else {
@@ -1128,7 +1158,7 @@ impl Manager {
         };
         let slot = self.entry(sandbox);
         let mut guard = slot.lock().await;
-        if alive(&record) {
+        if alive(&record) && !self.retired(sandbox) {
             let relays = self.start_relays(sandbox, &record);
             let mut live = Live::new(record, relays);
             live.front = read_json::<DockerFrontRecord>(&state.docker_record()).ok();
@@ -1231,10 +1261,14 @@ impl Manager {
                     let superseded = current
                         .as_ref()
                         .is_some_and(|base| base.id != record.base_id);
-                    let stop = runs == 0
-                        && state.leases == 0
-                        && (idle_for >= self.config.idle.stop_after
-                            || (superseded && idle_for >= Duration::from_secs(60)));
+                    let stop = holder_stops(
+                        self.retired(&sandbox),
+                        state.leases,
+                        runs,
+                        idle_for,
+                        self.config.idle.stop_after,
+                        superseded,
+                    );
                     if stop {
                         let record = record.clone();
                         state.live = None;
@@ -1543,6 +1577,23 @@ enum FrontAction {
 /// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
 /// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
 /// a running engine.
+/// Whether [`Manager::tick`] stops a live holder: never while a run holds a lease; a retired
+/// sandbox's at once, whatever else still runs in it (SPEC-206 RMV-004); any other once nothing
+/// runs in it and it was idle for `stop_after` (a minute when its base was superseded).
+fn holder_stops(
+    retired: bool,
+    leases: usize,
+    runs: usize,
+    idle_for: Duration,
+    stop_after: Duration,
+    superseded: bool,
+) -> bool {
+    leases == 0
+        && (retired
+            || (runs == 0
+                && (idle_for >= stop_after || (superseded && idle_for >= Duration::from_secs(60)))))
+}
+
 fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe) -> FrontAction {
     let running = current
         .filter(|(_, running)| *running)
@@ -2483,6 +2534,105 @@ while True:
             manager.quota_refusal(&request, &mut state).await,
             Some(PrepareError::OverQuota { .. })
         ));
+        Ok(())
+    }
+
+    /// SPEC-206 RMV-004: a retired sandbox's holder stops as soon as no run holds a lease,
+    /// whatever else runs in it; any other stops only once nothing runs and it was idle.
+    #[test]
+    fn a_retired_holder_stops_once_no_lease_is_left() {
+        let after = Duration::from_secs(300);
+        let now = Duration::ZERO;
+        assert!(
+            holder_stops(true, 0, 5, now, after, false),
+            "leftovers do not hold it up"
+        );
+        assert!(
+            !holder_stops(true, 1, 0, now, after, false),
+            "a run still holds a lease"
+        );
+        assert!(
+            !holder_stops(false, 0, 5, after, after, false),
+            "something runs in it"
+        );
+        assert!(
+            !holder_stops(false, 0, 0, now, after, false),
+            "not idle long enough"
+        );
+        assert!(holder_stops(false, 0, 0, after, after, false));
+        assert!(
+            holder_stops(false, 0, 0, Duration::from_secs(60), after, true),
+            "superseded"
+        );
+    }
+
+    /// A manager whose adopted holder of `s1` is a child `sleep` of this process (its namespaces
+    /// are this process's, so it reads as alive and stopping it ends only the child). The child
+    /// is reaped in the background; returns its pid.
+    fn adopting_child(data: &Path) -> Result<(Arc<Manager>, u32), Box<dyn std::error::Error>> {
+        let manager = adopting(data, Err(DOCKER_OFF.into()), false)?;
+        let mut child = std::process::Command::new("sleep").arg("600").spawn()?;
+        let pid = child.id();
+        std::thread::spawn(move || child.wait());
+        let state = StatePaths::new(manager.state_dir("s1"));
+        let record = HolderRecord {
+            inner_pid: pid,
+            ..read_json::<HolderRecord>(&state.record())?
+        };
+        write_json(&state.record(), &record)?;
+        Ok((manager, pid))
+    }
+
+    fn gone(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while crate::holder::exists(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !crate::holder::exists(pid)
+    }
+
+    /// SPEC-206 RMV-004 (#624): a removed sandbox's holder stopped only once nothing ran in its
+    /// namespaces, so a leftover process (here this test itself) kept it and its Docker engine
+    /// up for good. Retired, the next tick stops it.
+    #[tokio::test]
+    async fn the_tick_stops_a_retired_holder_while_other_processes_run_in_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let (manager, pid) = adopting_child(data.path())?;
+        assert!(manager.adopt_one("s1").await, "adopted");
+        assert!(
+            manager.processes("s1").await > 0,
+            "this test runs in its namespaces"
+        );
+        manager.tick().await;
+        assert!(
+            crate::holder::exists(pid),
+            "not retired: kept while something runs"
+        );
+
+        manager.retire("s1").await;
+        manager.tick().await;
+        let stopped = gone(pid);
+        kill(pid);
+        assert!(stopped, "the retired holder is stopped");
+        assert!(manager.entry("s1").lock().await.live.is_none());
+        assert_eq!(manager.processes("s1").await, 0);
+        Ok(())
+    }
+
+    /// SPEC-206 RMV-004: after a restart, a retired sandbox's holder is stopped, not adopted.
+    #[tokio::test]
+    async fn a_retired_holder_is_stopped_instead_of_adopted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let (manager, pid) = adopting_child(data.path())?;
+        manager.retire("s1").await;
+        let restarted = Manager::new(manager.config().clone());
+        assert!(!restarted.adopt_one("s1").await, "not adopted");
+        let stopped = gone(pid);
+        kill(pid);
+        assert!(stopped, "the retired holder is stopped");
+        assert!(restarted.entry("s1").lock().await.live.is_none());
         Ok(())
     }
 }

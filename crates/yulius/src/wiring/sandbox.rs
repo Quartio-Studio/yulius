@@ -355,6 +355,12 @@ impl SandboxIsolation for NamespaceIsolation {
         tokio::spawn(async move { manager.release(&sandbox).await });
     }
 
+    fn retire(&self, sandbox: &SandboxId) {
+        let manager = Arc::clone(&self.manager);
+        let sandbox = sandbox.as_str().to_owned();
+        tokio::spawn(async move { manager.retire(&sandbox).await });
+    }
+
     async fn prune_engine(&self, sandbox: &SandboxRef) -> Option<u64> {
         self.manager.prune_engine(sandbox.id.as_str()).await
     }

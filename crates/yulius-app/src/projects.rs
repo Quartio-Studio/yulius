@@ -977,10 +977,14 @@ impl App {
         Ok(())
     }
 
-    /// Ends in the background what still runs for a sandbox just removed besides its tasks
-    /// (SPEC-206): its CI runs, its shells (Superagents and terminals) and its browser. The
+    /// Ends what still runs for a sandbox just removed besides its tasks (SPEC-206): its holder
+    /// is retired (it stops, with every process in it, once the runs ended), and in the
+    /// background its CI runs, its shells (Superagents and terminals) and its browser end. The
     /// removal already refuses new ones, so none starts behind it.
     fn end_removed_sandbox(self: &Arc<Self>, id: SandboxId) {
+        if let Some(isolation) = self.isolation.get() {
+            isolation.retire(&id);
+        }
         let app = Arc::clone(self);
         tokio::spawn(async move {
             let runs = app.deps.store.active_ci_runs().await.unwrap_or_default();
