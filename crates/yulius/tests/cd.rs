@@ -947,6 +947,85 @@ async fn nothing_an_agent_writes_in_the_sandbox_changes_what_a_deploy_runs() -> 
     Ok(())
 }
 
+/// SPEC-216 SSA-003/004, AC-3/AC-4: production runs get a secret agents set up with no person's
+/// allowance; the production-only allowance and agents setting it up exclude each other.
+#[tokio::test]
+async fn production_gets_a_secret_agents_set_up() -> TestResult {
+    let f = fixture(
+        "[cd.dev]\n\n[cd.prod]\n\
+         deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+         verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         secrets = \"DEV_TOKEN\"\n",
+    )
+    .await?;
+    let secret_path = format!("/api/agent-secrets/{}", f.secret);
+    let auto = |on: bool| {
+        call(
+            &f.h.router,
+            Method::PATCH,
+            &secret_path,
+            Some(json!({"auto_allow": on})),
+            &f.alice,
+        )
+    };
+    let on = auto(true).await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(on.body["auto_allow"], true);
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/cd",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(
+        overview.body["environments"][1]["secrets"][0]["state"], "ready",
+        "{}",
+        overview.body
+    );
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains("token-ok") && !output.contains(VALUE),
+        "{output}"
+    );
+
+    // Production already gets it: no production-only allowance on top.
+    let cd_prod_path = format!("/api/agent-secrets/{}/cd-prod", f.secret);
+    let cd_prod = |allow: bool| {
+        call(
+            &f.h.router,
+            Method::POST,
+            &cd_prod_path,
+            Some(json!({"allow": allow})),
+            &f.alice,
+        )
+    };
+    let both = cd_prod(true).await?;
+    assert_eq!(both.status, StatusCode::CONFLICT, "{}", both.body);
+    // Turned off, production waits for a person again; a production secret is never set up by
+    // agents.
+    assert_eq!(auto(false).await?.status, StatusCode::OK);
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let allowed = cd_prod(true).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    let again = auto(true).await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    assert!(
+        again.body.to_string().contains("production secret"),
+        "{}",
+        again.body
+    );
+    Ok(())
+}
+
 /// Review H1 (CDR-002): production runs get only secrets a person allowed for production; an
 /// allowance for `.env` files (which any agent of the project could use) is not enough.
 #[tokio::test]
