@@ -513,6 +513,23 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn forget_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+    ) -> AppResult<()> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "DELETE FROM security_findings WHERE sandbox_id = ?1 AND fingerprint = ?2",
+                params![sandbox, fingerprint],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn resolve_security_finding(
         &self,
         sandbox: &SandboxId,
@@ -863,6 +880,12 @@ mod tests {
         );
         store.resolve_security_finding(&one, print, None).await?;
         assert_eq!(store.unresolved_security_findings(&one, 10).await?, [filed]);
+        store.forget_security_finding(&one, print).await?;
+        assert_eq!(store.filed_security_finding(&one, print).await?, None);
+        assert!(
+            store.claim_security_finding(&one, finding, at).await?,
+            "a forgotten finding is claimed anew"
+        );
         Ok(())
     }
 

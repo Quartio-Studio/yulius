@@ -514,6 +514,13 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::FiledFinding>>;
+    /// Forgets a filed finding whose issue GitHub no longer has, so it is filed anew when it is
+    /// reported again (SPEC-217 VSI-004).
+    async fn forget_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+    ) -> AppResult<()>;
     /// Marks a filed finding resolved at `at` (its issue was closed), or, with `None`, not
     /// resolved (reported again) (SPEC-217 VSI-004).
     async fn resolve_security_finding(

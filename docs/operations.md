@@ -695,8 +695,8 @@ medium findings in the lines the branch changed. Findings in code the branch did
 GitHub issues, which Yulius files once, reopens while they are reported and closes once their code
 is gone (ADR-0172). When the sandbox can use a Vidoc key (its own `VIDOC_API_KEY` agent secret or
 the instance's), Yulius CI adds a built-in `security` job to every project whose CI does not scan
-already. **The scanned code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key the scan says "not run",
-and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
+already. **The scanned code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key
+the scan says "not run", and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
 
 The key is managed like the Jev key:
 

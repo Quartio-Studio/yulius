@@ -1959,6 +1959,83 @@ async fn a_finding_whose_issue_is_gone_from_github_is_resolved() -> TestResult {
     Ok(())
 }
 
+/// SPEC-217 VSI-004 (review round 3): a finding filed before is looked at for reopening even once
+/// the job's filings are used up.
+#[tokio::test]
+async fn a_closed_finding_is_reopened_past_the_filing_cap() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    f.push_dev(
+        "many.rs",
+        Some("let v1 = 1;\nlet v2 = 2;\nlet v3 = 3;\nlet v4 = 4;\nlet v5 = 5;\n"),
+    )?;
+    let lib = finding_line("low", "lib.rs", "c6b08d3eced1a57c");
+    f.push_feature("findings.txt", Some(&lib))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.h.github
+        .closed_issues
+        .lock()
+        .map_err(|_| "closed")?
+        .insert(101, vec!["won't fix".into()]);
+    f.h.github
+        .fail_issues
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = String::new()
+        + &finding_line("low", "many.rs", "4e318af8a518ee12")
+        + &finding_line("low", "many.rs", "d746048c1cbdf9f8")
+        + &finding_line("low", "many.rs", "6bd523ab16569c0e")
+        + &finding_line("low", "many.rs", "73ba8fc484973a5d")
+        + &finding_line("low", "many.rs", "5cb9e593d94b466c")
+        + &lib;
+    let sha = f.push_feature("findings.txt", Some(&lines))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert_eq!(security.matches("not filed: ").count(), 5, "{security}");
+    assert!(
+        security.contains("reopened issue #101: finding c6b08d3eced1a57c is reported again"),
+        "{security}"
+    );
+    assert!(!security.contains("wait for a later run"), "{security}");
+    Ok(())
+}
+
+/// SPEC-217 VSI-004 (review round 3): a finding whose issue is gone from GitHub (deleted) and that
+/// is reported again is filed anew.
+#[tokio::test]
+async fn a_reported_finding_whose_issue_was_deleted_is_filed_again() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    let lib = finding_line("low", "lib.rs", "c6b08d3eced1a57c");
+    f.push_feature("findings.txt", Some(&lib))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.h.github
+        .missing_issues
+        .lock()
+        .map_err(|_| "missing")?
+        .push(101);
+    let sha = f.push_feature("findings.txt", Some(&(lib.clone() + "\n")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("filed issue #102 for the low finding c6b08d3eced1a57c"),
+        "{security}"
+    );
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 2);
+    Ok(())
+}
+
 /// SPEC-217 VSI-002 (review round 1, m8): when GitHub refuses an issue, the claim is released and
 /// a later run files it.
 #[tokio::test]

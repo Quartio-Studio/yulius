@@ -83,9 +83,9 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   them as issues. Each one has a fingerprint: the first 16 hex characters of SHA-256 over the
   path and the text of the finding's line with its whitespace collapsed (the lowercased title when
   there is no line or it is blank). Old code that shifts keeps its fingerprint, and so does a
-  finding whose severity or title the model words differently on another run. In `--ci` mode, each
-  such finding is also printed as one line, `::yulius-finding <json>`, with `severity`, `file`, `line`, `title`,
-  `detail`, `fingerprint` and `anchored`.
+  finding whose severity or title the model words differently on another run. In `--ci` mode,
+  each such finding is also printed as one line, `::yulius-finding <json>`, with `severity`,
+  `file`, `line`, `title`, `detail`, `fingerprint` and `anchored`.
 - **VSP-005.** The JSON report (`--report`) gives each finding `scope` (`change` or `outside`) and
   `fingerprint`.
 
@@ -93,10 +93,15 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 
 - **VSI-001.** When a job keyed `security` ends (passed, failed or skipped) on a pull request head,
   Yulius reads its output's `::yulius-finding` lines. It reads at most 64 of them, and each must
-  be a valid finding: severity medium or low, a non-empty file of at most 512 bytes, a 16-hex
-  fingerprint, and a title and detail cut to 200 and 2000 bytes. Yulius files each one whose
-  fingerprint the sandbox has not filed before, at most 5 attempts per job, failed ones included.
-  No other job's output is read for findings. A finding whose code is no longer on
+  be a valid finding:
+  - severity medium or low;
+  - a file of at most 512 bytes that is a repository path: relative and `/`-separated, with no
+    empty, `.` or `..` segment, no leading `-`, no `\`, and not in `.git`;
+  - a 16-hex fingerprint;
+  - a title and detail, cut to 200 and 2000 bytes.
+
+  Yulius files each one whose fingerprint the sandbox has not filed before, at most 5 attempts per
+  job, failed ones included. No other job's output is read for findings. A finding whose code is no longer on
   `origin/<integration branch>` is neither filed nor reopened, because a branch behind it still
   reports code that is already gone; the output says how many were left out that way. A file name
   with a backtick or a control character is refused.
@@ -131,7 +136,8 @@ but make sure it's in the default ci pipeline and will generalise for every othe
     `origin/<integration branch>`. If the file is gone, or if the finding is
     anchored and no line of the file has its fingerprint any more, Yulius closes the issue
     (completed), comments why, and marks the finding resolved. An issue GitHub no longer has
-    (404) is marked resolved too.
+    (404, or 410 when deleted) is marked resolved too. A finding reported again whose issue
+    GitHub no longer has is forgotten and filed anew.
   - Recomputing the fingerprint is exact (the same SHA-256 as the scanner, asserted on both sides
     by one constant). So a model that skips a finding on one run never closes an issue, and code
     still on a pull request branch closes nothing.
@@ -268,7 +274,7 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
 
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
-  with 18 skipped, plus lint, macOS, doctests, deps and docs. At 2a0b721f, the last code change: passed, 2209 tests (18 skipped).
+  with 18 skipped, plus lint, macOS, doctests, deps and docs. The final head's gate: GATE_LINE.
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
@@ -307,6 +313,14 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   in `file_write` was added to #657. The swap race on the temporary file's mode is closed by
   design: the mode is set on the handle, and there is no path-based call left. It cannot be
   reproduced deterministically without a test hook in production code.
+- Independent review round 3 (fresh session, at 30e7708d) verified the round-2 fixes and agreed
+  with each of the 11 new `[[ignore]]` entries. It asked for:
+  - a test of the reopen past the filing cap,
+    `a_closed_finding_is_reopened_past_the_filing_cap`;
+  - a finding whose issue was deleted to be filed again instead of left stuck,
+    `a_reported_finding_whose_issue_was_deleted_is_filed_again` (it failed first), with the
+    store's `forget_security_finding`;
+  - the VSI-001 path rule in this spec, and line lengths.
 
 ### Not tested here
 

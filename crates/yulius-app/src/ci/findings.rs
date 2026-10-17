@@ -348,14 +348,18 @@ impl App {
                     waiting += 1;
                     continue;
                 }
-                known += 1;
-                if budget.state_calls > 0
-                    && let Some(note) = self
+                if budget.state_calls > 0 {
+                    let (note, gone) = self
                         .ci_reopen_finding(sandbox, (run, pull), token, finding, budget)
-                        .await
-                {
-                    notes.push(note);
+                        .await;
+                    notes.extend(note);
+                    if gone {
+                        // Forgotten: a later run files it anew.
+                        waiting += 1;
+                        continue;
+                    }
                 }
+                known += 1;
                 continue;
             }
             let claim = (
@@ -369,15 +373,24 @@ impl App {
             {
                 Ok(true) => {}
                 Ok(false) => {
-                    known += 1;
-                    if budget.state_calls > 0
-                        && let Some(note) = self
+                    let mut gone = false;
+                    if budget.state_calls > 0 {
+                        let (note, forgotten) = self
                             .ci_reopen_finding(sandbox, (run, pull), token, finding, budget)
-                            .await
-                    {
-                        notes.push(note);
+                            .await;
+                        notes.extend(note);
+                        gone = forgotten;
                     }
-                    continue;
+                    // An issue GitHub no longer has: the forgotten finding is filed anew.
+                    let refile = gone
+                        && store
+                            .claim_security_finding(&sandbox.id, claim, self.now())
+                            .await
+                            .unwrap_or(false);
+                    if !refile {
+                        known += 1;
+                        continue;
+                    }
                 }
                 Err(err) => {
                     notes.push(format!(
@@ -428,8 +441,9 @@ impl App {
         notes
     }
 
-    /// Reopens the issue of a finding filed before that is reported again, when it was closed;
-    /// the note, or `None` when it was open (or there is no issue yet).
+    /// Reopens the issue of a finding filed before that is reported again, when it was closed.
+    /// Returns the note (`None` when it was open, or there is no issue yet) and whether GitHub no
+    /// longer has the issue (404, 410): the finding is then forgotten, to be filed anew.
     async fn ci_reopen_finding(
         &self,
         sandbox: &SandboxRecord,
@@ -437,13 +451,16 @@ impl App {
         token: &crate::model::Secret,
         finding: &Finding,
         budget: &mut Budget,
-    ) -> Option<String> {
+    ) -> (Option<String>, bool) {
         let store = &self.deps.store;
-        let filed = store
+        let Some(filed) = store
             .filed_security_finding(&sandbox.id, &finding.fingerprint)
             .await
             .ok()
-            .flatten()?;
+            .flatten()
+        else {
+            return (None, false);
+        };
         let comment = format!(
             "Yulius reopened this: Vidoc reports this finding again on pull request #{pull} (CI \
              run `{}`), and its code is still on the integration branch. Fix it, or, for a false \
@@ -470,17 +487,37 @@ impl App {
                 .await;
         }
         match reopened {
-            Ok(true) => Some(format!(
-                "[yulius] reopened issue #{}: finding {} is reported again",
-                filed.issue, filed.fingerprint
-            )),
-            Ok(false) => None,
-            Err(err) => Some(format!(
-                "[yulius] issue #{} of finding {} not reopened: {}",
-                filed.issue,
-                filed.fingerprint,
-                err.public_message()
-            )),
+            Ok(true) => (
+                Some(format!(
+                    "[yulius] reopened issue #{}: finding {} is reported again",
+                    filed.issue, filed.fingerprint
+                )),
+                false,
+            ),
+            Ok(false) => (None, false),
+            Err(crate::error::AppError::NotFound) => {
+                let forgotten = store
+                    .forget_security_finding(&sandbox.id, &filed.fingerprint)
+                    .await
+                    .is_ok();
+                (
+                    Some(format!(
+                        "[yulius] issue #{} of finding {} is gone from GitHub: the finding is \
+                         filed anew",
+                        filed.issue, filed.fingerprint
+                    )),
+                    forgotten,
+                )
+            }
+            Err(err) => (
+                Some(format!(
+                    "[yulius] issue #{} of finding {} not reopened: {}",
+                    filed.issue,
+                    filed.fingerprint,
+                    err.public_message()
+                )),
+                false,
+            ),
         }
     }
 
