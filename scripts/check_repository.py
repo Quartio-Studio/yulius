@@ -411,6 +411,27 @@ def doctor():
         if version not in result.split():
             raise ValueError(f"{name}: expected {version}, got {result}; rerun bootstrap")
         print(result)
+    if sys.platform == "linux":
+        # The macOS check's C compiler (ADR-0169).
+        import platform
+        from zig_install import host_key
+        pins = tomllib.loads((ROOT / ".config/tools.toml").read_text())["zig"]
+        if host_key(platform.machine(), pins) is None:
+            raise ValueError(f"No pinned zig for {platform.machine()}-linux in .config/tools.toml: "
+                             "the macOS check cannot run here")
+        version = pins["version"]
+        result = output([str(ROOT / ".tools/bin/zig"), "version"])
+        if result != version:
+            raise ValueError(f"zig: expected {version}, got {result}; rerun bootstrap")
+        for role in ("macos-cc", "macos-ar"):
+            if (ROOT / ".tools/bin" / role).resolve() != ROOT / "scripts/zig_macos.py":
+                raise ValueError(f".tools/bin/{role} is not scripts/zig_macos.py; rerun bootstrap")
+        print(f"zig {result}")
+    targets = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"].get("targets", [])
+    installed = output(["rustup", "+" + channel, "target", "list", "--installed"]).split()
+    missing = [target for target in targets if target not in installed]
+    if missing:
+        raise ValueError(f"Rust targets {missing} are not installed; rerun bootstrap")
     print(f"Python {sys.version.split()[0]}; pinned tools ready")
 
 
