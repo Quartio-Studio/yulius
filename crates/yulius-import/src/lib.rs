@@ -24,6 +24,7 @@ mod process;
 mod redact;
 mod run;
 mod secret;
+mod secrets_import;
 mod sessions;
 mod since;
 mod snapshot;
@@ -47,6 +48,10 @@ pub use run::{
     TerminalIo, UploadTuning, run_import,
 };
 pub use secret::Secret;
+pub use secrets_import::{
+    SecretsImportError, SecretsImportOptions, SecretsIo, SecretsSummary, SecretsTarget,
+    VaultClient, import_secrets, prompt_secrets,
+};
 pub use sessions::{DiscoveredSession, SessionFile, discover_claude_sessions};
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};
 pub use snapshot::{

@@ -168,7 +168,8 @@ fn quoted(
         }
     }
     let value = Secret::new(value);
-    let close = close.ok_or_else(|| DotenvError(format!("line {line}: the quote is never closed")))?;
+    let close =
+        close.ok_or_else(|| DotenvError(format!("line {line}: the quote is never closed")))?;
     let close_line = line + lines;
     let end = line_end(text, close + 1);
     let trailing = text[close + 1..end].trim();
@@ -267,7 +268,10 @@ EMPTY=
             ("A=1\nB='unterminated-secret-value\nC=2\n", "line 2"),
             ("A=\"unterminated-secret-value\n", "line 1"),
             ("A=1\n1BAD=secret-value-123\n", "line 2"),
-            ("A=first-secret-value\nB=2\nA=second-secret-value\n", "lines 1 and 3"),
+            (
+                "A=first-secret-value\nB=2\nA=second-secret-value\n",
+                "lines 1 and 3",
+            ),
             ("A='closed-secret-value' trailing-secret\n", "line 1"),
             ("=secret-value-123\n", "line 1"),
         ];

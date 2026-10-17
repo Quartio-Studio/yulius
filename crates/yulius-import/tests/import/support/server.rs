@@ -13,9 +13,10 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{post, put};
+use axum::routing::{get, post, put};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use yulius_contracts::api::secrets::{AgentSecretInput, TeamSecretInput};
 use yulius_contracts::import::{
     CHUNK_SHA256_HEADER, CreateImportRequest, CreateImportResponse, DevicePoll, DevicePollRequest,
     DeviceStart, DeviceStatus, FileProgress, FileRef, ImportManifest, ImportResult,
@@ -72,6 +73,24 @@ pub struct ServerState {
     pub device_script: VecDeque<DeviceStatus>,
     pub device_polls: usize,
     pub device_interval_s: u64,
+    /// Sandboxes listed by `GET /api/sandboxes`: (id, slug, owner, name).
+    pub sandboxes: Vec<(String, String, String, String)>,
+    /// Team secret titles that exist.
+    pub team_titles: Vec<String>,
+    /// Agent secrets that exist: (name, scope).
+    pub agent_names: Vec<(String, String)>,
+    /// Team secrets created, as sent.
+    pub team_created: Vec<TeamSecretInput>,
+    /// Agent secrets created, as sent, with the sandbox of the path.
+    pub agent_created: Vec<(String, AgentSecretInput)>,
+    /// Create requests accepted past authentication (team or agent).
+    pub creates: usize,
+    /// Every create request received, refused or not.
+    pub create_requests: usize,
+    /// Names whose create answers 422.
+    pub refuse_names: Vec<String>,
+    /// After this many creates every request answers 401.
+    pub expire_after_creates: Option<usize>,
 }
 
 type Shared = Arc<Mutex<ServerState>>;
@@ -96,6 +115,12 @@ impl FakeServer {
             .route("/api/import/{job}/complete", post(complete))
             .route("/api/device/start", post(device_start))
             .route("/api/device/poll", post(device_poll))
+            .route("/api/sandboxes", get(sandboxes))
+            .route("/api/team-secrets", get(team_list).post(team_create))
+            .route(
+                "/api/sandboxes/{sid}/agent-secrets",
+                get(agent_list).post(agent_create),
+            )
             .with_state(state.clone());
         let (shutdown, signal) = tokio::sync::oneshot::channel::<()>();
         let thread = std::thread::spawn(move || {
@@ -504,4 +529,114 @@ async fn device_poll(
         .unwrap_or(DeviceStatus::Pending);
     let token = (status == DeviceStatus::Approved).then(|| TOKEN.to_owned());
     Json(DevicePoll { status, token }).into_response()
+}
+
+/// Whether a vault call may go on: authorized and not past `expire_after_creates`.
+fn vault_allowed(state: &ServerState, headers: &HeaderMap) -> bool {
+    authorized(headers)
+        && state
+            .expire_after_creates
+            .is_none_or(|limit| state.creates < limit)
+}
+
+async fn sandboxes(State(state): State<Shared>, headers: HeaderMap) -> Response {
+    let Some(state) = lock(&state) else {
+        return poisoned();
+    };
+    if !vault_allowed(&state, &headers) {
+        return unauthorized();
+    }
+    let list: Vec<serde_json::Value> = state
+        .sandboxes
+        .iter()
+        .map(|(id, slug, owner, name)| {
+            serde_json::json!({
+                "id": id, "slug": slug, "name": name, "access": "admin",
+                "repo": {"owner": owner, "name": name, "url": "https://github.com/x/y"}
+            })
+        })
+        .collect();
+    Json(list).into_response()
+}
+
+async fn team_list(State(state): State<Shared>, headers: HeaderMap) -> Response {
+    let Some(state) = lock(&state) else {
+        return poisoned();
+    };
+    if !vault_allowed(&state, &headers) {
+        return unauthorized();
+    }
+    let list: Vec<serde_json::Value> = state
+        .team_titles
+        .iter()
+        .map(|title| serde_json::json!({"id": "t", "title": title, "has_value": true}))
+        .collect();
+    Json(list).into_response()
+}
+
+async fn agent_list(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(_sid): Path<String>,
+) -> Response {
+    let Some(state) = lock(&state) else {
+        return poisoned();
+    };
+    if !vault_allowed(&state, &headers) {
+        return unauthorized();
+    }
+    let list: Vec<serde_json::Value> = state
+        .agent_names
+        .iter()
+        .map(|(name, scope)| serde_json::json!({"id": "a", "name": name, "scope": scope}))
+        .collect();
+    Json(list).into_response()
+}
+
+/// Counts a create; `Some(response)` when it is refused.
+fn create_refusal(state: &mut ServerState, headers: &HeaderMap, name: &str) -> Option<Response> {
+    state.create_requests += 1;
+    if !vault_allowed(state, headers) {
+        return Some(unauthorized());
+    }
+    state.creates += 1;
+    state.refuse_names.iter().any(|n| n == name).then(|| {
+        error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid",
+            "the server refused it",
+        )
+    })
+}
+
+async fn team_create(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(input): Json<TeamSecretInput>,
+) -> Response {
+    let Some(mut state) = lock(&state) else {
+        return poisoned();
+    };
+    if let Some(refused) = create_refusal(&mut state, &headers, &input.title) {
+        return refused;
+    }
+    state.team_titles.push(input.title.clone());
+    state.team_created.push(input);
+    (StatusCode::CREATED, Json(serde_json::json!({"id": "new"}))).into_response()
+}
+
+async fn agent_create(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(sid): Path<String>,
+    Json(input): Json<AgentSecretInput>,
+) -> Response {
+    let Some(mut state) = lock(&state) else {
+        return poisoned();
+    };
+    if let Some(refused) = create_refusal(&mut state, &headers, &input.name) {
+        return refused;
+    }
+    state.agent_created.push((sid, input));
+    (StatusCode::CREATED, Json(serde_json::json!({"id": "new"}))).into_response()
 }
