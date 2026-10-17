@@ -2895,6 +2895,27 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     assert_eq!(secret["hosts"], json!(["api.vidoc.test", "eu.vidoc.test"]));
     assert_eq!(secret["requested_hosts"], json!(["us.vidoc.test"]));
     assert!(app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
+    // Once nothing the task asked for waits, it no longer needs a person (SPEC-213).
+    let all = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["us.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(all["waiting"], json!([]), "{all}");
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_ne!(
+        task.activity,
+        Some(yulius_domain::task::Activity::NeedsAttention),
+        "settled"
+    );
 
     // Turned off at creation: today's flow.
     let confirmed = add_agent_secret(

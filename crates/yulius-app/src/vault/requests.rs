@@ -274,6 +274,10 @@ impl App {
             }
             self.vault.bump();
             self.announce_request(record);
+            // A host that waited for a person is bound: a task may no longer need one (SPEC-213).
+            if waiting.len() < record.requested_hosts.len() {
+                self.settle_secret_waits(record.sandbox_id.as_ref()).await;
+            }
             let why = reason(why);
             self.vault_audit(
                 &user.actor(),

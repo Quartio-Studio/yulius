@@ -62,6 +62,7 @@ Two changes to the vault, one request:
   parsing, at most 16 hosts in all), audits `vault.agent.auto_allow` with the asker and the
   reason, does not mark the task as needing a person, and answers that they are bound (`bound`).
   A host it asks for that already waited for a person is bound too; other waiting hosts stay.
+  Once nothing a task asked for waits, it no longer needs a person (SPEC-213).
 - SSA-003. With `auto_allow`, production deploys get the secret (as `cd_prod` would) without a
   person allowing it. Dev deploys, `.env` copies, CI and the Superagent are unchanged.
 - SSA-004. `auto_allow` and the production-only allowance (`cd_prod`) exclude each other: turning
@@ -264,6 +265,9 @@ Two changes to the vault, one request:
   now takes `auto_allow`. A person's create passes the API default; an agent's create passes
   `false`. `secrets_create.rs` asserts that, and the secrets, cd, cockpit, local CI, CLI and
   manage-tools suites passed: 140 tests, plus 515 in the import, store and domain crates.
+- **Merge of dev #646** (SPEC-213, a task stops needing a person once nothing it asked for
+  waits): binding at once a host that waited now settles the waits as well. Test-first: the task
+  stayed in Needs attention after its last waiting host was bound.
 - **What could not be tested here:** the assignment against this instance's real vault and
   sandboxes (it runs at the first start after the update), and the live Secrets page against a
   running server (the page was tested against the mock).
