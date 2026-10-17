@@ -25,6 +25,7 @@ use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
     DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
 };
+use yulius_app::ports::store_ext::CiStore as _;
 use yulius_domain::ci::{GateResult, RunState};
 use yulius_domain::ids::SandboxId;
 
@@ -456,6 +457,60 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
         .map(|entries| entries.filter_map(Result::ok).collect())
         .unwrap_or_default();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+    Ok(())
+}
+
+/// SPEC-206 RMV-002 (#624): removing a sandbox cancels its CI runs, the running one (its jobs
+/// killed) and the queued one: they went on to their end and published their statuses.
+#[tokio::test]
+async fn removing_the_sandbox_cancels_its_ci_runs() -> TestResult {
+    let f = fixture().await?;
+    f.h.github.set_perm("alice", "acme/app", perms("admin"));
+    f.push_feature("slow", Some("1"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.running("pr/1").await?;
+    let active = |runs: &[yulius_app::ci::CiRunRecord]| {
+        runs.iter()
+            .filter(|r| matches!(r.state, RunState::Queued | RunState::Running))
+            .count()
+    };
+    let before = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    assert!(active(&before) >= 1, "{before:?}");
+
+    let started = tokio::time::Instant::now();
+    let removed = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    // No dispatch from here on: only the removal ends the runs, before the jobs' 8 s timeout.
+    let deadline = started + Duration::from_secs(5);
+    let runs = loop {
+        let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+        if active(&runs) == 0 {
+            break runs;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the removed sandbox's runs go on: {runs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    for run in runs.iter().filter(|r| {
+        before
+            .iter()
+            .any(|b| b.id == r.id && matches!(b.state, RunState::Queued | RunState::Running))
+    }) {
+        assert_eq!(run.state, RunState::Cancelled, "{run:?}");
+        assert_eq!(
+            run.reason.as_deref(),
+            Some("the sandbox was removed"),
+            "{run:?}"
+        );
+    }
     Ok(())
 }
 
