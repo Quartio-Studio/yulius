@@ -85,6 +85,10 @@ pub struct FakeGitHub {
     pub closed_issues: Mutex<HashMap<u64, Vec<String>>>,
     /// Every comment `set_issue_state` added: (number, comment).
     pub issue_comments: Mutex<Vec<(u64, String)>>,
+    /// Issues GitHub no longer has (deleted or transferred): `set_issue_state` answers NotFound.
+    pub missing_issues: Mutex<Vec<u64>>,
+    /// How many times `set_issue_state` was called.
+    pub issue_state_calls: std::sync::atomic::AtomicUsize,
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
@@ -299,6 +303,15 @@ impl GitHubPort for FakeGitHub {
         open: bool,
         comment: &str,
     ) -> AppResult<bool> {
+        self.issue_state_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .missing_issues
+            .lock()
+            .map_err(AppError::internal)?
+            .contains(&number)
+        {
+            return Err(AppError::NotFound);
+        }
         let mut closed = self.closed_issues.lock().map_err(AppError::internal)?;
         if closed.contains_key(&number) != open {
             return Ok(false);

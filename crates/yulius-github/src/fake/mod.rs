@@ -496,6 +496,17 @@ impl FakeGitHub {
             .unwrap_or_default()
     }
 
+    /// Deletes an issue: GitHub then answers 410 Gone for it.
+    pub fn delete_issue(&self, owner: &str, repo: &str, number: u64) {
+        if let Some(repo) = lock(&self.state).repos.get_mut(&key(owner, repo)) {
+            for issue in &mut repo.issues {
+                if issue["number"] == number {
+                    issue["deleted"] = json!(true);
+                }
+            }
+        }
+    }
+
     /// Labels of a repository.
     pub fn labels(&self, owner: &str, repo: &str) -> Vec<String> {
         lock(&self.state)
@@ -1508,6 +1519,9 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
             else {
                 return error(404, "Not Found");
             };
+            if issue["deleted"] == true {
+                return error(410, "This issue was deleted");
+            }
             match method.as_str() {
                 "PATCH" => {
                     if let Some(state) = body["state"].as_str() {

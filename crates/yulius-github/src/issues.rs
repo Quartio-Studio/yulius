@@ -134,7 +134,8 @@ impl GitHubClient {
     ///
     /// # Errors
     /// [`GitHubError::InvalidInput`] for an empty or oversized comment,
-    /// [`GitHubError::NotFound`] for no such issue, or other typed errors.
+    /// [`GitHubError::NotFound`] for no such issue (404, or 410 when deleted), or other typed
+    /// errors.
     pub async fn set_issue_state(
         &self,
         token: &Secret,
@@ -151,7 +152,11 @@ impl GitHubClient {
         }
         let number = number.to_string();
         let url = self.api_url(&["repos", owner, repo, "issues", &number])?;
-        let current: WireIssueState = self.get_json(url.clone(), Some(token)).await?;
+        // A deleted issue answers 410 Gone: no such issue, as a transferred one (404).
+        let current: WireIssueState = match self.get_json(url.clone(), Some(token)).await {
+            Err(GitHubError::Upstream(410)) => return Err(GitHubError::NotFound),
+            other => other?,
+        };
         if (current.state == "open") == open {
             return Ok(false);
         }

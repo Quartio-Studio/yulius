@@ -392,6 +392,11 @@ impl App {
             .create_new(true)
             .open(&temporary)
             .and_then(|mut handle| {
+                // On the handle, never by path: the agent can see the new entry and swap it for
+                // a link before a path-based chmod (review round 2).
+                if let Some(permissions) = mode {
+                    handle.set_permissions(permissions)?;
+                }
                 std::io::Write::write_all(&mut handle, req.content.as_bytes())?;
                 handle.sync_all()
             });
@@ -400,9 +405,6 @@ impl App {
                 let _ = std::fs::remove_file(&temporary);
             }
             return Err(io_error(&err));
-        }
-        if let Some(permissions) = mode {
-            let _ = std::fs::set_permissions(&temporary, permissions);
         }
         if let Err(err) = std::fs::rename(&temporary, &destination) {
             let _ = std::fs::remove_file(&temporary);

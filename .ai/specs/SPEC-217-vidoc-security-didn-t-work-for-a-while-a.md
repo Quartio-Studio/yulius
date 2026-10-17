@@ -83,8 +83,8 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   them as issues. Each one has a fingerprint: the first 16 hex characters of SHA-256 over the
   path and the text of the finding's line with its whitespace collapsed (the lowercased title when
   there is no line or it is blank). Old code that shifts keeps its fingerprint, and so does a
-  finding whose severity or title the model words differently on another run. In `--ci` mode, each such finding is also
-  printed as one line, `::yulius-finding <json>`, with `severity`, `file`, `line`, `title`,
+  finding whose severity or title the model words differently on another run. In `--ci` mode, each
+  such finding is also printed as one line, `::yulius-finding <json>`, with `severity`, `file`, `line`, `title`,
   `detail`, `fingerprint` and `anchored`.
 - **VSP-005.** The JSON report (`--report`) gives each finding `scope` (`change` or `outside`) and
   `fingerprint`.
@@ -241,8 +241,8 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
 | Tracked already | `yulius-browser/src/lib.rs:18` (#626), `claude_config.rs:174` (#634) |
 | False positive, `[[ignore]]` with the guard | high: `mcp_config.rs:566`, `:576`, `playground/onboard.rs:232`, `:254`, `session_docs.rs:936`, `credential.rs:353`, `yulius-update.service:15`. Medium: `accounts.rs:1086`, `auth.rs:562`, `ci/cd.rs:1176`, `:1515`, `delivery/runner.rs:225`, `disk.rs:22`, `manage.rs:244`, `mcp.rs:86`, `mcp_config.rs:250`, `project.rs:128`, `purge.rs:59`, `preview.rs:93`, `session_docs.rs:1124`, `terminal.rs:151`, `vault/runtime.rs:830`, `yulius-domain` `disk.rs:147`, `vault/mod.rs:182`, `:251`, `proxy.rs:351`, `hook_client.rs:316`, `yulius-import` `upload.rs:162`, `taskview.js:340`, `sessions.rs:40`, `leftovers_cli.rs:299`, `update_helper.rs:338`, `wiring/git.rs:263`, `:509`, `wiring/harness.rs:58`, `:206` |
 
-- **`.config/vidoc.toml`:** there are 44 new `[[ignore]]` entries. Each one names the guard and
-  test that stop its finding, or the issue tracking it. Applied to the report, they leave open
+- **`.config/vidoc.toml`:** there are 45 new `[[ignore]]` entries. Each one names the guard that
+  stops its finding (and its test where one exists), or the issue tracking it. Applied to the report, they leave open
   only the two findings fixed here.
 - **Low findings (43): my call as the executor, not acted on in this change.** They are
   hardening, test fixtures (`tools/fake-agent`, `fake/synthetic_app_key.pem`) or scripts. A
@@ -253,7 +253,7 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
 ### Commands and results
 
 - `cd scripts && python3 -m unittest test_vidoc_scan`: 63 tests passed. They include:
-  - 19 policy tests, each failing before its fix: changed lines, slack, deletions, new and moved
+  - 20 policy tests, each failing before its fix: changed lines, slack, deletions, new and moved
     files, `-diff`, a subdirectory, unusual names, a misnamed file, forged lines, fingerprints and
     Python–Rust parity.
 - `cargo nextest` on the new tests:

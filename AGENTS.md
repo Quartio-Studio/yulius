@@ -85,9 +85,10 @@ the lines the branch changed (within 3 lines)
 Fix a failing finding test-first. Low findings in your change are listed "for you to decide": fix
 each one, or say in the spec's Evidence why not. Medium and low findings in code the branch did not
 touch do not fail it: Yulius CI files each one as a GitHub issue once, reopens it while it is
-reported, and closes it once its line is gone from `dev`. A false positive becomes an `[[ignore]]` entry in `.config/vidoc.toml`,
-with its reason, only once the independent reviewer agrees; list it in the spec's Evidence. Exit 2
-(not run: no key, a refused key, no quota, Vidoc unreachable) is unrun, never passed. The key is
+reported, and closes it once its line is gone from `dev`. A false positive becomes an `[[ignore]]`
+entry in `.config/vidoc.toml`, with its reason, only once the independent reviewer agrees; list it
+in the spec's Evidence. Exit 2 (not run: no key, a refused key, no quota, Vidoc unreachable) is
+unrun, never passed. The key is
 `VIDOC_API_KEY`, a placeholder that the egress proxy replaces: this project's agent secret, else
 the instance's Vidoc key (Settings, Instance). The code goes to Vidoc. `scripts/dev security
 --all` is the broad scan of the whole repository, for an audit task (`--report FILE` writes JSON).

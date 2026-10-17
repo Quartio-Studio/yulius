@@ -1886,6 +1886,79 @@ async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_go
     Ok(())
 }
 
+/// SPEC-217 VSI-001 (review round 2): failed filings count against the 5 a job may try, and the
+/// rest wait for a later run.
+#[tokio::test]
+async fn a_job_tries_at_most_five_filings_failed_ones_included() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("many.rs", Some("let v1 = 1;\nlet v2 = 2;\nlet v3 = 3;\nlet v4 = 4;\nlet v5 = 5;\nlet v6 = 6;\nlet v7 = 7;\n"))?;
+    f.h.github
+        .fail_issues
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = String::new()
+        + &finding_line("low", "many.rs", "4e318af8a518ee12")
+        + &finding_line("low", "many.rs", "d746048c1cbdf9f8")
+        + &finding_line("low", "many.rs", "6bd523ab16569c0e")
+        + &finding_line("low", "many.rs", "73ba8fc484973a5d")
+        + &finding_line("low", "many.rs", "5cb9e593d94b466c")
+        + &finding_line("low", "many.rs", "1e75da6953b58fd8")
+        + &finding_line("low", "many.rs", "7930599a9fbbd0c5");
+    let sha = f.push_feature("findings.txt", Some(&lines))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert_eq!(security.matches("not filed: ").count(), 5, "{security}");
+    assert!(
+        security.contains("2 more finding(s) outside the change wait for a later run"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// SPEC-217 VSI-004 (review round 2): an issue GitHub no longer has (404) resolves its finding,
+/// so later jobs make no call for it.
+#[tokio::test]
+async fn a_finding_whose_issue_is_gone_from_github_is_resolved() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    let lib = finding_line("low", "lib.rs", "c6b08d3eced1a57c");
+    f.push_feature("findings.txt", Some(&lib))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 1);
+    f.h.github
+        .missing_issues
+        .lock()
+        .map_err(|_| "missing")?
+        .push(101);
+    f.push_dev("lib.rs", None)?;
+    let sha = f.push_feature("findings.txt", Some("nothing\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(!security.contains("not closed"), "{security}");
+    let calls = || {
+        f.h.github
+            .issue_state_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    };
+    let before = calls();
+    assert!(before >= 1, "the close was tried");
+    f.push_feature("findings.txt", Some("still nothing\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(calls(), before, "a resolved finding is not looked at again");
+    Ok(())
+}
+
 /// SPEC-217 VSI-002 (review round 1, m8): when GitHub refuses an issue, the claim is released and
 /// a later run files it.
 #[tokio::test]

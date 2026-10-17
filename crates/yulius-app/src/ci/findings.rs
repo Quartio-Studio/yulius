@@ -6,8 +6,8 @@
 //! stale branch reports code already gone). When a `security` job of a pull request or of the
 //! integration branch ends, Yulius closes the issues whose code is gone from the integration
 //! branch: no line of the file has the fingerprint any more (or the file is gone). A few per job,
-//! said in the job's output. The lines are scanner output (and, in a repository that runs its own scanner, the pull
-//! request's): they are validated, bounded and quoted as data in the issue.
+//! said in the job's output. The lines are scanner output (and, in a repository that runs its own
+//! scanner, the pull request's): they are validated, bounded and quoted as data in the issue.
 
 use serde::Deserialize;
 use yulius_domain::ci::CiRef;
@@ -120,7 +120,8 @@ pub(crate) fn issue_for(finding: &Finding, pull: u64, run: &str) -> NewIssue {
          ## Acceptance criteria\n\n\
          - [ ] The finding is confirmed or refuted against the code\n\
          - [ ] A real weakness is fixed with a regression test that fails without the fix\n\
-         - [ ] A false positive gets an `[[ignore]]` entry that the independent reviewer agreed to\n\n\
+         - [ ] A false positive gets an `[[ignore]]` entry that the independent reviewer \
+         agreed to\n\n\
          <!-- yulius-vidoc-fingerprint: {fingerprint} -->",
         severity = finding.severity,
         fingerprint = finding.fingerprint,
@@ -325,7 +326,25 @@ impl App {
         let (mut notes, mut waiting, mut known) = (Vec::new(), 0, 0);
         for finding in findings {
             if budget.filings == 0 {
-                waiting += 1;
+                // Filed before: looked at for reopening all the same; new: a later run files it.
+                let filed = store
+                    .filed_security_finding(&sandbox.id, &finding.fingerprint)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if !filed {
+                    waiting += 1;
+                    continue;
+                }
+                known += 1;
+                if budget.state_calls > 0
+                    && let Some(note) = self
+                        .ci_reopen_finding(sandbox, (run, pull), token, finding, budget)
+                        .await
+                {
+                    notes.push(note);
+                }
                 continue;
             }
             let claim = (
@@ -455,7 +474,8 @@ impl App {
     }
 
     /// Closes the issues of filed findings whose code is gone from the integration branch. An
-    /// issue GitHub no longer has (deleted, transferred) is resolved without a call.
+    /// issue GitHub no longer has (404 transferred, 410 deleted) is resolved, so later jobs make
+    /// no call for it.
     async fn ci_close_gone_findings(
         &self,
         sandbox: &SandboxRecord,
@@ -479,10 +499,14 @@ impl App {
                 continue;
             }
             let (branch, short) = (&dev.branch, dev.short());
+            let file = fenced(&finding.file);
+            let what = match dev.files.iter().find(|(path, _)| *path == finding.file) {
+                Some((_, None)) => format!("`{file}` is no longer on `{branch}` at {short}"),
+                _ => format!("no line of `{file}` on `{branch}` at {short} has it any more"),
+            };
             let comment = format!(
-                "Yulius closed this: the code this finding pointed at is gone from `{branch}` at \
-                 {short} (`{}` no longer has its line). A new finding there gets a new issue.",
-                fenced(&finding.file)
+                "Yulius closed this: the code this finding pointed at is gone ({what}). A new \
+                 finding there gets a new issue."
             );
             budget.state_calls -= 1;
             let closed = self
@@ -512,6 +536,10 @@ impl App {
                     finding.issue, finding.fingerprint
                 )),
                 Ok(false) => {}
+                Err(crate::error::AppError::NotFound) => notes.push(format!(
+                    "[yulius] issue #{} of finding {} is gone from GitHub: the finding is resolved",
+                    finding.issue, finding.fingerprint
+                )),
                 Err(err) => notes.push(format!(
                     "[yulius] issue #{} of finding {} not closed: {}",
                     finding.issue,

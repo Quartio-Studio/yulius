@@ -593,6 +593,14 @@ async fn issues_are_reopened_and_closed_with_a_comment() -> TestResult {
             .await,
         Err(GitHubError::NotFound)
     ));
+    // A deleted issue answers 410 Gone: no such issue either (review round 2).
+    fake.delete_issue("acme", "app", opened.number);
+    assert!(matches!(
+        client
+            .set_issue_state(&token, "acme", "app", opened.number, false, "x")
+            .await,
+        Err(GitHubError::NotFound)
+    ));
     Ok(())
 }
 

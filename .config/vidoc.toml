@@ -96,7 +96,12 @@ reason = "import makes no connection; the only server-side fetch is the address-
 
 [[ignore]]
 path = "crates/yulius-app/src/playground/onboard.rs"
-title = "Path traversal via"
+title = "Path traversal via bundle.name"
+reason = "names come from the manifest ImportManifest::validate checked in create_import (is_safe_file_name; import::tests::safe_file_names)"
+
+[[ignore]]
+path = "crates/yulius-app/src/playground/onboard.rs"
+title = "Path traversal via snapshot file.name"
 reason = "names come from the manifest ImportManifest::validate checked in create_import (is_safe_file_name; import::tests::safe_file_names)"
 
 [[ignore]]

@@ -243,8 +243,6 @@ async fn write_users_edit_files_inside_the_folder_only() -> TestResult {
     Ok(())
 }
 
-/// The Editor looks at the file in front every 2 s with the `sha256` it has (SPEC-181 EDT-014): an
-/// unchanged file answers 204 with no body, a changed one answers the file, with a read's rules.
 /// SPEC-217 audit (Vidoc, high): saving never writes through a link an agent planted at the
 /// temporary file's name: the file outside the folder keeps its content and the saved file gets
 /// the new one.
@@ -285,9 +283,35 @@ async fn a_save_never_writes_through_a_planted_temporary_link() -> TestResult {
         std::fs::symlink_metadata(repo.join("a.txt"))?.is_file(),
         "the saved file is a file, not the link"
     );
+    // The mode is set on the new file's handle, never through a path an agent could swap
+    // (review round 2): the saved file keeps the old one's mode.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(repo.join("a.txt"), std::fs::Permissions::from_mode(0o640))?;
+    let read = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/content?path=a.txt",
+        None,
+        &alice,
+    )
+    .await?;
+    let sha = read.body["sha256"].as_str().ok_or("sha")?.to_owned();
+    let saved = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/content",
+        Some(json!({"path": "a.txt", "content": "newer\n", "base_sha256": sha})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    let mode = std::fs::metadata(repo.join("a.txt"))?.permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o640);
     Ok(())
 }
 
+/// The Editor looks at the file in front every 2 s with the `sha256` it has (SPEC-181 EDT-014): an
+/// unchanged file answers 204 with no body, a changed one answers the file, with a read's rules.
 #[tokio::test]
 async fn a_read_with_the_known_sha256_answers_no_content_while_unchanged() -> TestResult {
     let (h, alice, bob, _carol) = presence_fixture().await?;
