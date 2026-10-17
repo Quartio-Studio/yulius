@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Agents set up a new agent secret themselves, and every secret belongs to a sandbox unless
+  team-wide (SPEC-216, ADR-0171, task #203). Adding an agent secret, "Let agents set it up" is on:
+  the hosts an agent works out are bound at once and production deploys get it, with no person
+  confirming; turned off (when adding it or in Edit), a person allows each as before. Secrets
+  added earlier keep their confirmations. Team secrets now have a scope like agent secrets: the
+  open sandbox's (the default, seen only by people who can view it) or team-wide. At the first
+  start after the update, every secret that applied to every sandbox becomes one copy per sandbox.
+  `yulius secrets import --to team` imports into the checkout's sandbox, `--instance` team-wide.
 - The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
   ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
   check blocked commands the person asked for and its "Teach auto mode about your environment?"

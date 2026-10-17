@@ -203,14 +203,18 @@ watching, steering and unblocking.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
   button is pressed; it copies without being shown, from a copy icon always in its box, as the
   notes do (SPEC-207). An agent secret is added with a name, a value
-  and a description: agents find the service's host and ask for it, and a person allows it with
-  one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
+  and a description: agents find the service's host and bind it themselves, and production deploys
+  get the secret, unless the person turns "Let agents set it up" off when adding it; then a person
+  allows each host with one click and production separately (SPEC-121, SPEC-216). Every secret
+  belongs to the sandbox it was added in, or is team-wide when the person picks that; secrets from
+  before were copied into each sandbox (SPEC-216). A project's keys live in a git-ignored `.env` beside a tracked
   `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
   there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
   pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands
   in the `.env` as its file, byte for byte (SPEC-186, SPEC-193). A key saved before that, its line
   breaks lost, is marked "Paste again" for the people who manage it. From a computer, `yulius
-  secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once:
+  secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once,
+  into the checkout's sandbox or team-wide with `--instance`:
   every name is listed first, nothing that exists is overwritten, nothing is sent before the
   person types `yes`, and no value is ever shown, passed as an argument or written down
   (SPEC-205).
