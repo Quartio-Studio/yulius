@@ -107,10 +107,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   `setns` and `pivot_root`) bounds every container.
 - **Removal.** Removing a sandbox
   ([SPEC-206](../.ai/specs/SPEC-206-i-deleted-sandbox-from-yulius-but-it-s-s.md)) stops its tasks,
-  cancels its CI runs, ends its Superagents, Shells and browser, and retires its holder: a
-  `retired` marker in the holder's state directory makes the upkeep tick stop it, with its engine,
-  containers and every other process inside, as soon as no run holds a lease, and a restart stops
-  it instead of adopting it.
+  cancels its CI runs, ends its Superagents, Shells and browser (a start under way ends itself
+  once it reads the removal), and retires its holder. A `retired` marker in the holder's state
+  directory makes `prepare` refuse the sandbox and the upkeep tick stop the holder, with its
+  engine, containers and egress, a minute after the retirement once no run holds a lease; a
+  restart stops it instead of adopting it. A run's own processes end with the run (its own PID
+  namespace). A CD deploy already running finishes.
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
   `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
   (`KillMode=process` keeps the holder and front running). The front makes it again before each

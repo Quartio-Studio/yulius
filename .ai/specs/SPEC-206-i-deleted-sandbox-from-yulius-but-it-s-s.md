@@ -1,11 +1,11 @@
 ---
 yulius-task: de8d2402-4860-4b4f-8147-77e7f1136a6f
-status: draft
+status: in-progress
 ---
 
 # SPEC-206: Removing a sandbox stops everything Yulius runs for it
 
-Status: draft
+Status: in-progress
 Date: 2026-10-17
 Owner: task #193
 Scope authorization: task #193 (requested by MrFishPL): "i deleted sandbox from yulius but it's
@@ -55,11 +55,13 @@ removed sandbox's worktrees are never purged (pre-existing, reported separately)
 - **RMV-002** Removing a sandbox cancels its queued and running CI runs ("the sandbox was
   removed").
 - **RMV-003** Removing a sandbox ends its shells and stops its browser, in the background (the
-  request does not wait for them).
-- **RMV-004** Removing a sandbox retires its holder: the manager stops it, and with it every
-  process in its namespaces (Docker engine, containers, leftovers), as soon as no lease of a run
-  is left, whatever else still runs there, and its holder is not adopted after a restart (a
-  marker in its state directory).
+  request does not wait for them); a shell or browser whose start was under way at the removal
+  ends once it reads the removal.
+- **RMV-004** Removing a sandbox retires its holder: `prepare` refuses the sandbox, and the
+  manager stops the holder (its Docker engine, containers and egress) `RETIRE_GRACE` (60 s) after
+  the retirement once no lease of a run is left, whatever else still runs there; it is not
+  adopted after a restart (a marker in its state directory, whose time is the retirement's). A
+  run's own processes end with the run: each run has its own PID namespace (`--die-with-parent`).
 - **RMV-005** PRJ-009 stays: repository, clone, worktrees, transcripts, task records and the
   export are kept.
 
@@ -79,8 +81,11 @@ removed sandbox's worktrees are never purged (pre-existing, reported separately)
 - A running CI run of a removed sandbox is cancelled at removal (its jobs killed).
 - A removed sandbox's Superagent and terminal end (the viewer's socket closes, no shell host is
   left) and its browser stops; another sandbox's browser goes on.
-- A retired sandbox's holder is stopped by the next tick once its leases are gone, even with
-  other processes in its namespaces; `adopt_one` stops it instead of adopting it.
+- A retired sandbox's holder is kept within the grace and stopped by a tick after it once its
+  leases are gone, even with other processes in its namespaces; `prepare` refuses it;
+  `adopt_one` stops it instead of adopting it.
+- A Superagent whose start was held while the sandbox was removed ends once it registers; a
+  removed sandbox's stopping task gets no browser from the browser tools.
 
 ## Test plan
 
@@ -91,22 +96,39 @@ removed sandbox's worktrees are never purged (pre-existing, reported separately)
 - `local_ci::removing_the_sandbox_cancels_its_ci_runs`: a slow running PR run is `cancelled`
   ("the sandbox was removed") within 5 s, before its 8 s job timeout, with no dispatch (failed on
   dev).
+- `cockpit::a_superagent_starting_while_the_sandbox_is_removed_ends`: the start held by the
+  gated host across the `DELETE` (failed before the fix).
+- `browser::a_removed_sandbox_gets_no_browser_from_its_stopping_task`: `browser_open` with the
+  stopping task's token is refused and starts no Chromium (failed with the checks disabled).
 - `projects::remove_retires_the_sandbox_holder`: a fake isolation records `retire` of exactly the
   removed sandbox.
-- `yulius-sandbox` manager: `holder_stops` table; a child `sleep` as an adopted holder is stopped
-  by the tick once retired while this test's own process runs in its namespaces, and is stopped
-  instead of adopted by a restarted manager (both fail with the marker check disabled).
+- `yulius-sandbox` manager: `holder_stops` table with the grace; `prepare` refuses a retired
+  sandbox; a child `sleep` as an adopted holder is kept within the grace and stopped by a tick
+  after it (the marker dated back) while this test's own process runs in its namespaces, and is
+  stopped instead of adopted by a restarted manager (both failed with the marker check disabled).
 - `delivery::a_removed_sandbox_merges_nothing_it_had_armed`: guard for RMV-001 (passes on dev).
 - Not run here: the opt-in host isolation suite (`YULIUS_ISOLATION_TEST=1`, real `bwrap` holder
   and Docker engine as the service user); the manager tests use a stand-in holder.
 
 ## Decisions
 
-- **Retire, not stop at once.** The tasks are only asked to stop at removal (they are Stopping
-  for up to the escalation). Killing the holder under their runs would end them uncleanly and
-  leave the supervisor to find out; waiting for the leases lets them end as any stop does, and
-  stray processes do not hold the holder up. Alternative rejected: stop the holder in
-  `delete_sandbox` directly.
+- **Retire, then stop after a grace.** The tasks are only asked to stop at removal (they are
+  Stopping for up to the escalation, about 20 s) and shells get their exit grace. Leases do not
+  cover a run's life (a task or shell drops its lease once launched; only CI and CD jobs hold one
+  to their end), so the holder waits `RETIRE_GRACE` (60 s) from the retirement, then stops once
+  no lease is left, whatever else runs in it. The marker's mtime is the retirement time, so a
+  restart after the grace stops it at once. Alternatives rejected: stop the holder in
+  `delete_sandbox` directly (cuts egress and the engine under runs still ending); wait until
+  nothing runs in it (the engine and its containers never end by themselves).
+- **Starts under way at the removal.** Access is checked when a start begins, so a start can
+  pass it just before the removal. Each start reads the removal again after it registers (a
+  shell) or after the browser runs, and ends what it started; the removal records `removed_at`
+  before it snapshots the shells, so one of the two always ends it. `prepare` refusing a
+  retired sandbox keeps such a start from making a new holder (mapped to `NotFound`, never to
+  the previous containment).
+- **A CD deploy already running finishes.** New deploys are refused (they need access to the
+  sandbox); cancelling one half-way can leave an environment half-deployed, and a deploy is
+  bounded by its timeout.
 - **A marker file, not a store query.** The manager knows nothing of the store; a `retired`
   file in the holder's state directory survives a restart and is read by `adopt_one`, without a
   new port method that lists removed sandboxes.
@@ -116,3 +138,26 @@ removed sandbox's worktrees are never purged (pre-existing, reported separately)
   refuses new ones): the request does not wait for each shell's exit grace.
 - No ADR: this completes PRJ-009 ("stops live and queued tasks") rather than taking a new
   lasting decision.
+
+## Evidence
+
+- Root cause reproduced on `dev` (a19efbac): `cockpit::removing_the_sandbox_ends_its_superagent_and_terminals`
+  timed out with both shells live 20 s after `DELETE`; `browser::removing_the_sandbox_stops_its_browser`
+  found the browser alive; `local_ci::removing_the_sandbox_cancels_its_ci_runs` found the PR run
+  still `Running` 5 s after `DELETE`. The armed-merge guard passed on `dev` (no change needed).
+- After the fix, each of those passes; the review's two in-flight tests failed before their fix
+  and pass after; the manager tests fail with the marker check disabled and pass with it.
+- `scripts/dev ci` at 11b8aac5 (before the review fixes): exit 0, 2103 tests passed, 18 skipped
+  (opt-in suites), lint, deps and docs clean. Re-run on the final head: see the pull request.
+- `scripts/dev security` (Vidoc vidoc-1) on the change: exit 0, no open critical or high finding.
+  Two pre-existing high findings in files this change touched were handled: `write_scaffold`
+  (`projects.rs`) now refuses non-plain paths (`a_scaffold_path_never_leaves_the_clone`), and the
+  browser port's unauthenticated loopback DevTools endpoint (documented trust model, Chromium
+  flags in yulius-browser) is an `[[ignore]]` entry in `.config/vidoc.toml` (path
+  `crates/yulius-app/src/ports/browser.rs`, title "Unauthenticated"), agreed by the independent
+  reviewer and tracked in #626.
+- Not run here: the opt-in host isolation suite (`YULIUS_ISOLATION_TEST=1`: a real `bwrap`
+  holder and Docker engine as the service user), so the retired holder's stop was tested with a
+  stand-in holder, not a real engine.
+- Issues: #624 (this defect), #625 (pre-existing: removed sandboxes' worktrees are never purged),
+  #626 (pre-existing: unauthenticated DevTools endpoint).
