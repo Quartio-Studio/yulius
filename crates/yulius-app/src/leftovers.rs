@@ -32,7 +32,6 @@ use crate::context::App;
 use crate::disk::dir_size;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
-use crate::playground::purge::delete_tree;
 
 /// First automatic round after a start: holders are adopted and runs recovered by then.
 pub const AUTO_FIRST: Duration = Duration::from_secs(2 * 60);
@@ -324,7 +323,15 @@ fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
         Err(err) => return Err(err),
     };
     let removed = if meta.is_dir() {
-        delete_tree(&through)
+        // A tree a tool made read-only is made writable through directory handles (never by
+        // path: a sandbox could swap a directory for a link between a check and a chmod), then
+        // removed again.
+        std::fs::remove_dir_all(&through).or_else(|_| {
+            if let Ok(tree) = openat(&dir, *last, flags, Mode::empty()) {
+                make_writable_at(&tree, 0, &mut { MAX_DIRS_MADE_WRITABLE });
+            }
+            std::fs::remove_dir_all(&through)
+        })
     } else {
         std::fs::remove_file(&through)
     };
@@ -332,6 +339,40 @@ fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
     match removed {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
+    }
+}
+
+/// Directories [`make_writable_at`] changes at most in one removal.
+const MAX_DIRS_MADE_WRITABLE: usize = 1_000_000;
+/// Directories deep it goes at most (each level holds one open handle).
+const MAX_WRITABLE_DEPTH: usize = 256;
+
+/// Makes the directory `dir` and every directory below it writable and searchable for its owner
+/// (a fixed 0o700) through their own handles: each subdirectory is opened relative to its
+/// parent's handle with `O_NOFOLLOW`, entries are typed without following links, and the mode is
+/// set with `fchmod`, so a link never carries the change outside the tree. `budget` bounds the
+/// directories changed.
+fn make_writable_at(dir: &std::os::fd::OwnedFd, depth: usize, budget: &mut usize) {
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::{Mode, fchmod};
+    use std::os::fd::AsRawFd as _;
+    if depth > MAX_WRITABLE_DEPTH || *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    let _ = fchmod(dir, Mode::from_bits_truncate(0o700));
+    let listing = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    let Ok(children) = std::fs::read_dir(&listing) else {
+        return;
+    };
+    for child in children.flatten() {
+        if !child.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        if let Ok(opened) = openat(dir, child.file_name().as_os_str(), flags, Mode::empty()) {
+            make_writable_at(&opened, depth + 1, budget);
+        }
     }
 }
 
@@ -1578,6 +1619,43 @@ mod tests {
         );
         remove_below(&data, &data.join("sandboxes/s1/worktrees/t1"))?;
         assert!(remove_below(&data, &tmp.path().join("elsewhere")).is_err());
+        Ok(())
+    }
+
+    /// Review round 3: the fallback that makes a read-only tree removable changes directories
+    /// through their own handles to a fixed 0o700, never through a link to what lies outside.
+    #[test]
+    fn making_a_tree_writable_never_follows_a_link() -> TestResult {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir()?;
+        let outside_file = tmp.path().join("master.key");
+        std::fs::write(&outside_file, "the key")?;
+        std::fs::set_permissions(&outside_file, std::fs::Permissions::from_mode(0o600))?;
+        let outside_dir = tmp.path().join("runtime");
+        std::fs::create_dir(&outside_dir)?;
+        std::fs::set_permissions(&outside_dir, std::fs::Permissions::from_mode(0o750))?;
+        let tree = tmp.path().join("tree");
+        let locked = tree.join("cache/locked");
+        std::fs::create_dir_all(&locked)?;
+        std::fs::write(locked.join("f"), "x")?;
+        std::os::unix::fs::symlink(&outside_file, tree.join("cache/key"))?;
+        std::os::unix::fs::symlink(&outside_dir, tree.join("cache/dir"))?;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o4555))?;
+
+        let handle = nix::fcntl::open(
+            &tree,
+            nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_NOFOLLOW,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        make_writable_at(&handle, 0, &mut 1_000);
+        let mode = |p: &Path| std::fs::metadata(p).map(|m| m.permissions().mode() & 0o7777);
+        assert_eq!(mode(&locked)?, 0o700, "a fixed mode, setuid gone");
+        assert_eq!(
+            mode(&outside_file)?,
+            0o600,
+            "a link's target is never changed"
+        );
+        assert_eq!(mode(&outside_dir)?, 0o750);
         Ok(())
     }
 }

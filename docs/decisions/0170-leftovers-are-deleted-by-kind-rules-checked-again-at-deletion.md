@@ -52,8 +52,10 @@ without SSH.
   listed. The removal opens every directory from the data directory down with `O_NOFOLLOW` and
   removes through the opened directory (`/proc/self/fd/<fd>/<name>`), so a link that appears
   after the last check fails the removal instead of steering it. Below that, std's
-  `remove_dir_all` removes links as links. Only the mapped removal of a removed sandbox's system
-  trees goes by path, where no run of that sandbox is left.
+  `remove_dir_all` removes links as links, and a read-only tree is made writable through
+  directory handles (`O_NOFOLLOW`, `fchmod` to a fixed 0o700), never by path. Only the isolation's
+  mapped removal goes by path: a removed sandbox's system trees, and a stale smoke test's or an
+  unowned sandbox's trees under `sandboxes/`. No run of those is left.
 - **Run directories.** `runs/<name>` stays while an attempt record owns it (an ended task's last
   run holds its terminal's final screen), a run is live, or a CI job or deploy of it runs. One no
   record owns goes a day after it was last touched.
