@@ -1091,10 +1091,10 @@ impl App {
                     RunStart::AfterLimit => None,
                 };
                 // In goal mode the task starts with its `/goal` as the launch prompt: the whole
-                // request, each attached file at its place, and the definition of done in one first
-                // message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the request is the first message:
-                // images are pasted into it and other files mentioned, so Claude Code attaches
-                // them natively (SPEC-025, SPEC-030).
+                // request, each attached file at its place, and the definition of done in one
+                // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
+                // request is the first message: images are pasted into it and other files
+                // mentioned, so Claude Code attaches them natively (SPEC-025, SPEC-030).
                 use yulius_domain::request::{Opening, Request};
                 let prompt = match prompt {
                     Some(prompt) => Some(prompt),

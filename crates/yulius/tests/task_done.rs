@@ -1292,7 +1292,7 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
                 let screen = app.runtime(&id).hub.screen_text();
                 screen
                     .find("ECHO: Make it blue")
-                    .is_some_and(|echo| screen[echo..].contains("[Image #1] "))
+                    .is_some_and(|echo| screen[echo..].contains("@\"/srv/notes.txt\""))
             }
         })
         .await?;

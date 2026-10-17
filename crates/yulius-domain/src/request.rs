@@ -531,7 +531,14 @@ pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefiniti
         return whole;
     }
     let tail = format!("\u{2026}\n\n(The request continues in {request_path}.)\n\n{done}");
-    let cut = take_units(text, GOAL_MAX_UNITS.saturating_sub(utf16_len(&tail))).trim_end();
+    let mut cut = take_units(text, GOAL_MAX_UNITS.saturating_sub(utf16_len(&tail)));
+    // Never half a file marker: that file is named whole in the request file.
+    if let Some(open) = cut.rfind("[file ")
+        && !cut[open..].contains(']')
+    {
+        cut = &cut[..open];
+    }
+    let cut = cut.trim_end();
     // An unusually long path or branch names: the cap still holds.
     take_units(&format!("{cut}{tail}"), GOAL_MAX_UNITS).to_owned()
 }
@@ -1000,6 +1007,23 @@ mod tests {
         assert_eq!(goal, format!("{fits}\n\n{done_text}"));
         let over = "x".repeat(room + 1);
         assert!(goal_condition(&Request::parse(&over), PATH, &done(&[])).contains(PATH));
+        // A cut never leaves half a file marker: the file goes whole to the request file.
+        for pad in 3_450..3_700 {
+            let request = Request::parse(&format!(
+                "{} @'/srv/{}/shot.png' {}",
+                "x".repeat(pad),
+                "d".repeat(80),
+                "y".repeat(400)
+            ));
+            let goal = goal_condition(&request, PATH, &done(&[]));
+            assert!(units(&goal) <= GOAL_MAX_UNITS, "{pad}");
+            let text = &goal[..goal.find('\u{2026}').unwrap_or(goal.len())];
+            assert!(
+                text.rfind("[file ")
+                    .is_none_or(|at| text[at..].contains(']')),
+                "{pad}: {text}"
+            );
+        }
         // Whatever the names, never over the cap.
         let huge = DoneDefinition {
             integration_branch: "b".repeat(5000),
@@ -1047,9 +1071,9 @@ mod tests {
             assert!(units(&goal) <= TYPED_GOAL_MAX_UNITS, "{}", units(&goal));
             assert!(!goal.contains('\n'), "{goal}");
         }
-        // The bound is under what Claude Code 2.1.292 still takes as typing (measured: 693
-        // characters were the command, 828 a paste).
-        assert!(TYPED_GOAL_MAX_UNITS + "/goal ".len() < 800);
+        // The bound is what Claude Code 2.1.292 still takes as typing: `/goal ` and 700 units
+        // were the command in ASCII, in two-byte letters and in emoji; 828 characters were a
+        // paste (SPEC-212 Evidence).
     }
 
     /// The definition of done follows the delivery profile: integration environments with a

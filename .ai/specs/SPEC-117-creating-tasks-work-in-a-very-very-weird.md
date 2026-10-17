@@ -63,6 +63,10 @@ session, so nothing a person types is mixed into it.
 
 ## Acceptance criteria
 
+(AC-ONE-1 and AC-ONE-2 give the goal forms of their time. SPEC-212 replaced them: the launch
+`/goal` is the whole request with each file in place, then `Done = …`; a typed goal is one short
+line.)
+
 - AC-ONE-1: a goal task created with `Make the header blue` and `@/srv/shots/header.png` launches
   Claude Code with the prompt `/goal Everything requested in …/tasks/<n>.md is done. Attached files
   (…): /srv/shots/header.png. Done = …`. Its terminal shows `GOAL SET` once, and nothing was typed
