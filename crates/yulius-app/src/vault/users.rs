@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use yulius_domain::ids::SandboxId;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
@@ -109,12 +110,17 @@ impl App {
         if task.activity == Some(Activity::NeedsAttention) {
             return Ok(());
         }
-        if let Err(err) = self
-            .set_task_activity(&task, Activity::NeedsAttention)
-            .await
-        {
+        if let Err(err) = self.raise_secret_flag(&task).await {
             tracing::warn!(task = %task.id, error = %err, "could not flag {what}");
-        } else if let Some(times) = self.deps.store.task_times(&task.id).await? {
+        }
+        Ok(())
+    }
+
+    /// Flags `task` for its secret request and remembers the flag's state time as its own.
+    async fn raise_secret_flag(&self, task: &TaskRecord) -> AppResult<()> {
+        self.set_task_activity(task, Activity::NeedsAttention)
+            .await?;
+        if let Some(times) = self.deps.store.task_times(&task.id).await? {
             self.runtime(&task.id)
                 .secret_wait_at
                 .store(times.state_at.0, Ordering::SeqCst);
@@ -122,38 +128,59 @@ impl App {
         Ok(())
     }
 
-    /// A person answered a request for a secret of `sandbox` (`None`: of every sandbox): each
-    /// running task still flagged by its own secret request, with no request waiting for a person
-    /// any more, works on (SPEC-213 SRA-001, SRA-002). Failures are logged: the answer stands.
+    /// A person answered a request for a secret of `sandbox` (`None`: of every sandbox), or
+    /// deleted the secret: each running task still flagged by its own secret request, with no
+    /// request waiting for a person any more, works on (SPEC-213 SRA-001, SRA-002). Failures are
+    /// logged per task: the answer stands.
     pub(super) async fn settle_secret_waits(&self, sandbox: Option<&SandboxId>) {
-        if let Err(err) = self.try_settle_secret_waits(sandbox).await {
+        let store = &self.deps.store;
+        let tasks = match sandbox {
+            Some(sandbox) => store.tasks(sandbox, false).await,
+            None => store.tasks_with_status(&[TaskStatus::Running]).await,
+        };
+        let tasks = tasks.unwrap_or_else(|err| {
             tracing::warn!(error = %err, "could not end the flags of answered secret requests");
+            Vec::new()
+        });
+        for task in tasks {
+            if task.status == TaskStatus::Running
+                && task.activity == Some(Activity::NeedsAttention)
+                && let Err(err) = self.settle_secret_wait(&task).await
+            {
+                tracing::warn!(task = %task.id, error = %err, "could not end the flag of its answered secret request");
+            }
         }
     }
 
-    async fn try_settle_secret_waits(&self, sandbox: Option<&SandboxId>) -> AppResult<()> {
-        let store = &self.deps.store;
-        let tasks = match sandbox {
-            Some(sandbox) => store.tasks(sandbox, false).await?,
-            None => store.tasks_with_status(&[TaskStatus::Running]).await?,
+    /// Ends `task`'s flag if its own secret request raised it, still stands, and nothing waits.
+    async fn settle_secret_wait(&self, task: &TaskRecord) -> AppResult<()> {
+        let Some(runtime) = self.existing_runtime(&task.id) else {
+            return Ok(());
         };
-        for task in tasks {
-            if task.status != TaskStatus::Running || task.activity != Some(Activity::NeedsAttention)
-            {
-                continue;
-            }
-            let Some(runtime) = self.existing_runtime(&task.id) else {
-                continue;
-            };
-            // Its own flag, not one set since (SRA-003).
-            let flagged = runtime.secret_wait_at.load(Ordering::SeqCst);
-            let since = store.task_times(&task.id).await?.map(|t| t.state_at.0);
-            if flagged == 0 || since != Some(flagged) || self.secret_waits_for(&task).await? {
-                continue;
-            }
-            runtime.secret_wait_at.store(0, Ordering::SeqCst);
-            tracing::info!(task = %task.id, "its secret requests are answered: the task works on");
-            self.set_task_activity(&task, Activity::Working).await?;
+        let flagged = runtime.secret_wait_at.load(Ordering::SeqCst);
+        if flagged == 0 || self.secret_waits_for(task).await? {
+            return Ok(());
+        }
+        // Only the flag it raised (SRA-003); a Stop that settled the task meanwhile stays.
+        let from = (Activity::NeedsAttention, Timestamp(flagged));
+        let now = self.now();
+        if !self
+            .deps
+            .store
+            .set_activity_from(&task.id, from, Some(Activity::Working), now)
+            .await?
+        {
+            return Ok(());
+        }
+        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        tracing::info!(task = %task.id, "its secret requests are answered: the task works on");
+        self.publish_task(&task.id).await;
+        // The agent asked again while this looked: that request was written before it saw the
+        // flag, so it shows here, and flags the task anew.
+        if self.secret_waits_for(task).await?
+            && let Some(fresh) = self.deps.store.task(&task.id).await?
+        {
+            self.raise_secret_flag(&fresh).await?;
         }
         Ok(())
     }

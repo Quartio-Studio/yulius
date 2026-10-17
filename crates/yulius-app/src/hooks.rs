@@ -277,6 +277,13 @@ impl App {
         task: &TaskRecord,
         activity: Activity,
     ) -> AppResult<()> {
+        // A flag raised for anything else, even over one already set, is no secret request's
+        // to end (SPEC-213 SRA-003); `flag_secret_wait` marks its own after this.
+        if activity == Activity::NeedsAttention {
+            self.runtime(&task.id)
+                .secret_wait_at
+                .store(0, Ordering::SeqCst);
+        }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
         }

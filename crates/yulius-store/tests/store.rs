@@ -273,6 +273,32 @@ async fn the_state_time_moves_only_when_the_state_changes() -> R {
         .set_activity(&t.id, Some(Activity::NeedsAttention), Timestamp(60))
         .await?;
     assert_eq!(store.task_times(&t.id).await?, times(60, None));
+    // SPEC-213: a conditional change applies only to the state it saw.
+    for stale in [
+        (Activity::NeedsAttention, Timestamp(55)),
+        (Activity::Waiting, Timestamp(60)),
+    ] {
+        assert!(
+            !store
+                .set_activity_from(&t.id, stale, Some(Activity::Working), Timestamp(65))
+                .await?
+        );
+    }
+    assert_eq!(store.task_times(&t.id).await?, times(60, None));
+    assert!(
+        store
+            .set_activity_from(
+                &t.id,
+                (Activity::NeedsAttention, Timestamp(60)),
+                Some(Activity::Working),
+                Timestamp(65)
+            )
+            .await?
+    );
+    assert_eq!(store.task_times(&t.id).await?, times(65, Some(65)));
+    store
+        .set_activity(&t.id, Some(Activity::NeedsAttention), Timestamp(66))
+        .await?;
     running(Activity::Working, 70).await?;
     assert_eq!(store.task_times(&t.id).await?, times(70, Some(70)));
     store.set_working_since(&t.id, None).await?;

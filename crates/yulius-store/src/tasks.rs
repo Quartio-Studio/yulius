@@ -365,6 +365,37 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn set_activity_from(
+        &self,
+        id: &TaskId,
+        from: (Activity, Timestamp),
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET activity = ?1, updated_at = ?2, \
+                     state_at = CASE WHEN activity IS NOT ?1 THEN ?2 ELSE state_at END, \
+                     working_since = CASE WHEN ?1 = 'needs_attention' THEN NULL \
+                       WHEN ?1 = 'working' OR ?1 IS NULL THEN COALESCE(working_since, ?2) \
+                       ELSE working_since END \
+                     WHERE id = ?3 AND status = 'running' AND activity = ?4 AND state_at = ?5",
+                    params![
+                        activity.map(Activity::as_str),
+                        at.0,
+                        id,
+                        from.0.as_str(),
+                        from.1.0
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn delete_task(&self, id: &TaskId) -> AppResult<bool> {
         let id = id.as_str().to_owned();
         self.call_access(move |c| {

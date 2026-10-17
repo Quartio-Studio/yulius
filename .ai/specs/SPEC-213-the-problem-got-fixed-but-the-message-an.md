@@ -47,9 +47,9 @@ and it leaves the sidebar's Needs you list.
 
 | ID | Requirement |
 | --- | --- |
-| SRA-001 | When a person answers a secret's `.env` request (allow or dismiss) or its host request (allow or dismiss), every running task of the secret's sandbox (every sandbox for an instance-wide secret) whose `needs_attention` was raised by a secret wait, and that has no other request still waiting, reads Working again, published to the UI at once. |
+| SRA-001 | When a person answers a secret's `.env` request (allow or dismiss) or its host request (allow or dismiss), or deletes a secret with a request waiting, every running task of the secret's sandbox (every sandbox for an instance-wide secret) whose `needs_attention` was raised by a secret wait, and that has no other request still waiting, reads Working again, published to the UI at once. |
 | SRA-002 | A task with another `.env` or host request still waiting (on this or another secret) stays `needs_attention`. |
-| SRA-003 | A `needs_attention` flag that was already set when the secret wait came (a permission prompt, the gate, a browser request), or that was replaced since (the activity changed after the secret wait), is not cleared by an answer. |
+| SRA-003 | A `needs_attention` flag that was already set when the secret wait came (a permission prompt, the gate, a browser request), one raised for any other cause after it (even while the task already reads `needs_attention`), and a state that replaced it (a Stop) are not cleared by an answer. |
 
 ## Plan
 
@@ -65,13 +65,19 @@ and it leaves the sidebar's Needs you list.
 - After a person allows the hosts a task asked for, the task's activity is `working` (SRA-001).
 - A task that asked for two secrets stays `needs_attention` after the first answer and is
   `working` after the second (SRA-002).
-- A task flagged by something else before it asked keeps its flag after the answer (SRA-003).
+- A task flagged by something else before it asked, or by an agent's question after it asked,
+  keeps its flag after the answer (SRA-003).
+- After a person deletes the only secret a task asked for, the task is `working` (SRA-001).
+- An instance-wide secret's answer releases the task that asked as `#N in <slug>` (SRA-001).
 
 ## Test plan
 
 - `crates/yulius/tests/secrets_env.rs`: a new test drives the MCP tool and the HTTP answer for two
   secrets (SRA-001, SRA-002), dismissal included, and a task flagged before it asked (SRA-003);
-  the existing copy test reads the activity after its answer.
+  the existing copy test reads the activity after its answer; an `elicitation_dialog` notice
+  after the request keeps the flag through the answer (SRA-003); deleting the asked secret ends
+  it; the instance-wide test reads the activity after the administrator's answer.
+- `crates/yulius-store/tests/store.rs`: `set_activity_from` changes only the state it saw.
 - `crates/yulius/tests/secrets.rs`: the host request test reads the activity after the answer.
 - The tests fail on `dev` before the fix (the task stays `needs_attention`).
 
@@ -89,13 +95,17 @@ and it leaves the sidebar's Needs you list.
   askers' text back to tasks and covers every request kind with one rule.
 - **Which flag is the secret wait's: the runtime remembers it.** `flag_secret_wait` records, in
   the task's runtime, the `state_at` its flag got, only when it raised the flag itself (the task
-  was not already `needs_attention`). An answer clears only a flag whose `state_at` still matches,
-  so a flag replaced since, or raised by another cause, stays (SRA-003). The runtime is memory: after
+  was not already `needs_attention`). Any other request for `needs_attention` forgets it, even
+  when the task already reads flagged (which moves no `state_at`): `set_task_activity` and the
+  browser request clear the mark first (review round 1). An answer clears only a flag still
+  marked, so one raised by another cause stays (SRA-003). The runtime is memory: after
   a Yulius restart the flag ends at the turn's Stop, as before this fix. A stored column would
   survive restarts but costs a migration for a few minutes of a banner; not worth it.
-- **The write is not a compare-and-set on the activity.** A Stop that settles the task between
-  the check and the write would be overwritten with Working until the next activity change. The
-  store has no activity compare-and-set, and the other writers (`resume_working`, the hooks) share
-  that window; the cost is one wrong status for one turn, so no new store primitive here.
+- **The write is a compare-and-set on the state it saw.** `set_activity_from` changes the
+  activity only while the task still reads `needs_attention` from the marked `state_at`, so a
+  Stop that settled the task meanwhile is never overwritten (it would read Working until a person
+  typed). An agent asking again while the answer is handled wrote its request before it read the
+  flag, so the check after the write sees it and flags the task again: at worst a moment of
+  Working, never a lost flag (review round 1).
 - No ADR: this restores the documented meaning of the flag (SPEC-129: the task is flagged while it
   waits for a person) and changes no contract.
