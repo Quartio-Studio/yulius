@@ -266,7 +266,8 @@ fn read_regular(path: &Path) -> Option<String> {
     {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            // A dangling link is no missing file: nothing is created through it.
+            // Absent at the open, yet a link now: one planted just after it is left alone too. (A
+            // dangling link at the open already fails with ELOOP under `O_NOFOLLOW`.)
             return path.symlink_metadata().is_err().then(String::new);
         }
         Err(_) => return None,
@@ -599,17 +600,15 @@ mod tests {
         ensure_claude_config(&config, dir.path(), false)?;
         assert!(settings.symlink_metadata()?.file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&outside)?, r#"{"private":"host"}"#);
-        // A dangling link is not created through either.
+        // A dangling link stays a link: it is neither replaced nor created through.
         std::fs::remove_file(&settings)?;
         symlink(dir.path().join("missing.json"), &settings)?;
         ensure_claude_config(&config, dir.path(), false)?;
+        assert!(settings.symlink_metadata()?.file_type().is_symlink());
         assert!(!dir.path().join("missing.json").exists());
         std::fs::remove_file(&settings)?;
         // A FIFO returns at once instead of waiting for a writer.
-        let status = std::process::Command::new("mkfifo")
-            .arg(&settings)
-            .status()?;
-        assert!(status.success());
+        nix::unistd::mkfifo(&settings, nix::sys::stat::Mode::S_IRWXU)?;
         ensure_claude_config(&config, dir.path(), false)?;
         assert!(!settings.metadata()?.is_file());
         std::fs::remove_file(&settings)?;

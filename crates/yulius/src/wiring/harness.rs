@@ -578,6 +578,7 @@ mod tests {
             yulius: None,
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
+            contained: false,
         })?;
         assert_eq!(style(&config)?, "Concise");
         Ok(())

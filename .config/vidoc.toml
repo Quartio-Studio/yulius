@@ -39,5 +39,5 @@ reason = "gh-token prints only what /internal/git-credential gives the caller's 
 # predates it.
 [[ignore]]
 path = "crates/yulius-harness/src/claude_config.rs"
-title = "trust"
+title = "as trusted"
 reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); host-side reads tracked in #634"
