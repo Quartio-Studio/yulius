@@ -29,3 +29,15 @@ reason = "pre-existing, documented trust model of the browser adapter; tracked i
 path = "crates/yulius/src/main.rs"
 title = "gh-token"
 reason = "gh-token prints only what /internal/git-credential gives the caller's own bearer; the server authorizes (SPEC-004 GH-001/GH-006, ADR-0114)"
+
+# `agent_secret_value` (MCP `${secret:NAME}` references) reads `store.vault_agent`, the stored
+# secrets only; the instance Vidoc key's virtual record is added solely by `applied_agent_secrets`
+# (the proxy and placeholder paths, none of which hands out a value), so a reference never
+# resolves it. This test asserts exactly that:
+# vidoc_key::the_instance_key_is_never_handed_out_in_clear
+# First reported on task #198's change scan, which sent runtime.rs for new `secrets_list`
+# guidance; the code predates it. The independent reviewer of #198 agreed it is a false positive.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Instance Vidoc key leaked through MCP"
+reason = "agent_secret_value reads stored secrets only (vault_agent), never the virtual Vidoc record; tested by vidoc_key::the_instance_key_is_never_handed_out_in_clear"

@@ -152,6 +152,14 @@ for any secret an agent did not create.
     moved unchanged from `create_agent_secret`; only the count can be exceeded, never a value.
   - The proxy URL format in `vault/runtime.rs`, which this change does not touch.
   - `eval` in a test fake in `tests/cockpit.rs`, which this change does not touch.
+- Yulius CI's `security` job on `b7deb0fc` reported one high:
+  - The finding: "Instance Vidoc key leaked through MCP secret references" in
+    `vault/runtime.rs:227`. `agent_secret_value` reads stored secrets only; the virtual Vidoc
+    record is added by `applied_agent_secrets` alone, and
+    `vidoc_key::the_instance_key_is_never_handed_out_in_clear` asserts no reference resolves it.
+  - The independent reviewer agreed it is a false positive. It is now an `[[ignore]]` entry in
+    `.config/vidoc.toml` (path `crates/yulius-app/src/vault/runtime.rs`, title "Instance Vidoc
+    key leaked through MCP"). This change only added guidance text to that file.
 - New tests:
   - `vault::dotenv::tests::a_file_becomes_the_stored_agent_value` (AC-1).
   - `vault::create::tests::{paths_name_the_work_folder_or_the_home,
