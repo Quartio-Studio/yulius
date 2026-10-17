@@ -87,7 +87,8 @@ Running it again changes nothing ("nothing to change"); it is safe on a running 
 `--dry-run` prints what it would change and changes nothing. With a unit named other than
 `yulius.service`, pass `--service <name>` (the update helper passes its `YULIUS_UPDATE_SERVICE`).
 A setup or `yulius host check` run keeps its report in `/var/lib/yulius-update/host-check.json`
-when that directory exists, so Settings → Instance shows the latest root check.
+when that directory exists, so Settings → Instance shows the latest root check. A helper with
+another `YULIUS_UPDATE_STATE` needs `--update-state <dir>`.
 
 **Still manual**, and why:
 

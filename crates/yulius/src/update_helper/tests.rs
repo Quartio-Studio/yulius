@@ -735,7 +735,7 @@ fn an_oversized_report_is_bounded() -> TestResult {
     let mut env = Env::new()?;
     env.health(None)?;
     // Under the 1 MiB the helper reads, so the report is parsed and must be bounded itself.
-    let huge = "x".repeat(100_000);
+    let huge = "\\u0001".repeat(20_000) + &"x".repeat(100_000);
     let lines: Vec<String> = (0..60)
         .map(|_| format!(r#"{{"name":"{huge}","outcome":"failed","detail":"{huge}"}}"#))
         .collect();

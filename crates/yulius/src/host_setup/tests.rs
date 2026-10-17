@@ -48,6 +48,8 @@ struct Fake {
     systemd_down: bool,
     /// Symbolic links: path → target.
     links: BTreeMap<PathBuf, PathBuf>,
+    /// Group of a path (root's 0 when absent).
+    gids: BTreeMap<PathBuf, u32>,
     /// `docker ps` fails.
     docker_ps_fails: bool,
     /// Tasks containerd runs for others than Docker (k3s, nerdctl).
@@ -72,6 +74,7 @@ impl Fake {
             docker_lists: false,
             systemd_down: false,
             links: BTreeMap::new(),
+            gids: BTreeMap::new(),
             docker_ps_fails: false,
             containerd_tasks: 0,
         };
@@ -223,6 +226,12 @@ impl Host for Fake {
             return Some((0, 0o120_777));
         }
         self.files.get(path).map(|(_, uid, mode)| (*uid, *mode))
+    }
+
+    fn gid(&self, path: &Path) -> Option<u32> {
+        self.files
+            .contains_key(path)
+            .then(|| self.gids.get(path).copied().unwrap_or(0))
     }
 
     fn canonical(&self, path: &Path) -> Option<PathBuf> {
@@ -1124,14 +1133,17 @@ fn owning_a_link_never_touches_its_target() -> Result<(), Box<dyn std::error::Er
     let dir = tempfile::tempdir()?;
     let target = dir.path().join("shadow");
     std::fs::write(&target, "secret")?;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640))?;
+    // Writable by group and others: a followed chmod would visibly clear those bits.
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o666))?;
     let link = dir.path().join("yulius");
     std::os::unix::fs::symlink(&target, &link)?;
     let mut host = super::system::RealHost { quiet: true };
-    assert!(host.own_by_root(&link).is_err());
+    let error = host.own_by_root(&link).err().unwrap_or_default();
+    // The open itself refuses the link (ELOOP), before any change.
+    assert!(error.contains("symbolic links"), "{error}");
     assert_eq!(
         std::fs::metadata(&target)?.permissions().mode() & 0o7777,
-        0o640
+        0o666
     );
     Ok(())
 }
@@ -1280,4 +1292,32 @@ fn a_root_check_replaces_the_kept_report() -> Result<(), Box<dyn std::error::Err
         "no helper: nothing kept"
     );
     Ok(())
+}
+
+/// Review round 2 of SPEC-203: a group-writable directory is a risk only when the service user is
+/// in that group (Debian's `/usr/local/bin` is `root:staff 2775`).
+#[test]
+fn a_group_writable_directory_counts_only_with_the_service_users_group() {
+    let mut fake = Fake::set_up();
+    let staff = 50;
+    fake.files.insert(
+        PathBuf::from("/usr/local/bin"),
+        (String::new(), 0, 0o042_775),
+    );
+    fake.gids.insert(PathBuf::from("/usr/local/bin"), staff);
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        outcome(&lines, "yulius binary"),
+        HostOutcome::Ok,
+        "{lines:#?}"
+    );
+
+    let group = fake.text("/etc/group").unwrap_or_default().to_owned();
+    fake.file("/etc/group", &format!("{group}staff:x:{staff}:yulius\n"));
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        outcome(&lines, "yulius binary"),
+        HostOutcome::Failed,
+        "{lines:#?}"
+    );
 }

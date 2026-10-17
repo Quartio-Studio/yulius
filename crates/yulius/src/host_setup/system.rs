@@ -65,6 +65,10 @@ impl Host for RealHost {
             .map(|m| (m.uid(), m.mode()))
     }
 
+    fn gid(&self, path: &Path) -> Option<u32> {
+        std::fs::symlink_metadata(path).ok().map(|m| m.gid())
+    }
+
     fn canonical(&self, path: &Path) -> Option<std::path::PathBuf> {
         std::fs::canonicalize(path).ok()
     }

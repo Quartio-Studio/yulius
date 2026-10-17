@@ -133,6 +133,8 @@ pub trait Host {
     fn list(&self, dir: &Path) -> Vec<String>;
     /// A path's owner and mode bits, not following a final link.
     fn stat(&self, path: &Path) -> Option<(u32, u32)>;
+    /// A path's group, not following a final link.
+    fn gid(&self, path: &Path) -> Option<u32>;
     /// The path with every link resolved, when it exists.
     fn canonical(&self, path: &Path) -> Option<PathBuf>;
     /// Makes `path` owned by root and not writable by group or others.
@@ -273,6 +275,27 @@ struct Service {
     name: String,
     /// `None` until a dry run's user exists.
     uid: Option<u32>,
+}
+
+/// The groups `name` belongs to: its primary group (`/etc/passwd`) and those that list it
+/// (`/etc/group`).
+fn groups_of(passwd: &str, group: &str, name: &str) -> Vec<u32> {
+    let mut groups: Vec<u32> = passwd
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.first() == Some(&name)).then(|| f.get(3)?.parse().ok())?
+        })
+        .collect();
+    groups.extend(group.lines().filter_map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        let members = f.get(3)?;
+        members
+            .split(',')
+            .any(|m| m.trim() == name)
+            .then(|| f.get(2)?.parse::<u32>().ok())?
+    }));
+    groups
 }
 
 /// What `systemctl show yulius.service` said.
@@ -657,8 +680,12 @@ impl<'a> Run<'a> {
     fn add_docker_source(&mut self, id: &str, codename: &str) -> Result<(), String> {
         let steps = [
             Cmd::new(&["install", "-m", "0755", "-d", "/etc/apt/keyrings"]),
-            Cmd::new(&["curl", "-fsSL", "--max-time", "60", "-o", DOCKER_KEY])
-                .arg(format!("https://download.docker.com/linux/{id}/gpg")),
+            {
+                let mut curl = Cmd::new(&["curl", "-fsSL", "--max-time", "60", "-o", DOCKER_KEY])
+                    .arg(format!("https://download.docker.com/linux/{id}/gpg"));
+                curl.timeout = Duration::from_secs(90);
+                curl
+            },
             Cmd::new(&["chmod", "a+r", DOCKER_KEY]),
         ];
         for cmd in &steps {
@@ -1281,6 +1308,13 @@ impl<'a> Run<'a> {
             .as_ref()
             .and_then(|s| s.uid)
             .unwrap_or(u32::MAX);
+        let service_groups = self.service.as_ref().map_or_else(Vec::new, |s| {
+            groups_of(
+                &self.host.read(Path::new("/etc/passwd")).unwrap_or_default(),
+                &self.host.read(Path::new("/etc/group")).unwrap_or_default(),
+                &s.name,
+            )
+        });
         let mut fixed = Vec::new();
         let mut fine = Vec::new();
         // A link is judged, and fixed, at its target, as the server and the doctor judge it.
@@ -1295,12 +1329,18 @@ impl<'a> Run<'a> {
             let Some((owner, mode)) = self.host.stat(&path) else {
                 continue;
             };
-            // Fixing the file is pointless where the service user may replace it.
+            // Fixing the file is pointless where the service user may replace it: a directory
+            // it owns, one writable by a group it is in, or by anyone.
             if let Some(dir) = path.parent()
-                && self
-                    .host
-                    .stat(dir)
-                    .is_some_and(|(owner, mode)| owner == service_uid || mode & 0o022 != 0)
+                && self.host.stat(dir).is_some_and(|(owner, mode)| {
+                    owner == service_uid
+                        || mode & 0o002 != 0
+                        || (mode & 0o020 != 0
+                            && self
+                                .host
+                                .gid(dir)
+                                .is_some_and(|gid| service_groups.contains(&gid)))
+                })
             {
                 return self.failed(
                     ITEM,

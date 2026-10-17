@@ -927,10 +927,14 @@ impl Helper {
         };
         // The new version is untrusted here: every field is bounded, so the status stays under
         // what the server reads (`MAX_STATUS_BYTES`).
+        // Control characters would serialize as six bytes each: replaced, so the bounds hold
+        // in bytes too.
         let cut = |text: &mut String, max: usize| {
-            if text.chars().count() > max {
-                *text = text.chars().take(max).collect();
-            }
+            *text = text
+                .chars()
+                .take(max)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
         };
         report.lines.truncate(HOST_CHECK_LINES);
         for line in &mut report.lines {

@@ -569,6 +569,11 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
         }
     }
     let fingerprint = fingerprint(&config.host_root, &config.sudo_shim);
+    // A build this one waited for may have made the same base already (review of SPEC-203).
+    if let Some(current) = bases.current().filter(|c| c.fingerprint == fingerprint) {
+        tracing::info!(base = %current.id, "the sandbox base already matches the host");
+        return Ok(current);
+    }
     let id = bases.next_id();
     let partial = bases.dir.join(format!(".building-{id}"));
     let (mut owners, stats) =
@@ -1097,6 +1102,52 @@ mod tests {
             "a stale partial tree goes"
         );
         builder.join().map_err(|_| "builder panicked")?;
+        Ok(())
+    }
+
+    /// Review round 2 of SPEC-203: a build that waited for another and finds the base already
+    /// matching the host builds nothing (no second copy of the same system).
+    #[test]
+    fn a_build_after_a_matching_one_builds_nothing() -> TestResult {
+        let host = host()?;
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        std::fs::create_dir_all(bases.path("base-1"))?;
+        let shim = "#!/bin/sh\n";
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-1".into(),
+                fingerprint: fingerprint(host.path(), shim),
+                built_at_ms: 1,
+                format: BASE_FORMAT,
+            },
+        )?;
+        let unusable = Mapper {
+            bwrap: "/nonexistent/bwrap".into(),
+            newuidmap: "/nonexistent/newuidmap".into(),
+            newgidmap: "/nonexistent/newgidmap".into(),
+            uid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+            gid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+        };
+        let config = BuildConfig {
+            host_root: host.path().to_path_buf(),
+            data_dir: data.path().to_path_buf(),
+            sudo_shim: shim.into(),
+            mapper: unusable,
+            exe: "/nonexistent/yulius".into(),
+        };
+        let built = build(&config, &bases)?;
+        assert_eq!(built.id, "base-1");
+        assert!(!bases.dir.join(".building-base-2").exists());
         Ok(())
     }
 }

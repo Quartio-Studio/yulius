@@ -172,7 +172,8 @@ Code today:
 - [x] Settings → Instance Sandbox Docker card with end-to-end test
 - [x] Fresh-install run in an Ubuntu 24.04 container
 - [x] ADR-0162, operations guide, architecture and changes updated
-- [ ] Gates green and independent review answered
+- [x] Gates green and review round 1 answered
+- [ ] Review round 2 approved and delivered on green CI
 
 ## Acceptance criteria
 
@@ -203,7 +204,8 @@ Code today:
 - Unit tests in `yulius` (`host_setup::tests`, `doctor::tests`, `update_helper::tests`) and
   `yulius-sandbox` (verdict, own engines, rebuild schedule), red before each change.
 - Server integration test in `crates/yulius/tests` for the API; e2e test for the card.
-- Real run: a systemd-capable `ubuntu:24.04` container in this sandbox's Docker engine.
+- Real run: an `ubuntu:24.04` container in this sandbox's Docker engine (systemd cannot be its
+  PID 1 here; see the amended acceptance criterion).
 - Gates: `scripts/dev ci`, `scripts/dev security`, the e2e suite.
 
 ## Decisions
@@ -301,5 +303,17 @@ Code today:
     Commands are bounded to 30 s each (2 minutes to stop the host's Docker); the helper's
     re-check gets 4 minutes. The card polls every 30 s during a rebuild, and retries after a
     failed read.
+  - Round 2 at 96bbe00f: request changes. Every round-1 finding was confirmed fixed. Answered:
+    - `owning_a_link_never_touches_its_target` could not fail. It now checks ELOOP from the
+      open, on a 0666 target. With `O_NOFOLLOW` removed it failed; with it, it passes.
+    - A build that waited and finds the base matching the host builds nothing
+      (`a_build_after_a_matching_one_builds_nothing` failed first), and the CLI's `collect`
+      runs under the build lock.
+    - A group-writable directory counts only when the service user is in that group
+      (`a_group_writable_directory_counts_only_with_the_service_users_group`; Debian's
+      `root:staff 2775`).
+    - Nits: the key download has 90 s; the helper replaces control characters, so the bounds
+      hold in bytes (the oversized test now includes them); `--update-state` is documented; this
+      test plan's wording.
   - Kept by choice: Docker's key is not pinned by fingerprint. It is fetched over HTTPS from
     `download.docker.com`, as Docker documents, and apt checks every package against it.
