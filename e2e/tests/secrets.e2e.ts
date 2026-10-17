@@ -273,7 +273,7 @@ test('a secret agents use offers no production allowance, and a production secre
   const stripe = browser.locator('.item-card:has-text("STRIPE_KEY")');
   await expect(stripe.getByText(/Production deploys never get a secret agents use/)).toBeVisible();
   await expect(screen.getByRole('button', 'Let production deploys (CD) get STRIPE_KEY')).toBeHidden();
-  await expect(stripe.locator('.badge-warn:has-text("Production")')).toBeHidden();
+  await expect(browser.locator('.item-card:has-text("STRIPE_KEY") .badge-warn:has-text("Production")')).toBeHidden();
   // PROD_API_TOKEN is a production secret an agent asked to copy into .env: Dismiss only.
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
   await expect(prod.getByText(/Task #112 asks to copy its value/)).toBeVisible();
