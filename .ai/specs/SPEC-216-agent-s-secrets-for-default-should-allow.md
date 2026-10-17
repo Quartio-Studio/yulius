@@ -67,11 +67,13 @@ Two changes to the vault, one request:
   with `auto_allow` (production already gets it).
 - SSA-005. People who manage a secret turn `auto_allow` on or off in Edit (`PATCH auto_allow`),
   audited `vault.agent.auto_allow_on` / `vault.agent.auto_allow_off`. Turning it off keeps the
-  hosts already bound (Edit removes them) and stops production deploys getting it.
+  hosts already bound (Edit removes them) and stops production deploys getting it. An edit read
+  before a host was bound or the switch changed is refused (409, reload), never undoing it.
 - SSA-006. The Secrets page marks such a secret "Agents set it up", and its production line says
   that production deploys get it because agents set it up (no Allow/Revoke button there).
   `secrets_list` gives `auto_allow` per secret and its guidance says such hosts bind at once; the
-  `secret_request_hosts` description says the same.
+  `secret_request_hosts` description says the same. A binding is announced to open Secrets pages
+  (`secrets.updated`, SPEC-209).
 
 ### Per sandbox or team-wide (SCO)
 
@@ -80,9 +82,12 @@ Two changes to the vault, one request:
   `POST /api/sandboxes/{sid}/team-secrets` creates one, `scope` defaulting to `sandbox`.
   `GET /api/team-secrets` lists the team-wide ones and `POST /api/team-secrets` creates a
   team-wide one, as before. Each view carries `scope`.
-- SCO-002. A sandbox's team secret is listed, revealed, changed and deleted only by people who can
-  view that sandbox; others get 404, as for an invisible sandbox. Its activity entries are shown
-  only to them. Team-wide ones stay as today (every member).
+- SCO-002. A sandbox's team secret is listed and revealed only by people who can view that
+  sandbox (others get 404, as for an invisible sandbox), and added, changed and deleted only by
+  those who write to it (403 for readers). Its activity entries are shown only to the people who
+  can view it. Team-wide ones stay as today (every member). Entries of a secret that no longer
+  exists (deleted, or replaced by its copies in SCO-004) are shown to instance administrators
+  only, as for agent secrets.
 - SCO-003. On the Secrets page both tabs work in the open sandbox. The Add dialogs offer Scope:
   "This sandbox" (default) or "Team-wide (every sandbox)". For agent secrets the team-wide choice
   stays limited to instance administrators. The cards badge "This sandbox" or "Team-wide".
@@ -95,6 +100,9 @@ Two changes to the vault, one request:
   sandbox, a secret stays team-wide. A failure is logged and retried at the next start.
 - SCO-005. `yulius secrets import --to team` imports into a sandbox (`--sandbox` or the
   checkout's remote) by default, and `--instance` imports team-wide, as for agent secrets.
+  `--to agent` says before `yes` that agents set the secrets up, and `--confirm-hosts` turns that
+  off (SSA-001 for the CLI). Fields left at their default are not sent, so an older server still
+  takes an import.
 
 ## Plan
 
@@ -160,5 +168,10 @@ Two changes to the vault, one request:
 - **A pending list fixed by the migration** (`vault_scope_pending`), not "every row without a
   sandbox": team-wide secrets created after the update must stay team-wide, and a crash midway
   resumes where it stopped.
-- **Sandbox team secrets need only view access**, like team secrets today need only membership:
-  stricter rules for people's own shared passwords would be a separate change.
+- **Sandbox team secrets: read with view access, change with write access.** The first version
+  let anyone who could view the sandbox change them, as any member changes team-wide ones; the
+  Vidoc scan flagged it (high) and a reader replacing a credential others use is a real risk, so
+  changes follow the agent secrets' rule. Team-wide ones keep their membership rule (SPEC-040).
+- **Self-set-up stays the CLI default too** (review M1), said in the list before `yes`, with
+  `--confirm-hosts` to turn it off: the request asks for one default everywhere, with the choice
+  at creation.

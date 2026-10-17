@@ -961,7 +961,8 @@ Keys held on a computer go into the vault from the CLI, signed in with `yulius l
 ```sh
 yulius secrets import --to agent .env      # agent secrets of this checkout's sandbox
 yulius secrets import --to agent --sandbox acme/shop keys.env
-yulius secrets import --to team shared.env                 # team secrets, for people
+yulius secrets import --to team shared.env                 # team secrets of this checkout's sandbox
+yulius secrets import --to team --instance shared.env      # team-wide team secrets
 gpg -d keys.env.gpg | yulius secrets import --to team -   # a dotenv text on stdin
 yulius secrets import --to agent                           # type each name and its hidden value
 ```
@@ -976,8 +977,11 @@ server, the target and every name as `new` (marked `with description (agents rea
 with the reason (agent names are `[A-Z][A-Z0-9_]*`, values at least 8 characters on one line; a
 PEM or OpenSSH key is kept as a key file, but its first line alone is refused). It then sends
 nothing until `yes` is typed at the terminal; there is no flag to skip it, so it cannot run
-unattended. `--instance` makes agent secrets apply to every sandbox (instance administrators).
-Agent secrets start bound to no host, as on the Secrets page.
+unattended. Team and agent secrets go to the sandbox (`--sandbox`, else the checkout's GitHub
+repository); `--instance` makes them team-wide, for every sandbox (agent secrets: instance
+administrators). Agent secrets start bound to no host and, as on the Secrets page, agents set them
+up: they bind the hosts they need and production deploys get them, which the list says before
+`yes`; `--confirm-hosts` makes a person allow each host and production deploys instead (SPEC-216).
 
 Put keys that span lines in a file. The hidden prompt reads one line: a pasted key arrives cut
 to its first line, which is refused, and the terminal usually discards the rest; if part of it

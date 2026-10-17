@@ -1,6 +1,7 @@
 //! Team secrets (VLT-001..002, SPEC-040): a title, a value and notes; reveals behind a two-factor
-//! unlock, everything audited. A team secret belongs to one sandbox, for the people who can view
-//! it, or is team-wide, for every member (SPEC-216 SCO-001/002).
+//! unlock, everything audited. A team secret belongs to one sandbox, read by the people who can
+//! view it and changed by those who write to it, or is team-wide, for every member (SPEC-216
+//! SCO-001/002).
 
 use yulius_contracts::api::secrets::{
     ReauthStatus, RevealRequest, SecretReveal, TeamSecretInput, TeamSecretPatch, TeamSecretView,
@@ -141,6 +142,20 @@ impl App {
         Ok(record)
     }
 
+    /// A team secret the caller may change: a sandbox's one needs write access to that sandbox
+    /// (people who only read it see and reveal it); a team-wide one, membership as before.
+    async fn team_record_to_change(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<VaultSecretRecord> {
+        let record = self.team_record(ctx, id).await?;
+        if let Some(sandbox) = &record.sandbox_id {
+            self.require(&ctx.user, sandbox, Action::Work).await?;
+        }
+        Ok(record)
+    }
+
     /// `GET /api/team-secrets`: the team-wide secrets, which every member sees (titles; the
     /// value and the notes only flagged).
     ///
@@ -196,7 +211,10 @@ impl App {
         };
         let scope = match (input.scope.as_deref(), sid) {
             (Some("instance"), _) | (None, None) => None,
-            (Some("sandbox") | None, Some(sid)) => Some(sid),
+            (Some("sandbox") | None, Some(sid)) => {
+                self.require(&ctx.user, &sid, Action::Work).await?;
+                Some(sid)
+            }
             (Some("sandbox"), None) => {
                 return Err(AppError::Invalid(
                     "a sandbox's team secret is added under that sandbox".into(),
@@ -268,7 +286,8 @@ impl App {
         id: &str,
         patch: &TeamSecretPatch,
     ) -> AppResult<TeamSecretView> {
-        let mut record = self.team_record(ctx, id).await?;
+        let mut record = self.team_record_to_change(ctx, id).await?;
+        let seen = record.clone();
         let mut payload: TeamPayload = self.open_payload(&record)?;
         let mut changed: Vec<&str> = Vec::new();
         let mut value_changed = false;
@@ -294,7 +313,7 @@ impl App {
         if value_changed {
             record.value_updated_at = now;
         }
-        if !self.deps.store.vault_update(&record).await? {
+        if !self.deps.store.vault_update(&record, &seen).await? {
             return Err(AppError::NotFound);
         }
         self.vault_audit(
@@ -312,7 +331,7 @@ impl App {
     /// # Errors
     /// `NotFound`, store failures.
     pub async fn delete_team_secret(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
-        let record = self.team_record(ctx, id).await?;
+        let record = self.team_record_to_change(ctx, id).await?;
         if !self.deps.store.vault_delete(id).await? {
             return Err(AppError::NotFound);
         }

@@ -35,8 +35,8 @@ pub struct TeamSecretView {
 #[serde(deny_unknown_fields)]
 pub struct TeamSecretInput {
     /// `sandbox` (the default under a sandbox) or `instance` (team-wide, the only one without a
-    /// sandbox) (SPEC-216 SCO-001).
-    #[serde(default)]
+    /// sandbox) (SPEC-216 SCO-001). Not sent when absent, so older servers take the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Title.
     pub title: String,
@@ -226,8 +226,9 @@ pub struct AgentSecretInput {
     pub username: Option<String>,
     /// The value (at least 8 characters).
     pub value: String,
-    /// Agents set it up themselves (SPEC-216 SSA-001); `true` when absent.
-    #[serde(default)]
+    /// Agents set it up themselves (SPEC-216 SSA-001); `true` when absent. Not sent when
+    /// absent, so older servers take the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_allow: Option<bool>,
 }
 
@@ -258,7 +259,7 @@ pub struct AgentSecretPatch {
     #[serde(default)]
     pub value: Option<String>,
     /// Agents set it up themselves (SPEC-216 SSA-005).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_allow: Option<bool>,
 }
 

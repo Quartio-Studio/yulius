@@ -653,10 +653,12 @@ test('a new agent secret lets agents set it up unless turned off, and secrets be
   await expect(team).toBeHidden();
   await expect(browser.locator('.item-card:has-text("Studio deploy box")').getByText('This sandbox')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  // Another sandbox has the team-wide one, not this sandbox's.
+  // Another sandbox has the team-wide one, not this sandbox's; someone who only reads it adds
+  // none of its own.
   await app.open(mock('/s/sandbox-3/secrets'));
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
   await expect(screen.getByText('Studio deploy box')).toBeHidden();
+  await expect(screen.getByRole('button', 'Add team secret')).toBeDisabled();
 });
 
 // Founder feedback 2026-10-11 ("ux is a little broken"): the add button sat in a row glued to the

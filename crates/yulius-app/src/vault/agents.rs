@@ -317,6 +317,7 @@ impl App {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
         }
         let toggled = patch.auto_allow.filter(|on| *on != record.auto_allow);
+        let seen = record.clone();
         let mut payload: AgentPayload = self.open_payload(&record)?;
         let meta = meta(
             patch.name.as_deref().unwrap_or(&record.name),
@@ -370,12 +371,24 @@ impl App {
         record.updated_at = now;
         if let Some(on) = toggled {
             record.auto_allow = on;
-            changed.push("agents set it up");
+            changed.push(if on {
+                "agents set it up"
+            } else {
+                "agents no longer set it up"
+            });
         }
-        if !self.deps.store.vault_update(&record).await? {
-            // Gone, or allowed for production meanwhile (the store keeps them exclusive).
+        if !self.deps.store.vault_update(&record, &seen).await? {
+            // Gone; or its hosts or switch changed meanwhile (an agent bound a host, a person
+            // switched it), or it was allowed for production: nothing is undone unseen.
             return Err(match self.deps.store.vault_get(id).await? {
-                Some(_) => AppError::Conflict(super::PRODUCTION_SECRET.into()),
+                Some(now) if now.cd_prod && record.auto_allow => {
+                    AppError::Conflict(super::PRODUCTION_SECRET.into())
+                }
+                Some(_) => AppError::Conflict(
+                    "the secret changed meanwhile (an agent bound a host, or someone changed it): \
+                     reload and save again"
+                        .into(),
+                ),
                 None => AppError::NotFound,
             });
         }

@@ -266,7 +266,10 @@ function teamForm(secret, loadNotes, sandbox) {
 function mountTeam(ctx, sandbox, host, actions) {
   const list = h('div');
   const activity = h('div');
-  setChildren(actions, createButton('Add team secret', () => edit(null)));
+  // A sandbox's team secrets are changed by the people who write to it (SPEC-216); others read them.
+  const write = !sandbox || allows(sandbox.access, 'write');
+  const changeable = (secret) => secret.scope === 'instance' || write;
+  setChildren(actions, createButton('Add team secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' }));
   setChildren(host,
     h('p', { class: 'muted small' }, sandbox
       ? `Shared by the people of ${sandbox.name} (this sandbox) or by everyone (team-wide). Values and notes show after your two-factor code; every reveal is recorded.`
@@ -306,8 +309,8 @@ function mountTeam(ctx, sandbox, host, actions) {
           } catch (error) { errorToast(error, 'Couldn’t reveal'); }
           reloadActivity();
         }),
-        smallButton('Edit', `Edit ${secret.title}`, () => edit(secret)),
-        iconButton('trash', `Delete ${secret.title}`, () => remove(secret), { class: 'btn-quiet-danger' }),
+        smallButton('Edit', `Edit ${secret.title}`, () => edit(secret), { disabled: !changeable(secret), title: changeable(secret) ? `Edit ${secret.title}` : 'Requires write access' }),
+        iconButton('trash', `Delete ${secret.title}`, () => remove(secret), { class: 'btn-quiet-danger', disabled: !changeable(secret) }),
       ].filter(Boolean),
     })));
   }

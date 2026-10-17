@@ -272,6 +272,7 @@ impl App {
                 ));
             }
             self.vault.bump();
+            self.announce_request(record);
             let why = reason(why);
             self.vault_audit(
                 &user.actor(),

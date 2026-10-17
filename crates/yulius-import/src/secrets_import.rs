@@ -40,6 +40,9 @@ pub enum SecretsTarget {
         sandbox: Option<String>,
         /// `--instance`: they apply to every sandbox.
         instance: bool,
+        /// `--confirm-hosts`: a person allows each host and production deploys; otherwise agents
+        /// set them up (the server's default, SPEC-216).
+        confirm_hosts: bool,
     },
 }
 
@@ -247,6 +250,7 @@ pub struct PreparedTarget {
     team: bool,
     sandbox: Option<String>,
     instance: bool,
+    confirm_hosts: bool,
     existing: Vec<String>,
     source_file: Option<String>,
 }
@@ -259,6 +263,13 @@ pub fn prepare_target(
     options: &SecretsImportOptions,
     client: &VaultClient,
 ) -> Result<PreparedTarget, SecretsImportError> {
+    let confirm_hosts = matches!(
+        options.target,
+        SecretsTarget::Agent {
+            confirm_hosts: true,
+            ..
+        }
+    );
     let (heading, team, sandbox, instance) = match &options.target {
         SecretsTarget::Team {
             instance: true,
@@ -284,7 +295,9 @@ pub fn prepare_target(
                 false,
             )
         }
-        SecretsTarget::Agent { sandbox, instance } => {
+        SecretsTarget::Agent {
+            sandbox, instance, ..
+        } => {
             let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout)?;
             let reach = if *instance {
                 "every sandbox (instance)"
@@ -327,6 +340,7 @@ pub fn prepare_target(
         team,
         sandbox,
         instance,
+        confirm_hosts,
         existing,
         source_file: options.source_file.clone(),
     })
@@ -357,6 +371,7 @@ pub fn import_secrets(
         team,
         sandbox,
         instance,
+        confirm_hosts,
         existing,
         source_file,
     } = target;
@@ -410,6 +425,15 @@ pub fn import_secrets(
         "{new} new secret{} will be sent. Values are not shown.",
         if new == 1 { "" } else { "s" }
     ));
+    if !team {
+        io.say(if *confirm_hosts {
+            "Agents ask for their hosts: a person allows each host and production deploys on the \
+             Secrets page."
+        } else {
+            "Agents set them up: they bind the hosts they need and production deploys get them, \
+             without asking (--confirm-hosts to allow each yourself)."
+        });
+    }
     let answer = io
         .ask("Type yes to import them: ")
         .map_err(|_| SecretsImportError::Cancelled)?;
@@ -426,7 +450,7 @@ pub fn import_secrets(
         }
         let sent = match (team, &sandbox) {
             (true, sandbox) => send_team(client, sandbox.as_deref(), &entry, &value),
-            (false, Some(id)) => send_agent(client, id, instance, &entry, &value),
+            (false, Some(id)) => send_agent(client, id, instance, *confirm_hosts, &entry, &value),
             (false, None) => Err(ApiError::NotFound("no sandbox".into())),
         };
         match sent {
@@ -564,14 +588,8 @@ fn send_team(
     value: &Secret,
 ) -> Result<(), ApiError> {
     let mut input = TeamSecretInput {
-        scope: Some(
-            if sandbox.is_some() {
-                "sandbox"
-            } else {
-                "instance"
-            }
-            .to_owned(),
-        ),
+        // Team-wide is the plain route's own default: unsaid, an older server takes it.
+        scope: sandbox.map(|_| "sandbox".to_owned()),
         title: entry.name.clone(),
         value: Some(value.expose().to_owned()),
         notes: (!entry.comment.is_empty()).then(|| entry.comment.clone()),
@@ -590,11 +608,14 @@ fn send_agent(
     client: &VaultClient,
     sandbox: &str,
     instance: bool,
+    confirm_hosts: bool,
     entry: &DotenvEntry,
     value: &Secret,
 ) -> Result<(), ApiError> {
     let mut input = AgentSecretInput {
         scope: Some(if instance { "instance" } else { "sandbox" }.to_owned()),
+        // Absent: the server's default, agents set it up (SPEC-216).
+        auto_allow: confirm_hosts.then_some(false),
         name: entry.name.clone(),
         description: (!entry.comment.is_empty()).then(|| entry.comment.clone()),
         value: value.expose().to_owned(),

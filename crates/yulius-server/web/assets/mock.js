@@ -2419,9 +2419,12 @@ function audit(db, action, id, detail) {
 }
 
 /** A team secret the person may see: a sandbox's one only through that sandbox (SPEC-216). */
-function teamSecret(db, id) {
+function teamSecret(db, id, change = false) {
   const secret = vaultOf(db).team.find((s) => s.id === id) || fail(404, 'not_found', 'not found');
-  if (secret.sandbox) sandboxOf(db, secret.sandbox);
+  if (secret.sandbox) {
+    const sandbox = sandboxOf(db, secret.sandbox);
+    if (change) need(sandbox, 'write');
+  }
   return secret;
 }
 
@@ -2430,6 +2433,7 @@ function createTeam(db, body, sandbox) {
   for (const key of Object.keys(body)) if (!['title', 'value', 'notes', 'scope'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
   const scope = body.scope || (sandbox ? 'sandbox' : 'instance');
   if (!['sandbox', 'instance'].includes(scope) || (scope === 'sandbox' && !sandbox)) fail(422, 'invalid', 'scope must be sandbox or instance');
+  if (scope === 'sandbox') need(sandbox, 'write');
   const secret = { id: `ts_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, title: body.title.trim(), value: body.value || null, notes: body.notes || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
   vaultOf(db).team.push(secret);
   audit(db, 'vault.team.create', secret.id, `${secret.title} (${secret.sandbox ? 'this sandbox' : 'team-wide'})`);
@@ -2458,14 +2462,14 @@ route('GET', `/api/sandboxes/${ID}/team-secrets`, ({ db, p }) => {
 });
 route('POST', `/api/sandboxes/${ID}/team-secrets`, ({ db, p, body }) => createTeam(db, body, sandboxOf(db, p[0])));
 route('PATCH', `/api/team-secrets/${ID}`, ({ db, p, body }) => {
-  const secret = teamSecret(db, p[0]);
+  const secret = teamSecret(db, p[0], true);
   for (const key of ['title', 'value', 'notes']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.team.update', secret.id, secret.title);
   return teamView(secret);
 });
 route('DELETE', `/api/team-secrets/${ID}`, ({ db, p }) => {
-  const secret = teamSecret(db, p[0]);
+  const secret = teamSecret(db, p[0], true);
   vaultOf(db).team = vaultOf(db).team.filter((s) => s !== secret);
   audit(db, 'vault.team.delete', secret.id, secret.title);
   return json(204);

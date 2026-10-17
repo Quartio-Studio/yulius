@@ -166,9 +166,15 @@ pub struct VaultAuditEntry {
 pub trait VaultStore: Send + Sync {
     /// Inserts a secret; `Conflict` for an agent name taken in the same scope.
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
-    /// Replaces every mutable column of the secret `record.id` but its host request; `false` when
-    /// it is gone.
-    async fn vault_update(&self, record: &VaultSecretRecord) -> AppResult<bool>;
+    /// Replaces every mutable column of the secret `record.id` but its host request, only while
+    /// its hosts and `auto_allow` still are those of `seen` (the row the change was read from:
+    /// an automatic binding or a switch meanwhile is never undone unseen) and agents setting it
+    /// up would not meet a production-only allowance; `false` otherwise or when it is gone.
+    async fn vault_update(
+        &self,
+        record: &VaultSecretRecord,
+        seen: &VaultSecretRecord,
+    ) -> AppResult<bool>;
     /// Deletes a secret; `false` when it is gone.
     async fn vault_delete(&self, id: &str) -> AppResult<bool>;
     /// One secret.

@@ -35,6 +35,8 @@ impl App {
             match self.assign_one(&id, &sandboxes).await {
                 Ok(true) => assigned += 1,
                 Ok(false) => {}
+                // Stays pending: retried at the next start (e.g. an agent name that clashes in a
+                // sandbox, from before names were kept unique).
                 Err(err) => {
                     tracing::error!(secret = %id, error = %err, "cannot assign a secret to its sandboxes");
                 }
@@ -77,14 +79,19 @@ impl App {
         if !store.vault_assign(id, &copies).await? {
             return Ok(false);
         }
+        // Done and no longer pending: an audit entry that fails to write is logged, not retried.
         for (copy, sandbox) in copies.iter().zip(sandboxes) {
-            self.vault_audit(
-                ASSIGNER,
-                &format!("vault.{}.assign", original.section.as_str()),
-                Some(&copy.id),
-                &format!("{} → {} (from every sandbox)", copy.name, sandbox.slug),
-            )
-            .await?;
+            if let Err(err) = self
+                .vault_audit(
+                    ASSIGNER,
+                    &format!("vault.{}.assign", original.section.as_str()),
+                    Some(&copy.id),
+                    &format!("{} → {} (from every sandbox)", copy.name, sandbox.slug),
+                )
+                .await
+            {
+                tracing::error!(secret = %copy.id, error = %err, "cannot audit a secret's assignment");
+            }
         }
         Ok(true)
     }

@@ -152,8 +152,13 @@ impl VaultStore for SqliteStore {
         .await
     }
 
-    async fn vault_update(&self, record: &VaultSecretRecord) -> AppResult<bool> {
+    async fn vault_update(
+        &self,
+        record: &VaultSecretRecord,
+        seen: &VaultSecretRecord,
+    ) -> AppResult<bool> {
         let r = record.clone();
+        let (seen_hosts, seen_auto) = (to_json(&seen.hosts), i64::from(seen.auto_allow));
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             ensure_agent_unique(&tx, &r)?;
@@ -162,7 +167,8 @@ impl VaultStore for SqliteStore {
                     "UPDATE vault_secrets SET name = ?2, description = ?3, hosts = ?4, injection = ?5, \
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
                      updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
-                     WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1)",
+                     WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1) AND hosts = ?15 \
+                     AND auto_allow = ?16",
                     params![
                         r.id,
                         r.name,
@@ -178,6 +184,8 @@ impl VaultStore for SqliteStore {
                         r.updated_at.0,
                         r.value_updated_at.0,
                         i64::from(r.auto_allow),
+                        seen_hosts,
+                        seen_auto,
                     ],
                 )
                 .map_err(db)?;
@@ -868,7 +876,7 @@ mod tests {
         assert_eq!(got.updated_at, Timestamp(1), "nothing else changes");
         let mut edited = got.clone();
         edited.description = "edited".into();
-        assert!(store.vault_update(&edited).await?);
+        assert!(store.vault_update(&edited, &got).await?);
         assert_eq!(
             store.vault_get("a").await?.ok_or("row")?.env_files,
             EnvFiles::Allowed,
@@ -981,15 +989,87 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-216 SSA-004, review M2/m1: agents setting a secret up and the production-only
+    /// allowance exclude each other in the store; an edit and an automatic binding each change
+    /// only what they saw.
+    #[tokio::test]
+    async fn agents_setting_up_and_production_stay_apart_and_edits_see_what_they_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let mut auto = record("a", VaultSection::Agent, Some("s1"), "AUTO");
+        auto.auto_allow = true;
+        auto.hosts = Vec::new();
+        store.vault_insert(&auto).await?;
+        assert!(
+            !store.vault_set_cd_prod("a", false, true).await?,
+            "no production-only allowance while agents set it up"
+        );
+
+        // An edit read while it was on does not turn it back on once a person turned it off.
+        let seen = store.vault_get("a").await?.ok_or("row")?;
+        let mut off = seen.clone();
+        off.auto_allow = false;
+        assert!(store.vault_update(&off, &seen).await?);
+        let mut stale = seen.clone();
+        stale.description = "edited".into();
+        assert!(!store.vault_update(&stale, &seen).await?, "stale switch");
+        assert!(!store.vault_get("a").await?.ok_or("row")?.auto_allow);
+
+        // Turned off, nothing binds by itself; an edit that read the hosts before a binding does
+        // not drop it.
+        let none: [String; 0] = [];
+        let one = ["api.example.com".to_owned()];
+        assert!(
+            !store
+                .vault_auto_bind("a", (&none, &one), (&none, &none))
+                .await?
+        );
+        let now = store.vault_get("a").await?.ok_or("row")?;
+        let mut on = now.clone();
+        on.auto_allow = true;
+        assert!(store.vault_update(&on, &now).await?);
+        let before_binding = store.vault_get("a").await?.ok_or("row")?;
+        assert!(
+            store
+                .vault_auto_bind("a", (&none, &one), (&none, &none))
+                .await?
+        );
+        assert!(
+            !store
+                .vault_auto_bind("a", (&none, &one), (&none, &none))
+                .await?,
+            "stale bindings"
+        );
+        let mut late = before_binding.clone();
+        late.description = "late edit".into();
+        assert!(
+            !store.vault_update(&late, &before_binding).await?,
+            "stale hosts"
+        );
+        assert_eq!(store.vault_get("a").await?.ok_or("row")?.hosts, one);
+
+        // A production secret is never turned into one agents set up.
+        let mut prod = record("p", VaultSection::Agent, Some("s1"), "PROD");
+        prod.hosts = Vec::new();
+        store.vault_insert(&prod).await?;
+        assert!(store.vault_set_cd_prod("p", false, true).await?);
+        let seen = store.vault_get("p").await?.ok_or("row")?;
+        let mut turned = seen.clone();
+        turned.auto_allow = true;
+        assert!(!store.vault_update(&turned, &seen).await?);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn updates_meta_reauth_and_audit() -> Result<(), Box<dyn std::error::Error>> {
         let store = store_with_sandboxes().await?;
         let mut r = record("a", VaultSection::Agent, Some("s1"), "KEY");
         store.vault_insert(&r).await?;
+        let seen = r.clone();
         r.name = "RENAMED".into();
         r.envelope.ciphertext = vec![9];
         r.value_updated_at = Timestamp(5);
-        assert!(store.vault_update(&r).await?);
+        assert!(store.vault_update(&r, &seen).await?);
         store.vault_touch_used("a", Timestamp(7)).await?;
         let got = store.vault_get("a").await?.ok_or("missing")?;
         assert_eq!(got.name, "RENAMED");

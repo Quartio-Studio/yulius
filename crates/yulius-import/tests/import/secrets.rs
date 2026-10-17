@@ -94,6 +94,7 @@ fn agent(sandbox: &str, instance: bool) -> SecretsImportOptions {
         target: SecretsTarget::Agent {
             sandbox: Some(sandbox.into()),
             instance,
+            confirm_hosts: false,
         },
         checkout: std::env::temp_dir(),
         source_file: None,
@@ -197,7 +198,14 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
     let created = server.with(|s| s.agent_created.clone())?;
     assert!(created.iter().all(|(sid, input)| sid == "sb-1"
         && input.scope.as_deref() == Some("sandbox")
-        && input.hosts.is_empty()));
+        && input.hosts.is_empty()
+        && input.auto_allow.is_none()));
+    // SPEC-216: the server's default (agents set them up) is said before yes.
+    assert!(
+        terminal.said.contains("Agents set them up"),
+        "{}",
+        terminal.said
+    );
     let key = created
         .iter()
         .find(|(_, i)| i.name == "DEPLOY_KEY")
@@ -272,8 +280,43 @@ ALL_KEY=all-value-4
     assert_eq!(summary.imported, vec!["ALL_KEY"]);
     let created = server.with(|s| s.team_created.clone())?;
     assert_eq!(created.len(), 1);
-    assert_eq!(created[0].scope.as_deref(), Some("instance"));
+    assert_eq!(created[0].scope, None, "team-wide is that route's default");
     assert!(terminal.said.contains("team-wide"), "{}", terminal.said);
+    Ok(())
+}
+
+/// SPEC-216 review M1: `--confirm-hosts` turns agents setting them up off, and says so; an
+/// absent choice is not sent, so an older server still takes the import.
+#[test]
+fn confirmed_hosts_are_asked_for_and_nothing_new_is_sent_by_default() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Agent {
+            sandbox: Some("sb-1".into()),
+            instance: false,
+            confirm_hosts: true,
+        },
+        ..agent("sb-1", false)
+    };
+    let mut terminal = Terminal::answering(&["yes"]);
+    run(
+        &server,
+        "NEW_KEY=sk_live_new_value_1\n",
+        &options,
+        &mut terminal,
+    )??;
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert_eq!(created[0].1.auto_allow, Some(false));
+    assert!(
+        terminal.said.contains("a person allows each host"),
+        "{}",
+        terminal.said
+    );
+    let plain = serde_json::to_value(yulius_contracts::api::secrets::AgentSecretInput::default())?;
+    assert!(plain.get("auto_allow").is_none(), "{plain}");
+    let team = serde_json::to_value(yulius_contracts::api::secrets::TeamSecretInput::default())?;
+    assert!(team.get("scope").is_none(), "{team}");
     Ok(())
 }
 

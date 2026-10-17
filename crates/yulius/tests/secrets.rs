@@ -1205,8 +1205,32 @@ async fn team_secrets_belong_to_a_sandbox_unless_team_wide() -> TestResult {
     assert_eq!(reveal.status, StatusCode::NOT_FOUND, "{}", reveal.body);
     let gone = call(&w.h.router, Method::DELETE, &path, None, &w.outsider).await?;
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
-    // People who can view it change it, as members change team secrets.
-    let renamed = call(&w.h.router, Method::PATCH, &path, rename, &w.reader).await?;
+    // People who only read the sandbox see it but do not change, add or delete its secrets; those
+    // who write to it do.
+    let read_only = call(&w.h.router, Method::PATCH, &path, rename.clone(), &w.reader).await?;
+    assert_eq!(
+        read_only.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        read_only.body
+    );
+    let reader_add = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "Reader's", "value": "reader-value-1"})),
+        &w.reader,
+    )
+    .await?;
+    assert_eq!(
+        reader_add.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        reader_add.body
+    );
+    let reader_delete = call(&w.h.router, Method::DELETE, &path, None, &w.reader).await?;
+    assert_eq!(reader_delete.status, StatusCode::FORBIDDEN);
+    let renamed = call(&w.h.router, Method::PATCH, &path, rename, &w.writer).await?;
     assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
     assert_eq!(renamed.body["scope"], "sandbox");
 
@@ -2205,6 +2229,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "app", "u-alice").await?;
     seed_sandbox(&h, "s2", "other", "u-alice").await?;
+    seed_sandbox(&h, "s3", "gone", "u-alice").await?;
     create_team_secret(&h, &admin).await?;
     let global = call(
         &h.router,
@@ -2218,9 +2243,10 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     )
     .await?;
     assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
-    // As the upgrade found them.
+    // As the upgrade found them; s3 was removed (its copy would outlive it).
     rusqlite::Connection::open(&path)?.execute_batch(
-        "INSERT INTO vault_scope_pending (id) SELECT id FROM vault_secrets WHERE sandbox_id IS NULL",
+        "INSERT INTO vault_scope_pending (id) SELECT id FROM vault_secrets WHERE sandbox_id IS NULL;
+         UPDATE sandboxes SET removed_at = 1 WHERE id = 's3';",
     )?;
     let later = call(
         &h.router,
@@ -2234,6 +2260,12 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
 
     assert_eq!(h.app.assign_vault_scopes().await?, 2);
     assert_eq!(h.app.assign_vault_scopes().await?, 0, "only once");
+    let in_removed: i64 = rusqlite::Connection::open(&path)?.query_row(
+        "SELECT COUNT(*) FROM vault_secrets WHERE sandbox_id = 's3'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(in_removed, 0, "a removed sandbox gets no copy");
 
     let wide = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
     assert_eq!(wide.body.as_array().map(Vec::len), Some(1), "{}", wide.body);
@@ -2730,6 +2762,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     assert_eq!(created.body["auto_allow"], true, "on by default");
     let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut announced = support::SecretAnnouncements::new(&w.h.app);
 
     let asked = tool_text(
         &mcp_tool(
@@ -2742,6 +2775,8 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     );
     assert_eq!(asked["bound"], json!(["api.vidoc.test"]), "{asked}");
     assert_eq!(asked["waiting"], json!([]), "{asked}");
+    // Open Secrets pages show the bound host without a reload (SPEC-209).
+    assert_eq!(announced.take(), vec![Some("s1".to_owned())]);
     let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
     assert_eq!(secret["hosts"], json!(["api.vidoc.test"]));
     assert_eq!(secret["requested_hosts"], json!([]));
@@ -2798,6 +2833,39 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     );
     assert_eq!(waits["requested"], json!(["eu.vidoc.test"]), "{waits}");
     assert!(!app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
+    mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_request_hosts",
+        json!({"secret": "VIDOC_API_KEY", "hosts": ["us.vidoc.test"]}),
+    )
+    .await?;
+
+    // On again: a host that waited is bound when an agent asks for it; the others keep waiting.
+    let on = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"auto_allow": true})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let bound = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["eu.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(bound["bound"], json!(["eu.vidoc.test"]), "{bound}");
+    assert_eq!(bound["waiting"], json!(["us.vidoc.test"]), "{bound}");
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!(["api.vidoc.test", "eu.vidoc.test"]));
+    assert_eq!(secret["requested_hosts"], json!(["us.vidoc.test"]));
+    assert!(app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
 
     // Turned off at creation: today's flow.
     let confirmed = add_agent_secret(
@@ -2829,7 +2897,11 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
         &w.writer,
     )
     .await?;
-    for action in ["vault.agent.auto_allow", "vault.agent.auto_allow_off"] {
+    for action in [
+        "vault.agent.auto_allow",
+        "vault.agent.auto_allow_off",
+        "vault.agent.auto_allow_on",
+    ] {
         assert!(
             activity
                 .body

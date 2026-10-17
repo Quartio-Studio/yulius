@@ -162,6 +162,9 @@ pub struct SecretsImportArgs {
     pub sandbox: Option<String>,
     /// Team-wide secrets, for every sandbox (SPEC-216).
     pub instance: bool,
+    /// Agent secrets a person allows each host and production deploys of, instead of agents
+    /// setting them up (SPEC-216).
+    pub confirm_hosts: bool,
     /// Server URL (`None`: the only signed-in server).
     pub server: Option<String>,
     /// No colours.
@@ -241,6 +244,7 @@ fn read_source(file: &std::path::Path) -> Result<Secret, String> {
 }
 
 /// `yulius secrets import --to team|agent [FILE|-] [--sandbox <owner/name>] [--instance]
+/// [--confirm-hosts]
 /// [--server <url>] [--no-color]`: exit 0 when every secret was imported or already there.
 pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
     install_tls();
@@ -248,6 +252,9 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
     let result = (|| -> Result<bool, String> {
         if args.instance && args.to == VaultChoice::Team && args.sandbox.is_some() {
             return Err("team-wide team secrets (--instance) belong to no --sandbox".into());
+        }
+        if args.confirm_hosts && args.to != VaultChoice::Agent {
+            return Err("--confirm-hosts applies to --to agent".into());
         }
         let parsed = match &args.file {
             Some(file) => {
@@ -276,6 +283,7 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
                 VaultChoice::Agent => SecretsTarget::Agent {
                     sandbox: args.sandbox.clone(),
                     instance: args.instance,
+                    confirm_hosts: args.confirm_hosts,
                 },
             },
             checkout: std::env::current_dir().map_err(|e| e.to_string())?,

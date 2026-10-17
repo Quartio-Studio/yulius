@@ -227,6 +227,10 @@ enum SecretsAction {
         /// Team-wide secrets, for every sandbox (agent secrets: instance administrators).
         #[arg(long)]
         instance: bool,
+        /// Agent secrets: you allow each host and production deploys on the Secrets page,
+        /// instead of agents setting them up (the default).
+        #[arg(long)]
+        confirm_hosts: bool,
         /// Yulius URL (default: the only server you signed in to).
         #[arg(long, env = "YULIUS_SERVER")]
         server: Option<String>,
@@ -447,6 +451,7 @@ fn main() -> ExitCode {
                     file,
                     sandbox,
                     instance,
+                    confirm_hosts,
                     server,
                     no_color,
                 },
@@ -455,6 +460,7 @@ fn main() -> ExitCode {
             file,
             sandbox,
             instance,
+            confirm_hosts,
             server,
             no_color,
         }),
