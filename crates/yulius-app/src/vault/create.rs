@@ -24,7 +24,7 @@ use yulius_domain::vault::{Injection, MAX_FIELD_BYTES};
 use zeroize::Zeroizing;
 
 use super::agents::{Meta, NewAgentSecret, description};
-use super::env_files::{Folder, WORK_FOLDER, open_folder, os_error};
+use super::env_files::{Folder, Naming, WORK_FOLDER, open_folder, os_error};
 use super::{AgentPayload, SecretUser, invalid};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
@@ -61,6 +61,14 @@ impl Root {
         match self {
             Self::Work => WORK_FOLDER,
             Self::Home => HOME,
+        }
+    }
+
+    /// What its paths are written after, as the caller writes them.
+    pub(super) fn prefix(&self) -> &'static str {
+        match self {
+            Self::Work => "",
+            Self::Home => "~/",
         }
     }
 }
@@ -240,9 +248,13 @@ impl App {
         // Anchored on a folder the agent cannot replace, and walked down without links: the
         // home or repository itself may be a link the agent planted (review of SPEC-211, 1).
         let (anchor, mut below) = self.secret_source_root(user, &sandbox, &root).await?;
-        let hidden = below.len();
+        let naming = Naming {
+            within: root.named(),
+            hidden: below.len(),
+            prefix: root.prefix(),
+        };
         below.extend(folders.iter().cloned());
-        let folder = open_folder(&anchor, &below, root.named(), hidden)?;
+        let folder = open_folder(&anchor, &below, &naming)?;
         // Messages name the path as the caller gave it, never the anchor's folders.
         let shown = match root {
             Root::Work => parts.join("/"),
@@ -362,7 +374,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::env_files::open_folder;
+    use crate::vault::env_files::WORK;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -415,7 +427,7 @@ mod tests {
         std::fs::write(wt.join("binary"), [0xff, 0xfe, 0x00, 0x41])?;
         std::fs::create_dir(wt.join("folder"))?;
 
-        let folder = open_folder(&wt, &[], WORK_FOLDER, 0)?;
+        let folder = open_folder(&wt, &[], &WORK)?;
         assert_eq!(
             read_secret_file(&folder, "token.txt", "token.txt")?.as_str(),
             "synthetic-token-1234\n"

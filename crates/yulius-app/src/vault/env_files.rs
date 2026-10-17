@@ -104,24 +104,46 @@ fn real_path(fd: &OwnedFd) -> AppResult<PathBuf> {
     }
 }
 
+/// How [`open_folder`]'s messages name its folders: the root it walks from as `within` ("the
+/// folder you work in", "your home"), leaving out the first `hidden` folders (those between an
+/// anchor and the folder the caller names its paths from) and writing the rest after `prefix`
+/// (`~/` for the home), as the caller gave them.
+pub(super) struct Naming<'a> {
+    pub(super) within: &'a str,
+    pub(super) hidden: usize,
+    pub(super) prefix: &'a str,
+}
+
+/// The folder an agent works in, named from itself.
+pub(super) const WORK: Naming<'static> = Naming {
+    within: WORK_FOLDER,
+    hidden: 0,
+    prefix: "",
+};
+
 /// Opens `folders` below `worktree` one component at a time without following links, and checks
-/// that the folder reached is inside the worktree and out of `.git`. `within` names the worktree
-/// in messages ("the folder you work in", "your home"), which leave out the first `hidden`
-/// folders (those between an anchor and the folder the caller names its paths from).
+/// that the folder reached is inside the worktree and out of `.git`.
 pub(super) fn open_folder(
     worktree: &Path,
     folders: &[String],
-    within: &str,
-    hidden: usize,
+    naming: &Naming<'_>,
 ) -> AppResult<Folder> {
-    let shown = || folders.get(hidden..).unwrap_or_default().join("/");
+    let within = naming.within;
+    let visible = folders.get(naming.hidden..).unwrap_or_default().join("/");
+    let shown = format!("{}{visible}", naming.prefix);
     let refused = |err: Errno| match err {
-        Errno::ELOOP | Errno::ENOTDIR => AppError::Forbidden(format!(
-            "a folder on the way to {} is a link or not a folder: Yulius follows no links",
-            shown()
+        // The root itself (a folder the caller does not name) is the one refused.
+        Errno::ELOOP | Errno::ENOTDIR if visible.is_empty() => AppError::Forbidden(format!(
+            "{within} is a link or not a folder: Yulius follows no links"
         )),
+        Errno::ELOOP | Errno::ENOTDIR => AppError::Forbidden(format!(
+            "a folder on the way to {shown} is a link or not a folder: Yulius follows no links"
+        )),
+        Errno::ENOENT if visible.is_empty() => {
+            AppError::Invalid(format!("{within} does not exist on this machine"))
+        }
         Errno::ENOENT => {
-            AppError::Invalid(format!("the folder {} does not exist in {within}", shown()))
+            AppError::Invalid(format!("the folder {shown} does not exist in {within}"))
         }
         other => os_error(other),
     };
@@ -131,10 +153,11 @@ pub(super) fn open_folder(
     }
     let real = real_path(&fd)?;
     if !inside(worktree, &real) {
-        return Err(AppError::Forbidden(format!(
-            "{} is outside {within}",
-            shown()
-        )));
+        return Err(AppError::Forbidden(if visible.is_empty() {
+            format!("{within} is outside where Yulius looks")
+        } else {
+            format!("{shown} is outside {within}")
+        }));
     }
     let relative = real
         .strip_prefix(worktree)
@@ -429,7 +452,7 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let worktree = self.secret_user_folder(user, &sandbox).await?;
-        let folder = open_folder(&worktree, folders, WORK_FOLDER, 0)?;
+        let folder = open_folder(&worktree, folders, &WORK)?;
         let target = folder.path_of(file_name);
         let existing = read_in(&folder, file_name)?;
         if !self.deps.git.is_disposable(&worktree, &target).await? {
@@ -647,7 +670,7 @@ mod tests {
     fn a_folder_swapped_for_a_link_after_the_check_is_not_followed() -> TestResult {
         let (_dir, wt, outside) = worktree()?;
         std::fs::write(outside.join(".env"), "OTHER_PROJECT_KEY=theirs\n")?;
-        let folder = open_folder(&wt, &["deploy".to_owned()], WORK_FOLDER, 0)?;
+        let folder = open_folder(&wt, &["deploy".to_owned()], &WORK)?;
         assert_eq!(folder.relative, "deploy");
         std::fs::rename(wt.join("deploy"), wt.join("moved"))?;
         std::os::unix::fs::symlink(&outside, wt.join("deploy"))?;
@@ -678,19 +701,19 @@ mod tests {
         for folders in [vec!["link".to_owned()], vec!["inner".to_owned()]] {
             assert!(
                 matches!(
-                    open_folder(&wt, &folders, WORK_FOLDER, 0),
+                    open_folder(&wt, &folders, &WORK),
                     Err(AppError::Forbidden(_))
                 ),
                 "{folders:?}"
             );
         }
         assert!(matches!(
-            open_folder(&wt, &["missing".to_owned()], WORK_FOLDER, 0),
+            open_folder(&wt, &["missing".to_owned()], &WORK),
             Err(AppError::Invalid(_))
         ));
         std::fs::write(wt.join("deploy/target"), "x")?;
         std::os::unix::fs::symlink(wt.join("deploy/target"), wt.join("deploy/.env"))?;
-        let folder = open_folder(&wt, &["deploy".to_owned()], WORK_FOLDER, 0)?;
+        let folder = open_folder(&wt, &["deploy".to_owned()], &WORK)?;
         assert!(matches!(
             read_in(&folder, ".env"),
             Err(AppError::Forbidden(_))

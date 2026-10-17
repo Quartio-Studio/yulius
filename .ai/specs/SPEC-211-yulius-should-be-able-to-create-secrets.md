@@ -144,7 +144,7 @@ for any secret an agent did not create.
 
 ## Evidence
 
-- `scripts/dev ci` on `2eb6210e`: exit 0 (repository checks, script unit tests, `cargo check`,
+- `scripts/dev ci` on `2eb6210e` and again on the final head: exit 0 (repository checks, script unit tests, `cargo check`,
   `fmt --check`, `clippy -D warnings`, every nextest suite, doctests, `deny`, `shear`).
 - `scripts/dev security` on `2eb6210e`: exit 0, "no open critical or high finding in the change
   scan". The three low findings are recorded, not fixed here:
@@ -171,6 +171,9 @@ for any secret an agent did not create.
     All own-code findings are fixed test-first.
   - Round 2 (head `a2636757`) approved, with one low own-code finding (error paths showed the
     anchor's folders), fixed in `2eb6210e`.
+  - Round 3 (head `11fb249b`) approved, with a minor and a nit in own code: a refused anchor
+    folder (a swapped home) was named as an empty path, and home folders were not written with
+    `~/`. Both are fixed test-first (`env_files::Naming`); the final head was reviewed again.
   - Pre-existing findings outside this change: #635 (the Superagent's `secret_copy_to_env` root
     is not anchored) and #638 (reserved environment names).
 - Not tested here: a contained run (bubblewrap) end to end. The anchors match the containment

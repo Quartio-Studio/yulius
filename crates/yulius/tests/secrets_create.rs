@@ -323,7 +323,7 @@ async fn files_yulius_must_not_read_are_refused() -> TestResult {
         ("~/.ssh/missing", "~/.ssh/missing does not exist"),
         (
             "~/nowhere/key",
-            "the folder nowhere does not exist in your home",
+            "the folder ~/nowhere does not exist in your home",
         ),
     ] {
         let refused = create(&w, TOKEN, json!({"name": "SOME_KEY", "file": file})).await?;
@@ -415,6 +415,12 @@ async fn a_root_swapped_for_a_link_and_reserved_names_are_refused() -> TestResul
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(
         !refused.to_string().contains("outside-synthetic"),
+        "{refused}"
+    );
+    assert!(
+        refused
+            .to_string()
+            .contains("your home is a link or not a folder: Yulius follows no links"),
         "{refused}"
     );
     assert_eq!(names(&w).await?, before, "nothing is created");
