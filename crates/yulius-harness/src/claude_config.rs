@@ -7,7 +7,8 @@
 //! keeps its own state there. The same preparation keeps Claude Code's diff side panel from opening
 //! by itself (SPEC-024). A linked git worktree is trusted under its main repository too: Claude
 //! Code 2.1.292 looks a worktree's trust up there when `.claude/settings.json` pre-approves tools
-//! (SPEC-106, verified live).
+//! (SPEC-106, verified live). It also defaults the user settings (`settings.json`) to the Concise
+//! output style (SPEC-210).
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -18,6 +19,10 @@ use crate::launch::PlannedFile;
 
 /// File name inside the config dir.
 pub const CLAUDE_GLOBAL_CONFIG: &str = ".claude.json";
+/// Claude Code's user settings file inside the config dir, the lowest settings layer.
+pub const CLAUDE_USER_SETTINGS: &str = "settings.json";
+/// The settings key of the output style, and the built-in style Yulius sessions start in.
+const OUTPUT_STYLE: (&str, &str) = ("outputStyle", "Concise");
 /// Claude Code's preference for its diff side panel; `false` keeps the panel from opening itself.
 const DIFF_SIDEBAR_OPEN: &str = "diffSidebarOpen";
 /// Store ids of the built-in diff plugin: the current one, then the legacy one Claude Code carries
@@ -30,7 +35,8 @@ const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Merges onboarding completion, trust for `worktree` (and, for a linked git worktree, its main
 /// repository) and a closed diff side panel into the
-/// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also
+/// Claude global config of `config_dir` (created 0700 when missing), and defaults its user settings
+/// to the Concise output style. `bypass_permissions` also
 /// records acceptance of the `--dangerously-skip-permissions` warning (contained runs only).
 /// Idempotent.
 ///
@@ -116,7 +122,43 @@ pub fn ensure_claude_config(
         .write()?;
     }
     close_diff_pane(config_dir);
+    default_output_style(config_dir);
     Ok(())
+}
+
+/// Adds `"outputStyle": "Concise"` to the user settings when they name no style (SPEC-210,
+/// ADR-0166). The user layer is the lowest one, so `/output-style` (local settings) and a style a
+/// repository commits still win; forced through `--settings`, `/output-style` would report a switch
+/// that never happens (measured on 2.1.292). A chosen style, `default` included, is kept, and a
+/// file that is not a JSON object is left to Claude Code: the style never blocks a launch.
+fn default_output_style(config_dir: &Path) {
+    let path = config_dir.join(CLAUDE_USER_SETTINGS);
+    let mut map = match read_small(&path) {
+        // Present but larger than 8 MiB (or a dangling link): not Yulius's to rewrite.
+        Ok(None) if path.symlink_metadata().is_ok() => return,
+        Ok(None) => Map::new(),
+        Ok(Some(text)) if text.trim().is_empty() => Map::new(),
+        Ok(Some(text)) => match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(map)) => map,
+            _ => return,
+        },
+        Err(_) => return,
+    };
+    let (key, style) = OUTPUT_STYLE;
+    if map.contains_key(key) {
+        return;
+    }
+    map.insert(key.into(), Value::String(style.into()));
+    if let Ok(mut contents) = serde_json::to_vec_pretty(&Value::Object(map)) {
+        contents.push(b'\n');
+        // Best effort, like the read: a failed write leaves the session in its current style.
+        let _ = PlannedFile {
+            path,
+            contents,
+            mode: 0o600,
+        }
+        .write();
+    }
 }
 
 /// The main repository of a linked git worktree, read from its files as Git lays them out (no
@@ -224,7 +266,7 @@ fn read_small(path: &Path) -> io::Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CLAUDE_GLOBAL_CONFIG, ensure_claude_config};
+    use super::{CLAUDE_GLOBAL_CONFIG, CLAUDE_USER_SETTINGS, ensure_claude_config};
     use serde_json::{Value, json};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -450,6 +492,65 @@ mod tests {
         std::fs::write(&current, "not json")?;
         ensure_claude_config(&config, dir.path(), false)?;
         assert_eq!(std::fs::read_to_string(&current)?, "not json");
+        Ok(())
+    }
+
+    /// SPEC-210 CON-001..003: every launch defaults the sandbox's user settings to the Concise
+    /// output style; a style already chosen, the file's other keys and a file Yulius cannot read
+    /// as a JSON object are kept.
+    #[test]
+    fn sessions_default_to_the_concise_output_style() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        let settings = config.join(CLAUDE_USER_SETTINGS);
+        let read = |path: &std::path::Path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+        };
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&settings)?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // An existing file gains the key and keeps the rest.
+        std::fs::write(
+            &settings,
+            r#"{"verbose":true,"enabledPlugins":{"a@b":false}}"#,
+        )?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(
+            read(&settings)?,
+            json!({ "verbose": true, "enabledPlugins": { "a@b": false }, "outputStyle": "Concise" })
+        );
+        // A style a person chose, `default` included, is theirs: the file is not rewritten.
+        for chosen in [
+            r#"{"outputStyle":"Explanatory"}"#,
+            r#"{"outputStyle":"default","verbose":true}"#,
+        ] {
+            std::fs::write(&settings, chosen)?;
+            ensure_claude_config(&config, dir.path(), false)?;
+            assert_eq!(std::fs::read_to_string(&settings)?, chosen);
+        }
+        // A file that is not a JSON object is Claude Code's to report; the launch goes on.
+        for corrupt in ["not json", "[1,2]", "{\"outputStyle\":"] {
+            std::fs::write(&settings, corrupt)?;
+            ensure_claude_config(&config, dir.path(), false)?;
+            assert_eq!(std::fs::read_to_string(&settings)?, corrupt);
+        }
+        let huge = format!("{{\"x\":\"{}\"}}", "a".repeat(8 * 1024 * 1024));
+        std::fs::write(&settings, &huge)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(
+            std::fs::read_to_string(&settings)? == huge,
+            "an oversized file is untouched"
+        );
+        // An empty file reads as no settings, as `.claude.json` does.
+        std::fs::write(&settings, "\n")?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
         Ok(())
     }
 
