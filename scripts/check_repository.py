@@ -411,6 +411,13 @@ def doctor():
         if version not in result.split():
             raise ValueError(f"{name}: expected {version}, got {result}; rerun bootstrap")
         print(result)
+    if sys.platform == "linux":
+        # The macOS check's C compiler (ADR-0169).
+        version = tomllib.loads((ROOT / ".config/tools.toml").read_text())["zig"]["version"]
+        result = output([str(ROOT / ".tools/bin/zig"), "version"])
+        if result != version:
+            raise ValueError(f"zig: expected {version}, got {result}; rerun bootstrap")
+        print(f"zig {result}")
     print(f"Python {sys.version.split()[0]}; pinned tools ready")
 
 
