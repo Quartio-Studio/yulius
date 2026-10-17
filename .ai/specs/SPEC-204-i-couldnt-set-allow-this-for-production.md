@@ -34,7 +34,7 @@ secret has no Allow for agents' requests.
   `env_files = allowed`: a production secret is exclusive (ADR-0109, review M-B). The web mock's
   `/cd-prod` route does not apply that rule. The only e2e test used a secret without hosts, so
   the refusal was never exercised.
-- **Same cause, other direction.** The server refuses to allow hosts (`answer_request`) or
+- **Same cause, other direction.** The server refuses to allow hosts (`answer_host_request`) or
   `.env` copies (`answer_env_files`) for a production secret (`PRODUCTION_SECRET`). A request
   can be left waiting from before the secret became a production secret, and the page still
   offers Allow for it.
@@ -103,7 +103,8 @@ secret has no Allow for agents' requests.
   docs built.
 - `cd e2e && npx e2e run`: 605 passed, 1 skipped (that test was already skipped), at
   `ed0d5794`. After the review fixes, the secrets, CD, phone, quality and places suites passed
-  69 of 69. The full suite and the gate ran again on the final head (see below).
+  69 of 69. On `18a4abcb`, the review's fixed head: `scripts/dev ci` exit 0 again, and the full
+  suite 606 passed, 1 skipped (607).
 - `python3 scripts/vidoc_scan.py` (the CI `security` job's scan): exit 0, no critical or high
   finding. Its one low finding is in `copyValue` (`secrets.js:30`, the clipboard is not cleared
   while the page has no focus), which this change does not touch. Browsers refuse a clipboard
@@ -115,10 +116,14 @@ secret has no Allow for agents' requests.
   - The mock's refusals were in a different order from the server's.
   - The badge was the same as a real production secret's.
   - Nits: the note named one way forward, and could show twice.
-  
+
   The one pre-existing finding is #622: the Edit dialog offers Hosts on a production secret.
   The mock's 409 routes are not reached by any test, because the page no longer offers those
   actions. That is accepted.
+- **Review, round 2** (fresh session): approved `18a4abcb`; every round-1 fix verified. Its
+  minor (this evidence line) and the spec's nits are fixed here. Two wording nits stay as they
+  are, because both are accurate:
+  - "agents never get it" sits beside "agents never do".
+  - "remove its hosts and .env copies" also shows for a secret that has only one of them.
 - What could not be tested here: the real server page against a live vault. The server rule is
   unchanged and already covered by `crates/yulius/tests/cd.rs` and `secrets.rs`.
-
