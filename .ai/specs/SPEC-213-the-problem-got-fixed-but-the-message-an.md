@@ -1,11 +1,11 @@
 ---
 yulius-task: a604d603-742b-4b73-bc40-be923fb2a698
-status: in-progress
+status: done
 ---
 
 # SPEC-213: an answered secret request ends the task's "Needs your action"
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: Yulius task #200
 Scope authorization: the person's request (task #200), "the problem got fixed but the message and
@@ -53,10 +53,10 @@ and it leaves the sidebar's Needs you list.
 
 ## Plan
 
-- [ ] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Reproduce the defect and find its root cause
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -116,3 +116,26 @@ and it leaves the sidebar's Needs you list.
   here and in the code, not tested: reproducing them needs probes inside the store calls.
 - No ADR: this restores the documented meaning of the flag (SPEC-129: the task is flagged while it
   waits for a person) and changes no contract.
+
+## Evidence
+
+- Root cause read in code: `flag_secret_wait` set `needs_attention`; `answer_env_files`,
+  `answer_host_request` and `activity_on_work` never ended it (Context).
+- Regression tests first (d48302ad, dbef6f51), failing on the old code for the right reason:
+  `an_allowed_secret_is_copied_into_the_ignored_env`, `the_answer_to_the_last_waiting_request_ends_the_flag`,
+  `agents_request_hosts_and_people_allow_them` and `deleting_the_asked_secret_ends_the_flag` read
+  `NeedsAttention` where `Working` is due; `a_flag_raised_after_the_request_outlives_its_answer`
+  read `Working` where the agent's later question must keep `NeedsAttention`.
+- After the fix: `cargo nextest run -p yulius -p yulius-store` over `secrets_env::`, `secrets::`,
+  `browser::`, `agent_hooks::`, `cd::`, `context_full::`, `task_done::` and the store crate: 189
+  passed.
+- `scripts/dev ci` on 0d9fd70e: exit 0, 2134 tests passed, 18 skipped; deny: advisories, bans,
+  licenses, sources ok.
+- `scripts/dev security` on 0d9fd70e: exit 0, no critical or high finding. The medium and low
+  findings of both scans are in code this change does not touch (present on `dev` before it) and
+  are tracked for triage in #639.
+- Independent review in fresh sessions: round 1 requested changes (one major: a later flag of
+  another cause was cleared; four minors), all fixed test-first; round 2 approved with one minor
+  race, fixed in 0d9fd70e (Decisions); the final round reviews the delivered head.
+- Not testable here: the live UI banner itself (the tests read the task's activity, which the
+  banner and the Needs you list render from), and the interleavings argued under Decisions.
