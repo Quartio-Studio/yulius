@@ -687,3 +687,105 @@ async fn the_round_runs_at_start_and_every_period() -> BoxResult<()> {
     );
     Ok(())
 }
+
+/// LFT-012: `yulius leftovers` lists and deletes through the loopback listener with the key the
+/// server wrote; a refused confirmation deletes nothing; a wrong key or no server is reported
+/// with exit 2.
+#[tokio::test]
+async fn the_cli_lists_and_deletes_with_the_server_s_key() -> BoxResult<()> {
+    use yulius::leftovers_cli::{Action, run_async};
+    let w = world().await?;
+    let old = w.sandbox("old").await?;
+    w.remove("old").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+    w.h.app.write_leftovers_key()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let router = w.h.internal.clone();
+    tokio::spawn(async move { axum::serve(listener, router).await });
+
+    let mut out = Vec::new();
+    let code = run_async(
+        &mut out,
+        &w.data,
+        &url,
+        Action::List { json: false },
+        &mut |_| false,
+    )
+    .await;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("removed-ci") && text.contains("safe"),
+        "{text}"
+    );
+    assert!(
+        text.contains("removed-sandbox") && text.contains("needs you"),
+        "{text}"
+    );
+    assert!(text.contains("Reclaimable:"), "{text}");
+
+    let delete = |yes| Action::Delete {
+        all_safe: true,
+        ids: Vec::new(),
+        yes,
+    };
+    let mut out = Vec::new();
+    let mut asked = Vec::new();
+    let code = run_async(&mut out, &w.data, &url, delete(false), &mut |q| {
+        asked.push(q.to_owned());
+        false
+    })
+    .await;
+    assert_eq!(code, 2, "{}", String::from_utf8_lossy(&out));
+    assert!(
+        asked
+            .iter()
+            .any(|q| q.starts_with("Delete ") && q.contains("Type yes")),
+        "{asked:?}"
+    );
+    assert!(
+        old.join("ci").exists(),
+        "a refused confirmation deletes nothing"
+    );
+
+    let mut out = Vec::new();
+    let code = run_async(&mut out, &w.data, &url, delete(true), &mut |_| false).await;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Deleted "), "{text}");
+    assert!(!old.join("ci").exists() && !w.at("sysroots/old").exists());
+    assert!(old.join("repo").exists(), "the person's item stays");
+    let audited = w.audit("old", "leftovers.delete").await?;
+    assert!(audited.iter().all(|a| a.starts_with("cli ")), "{audited:?}");
+
+    write(&w.at(yulius_app::leftovers::CLI_KEY_FILE), "00ff")?;
+    let mut out = Vec::new();
+    let code = run_async(
+        &mut out,
+        &w.data,
+        &url,
+        Action::List { json: true },
+        &mut |_| false,
+    )
+    .await;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("refused the key"), "{text}");
+
+    let mut out = Vec::new();
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let nowhere = format!("http://{}", closed.local_addr()?);
+    drop(closed);
+    let code = run_async(
+        &mut out,
+        &w.data,
+        &nowhere,
+        Action::List { json: false },
+        &mut |_| false,
+    )
+    .await;
+    assert_eq!(code, 2);
+    assert!(String::from_utf8_lossy(&out).contains("cannot reach"));
+    Ok(())
+}
