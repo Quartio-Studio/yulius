@@ -5,7 +5,9 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from zig_install import install
+from types import SimpleNamespace
+from unittest import mock
+from zig_install import install, unpack
 
 VERSION = "0.17.0"
 NAME = f"zig-x86_64-linux-{VERSION}"
@@ -83,6 +85,13 @@ class Install(unittest.TestCase):
         pins = {"version": VERSION, "aarch64-linux": "0" * 64}
         with self.assertRaises(SystemExit):
             self.run_install(Opener(self.body), machine="ARM64", pins=pins)
+
+    def test_without_the_data_filter_tar_unpacks(self):
+        tarball = self.root / "zig.tar.xz"
+        tarball.write_bytes(self.body)
+        with mock.patch("zig_install.tarfile", SimpleNamespace(open=tarfile.open)):
+            unpack(tarball, self.root / "out")
+        self.assertTrue((self.root / "out" / NAME / "zig").exists())
 
 
 if __name__ == "__main__":

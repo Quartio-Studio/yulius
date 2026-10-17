@@ -772,6 +772,7 @@ open(stopped, "w").write("stopped")
     /// Review of SPEC-187 (high): the engine can write its control directory (any container
     /// may bind it), while the holder sees the whole host. A link planted at the control socket
     /// must never lead the holder to another socket of the host.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_link_at_the_control_socket_is_never_followed() -> io::Result<()> {
         let f = Fixture::new()?;

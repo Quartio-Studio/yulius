@@ -59,8 +59,8 @@ namespaces and containment stay Linux-only, as before #620.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -74,8 +74,9 @@ namespaces and containment stay Linux-only, as before #620.
 
 - Regression: the `macos` gate stage itself, run on the parent commit's crates (fails) and on the
   fix (passes).
-- Unit: `scripts/test_zig_macos.py` (flags dropped and kept, roles), xtask `macos_env` (zig
-  wrappers off a Mac, nothing on a Mac).
+- Unit: `scripts/test_zig_macos.py` (flags dropped and kept, roles), `scripts/test_zig_install.py`
+  (a wrong digest leaves nothing, reuse, a stale folder, an unpinned architecture skipped, the
+  `tar` fallback), xtask `macos_env` (zig wrappers off a Mac, nothing on a Mac).
 - Full gate: `scripts/dev ci`.
 - Not testable here: linking and running on a real Mac (no Apple SDK on Linux); the check stops at
   type-checking, which is where every reported failure was.
@@ -102,3 +103,11 @@ namespaces and containment stay Linux-only, as before #620.
   `bootstrap.py:23`'s rustup installer).
 - `scripts/dev ci` (doctor, check with 90 Python tests, lint, macos, test, deps, docs): exit 0;
   nextest 2131 passed, 18 skipped.
+- Independent review, round 1 (fresh session, `4e4ce7c2..b0ab8f8a`): APPROVE with three minors
+  and five nits, all own code, all answered in this change: bootstrap's zig install moved to
+  `scripts/zig_install.py` with tests (committed failing first), which unpacks with `tar` where
+  Python lacks the `data` filter (before 3.11.4) or lzma, skips an unpinned Linux architecture
+  instead of exiting, and replaces a cached folder that lost its zig; doctor also checks the
+  wrappers and the installed target; the control socket's link test is Linux-only; ADR-0169's
+  consequences name the toolchain-file download and ziglang.org (mirrors left as is: one
+  download per home).

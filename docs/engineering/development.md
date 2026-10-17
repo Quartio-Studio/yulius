@@ -18,7 +18,8 @@ scripts/dev ci
 The compiler/components are pinned in `rust-toolchain.toml`. Exact Cargo tool
 versions are in `.config/tools.toml`, with the zig release (version and SHA-256 per Linux host)
 that compiles dependencies' vendored C for the macOS check; on Linux bootstrap downloads it once
-per home cache and links `.tools/bin/zig`, `macos-cc` and `macos-ar` (`scripts/zig_macos.py`).
+per home cache (`scripts/zig_install.py`, verified before it is unpacked) and links
+`.tools/bin/zig`, `macos-cc` and `macos-ar` (`scripts/zig_macos.py`); doctor checks them.
 Bootstrap installs tools from locked crates.io
 packages into ignored `.tools/`, skips matching installed versions and can be rerun
 after failure. It does not change `rustup default`. `--install-rustup` installs rustup
