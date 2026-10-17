@@ -19,6 +19,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Its clone, sessions, transcripts and export stay, as one item
   only the superadmin deletes. Settings → Instance → Leftovers and `yulius leftovers list|delete`
   list and delete them by hand.
+- An answered secret request ends the task's "Needs your action" (SPEC-213, task #200, fixes #633).
+  An agent waiting for a person to allow a `.env` copy, a CD secret or a secret's hosts flagged its
+  task, and the flag outlived the answer: the task read "Needs your action", with "The agent needs
+  your attention" over its terminal, while its agent worked on for minutes, until the turn ended.
+  Allowing or dismissing the last request a task waits for, or deleting the secret, now makes it
+  Working at once; a task with another request waiting, or flagged by something else, keeps its
+  flag.
 - Agents create agent secrets from a file without seeing them (SPEC-211, ADR-0167, task #198). A
   Superagent that had to store an SSH key sitting in `~/.ssh` asked the person to `cat` it in their
   own terminal and paste it into the Secrets page. The new tool `secret_create_from_file`, for
