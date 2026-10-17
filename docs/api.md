@@ -1401,7 +1401,10 @@ the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","ro
 open in the editor, only to people with write access to that sandbox; SPEC-127),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
-it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`,
+it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updated","sandbox_id"|null}`
+(an agent asked for an agent secret's hosts or a `.env` copy; to the secret's sandbox's viewers, or
+everyone for a secret of every sandbox, `null`; open Secrets pages read
+`GET /api/sandboxes/{sid}/agent-secrets` again; SPEC-209), `{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
 which resyncs; SPEC-191).

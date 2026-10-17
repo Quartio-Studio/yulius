@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- An agent's secret request shows on an open Secrets page at once (SPEC-209, task #196, fixes
+  #631). When an agent or a Superagent asked for a secret's hosts or a `.env` copy, the Agent
+  secrets page already open showed no request and no Allow until it was reloaded: nothing told
+  the browser. The request now publishes `secrets.updated` for the secret's sandbox (every
+  sandbox for a secret of every sandbox), and the page reads its list again on it and after a
+  reconnect, keeping what it shows meanwhile.
 - Removing a sandbox stops everything of it (SPEC-206, task #193, fixes #624). It stopped only the
   tasks: the sandbox's Superagents and terminals went on running (a person watching one saw it keep
   working), a CI run in progress ran to its end and published its status, the browser waited for
