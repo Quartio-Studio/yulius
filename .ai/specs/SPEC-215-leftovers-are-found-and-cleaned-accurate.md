@@ -250,7 +250,7 @@ Reviewed head `a1ac1831` (task branch `feat/202-leftovers-are-found-and-cleaned-
     and `an_existing_task_keeps_its_run_directories` failed before their fixes.
   - Review round 2: `leftovers::tests::the_removal_never_goes_through_a_link_on_the_way`
     (yulius-app) fails with `O_NOFOLLOW` removed.
-- **Leftovers suite:** 16 integration tests in `crates/yulius/tests/leftovers.rs` (#625, #582,
+- **Leftovers suite:** 15 integration tests in `crates/yulius/tests/leftovers.rs` (#625, #582,
   partly cleaned, blocked by a CI run or a live holder, the re-check at deletion, instance
   leftovers, the API, the schedule, the CLI, the loopback key, links, Git records, run
   directories, CI checkouts, a cache whose task works again), 2 yulius-app unit tests, 4 new
