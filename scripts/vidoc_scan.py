@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Security scan (SPEC-195): Vidoc's `vidoc-1` reviews the code and the scan fails on open critical
-or high findings.
+"""Security scan (SPEC-195, SPEC-217): Vidoc's `vidoc-1` reviews the code. The scan fails on open
+critical or high findings anywhere in a scanned file and on open medium findings in the change.
 
 Two modes, both reading commits (`HEAD`'s tree and its `.config/vidoc.toml`), never the working
 tree:
@@ -9,12 +9,18 @@ tree:
   integration branch (`--base`, else `origin/HEAD`) and `HEAD`;
 - broad scan (`--all`): every file tracked in `HEAD`.
 
+A finding is in the change when its line is within 3 lines of a line the branch added or modified
+(`git diff -U0`), or, without a line, when its file is new; the broad scan's findings are all in
+the change. Low findings in the change are for the agent to decide (fix, or say why not); medium
+and low findings outside the change are listed with a fingerprint, and with `--ci` also printed as
+`::yulius-finding <json>` lines, from which Yulius CI files each as a GitHub issue once.
+
 Files are sent in line-numbered chunks to `POST /v1/messages` of `VIDOC_API_URL` (default
 https://model.vidocsecurity.com) with the key `VIDOC_API_KEY` in `x-api-key`; in Yulius sessions
 and CI jobs the key is a placeholder that the egress proxy replaces. The code goes to Vidoc.
 
 Exit codes: 0 passed (or disabled by `enabled = false`, which it says), 1 failed (an open critical
-or high finding, an unreadable answer, a refused request), 2 not run (no key, the key refused,
+or high finding, an open medium finding in the change, an unreadable answer, a refused request), 2 not run (no key, the key refused,
 Vidoc unreachable or out of quota, no base, a malformed config, an incomplete scan). With `--ci`
 it scans pull request heads only (`YULIUS_CI_REF=pr/<n>`) and turns "not run" into
 `$YULIUS_CI_SKIP_CODE` (ADR-0133).
@@ -26,6 +32,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import fnmatch
+import hashlib
 import http.client
 import json
 import os
@@ -65,6 +72,12 @@ FILE_MARK = "<<<FILE"
 END_MARK = "<<<END FILE"
 SEVERITIES = ("critical", "high", "medium", "low")
 FAILING = {"critical", "high"}
+# Fails the scan in the change only (SPEC-217 VSP-002).
+FAILING_IN_CHANGE = {"medium"}
+# How far from a changed line a finding still belongs to the change: the model's line is
+# approximate.
+NEAR_LINES = 3
+FINDING_MARK = "::yulius-finding"
 SYNONYMS = {"info": "low", "informational": "low", "note": "low", "moderate": "medium",
             "severe": "high"}
 BUILT_DIRS = {"vendor", "node_modules", "third_party", "dist", "build", "target", "__pycache__"}
@@ -157,13 +170,20 @@ class Finding:
     title: str
     detail: str
     ignored: object = None
+    scope: str = "change"
+    fingerprint: str = ""
 
     def where(self):
         return f"{self.file}:{self.line}" if self.line else self.file
 
+    def fails(self):
+        return not self.ignored and (self.severity in FAILING or (
+            self.severity in FAILING_IN_CHANGE and self.scope == "change"))
+
     def as_json(self):
         out = {"severity": self.severity, "file": self.file, "line": self.line,
-               "title": self.title, "detail": self.detail}
+               "title": self.title, "detail": self.detail, "scope": self.scope,
+               "fingerprint": self.fingerprint}
         if self.ignored:
             out["ignored"] = self.ignored
         return out
@@ -294,13 +314,64 @@ def base_ref(git, given, env):
     return head.strip().removeprefix("refs/remotes/")
 
 
-def changed_paths(git, base):
+def merge_base_of(git, base):
     merge_base = git.text("merge-base", "HEAD", base, check=False)
     if not merge_base or not merge_base.strip():
         raise Usage(f"HEAD has no merge base with {base}: fetch it (no shallow clone)")
+    return merge_base.strip()
+
+
+def changed_paths(git, merge_base):
     out = git.text("diff", "--name-only", "-z", "--no-renames", "--diff-filter=d",
-                   f"{merge_base.strip()}..HEAD")
+                   f"{merge_base}..HEAD")
     return sorted(p for p in out.split("\0") if p)
+
+
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+
+
+@dataclass
+class Changes:
+    """The lines `HEAD` added or modified since the merge base, per file (`ranges` of first and
+    last line; a pure deletion is the line it follows), and the files that are new."""
+    ranges: dict = field(default_factory=dict)
+    new: set = field(default_factory=set)
+
+
+def changed_lines(git, merge_base, paths):
+    changes = Changes()
+    for path in paths:
+        diff = git.text("--literal-pathspecs", "diff", "-U0", "--no-renames", "--no-color",
+                        "--no-ext-diff", "--no-textconv", merge_base, "HEAD", "--", path)
+        head = diff.split("\n@@", 1)[0]
+        if re.search(r"^new file mode ", head, re.MULTILINE):
+            changes.new.add(path)
+        ranges = []
+        for match in HUNK.finditer(diff):
+            start, count = int(match.group(1)), int(match.group(2) or 1)
+            ranges.append((start, start + max(count, 1) - 1))
+        changes.ranges[path] = ranges
+    return changes
+
+
+def classify(finding, changes, lines):
+    """Sets the finding's fingerprint (SHA-256 of its path and its line's text, whitespace
+    collapsed, else its title) and its scope: `change` or `outside`; with no `changes` (the broad
+    scan) every finding is in the change."""
+    text = ""
+    file_lines = lines.get(finding.file) or []
+    if finding.line and 1 <= finding.line <= len(file_lines):
+        text = " ".join(file_lines[finding.line - 1].split())
+    basis = f"line:{text}" if text else "title:" + " ".join(finding.title.lower().split())
+    finding.fingerprint = hashlib.sha256(f"{finding.file}\n{basis}".encode()).hexdigest()[:16]
+    if changes is None or finding.file in changes.new:
+        finding.scope = "change"
+    elif finding.line is None:
+        finding.scope = "outside"
+    else:
+        near = any(first - NEAR_LINES <= finding.line <= last + NEAR_LINES
+                   for first, last in changes.ranges.get(finding.file, []))
+        finding.scope = "change" if near else "outside"
 
 
 def all_paths(git):
@@ -548,10 +619,11 @@ class Outcome:
     failed: object = None
 
 
-def scan_chunks(client, chunks, jobs, deadline, label, out, config):
+def scan_chunks(client, chunks, jobs, deadline, label, out, config, judge):
     """Reviews every chunk, `jobs` at a time, until the deadline or a stop (refusal, outage,
-    failure); what was not reviewed is listed as unscanned. An open critical or high finding is
-    printed as soon as it arrives, so a scan killed later still shows it."""
+    failure); what was not reviewed is listed as unscanned. `judge(finding)` sets its scope and
+    fingerprint. A finding that fails the scan is printed as soon as it arrives, so a scan killed
+    later still shows it."""
     outcome, lock, stop = Outcome(), threading.Lock(), threading.Event()
     done = [0]
 
@@ -577,9 +649,11 @@ def scan_chunks(client, chunks, jobs, deadline, label, out, config):
                 outcome.unscanned.extend(p.path for p in chunk.parts)
             return
         apply_ignores(findings, config)
+        for finding in findings:
+            judge(finding)
         with lock:
             for finding in findings:
-                if finding.severity in FAILING and not finding.ignored:
+                if finding.fails():
                     print(f"  found [{finding.severity}] {finding.where()} {finding.title}",
                           file=out, flush=True)
             outcome.findings.extend(findings)
@@ -601,8 +675,9 @@ def apply_ignores(findings, config):
                 break
 
 
-def print_finding(finding, out):
-    print(f"  [{finding.severity}] {finding.where()} {finding.title}", file=out)
+def print_finding(finding, out, fingerprint=False):
+    mark = f" (fingerprint {finding.fingerprint})" if fingerprint else ""
+    print(f"  [{finding.severity}] {finding.where()} {finding.title}{mark}", file=out)
     if finding.detail:
         print(f"      {finding.detail[:600]}", file=out)
 
@@ -636,11 +711,13 @@ def run(args, env, root, sleep, out):
     key, api = settings(env)
     mode = "broad" if args.all else "change"
     head = git.text("rev-parse", "--short", "HEAD").strip()
+    merge_base = None
     if args.all:
         paths, scope = all_paths(git), f"every file tracked at {head}"
     else:
         base = base_ref(git, args.base, env)
-        paths, scope = changed_paths(git, base), f"the files changed since {base} at {head}"
+        merge_base = merge_base_of(git, base)
+        paths, scope = changed_paths(git, merge_base), f"the files changed since {base} at {head}"
     blobs = git.blobs(paths)
     skipped, files = [], []
     for path in paths:
@@ -670,24 +747,43 @@ def run(args, env, root, sleep, out):
         print(f"Vidoc: nothing to scan: none of the {len(paths)} file(s) is one Vidoc reviews.", file=out)
         write_report(args.report, mode, [], skipped, [])
         return NOTHING_CHECKED
+    changes = changed_lines(git, merge_base, [p for p, _ in files]) if merge_base else None
+    lines = {path: split_lines(text) for path, text in files}
     deadline = time.monotonic() + 60 * (args.deadline_minutes or DEADLINE_MINUTES[mode])
     label = f"Repository {Path(toplevel.strip()).name}, {mode} scan at {head}."
-    outcome = scan_chunks(Client(api, key, sleep), chunks, args.jobs, deadline, label, out, config)
+    outcome = scan_chunks(Client(api, key, sleep), chunks, args.jobs, deadline, label, out, config,
+                          lambda finding: classify(finding, changes, lines))
     unscanned = sorted(set(outcome.unscanned) | set(unsent))
     order = {s: i for i, s in enumerate(SEVERITIES)}
     outcome.findings.sort(key=lambda f: (order[f.severity], f.file, f.line or 0))
     write_report(args.report, mode, outcome.findings, skipped, unscanned)
-    open_failing = [f for f in outcome.findings if f.severity in FAILING and not f.ignored]
-    others = [f for f in outcome.findings if f.severity not in FAILING and not f.ignored]
+    open_failing = [f for f in outcome.findings if f.fails()]
+    passing = [f for f in outcome.findings if not f.ignored and not f.fails()]
+    decide = [f for f in passing if f.scope == "change"]
+    outside = [f for f in passing if f.scope == "outside"]
     ignored = [f for f in outcome.findings if f.ignored]
     if open_failing:
-        print(f"Vidoc found {len(open_failing)} open critical or high finding(s):", file=out)
+        print(f"Vidoc found {len(open_failing)} open finding(s) that fail the scan (critical or "
+              "high anywhere, medium in the change):", file=out)
         for finding in open_failing:
             print_finding(finding, out)
-    if others:
-        print(f"Vidoc found {len(others)} medium or low finding(s) (they do not fail the scan):", file=out)
-        for finding in others:
+    if decide:
+        print(f"Vidoc found {len(decide)} low finding(s) in this change, for you to decide: fix "
+              "each test-first, or say in the spec's Evidence why not (they do not fail the scan):",
+              file=out)
+        for finding in decide:
             print_finding(finding, out)
+    if outside:
+        print(f"Vidoc found {len(outside)} medium or low finding(s) outside this change (code the "
+              "branch did not touch; they do not fail the scan). Yulius CI files each as a GitHub "
+              "issue once:", file=out)
+        for finding in outside:
+            print_finding(finding, out, fingerprint=True)
+        if args.ci:
+            for finding in outside:
+                record = {k: v for k, v in finding.as_json().items()
+                          if k in ("severity", "file", "line", "title", "detail", "fingerprint")}
+                print(f"{FINDING_MARK} {json.dumps(record, ensure_ascii=True)}", file=out)
     for finding in ignored:
         print(f"  ignored [{finding.severity}] {finding.where()} {finding.title}: {finding.ignored}",
               file=out)
@@ -703,7 +799,8 @@ def run(args, env, root, sleep, out):
     if unscanned:
         raise Usage("the scan is incomplete (budget or deadline reached; --max-bytes and "
                     "--deadline-minutes raise them)")
-    print(f"Vidoc: no open critical or high finding in the {mode} scan.", file=out)
+    print(f"Vidoc: no open critical or high finding, and no open medium one in the change, in "
+          f"the {mode} scan.", file=out)
     return 0
 
 

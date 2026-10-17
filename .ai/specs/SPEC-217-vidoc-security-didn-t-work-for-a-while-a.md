@@ -75,8 +75,9 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 - **VSP-004. Findings outside the change become issues.** Medium and low findings outside the
   change are printed under "outside this change". They do not fail the scan, and Yulius CI files
   them as issues. Each one has a fingerprint: the first 16 hex characters of SHA-256 over the
-  path, the severity and the finding's line with its whitespace collapsed (the title when there is
-  no line). Old code that shifts keeps its fingerprint. In `--ci` mode, each such finding is also
+  path and the text of the finding's line with its whitespace collapsed (the lowercased title when
+  there is no line or it is blank). Old code that shifts keeps its fingerprint, and so does a
+  finding whose severity or title the model words differently on another run. In `--ci` mode, each such finding is also
   printed as one line, `::yulius-finding <json>`, with `severity`, `file`, `line`, `title`,
   `detail` and `fingerprint`.
 - **VSP-005.** The JSON report (`--report`) gives each finding `scope` (`change` or `outside`) and
