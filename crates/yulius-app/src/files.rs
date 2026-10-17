@@ -374,14 +374,33 @@ impl App {
             (None, None) => None,
         };
         let destination = existing.unwrap_or(file);
+        // A new file at an unpredictable name: an entry an agent planted there (a link out of
+        // the folder) is never opened, so the save cannot write through it (#655).
+        let suffix: String = self.deps.crypto.random_bytes()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let temporary = destination.with_file_name(format!(
-            ".{}.yulius-edit",
+            ".{}.yulius-edit-{suffix}",
             destination
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
         ));
-        std::fs::write(&temporary, req.content.as_bytes()).map_err(|e| io_error(&e))?;
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .and_then(|mut handle| {
+                std::io::Write::write_all(&mut handle, req.content.as_bytes())?;
+                handle.sync_all()
+            });
+        if let Err(err) = written {
+            if err.kind() != std::io::ErrorKind::AlreadyExists {
+                let _ = std::fs::remove_file(&temporary);
+            }
+            return Err(io_error(&err));
+        }
         if let Some(permissions) = mode {
             let _ = std::fs::set_permissions(&temporary, permissions);
         }
