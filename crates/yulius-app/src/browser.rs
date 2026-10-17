@@ -146,12 +146,9 @@ impl App {
         Ok(session)
     }
 
-    /// Whether `sandbox` was removed (or cannot be read: nothing starts for it then).
+    /// Whether `sandbox` reads as removed ([`reads_removed`]).
     pub(crate) async fn sandbox_removed(&self, sandbox: &SandboxId) -> bool {
-        !matches!(
-            self.deps.store.sandbox(sandbox).await,
-            Ok(Some(record)) if record.removed_at.is_none()
-        )
+        reads_removed(&self.deps.store.sandbox(sandbox).await)
     }
 
     async fn agent_browser(&self, ctx: &AgentContext) -> AppResult<Arc<dyn BrowserSession>> {
@@ -377,9 +374,29 @@ impl App {
     }
 }
 
+/// Whether a read of a sandbox says it was removed (or is unknown). A failed read says nothing:
+/// a store error never stops a live sandbox's browser or ends its shell (SPEC-206).
+fn reads_removed(read: &AppResult<Option<crate::model::SandboxRecord>>) -> bool {
+    match read {
+        Ok(Some(record)) => record.removed_at.is_some(),
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-206 (review of #193, round 2): only a positive read means removed; a store error
+    /// never stops a live sandbox's browser or ends its shell.
+    #[test]
+    fn only_a_read_that_says_so_means_removed() {
+        assert!(!reads_removed(&Err(AppError::Internal(
+            "database is locked".into()
+        ))));
+        assert!(reads_removed(&Ok(None)), "unknown: nothing runs for it");
+    }
 
     #[test]
     fn percent_encoding_keeps_only_unreserved_characters() {

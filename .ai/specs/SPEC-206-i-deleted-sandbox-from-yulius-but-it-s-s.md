@@ -1,11 +1,11 @@
 ---
 yulius-task: de8d2402-4860-4b4f-8147-77e7f1136a6f
-status: in-progress
+status: done
 ---
 
 # SPEC-206: Removing a sandbox stops everything Yulius runs for it
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #193
 Scope authorization: task #193 (requested by MrFishPL): "i deleted sandbox from yulius but it's
@@ -72,7 +72,7 @@ removed sandbox's worktrees are never purged (pre-existing, reported separately)
 - [x] A removed sandbox's Superagents, terminals and browser end
 - [x] A removed sandbox's CI runs are cancelled
 - [x] A removed sandbox's holder and leftover processes stop
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -159,5 +159,12 @@ removed sandbox's worktrees are never purged (pre-existing, reported separately)
 - Not run here: the opt-in host isolation suite (`YULIUS_ISOLATION_TEST=1`: a real `bwrap`
   holder and Docker engine as the service user), so the retired holder's stop was tested with a
   stand-in holder, not a real engine.
+- Independent review (fresh session, om-code-review): round 1 requested changes (holder stopped
+  under runs still ending; starts under way at the removal; CD; Evidence; two nits), all fixed
+  test-first; round 2 approved 505b970e with three small findings: a store read error read as
+  "removed" (fixed test-first, `only_a_read_that_says_so_means_removed`), the PRJ-009 and changes
+  wording (fixed), and that the Superagent in-flight test cannot force the removal's background
+  snapshot to run before the start registers (kept: it cannot fail spuriously, and the end has no
+  completion signal worth adding for a test).
 - Issues: #624 (this defect), #625 (pre-existing: removed sandboxes' worktrees are never purged),
   #626 (pre-existing: unauthenticated DevTools endpoint).

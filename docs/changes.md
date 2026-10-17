@@ -12,8 +12,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   its 30-minute idle stop, and the holder, with its Docker engine and any container or process an
   agent left, stayed up for good and was adopted again after a restart. The removal now cancels the
   sandbox's CI runs, ends its shells and browser (also one whose start was under way), and
-  retires its holder: nothing new is prepared for it, and a minute later, once its runs ended, the
-  holder stops with its engine and containers. A CD deploy already running finishes. Nothing
+  retires its holder: nothing new is prepared for it, and a minute later, once no run holds a
+  lease, the holder stops with its engine and containers. A CD deploy already running finishes. Nothing
   armed in a removed sandbox is merged (already true, now tested).
 - Secrets can be imported from the CLI (SPEC-205, ADR-0163, task #192). `yulius secrets import
   --to team|agent [FILE|-]` reads a dotenv file, stdin or hidden prompts and creates team secrets
