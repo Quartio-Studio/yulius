@@ -15,6 +15,7 @@
 //!   is what it shows and asks ([`TerminalUi`] with progress bars, [`PlainUi`] for pipes).
 
 mod device;
+mod dotenv;
 mod git;
 mod hash;
 mod http;
@@ -32,6 +33,7 @@ mod ui;
 mod upload;
 
 pub use device::{DeviceError, DeviceLoginOptions, MAX_DEVICE_WAIT, device_login};
+pub use dotenv::{DotenvEntry, DotenvError, MAX_DOTENV_BYTES, MAX_DOTENV_ENTRIES, parse_dotenv};
 pub use git::{
     GitHubRemote, RepoError, RepoInfo, UnpublishedRef, create_bundle, create_full_bundle,
     discover_playground_checkout, discover_repo, parse_github_remote, unpublished_refs,
