@@ -351,3 +351,13 @@ reason = "owner/name are GitHub's own names (letters, digits, '.', '-', '_'), ch
 path = "crates/yulius-github/src/fake/mod.rs"
 title = "credentials"
 reason = "the in-process fake GitHub for tests (feature fake); its constants are synthetic"
+
+[[ignore]]
+path = "crates/yulius-app/src/files.rs"
+title = "TOCTOU between symlink/permission checks"
+reason = "real and pre-existing: the write side of the editor's path checks (a parent swapped for a link between the check and the rename) is tracked in #657 (task #206); remove this entry with its fix"
+
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Vidoc API key granted to CI jobs"
+reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, which the egress proxy replaces toward model.vidocsecurity.com alone (ADR-0116, VDK-005): a job can spend the key's quota at Vidoc but never read or send the key elsewhere"
