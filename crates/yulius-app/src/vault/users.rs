@@ -114,12 +114,13 @@ impl App {
     }
 
     /// Flags a running task for its secret request, unless it reads flagged already, and marks
-    /// the flag as its own only when its own write raised it: a compare-and-set from the state it
-    /// read, marked before the write so that a flag raised by anything else meanwhile clears the
-    /// mark after its own write (SPEC-213 SRA-003, review round 2).
+    /// the flag as its own. Under the task's attention lock, so no other flag, request or answer
+    /// interleaves; the write is a compare-and-set from the state it read, as a Stop does not
+    /// take the lock (SPEC-213 SRA-003, review rounds 2 and 3).
     async fn raise_secret_flag(&self, task_id: &TaskId) -> AppResult<()> {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
+        let _held = runtime.attention_lock.lock().await;
         for _ in 0..RAISE_TRIES {
             let (Some(task), Some(times)) =
                 (store.task(task_id).await?, store.task_times(task_id).await?)
@@ -131,27 +132,28 @@ impl App {
                 return Ok(());
             }
             let now = self.now();
-            runtime.secret_wait_at.store(now.0, Ordering::SeqCst);
             let from = (task.activity, times.state_at);
             if store
                 .set_activity_from(task_id, from, Some(Activity::NeedsAttention), now)
                 .await?
             {
+                runtime.secret_wait_at.store(now.0, Ordering::SeqCst);
                 self.publish_task(task_id).await;
                 return Ok(());
             }
-            let _ = runtime.secret_wait_at.compare_exchange(
-                now.0,
-                0,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
         }
         // The task kept changing: flagged all the same, not as the request's (it ends at the
         // turn's end, as before SPEC-213).
-        if let Some(task) = store.task(task_id).await? {
-            self.set_task_activity(&task, Activity::NeedsAttention)
+        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        if store
+            .task(task_id)
+            .await?
+            .is_some_and(|t| t.status == TaskStatus::Running)
+        {
+            store
+                .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
                 .await?;
+            self.publish_task(task_id).await;
         }
         Ok(())
     }
@@ -185,6 +187,7 @@ impl App {
         let Some(runtime) = self.existing_runtime(&task.id) else {
             return Ok(());
         };
+        let held = runtime.attention_lock.lock().await;
         let flagged = runtime.secret_wait_at.load(Ordering::SeqCst);
         if flagged == 0 || self.secret_waits_for(task).await? {
             return Ok(());
@@ -200,15 +203,12 @@ impl App {
         {
             return Ok(());
         }
-        // Only its mark: one the agent's next request set since stays.
-        let _ =
-            runtime
-                .secret_wait_at
-                .compare_exchange(flagged, 0, Ordering::SeqCst, Ordering::SeqCst);
+        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        drop(held);
         tracing::info!(task = %task.id, "its secret requests are answered: the task works on");
         self.publish_task(&task.id).await;
-        // The agent asked again while this looked: that request was written before it saw the
-        // flag, so it shows here, and flags the task anew.
+        // The agent asked again while this looked (its request is written before it flags, which
+        // waited for the lock and found the task flagged): it shows here, and flags the task anew.
         if self.secret_waits_for(task).await? {
             self.raise_secret_flag(&task.id).await?;
         }

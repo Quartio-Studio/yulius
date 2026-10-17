@@ -277,31 +277,42 @@ impl App {
         task: &TaskRecord,
         activity: Activity,
     ) -> AppResult<()> {
-        // A flag raised for anything else, even over one already set, is no secret request's
-        // to end (SPEC-213 SRA-003): its mark goes, also after this write, so a secret request
-        // flagging meanwhile does not take this flag for its own.
-        let forget_secret_wait = || {
-            if activity == Activity::NeedsAttention {
-                self.runtime(&task.id)
-                    .secret_wait_at
-                    .store(0, Ordering::SeqCst);
-            }
-        };
-        forget_secret_wait();
+        if activity == Activity::NeedsAttention {
+            return self.flag_needs_attention(&task.id).await;
+        }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
         }
-        if activity != Activity::NeedsAttention {
-            self.runtime(&task.id)
-                .notice_attention_ms
-                .store(0, Ordering::SeqCst);
-        }
+        self.runtime(&task.id)
+            .notice_attention_ms
+            .store(0, Ordering::SeqCst);
         self.deps
             .store
             .set_activity(&task.id, Some(activity), self.now())
             .await?;
-        forget_secret_wait();
         self.publish_task(&task.id).await;
+        Ok(())
+    }
+
+    /// Flags a running task as needing a person, for anything but a secret request: a flag
+    /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
+    /// the task's attention lock, from the task as it is now, so that a secret request's answer
+    /// ending its flag at the same moment cannot swallow this one.
+    async fn flag_needs_attention(&self, task_id: &yulius_domain::ids::TaskId) -> AppResult<()> {
+        let runtime = self.runtime(task_id);
+        let _held = runtime.attention_lock.lock().await;
+        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        let Some(task) = self.deps.store.task(task_id).await? else {
+            return Ok(());
+        };
+        if task.status != TaskStatus::Running || task.activity == Some(Activity::NeedsAttention) {
+            return Ok(());
+        }
+        self.deps
+            .store
+            .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
+            .await?;
+        self.publish_task(task_id).await;
         Ok(())
     }
 

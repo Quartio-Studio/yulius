@@ -96,24 +96,29 @@ and it leaves the sidebar's Needs you list.
 - **Which flag is the secret wait's: the runtime remembers it.** `flag_secret_wait` records, in
   the task's runtime, the `state_at` its flag got, only when it raised the flag itself (the task
   was not already `needs_attention`). Any other request for `needs_attention` forgets it, even
-  when the task already reads flagged (which moves no `state_at`): `set_task_activity` and the
-  browser request clear the mark first (review round 1). An answer clears only a flag still
-  marked, so one raised by another cause stays (SRA-003). The runtime is memory: after
+  when the task already reads flagged (which moves no `state_at`): `set_task_activity`, which the
+  browser request now goes through too, clears the mark (review round 1). An answer clears only a
+  flag still marked, so one raised by another cause stays (SRA-003). The runtime is memory: after
   a Yulius restart the flag ends at the turn's Stop, as before this fix. A stored column would
   survive restarts but costs a migration for a few minutes of a banner; not worth it.
-- **The write is a compare-and-set on the state it saw.** `set_activity_from` changes the
-  activity only while the task still reads `needs_attention` from the marked `state_at`, so a
-  Stop that settled the task meanwhile is never overwritten (it would read Working until a person
-  typed). An agent asking again while the answer is handled wrote its request before it read the
-  flag, so the check after the write sees it and flags the task again: at worst a moment of
-  Working, never a lost flag (review round 1).
-- **The request marks only a flag its own write raised.** It flags with the same
-  compare-and-set, from the state it read, and sets its mark (the state time it writes) before the
-  write; every other cause clears the mark after its own write too, and the answer releases only
-  its mark (`compare_exchange`). So a flag another cause raises in the same moment is never taken
-  for the request's (review round 2). A task whose state keeps changing under three tries is
-  flagged unmarked: that flag ends at the turn's end, as before. These interleavings are argued
-  here and in the code, not tested: reproducing them needs probes inside the store calls.
+- **One lock per task orders every flag, mark and answer.** The task's runtime holds an async
+  `attention_lock`. Raising `needs_attention` for any cause (`set_task_activity`), raising and
+  marking a secret request's flag, and ending it at an answer each hold it from their read to
+  their write, and read the task as it is then (not the record the caller had). So two requests
+  of one task never wipe each other's mark, and a question raised while an answer is handled
+  either comes first (the answer finds no mark) or after (it flags the task the answer just made
+  Working) (review rounds 2 and 3). A per-task lock, not a global one: tasks never wait on each
+  other, and no code holding it takes another.
+- **The writes are compare-and-sets on the state they read.** The Stop and the agent's work do
+  not take the lock, so `set_activity_from` changes the activity only while the task still reads
+  what was read: a Stop that settled the task meanwhile is never overwritten (it would read
+  Working until a person typed). A request whose task keeps changing under three tries is flagged
+  unmarked: that flag ends at the turn's end, as before.
+- **A request written while the answer is handled flags the task again.** The agent writes its
+  request before it flags (which waits for the lock and finds the task flagged), so the check
+  after the answer's write sees it and flags anew: at worst a moment of Working, no lost flag.
+- These interleavings are argued here and in the code, not tested: reproducing them needs probes
+  inside the store calls; the sequential cases they protect are tested.
 - No ADR: this restores the documented meaning of the flag (SPEC-129: the task is flagged while it
   waits for a person) and changes no contract.
 
@@ -126,9 +131,9 @@ and it leaves the sidebar's Needs you list.
   `agents_request_hosts_and_people_allow_them` and `deleting_the_asked_secret_ends_the_flag` read
   `NeedsAttention` where `Working` is due; `a_flag_raised_after_the_request_outlives_its_answer`
   read `Working` where the agent's later question must keep `NeedsAttention`.
-- After the fix: `cargo nextest run -p yulius -p yulius-store` over `secrets_env::`, `secrets::`,
-  `browser::`, `agent_hooks::`, `cd::`, `context_full::`, `task_done::` and the store crate: 189
-  passed.
+- After the fix: `cargo nextest run -p yulius -p yulius-store -p yulius-app` over `secrets_env::`,
+  `secrets::`, `browser::`, `agent_hooks::`, `cd::`, `context_full::`, `task_done::`,
+  `first_message::`, `delivery::`, `stages::` and the store and app crates: 531 passed.
 - `scripts/dev ci` on 0d9fd70e: exit 0, 2134 tests passed, 18 skipped; deny: advisories, bans,
   licenses, sources ok.
 - `scripts/dev security` on 0d9fd70e: exit 0, no critical or high finding. The medium and low
@@ -136,6 +141,7 @@ and it leaves the sidebar's Needs you list.
   are tracked for triage in #639.
 - Independent review in fresh sessions: round 1 requested changes (one major: a later flag of
   another cause was cleared; four minors), all fixed test-first; round 2 approved with one minor
-  race, fixed in 0d9fd70e (Decisions); the final round reviews the delivered head.
+  race, fixed in 0d9fd70e; round 3 approved with two minor races, fixed with the per-task lock
+  (Decisions); the delivered head is reviewed again.
 - Not testable here: the live UI banner itself (the tests read the task's activity, which the
   banner and the Needs you list render from), and the interleavings argued under Decisions.
