@@ -14,7 +14,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   sandbox's CI runs, ends its shells and browser, and retires its holder, which stops with every
   process in it once the runs ended. Nothing armed in a removed sandbox is merged (already true,
   now tested).
-
 - The Secrets page offers the production allowance only where it can be given (SPEC-204, task
   #191, fixes #621). A secret agents use, through its hosts or `.env` copies, showed a warning
   badge and an "Allow for production deploys" button. The server always refused that button,
