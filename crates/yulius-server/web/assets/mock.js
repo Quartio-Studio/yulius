@@ -3723,6 +3723,11 @@ async function handleFetch(db, url, init = {}) {
     const asked = new URL(url, ORIGIN).pathname;
     db.asked = db.asked || {};
     db.asked[asked] = (db.asked[asked] || 0) + 1;
+  } else {
+    // `sent` counts the other requests by method and path (SPEC-209: nothing sent while settling).
+    const sent = `${init.method} ${new URL(url, ORIGIN).pathname}`;
+    db.sent = db.sent || {};
+    db.sent[sent] = (db.sent[sent] || 0) + 1;
   }
   if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
   // The Editor's file reads, as asked, and whether a save of a file was on its way (SPEC-181).

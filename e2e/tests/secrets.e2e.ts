@@ -242,7 +242,7 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(dialog.getByText('More options')).toBeHidden();
 });
 
-type Asking = { __yuliusMock: { askHosts(name: string, hosts: string[], by: string, announce?: boolean): void; announceSecrets(sandboxId: string | null): void; goOffline(): void; goOnline(): void; request(method: string, path: string, body?: object): Promise<number>; asked: Record<string, number>; heldWaiting: number; release(): void }; pageKept?: boolean; firstAllowDisabled?: boolean | null };
+type Asking = { __yuliusMock: { askHosts(name: string, hosts: string[], by: string, announce?: boolean): void; announceSecrets(sandboxId: string | null): void; goOffline(): void; goOnline(): void; request(method: string, path: string, body?: object): Promise<number>; asked: Record<string, number>; sent?: Record<string, number>; heldWaiting: number; release(): void }; pageKept?: boolean; drawnAllow?: { settling: boolean; focused: boolean } | null };
 
 const LIST = '/api/sandboxes/sb_studio/agent-secrets';
 
@@ -285,25 +285,33 @@ test('an agent’s host request shows its Allow on the open page at once', async
 test('an Allow whose hosts just changed is off for a moment', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeEnabled();
-  // Notes the Allow's state the moment it is drawn, before any timer could change it.
+  // The person is on the Allow (keyboard focus) when the hosts change. The moment the new Allow
+  // is drawn, before any timer could change it, its state is noted and it is clicked.
   await browser.evaluate(() => {
     const page = window as unknown as Asking;
-    page.firstAllowDisabled = null;
+    page.drawnAllow = null;
+    document.querySelector<HTMLButtonElement>('button[aria-label="Allow api.vidoc.test for VIDOC_API_KEY"]')!.focus();
     const watch = new MutationObserver(() => {
       const allow = document.querySelector<HTMLButtonElement>('button[aria-label="Allow api.vidoc.test, evil.test for VIDOC_API_KEY"]');
       if (!allow) return;
-      page.firstAllowDisabled = allow.disabled;
       watch.disconnect();
+      page.drawnAllow = { settling: allow.getAttribute('aria-disabled') === 'true', focused: document.activeElement === allow };
+      allow.click();
     });
     watch.observe(document.body, { childList: true, subtree: true });
     page.__yuliusMock.askHosts('VIDOC_API_KEY', ['evil.test'], '#107, #121');
   });
   const allow = screen.getByRole('button', 'Allow api.vidoc.test, evil.test for VIDOC_API_KEY');
   await expect(allow).toBeVisible();
-  expect(await browser.evaluate(() => (window as unknown as Asking).firstAllowDisabled)).toBe(true);
+  // Off, yet focus stays on it: never moved to another grant on the card (review round 2).
+  expect(await browser.evaluate(() => (window as unknown as Asking).drawnAllow)).toEqual({ settling: true, focused: true });
   await expect(browser.locator('.item-card:has-text("VIDOC_API_KEY")').getByText('The hosts asked for changed while this page was open.')).toBeVisible();
-  await expect(allow).toBeEnabled();
+  await expect.poll(() => browser.evaluate(() => document.querySelector('button[aria-label="Allow api.vidoc.test, evil.test for VIDOC_API_KEY"]')!.getAttribute('aria-disabled'))).toBe(null);
+  // The click while it settled sent nothing; Enter now allows what is shown.
+  expect(await browser.evaluate(() => ((window as unknown as Asking).__yuliusMock.sent || {})['POST /api/agent-secrets/as_vidoc/request'] || 0)).toBe(0);
   expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByText('Allowed. Agents can use VIDOC_API_KEY on api.vidoc.test, evil.test.')).toBeVisible();
 });
 
 // Review of SPEC-209 (L1): an answer on its way is not undone by a live update, which would give
