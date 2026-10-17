@@ -7,6 +7,7 @@
 
 import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from './dom.js';
 import { relLong, bytes, plural } from './format.js';
+import { BRAND } from './brand.js';
 
 const API = '/api/admin/leftovers';
 /** While a scan or a deletion runs, the card asks again this often (ms). */
@@ -134,7 +135,7 @@ export function leftoversCard(ctx) {
       diskLine(view),
       h('p', { class: 'muted xs' }, [
         view.scanned_at ? `Scanned ${relLong(view.scanned_at)}.` : null,
-        view.next_auto_at ? `Yulius deletes the safe ones by itself, next ${relLong(view.next_auto_at)}.` : 'Yulius deletes the safe ones by itself after every start and every hour.',
+        view.next_auto_at ? `${BRAND.name} deletes the safe ones by itself, next ${relLong(view.next_auto_at)}.` : `${BRAND.name} deletes the safe ones by itself after every start and every hour.`,
       ].filter(Boolean).join(' ')),
       jobLine(view.job),
       deleteButtons(),
@@ -190,7 +191,7 @@ export function leftoversCard(ctx) {
   async function removeAllSafe(safe) {
     const ok = await confirmDialog({
       title: `Delete every safe leftover (${bytes(view.safe_bytes)})?`,
-      message: `${plural(safe.length, 'item')} that Yulius would delete by itself. Items that need you stay. Anything in use by then is kept.`,
+      message: `${plural(safe.length, 'item')} that ${BRAND.name} would delete by itself. Items that need you stay. Anything in use by then is kept.`,
       confirmLabel: `Delete ${bytes(view.safe_bytes)}`,
       danger: true,
     });

@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Leftovers are found and cleaned (SPEC-215, ADR-0170, task #202, fixes #625 and #582). A removed
+  sandbox's worktrees and CI checkouts were never purged (the purge read only live sandboxes), and
+  nothing ever deleted its system layer with its Docker images, its holder state, CD files or
+  browser profile. Finished ("done") tasks kept 11–23 GB of `target/` each. Yulius now has an
+  inventory of every path it writes, with an owner and a rule for each. It deletes the safe
+  leftovers by itself at every start (so after every update) and every hour, checking each rule
+  again right before deleting and auditing every deletion. A removed sandbox's disposable parts go
+  10 minutes after the removal once nothing of it runs (its system layer once its holder has
+  stopped), and a done task's caches go after 30 quiet minutes. Partly cleaned sandboxes are
+  finished (`git worktree prune`). Its clone, sessions, transcripts and export stay, as one item
+  only the superadmin deletes. Settings → Instance → Leftovers and `yulius leftovers list|delete`
+  list and delete them by hand.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,

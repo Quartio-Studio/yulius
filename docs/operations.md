@@ -952,6 +952,8 @@ already removed one through the API). Its `<data>/playgrounds/<id>.git` and
 `<data>/sandboxes/<id>/` are deleted once no agent run, shell, browser, CI run or other process of
 it is left, within a disk upkeep round (5 minutes); task records, the removal's export under
 `<data>/exports/` and the audit (`sandbox.purge_requested`, `sandbox.purged`) stay (ADR-0139).
+Its system layer, holder state and CD files go with the leftovers of any removed sandbox (see
+"Leftovers" below).
 
 ### Importing secrets (`yulius secrets import`)
 
@@ -1014,6 +1016,48 @@ wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncomm
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
 The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
 `master.key` apart from database backups (whoever has both can read every secret).
+
+### Leftovers: what is kept, what is cleaned and when
+
+Yulius deletes what nothing needs any more by itself (SPEC-215, ADR-0170): at every start (two
+minutes in, so after every update) and every hour. Each deletion checks its rule again right
+before it removes anything: a running agent, shell, browser, CI run or deploy, a live holder, or a
+task that started working again keeps its files. Every deletion is audited as `leftovers.delete`
+(path, size, reason), and every failure as `leftovers.failed`.
+
+| What | When it goes | By itself? |
+| --- | --- | --- |
+| A removed sandbox's `worktrees/`, `ci/`, `browser/`, `<data>/cd/<id>`, `<data>/displays/<id>` and its agent runs' `<data>/runs/<attempt>` | 10 minutes after the removal, once nothing of it runs | yes |
+| A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal, SPEC-206); removed as root of a mapped namespace | yes |
+| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-*.json` | kept (PRJ-009); the database records always stay | **only a person** |
+| A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota | yes (the worktree and uncommitted work stay) |
+| A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
+| Git's record of a worktree whose directory is gone (`.git/worktrees/<name>`) | always (`git worktree prune`) | yes |
+| A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
+| A draft attachment older than 7 days | always | yes |
+| `<data>/runs/<name>` of no live run, untouched for a day | always | yes |
+| Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
+| An unused sandbox base (not current, no live holder mounts it) | always | yes |
+| A worktree no task owns; a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/` or `displays/` that no sandbox record owns | listed | **only a person** |
+| The host's `/var/lib/docker` and `/var/lib/containerd` (docker-ce; Yulius's host daemons are off) | listed, never deleted: remove them on the host if nothing else uses them | report only |
+| Update backups under `/var/lib/yulius-update/backups/` | the helper keeps the last 3 | yes (not listed) |
+
+**Settings → Instance → Leftovers** (superadmin) lists every item with its path, kind, size, owner,
+why it is a leftover and whether Yulius deletes it by itself, with the disk's usage and the
+reclaimable total. **Refresh** rescans, and **Delete** (the selected items) and **Delete all safe**
+ask for confirmation with the size, then run in the background. The same from SSH, as root or the
+service user while the server runs:
+
+```sh
+sudo -u yulius yulius leftovers list                 # rescans; id, size, safe/needs you, kind, path
+sudo -u yulius yulius leftovers delete --all-safe    # shows them and the total, then asks for yes
+sudo -u yulius yulius leftovers delete 3f9c0a1b2c3d4e5f 0a1b2c3d4e5f6a7b --yes
+```
+
+The command talks to the loopback listener (`--url`, default `http://127.0.0.1:8081`) with the key
+the server writes to `<data>/leftovers-cli.key` (0600, new at every start; `--data-dir` if the data
+directory is elsewhere). Exit 0: done, 1: a deletion failed, 2: not run (no key, server
+unreachable, no confirmation).
 
 ### Secrets vault (agent secrets, ADR-20)
 
@@ -1179,6 +1223,29 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 --release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
 
 ### Notes for specific upgrades
+
+- Upgrading to leftovers cleanup (SPEC-215, task #202, ADR-0170): no migration. The first start
+  of the new version deletes the existing safe leftovers two minutes in, the removed product
+  sandbox's included (its worktrees, CI checkouts and system layer, more than 100 GB). Nothing is
+  needed on the host. On the reference VM, after promotion to `main` and **Update now**:
+
+  ```sh
+  curl -s http://127.0.0.1:8081/internal/version         # the new commit
+  df -h /var/lib/yulius                                  # before: 81 % (312 of 386 GiB)
+  sudo -u yulius yulius leftovers list                   # what is left after the first round
+  ```
+
+  Then:
+  1. Settings → Instance → Leftovers: note the reclaimable total, then **Refresh** a few minutes
+     after the start. The product sandbox's `worktrees`, `ci` and `sysroots/6b76ccc7-…` are no
+     longer listed, and its "Everything else of a removed sandbox" item stays until you delete it.
+  2. `df -h /var/lib/yulius` is well below 81 %, and `ls /var/lib/yulius/sysroots` no longer shows
+     `6b76ccc7-869e-4e5e-871e-c944824fe373`.
+  3. The audit has `leftovers.delete` entries by `yulius`, and no `leftovers.failed` entries.
+  4. Done tasks (#191–#194) keep their worktrees but not their `target/` (half an hour after they
+     last moved).
+  5. `/var/lib/docker` and `/var/lib/containerd` are listed as report only. Remove them as root
+     only if nothing else on the host uses Docker.
 
 - Upgrading to the host setup (SPEC-203, task #188, ADR-0162): no migration. The helper that
   installs this version is the previous one, so this update is not re-checked; the next ones are.

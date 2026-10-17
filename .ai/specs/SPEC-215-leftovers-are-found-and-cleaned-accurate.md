@@ -120,7 +120,8 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 - **LFT-010** `GET /api/admin/leftovers` (superadmin) returns the last scan's items, the total
   size and reclaimable size, the disk's usage, and the scan and deletion progress.
   `POST /api/admin/leftovers/scan` rescans in the background. `POST /api/admin/leftovers/delete`
-  with `{ids}` or `{all_safe: true}` deletes in the background. Anyone else gets 404.
+  with `{ids}` or `{all_safe: true}` deletes in the background. Anyone else is refused (403, as the
+  other `/api/admin/*` routes); unknown ids are refused (422).
 - **LFT-011** Settings → Instance has a **Leftovers** section with the disk usage, the
   reclaimable total, a table of items, Refresh, **Delete** for the selected items and **Delete all
   safe**. Each delete asks for confirmation naming the size. Progress shows while a deletion runs,
@@ -159,7 +160,7 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 - A removed sandbox with a live shell, a running CI run or a live holder keeps the guarded paths.
   An item listed as safe but blocked by the time of the deletion (a shell started meanwhile) is
   kept and reported.
-- The API lists items for the superadmin and gives 404 to anyone else. Delete with ids removes
+- The API lists items for the superadmin and refuses anyone else (403). Delete with ids removes
   exactly those ids. Delete all safe never removes a manual item.
 - The Leftovers section shows the list. Refresh rescans. Delete all safe, after its confirmation,
   empties the safe items.
@@ -178,10 +179,15 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
   - the re-check at delete time: an item becomes live between the scan and the delete and is kept;
   - the API (superadmin lists and deletes; another user gets 404; all safe skips manual items);
   - a done task's cache follows the policy through `disk_upkeep`.
-- CLI: `crates/yulius` test of `leftovers list/delete` against a test server through the key file,
-  plus a wrong key.
-- e2e: `leftovers.spec`: the section lists the mock items, and Delete all safe asks for
-  confirmation and refreshes the list.
+- CLI: `leftovers::the_cli_lists_and_deletes_with_the_server_s_key` runs `leftovers_cli::run_async`
+  against the internal router on a loopback port through the key file, plus a refused
+  confirmation, a wrong key and no server.
+- Schedule: `leftovers::the_round_runs_at_start_and_every_period` (periods shortened).
+- `yulius-sandbox` manager: holder liveness (an ended holder counts while processes use its
+  namespaces), mapped removal only under the system trees, unused bases.
+- e2e: `e2e/tests/leftovers.e2e.ts`: the card lists the mock items with the disk; Delete all safe
+  and Delete of a selected item confirm with the size and follow the deletion; an empty scan;
+  members never see it; no WCAG violations.
 - Measurement on this sandbox: sizes of the done tasks' `target/` before the policy (Context).
 
 ## Decisions
