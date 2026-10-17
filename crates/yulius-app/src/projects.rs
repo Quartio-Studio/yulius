@@ -1135,6 +1135,14 @@ pub(crate) fn write_scaffold(
     std::fs::write(git_dir.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
         .map_err(AppError::internal)?;
     for (path, contents) in files {
+        let plain = Path::new(path)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !plain {
+            return Err(AppError::Internal(format!(
+                "scaffold path {path:?} is not a plain relative path"
+            )));
+        }
         let target = root.join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(AppError::internal)?;
@@ -1147,6 +1155,27 @@ pub(crate) fn write_scaffold(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scaffold path is plain relative components: none leaves the clone (Vidoc, task #193).
+    #[test]
+    fn a_scaffold_path_never_leaves_the_clone() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("clone");
+        std::fs::create_dir_all(root.join(".git"))?;
+        for path in [
+            "../escaped",
+            "/tmp/absolute",
+            "docs/../../escaped",
+            "./docs/a.md",
+        ] {
+            let files = [(path.to_owned(), "x".to_owned())];
+            assert!(write_scaffold(&root, "main", &files).is_err(), "{path}");
+        }
+        assert!(!dir.path().join("escaped").exists());
+        write_scaffold(&root, "main", &[("docs/a.md".to_owned(), "x".to_owned())])?;
+        assert_eq!(std::fs::read_to_string(root.join("docs/a.md"))?, "x");
+        Ok(())
+    }
 
     #[test]
     fn slugs_and_names() {
