@@ -99,6 +99,13 @@ blocking commands, no auto-mode onboarding dialog, no approval prompts for ordin
   harness plan rather than with the isolation join as for tasks.
 - **The read-only `--allowedTools` list stays.** It is redundant under bypass but keeps a session
   the person switched to default mode from asking about read-only Yulius tools.
+- **Its person's GitHub credential stays.** A task's Git holds a narrowed token (ADR-0114); the
+  Superagent's holds its person's, so under the bypass its GitHub actions (or injected ones) run
+  without a prompt with that person's rights. Accepted and recorded in decision 0165: the person
+  asked for the bypass, watches the panel, and their terminal in the sandbox has the same reach.
+  Narrowing it is a separate decision (review round 1, finding 1).
+- **Docs that said it asks first are amended** (decisions 0029, 0150, SPEC-037 MGT-004/MGT-006,
+  `docs/api.md`, `docs/product.md`; review round 1, finding 2).
 - **Restart running Superagents** by bumping `COCKPIT_LAUNCH_REVISION` (SPEC-186 SAV-006) rather
   than waiting for the next idle stop: the change is what the person asked to see.
 - **Tasks: no code change.** They already bypass on a contained server; the request's "tasks"
@@ -121,6 +128,10 @@ blocking commands, no auto-mode onboarding dialog, no approval prompts for ordin
 - `scripts/dev ci` after merging `origin/dev`: exit 0; nextest 2131 passed, 18 skipped.
 - `scripts/dev security`: exit 0, "no open critical or high finding in the change scan" (vidoc-1,
   6 files sent).
+- Review round 1 (fresh session, REQUEST CHANGES at `af034c26`): 1 major, the person's GitHub
+  credential under the bypass, recorded as an accepted consequence in decision 0165; 2 major,
+  stale "asks first" docs, amended; 3 nit, a 120-column doc line, rewrapped; 4 nit, uncontained
+  Superagents also restart once on the revision bump, accepted (harmless).
 - Not testable here: a real Claude Code 2.1.292 Superagent start inside bubblewrap showing
   "bypass permissions on" in the footer; the flag and `IS_SANDBOX` are the same ones task runs use
   there today.

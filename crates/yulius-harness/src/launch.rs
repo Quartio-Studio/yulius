@@ -690,9 +690,9 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 8] = [
 /// (SPEC-023 DEF-004) with the subscription's token (and the Cockpit's Yulius bearer) in the secret
 /// environment and none of a task's lifecycle hooks, status line or briefing (SPEC-021 CKP-002,
 /// SPEC-037 MGT-004 as amended by SPEC-147, ADR-0121). The approval bypass comes with
-/// `bypass_permissions`, as a contained task run's does (SPEC-208, decision 0165). The MCP config is inline JSON naming
-/// `${YULIUS_COCKPIT_TOKEN}` and the servers' `${VAR}` references, never a value; it is not
-/// strict, so the person's own MCP servers keep working. The settings are the `PostToolUse`
+/// `bypass_permissions`, as a contained task run's does (SPEC-208, decision 0165). The MCP config
+/// is inline JSON naming `${YULIUS_COCKPIT_TOKEN}` and the servers' `${VAR}` references, never a
+/// value; it is not strict, so the person's own MCP servers keep working. The settings are the `PostToolUse`
 /// redaction hook and `disabledMcpjsonServers` (SPEC-095 PMC-004).
 ///
 /// # Errors

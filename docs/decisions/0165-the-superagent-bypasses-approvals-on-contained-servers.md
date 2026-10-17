@@ -3,8 +3,9 @@
 ## Status
 
 Accepted. Specified in [SPEC-208](../../.ai/specs/SPEC-208-tasks-and-the-superagent-should-run-in-d.md);
-task #195. Amends [0020](0020-cockpit-as-a-plain-shell-session.md) ("no … approval bypass") and
-SPEC-021 CKP-002.
+task #195. Amends [0020](0020-cockpit-as-a-plain-shell-session.md) ("no … approval bypass"),
+[0029](0029-cockpit-manages-through-mcp.md) and [0150](0150-the-superagent-uses-agent-secrets-as-a-task-does.md)
+("asks the person first"), SPEC-021 CKP-002 and SPEC-037 MGT-004, MGT-006.
 
 ## Context
 
@@ -36,12 +37,26 @@ bypass only with `IS_SANDBOX=1`.
   `IS_SANDBOX` and acceptance handling.
 - **Bypass on uncontained servers too**: the session would act on the host as the service user
   with no boundary.
+- **Give a bypassing Superagent a task's narrowed GitHub credential** (ADR-0114) instead of its
+  person's: closer to a task's boundary, but the Superagent is the person's own session with Git
+  as their GitHub account, like their terminal in the same sandbox (SPEC-021); changing whose
+  identity it acts with is a separate decision, left for its own task.
 
 ## Consequences
 
 - The Superagent no longer asks before running tools, including the Yulius management tools that
-  create, stop or delete tasks; containment and the tools' own server-side checks (owner's access,
-  audit) are its boundary, as for tasks.
+  create, stop or delete tasks and the secret tools (`secret_copy_to_env`,
+  `secret_request_hosts`); containment and the tools' own server-side checks (owner's access, a
+  person's one-time allowance of a secret, audit) remain.
+- **Its GitHub reach is its person's, not a task's.** Unlike a task, whose Git and `gh` hold a
+  narrowed installation token without Administration (ADR-0114), the Superagent's hold its person's
+  own credential (or, for a superadmin without a GitHub sign-in, the App's installation token).
+  Bubblewrap does not limit what that token does on GitHub. Under the bypass a command the
+  Superagent decides on, or one injected through what it reads (repository files, issues,
+  transcripts, MCP output), runs without a prompt with that person's rights; a repository admin's
+  rights pass the production ruleset. Accepted: the person asked for the bypass, the Superagent
+  runs only while they use its panel, it already held that credential, and the same person's
+  terminal in the sandbox has the same reach. Narrowing it is the alternative above.
 - Claude Code's own checks that ask even under the bypass (SPEC-192) still ask; the person is
   there to answer.
 - Running Superagents restart once after the update; their conversations continue.

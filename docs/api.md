@@ -1103,7 +1103,8 @@ resolves to nothing, the run gets the server without that variable or token.
     `task_create`, `task_stop`, `task_archive`, `task_delete`, `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
-    for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
+    for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
+    tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     A usage limit Claude Code records in its conversation after it started is recorded on its
     subscription, and the Cockpit starts again on one with capacity, resuming the conversation

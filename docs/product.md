@@ -51,7 +51,8 @@ watching, steering and unblocking.
   bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
-  automations and enables the ready-made ones, asking the person before each change. Task agents
+  automations and enables the ready-made ones (asking the person before each change only on an
+  uncontained server). Task agents
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
