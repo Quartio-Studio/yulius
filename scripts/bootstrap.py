@@ -31,12 +31,15 @@ channel = config["channel"]
 command = [rustup, "toolchain", "install", channel, "--profile", config["profile"]]
 for component in config["components"]:
     command += ["--component", component]
+for target in config.get("targets", []):
+    command += ["--target", target]
 subprocess.run(command, cwd=root, check=True)
 compiler = subprocess.check_output([rustup, "which", "--toolchain", channel, "rustc"], text=True).strip()
 toolchain_bin = Path(compiler).parent
 install_env = dict(os.environ, RUSTC=compiler, RUSTDOC=str(toolchain_bin / "rustdoc"))
 install_env["PATH"] = str(toolchain_bin) + os.pathsep + os.environ.get("PATH", "")
-tools = tomllib.loads((root / ".config/tools.toml").read_text())["tools"]
+pinned = tomllib.loads((root / ".config/tools.toml").read_text())
+tools = pinned["tools"]
 # Each pinned tool is built once per home (shared by every worktree and CI run of a sandbox) and
 # linked into this worktree's .tools/bin: compiling them per worktree cost every new task 10-40
 # minutes (F 2026-10-12).
@@ -68,4 +71,10 @@ for name, version in tools.items():
     except OSError:
         shutil.copy2(shared, executable)
     print(f"{name} {version} linked from {shared_root}", flush=True)
+
+if sys.platform == "linux":
+    import platform
+    sys.path.insert(0, str(root / "scripts"))
+    from zig_install import install
+    print(install(pinned["zig"], cache, bin_dir, root, platform.machine(), urllib.request.urlopen), flush=True)
 print("Ready. Run scripts/dev doctor, then scripts/dev ci.", flush=True)

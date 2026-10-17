@@ -23,7 +23,10 @@ watching, steering and unblocking.
   before too, `yulius doctor --docker-smoke` proves it on a host; SPEC-203: `sudo yulius host
   setup` installs what it needs on a fresh host, every update re-checks it, and Settings →
   Instance shows whether sandboxes get Docker and runs the smoke check), home, shells per user,
-  browser and editor. The CLI
+  browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
+  layer, a done task's build cache) are deleted by themselves after every start and hourly, and
+  the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
+  `yulius leftovers` (SPEC-215). The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page. It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and
@@ -46,11 +49,15 @@ watching, steering and unblocking.
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
   the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
-  writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
-  deleted and comes back with its conversation. It manages the project for its owner: asked to
+  writing code, belongs in a task, and its panel says so. Like task runs, it answers in Claude
+  Code's Concise output style unless someone picks another with `/output-style` (SPEC-210).
+  `/clear` starts over, it cannot be
+  deleted and comes back with its conversation. On a contained server it runs in Claude Code's
+  bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
-  automations and enables the ready-made ones, asking the person before each change. Task agents
+  automations and enables the ready-made ones (asking the person before each change only on an
+  uncontained server). Task agents
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
@@ -199,7 +206,8 @@ watching, steering and unblocking.
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
-  button is pressed; it copies without being shown. An agent secret is added with a name, a value
+  button is pressed; it copies without being shown, from a copy icon always in its box, as the
+  notes do (SPEC-207). An agent secret is added with a name, a value
   and a description: agents find the service's host and ask for it, and a person allows it with
   one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
   `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
@@ -210,7 +218,10 @@ watching, steering and unblocking.
   secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once:
   every name is listed first, nothing that exists is overwritten, nothing is sent before the
   person types `yes`, and no value is ever shown, passed as an argument or written down
-  (SPEC-205).
+  (SPEC-205). Agents add one themselves from a file they can reach (a key they generated, a key in
+  `~/.ssh`): Yulius reads the file, so no one sees the value. The new secret has no hosts and no
+  `.env` allowance until a person allows them, an existing name is never replaced, and the
+  Superagent asks before it does this on an uncontained server (SPEC-211).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the

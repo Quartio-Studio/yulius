@@ -35,7 +35,7 @@ fn plural(count: usize, noun: &str) -> String {
 
 /// Deletes the tree at `path` without following links. A tree some tool made read-only (a Go
 /// module cache) is made writable and deleted again. `Ok` once nothing is left at `path`.
-fn delete_tree(path: &Path) -> io::Result<()> {
+pub(crate) fn delete_tree(path: &Path) -> io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => return Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -138,7 +138,7 @@ impl App {
 
     /// What of the sandbox still runs, as people read it: agent runs (and tasks still stopping),
     /// shells, the browser, a CI run and other processes in its namespaces.
-    async fn still_running(&self, id: &SandboxId) -> AppResult<Vec<String>> {
+    pub(crate) async fn still_running(&self, id: &SandboxId) -> AppResult<Vec<String>> {
         let store = &self.deps.store;
         let mut tasks = store.tasks(id, false).await?;
         tasks.extend(store.tasks(id, true).await?);

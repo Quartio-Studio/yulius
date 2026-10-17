@@ -6,6 +6,90 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Leftovers are found and cleaned (SPEC-215, ADR-0170, task #202, fixes #625 and #582). A removed
+  sandbox's worktrees and CI checkouts were never purged (the purge read only live sandboxes), and
+  nothing ever deleted its system layer with its Docker images, its holder state, CD files or
+  browser profile. Finished ("done") tasks kept 11–23 GB of `target/` each. Yulius now has an
+  inventory of every path it writes, with an owner and a rule for each. It deletes the safe
+  leftovers by itself at every start (so after every update) and every hour, checking each rule
+  again right before deleting and auditing every deletion. A removed sandbox's disposable parts go
+  10 minutes after the removal once nothing of it runs (its system layer once its holder has
+  stopped), and a done task's caches go after 30 quiet minutes. Partly cleaned sandboxes are
+  finished (stale Git worktree records go). Nothing is reached through a link a sandbox could plant.
+  Its clone, sessions, transcripts and export stay, as one item
+  only the superadmin deletes. Settings → Instance → Leftovers and `yulius leftovers list|delete`
+  list and delete them by hand.
+- An answered secret request ends the task's "Needs your action" (SPEC-213, task #200, fixes #633).
+  An agent waiting for a person to allow a `.env` copy, a CD secret or a secret's hosts flagged its
+  task, and the flag outlived the answer: the task read "Needs your action", with "The agent needs
+  your attention" over its terminal, while its agent worked on for minutes, until the turn ended.
+  Allowing or dismissing the last request a task waits for, or deleting the secret, now makes it
+  Working at once; a task with another request waiting, or flagged by something else, keeps its
+  flag.
+- Agents create agent secrets from a file without seeing them (SPEC-211, ADR-0167, task #198). A
+  Superagent that had to store an SSH key sitting in `~/.ssh` asked the person to `cat` it in their
+  own terminal and paste it into the Secrets page. The new tool `secret_create_from_file`, for
+  tasks and the Superagent (asking the person first on an uncontained server), takes a name and a
+  file in the work folder or `~/`. Yulius reads the file itself (no absolute paths, no links, a
+  regular file of at most 16 KiB) and stores it as an agent secret of the sandbox: a key file with
+  literal `\n`, as the Secrets page does. The secret starts with no hosts and no `.env` allowance,
+  an existing name is never replaced (nor `VIDOC_API_KEY`, which would hide the instance's Vidoc
+  key), the person's write access is required, the audit names the agent, and the file is deleted
+  only when asked. The CLI import shares the conversion: a quoted value whose only line break ends
+  it is now stored without it, and spaces around a key's lines are dropped.
+- A goal task's first message is the person's whole request (SPEC-212, ADR-0168, task #199). It
+  read `/goal Everything requested in /var/lib/yulius/…/tasks/1.md is done. Done = …`, so the
+  request hid behind a path in the sandbox home. The launch `/goal` is now the request as written,
+  its lines kept and each attached file at its place as `[file N: <path>]`, followed by the
+  definition of done, which now also says what the closing summary holds. Claude Code 2.1.292 has
+  no other goal entry point, and its goal's judge reads the SessionStart briefing (measured
+  against a mock API). So the rest of Yulius's rules stay in the briefing, which now says to open
+  attached files with the Read tool. A request past Claude Code's 4000-unit cap is cut and points
+  at the request file. A goal typed into a resumed session is one line of at most 700 units. It
+  could reach 2000 characters before, and Claude Code takes a write of about 800 as a paste, which
+  sets no goal.
+- Claude Code sessions answer concisely (SPEC-210, ADR-0166, task #197). Task runs and the
+  Superagent start in Claude Code's built-in Concise output style: the first sentence gives the
+  result, without lead-in, narration or recap, while the work stays as thorough. Each launch adds
+  `"outputStyle": "Concise"` to the sandbox's Claude Code user settings when they name no style;
+  `/output-style` still switches a session (Claude Code keeps that choice for the worktree, so
+  the Superagent keeps it and a new task starts concise again), and a style a repository commits
+  in `.claude/settings.json` wins. Before a launch the host now opens the files of the sandbox's
+  Claude config and the worktree's `.git` without following a link or blocking on a FIFO; a
+  config dir that is itself a link is still open in #634.
+- Yulius builds on macOS again, and CI keeps it so (SPEC-214, ADR-0169, task #201, fixes #636).
+  #620 had put Linux-only calls in the sandbox and app crates (a build lock through a Linux-only
+  crate, the Docker engine's `O_PATH` socket, a file mode's width), so the `yulius` CLI could not
+  be installed on a Mac. They now compile there, and `scripts/dev ci` compiles every target for
+  macOS (`scripts/dev macos`), with a pinned zig compiling the vendored C on Linux. Linking and
+  tests on a Mac stay a manual check before a release.
+- An agent's secret request shows on an open Secrets page at once (SPEC-209, task #196, fixes
+  #631). When an agent or a Superagent asked for a secret's hosts or a `.env` copy, the Agent
+  secrets page already open showed no request and no Allow until it was reloaded: nothing told
+  the browser. The request now publishes `secrets.updated` for the secret's sandbox (every
+  sandbox for a secret of every sandbox), and the page reads its list again on it and after a
+  reconnect, keeping what it shows meanwhile.
+- The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
+  ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
+  check blocked commands the person asked for and its "Teach auto mode about your environment?"
+  dialog interrupted the panel. It now starts with `--dangerously-skip-permissions` and
+  `IS_SANDBOX=1` (it is root of its sandbox), the bypass warning already accepted; running
+  Superagents restart into it once idle. Tasks already ran this way (checked on this instance's
+  transcripts); an uncontained server still bypasses nothing.
+- A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
+  icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
+  same thing. The value box now holds the masked value, the eye and one copy icon, always visible,
+  which shows a check after a copy. The notes and the two-factor setup key sit in the same framed
+  box with their own copy; every copy still clears the clipboard after 30 seconds.
+- Removing a sandbox stops everything of it (SPEC-206, task #193, fixes #624). It stopped only the
+  tasks: the sandbox's Superagents and terminals went on running (a person watching one saw it keep
+  working), a CI run in progress ran to its end and published its status, the browser waited for
+  its 30-minute idle stop, and the holder, with its Docker engine and any container or process an
+  agent left, stayed up for good and was adopted again after a restart. The removal now cancels the
+  sandbox's CI runs, ends its shells and browser (also one whose start was under way), and
+  retires its holder: nothing new is prepared for it, and a minute later, once no run holds a
+  lease, the holder stops with its engine and containers. A CD deploy already running finishes. Nothing
+  armed in a removed sandbox is merged (already true, now tested).
 - Secrets can be imported from the CLI (SPEC-205, ADR-0163, task #192). `yulius secrets import
   --to team|agent [FILE|-]` reads a dotenv file, stdin or hidden prompts and creates team secrets
   or a sandbox's agent secrets (`--sandbox`, `--instance`) through the existing vault API. It lists

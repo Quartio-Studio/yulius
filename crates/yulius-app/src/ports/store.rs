@@ -193,6 +193,8 @@ pub trait SandboxStore: Send + Sync {
     async fn sandbox_by_repo(&self, owner: &str, name: &str) -> AppResult<Option<SandboxRecord>>;
     /// Active sandboxes.
     async fn sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
+    /// Removed sandboxes, oldest removal first (their leftovers, SPEC-215).
+    async fn removed_sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
     /// Next free port base (multiples of `count` from `start`).
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16>;
     /// Replaces the profile JSON.
@@ -307,6 +309,15 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Sets the activity of a running task only while it still reads `from`: that activity
+    /// (or none), entered at that state time (SPEC-213); whether it did.
+    async fn set_activity_from(
+        &self,
+        id: &TaskId,
+        from: (Option<Activity>, Timestamp),
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087

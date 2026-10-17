@@ -6,6 +6,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::api::secrets::{AgentSecretView, HostRequestAnswer};
+use yulius_contracts::events::UiEvent;
 use yulius_domain::vault::VaultError;
 use yulius_domain::vault::hosts::{HostPattern, MAX_HOSTS, parse_hosts};
 
@@ -14,6 +15,7 @@ use crate::auth::AuthContext;
 use crate::browser::percent_encode;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
+use crate::ports::vault::VaultSecretRecord;
 
 /// Longest reason an agent gives (audited).
 const MAX_REASON: usize = 300;
@@ -102,6 +104,20 @@ impl App {
         )
     }
 
+    /// Tells the open Secrets pages that an agent asked for something about `record` (or created
+    /// it, SPEC-211), so it shows without a reload (SPEC-209): those of its sandbox, or every
+    /// sandbox's for a secret of every sandbox. The event names nothing; the page reads the list
+    /// again.
+    pub(super) fn announce_request(&self, record: &VaultSecretRecord) {
+        self.events.publish(
+            record.sandbox_id.clone(),
+            false,
+            UiEvent::SecretsUpdated {
+                sandbox_id: record.sandbox_id.as_ref().map(ToString::to_string),
+            },
+        );
+    }
+
     /// `secret_request_hosts`: stores the hosts an agent or a Superagent proposes for an agent
     /// secret of its project as a request (never a binding), audits it and flags a task as needing
     /// a person (SPEC-121, SPEC-186 SAV-003).
@@ -171,6 +187,7 @@ impl App {
                 "the secret changed meanwhile: ask again".into(),
             ));
         }
+        self.announce_request(&record);
         let why = reason(args.reason.as_deref());
         self.vault_audit(
             &user.actor(),
@@ -272,6 +289,7 @@ impl App {
             &format!("{} → {} (asked by {by})", record.name, asked.join(", ")),
         )
         .await?;
+        self.settle_secret_waits(record.sandbox_id.as_ref()).await;
         self.agent_view(&record, true).await
     }
 }
@@ -279,6 +297,11 @@ impl App {
 /// Whether two lists name the same hosts, in any order.
 fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
     a.len() == b.len() && a.iter().all(|h| b.contains(h))
+}
+
+/// Whether `asker` (as [`requester`] writes it) is among the askers `by` of a request.
+pub(super) fn among_askers(by: Option<&str>, asker: &str) -> bool {
+    by.is_some_and(|by| by.split(", ").any(|e| e == asker))
 }
 
 /// Who asks: `asker` (`#N`, `<login>'s Superagent`), with the sandbox for a secret of every
@@ -295,7 +318,7 @@ pub(super) fn requester(
         None => asker.to_owned(),
     };
     match earlier {
-        Some(earlier) if waiting && earlier.split(", ").any(|e| e == me) => earlier.to_owned(),
+        Some(earlier) if waiting && among_askers(Some(earlier), &me) => earlier.to_owned(),
         Some(earlier) if waiting => format!("{earlier}, {me}"),
         _ => me,
     }

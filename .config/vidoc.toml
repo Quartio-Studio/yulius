@@ -12,6 +12,14 @@ enabled = true
 # location assignment): rendering stays in scanned code. Remove the exclusion if it gains one.
 exclude = ["crates/yulius-server/web/assets/mock.js"]
 
+# Reported against the browser port's documented trust model, not code of this file: the
+# endpoint is the adapter's Chromium launch (yulius-browser). The weakness is real and tracked in
+# #626; remove this entry with its fix. Reported when task #193 (SPEC-206) added `stop`.
+[[ignore]]
+path = "crates/yulius-app/src/ports/browser.rs"
+title = "Unauthenticated"
+reason = "pre-existing, documented trust model of the browser adapter; tracked in #626"
+
 # `yulius gh-token` holds no credential: it asks `/internal/git-credential` (loopback) with the
 # caller's own bearer (`YULIUS_TASK_TOKEN`, a shell's workspace token), and the server decides what
 # token that caller gets: a person's shell its own token (SPEC-004 GH-001), an agent run a narrowed
@@ -21,3 +29,37 @@ exclude = ["crates/yulius-server/web/assets/mock.js"]
 path = "crates/yulius/src/main.rs"
 title = "gh-token"
 reason = "gh-token prints only what /internal/git-credential gives the caller's own bearer; the server authorizes (SPEC-004 GH-001/GH-006, ADR-0114)"
+
+# `agent_secret_value` (MCP `${secret:NAME}` references) reads `store.vault_agent`, the stored
+# secrets only; the instance Vidoc key's virtual record is added solely by `applied_agent_secrets`
+# (the proxy and placeholder paths, none of which hands out a value), so a reference never
+# resolves it. This test asserts exactly that:
+# vidoc_key::the_instance_key_is_never_handed_out_in_clear
+# First reported on task #198's change scan, which sent runtime.rs for new `secrets_list`
+# guidance; the code predates it. The independent reviewer of #198 agreed it is a false positive.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Instance Vidoc key leaked through MCP"
+reason = "agent_secret_value reads stored secrets only (vault_agent), never the virtual Vidoc record; tested by vidoc_key::the_instance_key_is_never_handed_out_in_clear"
+
+# The folder trust `ensure_claude_config` records (SPEC-106) is written into the sandbox's own
+# Claude config dir, which the contained agent can already edit: an agent that plants a `.git`
+# file to have some directory trusted could write that trust entry itself, and the trust only
+# skips Claude Code's folder prompt for sessions started from that config dir. The host-side
+# reads of that agent-owned dir (links, FIFOs) are tracked in #634. Reported on task #197's
+# change scan (SPEC-210), which sent claude_config.rs for the new output-style default; the code
+# predates it.
+[[ignore]]
+path = "crates/yulius-harness/src/claude_config.rs"
+title = "as trusted"
+reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); host-side reads tracked in #634"
+
+# `read_repo_doc` reads no link: `symlink_metadata(..).is_file()` is false for a symlink, whether it
+# names a file or a directory, and the resolved path and (on Linux) the opened fd's real path must
+# stay under the root (#70). `hooks::tests::linked_documents_are_not_read` proves a file linked to
+# a host file is neither read nor counted. Reported (high) on task #200's change scan (SPEC-213),
+# which sent hooks.rs for set_task_activity; the code predates it.
+[[ignore]]
+path = "crates/yulius-app/src/hooks.rs"
+title = "Symlink file read escapes the repository root"
+reason = "symlink_metadata().is_file() refuses every link before any read; proven by hooks::tests::linked_documents_are_not_read (#70)"

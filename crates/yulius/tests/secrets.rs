@@ -2414,6 +2414,13 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     assert_eq!(allowed.body["requested_hosts"], json!([]));
     assert_eq!(allowed.body["requested_by"], Value::Null);
     assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    // SPEC-213 SRA-001: nothing waits for a person any more.
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(task.activity, Some(yulius_domain::task::Activity::Working));
     let none = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(none.status, StatusCode::CONFLICT, "nothing to answer");
 
@@ -2468,6 +2475,59 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
             activity.body
         );
     }
+    Ok(())
+}
+
+/// SPEC-209 SRE-001/002/004 (#631): an agent's host request is announced to the open Secrets
+/// pages of the secret's sandbox, or of every sandbox for an instance-wide secret, so its Allow
+/// shows without a reload; a request that changes nothing is not announced.
+#[tokio::test]
+async fn an_agents_host_request_is_announced_to_open_secrets_pages() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let global = add_agent_secret(
+        &w,
+        &w.admin,
+        "s1",
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "description": "Shared", "value": "global-value-123"}),
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    let mut announced = support::SecretAnnouncements::new(&w.h.app);
+
+    let ask = |secret: &str, host: &str| {
+        mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": secret, "hosts": [host]}),
+        )
+    };
+    let asked = ask("VIDOC_API_KEY", "api.vidoc.test").await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    assert_eq!(announced.take(), vec![Some("s1".to_owned())]);
+
+    // The same host again waits already: nothing changed, nothing is announced.
+    let again = ask("VIDOC_API_KEY", "api.vidoc.test").await?;
+    assert_eq!(tool_text(&again)["requested"], json!([]), "{again}");
+    assert_eq!(announced.take(), Vec::<Option<String>>::new());
+
+    // A refused request announces nothing either.
+    let refused = ask("VIDOC_API_KEY", "localhost").await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(announced.take(), Vec::<Option<String>>::new());
+
+    // A secret of every sandbox: every sandbox's page lists it.
+    let asked = ask("GLOBAL_KEY", "global.test").await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    assert_eq!(announced.take(), vec![None]);
     Ok(())
 }
 

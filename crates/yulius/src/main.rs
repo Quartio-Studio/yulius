@@ -161,6 +161,25 @@ enum Command {
         #[arg(long)]
         no_color: bool,
     },
+    /// List and delete leftovers on this server's disk (SPEC-215), as root or the service user,
+    /// through the running server's loopback listener and its rules.
+    Leftovers {
+        /// Data directory (the server's key for this command is in it).
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius",
+            global = true
+        )]
+        data_dir: PathBuf,
+        /// The server's loopback listener.
+        #[arg(long, default_value = yulius::leftovers_cli::DEFAULT_URL, global = true)]
+        url: String,
+        /// What to do.
+        #[command(subcommand)]
+        action: LeftoversAction,
+    },
     /// Manage the vault from this computer.
     Secrets {
         /// What to do.
@@ -205,6 +224,28 @@ enum Command {
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
+}
+
+#[derive(Debug, Subcommand)]
+enum LeftoversAction {
+    /// Rescan and list every leftover: id, size, safe / needs you / report only, kind, path,
+    /// owner and why.
+    List {
+        /// The server's JSON instead of the list.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rescan, then delete every safe leftover or the given ids, after a typed yes.
+    Delete {
+        /// Every leftover Yulius deletes by itself.
+        #[arg(long, conflicts_with = "ids")]
+        all_safe: bool,
+        /// Ids from `yulius leftovers list`.
+        ids: Vec<String>,
+        /// Do not ask (scripts).
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -439,6 +480,20 @@ fn main() -> ExitCode {
             playground_name: name,
             no_color,
         }),
+        Command::Leftovers {
+            data_dir,
+            url,
+            action,
+        } => {
+            let action = match action {
+                LeftoversAction::List { json } => yulius::leftovers_cli::Action::List { json },
+                LeftoversAction::Delete { all_safe, ids, yes } => {
+                    yulius::leftovers_cli::Action::Delete { all_safe, ids, yes }
+                }
+            };
+            let code = yulius::leftovers_cli::run(&data_dir, &url, action);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
         Command::Secrets {
             action:
                 SecretsAction::Import {

@@ -317,6 +317,8 @@ impl SandboxIsolation for NamespaceIsolation {
                     .into(),
             )),
             Ok(None) => Ok(None),
+            // Never the previous containment: nothing runs for a removed sandbox (SPEC-206).
+            Err(PrepareError::Retired) => Err(AppError::NotFound),
             Err(error @ PrepareError::OverQuota { .. }) => {
                 Err(AppError::Conflict(error.to_string()))
             }
@@ -355,8 +357,26 @@ impl SandboxIsolation for NamespaceIsolation {
         tokio::spawn(async move { manager.release(&sandbox).await });
     }
 
+    fn retire(&self, sandbox: &SandboxId) {
+        let manager = Arc::clone(&self.manager);
+        let sandbox = sandbox.as_str().to_owned();
+        tokio::spawn(async move { manager.retire(&sandbox).await });
+    }
+
     async fn prune_engine(&self, sandbox: &SandboxRef) -> Option<u64> {
         self.manager.prune_engine(sandbox.id.as_str()).await
+    }
+
+    async fn holder_live(&self, name: &str) -> bool {
+        self.manager.holder_live(name).await
+    }
+
+    async fn remove_owned_tree(&self, path: &std::path::Path) -> Result<(), String> {
+        self.manager.remove_owned_tree(path).await
+    }
+
+    async fn unused_bases(&self) -> Vec<PathBuf> {
+        self.manager.unused_bases().await
     }
 
     async fn docker(&self, sandbox: &SandboxRef) -> bool {

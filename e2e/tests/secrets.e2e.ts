@@ -16,6 +16,12 @@ async function setUpTwoFactor(screen: any, browser: any) {
   await expect(setup.getByText(/Add this key to your authenticator app/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await expect(setup.getByRole('link', 'Open in an authenticator app')).toHaveAttribute('href', /^otpauth:\/\/totp\//);
+  // The key sits in a box with its copy icon (SPEC-207), not beside a text button.
+  await expect(browser.locator('dialog.modal .secret-box .secret-copy[aria-label="Copy key"]')).toBeVisible();
+  expect(await browser.evaluate(() => ({
+    copies: document.querySelectorAll('dialog.modal button[aria-label^="Copy"]').length,
+    after: document.querySelector('dialog.modal .secret-box + *'),
+  }))).toEqual({ copies: 1, after: null });
   await screen.getByLabel('Code from your app').fill('000000');
   await setup.getByRole('button', 'Unlock').click();
   await expect(setup.getByRole('alert')).toHaveText(/wrong code/i);
@@ -236,6 +242,112 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(dialog.getByText('More options')).toBeHidden();
 });
 
+type Asking = { __yuliusMock: { askHosts(name: string, hosts: string[], by: string, announce?: boolean): void; announceSecrets(sandboxId: string | null): void; goOffline(): void; goOnline(): void; request(method: string, path: string, body?: object): Promise<number>; asked: Record<string, number>; sent?: Record<string, number>; heldWaiting: number; release(): void }; pageKept?: boolean; drawnAllow?: { settling: boolean; focused: boolean } | null };
+
+const LIST = '/api/sandboxes/sb_studio/agent-secrets';
+
+// Task #196 (SPEC-209, #631): "Allow didnt show instantly but i needed to refresh the page." An
+// agent's request reaches the open page through the event stream; the page itself never reloads.
+test('an agent’s host request shows its Allow on the open page at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Asking).pageKept = true; });
+
+  const reads = () => browser.evaluate((path: string) => (window as unknown as Asking).__yuliusMock.asked[path] || 0, LIST);
+  const before = await reads();
+
+  // Another sandbox's secrets changed, then this one's: only this one's is read again, once, and
+  // the request and its Allow show with no reload of the page.
+  await browser.evaluate(() => {
+    const mocked = (window as unknown as Asking).__yuliusMock;
+    mocked.askHosts('OLD_DEPLOY_KEY', ['staging.example.test'], '#120', false);
+    mocked.announceSecrets('sb_product');
+    mocked.announceSecrets('sb_studio');
+  });
+  await expect(card.getByText('Task #120 asks to send it to')).toBeVisible();
+  await expect(screen.getByRole('button', 'Allow staging.example.test for OLD_DEPLOY_KEY')).toBeEnabled();
+  expect(await reads()).toBe(before + 1);
+  expect(await browser.evaluate(() => (window as unknown as Asking).pageKept)).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A secret of every sandbox is announced to every sandbox's page.
+  expect(await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.request('POST', '/api/sandboxes/sb_studio/agent-secrets', { scope: 'instance', name: 'SHARED_KEY', description: 'Shared', value: 'mock-shared-value-1' }))).toBe(201);
+  const shared = browser.locator('.item-card:has-text("SHARED_KEY")');
+  await expect(shared).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askHosts('SHARED_KEY', ['api.shared.test'], '#121 in product'));
+  await expect(shared.getByText('api.shared.test')).toBeVisible();
+});
+
+// SPEC-121 holds while the page follows requests live (review of SPEC-209, M1): Allow answers the
+// hosts it shows, and a request that changes under the person's pointer or keyboard gets an Allow
+// that is off for a moment, so a click meant for the old one cannot allow a host never seen.
+test('an Allow whose hosts just changed is off for a moment', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeEnabled();
+  // The person is on the Allow (keyboard focus) when the hosts change. The moment the new Allow
+  // is drawn, before any timer could change it, its state is noted and it is clicked.
+  await browser.evaluate(() => {
+    const page = window as unknown as Asking;
+    page.drawnAllow = null;
+    document.querySelector<HTMLButtonElement>('button[aria-label="Allow api.vidoc.test for VIDOC_API_KEY"]')!.focus();
+    const watch = new MutationObserver(() => {
+      const allow = document.querySelector<HTMLButtonElement>('button[aria-label="Allow api.vidoc.test, evil.test for VIDOC_API_KEY"]');
+      if (!allow) return;
+      watch.disconnect();
+      page.drawnAllow = { settling: allow.getAttribute('aria-disabled') === 'true', focused: document.activeElement === allow };
+      allow.click();
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    page.__yuliusMock.askHosts('VIDOC_API_KEY', ['evil.test'], '#107, #121');
+  });
+  const allow = screen.getByRole('button', 'Allow api.vidoc.test, evil.test for VIDOC_API_KEY');
+  await expect(allow).toBeVisible();
+  // Off, yet focus stays on it: never moved to another grant on the card (review round 2).
+  expect(await browser.evaluate(() => (window as unknown as Asking).drawnAllow)).toEqual({ settling: true, focused: true });
+  await expect(browser.locator('.item-card:has-text("VIDOC_API_KEY")').getByText('The hosts asked for changed while this page was open.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.querySelector('button[aria-label="Allow api.vidoc.test, evil.test for VIDOC_API_KEY"]')!.getAttribute('aria-disabled'))).toBe(null);
+  // The click while it settled sent nothing; Enter now allows what is shown.
+  expect(await browser.evaluate(() => ((window as unknown as Asking).__yuliusMock.sent || {})['POST /api/agent-secrets/as_vidoc/request'] || 0)).toBe(0);
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByText('Allowed. Agents can use VIDOC_API_KEY on api.vidoc.test, evil.test.')).toBeVisible();
+});
+
+// Review of SPEC-209 (L1): an answer on its way is not undone by a live update, which would give
+// back enabled buttons for a request about to be gone; the reload after the answer catches up.
+test('a live update waits for an answer on its way', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents', '&holdpost=/api/agent-secrets/as_stripe/env'));
+  const allow = screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files');
+  await allow.click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Asking).__yuliusMock.heldWaiting)).toBe(1);
+  const reads = () => browser.evaluate((path: string) => (window as unknown as Asking).__yuliusMock.asked[path] || 0, LIST);
+  const before = await reads();
+  await browser.evaluate(() => {
+    (window as unknown as Asking).__yuliusMock.announceSecrets('sb_studio');
+    // The mock delivers an event on a 0 ms timer: one queued after it runs once the page heard it.
+    return new Promise((resolve) => { setTimeout(resolve, 0); });
+  });
+  expect(await reads()).toBe(before);
+  await expect(allow).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.release());
+  await expect(screen.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
+  expect(await reads()).toBe(before + 1);
+});
+
+test('a request made while the stream was down shows once it reconnects', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await browser.evaluate(() => {
+    const mocked = (window as unknown as Asking).__yuliusMock;
+    mocked.goOffline();
+    mocked.askHosts('OLD_DEPLOY_KEY', ['staging.example.test'], '#120', false);
+    mocked.goOnline();
+  });
+  await expect(screen.getByRole('button', 'Allow staging.example.test for OLD_DEPLOY_KEY')).toBeVisible({ timeout: 15000 });
+});
+
 // SPEC-129 R4: an agent asks to copy a secret into the project's .env; a person allows it here,
 // and can revoke it later.
 test('a person allows an agent to copy a secret into .env, then revokes it', async ({ app, browser, screen }) => {
@@ -309,9 +421,10 @@ test('a member sees why a production secret’s requests wait, without a Dismiss
 });
 
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
-// shown after explicitly clicking eye icon. On hover there should be option to copy + the current
-// copy button." (SPEC-114)
-test('a shown value stays masked until the eye is pressed, and copies on hover', async ({ app, browser, screen }) => {
+// shown after explicitly clicking eye icon." (SPEC-114) F 2026-10-17 (task #194): "this UI is bad,
+// fix. For example copy icon is missing and overall": the value, its eye and its one copy icon sit
+// in one box, always visible, and the notes get the same box and a copy (SPEC-207).
+test('a shown value stays masked until the eye is pressed, and its box always offers the copy', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets'));
   // What the page puts on the clipboard, without a clipboard permission.
   await browser.evaluate(() => {
@@ -319,6 +432,7 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
   });
   const copied = () => browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== ''));
+  const inPage = () => browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE);
 
   await screen.getByRole('button', 'Show Shared Gmail').click();
   await setUpTwoFactor(screen, browser);
@@ -327,45 +441,53 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
   // Masked: dots of a fixed length, the value nowhere in the page, a name for screen readers.
   const eye = shown.getByRole('button', 'Show value');
   await expect(eye).toHaveAttribute('aria-pressed', 'false');
-  const box = browser.locator('dialog.modal .secret-box');
+  const box = browser.locator('dialog.modal .secret-box:has(.secret-eye)');
   await expect(box).toContainText('••••••••••••');
   await expect(browser.locator('dialog.modal .secret-box .sr-only')).toHaveText('Value hidden');
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
-  // The notes still show.
-  await expect(shown.getByText(/Recovery codes/)).toBeVisible();
+  expect(await inPage()).toBe(false);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // The quick copy shows on hover only, and copies the value while it is masked.
-  const quick = browser.locator('dialog.modal .secret-quick-copy');
-  await expect(quick).toBeHidden();
-  await box.hover();
-  await expect(quick).toBeVisible();
-  await expect(quick).toHaveAttribute('aria-label', 'Copy');
-  await quick.click();
+  // The copy is in the box after the eye and visible without a hover; it is the value's only copy.
+  await browser.mouse.move(0, 0);
+  const copy = browser.locator('dialog.modal .secret-box .secret-eye + .secret-copy');
+  await expect(copy).toBeVisible();
+  await expect(copy).toHaveAttribute('aria-label', 'Copy value');
+  expect(await browser.evaluate(() => ({
+    copies: document.querySelectorAll('dialog.modal button[aria-label="Copy value"]').length,
+    after: document.querySelector('dialog.modal .secret-box + *'),
+  }))).toEqual({ copies: 1, after: null });
+  // It copies while masked, and says so on itself for a moment.
+  await copy.click();
+  await expect(copy).toHaveAttribute('title', 'Copied');
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-check')).toBeVisible();
+  await expect(copy).toHaveAttribute('aria-label', 'Copy value');
   await expect(screen.getByText(/Value copied/).first()).toBeVisible();
   expect(await copied()).toEqual([TEAM_VALUE]);
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  expect(await inPage()).toBe(false);
+  await expect(copy).toHaveAttribute('title', 'Copy value');
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-copy')).toBeVisible();
 
   // The eye shows it; pressed again it is masked and gone from the page.
   await eye.click();
   await expect(eye).toHaveAttribute('aria-pressed', 'true');
   await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  await eye.click();
-  await expect(eye).toHaveAttribute('aria-pressed', 'false');
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
-
-  // The current Copy button stays and copies too.
   await shown.getByRole('button', 'Copy value').click();
   expect(await copied()).toEqual([TEAM_VALUE, TEAM_VALUE]);
+  await eye.click();
+  await expect(eye).toHaveAttribute('aria-pressed', 'false');
+  expect(await inPage()).toBe(false);
 
-  // Keyboard: focus on the eye shows the quick copy, and it is the next stop.
-  await browser.mouse.move(0, 0);
-  await expect(quick).toBeHidden();
+  // Keyboard: the copy is the next stop after the eye.
   await eye.focus();
-  await expect(quick).toBeVisible();
   await browser.keyboard.press('Tab');
-  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy');
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy value');
+
+  // The notes sit in a box of their own, with their own copy.
+  await expect(browser.locator('dialog.modal .secret-box:has-text("Recovery codes")')).toBeVisible();
+  await shown.getByRole('button', 'Copy notes').click();
+  await expect(screen.getByText(/Notes copied/).first()).toBeVisible();
+  expect(await copied()).toEqual([TEAM_VALUE, TEAM_VALUE, 'User name: team@example.test\nRecovery codes: mock']);
 
   // The light theme has no violations either, masked and shown.
   await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
@@ -382,19 +504,70 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
   await expect(shown).toBeHidden();
   await screen.getByRole('button', 'Show Shared Gmail').click();
   await expect(screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value')).toHaveAttribute('aria-pressed', 'false');
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  expect(await inPage()).toBe(false);
 
-  // At 390 px the box, its buttons and Copy stay inside the dialog, shown or masked.
+  // At 390 px the boxes and their buttons stay inside the dialog, shown or masked.
   await browser.setViewport({ width: 390, height: 844 });
   for (const press of [false, true]) {
     if (press) await screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value').click();
     const outside = await browser.evaluate(() => {
       const dialog = document.querySelector('dialog.modal')!.getBoundingClientRect();
-      const parts = ['.secret-box', '.secret-eye', '.secret-quick-copy', '.secret-box + .btn'].map((s) => document.querySelector(`dialog.modal ${s}`)!.getBoundingClientRect());
-      return parts.filter((r) => r.left < dialog.left || r.right > dialog.right).length;
+      const parts = [...document.querySelectorAll('dialog.modal .secret-box, dialog.modal .secret-box button')].map((e) => e.getBoundingClientRect());
+      return { parts: parts.length, outside: parts.filter((r) => r.left < dialog.left || r.right > dialog.right).length };
     });
-    expect(outside).toBe(0);
+    expect(outside).toEqual({ parts: 5, outside: 0 });
   }
+});
+
+// SPEC-207 review: a failed copy says so and never shows the check, even right after a copy that
+// worked; long notes wrap inside their box and scroll past 240 px, also at 390 px.
+test('a failed copy shows no check, and long notes wrap and scroll in their box', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  const notes = `${'x'.repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n')}`;
+  await browser.evaluate((text: string) => {
+    (window as any).__yuliusMock.vault.team[0].notes = text;
+    (window as any).__fail = 0;
+    // Each failure names its number, so the test waits for the toast of the copy it just made.
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { if ((window as any).__fail) throw new Error(`Clipboard blocked ${(window as any).__fail++}`); } } });
+  }, notes);
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'Shared Gmail');
+  const copy = browser.locator('dialog.modal .secret-eye + .secret-copy');
+
+  // A copy that worked shows the check; one that fails right after brings the copy icon back.
+  await copy.click();
+  await expect(copy).toHaveAttribute('title', 'Copied');
+  // The failing copy follows in the same round trip, well inside the check's 2 s.
+  await browser.evaluate(() => {
+    (window as any).__fail = 1;
+    (document.querySelector('dialog.modal .secret-eye + .secret-copy') as HTMLButtonElement).click();
+  });
+  await expect(screen.getByText(/Couldn’t copy: Clipboard blocked 1/)).toBeVisible();
+  // Read at once, not waited on: the check of the first copy would clear by itself after 2 s.
+  expect(await browser.evaluate(() => {
+    const button = document.querySelector('dialog.modal .secret-eye + .secret-copy')!;
+    return { title: button.getAttribute('title'), icon: button.querySelector('svg')!.classList.contains('icon-copy') };
+  })).toEqual({ title: 'Copy value', icon: true });
+  // A first copy that fails never shows the check.
+  await shown.getByRole('button', 'Copy notes').click();
+  await expect(screen.getByText(/Couldn’t copy: Clipboard blocked 2/)).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const button = document.querySelector('dialog.modal button[aria-label="Copy notes"]')!;
+    return { title: button.getAttribute('title'), icon: button.querySelector('svg')!.classList.contains('icon-copy') };
+  })).toEqual({ title: 'Copy notes', icon: true });
+
+  // Long notes wrap (no sideways scroll) and scroll past 240 px, inside the dialog at 390 px.
+  await browser.setViewport({ width: 390, height: 844 });
+  const box = await browser.evaluate(() => {
+    const pre = document.querySelector('dialog.modal .secret-notes')!;
+    const dialog = document.querySelector('dialog.modal')!.getBoundingClientRect();
+    const outer = pre.closest('.secret-box')!.getBoundingClientRect();
+    return { wraps: pre.scrollWidth <= pre.clientWidth, capped: pre.clientHeight <= 240, scrolls: pre.scrollHeight > pre.clientHeight, inside: outer.left >= dialog.left && outer.right <= dialog.right };
+  });
+  expect(box).toEqual({ wraps: true, capped: true, scrolls: true, inside: true });
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its

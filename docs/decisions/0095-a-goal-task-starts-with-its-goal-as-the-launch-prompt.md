@@ -8,6 +8,9 @@ goal-mode parts of [0022](0022-native-task-attachments.md) (a first message ment
 attached files before the goal) and [0026](0026-attached-images-are-pasted.md) (images pasted into
 that first message), and the goal typed after a restart-held first message of
 [0052](0052-only-keystrokes-count-as-typing.md). Prompt mode is unchanged.
+Its condition (the request file named) is amended by
+[0168](0168-the-goal-is-the-whole-request-and-the-briefing-carries-the-rules.md): the condition is
+the whole request.
 
 ## Context
 

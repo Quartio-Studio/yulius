@@ -27,7 +27,7 @@ const MAX_DESCRIPTION: usize = 1000;
 /// Agent secrets per sandbox plus instance-wide ones.
 const MAX_AGENT_SECRETS: usize = 200;
 
-fn description(text: Option<&str>) -> AppResult<String> {
+pub(super) fn description(text: Option<&str>) -> AppResult<String> {
     let text = text.unwrap_or_default().trim();
     if text.chars().count() > MAX_DESCRIPTION {
         return Err(AppError::Invalid(format!(
@@ -67,10 +67,27 @@ fn check_username(injection: &Injection, username: Option<&str>, set: bool) -> A
 }
 
 /// Validated metadata of an agent secret.
-struct Meta {
-    name: String,
-    hosts: Vec<String>,
-    injection: Injection,
+pub(super) struct Meta {
+    pub(super) name: String,
+    pub(super) hosts: Vec<String>,
+    pub(super) injection: Injection,
+}
+
+/// An agent secret to store ([`App::insert_agent_secret`]).
+pub(super) struct NewAgentSecret<'a> {
+    /// The sandbox it is created from (its capacity is checked).
+    pub(super) sandbox: &'a SandboxId,
+    /// That sandbox, or `None` for every sandbox.
+    pub(super) scope: Option<SandboxId>,
+    pub(super) meta: Meta,
+    pub(super) description: String,
+    pub(super) payload: &'a AgentPayload,
+    /// The person's user id, recorded as its creator.
+    pub(super) by: &'a str,
+    /// The audit actor.
+    pub(super) actor: &'a str,
+    /// How it came in, appended to the audit detail.
+    pub(super) origin: Option<&'a str>,
 }
 
 fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) -> AppResult<Meta> {
@@ -212,7 +229,42 @@ impl App {
             totp: None,
         };
         check_username(&meta.injection, payload.username.as_deref(), true)?;
-        if self.deps.store.vault_agent(Some(&sid)).await?.len() >= MAX_AGENT_SECRETS {
+        let record = self
+            .insert_agent_secret(NewAgentSecret {
+                sandbox: &sid,
+                scope,
+                meta,
+                description: description(input.description.as_deref())?,
+                payload: &payload,
+                by: ctx.user.id.as_str(),
+                actor: &Self::vault_actor(ctx),
+                origin: None,
+            })
+            .await?;
+        self.agent_view(&record, true).await
+    }
+
+    /// Stores a new agent secret and audits it (`vault.agent.create`, `origin` appended to the
+    /// detail): at most [`MAX_AGENT_SECRETS`] apply to a sandbox, and a name that already applies
+    /// is a `Conflict` (the store checks it in the same transaction).
+    ///
+    /// # Errors
+    /// `Capacity`, `Conflict`, sealing and store failures.
+    pub(super) async fn insert_agent_secret(
+        &self,
+        new: NewAgentSecret<'_>,
+    ) -> AppResult<VaultSecretRecord> {
+        let NewAgentSecret {
+            sandbox,
+            scope,
+            meta,
+            description,
+            payload,
+            by,
+            actor,
+            origin,
+        } = new;
+        if self.deps.store.vault_agent(Some(sandbox)).await?.len() >= MAX_AGENT_SECRETS {
             return Err(AppError::Capacity(format!(
                 "at most {MAX_AGENT_SECRETS} agent secrets apply to one sandbox"
             )));
@@ -224,7 +276,7 @@ impl App {
             section: VaultSection::Agent,
             sandbox_id: scope.clone(),
             name: meta.name,
-            description: description(input.description.as_deref())?,
+            description,
             hosts: meta.hosts,
             injection: meta.injection.kind().into(),
             header_name: match &meta.injection {
@@ -232,10 +284,10 @@ impl App {
                 _ => None,
             },
             fields: payload.fields(),
-            envelope: self.seal_payload(&id, VaultSection::Agent, &payload)?,
-            created_by: ctx.user.id.as_str().to_owned(),
+            envelope: self.seal_payload(&id, VaultSection::Agent, payload)?,
+            created_by: by.to_owned(),
             created_at: now,
-            updated_by: ctx.user.id.as_str().to_owned(),
+            updated_by: by.to_owned(),
             updated_at: now,
             value_updated_at: now,
             last_used_at: None,
@@ -248,11 +300,11 @@ impl App {
         self.deps.store.vault_insert(&record).await?;
         self.vault.bump();
         self.vault_audit(
-            &Self::vault_actor(ctx),
+            actor,
             "vault.agent.create",
             Some(&id),
             &format!(
-                "{} ({}) → {}",
+                "{} ({}) → {}{}",
                 record.name,
                 if scope.is_some() {
                     "this sandbox"
@@ -263,11 +315,12 @@ impl App {
                     "no hosts yet".to_owned()
                 } else {
                     record.hosts.join(", ")
-                }
+                },
+                origin.map(|o| format!(", {o}")).unwrap_or_default()
             ),
         )
         .await?;
-        self.agent_view(&record, true).await
+        Ok(record)
     }
 
     pub(super) async fn agent_record(
@@ -388,7 +441,10 @@ impl App {
             Some(id),
             &record.name,
         )
-        .await
+        .await?;
+        // Its requests went with it (SPEC-213).
+        self.settle_secret_waits(record.sandbox_id.as_ref()).await;
+        Ok(())
     }
 
     /// `POST /api/agent-secrets/{id}/reveal`: the value and the notes (its description) for a

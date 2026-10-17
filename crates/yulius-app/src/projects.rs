@@ -934,9 +934,9 @@ impl App {
         Ok(())
     }
 
-    /// `DELETE /api/sandboxes/{sid}` (admin, PRJ-009): stops live and queued tasks and marks
-    /// the sandbox removed. The GitHub repository, the clone, worktrees, transcripts and task
-    /// records are kept.
+    /// `DELETE /api/sandboxes/{sid}` (admin, PRJ-009): stops live and queued tasks, marks the
+    /// sandbox removed and ends everything else of it (SPEC-206). The GitHub repository, the
+    /// clone, worktrees, transcripts and task records are kept.
     ///
     /// # Errors
     /// `NotFound` without access, `Forbidden` without admin.
@@ -973,7 +973,32 @@ impl App {
             )
             .await?;
         self.publish_resync(None);
+        self.end_removed_sandbox(id);
         Ok(())
+    }
+
+    /// Ends what still runs for a sandbox just removed besides its tasks (SPEC-206): its holder
+    /// is retired (it stops, with every process in it, once the runs ended), and in the
+    /// background its CI runs, its shells (Superagents and terminals) and its browser end. The
+    /// removal already refuses new ones, so none starts behind it.
+    fn end_removed_sandbox(self: &Arc<Self>, id: SandboxId) {
+        if let Some(isolation) = self.isolation.get() {
+            isolation.retire(&id);
+        }
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let runs = app.deps.store.active_ci_runs().await.unwrap_or_default();
+            for run in runs.iter().filter(|run| run.sandbox_id == id) {
+                if let Err(err) = app.ci_cancel(&run.id, "the sandbox was removed").await {
+                    tracing::warn!(sandbox = %id, run = %run.id, error = %err, "a CI run of the removed sandbox could not be cancelled");
+                }
+            }
+            let shells = app.sandbox_shells(&id);
+            if !app.end_shells(&shells).await {
+                tracing::warn!(sandbox = %id, "a shell of the removed sandbox could not be ended");
+            }
+            app.deps.browser.stop(&id).await;
+        });
     }
 }
 
@@ -1110,6 +1135,14 @@ pub(crate) fn write_scaffold(
     std::fs::write(git_dir.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
         .map_err(AppError::internal)?;
     for (path, contents) in files {
+        let plain = Path::new(path)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !plain {
+            return Err(AppError::Internal(format!(
+                "scaffold path {path:?} is not a plain relative path"
+            )));
+        }
         let target = root.join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(AppError::internal)?;
@@ -1122,6 +1155,27 @@ pub(crate) fn write_scaffold(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scaffold path is plain relative components: none leaves the clone (Vidoc, task #193).
+    #[test]
+    fn a_scaffold_path_never_leaves_the_clone() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("clone");
+        std::fs::create_dir_all(root.join(".git"))?;
+        for path in [
+            "../escaped",
+            "/tmp/absolute",
+            "docs/../../escaped",
+            "./docs/a.md",
+        ] {
+            let files = [(path.to_owned(), "x".to_owned())];
+            assert!(write_scaffold(&root, "main", &files).is_err(), "{path}");
+        }
+        assert!(!dir.path().join("escaped").exists());
+        write_scaffold(&root, "main", &[("docs/a.md".to_owned(), "x".to_owned())])?;
+        assert_eq!(std::fs::read_to_string(root.join("docs/a.md"))?, "x");
+        Ok(())
+    }
 
     #[test]
     fn slugs_and_names() {

@@ -146,6 +146,9 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
     }
 
     let settings = json_of(file(&plan, "claude-settings.json")?)?;
+    // SPEC-210 CON-004: the output style is the user settings' default, never forced here, where
+    // it would outrank `/output-style`.
+    assert!(settings.get("outputStyle").is_none(), "{settings}");
     // The turn boundaries may be held while no subscription has capacity (ADR-17): their CLI
     // timeout outlasts the hook client's 8-day hold; the others keep 15 s.
     for (event, timeout) in [
@@ -491,11 +494,12 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
         redaction_exe: None,
+        bypass_permissions: false,
     };
     let plan = plan_cockpit(&request)?;
-    // No Yulius settings (hooks, status line), MCP, prompt or approval bypass (SPEC-021
-    // CKP-002): Claude Code as a person starts it, on the default Opus 5.5 at high effort
-    // (SPEC-023 DEF-004); `/model` and `/effort` still change it.
+    // No Yulius settings (hooks, status line), MCP or prompt (SPEC-021 CKP-002), and uncontained
+    // no approval bypass (SPEC-208 BYP-004): on the default Opus 5.5 at high effort (SPEC-023
+    // DEF-004); `/model` and `/effort` still change it.
     assert_eq!(
         plan.argv,
         ["claude", "--model", "claude-opus-5-5", "--effort", "high"]
@@ -589,6 +593,52 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
 }
 
 #[test]
+fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult {
+    let request = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: Some(SESSION.into()),
+        continue_interrupted: false,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
+        bypass_permissions: true,
+    };
+    let plan = plan_cockpit(&request)?;
+    // SPEC-208 BYP-001: bypass-permissions mode, not Claude Code's auto mode; it runs as uid 0 of
+    // its sandbox, where Claude Code takes the flag only with IS_SANDBOX.
+    assert_eq!(
+        plan.argv,
+        [
+            "claude",
+            "--resume",
+            SESSION,
+            "--model",
+            "claude-opus-5-5",
+            "--effort",
+            "high",
+            "--dangerously-skip-permissions"
+        ]
+    );
+    assert!(plan.env.contains(&("IS_SANDBOX".into(), "1".into())));
+    // BYP-004: uncontained, neither.
+    let plain = plan_cockpit(&CockpitRequest {
+        bypass_permissions: false,
+        ..request
+    })?;
+    assert!(
+        !plain
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions")
+    );
+    assert!(!plain.env.iter().any(|(k, _)| k == "IS_SANDBOX"));
+    Ok(())
+}
+
+#[test]
 fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -> TestResult {
     let request = CockpitRequest {
         cwd: PathBuf::from("/data/sandboxes/s1/repo"),
@@ -603,6 +653,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
         redaction_exe: None,
+        bypass_permissions: false,
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-037 MGT-004: the Yulius MCP server inline, its bearer read from the environment; the
@@ -679,6 +730,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         ],
         mcp_servers: Vec::new(),
         redaction_exe: None,
+        bypass_permissions: false,
     };
     let plan = plan_cockpit(&request)?;
     let at = plan
@@ -687,6 +739,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         .position(|a| a == "--settings")
         .ok_or("--settings")?;
     let settings: serde_json::Value = serde_json::from_str(&plan.argv[at + 1])?;
+    // Exactly these keys: no `outputStyle` either (SPEC-210 CON-004).
     assert_eq!(
         settings,
         serde_json::json!({ "disabledMcpjsonServers": [
@@ -719,6 +772,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         project_mcp_servers: vec!["apify".into()],
         mcp_servers: servers(),
         redaction_exe: Some(PathBuf::from("/opt/yulius it's/yulius")),
+        bypass_permissions: false,
     };
     let plan = plan_cockpit(&request)?;
     let value_of = |flag: &str| -> Result<Value, Box<dyn std::error::Error>> {
@@ -753,6 +807,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
     );
     let settings = value_of("--settings")?;
     assert_eq!(settings["disabledMcpjsonServers"], json!(["apify"]));
+    assert!(settings.get("outputStyle").is_none(), "{settings}");
     assert_eq!(
         settings["hooks"],
         json!({ "PostToolUse": [{ "matcher": "*", "hooks": [{

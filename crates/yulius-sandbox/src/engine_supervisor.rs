@@ -296,6 +296,7 @@ impl Supervisor {
 /// containers, which may bind the directory) put there: the holder sees the whole host, so the
 /// name is opened with `O_PATH | O_NOFOLLOW`, must be a socket, and is connected through
 /// `/proc/self/fd`, which names exactly that inode (no second lookup to race).
+#[cfg(target_os = "linux")]
 pub(crate) async fn connect_control(path: &Path) -> io::Result<UnixStream> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _};
@@ -312,6 +313,15 @@ pub(crate) async fn connect_control(path: &Path) -> io::Result<UnixStream> {
     let stream = UnixStream::connect(format!("/proc/self/fd/{}", handle.as_raw_fd())).await;
     drop(handle);
     stream
+}
+
+/// The sandbox's Docker engine runs in a holder's namespaces, which are Linux-only.
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn connect_control(_path: &Path) -> io::Result<UnixStream> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the sandbox's Docker engine is Linux-only",
+    ))
 }
 
 async fn stop(mut child: Child, grace: Duration) {
@@ -762,6 +772,7 @@ open(stopped, "w").write("stopped")
     /// Review of SPEC-187 (high): the engine can write its control directory (any container
     /// may bind it), while the holder sees the whole host. A link planted at the control socket
     /// must never lead the holder to another socket of the host.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_link_at_the_control_socket_is_never_followed() -> io::Result<()> {
         let f = Fixture::new()?;

@@ -50,7 +50,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask) and `scripts/` (the gates, and `vidoc_scan.py`, the security scan that `yulius` embeds as `yulius security-scan`, switched on or off in `.config/vidoc.toml`) |
+| tooling | `tools/` (fake agent, xtask) and `scripts/` (the gates, among them the macOS compile check with `zig_macos.py`, and `vidoc_scan.py`, the security scan that `yulius` embeds as `yulius security-scan`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
@@ -105,6 +105,14 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
   `setns` and `pivot_root`) bounds every container.
+- **Removal.** Removing a sandbox
+  ([SPEC-206](../.ai/specs/SPEC-206-i-deleted-sandbox-from-yulius-but-it-s-s.md)) stops its tasks,
+  cancels its CI runs, ends its Superagents, Shells and browser (a start under way ends itself
+  once it reads the removal), and retires its holder. A `retired` marker in the holder's state
+  directory makes `prepare` refuse the sandbox and the upkeep tick stop the holder, with its
+  engine, containers and egress, a minute after the retirement once no run holds a lease; a
+  restart stops it instead of adopting it. A run's own processes end with the run (its own PID
+  namespace). A CD deploy already running finishes.
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
   `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
   (`KillMode=process` keeps the holder and front running). The front makes it again before each
@@ -282,6 +290,38 @@ the request is kept in `playground_purges`, and its `origin` and sandbox directo
 only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
 once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
 
+**Leftovers** ([SPEC-215](../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md),
+[decision 0170](decisions/0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md)).
+Every path under the data directory has an owner record and a rule for when it is garbage (the
+inventory in SPEC-215). `yulius-domain::leftovers` holds the kinds and their policy (safe
+automatically, needs a person, report only). `yulius-app::leftovers` scans by kind: removed
+sandboxes from `SandboxStore::removed_sandboxes`, live sandboxes' ended caches (from the disk
+upkeep's own scan), worktrees no task owns, unused CI checkouts, Git records of vanished
+worktrees, and instance directories no record owns. It deletes one item at a time after its
+**guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
+`still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
+`holder_live` is false, and a CI claim is held while checkouts go. Trees whose files belong to a
+sandbox's mapped ids go through the isolation's `remove_owned_tree` (`base::remove_tree` as root
+of a mapped namespace). No link is followed: an item reached through one is never listed, and the
+removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
+the opened directory, so a link a sandbox swaps in after the check fails the removal. The automatic round runs at every start and hourly. People reach the
+same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
+loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
+
+```mermaid
+flowchart LR
+  T["start + hourly round"] --> SC["scan by kind"]
+  UI["Settings → Instance → Leftovers"] -->|"/api/admin/leftovers*"| SC
+  CLI["yulius leftovers (root, service user)"] -->|"/internal/leftovers* + key file"| SC
+  SC --> ST[("store: sandboxes, removed sandboxes, tasks, attempts, CI runs")]
+  SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, runs/, transcripts/, system/"]
+  SC --> L["items: kind, path, size, owner, reason, safe?"]
+  L -->|"safe only (round) or chosen (person)"| G{"guard again: removed 10 min, nothing runs, no deploy, holder stopped, CI claimed"}
+  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then through the opened directory; or isolation remove_owned_tree"]
+  G -->|"no longer holds"| K["kept, reported"]
+  D --> A[("audit: leftovers.delete / leftovers.failed")]
+```
+
 A playground moves to GitHub
 ([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
 [decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
@@ -403,9 +443,13 @@ default) is launched with `/goal <condition>` as Claude Code's prompt argument: 
 typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. Until it
 is confirmed the run directory holds `launch-goal-pending`, so a restarted server watches it again
 ([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md)). The
-condition names the request file in the sandbox home, which keeps the whole request, and the
-attached files, which the agent opens with its Read tool (a `/goal` carries no image
-block); the request file writes each file inside the text where it sits (`[file N: <path>]`). A
+condition is the person's whole request, its lines kept and each attached file at its place as
+`[file N: <path>]` (the agent opens it with its Read tool, since a `/goal` carries no image block),
+then a blank line and the definition of done. Past Claude Code's 4000 UTF-16 code units it is cut
+and points at the request file in the sandbox home, which keeps the whole request with the same
+markers. Yulius's other rules reach the agent and the goal's judge natively, in the SessionStart
+briefing ([SPEC-212](../.ai/specs/SPEC-212-we-need-to-approach-it-differently-we-ca.md),
+[decision 0168](decisions/0168-the-goal-is-the-whole-request-and-the-briefing-carries-the-rules.md)). A
 prompt task's first message is its request. Without an image it is the CLI prompt argument, each
 file mentioned where it sits (`@"<path>"`). With an image the session starts with no prompt and
 Yulius types the message into the TUI, in order: the text, each image's path pasted on its own
@@ -413,11 +457,18 @@ where it sits (Claude Code shows `[Image #N]` at the cursor and sends an image b
 files mentioned in the text, then Enter (an `@` mention of an image would only be a Read tool
 call). Until that
 Enter a person's keys are not written into the session; the first one is answered with a notice.
-A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn; a
+A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn, as
+one line of at most 700 code units (Claude Code takes a longer write as a paste, which is no
+command): the request when it fits, else the request file named; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
 (only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
-a worktree's trust up there when `.claude/settings.json` pre-approves tools. If a trust prompt
+a worktree's trust up there when `.claude/settings.json` pre-approves tools. The same preparation,
+for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the config dir's user
+`settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
+`/output-style` and a repository's committed style still win
+([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
@@ -448,7 +499,7 @@ sequenceDiagram
     UI->>S: create task (prompt, each file in place as @'path')
     alt goal mode
         S->>S: write the request file (request with [file N: path] in place, attached files, definition of done)
-        S->>C: launch with prompt /goal <condition naming the request file and attached files>
+        S->>C: launch with prompt /goal <the whole request, [file N: path] in place, then Done = …>
         opt Claude Code shows its folder-trust prompt
             S-->>UI: notice: answer it in the terminal (flagged if unanswered)
             UI->>C: a person answers (not a draft)
@@ -581,7 +632,10 @@ Every user has one plain Claude Code session per sandbox, shown as the **Superag
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
-conversation resumed whenever it starts again. Its start, like a terminal's, runs detached from
+conversation resumed whenever it starts again. On a contained server it runs in Claude Code's
+bypass-permissions mode, as task runs do (`--dangerously-skip-permissions`, `IS_SANDBOX=1`,
+[SPEC-208](../.ai/specs/SPEC-208-tasks-and-the-superagent-should-run-in-d.md),
+[decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)). Its start, like a terminal's, runs detached from
 the request, so a client that goes away mid-start never leaves a second or half-started session
 ([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
 [decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
@@ -657,6 +711,20 @@ for the people who manage it
 ([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
 [decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
 
+Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
+a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
+folder or `~/` for the caller's home (the sandbox home for a task, its person's home for the
+Superagent, shared by their projects). Yulius walks to it from a folder the agent cannot replace (the
+canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` opens
+its target (`open_folder`: one folder at a time without following links, real path checked), reads a regular
+file of at most 16 KiB, converts it with `dotenv::agent_value_from_file` (the CLI import's
+conversion too) and stores it through `App::insert_agent_secret`, the Secrets page's path. The
+secret has no hosts and no `.env` allowance, its creator is the person the caller acts for (write
+access required) and its audit actor is the agent. The file is removed through the same folder
+handle only when asked
+([SPEC-211](../.ai/specs/SPEC-211-yulius-should-be-able-to-create-secrets.md),
+[decision 0167](decisions/0167-agents-create-agent-secrets-from-a-file-yulius-reads.md)).
+
 `yulius secrets import` (`crates/yulius/src/cli.rs`, `yulius-import`'s `secrets_import` and
 `dotenv`) adds secrets from a computer through the same create calls as the Secrets page, with
 the CLI's bearer token: it reads a dotenv file, stdin or hidden prompts, lists the caller's
@@ -703,6 +771,7 @@ flowchart LR
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management and vault tools"]
   MCP -->|"secret_copy_to_env (SecretUser::Superagent)"| ENV[".env in the sandbox repository"]
+  MCP -->|"secret_create_from_file: reads a work-folder or ~/ file, no links"| VA[("Agent vault: new secret, no hosts")]
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
@@ -715,7 +784,10 @@ An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Sinc
 (ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
 nothing. The agent works out the service's host and proposes it; the request waits on the secret
 (`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
-so an agent misled by injected content cannot send a secret to another server.
+so an agent misled by injected content cannot send a secret to another server. Storing a host or
+`.env` request publishes `secrets.updated` to the secret's sandbox (to every sandbox for an
+instance-wide secret), so an open Secrets page reads its list again and shows Allow without a
+reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
 
 ```mermaid
 sequenceDiagram
@@ -728,6 +800,7 @@ sequenceDiagram
     UI->>App: POST agent-secrets (hosts [], injection none)
     A->>App: secrets_list, then secret_request_hosts(model.vidocsecurity.com)
     App-->>A: requested, waiting for a person (task needs attention)
+    App-->>UI: secrets.updated (open page reads the list again, shows Allow)
     A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: forwarded without the secret (not bound yet)
     P->>UI: Allow

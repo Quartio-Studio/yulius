@@ -155,6 +155,37 @@ pub trait SandboxIsolation: Send + Sync {
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 
+    /// `sandbox` was removed (SPEC-206 RMV-004): its holder, with every process in it, stops
+    /// once no run holds a lease, and is never adopted again (may finish in the background).
+    fn retire(&self, _sandbox: &SandboxId) {}
+
+    /// Whether the holder recorded under `runtime/sandboxes/<name>` is alive (SPEC-215 LFT-002):
+    /// its system layer and state are never deleted while it is. `false` without isolation.
+    async fn holder_live(&self, _name: &str) -> bool {
+        false
+    }
+
+    /// Removes `path`, a tree of the data directory whose files may belong to a sandbox's mapped
+    /// ids (`sysroots/<sid>`, `runtime/sandboxes/<sid>`, `system/base-<n>`), as root of a mapped
+    /// namespace where the service user cannot (SPEC-215). Without isolation nothing is mapped:
+    /// a plain removal.
+    ///
+    /// # Errors
+    /// The removal failed.
+    async fn remove_owned_tree(&self, path: &std::path::Path) -> Result<(), String> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || crate::playground::purge::delete_tree(&path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    /// Bases of sandboxes' systems that are not current and that no live holder mounts
+    /// (ADR-0161), as paths; empty without isolation.
+    async fn unused_bases(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
     /// Prunes `sandbox`'s Docker engine: build cache and images no container uses (never
     /// containers or volumes). Returns the bytes freed; `None` without an engine or a live holder
     /// (SPEC-187 DKR-006).

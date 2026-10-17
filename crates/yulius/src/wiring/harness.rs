@@ -190,13 +190,16 @@ impl HarnessPort for HarnessAdapter {
             project_mcp_servers: l.project_mcp_servers.clone(),
             mcp_servers,
             redaction_exe: Some(self.yulius_exe.clone()),
+            bypass_permissions: l.contained,
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
-        // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
-        yulius_harness::claude_config::ensure_claude_config(&l.config_dir_host, &l.cwd, false)
-            .map_err(|e| {
-                AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
-            })?;
+        // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
+        yulius_harness::claude_config::ensure_claude_config(
+            &l.config_dir_host,
+            &l.cwd,
+            l.contained,
+        )
+        .map_err(|e| AppError::Upstream(format!("cannot prepare the Claude Code config: {e}")))?;
         // Moved past a usage limit, the conversation steps back over it first (SPEC-074 SUP-004,
         // as a task's does, SPEC-034); a failed step back still resumes.
         if let (Some(session), true) = (&l.resume, l.continue_interrupted) {
@@ -532,6 +535,52 @@ mod tests {
             credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
         };
         launch::plan_launch(&request)?;
+        Ok(())
+    }
+
+    /// SPEC-210 CON-001: a task run and a Superagent both start with their config dir's user
+    /// settings defaulted to the Concise output style.
+    #[test]
+    fn every_claude_code_launch_defaults_to_the_concise_output_style()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::Secret;
+        let style = |config: &Path| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let text = std::fs::read_to_string(config.join("settings.json"))?;
+            Ok(serde_json::from_str::<serde_json::Value>(&text)?["outputStyle"].clone())
+        };
+        let dir = tempfile::tempdir()?;
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let home = dir.path().join("home");
+        adapter.plan(&HarnessLaunch {
+            harness: Harness::ClaudeCode,
+            mode: SessionMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: dir.path().to_path_buf(),
+            sandbox_home: home.clone(),
+            run_dir: dir.path().join("run"),
+            model: None,
+            effort: None,
+            contained: false,
+            mcp: Vec::new(),
+            credential: Secret("token".into()),
+        })?;
+        assert_eq!(style(&home.join(".claude"))?, "Concise");
+        let config = dir.path().join("cockpit");
+        adapter.plan_cockpit(&CockpitLaunch {
+            cwd: dir.path().to_path_buf(),
+            config_dir: config.clone(),
+            config_dir_host: config.clone(),
+            resume: None,
+            continue_interrupted: false,
+            credential: Secret("token".into()),
+            yulius: None,
+            project_mcp_servers: Vec::new(),
+            mcp: Vec::new(),
+            contained: false,
+        })?;
+        assert_eq!(style(&config)?, "Concise");
         Ok(())
     }
 }

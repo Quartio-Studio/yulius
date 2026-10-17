@@ -143,6 +143,13 @@ pub enum UiEvent {
         /// Sandbox id.
         sandbox_id: String,
     },
+    /// An agent asked for an agent secret's hosts or a `.env` copy, or created one (SPEC-211):
+    /// open Secrets pages of the sandbox read its agent secrets again (SPEC-209). Scoped like the secret; it names nothing.
+    #[serde(rename = "secrets.updated")]
+    SecretsUpdated {
+        /// The secret's sandbox, or `None` for a secret of every sandbox.
+        sandbox_id: Option<String>,
+    },
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,

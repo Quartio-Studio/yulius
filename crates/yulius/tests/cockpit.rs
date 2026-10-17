@@ -527,6 +527,100 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     Ok(())
 }
 
+/// SPEC-206 RMV-003 (#624): removing a sandbox ends its Superagents and terminals. They kept
+/// running, and a person watching one saw the removed sandbox's Superagent go on working.
+#[tokio::test]
+async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    f.h.github.set_perm("alice", "acme/fixture", perms("admin"));
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let terminal = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/shells",
+        Some(json!({})),
+        &f.carol,
+    )
+    .await?;
+    assert_eq!(terminal.status, StatusCode::CREATED, "{:?}", terminal.body);
+    assert_eq!(f.h.app.sandbox_shells(&sid()).len(), 2);
+
+    let removed = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    wait_for("the removed sandbox's shells to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+    // The watcher's terminal is told and closed: nothing of the sandbox goes on behind it.
+    let closed = tokio::time::timeout(WAIT, async {
+        while let Some(Ok(message)) = socket.next().await {
+            if matches!(message, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the viewer's socket closes");
+    assert_eq!(run_dirs(&f), 0, "no shell host is left");
+    Ok(())
+}
+
+/// SPEC-206 RMV-003 (review of #193): a Superagent whose start was under way when its sandbox
+/// was removed ends once it registers; it outlived the removal (the removal ended only the
+/// shells registered by then).
+#[tokio::test]
+async fn a_superagent_starting_while_the_sandbox_is_removed_ends() -> TestResult {
+    let f = fixture().await?;
+    f.h.github.set_perm("alice", "acme/fixture", perms("admin"));
+    f.gate.arm();
+    let app = f.h.app.clone();
+    let router = f.h.router.clone();
+    let alice = f.alice.clone();
+    let open = tokio::spawn(async move {
+        call(
+            &router,
+            Method::POST,
+            "/api/sandboxes/s1/cockpit",
+            None,
+            &alice,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    });
+    f.gate.reached().await;
+    assert!(app.sandbox_shells(&sid()).is_empty(), "not registered yet");
+
+    let removed = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+    f.gate.release();
+    let _ = open.await?;
+
+    wait_for("the late Superagent to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty() && run_dirs(&f) == 0
+    })
+    .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestResult {
     let f = fixture().await?;
@@ -1114,7 +1208,59 @@ async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult 
     assert_eq!(launch.config_dir_host, home_host.join(".claude"));
     assert_eq!(launch.cwd, repo);
     assert_eq!(launch.resume.as_deref(), Some("earlier"));
+    // A contained server's Superagent bypasses approvals, as its tasks do (SPEC-208 BYP-001).
+    assert!(launch.contained);
     assert!(h.app.sandbox_shells(&sid()).is_empty());
+    Ok(())
+}
+
+/// SPEC-208 BYP-001, BYP-002: a contained Superagent starts in bypass-permissions mode as root of
+/// its sandbox, its person's Claude config records the bypass accepted; uncontained, neither.
+#[test]
+fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let cwd = dir.path().join("repo");
+    std::fs::create_dir_all(&cwd)?;
+    let adapter = yulius::wiring::harness::HarnessAdapter::new(
+        PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        "http://127.0.0.1:9",
+    );
+    let launch = |home: &str, contained: bool| CockpitLaunch {
+        cwd: cwd.clone(),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        config_dir_host: dir.path().join(home),
+        resume: None,
+        continue_interrupted: false,
+        credential: yulius_app::model::Secret(TOKEN.into()),
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        mcp: Vec::new(),
+        contained,
+    };
+    let settled = |home: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        let path = dir.path().join(home).join(".claude.json");
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    };
+
+    let plan = adapter.plan_cockpit(&launch("contained", true))?;
+    assert_eq!(
+        plan.argv.last().map(String::as_str),
+        Some("--dangerously-skip-permissions"),
+        "{:?}",
+        plan.argv
+    );
+    assert!(plan.env.contains(&("IS_SANDBOX".into(), "1".into())));
+    assert_eq!(settled("contained")?["bypassPermissionsModeAccepted"], true);
+
+    let plain = adapter.plan_cockpit(&launch("plain", false))?;
+    assert!(
+        !plain
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions")
+    );
+    assert!(!plain.env.iter().any(|(k, _)| k == "IS_SANDBOX"));
+    assert!(settled("plain")?["bypassPermissionsModeAccepted"].is_null());
     Ok(())
 }
 
@@ -1228,6 +1374,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_update",
             "automations_list",
             "secret_copy_to_env",
+            "secret_create_from_file",
             "secret_request_hosts",
             "secret_verify",
             "secrets_list",
@@ -2390,6 +2537,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
+        "secret_create_from_file",
         "$NAME",
         "/s/fixture/secrets?section=agents",
     ] {
@@ -2409,6 +2557,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
+        "secret_create_from_file",
     ] {
         assert!(served.contains(&tool), "{tool}: {served:?}");
     }
@@ -2777,7 +2926,9 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     assert_eq!(verified["match"], "escaped_newlines", "{verified}");
     assert_eq!(verified["lines"], 7, "{verified}");
 
-    // Not allowed yet: asked for, as alice's Superagent, and nothing is written.
+    // Not allowed yet: asked for, as alice's Superagent, and nothing is written; the open
+    // Secrets pages hear of it (SPEC-209).
+    let mut announced = support::SecretAnnouncements::new(&f.h.app);
     let copy = |secrets: Value, path: Option<&str>| {
         let mut args = json!({"secrets": secrets, "reason": "the deploy script signs in"});
         if let Some(path) = path {
@@ -2796,6 +2947,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
         "{asked}"
     );
     assert!(!repo.join(".env").exists(), "nothing is written");
+    assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(record.env_files, EnvFiles::Asked);
     assert_eq!(
@@ -2853,6 +3005,8 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(!is_error, "{requested}");
     assert_eq!(requested["requested"], json!(["deploy.quartio.test"]));
+    // #631: the person's open Secrets page shows the request and its Allow at once.
+    assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(
         record.requested_hosts,
@@ -3223,5 +3377,100 @@ async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult 
     std::fs::write(&transcript, &text)?;
     other_cockpit(&g, &id).await?;
     g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-211 SCF-001, SCF-002, SCF-004 (AC-7): the Superagent stores a key in its person's home as
+/// an agent secret without seeing it, created by the person and audited as their Superagent; the
+/// stored value is the key file with literal `\n` (`secret_verify` matches the file's hash).
+#[tokio::test]
+async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
+    use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let home = f.data.join("users/u-alice/home");
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    let key = crate::secrets_env::openssh_key(4);
+    std::fs::write(home.join(".ssh/operator"), &key)?;
+
+    let (created, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_create_from_file",
+        json!({
+            "name": "DO_SSH_PRIVATE_KEY",
+            "file": "~/.ssh/operator",
+            "description": "operator SSH key (ed25519)"
+        }),
+    )
+    .await?;
+    assert!(!is_error, "{created}");
+    assert_eq!(created["created"], "DO_SSH_PRIVATE_KEY", "{created}");
+    assert_eq!(created["file"], "~/.ssh/operator", "{created}");
+    assert_eq!(created["deleted"], false, "{created}");
+    for line in key.lines().skip(1).take(5) {
+        assert!(!created.to_string().contains(line), "{created}");
+    }
+    assert!(home.join(".ssh/operator").exists(), "kept unless asked");
+
+    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    let record = records
+        .iter()
+        .find(|r| r.name == "DO_SSH_PRIVATE_KEY")
+        .ok_or("stored")?;
+    assert_eq!(record.sandbox_id, Some(sid()));
+    assert!(record.hosts.is_empty());
+    assert_eq!(record.env_files, EnvFiles::No);
+    assert!(!record.cd_prod);
+    assert_eq!(record.created_by, "u-alice");
+    assert_eq!(record.description, "operator SSH key (ed25519)");
+
+    let (verified, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "DO_SSH_PRIVATE_KEY", "sha256": f.h.app.deps.crypto.sha256_hex(key.as_bytes())}),
+    )
+    .await?;
+    assert!(!is_error, "{verified}");
+    assert_eq!(verified["match"], "escaped_newlines", "{verified}");
+    assert_eq!(verified["lines"], 7, "{verified}");
+
+    let audit = audited(&f, "vault.agent.create").await?;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0]["actor"], "cockpit:alice", "{audit:?}");
+    let detail = audit[0]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("from a file, by alice's Superagent"),
+        "{detail}"
+    );
+
+    // Review of SPEC-211, finding 1: the sandbox repository swapped for a link to Yulius' data
+    // folder is never followed.
+    std::fs::write(f.data.join("outside.txt"), "outside-synthetic-value-0004\n")?;
+    let repo = f.data.join("sandboxes/s1/repo");
+    std::fs::rename(&repo, f.data.join("sandboxes/s1/repo.old"))?;
+    std::os::unix::fs::symlink(&f.data, &repo)?;
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_create_from_file",
+        json!({"name": "OUTSIDE_KEY", "file": "outside.txt"}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        !refused.to_string().contains("outside-synthetic"),
+        "{refused}"
+    );
+    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    assert!(!records.iter().any(|r| r.name == "OUTSIDE_KEY"));
+    f.h.app.end_all_shells().await;
     Ok(())
 }

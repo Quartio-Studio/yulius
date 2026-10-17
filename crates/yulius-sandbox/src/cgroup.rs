@@ -277,7 +277,10 @@ impl Delegation {
     /// touching anything.
     #[must_use]
     pub fn sandbox_paths(&self, sandbox: &str) -> SandboxGroups {
-        let dir = self.unit.join(SANDBOXES).join(sandbox);
+        let dir = self
+            .unit
+            .join(SANDBOXES)
+            .join(crate::manager::path_name(sandbox));
         if self.controllers.iter().any(|c| c == "cpu") {
             SandboxGroups::leaves(&dir)
         } else {
@@ -291,7 +294,10 @@ impl Delegation {
     /// # Errors
     /// A group cannot be created or a limit written.
     pub fn sandbox_group(&self, sandbox: &str, limits: &Limits) -> io::Result<SandboxGroups> {
-        let dir = self.unit.join(SANDBOXES).join(sandbox);
+        let dir = self
+            .unit
+            .join(SANDBOXES)
+            .join(crate::manager::path_name(sandbox));
         std::fs::create_dir_all(&dir)?;
         for (file, value) in limits.files() {
             let controller = file.split('.').next().unwrap_or_default();

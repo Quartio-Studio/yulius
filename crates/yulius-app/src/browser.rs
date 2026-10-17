@@ -20,7 +20,7 @@ use yulius_contracts::events::UiEvent;
 use yulius_contracts::mcp::{ToolDescriptor, text_result};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::Activity;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -119,18 +119,36 @@ impl App {
                 .is_ok()
     }
 
-    /// The sandbox's browser, started on first use.
+    /// The sandbox's browser, started on first use; never for a removed sandbox (SPEC-206): its
+    /// removal is checked again once the browser runs, so a start racing the removal's own stop
+    /// is stopped too.
     ///
     /// # Errors
-    /// [`BrowserFailure`] when Chromium is missing or fails to start.
+    /// [`BrowserFailure`] when Chromium is missing or fails to start, or the sandbox was removed.
     pub async fn browser_session(
         &self,
         sandbox: &SandboxId,
     ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
-        self.deps
+        let removed =
+            || BrowserFailure::new(BrowserFailureKind::NotFound, "the sandbox was removed");
+        if self.sandbox_removed(sandbox).await {
+            return Err(removed());
+        }
+        let session = self
+            .deps
             .browser
             .ensure(sandbox, &self.browser_profile_dir(sandbox))
-            .await
+            .await?;
+        if self.sandbox_removed(sandbox).await {
+            self.deps.browser.stop(sandbox).await;
+            return Err(removed());
+        }
+        Ok(session)
+    }
+
+    /// Whether `sandbox` reads as removed ([`reads_removed`]).
+    pub(crate) async fn sandbox_removed(&self, sandbox: &SandboxId) -> bool {
+        reads_removed(&self.deps.store.sandbox(sandbox).await)
     }
 
     async fn agent_browser(&self, ctx: &AgentContext) -> AppResult<Arc<dyn BrowserSession>> {
@@ -318,12 +336,8 @@ impl App {
             browser.request_user_action(&params.tab_id, &params.reason, Some(&ctx.task.id))?;
         let store = &self.deps.store;
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        if task.status == TaskStatus::Running && task.activity != Some(Activity::NeedsAttention) {
-            store
-                .set_activity(&task.id, Some(Activity::NeedsAttention), self.now())
-                .await?;
-            self.publish_task(&task.id).await;
-        }
+        self.set_task_activity(&task, Activity::NeedsAttention)
+            .await?;
         let sandbox = store
             .sandbox(&task.sandbox_id)
             .await?
@@ -356,9 +370,29 @@ impl App {
     }
 }
 
+/// Whether a read of a sandbox says it was removed (or is unknown). A failed read says nothing:
+/// a store error never stops a live sandbox's browser or ends its shell (SPEC-206).
+fn reads_removed(read: &AppResult<Option<crate::model::SandboxRecord>>) -> bool {
+    match read {
+        Ok(Some(record)) => record.removed_at.is_some(),
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-206 (review of #193, round 2): only a positive read means removed; a store error
+    /// never stops a live sandbox's browser or ends its shell.
+    #[test]
+    fn only_a_read_that_says_so_means_removed() {
+        assert!(!reads_removed(&Err(AppError::Internal(
+            "database is locked".into()
+        ))));
+        assert!(reads_removed(&Ok(None)), "unknown: nothing runs for it");
+    }
 
     #[test]
     fn percent_encoding_keeps_only_unreserved_characters() {

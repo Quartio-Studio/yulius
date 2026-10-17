@@ -2,7 +2,8 @@
 // update offered from main (checked when the page opens, SPEC-149) with its new commits, "Update
 // now" and the update's progress (building → pausing tasks → restarting → resuming, with a
 // failure or rollback said plainly, and the new version's re-check of sandboxes' Docker), whether
-// sandboxes get Docker (SPEC-203), and the Jev and Vidoc keys.
+// sandboxes get Docker (SPEC-203), the leftovers on the disk (SPEC-215), and the Jev and Vidoc
+// keys.
 
 import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
@@ -10,6 +11,7 @@ import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { keySettingsCard } from '../instancekeys.js';
 import { sandboxDockerCard } from '../sandboxdocker.js';
+import { leftoversCard } from '../leftovers.js';
 import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
 
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
@@ -103,14 +105,15 @@ export function mountInstancePage(ctx) {
     frame.body.append(h('div', { class: 'card placeholder' }, 'Only the superadmin manages updates and the instance keys.'));
     return { el: frame.el };
   }
-  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, sandboxes’ Docker, the Jev and Vidoc keys' });
+  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, sandboxes’ Docker, leftovers, the Jev and Vidoc keys' });
   const updatesBody = h('div', { class: 'settings-body instance-body' }, skeleton('Loading updates…', 3, { block: true }));
   const checkButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => checkNow() }, icon('refresh', { size: 14 }), 'Check now');
   const updatesCard = h('section', { class: 'settings-section', 'aria-labelledby': 'updates-title' },
     h('div', { class: 'settings-head' }, icon('download', { size: 16 }), h('h2', { id: 'updates-title' }, 'Updates'), h('span', { class: 'muted small' }, 'from main of Quartio-Studio/yulius'), h('span', { class: 'spacer' }), checkButton),
     updatesBody);
   const docker = sandboxDockerCard(ctx);
-  frame.body.append(updatesCard, docker.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
+  const leftovers = leftoversCard(ctx);
+  frame.body.append(updatesCard, docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
   function render(view) {
     if (!view) return;
@@ -215,6 +218,7 @@ export function mountInstancePage(ctx) {
     destroy() {
       off();
       docker.destroy();
+      leftovers.destroy();
       if (ctx.updates) ctx.updates.setQuiet(false);
     },
   };
