@@ -168,8 +168,8 @@ fn default_output_style(config_dir: &Path) {
 /// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
 /// that do not read like that.
 fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
-    // Regular files only (`read_small`): a link would let the worktree name any directory, a FIFO
-    // block the launch.
+    // Regular files only (`read_small`): a link would make the host read a file outside the
+    // worktree, a FIFO block the launch.
     let small_file = |path: &Path| read_small(path).ok().flatten();
     let dot_git = small_file(&worktree.join(".git"))?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
@@ -286,6 +286,9 @@ fn open_regular(path: &Path) -> io::Result<Option<std::fs::File>> {
     {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.raw_os_error() == Some(nix::errno::Errno::ELOOP as i32) => {
+            return Err(io::Error::other(format!("{} is a link", path.display())));
+        }
         Err(err) => return Err(err),
     };
     if !file.metadata()?.is_file() {
@@ -640,7 +643,13 @@ mod tests {
         std::fs::create_dir_all(&config)?;
         let global = config.join(CLAUDE_GLOBAL_CONFIG);
         symlink(&outside, &global)?;
-        assert!(ensure_claude_config(&config, dir.path(), false).is_err());
+        let refused = ensure_claude_config(&config, dir.path(), false)
+            .err()
+            .ok_or("a linked .claude.json is refused")?;
+        assert!(
+            refused.to_string().ends_with(".claude.json is a link"),
+            "{refused}"
+        );
         assert!(global.symlink_metadata()?.file_type().is_symlink());
         std::fs::remove_file(&global)?;
         nix::unistd::mkfifo(&global, nix::sys::stat::Mode::S_IRWXU)?;
@@ -668,6 +677,27 @@ mod tests {
         std::fs::create_dir_all(&worktree)?;
         symlink(&gitfile, worktree.join(".git"))?;
         let config = dir.path().join(".claude-wt");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &main)?);
+        // A `commondir` that is a link is not followed either.
+        std::fs::remove_file(worktree.join(".git"))?;
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )?;
+        let common = dir.path().join("common");
+        std::fs::write(&common, "../..\n")?;
+        std::fs::remove_file(admin.join("commondir"))?;
+        symlink(&common, admin.join("commondir"))?;
+        let config = dir.path().join(".claude-common");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &main)?);
+        // A `.git` FIFO returns at once and trusts the worktree alone.
+        std::fs::remove_file(worktree.join(".git"))?;
+        nix::unistd::mkfifo(&worktree.join(".git"), nix::sys::stat::Mode::S_IRWXU)?;
+        let config = dir.path().join(".claude-fifo");
         ensure_claude_config(&config, &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(!trusted(&config, &main)?);

@@ -12,8 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `"outputStyle": "Concise"` to the sandbox's Claude Code user settings when they name no style;
   `/output-style` still switches a session (Claude Code keeps that choice for the worktree, so
   the Superagent keeps it and a new task starts concise again), and a style a repository commits
-  in `.claude/settings.json` wins. The host now reads the sandbox's Claude config and the
-  worktree's `.git` before a launch without following a link or blocking on a FIFO (#634).
+  in `.claude/settings.json` wins. Before a launch the host now opens the files of the sandbox's
+  Claude config and the worktree's `.git` without following a link or blocking on a FIFO; a
+  config dir that is itself a link is still open in #634.
 - The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
   ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
   check blocked commands the person asked for and its "Teach auto mode about your environment?"
