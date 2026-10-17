@@ -218,7 +218,10 @@ watching, steering and unblocking.
   secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once:
   every name is listed first, nothing that exists is overwritten, nothing is sent before the
   person types `yes`, and no value is ever shown, passed as an argument or written down
-  (SPEC-205).
+  (SPEC-205). Agents add one themselves from a file they can reach (a key they generated, a key in
+  `~/.ssh`): Yulius reads the file, so no one sees the value. The new secret has no hosts and no
+  `.env` allowance until a person allows them, an existing name is never replaced, and the
+  Superagent asks before it does this on an uncontained server (SPEC-211).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
