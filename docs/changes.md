@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Yulius builds on macOS again, and CI keeps it so (SPEC-214, ADR-0169, task #201, fixes #636).
+  #620 had put Linux-only calls in the sandbox and app crates (a build lock through a Linux-only
+  crate, the Docker engine's `O_PATH` socket, a file mode's width), so the `yulius` CLI could not
+  be installed on a Mac. They now compile there, and `scripts/dev ci` compiles every target for
+  macOS (`scripts/dev macos`), with a pinned zig compiling the vendored C on Linux. Linking and
+  tests on a Mac stay a manual check before a release.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,

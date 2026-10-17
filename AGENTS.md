@@ -69,6 +69,7 @@ python3 scripts/bootstrap.py
 scripts/dev doctor
 scripts/dev check
 scripts/dev lint
+scripts/dev macos
 scripts/dev test
 scripts/dev deps
 scripts/dev ci
@@ -103,6 +104,8 @@ The `yulius` crate's integration tests are one binary (ADR-0028): run one file's
 filter `<file>::` is a substring: `supervision::` also runs `pool_supervision::`), and declare a
 new test file in `tests/main.rs`.
 `cargo xtask <command>` also works with the pinned rustup toolchain and `.tools/bin` on PATH.
+`scripts/dev macos` (in `ci`) compiles every target for macOS, a supported development host;
+keep Linux-only calls behind `cfg(target_os = "linux")` ([ADR-0169](docs/decisions/0169-the-gate-compiles-every-target-for-macos-on-linux.md)).
 Never claim a missing command was passed; do not skip gates or widen allowlists to get green.
 
 ## Non-negotiable engineering boundaries

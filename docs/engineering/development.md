@@ -4,7 +4,9 @@
 
 Supported development hosts: macOS and Linux. Python 3.11+, rustup, Git and a C linker
 are required. Yulius CI (`[[ci.jobs]]` in `yulius.toml`) is the only CI and runs the gate on
-Linux; macOS is checked by running `scripts/dev ci` on a Mac before promotion. Windows support for a
+Linux; there it also compiles every target for macOS (`scripts/dev macos`,
+[decision 0169](../decisions/0169-the-gate-compiles-every-target-for-macos-on-linux.md)), but
+linking and tests on macOS are checked only by running `scripts/dev ci` on a Mac. Windows support for a
 future process supervisor is undecided; the shell entry point is not a Windows promise.
 
 ```sh
@@ -14,7 +16,10 @@ scripts/dev ci
 ```
 
 The compiler/components are pinned in `rust-toolchain.toml`. Exact Cargo tool
-versions are in `.config/tools.toml`. Bootstrap installs tools from locked crates.io
+versions are in `.config/tools.toml`, with the zig release (version and SHA-256 per Linux host)
+that compiles dependencies' vendored C for the macOS check; on Linux bootstrap downloads it once
+per home cache and links `.tools/bin/zig`, `macos-cc` and `macos-ar` (`scripts/zig_macos.py`).
+Bootstrap installs tools from locked crates.io
 packages into ignored `.tools/`, skips matching installed versions and can be rerun
 after failure. It does not change `rustup default`. `--install-rustup` installs rustup
 (no default toolchain, no profile edits) on a clean machine; unattended runs (`CI` set or no
@@ -34,9 +39,10 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`); checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
+| `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
-| `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
+| `scripts/dev ci` | doctor, check, lint, macos, test, deps, then rustdoc with warnings denied |
 | `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open critical or high findings, exit 2 when it could not run. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
