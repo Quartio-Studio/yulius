@@ -12,7 +12,7 @@ use support::{
 use yulius_app::auth::{DEVICE_STARTS_PER_MINUTE, MAX_DEVICE_GRANTS, MAX_DEVICE_GRANTS_PER_CLIENT};
 use yulius_app::error::AppError;
 use yulius_app::model::SandboxRecord;
-use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore};
+use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore, UserStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::TaskStatus;
@@ -496,6 +496,49 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
 /// The same-window case (F 2026-10-09): the browser's GitHub account is refused, GitHub's
 /// account picker is offered, and a reload or a denial lands on the sign-in page, never on a raw
 /// error (ACC-004, AC-ACC-3).
+/// SPEC-217 audit (Vidoc, high): an account linked to one GitHub user is never taken over by
+/// another GitHub user who holds its login now (GitHub frees a renamed account's login); the
+/// login admits only a user not linked yet.
+#[tokio::test]
+async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    h.github.add_user("code-alice", 11, "alice");
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "alice"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::CREATED);
+    let first = github_login(&h, "code-alice").await?;
+    assert_eq!(
+        first.location.as_deref(),
+        Some("/s/studio"),
+        "alice links id 11"
+    );
+    // alice renames her GitHub account; someone else registers `alice` (another id).
+    h.github.add_user("code-squatter", 31, "alice");
+    let squatter = github_login(&h, "code-squatter").await?;
+    assert_eq!(
+        squatter.location.as_deref(),
+        Some("/signin?error=not_admitted&next=/s/studio&login=alice"),
+        "the login of a linked account admits no one else"
+    );
+    assert!(squatter.set_cookie.is_none());
+    let linked = h.store.user_by_github_id(11).await?.ok_or("alice")?;
+    assert_eq!(linked.github_id, Some(11), "the link is kept");
+    assert!(h.store.user_by_github_id(31).await?.is_none());
+    // alice, under her new login, still signs in by her id.
+    h.github.add_user("code-renamed", 11, "alice-renamed");
+    let renamed = github_login(&h, "code-renamed").await?;
+    assert_eq!(renamed.location.as_deref(), Some("/s/studio"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() -> TestResult {
     let h = harness()?;
