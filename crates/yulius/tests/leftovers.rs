@@ -835,3 +835,322 @@ async fn the_loopback_routes_need_the_server_s_key() -> BoxResult<()> {
     assert_eq!(get(Some(format!("Bearer {key}"))).await?, StatusCode::OK);
     Ok(())
 }
+
+fn real_now_ms() -> BoxResult<i64> {
+    Ok(i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?)
+}
+
+/// A CI run of `sandbox` queued at `at` with jobs of `keys`.
+async fn ci_run(w: &World, sandbox: &str, id: &str, at: i64, keys: &[&str]) -> BoxResult<()> {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    let run = CiRunRecord {
+        id: id.into(),
+        sandbox_id: SandboxId::parse(sandbox)?,
+        reference: CiRef::PullRequest(1),
+        sha: "abc1234".into(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(at),
+        started_at: None,
+        ended_at: None,
+    };
+    let jobs: Vec<CiJobRecord> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| CiJobRecord {
+            id: format!("{id}-{key}"),
+            run_id: id.into(),
+            ordinal: u32::try_from(i).unwrap_or(0),
+            name: (*key).into(),
+            key: (*key).into(),
+            command: "true".into(),
+            matrix: None,
+            state: RunState::Passed,
+            reason: None,
+            exit_code: Some(0),
+            output: String::new(),
+            failures: None,
+            started_at: None,
+            ended_at: None,
+            need: yulius_domain::resources::Need::default(),
+        })
+        .collect();
+    w.h.store.insert_ci_run(&run, &jobs).await?;
+    Ok(())
+}
+
+/// Review blocker: a sandbox's agents and shells can put links into their sandbox directory. A
+/// linked `attachments/drafts/<user>` or `ci/jobs` never steers a deletion outside the sandbox:
+/// neither the data directory's files nor another sandbox's.
+#[tokio::test]
+async fn a_link_in_a_sandbox_never_steers_a_deletion_outside_it() -> BoxResult<()> {
+    let w = world().await?;
+    let live = w.sandbox("live").await?;
+    let victim = w.sandbox("victim").await?;
+    write(&w.at("master.key"), "the key")?;
+    std::fs::create_dir_all(live.join("attachments/drafts"))?;
+    std::os::unix::fs::symlink(&w.data, live.join("attachments/drafts/x"))?;
+    std::fs::remove_dir_all(live.join("ci/jobs"))?;
+    std::os::unix::fs::symlink(&victim, live.join("ci/jobs"))?;
+    let now = real_now_ms()? + 8 * 24 * 60 * 60 * 1000;
+    w.h.clock.0.store(now, Ordering::SeqCst);
+    ci_run(&w, "live", "r1", now - 60_000, &["gate"]).await?;
+
+    let items = w.scan().await?;
+    let outside: Vec<_> = items
+        .iter()
+        .filter(|i| {
+            !i.path.starts_with(&live) && i.sandbox.as_ref().is_some_and(|s| s.as_str() == "live")
+        })
+        .map(|i| i.path.clone())
+        .collect();
+    assert!(outside.is_empty(), "{outside:?}");
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(w.at("master.key").exists(), "{report:?}");
+    for kept in [
+        "repo/README.md",
+        "home/.claude/projects/x.jsonl",
+        "worktrees/t-victim/notes.txt",
+    ] {
+        assert!(victim.join(kept).exists(), "the victim keeps {kept}");
+    }
+    assert!(w.at("sandboxes").exists() && w.at("transcripts").exists());
+
+    // Even an item listed before the link appeared is refused at deletion.
+    let link_free = w.sandbox("other").await?;
+    write(&link_free.join("attachments/drafts/u-alice/old.png"), "png")?;
+    let items: Vec<Leftover> = w
+        .scan()
+        .await?
+        .into_iter()
+        .filter(|i| i.kind == Kind::OldDraft)
+        .collect();
+    assert_eq!(items.len(), 1, "{:?}", kinds(&items));
+    std::fs::rename(
+        link_free.join("attachments/drafts/u-alice"),
+        link_free.join("attachments/moved"),
+    )?;
+    std::fs::create_dir_all(w.at("elsewhere"))?;
+    write(&w.at("elsewhere/old.png"), "not a draft")?;
+    std::os::unix::fs::symlink(
+        w.at("elsewhere"),
+        link_free.join("attachments/drafts/u-alice"),
+    )?;
+    let report = w.h.app.delete_leftovers(&items, "root").await;
+    assert_eq!(report.deleted, 0, "{report:?}");
+    assert!(w.at("elsewhere/old.png").exists());
+    Ok(())
+}
+
+/// Review major: a worktree an agent made outside the sandbox directory (its own `/tmp`, which
+/// the host does not see) keeps its Git record; a record under the sandbox whose directory is gone
+/// goes, and only that one.
+#[tokio::test]
+async fn git_records_of_worktrees_outside_the_sandbox_are_kept() -> BoxResult<()> {
+    let w = world().await?;
+    let live = w.sandbox("live").await?;
+    let outside = tempfile::tempdir()?;
+    let review = outside.path().join("review");
+    git(
+        &live.join("repo"),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "review",
+            review.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::remove_dir_all(&review)?;
+    git(
+        &live.join("repo"),
+        &["worktree", "add", "-q", "-b", "gone", "../worktrees/gone"],
+    )?;
+    std::fs::remove_dir_all(live.join("worktrees/gone"))?;
+
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert!(
+        live.join("repo/.git/worktrees/review").exists(),
+        "outside the sandbox: kept"
+    );
+    assert!(
+        !live.join("repo/.git/worktrees/gone").exists(),
+        "under the sandbox and gone"
+    );
+    assert!(live.join("repo/.git/worktrees/t-live").exists());
+    Ok(())
+}
+
+/// Review major: a task's run directories stay while its attempt records exist (the last one
+/// holds the terminal's final screen, shown after a restart); one no attempt owns goes after a
+/// day.
+#[tokio::test]
+async fn an_existing_task_keeps_its_run_directories() -> BoxResult<()> {
+    use yulius_app::model::{AttemptRecord, LaunchKind};
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::ids::{AttemptId, TaskId};
+    use yulius_domain::task::AttemptState;
+    let w = world().await?;
+    w.sandbox("live").await?;
+    for (attempt, state) in [
+        ("a-last", AttemptState::Exited),
+        ("a-live", AttemptState::Live),
+    ] {
+        let run = w.at(&format!("runs/{attempt}"));
+        write(&run.join("final-screen"), "how it ended")?;
+        w.h.store
+            .insert_attempt(&AttemptRecord {
+                id: AttemptId::parse(attempt)?,
+                task_id: TaskId::parse("t-live")?,
+                seq: if attempt == "a-last" { 1 } else { 2 },
+                harness: yulius_domain::harness::Harness::ClaudeCode,
+                account_id: None,
+                provider_session_id: None,
+                launch_kind: LaunchKind::New,
+                state,
+                run_dir: run.to_string_lossy().into_owned(),
+                token_hash: format!("hash-{attempt}"),
+                host_token: w.h.app.deps.crypto.seal(&[1u8; 32])?,
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: w.h.app.now(),
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+    }
+    write(&w.at("runs/a-orphan/launch.json"), "{}")?;
+    w.h.clock
+        .0
+        .store(real_now_ms()? + 2 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert!(
+        w.at("runs/a-last/final-screen").exists(),
+        "its attempt record owns it"
+    );
+    assert!(w.at("runs/a-live").exists(), "a live run");
+    assert!(!w.at("runs/a-orphan").exists(), "no attempt owns it");
+    Ok(())
+}
+
+/// Review major: CI checkouts of jobs no run used for 14 days, and of lanes past the configured
+/// ones, go while no CI run of the sandbox runs; the jobs still used stay; a sandbox with no
+/// recent run keeps every checkout; a run that started after the scan keeps them.
+#[tokio::test]
+async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
+    let w = world().await?;
+    let live = w.sandbox("live").await?;
+    let idle = w.sandbox("idle").await?;
+    for name in ["gate.2", "old", "gate@7"] {
+        write(&live.join(format!("ci/jobs/{name}/f")), "x")?;
+    }
+    let now = w.h.app.now().0;
+    ci_run(&w, "live", "r-new", now - 60_000, &["gate"]).await?;
+    ci_run(
+        &w,
+        "live",
+        "r-old",
+        now - 20 * 24 * 60 * 60 * 1000,
+        &["old"],
+    )
+    .await?;
+
+    let items = w.scan().await?;
+    let stale: Vec<String> = items
+        .iter()
+        .filter(|i| i.kind == Kind::StaleCiCheckout)
+        .filter_map(|i| i.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(stale.len(), 2, "{stale:?}");
+    assert!(stale.contains(&"old".to_owned()) && stale.contains(&"gate@7".to_owned()));
+    assert!(
+        !items.iter().any(|i| i.path.starts_with(&idle)),
+        "no recent run: idle checkouts are not stale"
+    );
+
+    let id = SandboxId::parse("live")?;
+    assert!(w.h.app.ci_claim(&id), "a run starts after the scan");
+    let report = w.h.app.delete_leftovers(&items, "root").await;
+    w.h.app.ci_release(&id);
+    assert!(live.join("ci/jobs/old").exists(), "{report:?}");
+
+    w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(!live.join("ci/jobs/old").exists() && !live.join("ci/jobs/gate@7").exists());
+    assert!(live.join("ci/jobs/gate.2/f").exists(), "a job still used");
+    assert!(idle.join("ci/jobs/gate/build.log").exists());
+    Ok(())
+}
+
+/// LFT-007: a done task's cache listed by a scan stays when the task works again before the
+/// deletion.
+#[tokio::test]
+async fn a_cache_whose_task_works_again_is_kept() -> BoxResult<()> {
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::ids::TaskId;
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let live = w.sandbox("live").await?;
+    let worktree = live.join("worktrees/t-done");
+    git(
+        &live.join("repo"),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/t-done",
+            "../worktrees/t-done",
+        ],
+    )?;
+    write(&worktree.join("Cargo.toml"), "[package]\n")?;
+    write(&worktree.join(".gitignore"), "target\n")?;
+    write(&worktree.join("target/debug/blob"), "built")?;
+    seed_task(
+        &w.h,
+        "t-done",
+        "live",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&worktree),
+    )
+    .await?;
+    let task = TaskId::parse("t-done")?;
+    w.h.store
+        .set_activity(&task, Some(Activity::Done), w.h.app.now())
+        .await?;
+    w.later(31 * 60 * 1000);
+
+    let items: Vec<Leftover> = w
+        .scan()
+        .await?
+        .into_iter()
+        .filter(|i| i.kind == Kind::TaskCache)
+        .collect();
+    assert_eq!(items.len(), 1, "{:?}", kinds(&items));
+    w.h.store
+        .set_activity(&task, Some(Activity::Working), w.h.app.now())
+        .await?;
+    let report = w.h.app.delete_leftovers(&items, "root").await;
+    assert!(
+        report.kept.iter().any(|k| k.contains("works again")),
+        "{report:?}"
+    );
+    assert!(worktree.join("target/debug/blob").exists());
+    Ok(())
+}

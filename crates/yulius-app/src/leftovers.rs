@@ -20,7 +20,7 @@ use yulius_contracts::api::leftovers::{
     DeleteLeftoversRequest, LeftoverJobView, LeftoverView, LeftoversView,
 };
 use yulius_domain::disk::human;
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::leftovers::{
     AUTO_EVERY_MS, DRAFT_MAX_AGE_MS, ENDED_RUN_AFTER_MS, Kind, STALE_CHECKOUT_AFTER_MS,
     checkout_job_key, item_id, removed_long_enough, smoke_pid,
@@ -35,12 +35,12 @@ use crate::model::SandboxRecord;
 use crate::playground::purge::delete_tree;
 
 /// First automatic round after a start: holders are adopted and runs recovered by then.
-const AUTO_FIRST: Duration = Duration::from_secs(2 * 60);
+pub const AUTO_FIRST: Duration = Duration::from_secs(2 * 60);
 /// A worktree directory no task owns is listed once it is this old (a task's worktree is made
 /// before its record only for a moment).
 const ORPHAN_WORKTREE_AFTER_MS: i64 = 60 * 60 * 1000;
 /// CI runs read when looking for the jobs a sandbox still runs.
-const CI_RUNS_READ: u32 = 200;
+const CI_RUNS_READ: u32 = 1000;
 /// The host's own Docker data, reported only (ADR-0170).
 const HOST_DOCKER: [&str; 2] = ["/var/lib/docker", "/var/lib/containerd"];
 
@@ -173,6 +173,17 @@ impl Drop for CiClaim<'_> {
     }
 }
 
+/// Ends the job when whatever ran it stopped without ending it (a panic, a dropped task), so
+/// the slot never stays taken (later rounds and requests would be refused until a restart).
+struct JobEnd<'a>(&'a App);
+
+impl Drop for JobEnd<'_> {
+    fn drop(&mut self) {
+        self.0
+            .end_leftover_job(Some("the job stopped before its end".into()));
+    }
+}
+
 fn exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
@@ -201,6 +212,12 @@ fn entries(dir: &Path) -> Vec<(String, PathBuf)> {
     found
 }
 
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 fn pid_alive(pid: u32) -> bool {
     Path::new("/proc").join(pid.to_string()).exists()
 }
@@ -216,13 +233,74 @@ fn size_of(path: &Path) -> Option<u64> {
     }
 }
 
+/// Whether every directory from `root` (exclusive) down to `path`'s parent is a real directory,
+/// not a link: a sandbox's agents and shells can replace a directory of their sandbox with a link,
+/// which would steer a removal elsewhere (review of SPEC-215). `path` itself may be a link (it is
+/// removed as a link). A path that is not below `root` fails.
+fn no_link_between(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let parts: Vec<Component<'_>> = relative.components().collect();
+    if parts.is_empty() || parts.iter().any(|c| !matches!(c, Component::Normal(_))) {
+        return false;
+    }
+    let mut walked = root.to_path_buf();
+    for part in &parts[..parts.len() - 1] {
+        walked.push(part);
+        match std::fs::symlink_metadata(&walked) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// The directory a worktree's Git record (`.git/worktrees/<name>/gitdir`) points at, when that
-/// directory is gone.
-fn gone_worktree(record: &Path) -> Option<PathBuf> {
+/// directory lies inside `sandbox_dir` (where the host sees it) and is gone. A worktree outside it
+/// (an agent's own `/tmp`, which only its run sees) or a locked record is never gone.
+fn gone_worktree(record: &Path, sandbox_dir: &Path) -> Option<PathBuf> {
+    if exists(&record.join("locked")) {
+        return None;
+    }
     let gitdir = std::fs::read_to_string(record.join("gitdir")).ok()?;
     let dot_git = PathBuf::from(gitdir.trim());
     let worktree = dot_git.parent()?.to_path_buf();
-    (!exists(&worktree)).then_some(worktree)
+    // Inside the sandbox directory, with no link on the part of the way that still exists (a
+    // directory deleted by hand on the way is fine: nothing can be linked there).
+    let Ok(relative) = worktree.strip_prefix(sandbox_dir) else {
+        return None;
+    };
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return None;
+    }
+    let mut walked = sandbox_dir.to_path_buf();
+    for part in relative.components() {
+        walked.push(part);
+        match std::fs::symlink_metadata(&walked) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(worktree),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Removes the Git records of `repo` whose worktrees lay under `removed` and are gone now (what
+/// `git worktree prune` does for them, without touching any other record).
+fn drop_records_under(repo: &Path, removed: &Path, sandbox_dir: &Path) {
+    for (_, record) in entries(&repo.join(".git").join("worktrees")) {
+        if let Some(worktree) = gone_worktree(&record, sandbox_dir)
+            && worktree.starts_with(removed)
+            && let Err(err) = delete_tree(&record)
+        {
+            tracing::warn!(record = %record.display(), error = %err, "a worktree record stays");
+        }
+    }
 }
 
 impl App {
@@ -234,12 +312,10 @@ impl App {
         path
     }
 
-    /// Whether `path` lies inside the data directory, with no `..` on the way (every deletion
-    /// is checked against it).
+    /// Whether `path` lies inside the data directory with no `..` and no link on the way (every
+    /// item is checked against it when listed and again right before its deletion).
     fn inside_data(&self, path: &Path) -> bool {
-        path.starts_with(&self.config.data_dir)
-            && path != self.config.data_dir
-            && !path.components().any(|c| matches!(c, Component::ParentDir))
+        no_link_between(&self.config.data_dir, path)
     }
 
     /// Scans the data directory for leftovers, with their sizes.
@@ -266,9 +342,15 @@ impl App {
             .map(|s| s.id.to_string())
             .collect();
         self.scan_instance(&known, &mut found).await?;
-        // One item per path: a removed sandbox's run directory is also an old one.
+        // One item per path: a removed sandbox's run directory is also an old one. Nothing
+        // reached through a link is listed (it would point elsewhere); the host's own data is
+        // reported, never deleted.
         let mut seen = HashSet::new();
-        found.retain(|item: &Leftover| seen.insert(item.id.clone()));
+        found.retain(|item: &Leftover| {
+            let reachable = !item.kind.deletable()
+                || (self.inside_data(&item.path) && item.extra.iter().all(|p| self.inside_data(p)));
+            reachable && seen.insert(item.id.clone())
+        });
         let measured = tokio::task::spawn_blocking(move || {
             for item in &mut found {
                 if item.bytes.is_none() {
@@ -463,9 +545,7 @@ impl App {
         let drafts = dir.join("attachments").join("drafts");
         for (_, user_dir) in entries(&drafts) {
             for (name, file) in entries(&user_dir) {
-                let old = std::fs::symlink_metadata(&file)
-                    .is_ok_and(|m| now - m.mtime() * 1000 >= DRAFT_MAX_AGE_MS);
-                if old {
+                if self.old_draft(&file) {
                     out.push(
                         Leftover::new(
                             Kind::OldDraft,
@@ -480,6 +560,57 @@ impl App {
         Ok(())
     }
 
+    /// Whether `file` is a regular draft attachment (never a link) older than
+    /// [`DRAFT_MAX_AGE_MS`].
+    fn old_draft(&self, file: &Path) -> bool {
+        let now = self.now().0;
+        std::fs::symlink_metadata(file)
+            .is_ok_and(|m| m.file_type().is_file() && now - m.mtime() * 1000 >= DRAFT_MAX_AGE_MS)
+    }
+
+    /// The job keys runs of `sandbox` used in the last [`STALE_CHECKOUT_AFTER_MS`]; `None` when
+    /// no run used any (its checkouts are idle, not stale) or when the runs read do not reach
+    /// back that far (nothing can be said).
+    async fn ci_keys_used(&self, sandbox: &SandboxId) -> AppResult<Option<HashSet<String>>> {
+        let since = self.now().0 - STALE_CHECKOUT_AFTER_MS;
+        let runs = self.deps.store.ci_runs(sandbox, CI_RUNS_READ).await?;
+        let read_all = runs.len() < usize::try_from(CI_RUNS_READ).unwrap_or(usize::MAX);
+        if !read_all && runs.last().is_some_and(|run| run.queued_at.0 >= since) {
+            return Ok(None);
+        }
+        let mut used: HashSet<String> = HashSet::new();
+        let mut recent = 0;
+        for run in runs.iter().filter(|run| run.queued_at.0 >= since) {
+            recent += 1;
+            for job in self.deps.store.ci_jobs(&run.id, false).await? {
+                used.insert(job.key);
+            }
+        }
+        Ok((recent > 0).then_some(used))
+    }
+
+    /// Why the CI checkout `name` is stale given the job keys `used`; `None` when it is not.
+    fn checkout_stale(&self, name: &str, used: &HashSet<String>) -> Option<String> {
+        let lanes = self.config.ci.lanes.max(1);
+        let (unlaned, lane) = match name.split_once('@') {
+            Some((key, lane)) => (key, lane.parse::<u32>().ok()),
+            None => (name, Some(0)),
+        };
+        let job_used = used.contains(unlaned) || used.contains(checkout_job_key(name));
+        let lane_used = lane.is_some_and(|lane| lane < lanes);
+        if job_used && lane_used {
+            None
+        } else if job_used {
+            Some(format!(
+                "CI checkout {name}: a lane past the {lanes} configured"
+            ))
+        } else {
+            Some(format!(
+                "CI checkout {name}: no run used its job for 14 days"
+            ))
+        }
+    }
+
     /// CI checkouts whose job no run of the sandbox used for [`STALE_CHECKOUT_AFTER_MS`], or of a
     /// lane past the configured ones. A sandbox with no recent run keeps its checkouts (they are
     /// idle, not stale).
@@ -488,43 +619,17 @@ impl App {
         sandbox: &SandboxRecord,
         out: &mut Vec<Leftover>,
     ) -> AppResult<()> {
-        let jobs_dir = self.ci_dir(&sandbox.id).join("jobs");
-        let checkouts = entries(&jobs_dir);
+        let checkouts = entries(&self.ci_dir(&sandbox.id).join("jobs"));
         if checkouts.is_empty() {
             return Ok(());
         }
-        let since = self.now().0 - STALE_CHECKOUT_AFTER_MS;
-        let mut used: HashSet<String> = HashSet::new();
-        let mut recent = 0;
-        for run in self.deps.store.ci_runs(&sandbox.id, CI_RUNS_READ).await? {
-            if run.queued_at.0 < since {
-                continue;
-            }
-            recent += 1;
-            for job in self.deps.store.ci_jobs(&run.id, false).await? {
-                used.insert(job.key);
-            }
-        }
-        if recent == 0 {
+        let Some(used) = self.ci_keys_used(&sandbox.id).await? else {
             return Ok(());
-        }
-        let lanes = self.config.ci.lanes.max(1);
+        };
         for (name, path) in checkouts {
-            let (unlaned, lane) = match name.split_once('@') {
-                Some((key, lane)) => (key, lane.parse::<u32>().ok()),
-                None => (name.as_str(), Some(0)),
-            };
-            let job_used = used.contains(unlaned) || used.contains(checkout_job_key(&name));
-            let lane_used = lane.is_some_and(|lane| lane < lanes);
-            if job_used && lane_used {
-                continue;
+            if let Some(reason) = self.checkout_stale(&name, &used) {
+                out.push(Leftover::new(Kind::StaleCiCheckout, path, reason).of(sandbox));
             }
-            let reason = if job_used {
-                format!("CI checkout {name}: a lane past the {lanes} configured")
-            } else {
-                format!("CI checkout {name}: no run used its job for 14 days")
-            };
-            out.push(Leftover::new(Kind::StaleCiCheckout, path, reason).of(sandbox));
         }
         Ok(())
     }
@@ -533,7 +638,7 @@ impl App {
     fn scan_git_records(&self, sandbox: &SandboxRecord, out: &mut Vec<Leftover>) {
         let repo = self.sandbox_repo(&sandbox.id);
         for (name, record) in entries(&repo.join(".git").join("worktrees")) {
-            if let Some(worktree) = gone_worktree(&record) {
+            if let Some(worktree) = gone_worktree(&record, &self.sandbox_dir(&sandbox.id)) {
                 let mut item = Leftover::new(
                     Kind::GitMetadata,
                     record,
@@ -556,24 +661,14 @@ impl App {
         known: &HashSet<String>,
         out: &mut Vec<Leftover>,
     ) -> AppResult<()> {
-        let now = self.now().0;
-        let live: HashSet<String> = self
-            .deps
-            .store
-            .live_attempts()
-            .await?
-            .into_iter()
-            .flat_map(|a| [a.id.to_string(), a.run_dir])
-            .collect();
         for (name, path) in entries(&self.data_path(&["runs"])) {
-            let old = touched_ms(&path).is_some_and(|t| now - t >= ENDED_RUN_AFTER_MS);
-            if !old || live.contains(&name) || live.contains(&path.to_string_lossy().into_owned()) {
+            if self.run_dir_owned(&name, &path).await? {
                 continue;
             }
             out.push(Leftover::new(
                 Kind::EndedRun,
                 path,
-                "a run directory of no live run, untouched for a day",
+                "a run directory no attempt, CI job or deploy owns, untouched for a day",
             ));
         }
         for (name, path) in entries(&self.data_path(&["transcripts"])) {
@@ -635,6 +730,49 @@ impl App {
         Ok(())
     }
 
+    /// Whether the run directory `runs/<name>` is still someone's: touched within a day, an
+    /// attempt record's (its last one holds the terminal's final screen, shown after a restart),
+    /// a live attempt's, a CI job's of a queued or running run, or a running deploy's.
+    async fn run_dir_owned(&self, name: &str, path: &Path) -> AppResult<bool> {
+        let now = self.now().0;
+        if !touched_ms(path).is_some_and(|t| now - t >= ENDED_RUN_AFTER_MS) {
+            return Ok(true);
+        }
+        let store = &self.deps.store;
+        if let Ok(attempt) = AttemptId::parse(name)
+            && store.attempt(&attempt).await?.is_some()
+        {
+            return Ok(true);
+        }
+        let written = path.to_string_lossy();
+        if store
+            .live_attempts()
+            .await?
+            .iter()
+            .any(|a| a.run_dir == written)
+        {
+            return Ok(true);
+        }
+        if let Some(job) = name.strip_prefix("ci-") {
+            for run in store.active_ci_runs().await? {
+                if store
+                    .ci_jobs(&run.id, false)
+                    .await?
+                    .iter()
+                    .any(|j| j.id == job)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if let Some(run) = name.strip_prefix("cd-")
+            && store.running_cd_runs().await?.iter().any(|r| r.id == run)
+        {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Checks `item`'s rule again on fresh state right before it is deleted (LFT-007). `Ok`
     /// with a CI claim when its sandbox's checkouts are touched; `Err` with why it stays.
     async fn leftover_guard(&self, item: &Leftover) -> Result<Option<CiClaim<'_>>, String> {
@@ -688,18 +826,29 @@ impl App {
                 Ok(None)
             }
             Kind::EndedRun => {
-                let live = store.live_attempts().await.map_err(|e| e.to_string())?;
-                let path = item.path.to_string_lossy();
-                if live.iter().any(|a| a.run_dir == path) {
-                    return Err("its run is live".into());
-                }
-                if let Some(sandbox) = &sandbox
-                    && let Some(why) = self
+                if let Some(sandbox) = &sandbox {
+                    // A removed sandbox's agent run: its rule is the sandbox's.
+                    let live = store.live_attempts().await.map_err(|e| e.to_string())?;
+                    let path = item.path.to_string_lossy();
+                    if live.iter().any(|a| a.run_dir == path) {
+                        return Err("its run is live".into());
+                    }
+                    if let Some(why) = self
                         .removed_blocker(sandbox, None)
                         .await
                         .map_err(|e| e.to_string())?
+                    {
+                        return Err(why);
+                    }
+                    return Ok(None);
+                }
+                let name = file_name(&item.path);
+                if self
+                    .run_dir_owned(&name, &item.path)
+                    .await
+                    .map_err(|e| e.to_string())?
                 {
-                    return Err(why);
+                    return Err("a run owns it now, or it was touched within a day".into());
                 }
                 Ok(None)
             }
@@ -713,10 +862,24 @@ impl App {
             }
             Kind::StaleCiCheckout => {
                 let sandbox = sandbox.ok_or("no sandbox")?;
+                let used = self
+                    .ci_keys_used(&sandbox.id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let stale = used.is_some_and(|used| {
+                    self.checkout_stale(&file_name(&item.path), &used).is_some()
+                });
+                if !stale {
+                    return Err("a recent run used its job".into());
+                }
                 claim(&sandbox)
             }
             Kind::OrphanWorktree => {
                 let sandbox = sandbox.ok_or("no sandbox")?;
+                let now = self.now().0;
+                if !touched_ms(&item.path).is_some_and(|t| now - t >= ORPHAN_WORKTREE_AFTER_MS) {
+                    return Err("it was touched within the hour".into());
+                }
                 let name = item
                     .path
                     .file_name()
@@ -733,8 +896,9 @@ impl App {
                 Ok(None)
             }
             Kind::GitMetadata => {
-                if gone_worktree(&item.path).is_none() {
-                    return Err("its worktree is back".into());
+                let sandbox = sandbox.ok_or("no sandbox")?;
+                if gone_worktree(&item.path, &self.sandbox_dir(&sandbox.id)).is_none() {
+                    return Err("its worktree is back, or it is locked".into());
                 }
                 Ok(None)
             }
@@ -786,22 +950,30 @@ impl App {
                 Some(isolation) if isolation.unused_bases().await.contains(&item.path) => Ok(None),
                 _ => Err("the base is current or mounted".into()),
             },
-            Kind::OldDraft => Ok(None),
+            Kind::OldDraft => {
+                if self.old_draft(&item.path) {
+                    Ok(None)
+                } else {
+                    Err("not a draft older than 7 days any more".into())
+                }
+            }
             Kind::HostDocker => Err("reported only".into()),
         }
     }
 
     /// Removes one path of an item: a missing one is fine; a tree whose files may belong to a
     /// sandbox's mapped ids goes through the isolation.
-    async fn remove_leftover_path(&self, path: &Path) -> Result<(), String> {
+    async fn remove_leftover_path(&self, kind: Kind, path: &Path) -> Result<(), String> {
         if !exists(path) {
             return Ok(());
         }
-        let mapped = ["sysroots", "system"]
+        let system = ["sysroots", "system"]
             .iter()
             .map(|d| self.data_path(&[d]))
             .chain([self.data_path(&["runtime", "sandboxes"])])
             .any(|root| path.starts_with(root));
+        // A smoke test's or an unowned sandbox's home holds files of mapped ids too.
+        let mapped = system || (kind.mapped() && path.starts_with(self.data_path(&["sandboxes"])));
         if mapped && let Some(isolation) = self.isolation.get() {
             return isolation.remove_owned_tree(path).await;
         }
@@ -845,30 +1017,21 @@ impl App {
         .await
         .unwrap_or(0);
         let mut result = Ok(());
-        if item.kind == Kind::GitMetadata {
-            if let Some(repo) = &item.repo {
-                result = self
-                    .deps
-                    .git
-                    .prune_worktrees(repo)
-                    .await
-                    .map_err(|e| e.to_string());
+        for path in &paths {
+            if let Err(err) = self.remove_leftover_path(item.kind, path).await {
+                result = Err(err);
+                break;
             }
-            if result.is_ok() && exists(&item.path) {
-                result = Err("git worktree prune kept it".into());
-            }
-        } else {
-            for path in &paths {
-                if let Err(err) = self.remove_leftover_path(path).await {
-                    result = Err(err);
-                    break;
-                }
-            }
-            if let Some(repo) = item.repo.as_ref().filter(|r| exists(r))
-                && let Err(err) = self.deps.git.prune_worktrees(repo).await
-            {
-                tracing::warn!(repo = %repo.display(), error = %err, "git worktree prune failed");
-            }
+        }
+        // Git forgets the worktrees that went with it, and only those (`git worktree prune`
+        // would also drop the records of worktrees an agent keeps in its own `/tmp`).
+        if result.is_ok()
+            && let (Some(repo), Some(sandbox)) = (&item.repo, &item.sandbox)
+            && item.kind != Kind::GitMetadata
+        {
+            let (repo, removed, dir) = (repo.clone(), item.path.clone(), self.sandbox_dir(sandbox));
+            let _ = tokio::task::spawn_blocking(move || drop_records_under(&repo, &removed, &dir))
+                .await;
         }
         drop(guard);
         let target = item.slug.clone().unwrap_or_else(|| "instance".into());
@@ -907,18 +1070,18 @@ impl App {
     pub async fn delete_leftovers(&self, items: &[Leftover], actor: &str) -> DeleteReport {
         let mut report = DeleteReport::default();
         for item in items {
+            let (kept, failed) = (report.kept.len(), report.failed.len());
             self.delete_leftover(item, actor, &mut report).await;
-            let freed = report.freed;
-            let deleted = report.deleted;
-            let kept = report.kept.clone();
-            let failed = report.failed.clone();
+            let (freed, deleted) = (report.freed, report.deleted);
+            let new_kept = report.kept[kept..].to_vec();
+            let new_failed = report.failed[failed..].to_vec();
             self.with_leftovers(|inner| {
                 if let Some(job) = inner.job.as_mut() {
                     job.done += 1;
                     job.deleted = deleted;
                     job.freed = freed;
-                    job.kept = kept;
-                    job.failed = failed;
+                    job.kept.extend(new_kept);
+                    job.failed.extend(new_failed);
                 }
             });
         }
@@ -960,10 +1123,11 @@ impl App {
         })
     }
 
+    /// Ends the running job (once: a job already ended stays as it ended).
     fn end_leftover_job(&self, error: Option<String>) {
         let ended_at = rfc3339(self.now());
         self.with_leftovers(|inner| {
-            if let Some(job) = inner.job.as_mut() {
+            if let Some(job) = inner.job.as_mut().filter(|job| job.running) {
                 job.running = false;
                 job.ended_at = Some(ended_at);
                 if let Some(error) = error {
@@ -989,6 +1153,7 @@ impl App {
         if !self.begin_leftover_job("scan", "yulius", 0) {
             return None;
         }
+        let _end = JobEnd(self);
         if let Err(err) = self.scan_into_state().await {
             tracing::warn!(error = %err, "the leftovers scan failed");
             self.end_leftover_job(Some(err.to_string()));
@@ -1167,6 +1332,7 @@ impl App {
         }
         let app = Arc::clone(self);
         tokio::spawn(async move {
+            let _end = JobEnd(&app);
             let result = app.scan_into_state().await;
             app.end_leftover_job(result.err().map(|e| e.to_string()));
         });
@@ -1239,6 +1405,7 @@ impl App {
         let app = Arc::clone(self);
         let actor = actor.to_owned();
         tokio::spawn(async move {
+            let _end = JobEnd(&app);
             app.delete_leftovers(&chosen, &actor).await;
             app.end_leftover_job(None);
         });

@@ -13,7 +13,8 @@ use yulius_app::leftovers::CLI_KEY_FILE;
 use yulius_contracts::api::leftovers::{DeleteLeftoversRequest, LeftoverView, LeftoversView};
 use yulius_domain::disk::human;
 
-/// The server's loopback listener (`YULIUS_INTERNAL_BIND`).
+/// The server's loopback listener as `yulius serve` binds it by default (`--url` for another
+/// `YULIUS_INTERNAL_BIND`).
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8081";
 /// How long a scan or a deletion is followed at most.
 const JOB_LIMIT: Duration = Duration::from_secs(60 * 60);

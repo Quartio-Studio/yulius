@@ -140,7 +140,11 @@ impl Kind {
     pub const fn mapped(self) -> bool {
         matches!(
             self,
-            Self::RemovedSystem | Self::RemovedRuntime | Self::StaleSmoke | Self::UnusedBase
+            Self::RemovedSystem
+                | Self::RemovedRuntime
+                | Self::StaleSmoke
+                | Self::Unowned
+                | Self::UnusedBase
         )
     }
 }

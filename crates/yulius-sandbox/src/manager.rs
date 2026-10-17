@@ -973,7 +973,7 @@ impl Manager {
     /// Whether `sandbox`'s holder runs, ended while processes still use its namespaces (and its
     /// overlay mount), holds a lease, or is recorded alive in its state directory: its system
     /// layer and state are never deleted then (SPEC-215 LFT-002). A record that cannot be read
-    /// counts as not alive.
+    /// counts as alive; only a missing one counts as none.
     pub async fn holder_live(&self, sandbox: &str) -> bool {
         let entry = lock(&self.sandboxes).get(sandbox).cloned();
         if let Some(entry) = entry {
@@ -992,14 +992,19 @@ impl Manager {
         }
         let record = self.state_dir(sandbox).join(HOLDER_RECORD_FILE);
         tokio::task::spawn_blocking(move || {
-            read_json::<HolderRecord>(&record).is_ok_and(|record| alive(&record))
+            // A record that is there but cannot be read (a partial write, a newer format) may
+            // describe a live holder: kept, never guessed dead.
+            match read_json::<HolderRecord>(&record) {
+                Ok(record) => alive(&record),
+                Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+            }
         })
         .await
         .unwrap_or(true)
     }
 
-    /// Removes `path`, under `sysroots/`, `runtime/sandboxes/` or `system/` of the data
-    /// directory, as root of a mapped namespace where the service user cannot (its files belong
+    /// Removes `path`, under `sysroots/`, `runtime/sandboxes/`, `system/` or `sandboxes/` of the
+    /// data directory, as root of a mapped namespace where the service user cannot (its files belong
     /// to a sandbox's mapped ids; SPEC-215).
     ///
     /// # Errors
@@ -1010,6 +1015,7 @@ impl Manager {
             data.join("sysroots"),
             data.join("runtime").join("sandboxes"),
             data.join("system"),
+            data.join("sandboxes"),
         ]
         .iter()
         .any(|root| path.starts_with(root) && path != root.as_path())
@@ -2769,6 +2775,13 @@ while True:
         let data = tempfile::tempdir()?;
         let (manager, pid) = adopting_child(data.path())?;
         assert!(!manager.holder_live("other").await, "no holder");
+        let unreadable = manager.state_dir("torn");
+        std::fs::create_dir_all(&unreadable)?;
+        std::fs::write(unreadable.join(HOLDER_RECORD_FILE), "{\"inner_pid\": 4")?;
+        assert!(
+            manager.holder_live("torn").await,
+            "an unreadable record is never guessed dead"
+        );
         assert!(manager.holder_live("s1").await, "recorded alive");
         assert!(manager.adopt_one("s1").await);
         assert!(manager.holder_live("s1").await, "adopted");
@@ -2803,7 +2816,9 @@ while True:
         let manager = manager(data.path(), 1 << 30);
         let d = data.path();
         for refused in [
-            d.join("sandboxes/s1"),
+            d.join("master.key"),
+            d.join("users/u1"),
+            d.join("sandboxes"),
             d.join("sysroots"),
             d.join("sysroots/../sandboxes/s1"),
             PathBuf::from("/tmp"),
