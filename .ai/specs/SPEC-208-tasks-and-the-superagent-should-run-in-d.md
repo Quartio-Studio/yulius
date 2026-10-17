@@ -132,6 +132,8 @@ blocking commands, no auto-mode onboarding dialog, no approval prompts for ordin
   credential under the bypass, recorded as an accepted consequence in decision 0165; 2 major,
   stale "asks first" docs, amended; 3 nit, a 120-column doc line, rewrapped; 4 nit, uncontained
   Superagents also restart once on the revision bump, accepted (harmless).
+- Review round 2 (APPROVE at `c7a7f8df`): minor, ADR-0165 said the Superagent runs only while its
+  panel is used (it stops after 24 h without a viewer), reworded; nit, a 109-column line, rewrapped.
 - Not testable here: a real Claude Code 2.1.292 Superagent start inside bubblewrap showing
   "bypass permissions on" in the footer; the flag and `IS_SANDBOX` are the same ones task runs use
   there today.

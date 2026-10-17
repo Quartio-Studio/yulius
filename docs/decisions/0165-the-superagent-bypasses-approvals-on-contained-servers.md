@@ -54,9 +54,10 @@ bypass only with `IS_SANDBOX=1`.
   Bubblewrap does not limit what that token does on GitHub. Under the bypass a command the
   Superagent decides on, or one injected through what it reads (repository files, issues,
   transcripts, MCP output), runs without a prompt with that person's rights; a repository admin's
-  rights pass the production ruleset. Accepted: the person asked for the bypass, the Superagent
-  runs only while they use its panel, it already held that credential, and the same person's
-  terminal in the sandbox has the same reach. Narrowing it is the alternative above.
+  rights pass the production ruleset. Accepted: the person asked for the bypass, it acts only on
+  turns the person started (and stops after 24 h without a viewer), it already held that
+  credential, and the same person's terminal in the sandbox has the same reach. Narrowing it is
+  the alternative above.
 - Claude Code's own checks that ask even under the bypass (SPEC-192) still ask; the person is
   there to answer.
 - Running Superagents restart once after the update; their conversations continue.

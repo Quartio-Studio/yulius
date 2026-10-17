@@ -692,8 +692,8 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 8] = [
 /// SPEC-037 MGT-004 as amended by SPEC-147, ADR-0121). The approval bypass comes with
 /// `bypass_permissions`, as a contained task run's does (SPEC-208, decision 0165). The MCP config
 /// is inline JSON naming `${YULIUS_COCKPIT_TOKEN}` and the servers' `${VAR}` references, never a
-/// value; it is not strict, so the person's own MCP servers keep working. The settings are the `PostToolUse`
-/// redaction hook and `disabledMcpjsonServers` (SPEC-095 PMC-004).
+/// value; it is not strict, so the person's own MCP servers keep working. The settings are the
+/// `PostToolUse` redaction hook and `disabledMcpjsonServers` (SPEC-095 PMC-004).
 ///
 /// # Errors
 /// [`LaunchError`] for a non-UTF-8 config dir or executable, an unsafe session id, credential,
