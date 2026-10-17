@@ -4837,6 +4837,7 @@ export function createMockTransport(params) {
   // the server does (SPEC-209), unless `announce` is false (a change the page missed).
   db.askHosts = (name, hosts, by, announce = true) => {
     const secret = vaultOf(db).agent.find((s) => s.name === name);
+    if (secret.cd_prod) throw new Error(PRODUCTION_SECRET); // refused, as by the server
     secret.requested_hosts = [...new Set([...secret.requested_hosts, ...hosts])];
     secret.requested_by = by;
     audit(db, 'vault.agent.request', secret.id, `${secret.name} → ${hosts.join(', ')}`);
