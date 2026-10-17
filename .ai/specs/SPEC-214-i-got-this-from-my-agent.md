@@ -85,3 +85,20 @@ namespaces and containment stay Linux-only, as before #620.
 - [ADR-0169](../../docs/decisions/0169-the-gate-compiles-every-target-for-macos-on-linux.md): the
   gate cross-checks `aarch64-apple-darwin` on Linux with Clippy, the vendored C compiled by a
   pinned zig.
+
+## Evidence
+
+- Red: with only the gate commit (`ed9bcf2d`), `scripts/dev macos` exits 1: E0433 `rustix` at
+  `yulius-sandbox/src/base.rs:543,545`, E0599 `O_PATH` at `engine_supervisor.rs:302` (cargo stops
+  at `yulius-sandbox`; the `env_files.rs:188` E0308 showed in the first cross-check, with
+  `yulius-sandbox` compiled).
+- Green: with the fix (`f094d12d`), `scripts/dev macos` exits 0, every workspace crate checked.
+- `python3 scripts/bootstrap.py` downloads zig 0.17.0 (SHA-256 verified) once and links
+  `.tools/bin/zig`, `macos-cc`, `macos-ar`; `scripts/dev doctor` prints `zig 0.17.0`.
+- `cargo nextest run -p yulius-sandbox -p yulius-app -E 'test(/lock|build|control|env_files|write_in/)'`:
+  19 passed (the build lock's wait and reuse tests, the control socket's link test).
+- `python3 scripts/vidoc_scan.py`: no open critical or high finding (exit 0). Its three
+  medium/low findings are in code this change did not modify (`env_files.rs:125` and `:433`,
+  `bootstrap.py:23`'s rustup installer).
+- `scripts/dev ci` (doctor, check with 90 Python tests, lint, macos, test, deps, docs): exit 0;
+  nextest 2131 passed, 18 skipped.
