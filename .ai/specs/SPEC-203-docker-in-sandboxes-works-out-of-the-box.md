@@ -233,10 +233,10 @@ Code today:
 ## Evidence
 
 - **Gate** `scripts/dev ci` (check, lint, test, deps, doc): exit 0 at 606c4b09 (2085 passed, 18
-  skipped). Two earlier runs failed and were fixed: the repository check (a padding off the 4 px
+  skipped), and after the review's fixes at 65f0f200 (2093 passed, 18 skipped). Two earlier runs failed and were fixed: the repository check (a padding off the 4 px
   scale; modulepreload list, synced) and `cargo doc` (links to private constants).
 - **E2E** (`cd e2e && npx e2e run`): 604 passed, 1 skipped, exit 0; the new
-  `sandbox-docker.e2e.ts` 6/6.
+  `sandbox-docker.e2e.ts` 6/6, again after the card's review changes.
 - **Security** `scripts/dev security`: **unrun**, exit 2: Vidoc refused the agent's key (HTTP 401,
   as since PR #600). The CI `security` job scans the pull request head.
 - **Tests first.** Red before the change, green after:
