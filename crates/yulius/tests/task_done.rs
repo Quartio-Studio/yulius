@@ -1283,8 +1283,17 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
             })
             .await?
             .id;
+        // The answer spans lines: wait for all of it, not its first line (under load the
+        // lines after `ECHO: Make it blue` reached the screen after it was read).
         wait_for("the first message", Duration::from_secs(90), || {
-            screen_contains(&app, &id, "ECHO: Make it blue")
+            let app = app.clone();
+            let id = id.clone();
+            async move {
+                let screen = app.runtime(&id).hub.screen_text();
+                screen
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|echo| screen[echo..].contains("[Image #1] "))
+            }
         })
         .await?;
         let launch = first_launch(&app, &id).await?;
