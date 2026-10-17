@@ -105,6 +105,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
   `setns` and `pivot_root`) bounds every container.
+- **Removal.** Removing a sandbox
+  ([SPEC-206](../.ai/specs/SPEC-206-i-deleted-sandbox-from-yulius-but-it-s-s.md)) stops its tasks,
+  cancels its CI runs, ends its Superagents, Shells and browser, and retires its holder: a
+  `retired` marker in the holder's state directory makes the upkeep tick stop it, with its engine,
+  containers and every other process inside, as soon as no run holds a lease, and a restart stops
+  it instead of adopting it.
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
   `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
   (`KillMode=process` keeps the holder and front running). The front makes it again before each

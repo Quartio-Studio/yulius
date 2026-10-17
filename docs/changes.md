@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Removing a sandbox stops everything of it (SPEC-206, task #193, fixes #624). It stopped only the
+  tasks: the sandbox's Superagents and terminals went on running (a person watching one saw it keep
+  working), a CI run in progress ran to its end and published its status, the browser waited for
+  its 30-minute idle stop, and the holder, with its Docker engine and any container or process an
+  agent left, stayed up for good and was adopted again after a restart. The removal now cancels the
+  sandbox's CI runs, ends its shells and browser, and retires its holder, which stops with every
+  process in it once the runs ended. Nothing armed in a removed sandbox is merged (already true,
+  now tested).
+
 - Docker in sandboxes works out of the box (SPEC-203, ADR-0162, task #188). `sudo yulius host
   setup` is now the install path after the binary. It checks and fixes, in one order: a
   needrestart rule, written before any install, so installs never restart `yulius.service`; Git
