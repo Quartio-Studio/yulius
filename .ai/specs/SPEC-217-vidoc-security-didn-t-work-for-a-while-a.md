@@ -152,7 +152,11 @@ but make sure it's in the default ci pipeline and will generalise for every othe
     or `vidoc_scan`.
 
   The same rule applies to the CI view (`ci_gate`) and to the verified gate the grant is read from
-  (`ci_verified_gate`). A sandbox without CI, and a playground, get no built-in job. `enabled =
+  (`ci_verified_gate`). A pull request tested with its own jobs (it changed them, or bootstrap)
+  keeps the trusted security job(s): the integration branch's scanning jobs, else, when the key
+  applies, the built-in one. Each replaces the pull request's job of the same key, so a job it
+  named `security`, or one that only mentions the scanner, never stands in for the scan
+  (`keep_security_jobs`). A sandbox without CI, and a playground, get no built-in job. `enabled =
   false` in `.config/vidoc.toml` keeps turning the scan off (the job ends skipped).
 - **VDP-002.** The briefing's "Security scan" section, the onboarding text, the infra-bootstrap
   workflow and skill, and AGENTS.md describe the policy:
@@ -276,7 +280,7 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
   with 18 skipped, plus lint, macOS, doctests, deps and docs. The final
-  head's gate: at 0193f701, the last code change, it passed with 2211 tests (18 skipped).
+  head's gate: GATE_LINE.
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
@@ -337,6 +341,12 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   `security_findings_are_claimed_once_per_sandbox` was extended first: a stale forget keeps the
   newer #43. The note now says only that the issue is gone, the migration comment mentions the
   forget, and the long line was rewrapped.
+- The PR's CI `security` job (the new scanner, at 9604a467) blocked the merge on a medium in the
+  change: the built-in job's detection could be spoofed. Tracing it showed a real bypass. A pull
+  request that changes the CI jobs is tested with its own jobs, which replaced the gate together
+  with the built-in security job, and its own job named `security` was even granted the key's
+  placeholder. Fixed test-first: `local_ci::a_pull_request_with_its_own_jobs_cannot_drop_the_security_job`
+  failed (the fake job ran), and passes with `keep_security_jobs`, which also has a domain test.
 
 ### Not tested here
 

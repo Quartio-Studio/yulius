@@ -2272,6 +2272,50 @@ async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> Test
     Ok(())
 }
 
+/// SPEC-217 VDP-001 (the branch's own CI scan, medium): a pull request tested with its own jobs
+/// keeps the built-in security job; its own job named `security` does not stand in for it.
+#[tokio::test]
+async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    // Nothing for the scanner to send: the change is the configuration only.
+    std::fs::create_dir_all(f.work.join(".config"))?;
+    f.push_feature(
+        ".config/vidoc.toml",
+        Some("exclude = [\"yulius.toml\", \".config/*\"]\n"),
+    )?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some(
+            "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo changed\"\n\n\
+             [[ci.jobs]]\nname = \"security\"\ncommand = \"echo fake pass\"\n",
+        ),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    assert!(
+        output_of(&outputs, "plain")?.contains("changed"),
+        "the pull request's own jobs run: {outputs:?}"
+    );
+    let security = output_of(&outputs, "security")?;
+    assert!(!security.contains("fake pass"), "{security}");
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "the built-in scanner ran: {security}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]

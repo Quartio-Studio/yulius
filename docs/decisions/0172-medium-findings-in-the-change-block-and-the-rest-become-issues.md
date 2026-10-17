@@ -68,7 +68,10 @@ skip rule of [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md) and 
   - it is added both to the CI in force and to the verified gate the grant is read from, so the
     job gets its key.
 
-  Playgrounds get none. `enabled = false` in `.config/vidoc.toml` still turns the scan off.
+  A pull request tested with its own jobs (it changed them, or bootstrap) keeps the trusted
+  security job, from the integration branch or built in, in place of any job it named `security`,
+  so it cannot drop or fake the scan. Playgrounds get none. `enabled = false` in
+  `.config/vidoc.toml` still turns the scan off.
 
 ## Alternatives
 

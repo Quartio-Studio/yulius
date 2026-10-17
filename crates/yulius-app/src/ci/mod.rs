@@ -462,18 +462,21 @@ impl App {
         gate: Option<Gate>,
     ) -> Option<Gate> {
         let gate = gate?;
-        if sandbox.is_playground() {
-            return Some(gate);
-        }
-        let vidoc = self
-            .applied_agent_secrets(&sandbox.id)
-            .await
-            .is_ok_and(|records| records.iter().any(|r| r.name == dom::VIDOC_SECRET));
-        Some(if vidoc {
+        Some(if self.ci_scans(sandbox).await {
             dom::with_security_job(gate)
         } else {
             gate
         })
+    }
+
+    /// Whether the sandbox's CI runs the Vidoc scan: not a playground, and `VIDOC_API_KEY` among
+    /// its applied agent secrets (SPEC-217 VDP-001).
+    async fn ci_scans(&self, sandbox: &SandboxRecord) -> bool {
+        !sandbox.is_playground()
+            && self
+                .applied_agent_secrets(&sandbox.id)
+                .await
+                .is_ok_and(|records| records.iter().any(|r| r.name == dom::VIDOC_SECRET))
     }
 
     async fn ci_configured_gate(&self, sandbox: &SandboxRecord) -> GateView {
@@ -668,6 +671,7 @@ impl App {
                 }
             }
         }
+        let scans = self.ci_scans(sandbox).await;
         let pulls = match &token {
             Some(token) => {
                 self.deps
@@ -713,21 +717,29 @@ impl App {
                 // A pull request that changes the CI (an agent scoping a monorepo's jobs to
                 // its project, F 2026-10-12) is tested with its own jobs; one that removes them
                 // all is still tested with the integration branch's.
+                // Either way it keeps the trusted security job (SPEC-217 VDP-001).
                 Some(gate) => Some(match own {
-                    Some(jobs) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => Gate {
-                        jobs,
-                        source: GateSource::PullRequest,
-                    },
+                    Some(jobs) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => {
+                        let own = Gate {
+                            jobs,
+                            source: GateSource::PullRequest,
+                        };
+                        dom::keep_security_jobs(own, Some(gate), scans)
+                    }
                     _ => gate.clone(),
                 }),
                 // Bootstrap: the integration branch has no CI yet; the pull request that adds
                 // it is tested with its own configuration.
                 None if view.problem.is_none() => {
                     match self.ci_jobs_at(&repo, &pull.head_sha).await {
-                        Ok(jobs) if !jobs.is_empty() => Some(Gate {
-                            jobs,
-                            source: GateSource::PullRequest,
-                        }),
+                        Ok(jobs) if !jobs.is_empty() => Some(dom::keep_security_jobs(
+                            Gate {
+                                jobs,
+                                source: GateSource::PullRequest,
+                            },
+                            None,
+                            scans,
+                        )),
                         _ => None,
                     }
                 }
@@ -1388,10 +1400,11 @@ impl App {
                         "this commit has no CI configured".into(),
                     ));
                 }
-                Gate {
+                let own = Gate {
                     jobs,
                     source: GateSource::PullRequest,
-                }
+                };
+                dom::keep_security_jobs(own, None, self.ci_scans(sandbox).await)
             }
             None => {
                 return Err(AppError::Conflict(
