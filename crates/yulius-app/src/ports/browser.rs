@@ -317,6 +317,9 @@ pub trait BrowserPort: Send + Sync {
     /// Stops idle browsers (no viewers, no recent activity) and reaps crashed ones; returns
     /// the stopped sandboxes.
     async fn reap_idle(&self) -> Vec<SandboxId>;
+    /// Stops `sandbox`'s browser (its sandbox was removed, SPEC-206); `false` when none ran or
+    /// its process survived.
+    async fn stop(&self, sandbox: &SandboxId) -> bool;
     /// Stops every browser (server shutdown); returns sandboxes whose process survived.
     async fn shutdown_all(&self) -> Vec<SandboxId>;
     /// Loopback ports of the running browsers' DevTools endpoints (never previewed, never

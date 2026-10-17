@@ -1038,6 +1038,48 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
     Ok(())
 }
 
+/// Records the sandboxes retired through the isolation port.
+#[derive(Default)]
+struct Retiring(std::sync::Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for Retiring {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    fn retire(&self, sandbox: &SandboxId) {
+        if let Ok(mut retired) = self.0.lock() {
+            retired.push(sandbox.as_str().to_owned());
+        }
+    }
+}
+
+/// SPEC-206 RMV-004 (#624): removing a sandbox retires its holder, which then stops with every
+/// process in it (its Docker engine, containers, an agent's leftovers) once its runs ended;
+/// another sandbox's holder is left alone.
+#[tokio::test]
+async fn remove_retires_the_sandbox_holder() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    let isolation = std::sync::Arc::new(Retiring::default());
+    assert!(w.h.app.set_isolation(isolation.clone()));
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?.body;
+    let sid = text(&shop["id"]).to_owned();
+    assert!(isolation.0.lock().map_err(|_| "lock")?.is_empty());
+
+    let path = format!("/api/sandboxes/{sid}");
+    let removed = call(&w.h.router, Method::DELETE, &path, None, &alice).await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    assert_eq!(*isolation.0.lock().map_err(|_| "lock")?, [sid]);
+    Ok(())
+}
+
 /// F 2026-10-11: the preparation agent did the work and waited at its prompt, so the sandbox
 /// stayed `preparing` and every other task was refused. A finished turn with the whole plan
 /// resolved and the docs in its worktree makes the sandbox ready, and the task that waited for

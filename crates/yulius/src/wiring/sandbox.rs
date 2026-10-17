@@ -317,6 +317,8 @@ impl SandboxIsolation for NamespaceIsolation {
                     .into(),
             )),
             Ok(None) => Ok(None),
+            // Never the previous containment: nothing runs for a removed sandbox (SPEC-206).
+            Err(PrepareError::Retired) => Err(AppError::NotFound),
             Err(error @ PrepareError::OverQuota { .. }) => {
                 Err(AppError::Conflict(error.to_string()))
             }
@@ -353,6 +355,12 @@ impl SandboxIsolation for NamespaceIsolation {
         let manager = Arc::clone(&self.manager);
         let sandbox = sandbox.as_str().to_owned();
         tokio::spawn(async move { manager.release(&sandbox).await });
+    }
+
+    fn retire(&self, sandbox: &SandboxId) {
+        let manager = Arc::clone(&self.manager);
+        let sandbox = sandbox.as_str().to_owned();
+        tokio::spawn(async move { manager.retire(&sandbox).await });
     }
 
     async fn prune_engine(&self, sandbox: &SandboxRef) -> Option<u64> {
