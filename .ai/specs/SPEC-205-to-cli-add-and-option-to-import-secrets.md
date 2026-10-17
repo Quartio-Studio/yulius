@@ -154,7 +154,14 @@ the list of names and typed `yes` at the terminal.
   passed, 18 skipped; doc build, lint and deps passed (the `thiserror` 1/2 duplicate warnings were
   there before). Rerun at the final head before delivery.
 - `scripts/dev security` at `4ee2020c` and `af80fee9`: exit 0, Vidoc vidoc-1 ran (2 and 3 chunks
-  reviewed), no open critical or high finding.
+  reviewed), no open critical or high finding. At `697a5ff7` it reported one high finding in
+  pre-existing code that the scan saw because this change adds a subcommand to `main.rs`: `yulius
+  gh-token` "prints the user's GitHub token without authorization". It is a false positive: the
+  command holds no credential and prints only what `/internal/git-credential` gives the caller's
+  own bearer (SPEC-004 GH-001/GH-006, ADR-0114). With the independent reviewer's agreement it is
+  an `[[ignore]]` entry in `.config/vidoc.toml` (path `crates/yulius/src/main.rs`, title
+  `gh-token`). Two medium findings in the same pre-existing code (`--scrub-exec`,
+  `git-credential`) do not fail the scan and are by design (SPEC-002 ADR-20, SPEC-004).
 - Manual, built binary in a pseudo-terminal against a mock vault on 127.0.0.1:20101: a file to
   team secrets (one new, one existing skipped, notes from the comment), typed hidden values to a
   sandbox's agent secrets, stdin to team secrets answered `no` (nothing sent, exit 1) and `yes`,

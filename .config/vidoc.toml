@@ -11,3 +11,13 @@ enabled = true
 # origin, so this holds only while mock.js has no DOM sink (innerHTML, eval, document.write,
 # location assignment): rendering stays in scanned code. Remove the exclusion if it gains one.
 exclude = ["crates/yulius-server/web/assets/mock.js"]
+
+# `yulius gh-token` holds no credential: it asks `/internal/git-credential` (loopback) with the
+# caller's own bearer (`YULIUS_TASK_TOKEN`, a shell's workspace token), and the server decides what
+# token that caller gets: a person's shell its own token (SPEC-004 GH-001), an agent run a narrowed
+# installation token (GH-006, ADR-0114). Without a valid bearer it prints nothing. First reported
+# on task #192's change scan, which sent main.rs for an unrelated subcommand; the code predates it.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "gh-token"
+reason = "gh-token prints only what /internal/git-credential gives the caller's own bearer; the server authorizes (SPEC-004 GH-001/GH-006, ADR-0114)"
