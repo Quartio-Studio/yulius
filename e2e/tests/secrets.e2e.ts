@@ -16,6 +16,8 @@ async function setUpTwoFactor(screen: any, browser: any) {
   await expect(setup.getByText(/Add this key to your authenticator app/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await expect(setup.getByRole('link', 'Open in an authenticator app')).toHaveAttribute('href', /^otpauth:\/\/totp\//);
+  // The key sits in a box with its copy icon (SPEC-207), not beside a text button.
+  await expect(browser.locator('dialog.modal .secret-box .secret-copy[aria-label="Copy key"]')).toBeVisible();
   await screen.getByLabel('Code from your app').fill('000000');
   await setup.getByRole('button', 'Unlock').click();
   await expect(setup.getByRole('alert')).toHaveText(/wrong code/i);
@@ -309,9 +311,10 @@ test('a member sees why a production secret’s requests wait, without a Dismiss
 });
 
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
-// shown after explicitly clicking eye icon. On hover there should be option to copy + the current
-// copy button." (SPEC-114)
-test('a shown value stays masked until the eye is pressed, and copies on hover', async ({ app, browser, screen }) => {
+// shown after explicitly clicking eye icon." (SPEC-114) F 2026-10-17 (task #194): "this UI is bad,
+// fix. For example copy icon is missing and overall": the value, its eye and its one copy icon sit
+// in one box, always visible, and the notes get the same box and a copy (SPEC-207).
+test('a shown value stays masked until the eye is pressed, and its box always offers the copy', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets'));
   // What the page puts on the clipboard, without a clipboard permission.
   await browser.evaluate(() => {
@@ -319,6 +322,7 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
   });
   const copied = () => browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== ''));
+  const inPage = () => browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE);
 
   await screen.getByRole('button', 'Show Shared Gmail').click();
   await setUpTwoFactor(screen, browser);
@@ -327,45 +331,53 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
   // Masked: dots of a fixed length, the value nowhere in the page, a name for screen readers.
   const eye = shown.getByRole('button', 'Show value');
   await expect(eye).toHaveAttribute('aria-pressed', 'false');
-  const box = browser.locator('dialog.modal .secret-box');
+  const box = browser.locator('dialog.modal .secret-box:has(.secret-eye)');
   await expect(box).toContainText('••••••••••••');
   await expect(browser.locator('dialog.modal .secret-box .sr-only')).toHaveText('Value hidden');
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
-  // The notes still show.
-  await expect(shown.getByText(/Recovery codes/)).toBeVisible();
+  expect(await inPage()).toBe(false);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // The quick copy shows on hover only, and copies the value while it is masked.
-  const quick = browser.locator('dialog.modal .secret-quick-copy');
-  await expect(quick).toBeHidden();
-  await box.hover();
-  await expect(quick).toBeVisible();
-  await expect(quick).toHaveAttribute('aria-label', 'Copy');
-  await quick.click();
+  // The copy is in the box after the eye and visible without a hover; it is the value's only copy.
+  await browser.mouse.move(0, 0);
+  const copy = browser.locator('dialog.modal .secret-box .secret-eye + .secret-copy');
+  await expect(copy).toBeVisible();
+  await expect(copy).toHaveAttribute('aria-label', 'Copy value');
+  expect(await browser.evaluate(() => ({
+    copies: document.querySelectorAll('dialog.modal button[aria-label="Copy value"]').length,
+    after: document.querySelector('dialog.modal .secret-box + *'),
+  }))).toEqual({ copies: 1, after: null });
+  // It copies while masked, and says so on itself for a moment.
+  await copy.click();
   await expect(screen.getByText(/Value copied/).first()).toBeVisible();
   expect(await copied()).toEqual([TEAM_VALUE]);
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  expect(await inPage()).toBe(false);
+  await expect(copy).toHaveAttribute('title', 'Copied');
+  await expect(copy).toHaveAttribute('aria-label', 'Copy value');
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-check')).toBeVisible();
+  await expect(copy).toHaveAttribute('title', 'Copy value');
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-copy')).toBeVisible();
 
   // The eye shows it; pressed again it is masked and gone from the page.
   await eye.click();
   await expect(eye).toHaveAttribute('aria-pressed', 'true');
   await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  await eye.click();
-  await expect(eye).toHaveAttribute('aria-pressed', 'false');
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
-
-  // The current Copy button stays and copies too.
   await shown.getByRole('button', 'Copy value').click();
   expect(await copied()).toEqual([TEAM_VALUE, TEAM_VALUE]);
+  await eye.click();
+  await expect(eye).toHaveAttribute('aria-pressed', 'false');
+  expect(await inPage()).toBe(false);
 
-  // Keyboard: focus on the eye shows the quick copy, and it is the next stop.
-  await browser.mouse.move(0, 0);
-  await expect(quick).toBeHidden();
+  // Keyboard: the copy is the next stop after the eye.
   await eye.focus();
-  await expect(quick).toBeVisible();
   await browser.keyboard.press('Tab');
-  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy');
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy value');
+
+  // The notes sit in a box of their own, with their own copy.
+  await expect(browser.locator('dialog.modal .secret-box:has-text("Recovery codes")')).toBeVisible();
+  await shown.getByRole('button', 'Copy notes').click();
+  await expect(screen.getByText(/Notes copied/).first()).toBeVisible();
+  expect(await copied()).toEqual([TEAM_VALUE, TEAM_VALUE, 'User name: team@example.test\nRecovery codes: mock']);
 
   // The light theme has no violations either, masked and shown.
   await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
@@ -382,18 +394,18 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
   await expect(shown).toBeHidden();
   await screen.getByRole('button', 'Show Shared Gmail').click();
   await expect(screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value')).toHaveAttribute('aria-pressed', 'false');
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  expect(await inPage()).toBe(false);
 
-  // At 390 px the box, its buttons and Copy stay inside the dialog, shown or masked.
+  // At 390 px the boxes and their buttons stay inside the dialog, shown or masked.
   await browser.setViewport({ width: 390, height: 844 });
   for (const press of [false, true]) {
     if (press) await screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value').click();
     const outside = await browser.evaluate(() => {
       const dialog = document.querySelector('dialog.modal')!.getBoundingClientRect();
-      const parts = ['.secret-box', '.secret-eye', '.secret-quick-copy', '.secret-box + .btn'].map((s) => document.querySelector(`dialog.modal ${s}`)!.getBoundingClientRect());
-      return parts.filter((r) => r.left < dialog.left || r.right > dialog.right).length;
+      const parts = [...document.querySelectorAll('dialog.modal .secret-box, dialog.modal .secret-box button')].map((e) => e.getBoundingClientRect());
+      return { parts: parts.length, outside: parts.filter((r) => r.left < dialog.left || r.right > dialog.right).length };
     });
-    expect(outside).toBe(0);
+    expect(outside).toEqual({ parts: 5, outside: 0 });
   }
 });
 

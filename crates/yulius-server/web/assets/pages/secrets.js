@@ -78,11 +78,7 @@ function enterCode(ctx, setup, pending = false) {
   else if (pending) hint = 'Finish setting up two-factor: enter the code your authenticator app shows for the key you added, or get a new key.';
   const body = h('div', { class: 'stack' },
     h('p', { id: 'unlock-hint' }, hint),
-    setup ? h('div', { class: 'stack-tight' },
-      h('span', { class: 'field-label' }, 'Key'),
-      h('div', { class: 'row-wrap' },
-        h('code', { class: 'mono secret-value' }, setup.secret),
-        smallButton('Copy', 'Copy key', () => copyValue(setup.secret, 'Key').catch((e) => errorToast(e, 'Couldn’t copy'))))) : null,
+    setup ? readField('Key', h('div', { class: 'secret-box' }, h('code', { class: 'mono secret-value' }, setup.secret), copyButton('Copy key', setup.secret, 'Key'))) : null,
     setup ? h('a', { href: setup.uri, class: 'small' }, 'Open in an authenticator app') : null,
     field('Code from your app', code),
   );
@@ -129,13 +125,59 @@ function confirmIdentity(ctx, status, why) {
 
 /** The dots a masked value shows: a fixed run, so they do not tell the value's length. */
 const MASK = '••••••••••••';
+/** How long a copy button shows its check after a copy (SPEC-207). */
+const COPIED_MS = 2000;
+
+/** An icon tagged with its name, so a test can tell the copy and check icons apart. */
+function namedIcon(name) {
+  const svg = icon(name);
+  svg.classList.add(`icon-${name}`);
+  return svg;
+}
 
 /**
- * A revealed value, masked until its eye button is pressed (SPEC-114). While masked the value is
- * not in the page at all, so a selection, find-in-page or an extension cannot read it. Hovering
- * the box (or focus in it) shows a quick copy after the eye, which `copy` serves.
+ * The copy icon button of a secret box (SPEC-207): always visible, it copies `text` like every
+ * copy here (VLT-002), then shows a check and the tooltip "Copied" for a moment. Its name stays
+ * `label`; the toast announces the copy.
  */
-function maskedValue(value, copy) {
+function copyButton(label, text, what) {
+  let timer = null;
+  const button = h('button', { type: 'button', class: 'btn-icon secret-copy', 'aria-label': label, title: label, onClick: async () => {
+    try {
+      await copyValue(text, what);
+    } catch (error) {
+      errorToast(error, 'Couldn’t copy');
+      return;
+    }
+    setChildren(button, namedIcon('check'));
+    button.title = 'Copied';
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      setChildren(button, namedIcon('copy'));
+      button.title = label;
+    }, COPIED_MS);
+  } }, namedIcon('copy'));
+  return button;
+}
+
+/**
+ * A read-only field: a label over a box. Not a `<label>`, which would pass a click on the text to
+ * the box's first button.
+ */
+let readFieldIds = 0;
+function readField(label, box) {
+  const id = `secret-field-${++readFieldIds}`;
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-labelledby', id);
+  return h('div', { class: 'field' }, h('span', { class: 'field-label', id }, label), box);
+}
+
+/**
+ * A revealed value, masked until its eye button is pressed (SPEC-114), in one box with its copy
+ * button (SPEC-207). While masked the value is not in the page at all, so a selection,
+ * find-in-page or an extension cannot read it; the copy works either way.
+ */
+function maskedValue(value) {
   const text = h('code', { class: 'mono secret-value' });
   const eye = h('button', { type: 'button', class: 'btn-icon secret-eye', 'aria-label': 'Show value', 'aria-pressed': 'false', onClick: () => draw(eye.getAttribute('aria-pressed') !== 'true') });
   function draw(shown) {
@@ -147,19 +189,14 @@ function maskedValue(value, copy) {
     else setChildren(text, h('span', { 'aria-hidden': 'true' }, MASK), h('span', { class: 'sr-only' }, 'Value hidden'));
   }
   draw(false);
-  return h('div', { class: 'secret-box' }, text, eye, iconButton('copy', 'Copy', copy, { class: 'secret-quick-copy' }));
+  return h('div', { class: 'secret-box' }, text, eye, copyButton('Copy value', value, 'Value'));
 }
 
-/** Shows a revealed value (masked until its eye is pressed) and notes. */
+/** Shows a revealed value (masked until its eye is pressed) and notes, each in a box with its copy. */
 function showRevealed(title, revealed) {
   const rows = [];
-  if (revealed.value) {
-    const copy = () => copyValue(revealed.value, 'Value').catch((e) => errorToast(e, 'Couldn’t copy'));
-    rows.push(field('Value', h('div', { class: 'row-wrap' },
-      maskedValue(revealed.value, copy),
-      smallButton('Copy', 'Copy value', copy))));
-  }
-  if (revealed.notes) rows.push(field('Notes', h('pre', { class: 'mono secret-notes' }, revealed.notes)));
+  if (revealed.value) rows.push(readField('Value', maskedValue(revealed.value)));
+  if (revealed.notes) rows.push(readField('Notes', h('div', { class: 'secret-box secret-box-notes' }, h('pre', { class: 'mono secret-notes' }, revealed.notes), copyButton('Copy notes', revealed.notes, 'Notes'))));
   if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no value or notes.'));
   openModal({ title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }] });
 }
