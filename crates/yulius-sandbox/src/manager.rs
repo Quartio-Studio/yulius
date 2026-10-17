@@ -399,6 +399,22 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Whether `name` is a sandbox name as the server makes them (its ids' alphabet: ASCII letters,
+/// digits, `-` and `_`, at most 64): one path component that cannot leave its directory.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The path component of the sandbox `name`: the name itself, or for anything else a fixed
+/// component no sandbox has (`.invalid`), so a path built from it never leaves its tree.
+pub(crate) fn path_name(name: &str) -> &str {
+    if valid_name(name) { name } else { ".invalid" }
+}
+
 /// Bytes as "12.3 GB".
 #[must_use]
 pub fn human(bytes: u64) -> String {
@@ -432,11 +448,14 @@ impl Manager {
             .data_dir
             .join("runtime")
             .join("sandboxes")
-            .join(sandbox)
+            .join(path_name(sandbox))
     }
 
     fn sysroot(&self, sandbox: &str) -> PathBuf {
-        self.config.data_dir.join("sysroots").join(sandbox)
+        self.config
+            .data_dir
+            .join("sysroots")
+            .join(path_name(sandbox))
     }
 
     /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they may (each one
@@ -514,7 +533,11 @@ impl Manager {
             hostname: spec
                 .as_ref()
                 .map_or_else(|| sandbox.to_owned(), |s| s.hostname.clone()),
-            dir: self.config.data_dir.join("sandboxes").join(sandbox),
+            dir: self
+                .config
+                .data_dir
+                .join("sandboxes")
+                .join(path_name(sandbox)),
             port_first: spec.as_ref().map_or(0, |s| s.port_first),
             port_last: spec.as_ref().map_or(0, |s| s.port_last),
         }
@@ -975,6 +998,9 @@ impl Manager {
     /// layer and state are never deleted then (SPEC-215 LFT-002). A record that cannot be read
     /// counts as alive; only a missing one counts as none.
     pub async fn holder_live(&self, sandbox: &str) -> bool {
+        if !valid_name(sandbox) {
+            return false;
+        }
         let entry = lock(&self.sandboxes).get(sandbox).cloned();
         if let Some(entry) = entry {
             let state = entry.lock().await;
@@ -1076,6 +1102,10 @@ impl Manager {
     /// [`Manager::adopt_one`] stops it instead of adopting it. A marker in its state directory
     /// keeps it across restarts; its time is the retirement's.
     pub async fn retire(&self, sandbox: &str) {
+        if !valid_name(sandbox) {
+            tracing::warn!(sandbox, "not a sandbox name: nothing retired");
+            return;
+        }
         let dir = self.state_dir(sandbox);
         let marked = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&dir)?;
@@ -2805,6 +2835,40 @@ while True:
             });
         }
         assert!(!manager.holder_live("s1").await, "stopped and unused");
+        Ok(())
+    }
+
+    /// Security scan (high): a sandbox name is one path component of the id alphabet; any other
+    /// name never reaches outside the state and system trees, and retiring it writes nothing.
+    #[tokio::test]
+    async fn a_name_outside_the_id_alphabet_never_leaves_its_tree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 30);
+        let states = data.path().join("runtime/sandboxes");
+        for name in ["../../etc", "..", "/tmp", "a/b", "", "x\0"] {
+            assert!(manager.state_dir(name).starts_with(&states), "{name:?}");
+            assert_eq!(
+                manager.state_dir(name).parent(),
+                Some(states.as_path()),
+                "{name:?}"
+            );
+            assert!(
+                manager
+                    .sysroot(name)
+                    .starts_with(data.path().join("sysroots")),
+                "{name:?}"
+            );
+            assert!(!manager.holder_live(name).await, "{name:?}");
+        }
+        manager.retire("../../escaped").await;
+        assert!(!data.path().join("escaped").exists());
+        assert!(!data.path().join("runtime/escaped").exists());
+        assert_eq!(
+            manager.state_dir("s-1_A"),
+            states.join("s-1_A"),
+            "a real id is kept"
+        );
         Ok(())
     }
 
