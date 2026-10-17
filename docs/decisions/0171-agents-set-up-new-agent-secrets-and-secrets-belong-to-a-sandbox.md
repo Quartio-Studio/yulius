@@ -26,7 +26,8 @@ Team secrets were all instance-wide; agent secrets were a sandbox's or every san
   dialog and in Edit (`--confirm-hosts` turns it off in `yulius secrets import`):
   `secret_request_hosts` binds the hosts at once (audited `vault.agent.auto_allow`), and production
   CD runs get the value (`allowed_for(prod)`). The API field defaults to `true`; secrets that
-  existed keep it off.
+  existed keep it off, and so does a secret an agent creates (`secret_create_from_file`,
+  SPEC-211): it is a person's choice.
 - **The production-only allowance stays exclusive.** `cd_prod` and `auto_allow` exclude each
   other in the application and in the store's compare-and-set. A person who wants a credential for
   production deploys only turns the option off and allows production as before.

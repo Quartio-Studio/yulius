@@ -56,7 +56,8 @@ Two changes to the vault, one request:
 - SSA-001. An agent secret has `auto_allow`. A new one has it on unless its creator turns it off:
   the Add dialog has the option "Let agents set it up", checked; the API field `auto_allow`
   defaults to `true` when omitted. Secrets that exist keep it off (their people chose to
-  confirm).
+  confirm). A secret an agent creates (`secret_create_from_file`, SPEC-211) has it off: whether
+  agents set a secret up is a person's choice.
 - SSA-002. With `auto_allow`, `secret_request_hosts` binds the hosts it asks for at once (same
   parsing, at most 16 hosts in all), audits `vault.agent.auto_allow` with the asker and the
   reason, does not mark the task as needing a person, and answers that they are bound (`bound`).
@@ -256,6 +257,13 @@ Two changes to the vault, one request:
     it). Test-first: the PATCH answered 200 and dropped the bound host.
   - Nits: the `vault.agent.assign` leftovers are gone; the Goal and the upgrade test name say
     "team secrets"; the mock checks view access for a sandbox's team secret.
+- **Review, round 5** (fresh session, 00d42d0a): approve, no blocker, major or minor. Its nits
+  are in the test-only mock (it does not apply the `expect_hosts` rule, and answers 403 where the
+  server answers 404), left after five rounds.
+- **Merge of dev #642** (`secret_create_from_file`, SPEC-211): the shared `insert_agent_secret`
+  now takes `auto_allow`. A person's create passes the API default; an agent's create passes
+  `false`. `secrets_create.rs` asserts that, and the secrets, cd, cockpit, local CI, CLI and
+  manage-tools suites passed: 140 tests, plus 515 in the import, store and domain crates.
 - **What could not be tested here:** the assignment against this instance's real vault and
   sandboxes (it runs at the first start after the update), and the live Secrets page against a
   running server (the page was tested against the mock).

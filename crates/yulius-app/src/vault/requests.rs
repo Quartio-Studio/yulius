@@ -106,9 +106,10 @@ impl App {
         )
     }
 
-    /// Tells the open Secrets pages that an agent asked for something about `record`, so its
-    /// Allow shows without a reload (SPEC-209): those of its sandbox, or every sandbox's for a
-    /// secret of every sandbox. The event names nothing; the page reads the list again.
+    /// Tells the open Secrets pages that an agent asked for something about `record` (or created
+    /// it, SPEC-211), so it shows without a reload (SPEC-209): those of its sandbox, or every
+    /// sandbox's for a secret of every sandbox. The event names nothing; the page reads the list
+    /// again.
     pub(super) fn announce_request(&self, record: &VaultSecretRecord) {
         self.events.publish(
             record.sandbox_id.clone(),
