@@ -94,3 +94,32 @@ Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a p
 - Only an absent key is filled in: a person or an earlier `/config` choice in the user file wins.
 - No per-project switch in `yulius.toml`: a repository that wants another style commits
   `outputStyle` in its `.claude/settings.json`, which outranks the user layer.
+
+## Evidence
+
+- `scripts/dev ci` at `d75b97bb`: exit 0, 2132 tests passed, 18 skipped (lint, deps, checks
+  included).
+- New tests:
+  - `claude_config::tests::sessions_default_to_the_concise_output_style` failed before the
+    change (no `settings.json`).
+  - `claude_config::tests::the_output_style_default_touches_only_a_regular_settings_file`
+    failed on the first implementation, which replaced the link with a copy of its target; it
+    passes with `read_regular`.
+  - `wiring::harness::tests::every_claude_code_launch_defaults_to_the_concise_output_style` and
+    the `outputStyle` assertions in `crates/yulius-harness/tests/launch.rs` pass.
+- Live, Claude Code 2.1.292, `CLAUDE_CONFIG_DIR` holding `settings.json` = `{"outputStyle": "Concise"}`:
+  - `claude -p "/output-style"` → `Output style: Concise`.
+  - In one session, `/output-style Explanatory` → "Output style set to Explanatory", then
+    `/output-style` → `Output style: Explanatory`; the next process also reports Explanatory.
+  - Run settings as a contrast: with `--settings '{"outputStyle":"Concise"}'` the same switch
+    reported success but stayed Concise.
+- `scripts/dev security`: the runs at `61c71bca` and `d75b97bb` reported no open critical or high
+  finding in this change's code.
+  - One run at `d75b97bb` reported a high in the pre-existing `main_repository` folder trust
+    (SPEC-106). It is ignored in `.config/vidoc.toml` with its reason, subject to the reviewer's
+    agreement.
+  - The pre-existing host-side reads of the agent-owned config dir (links, FIFOs in
+    `.claude.json` and the plugin stores) are tracked in #634.
+- Review round 1 (fresh reviewer) requested changes; all own-code findings are fixed in
+  `d75b97bb`.
+- Not tested here: a full task run in the web UI after deployment (no deploy in this task).
