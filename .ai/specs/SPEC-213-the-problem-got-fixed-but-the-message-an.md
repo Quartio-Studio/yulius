@@ -141,7 +141,13 @@ and it leaves the sidebar's Needs you list.
   `cd::` and the app crate.
 - `scripts/dev ci` on 10c8e0e7 (round 4's fix, `dev` merged): exit 0, 2138 tests passed, 18
   skipped; deny: advisories, bans, licenses, sources ok.
-- `scripts/dev security` on 10c8e0e7: exit 0, no critical or high finding. The medium and low
+- `scripts/dev security` on 10c8e0e7 and bcf4e929: exit 0, no critical or high finding. Yulius
+  CI's scan at 717b34bf (Yulius's merge of `dev`) reported one high in `hooks.rs`, "Symlink file
+  read escapes the repository root" (`read_repo_doc`, code this change does not touch): a false
+  positive, as `symlink_metadata().is_file()` refuses every link before any read. The new unit
+  test `hooks::tests::linked_documents_are_not_read` passes on the unchanged code and proves it;
+  the finding is an `[[ignore]]` entry in `.config/vidoc.toml` with that reason, agreed by the
+  independent reviewer. The medium and low
   findings of both scans are in code this change does not touch (present on `dev` before it) and
   are tracked for triage in #639.
 - Independent review in fresh sessions: round 1 requested changes (one major: a later flag of

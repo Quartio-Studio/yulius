@@ -1152,7 +1152,8 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoDocs, foundations, notice_answered_by_work, notification_needs_a_person, repo_path,
+        RepoDocs, foundations, notice_answered_by_work, notification_needs_a_person, read_repo_doc,
+        repo_doc_exists, repo_path,
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
@@ -1293,6 +1294,30 @@ mod tests {
             0,
             "a linked directory is not read"
         );
+        Ok(())
+    }
+
+    /// #70: a document that is itself a link (a file in the repository root linked to a host
+    /// file, or even to a file of the repository) is never read, nor counted as present; a
+    /// regular file is.
+    #[test]
+    fn linked_documents_are_not_read() -> Result<(), Box<dyn std::error::Error>> {
+        let host = tempfile::tempdir()?;
+        let secret = host.path().join("secret.txt");
+        std::fs::write(&secret, "host secret")?;
+        let repo = tempfile::tempdir()?;
+        let root = repo.path();
+        std::fs::write(root.join("real.md"), "# real")?;
+        std::os::unix::fs::symlink(&secret, root.join("p.md"))?;
+        std::os::unix::fs::symlink(root.join("real.md"), root.join("inside.md"))?;
+        std::fs::create_dir(root.join("docs"))?;
+        std::os::unix::fs::symlink(&secret, root.join("docs/product.md"))?;
+        for linked in ["p.md", "inside.md", "docs/product.md"] {
+            assert_eq!(read_repo_doc(root, linked), None, "{linked}");
+            assert!(!repo_doc_exists(root, linked), "{linked}");
+        }
+        assert_eq!(read_repo_doc(root, "real.md").as_deref(), Some("# real"));
+        assert!(repo_doc_exists(root, "real.md"));
         Ok(())
     }
 
