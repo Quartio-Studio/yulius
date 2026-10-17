@@ -1,11 +1,11 @@
 ---
 yulius-task: a1e80fc6-d84f-4f2b-9f91-efb94e7c8716
-status: in-progress
+status: done
 ---
 
 # SPEC-217: The Vidoc audit, medium findings in a change block, and every project's CI scans
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: Yulius task #160
 Scope authorization: task #160 (requested by MrFishPL): "execute broad audit of security using
@@ -171,8 +171,8 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 - [x] Filed issues follow the code: reopened while reported, closed once the line is gone from dev
 - [x] Briefing, onboarding, infra bootstrap, AGENTS.md, docs and ADR-0172 describe the policy
 - [x] Audit findings fixed, ignored with reasons, or filed
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, Evidence written, changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, Evidence written, changes log updated
 
 ## Acceptance criteria
 
@@ -241,9 +241,10 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
 | Tracked already | `yulius-browser/src/lib.rs:18` (#626), `claude_config.rs:174` (#634) |
 | False positive, `[[ignore]]` with the guard | high: `mcp_config.rs:566`, `:576`, `playground/onboard.rs:232`, `:254`, `session_docs.rs:936`, `credential.rs:353`, `yulius-update.service:15`. Medium: `accounts.rs:1086`, `auth.rs:562`, `ci/cd.rs:1176`, `:1515`, `delivery/runner.rs:225`, `disk.rs:22`, `manage.rs:244`, `mcp.rs:86`, `mcp_config.rs:250`, `project.rs:128`, `purge.rs:59`, `preview.rs:93`, `session_docs.rs:1124`, `terminal.rs:151`, `vault/runtime.rs:830`, `yulius-domain` `disk.rs:147`, `vault/mod.rs:182`, `:251`, `proxy.rs:351`, `hook_client.rs:316`, `yulius-import` `upload.rs:162`, `taskview.js:340`, `sessions.rs:40`, `leftovers_cli.rs:299`, `update_helper.rs:338`, `wiring/git.rs:263`, `:509`, `wiring/harness.rs:58`, `:206` |
 
-- **`.config/vidoc.toml`:** there are 45 new `[[ignore]]` entries. Each one names the guard that
-  stops its finding (and its test where one exists), or the issue tracking it. Applied to the report, they leave open
-  only the two findings fixed here.
+- **`.config/vidoc.toml`:** 45 of its 56 new `[[ignore]]` entries come from the audit; the other 11
+  come from this branch's own change scans, below. Each one names the guard that stops its
+  finding (and its test where one exists), or the issue tracking it. Applied to the audit's
+  report, they leave open only the two findings fixed here.
 - **Low findings (43): my call as the executor, not acted on in this change.** They are
   hardening, test fixtures (`tools/fake-agent`, `fake/synthetic_app_key.pem`) or scripts. A
   pull request that touches their code gets each one filed as an issue by the new CI path.
@@ -266,20 +267,46 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   - the briefing and onboarding tests.
 
   All passed. The order-dependent tests were run three times each.
-- `scripts/dev ci` at be37290e: passed, 2206 tests (18 skipped), plus lint, macOS, doctests,
-  deps and docs. The final head's gate is recorded below.
+- `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
+  with 18 skipped, plus lint, macOS, doctests, deps and docs. At 2a0b721f, the last code change: passed, 2209 tests (18 skipped).
 - `python3 scripts/check_repository.py`: passed.
-- `python3 scripts/vidoc_scan.py --base origin/dev` at 5232bfc6 (the change scan, under the new
-  policy): exit 0, with 29 files sent in 23 chunks.
-  - Findings that fail the scan: none.
-  - Low findings in the change: none.
-  - Low findings outside the change: 3 (`ports/github.rs:401`, `fake/mod.rs:1058`, `:1122`),
-    which CI files as issues.
+- `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
+  files sent in 23 chunks each time. The model's answers vary between runs, so each run was
+  triaged:
+  - **At 5232bfc6:** exit 0. Three low findings outside the change, which CI files as issues.
+  - **At 7a33f248:** exit 1, on a high at `ci/cd.rs:1071` ("No process isolation when
+    containment is disabled"). That is by design: an uncontained instance is the operator's
+    documented choice. The run also reported 3 medium and 5 low findings outside the change. The
+    medium ones were false positives, and the low ones were fixtures, internal-only code, or
+    tracked in #657. All were recorded as `[[ignore]]` entries (9).
+  - **At 4c0356ea:** exit 1, on a medium **in the change**: `ci/findings.rs:191`, a finding's file
+    went to `git show` unchecked. The new policy blocked its own author. It was fixed test-first
+    in 2a0b721f: only repository-relative paths are read. Two outside false positives were
+    recorded.
+  - **At 2a0b721f:** exit 0. Nothing fails, and nothing is low in the change. Three findings
+    outside the change (a medium at `ports/github.rs:339`, lows at `auth.rs:146` and
+    `ci/cd.rs:1289`) are left for CI to file as issues.
 - Independent review round 1 (fresh session, at d0e9cec3) asked for changes:
   - 3 major findings: M1 subdirectory, M2 stale branches, M3 Evidence;
   - 9 minor findings and 4 nits.
 
   All were fixed test-first in 126712a2, 331c1c3a and be37290e, and M3 by this section.
+- Independent review round 2 (fresh session, at 56066584) asked for changes, with every round-1
+  fix verified. It raised:
+  - the editor save's mode set by path;
+  - no test of the filing cap or the 404 path;
+  - one ignore entry that was too broad;
+  - Evidence wording;
+  - nits: 410 Gone, the close-comment wording, findings filed before past the cap, long lines,
+    and a misplaced doc comment.
+
+  These were fixed in 7a33f248, with tests `a_job_tries_at_most_five_filings_failed_ones_included`
+  and `a_finding_whose_issue_is_gone_from_github_is_resolved`. The latter fails when the 404 arm
+  is removed. The 410 case is covered by the `yulius-github` client test, and the mode by
+  `files::a_save_never_writes_through_a_planted_temporary_link`. The pre-existing write-side race
+  in `file_write` was added to #657. The swap race on the temporary file's mode is closed by
+  design: the mode is set on the handle, and there is no path-based call left. It cannot be
+  reproduced deterministically without a test hook in production code.
 
 ### Not tested here
 
