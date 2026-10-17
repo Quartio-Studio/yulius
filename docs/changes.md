@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `IS_SANDBOX=1` (it is root of its sandbox), the bypass warning already accepted; running
   Superagents restart into it once idle. Tasks already ran this way (checked on this instance's
   transcripts); an uncontained server still bypasses nothing.
+- A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
+  icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
+  same thing. The value box now holds the masked value, the eye and one copy icon, always visible,
+  which shows a check after a copy. The notes and the two-factor setup key sit in the same framed
+  box with their own copy; every copy still clears the clipboard after 30 seconds.
 - Removing a sandbox stops everything of it (SPEC-206, task #193, fixes #624). It stopped only the
   tasks: the sandbox's Superagents and terminals went on running (a person watching one saw it keep
   working), a CI run in progress ran to its end and published its status, the browser waited for
