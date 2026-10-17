@@ -527,14 +527,18 @@ impl App {
             .exchange_code(&app, code, &self.github_redirect_uri())
             .await?;
         let gh = self.deps.github.current_user(&token.access).await?;
+        // A linked user is found by its GitHub id only: GitHub frees a renamed account's login
+        // for anyone, so the login admits only a user not linked yet (#653).
         let user = match store.user_by_github_id(gh.id).await? {
             Some(user) => user,
-            None => store.user_by_login(&gh.login).await?.ok_or_else(|| {
-                GitHubSignInError::NotAdmitted {
+            None => store
+                .user_by_login(&gh.login)
+                .await?
+                .filter(|user| user.github_id.is_none())
+                .ok_or_else(|| GitHubSignInError::NotAdmitted {
                     login: gh.login.clone(),
                     next: next.clone(),
-                }
-            })?,
+                })?,
         };
         if user.disabled_at.is_some() {
             return Err(GitHubSignInError::Disabled { next });
