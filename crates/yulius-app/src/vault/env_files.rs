@@ -554,6 +554,7 @@ impl App {
                 "the secret changed meanwhile: ask again".into(),
             ));
         }
+        self.announce_request(record);
         self.vault_audit(
             &user.actor(),
             "vault.agent.env_request",

@@ -6,6 +6,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::api::secrets::{AgentSecretView, HostRequestAnswer};
+use yulius_contracts::events::UiEvent;
 use yulius_domain::vault::VaultError;
 use yulius_domain::vault::hosts::{HostPattern, MAX_HOSTS, parse_hosts};
 
@@ -14,6 +15,7 @@ use crate::auth::AuthContext;
 use crate::browser::percent_encode;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
+use crate::ports::vault::VaultSecretRecord;
 
 /// Longest reason an agent gives (audited).
 const MAX_REASON: usize = 300;
@@ -102,6 +104,19 @@ impl App {
         )
     }
 
+    /// Tells the open Secrets pages that an agent asked for something about `record`, so its
+    /// Allow shows without a reload (SPEC-209): those of its sandbox, or every sandbox's for a
+    /// secret of every sandbox. The event names nothing; the page reads the list again.
+    pub(super) fn announce_request(&self, record: &VaultSecretRecord) {
+        self.events.publish(
+            record.sandbox_id.clone(),
+            false,
+            UiEvent::SecretsUpdated {
+                sandbox_id: record.sandbox_id.as_ref().map(ToString::to_string),
+            },
+        );
+    }
+
     /// `secret_request_hosts`: stores the hosts an agent or a Superagent proposes for an agent
     /// secret of its project as a request (never a binding), audits it and flags a task as needing
     /// a person (SPEC-121, SPEC-186 SAV-003).
@@ -171,6 +186,7 @@ impl App {
                 "the secret changed meanwhile: ask again".into(),
             ));
         }
+        self.announce_request(&record);
         let why = reason(args.reason.as_deref());
         self.vault_audit(
             &user.actor(),
