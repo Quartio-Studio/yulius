@@ -1,11 +1,11 @@
 ---
 yulius-task: 57829d06-aedf-45d3-8017-1930f1d0ce8f
-status: in-progress
+status: done
 ---
 
 # SPEC-208: Tasks and the Superagent run with Claude Code's approval bypass, not auto mode
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #195
 Scope authorization: task #195 (requested by MrFishPL): "tasks and the superagent should run in
@@ -56,11 +56,11 @@ blocking commands, no auto-mode onboarding dialog, no approval prompts for ordin
 
 ## Plan
 
-- [ ] Spec and decision record: Superagent bypasses approvals on contained servers
-- [ ] Superagent launch plan carries --dangerously-skip-permissions and IS_SANDBOX when contained
-- [ ] Contained Superagents start with bypass accepted, and running ones restart into it
-- [ ] Docs (architecture, API, ADR index, changes) describe the bypass
-- [ ] Gates green, independent review answered, merged into dev
+- [x] Spec and decision record: Superagent bypasses approvals on contained servers
+- [x] Superagent launch plan carries --dangerously-skip-permissions and IS_SANDBOX when contained
+- [x] Contained Superagents start with bypass accepted, and running ones restart into it
+- [x] Docs (architecture, API, ADR index, changes) describe the bypass
+- [x] Gates green, independent review answered, merged into dev
 
 ## Acceptance criteria
 
@@ -103,3 +103,24 @@ blocking commands, no auto-mode onboarding dialog, no approval prompts for ordin
   than waiting for the next idle stop: the change is what the person asked to see.
 - **Tasks: no code change.** They already bypass on a contained server; the request's "tasks"
   part is verified (Context) and kept by the existing regression test.
+
+## Evidence
+
+- Red first: `cargo nextest run -p yulius-harness -E 'test(cockpit)'` with the new test
+  `a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox` failed to compile
+  (`CockpitRequest` has no field `bypass_permissions`, E0560); after the change 5/5 passed.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^cockpit::/)'`: 40/40 passed,
+  including the new `a_contained_superagent_starts_with_the_approval_bypass_accepted` (adapter:
+  argv ends with `--dangerously-skip-permissions`, `IS_SANDBOX=1`, `bypassPermissionsModeAccepted:
+  true`; uncontained none of them), the contained recording test (`launch.contained`), the
+  uncontained live test (argv `[--model claude-opus-5-5 --effort high]`, no acceptance) and the
+  SPEC-186 refresh tests.
+- BYP-005: `crates/yulius-harness/tests/launch.rs` contained task argv test unchanged and passing.
+- Task transcripts on this instance (2026-10-17): 13,614 `"permissionMode":"bypassPermissions"`
+  records, 1 `default`, no `auto`.
+- `scripts/dev ci` after merging `origin/dev`: exit 0; nextest 2131 passed, 18 skipped.
+- `scripts/dev security`: exit 0, "no open critical or high finding in the change scan" (vidoc-1,
+  6 files sent).
+- Not testable here: a real Claude Code 2.1.292 Superagent start inside bubblewrap showing
+  "bypass permissions on" in the footer; the flag and `IS_SANDBOX` are the same ones task runs use
+  there today.
