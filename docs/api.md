@@ -1471,6 +1471,15 @@ task; other hooks answer as usual.
   `secret_request_hosts` and `secret_copy_to_env` too (its copies go to the sandbox repository,
   its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), not `browser_fill_secret`;
   the egress proxy accepts its bearer as `yulius:ck_…`.
+- MCP `secret_create_from_file {name, file, description?, delete_file?}` (SPEC-211, tasks and the
+  Superagent, which asks first) → `{created, file, deleted, hosts: [], link, next, warning?}`:
+  Yulius reads `file` (relative to the folder the caller works in, or `~/…` in its home), anchored
+  on the sandbox folder (the Superagent's home: its person's folder) and opened one folder at a
+  time without links, a regular UTF-8 file of at most 16 KiB, and stores it as an agent secret of
+  the sandbox (a key block with literal `\n`) with no hosts, no `.env` allowance, not for
+  production. It needs the person's write access, never replaces a name, refuses
+  `VIDOC_API_KEY`, is audited `vault.agent.create` with the agent as actor, deletes the file only
+  with `delete_file`, and never returns the value.
 - MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
   `sha256sum`'s line) →
   `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`

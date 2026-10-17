@@ -667,9 +667,10 @@ for the people who manage it
 
 Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
-folder or `~/` for the caller's home (the sandbox home for a task, the person's home in the
-sandbox for the Superagent). Yulius opens it as `secret_copy_to_env` opens its target
-(`open_folder`: one folder at a time without following links, real path checked), reads a regular
+folder or `~/` for the caller's home (the sandbox home for a task, its person's home for the
+Superagent, shared by their projects). Yulius walks to it from a folder the agent cannot replace (the
+canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` opens
+its target (`open_folder`: one folder at a time without following links, real path checked), reads a regular
 file of at most 16 KiB, converts it with `dotenv::agent_value_from_file` (the CLI import's
 conversion too) and stores it through `App::insert_agent_secret`, the Secrets page's path. The
 secret has no hosts and no `.env` allowance, its creator is the person the caller acts for (write

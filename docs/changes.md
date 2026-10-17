@@ -13,8 +13,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `~/`. Yulius reads the file itself (no absolute paths, no links, a regular file of at most
   16 KiB) and stores it as an agent secret of the sandbox: a key file with literal `\n`, as the
   Secrets page does. The secret starts with no hosts and no `.env` allowance, an existing name is
-  never replaced, the person's write access is required, the audit names the agent, and the file
-  is deleted only when asked.
+  never replaced (nor `VIDOC_API_KEY`, which would hide the instance's Vidoc key), the person's
+  write access is required, the audit names the agent, and the file is deleted only when asked.
+  The CLI import shares the conversion: a quoted value whose only line break ends it is now
+  stored without it, and spaces around a key's lines are dropped.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,

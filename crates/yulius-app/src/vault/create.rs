@@ -12,8 +12,8 @@ use std::io::Read as _;
 use std::path::PathBuf;
 
 use nix::errno::Errno;
-use nix::fcntl::{OFlag, openat};
-use nix::sys::stat::Mode;
+use nix::fcntl::{AtFlags, OFlag, openat};
+use nix::sys::stat::{Mode, SFlag, fstatat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -101,6 +101,26 @@ pub(super) fn source(file: &str) -> AppResult<(Root, Vec<String>)> {
 /// its content.
 pub(super) fn read_secret_file(folder: &Folder, name: &str) -> AppResult<Zeroizing<String>> {
     let shown = folder.path_of(name);
+    // Its type first, so a device or socket is never opened (a link is not followed).
+    match fstatat(&folder.fd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) => {
+            let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+            if kind == SFlag::S_IFLNK {
+                return Err(AppError::Forbidden(format!(
+                    "{shown} is a link: Yulius reads only regular files and follows no links"
+                )));
+            }
+            if kind != SFlag::S_IFREG {
+                return Err(AppError::Forbidden(format!(
+                    "{shown} is not a regular file: Yulius reads only regular files"
+                )));
+            }
+        }
+        Err(Errno::ENOENT) => {
+            return Err(AppError::Invalid(format!("{shown} does not exist")));
+        }
+        Err(err) => return Err(os_error(err)),
+    }
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
     let fd = match openat(&folder.fd, name, flags, Mode::empty()) {
         Ok(fd) => fd,
@@ -150,6 +170,22 @@ pub(super) fn remove_file(folder: &Folder, name: &str) -> AppResult<()> {
     unlinkat(&folder.fd, name, UnlinkatFlags::NoRemoveDir).map_err(os_error)
 }
 
+/// Deletes a file whose secret is stored (SCF-006): whether it is gone, and otherwise the warning
+/// that says the secret stays and the file must go by hand.
+fn delete_stored(folder: &Folder, name: &str, shown: &str) -> (bool, Option<String>) {
+    match remove_file(folder, name) {
+        Ok(()) => (true, None),
+        Err(err) => (
+            false,
+            Some(format!(
+                "the secret is stored, but {shown} could not be deleted ({}): delete it yourself \
+                 if the vault should hold the only copy",
+                err.public_message()
+            )),
+        ),
+    }
+}
+
 impl App {
     /// `secret_create_from_file` (SPEC-211): stores the text of a file the caller names (in the
     /// folder it works in, or `~/…` in its home) as an agent secret of its sandbox, without the
@@ -164,6 +200,15 @@ impl App {
         let args: CreateArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let name = SecretName::parse(args.name.trim()).map_err(invalid)?;
+        if name.as_str() == crate::vidoc_key::VIDOC_SECRET {
+            // A project secret of this name replaces the instance's Vidoc key for every run and
+            // CI job of the sandbox (ADR-0157): a person's choice, never an agent's.
+            return Err(AppError::Forbidden(format!(
+                "{VIDOC} is reserved: a project secret of that name replaces the instance's Vidoc \
+                 key for this project, so only a person adds one, on the Secrets page",
+                VIDOC = crate::vidoc_key::VIDOC_SECRET
+            )));
+        }
         let description = description(args.description.as_deref())?;
         let (root, parts) = source(&args.file)?;
         let (file_name, folders) = parts
@@ -189,11 +234,14 @@ impl App {
                 other => other,
             })?;
 
-        let base = self.secret_source_root(user, &sandbox, &root).await?;
-        let folder = open_folder(&base, folders, root.named())?;
+        // Anchored on a folder the agent cannot replace, and walked down without links: the
+        // home or repository itself may be a link the agent planted (review of SPEC-211, 1).
+        let (anchor, mut below) = self.secret_source_root(user, &sandbox, &root).await?;
+        below.extend(folders.iter().cloned());
+        let folder = open_folder(&anchor, &below, root.named())?;
         let shown = match root {
-            Root::Work => folder.path_of(file_name),
-            Root::Home => format!("~/{}", folder.path_of(file_name)),
+            Root::Work => parts.join("/"),
+            Root::Home => format!("~/{}", parts.join("/")),
         };
         let text = read_secret_file(&folder, file_name)?;
         let value = Zeroizing::new(
@@ -226,20 +274,11 @@ impl App {
             .await?;
         drop(payload);
 
-        let mut deleted = false;
-        let mut warning = None;
-        if args.delete_file {
-            match remove_file(&folder, file_name) {
-                Ok(()) => deleted = true,
-                Err(err) => {
-                    warning = Some(format!(
-                        "the secret is stored, but {shown} could not be deleted ({}): delete it \
-                         yourself if the vault should hold the only copy",
-                        err.public_message()
-                    ));
-                }
-            }
-        }
+        let (deleted, warning) = if args.delete_file {
+            delete_stored(&folder, file_name, &shown)
+        } else {
+            (false, None)
+        };
         let keep = if deleted {
             format!("{shown} is deleted: the vault holds the value now.")
         } else {
@@ -268,24 +307,50 @@ impl App {
         Ok(result)
     }
 
-    /// The folder `root` stands for, as Yulius sees it (real path): the folder the caller works
-    /// in, or its home (a task's: the sandbox home; the Superagent's: its person's home in the
-    /// sandbox).
+    /// Where `root` lies: a folder the agent cannot replace (the sandbox folder, or the
+    /// Superagent's person's folder, canonical) and the folders below it, to be opened one at a
+    /// time without following links. The folder the caller works in is a task's worktree or the
+    /// sandbox repository; the home is the sandbox home for a task, its person's home (shared by
+    /// their projects) for the Superagent.
     async fn secret_source_root(
         &self,
         user: SecretUser<'_>,
         sandbox: &SandboxRecord,
         root: &Root,
-    ) -> AppResult<PathBuf> {
-        let base = match (root, user) {
-            (Root::Work, _) => return self.secret_user_folder(user, sandbox).await,
-            (Root::Home, SecretUser::Task(_)) => self.sandbox_home(&sandbox.id),
-            (Root::Home, SecretUser::Superagent(caller)) => {
-                self.users_dir().join(caller.user.as_str()).join("home")
+    ) -> AppResult<(PathBuf, Vec<String>)> {
+        let missing =
+            || AppError::Invalid(format!("{} does not exist on this machine", root.named()));
+        let canonical = |path: PathBuf| std::fs::canonicalize(path).map_err(|_| missing());
+        let below = |name: &str| vec![name.to_owned()];
+        match (root, user) {
+            (Root::Work, SecretUser::Task(ctx)) => {
+                let anchor = canonical(self.sandbox_dir(&sandbox.id))?;
+                // Canonical and inside the sandbox folder (`sandbox_worktree` checks it); the
+                // walk from the anchor checks it again without links.
+                let worktree = self
+                    .sandbox_worktree(sandbox, ctx.task.id.as_str(), None)
+                    .await?;
+                let parts = worktree
+                    .strip_prefix(&anchor)
+                    .map_err(|_| {
+                        AppError::Forbidden(format!("{WORK_FOLDER} is outside the sandbox"))
+                    })?
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                Ok((anchor, parts))
             }
-        };
-        std::fs::canonicalize(&base)
-            .map_err(|_| AppError::Invalid(format!("{HOME} does not exist on this machine")))
+            (Root::Work, SecretUser::Superagent(_)) => {
+                Ok((canonical(self.sandbox_dir(&sandbox.id))?, below("repo")))
+            }
+            (Root::Home, SecretUser::Task(_)) => {
+                Ok((canonical(self.sandbox_dir(&sandbox.id))?, below("home")))
+            }
+            (Root::Home, SecretUser::Superagent(caller)) => Ok((
+                canonical(self.users_dir().join(caller.user.as_str()))?,
+                below("home"),
+            )),
+        }
     }
 }
 
@@ -374,6 +439,21 @@ mod tests {
 
         remove_file(&folder, "token.txt")?;
         assert!(!wt.join("token.txt").exists());
+        // Review of SPEC-211, finding 4: a file that cannot be deleted leaves the secret and says
+        // so.
+        let (deleted, warning) = delete_stored(&folder, "token.txt", "secrets/token.txt");
+        assert!(!deleted);
+        let warning = warning.ok_or("no warning")?;
+        assert!(
+            warning.starts_with("the secret is stored, but secrets/token.txt could not be deleted"),
+            "{warning}"
+        );
+        std::fs::write(wt.join("again.txt"), "synthetic-token-5678\n")?;
+        assert_eq!(
+            delete_stored(&folder, "again.txt", "again.txt"),
+            (true, None)
+        );
+        assert!(!wt.join("again.txt").exists());
         assert!(remove_file(&folder, "folder").is_err());
         assert!(wt.join("folder").is_dir());
         Ok(())

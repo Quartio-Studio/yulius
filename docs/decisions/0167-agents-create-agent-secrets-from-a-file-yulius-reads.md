@@ -29,8 +29,11 @@ vault key), so anything it reads on an agent's behalf must stay where the agent 
   caller's sandbox. The value never goes through the tool call, the result or the transcript.
 - **Only the work folder and the home.** `file` is relative to the folder the caller works in (a
   task's worktree, the Superagent's sandbox repository) or `~/…` in its home (a task's: the
-  sandbox home; the Superagent's: its person's home in the sandbox). Absolute paths, `..` and
-  `.git` are refused. The folders on the way are opened one at a time without following links,
+  sandbox home; the Superagent's: its person's home, shared by their projects). Absolute paths, `..` and
+  `.git` are refused. The walk starts at a folder the agent cannot replace (the canonical sandbox
+  folder; for the Superagent's home, its person's folder `users/<id>`), never at the home or
+  repository path, which the agent can swap for a link. From there the folders on the way, the
+  home or repository included, are opened one at a time without following links,
   as `secret_copy_to_env` opens its target (`open_folder`), and the folder reached must lie inside
   its root. The file is opened without following a link and without blocking, and must be a
   regular file of at most 16 KiB in UTF-8.
@@ -41,7 +44,9 @@ vault key), so anything it reads on an agent's behalf must stay where the agent 
 - **Creating grants nothing.** The secret applies to this sandbox only, with no hosts, no `.env`
   allowance and not for production. Every use still needs a person (`secret_request_hosts`,
   `secret_copy_to_env`). A name that already applies (sandbox or instance-wide) is refused:
-  nothing is replaced, and rotation stays on the Secrets page.
+  nothing is replaced, and rotation stays on the Secrets page. `VIDOC_API_KEY` is refused too: a
+  project secret of that name replaces the instance's Vidoc key for the whole sandbox
+  (ADR-0157), which only a person decides.
 - **The person's right, the agent's name.** The person the caller acts for (a task's owner, the
   Superagent's person) must be able to manage the sandbox's agent secrets (write access); they
   are recorded as its creator. The audit entry `vault.agent.create` names the agent as actor

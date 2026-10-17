@@ -376,3 +376,41 @@ async fn names_in_use_and_readers_are_refused() -> TestResult {
     assert!(other.join("key.txt").exists());
     Ok(())
 }
+
+/// Review of SPEC-211, finding 1: the home (or the worktree) swapped for a link to elsewhere, such
+/// as Yulius' data folder, is never followed: Yulius anchors the root on the sandbox folder and
+/// walks down without links, so nothing outside the agent's own folders is read. The instance's
+/// Vidoc key's name is reserved (finding 3): a project secret of that name would hide it.
+#[tokio::test]
+async fn a_root_swapped_for_a_link_and_reserved_names_are_refused() -> TestResult {
+    let w = world().await?;
+    let data = w.h.app.config.data_dir.clone();
+    std::fs::write(data.join("outside.txt"), "outside-synthetic-value-0002\n")?;
+    let before = names(&w).await?;
+    std::fs::rename(&w.home, data.join("sandboxes/s1/home.old"))?;
+    std::os::unix::fs::symlink(&data, &w.home)?;
+    let refused = create(
+        &w,
+        TOKEN,
+        json!({"name": "SOME_KEY", "file": "~/outside.txt"}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        !refused.to_string().contains("outside-synthetic"),
+        "{refused}"
+    );
+    assert_eq!(names(&w).await?, before, "nothing is created");
+
+    std::fs::write(w.worktree.join("vidoc.txt"), "junk-synthetic-value-0003\n")?;
+    let refused = create(
+        &w,
+        TOKEN,
+        json!({"name": "VIDOC_API_KEY", "file": "vidoc.txt"}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(refused.to_string().contains("reserved"), "{refused}");
+    assert_eq!(names(&w).await?, before, "nothing is created");
+    Ok(())
+}

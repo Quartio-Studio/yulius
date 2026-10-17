@@ -92,7 +92,10 @@ pub fn agent_value_from_file(text: &str) -> Result<String, VaultError> {
         let first = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
         let last = lines.iter().rposition(|l| !l.is_empty()).unwrap_or(0);
         let joined = lines.get(first..=last).unwrap_or_default().join("\\n");
-        if key_block(&joined).is_none() {
+        // The key file `key_block` builds is a copy of the key: wiped too.
+        if let Some(file) = key_block(&joined) {
+            wipe(file);
+        } else {
             wipe(joined);
             return Err(VaultError::Value(
                 "an agent secret cannot span lines (a PEM or OpenSSH key can), and this is not a \

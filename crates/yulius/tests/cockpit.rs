@@ -3393,6 +3393,27 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
         detail.contains("from a file, by alice's Superagent"),
         "{detail}"
     );
+
+    // Review of SPEC-211, finding 1: the sandbox repository swapped for a link to Yulius' data
+    // folder is never followed.
+    std::fs::write(f.data.join("outside.txt"), "outside-synthetic-value-0004\n")?;
+    let repo = f.data.join("sandboxes/s1/repo");
+    std::fs::rename(&repo, f.data.join("sandboxes/s1/repo.old"))?;
+    std::os::unix::fs::symlink(&f.data, &repo)?;
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_create_from_file",
+        json!({"name": "OUTSIDE_KEY", "file": "outside.txt"}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        !refused.to_string().contains("outside-synthetic"),
+        "{refused}"
+    );
+    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    assert!(!records.iter().any(|r| r.name == "OUTSIDE_KEY"));
     f.h.app.end_all_shells().await;
     Ok(())
 }
