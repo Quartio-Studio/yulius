@@ -2532,6 +2532,8 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
   // A production secret is never set up by agents (SPEC-216 SSA-004).
   if (body.auto_allow === true && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
+  if (body.expect_hosts && body.expect_hosts.join(',') !== secret.hosts.join(',')) fail(409, 'conflict', `its hosts changed since you opened it (now ${secret.hosts.join(', ') || 'none'}): reload and edit again`);
+  delete body.expect_hosts;
   for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);

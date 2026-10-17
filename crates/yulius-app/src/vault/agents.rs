@@ -9,7 +9,7 @@ use yulius_contracts::api::secrets::{
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::vault::dotenv::flattened_key;
-use yulius_domain::vault::hosts::parse_hosts;
+use yulius_domain::vault::hosts::{HostPattern, parse_hosts};
 use yulius_domain::vault::{
     Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
 };
@@ -311,6 +311,26 @@ impl App {
             .await?;
         if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
+        // SPEC-216 SSA-005 (review round 2): hosts edited from what the person saw, which an
+        // agent may have changed since the dialog opened.
+        if let Some(seen) = &patch.expect_hosts {
+            let seen = parse_hosts(seen).map_err(invalid)?;
+            let bound: Vec<HostPattern> = record
+                .hosts
+                .iter()
+                .filter_map(|h| HostPattern::parse(h).ok())
+                .collect();
+            if seen.len() != bound.len() || !seen.iter().all(|h| bound.contains(h)) {
+                return Err(AppError::Conflict(format!(
+                    "its hosts changed since you opened it (now {}): reload and edit again",
+                    if record.hosts.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        record.hosts.join(", ")
+                    }
+                )));
+            }
         }
         // SPEC-216 SSA-004: a production-only secret is never set up by agents.
         if record.cd_prod && patch.auto_allow == Some(true) {

@@ -68,7 +68,8 @@ Two changes to the vault, one request:
 - SSA-005. People who manage a secret turn `auto_allow` on or off in Edit (`PATCH auto_allow`),
   audited `vault.agent.auto_allow_on` / `vault.agent.auto_allow_off`. Turning it off keeps the
   hosts already bound (Edit removes them) and stops production deploys getting it. An edit read
-  before a host was bound or the switch changed is refused (409, reload), never undoing it.
+  before a host was bound or the switch changed is refused (409, reload), never undoing it: the
+  Edit dialog sends hosts only when changed, with `expect_hosts`, the hosts it showed.
 - SSA-006. The Secrets page marks such a secret "Agents set it up", and its production line says
   that production deploys get it because agents set it up (no Allow/Revoke button there).
   `secrets_list` gives `auto_allow` per secret and its guidance says such hosts bind at once; the
@@ -102,7 +103,7 @@ Two changes to the vault, one request:
   checkout's remote) by default, and `--instance` imports team-wide, as for agent secrets.
   `--to agent` says before `yes` that agents set the secrets up, and `--confirm-hosts` turns that
   off (SSA-001 for the CLI). Fields left at their default are not sent, so an older server still
-  takes an import.
+  takes a team-wide or an agent import (a sandbox's team secrets need a server with SPEC-216).
 
 ## Plan
 

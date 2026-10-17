@@ -284,7 +284,7 @@ function mountTeam(ctx, sandbox, host, actions) {
   }
 
   function render(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, recovery codes.', action: createButton('Add team secret', () => edit(null)) });
+    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, recovery codes.', action: write ? createButton('Add team secret', () => edit(null)) : null });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: secret.title,
@@ -479,7 +479,15 @@ function agentForm(ctx, secret) {
     const out = { name: name.value.trim(), description: notes.value.trim() };
     if (form.scope) out.scope = form.scope.value;
     if (form.auto && (!secret || form.auto.checked !== secret.auto_allow)) out.auto_allow = form.auto.checked;
-    if (form.hosts) out.hosts = form.hosts.value.split(/[\s,]+/).filter(Boolean);
+    if (form.hosts) {
+      // Hosts go only when changed, with those the dialog showed: an agent may have bound one
+      // since it opened, and the server refuses to drop it unseen (SPEC-216).
+      const hosts = form.hosts.value.split(/[\s,]+/).filter(Boolean);
+      if (hosts.join(',') !== secret.hosts.join(',')) {
+        out.hosts = hosts;
+        out.expect_hosts = secret.hosts;
+      }
+    }
     if (form.injection) {
       out.injection = form.injection.value;
       out.header_name = out.injection === 'header' ? form.header.value.trim() : null;

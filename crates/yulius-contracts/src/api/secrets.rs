@@ -261,6 +261,10 @@ pub struct AgentSecretPatch {
     /// Agents set it up themselves (SPEC-216 SSA-005).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_allow: Option<bool>,
+    /// The bound hosts the person saw when they changed `hosts`: 409 unless they still are the
+    /// bound ones (an agent may bind one meanwhile, SPEC-216), so none is dropped unseen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_hosts: Option<Vec<String>>,
 }
 
 /// `POST /api/agent-secrets/{id}/request` body: answers the hosts an agent asked for (SPEC-121).

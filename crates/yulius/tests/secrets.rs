@@ -2796,8 +2796,30 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     let listed = tool_text(&mcp_tool(&w.h, TOKEN_S1, "secrets_list", json!({})).await?);
     assert_eq!(listed["secrets"][0]["auto_allow"], true, "{listed}");
 
-    // Only its managers turn it off; then a host waits for a person again.
+    // Review round 2: an Edit dialog opened before the binding names the hosts it showed; saving
+    // it never drops the bound host unseen. An edit that leaves the hosts alone keeps it.
     let path = format!("/api/agent-secrets/{id}");
+    let stale = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"description": "Vidoc", "hosts": [], "expect_hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    let kept = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"description": "Vidoc"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.body);
+    assert_eq!(kept.body["hosts"], json!(["api.vidoc.test"]));
+
+    // Only its managers turn it off; then a host waits for a person again.
     let reader = call(
         &w.h.router,
         Method::PATCH,

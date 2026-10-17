@@ -32,8 +32,9 @@ Team secrets were all instance-wide; agent secrets were a sandbox's or every san
   production deploys only turns the option off and allows production as before.
 - **A scope for every secret.** `sandbox_id` (already a column) now scopes team secrets too: a
   sandbox's team secret is read by the people who can view that sandbox (404 otherwise, its
-  activity hidden) and changed by those who write to it; a team-wide one is every member's. New ones default to the open sandbox; team-wide is
-  under More options (agent secrets: instance administrators only, as before).
+  activity hidden) and changed by those who write to it; a team-wide one is every member's. New
+  ones default to the open sandbox; team-wide is under More options (agent secrets: instance
+  administrators only, as before).
 - **Existing secrets are copied into each sandbox once.** Schema version 35 lists the secrets with
   no sandbox (`vault_scope_pending`). At the next start, before serving, each is re-sealed under a
   new id per sandbox and replaced by those copies in one transaction (audited `vault.*.assign` by
