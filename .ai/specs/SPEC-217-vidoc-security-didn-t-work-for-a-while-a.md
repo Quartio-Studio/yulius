@@ -163,14 +163,14 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 
 ## Plan
 
-- [ ] Broad Vidoc audit of dev run and every finding triaged
-- [ ] The scan fails on medium findings in the changed lines and hands low ones to the agent
-- [ ] Findings outside the change are printed with fingerprints for CI to file
-- [ ] Yulius CI files each outside-the-change finding once as an issue
-- [ ] Every project with a Vidoc key gets the security job in its CI
-- [ ] Filed issues follow the code: reopened while reported, closed once the line is gone from dev
-- [ ] Briefing, onboarding, infra bootstrap, AGENTS.md, docs and ADR-0172 describe the policy
-- [ ] Audit findings fixed, ignored with reasons, or filed
+- [x] Broad Vidoc audit of dev run and every finding triaged
+- [x] The scan fails on medium findings in the changed lines and hands low ones to the agent
+- [x] Findings outside the change are printed with fingerprints for CI to file
+- [x] Yulius CI files each outside-the-change finding once as an issue
+- [x] Every project with a Vidoc key gets the security job in its CI
+- [x] Filed issues follow the code: reopened while reported, closed once the line is gone from dev
+- [x] Briefing, onboarding, infra bootstrap, AGENTS.md, docs and ADR-0172 describe the policy
+- [x] Audit findings fixed, ignored with reasons, or filed
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, Evidence written, changes log updated
 
@@ -214,6 +214,81 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   no-op when already in that state, and 404.
 - The store migration's test: claim and release.
 - The live CI `security` job on this pull request runs the new scanner.
+
+## Evidence
+
+### The audit (VSA-001)
+
+The broad scan of `dev` at 7b7ca3f3 ran from a detached worktree with this branch's scanner. The
+command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the report is in the ignored
+`.ai/runs/vidoc-broad-7b7ca3f3.json`.
+
+- **Coverage:** 1626 files tracked. 808 were sent in 269 chunks (16 MB): 269 of 269 reviewed and
+  none unscanned. 818 were skipped as prose, vendored, media or lockfiles.
+- **Outages:** a first attempt at 12 requests at a time got HTTP 500 from `/v1/messages`, for
+  every request, from about 19:55Z to 20:40Z. `/v1/models` still answered 200, so the cause was
+  on Vidoc's side. That was reported with `needs_you` and resolved when Vidoc recovered.
+- **Findings:** 10 high (1 already ignored, #626), 38 medium, 43 low. Three read-only triage
+  sessions checked every high and medium finding against the code.
+
+| Outcome | Findings |
+| --- | --- |
+| Fixed here, test-first | high `auth.rs:532`, a reused GitHub login takes over a linked account: #653 (`http_auth::a_reused_github_login_does_not_take_over_a_linked_account`, which fails without the fix) |
+| Fixed here, test-first | medium (triaged high) `files.rs:384`, the editor's save writes through a planted temporary link: #655 (`files::a_save_never_writes_through_a_planted_temporary_link`) |
+| Filed, chained task #204 | high `mcp_config/project.rs:116` plus the stdio Test: agent-imported `.mcp.json` commands run on the host: #654 |
+| Filed, chained task #205 | medium (triaged high) `delivery.rs:26`, `:4095`: environment runs check out and execute uncontained on the host: #656 |
+| Filed, chained task #206 | medium: imported transcripts `imports.rs:1812`, uploads `uploads.rs:283`, skill copies (destination side of `skills.rs:227`), editor read `files.rs:294`; host writes follow links: #657 |
+| Tracked already | `yulius-browser/src/lib.rs:18` (#626), `claude_config.rs:174` (#634) |
+| False positive, `[[ignore]]` with the guard | high: `mcp_config.rs:566`, `:576`, `playground/onboard.rs:232`, `:254`, `session_docs.rs:936`, `credential.rs:353`, `yulius-update.service:15`. Medium: `accounts.rs:1086`, `auth.rs:562`, `ci/cd.rs:1176`, `:1515`, `delivery/runner.rs:225`, `disk.rs:22`, `manage.rs:244`, `mcp.rs:86`, `mcp_config.rs:250`, `project.rs:128`, `purge.rs:59`, `preview.rs:93`, `session_docs.rs:1124`, `terminal.rs:151`, `vault/runtime.rs:830`, `yulius-domain` `disk.rs:147`, `vault/mod.rs:182`, `:251`, `proxy.rs:351`, `hook_client.rs:316`, `yulius-import` `upload.rs:162`, `taskview.js:340`, `sessions.rs:40`, `leftovers_cli.rs:299`, `update_helper.rs:338`, `wiring/git.rs:263`, `:509`, `wiring/harness.rs:58`, `:206` |
+
+- **`.config/vidoc.toml`:** there are 44 new `[[ignore]]` entries. Each one names the guard and
+  test that stop its finding, or the issue tracking it. Applied to the report, they leave open
+  only the two findings fixed here.
+- **Low findings (43): my call as the executor, not acted on in this change.** They are
+  hardening, test fixtures (`tools/fake-agent`, `fake/synthetic_app_key.pem`) or scripts. A
+  pull request that touches their code gets each one filed as an issue by the new CI path.
+  - `scripts/vidoc_scan.py:437`: a finding naming a file outside its chunk. This is now covered:
+    such a finding counts as in the change (VSP-001).
+
+### Commands and results
+
+- `cd scripts && python3 -m unittest test_vidoc_scan`: 63 tests passed. They include:
+  - 19 policy tests, each failing before its fix: changed lines, slack, deletions, new and moved
+    files, `-diff`, a subdirectory, unusual names, a misnamed file, forged lines, fingerprints and
+    Python–Rust parity.
+- `cargo nextest` on the new tests:
+  - `local_ci::` (34): filing once, reopening and closing, a stale branch, a refused filing, the
+    built-in job;
+  - `ci::findings::` unit tests;
+  - the store's `security_findings_are_claimed_once_per_sandbox`;
+  - `yulius-github` `issues_are_reopened_and_closed_with_a_comment`;
+  - the domain's `the_built_in_security_job_joins_a_gate_that_does_not_scan`;
+  - the briefing and onboarding tests.
+
+  All passed. The order-dependent tests were run three times each.
+- `scripts/dev ci` at be37290e: passed, 2206 tests (18 skipped), plus lint, macOS, doctests,
+  deps and docs. The final head's gate is recorded below.
+- `python3 scripts/check_repository.py`: passed.
+- `python3 scripts/vidoc_scan.py --base origin/dev` at 5232bfc6 (the change scan, under the new
+  policy): exit 0, with 29 files sent in 23 chunks.
+  - Findings that fail the scan: none.
+  - Low findings in the change: none.
+  - Low findings outside the change: 3 (`ports/github.rs:401`, `fake/mod.rs:1058`, `:1122`),
+    which CI files as issues.
+- Independent review round 1 (fresh session, at d0e9cec3) asked for changes:
+  - 3 major findings: M1 subdirectory, M2 stale branches, M3 Evidence;
+  - 9 minor findings and 4 nits.
+
+  All were fixed test-first in 126712a2, 331c1c3a and be37290e, and M3 by this section.
+
+### Not tested here
+
+- A live Yulius CI run of the built-in job on another project. The instance runs `main`, so the
+  built-in job and the issue handling reach other projects only after promotion. This
+  repository's own `security` job runs the pull request's scanner and uses the new verdict from
+  this pull request on.
+- Real GitHub issue creation and reopening. These were tested against the in-process fakes (the
+  app port fake and the `yulius-github` HTTP fake).
 
 ## Decisions
 

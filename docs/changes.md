@@ -15,6 +15,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reopens it while Vidoc still reports it, and closes it once its line is gone from the
   integration branch. Every project whose sandbox has a Vidoc key (its own or the instance's)
   gets a built-in `security` CI job unless its CI already scans; onboarding no longer adds one.
+  The first full Vidoc audit of the repository (269 chunks) fixed a GitHub sign-in takeover by a
+  reused login (#653) and an editor save that wrote through an agent-planted link (#655). It filed
+  three host-escape issues with fix tasks queued (#654 MCP stdio Test, #656 environment runs, #657
+  link-following writes), and recorded 39 false positives with their guards in `.config/vidoc.toml`.
 - Agents set up a new agent secret themselves, and every secret belongs to a sandbox unless
   team-wide (SPEC-216, ADR-0171, task #203). Adding an agent secret, "Let agents set it up" is on:
   the hosts an agent works out are bound at once and production deploys get it, with no person
