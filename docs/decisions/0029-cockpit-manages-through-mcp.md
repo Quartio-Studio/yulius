@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-037](../../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md).
 Supersedes the "no MCP server" part of [0020](0020-cockpit-as-a-plain-shell-session.md); the
-Cockpit still has no hooks, settings, briefing, gates or approval bypass.
+Cockpit still has no hooks, settings, briefing, gates or approval bypass. Amended by
+[0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md): on a contained server it
+bypasses approvals, so "asks the person first" below holds only on an uncontained one.
 
 ## Context
 

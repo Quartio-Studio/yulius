@@ -190,13 +190,16 @@ impl HarnessPort for HarnessAdapter {
             project_mcp_servers: l.project_mcp_servers.clone(),
             mcp_servers,
             redaction_exe: Some(self.yulius_exe.clone()),
+            bypass_permissions: l.contained,
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
-        // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
-        yulius_harness::claude_config::ensure_claude_config(&l.config_dir_host, &l.cwd, false)
-            .map_err(|e| {
-                AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
-            })?;
+        // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
+        yulius_harness::claude_config::ensure_claude_config(
+            &l.config_dir_host,
+            &l.cwd,
+            l.contained,
+        )
+        .map_err(|e| AppError::Upstream(format!("cannot prepare the Claude Code config: {e}")))?;
         // Moved past a usage limit, the conversation steps back over it first (SPEC-074 SUP-004,
         // as a task's does, SPEC-034); a failed step back still resumes.
         if let (Some(session), true) = (&l.resume, l.continue_interrupted) {
