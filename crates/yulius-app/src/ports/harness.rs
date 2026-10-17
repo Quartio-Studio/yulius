@@ -109,6 +109,8 @@ pub struct CockpitLaunch {
     /// The sandbox's MCP servers, as a task run of the sandbox gets them (SPEC-147 SAM-001); the
     /// adapter puts their values in the secret environment.
     pub mcp: Vec<McpAttachment>,
+    /// A contained server: the session bypasses approvals, as a task run there does (SPEC-208).
+    pub contained: bool,
 }
 
 /// A launch plan plus the session id known up front.
