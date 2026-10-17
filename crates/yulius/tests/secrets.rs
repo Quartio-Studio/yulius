@@ -2414,6 +2414,13 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     assert_eq!(allowed.body["requested_hosts"], json!([]));
     assert_eq!(allowed.body["requested_by"], Value::Null);
     assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    // SPEC-213 SRA-001: nothing waits for a person any more.
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(task.activity, Some(yulius_domain::task::Activity::Working));
     let none = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(none.status, StatusCode::CONFLICT, "nothing to answer");
 
