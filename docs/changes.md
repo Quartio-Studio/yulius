@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Claude Code sessions answer concisely (SPEC-210, ADR-0166, task #197). Task runs and the
+  Superagent start in Claude Code's built-in Concise output style: the first sentence gives the
+  result, without lead-in, narration or recap, while the work stays as thorough. Each launch adds
+  `"outputStyle": "Concise"` to the sandbox's Claude Code user settings when they name no style;
+  `/output-style` still switches a session (Claude Code keeps that choice for the worktree, so
+  the Superagent keeps it and a new task starts concise again), and a style a repository commits
+  in `.claude/settings.json` wins. Before a launch the host now opens the files of the sandbox's
+  Claude config and the worktree's `.git` without following a link or blocking on a FIFO; a
+  config dir that is itself a link is still open in #634.
 - Yulius builds on macOS again, and CI keeps it so (SPEC-214, ADR-0169, task #201, fixes #636).
   #620 had put Linux-only calls in the sandbox and app crates (a build lock through a Linux-only
   crate, the Docker engine's `O_PATH` socket, a file mode's width), so the `yulius` CLI could not

@@ -7,7 +7,8 @@
 //! keeps its own state there. The same preparation keeps Claude Code's diff side panel from opening
 //! by itself (SPEC-024). A linked git worktree is trusted under its main repository too: Claude
 //! Code 2.1.292 looks a worktree's trust up there when `.claude/settings.json` pre-approves tools
-//! (SPEC-106, verified live).
+//! (SPEC-106, verified live). It also defaults the user settings (`settings.json`) to the Concise
+//! output style (SPEC-210).
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -18,6 +19,10 @@ use crate::launch::PlannedFile;
 
 /// File name inside the config dir.
 pub const CLAUDE_GLOBAL_CONFIG: &str = ".claude.json";
+/// Claude Code's user settings file inside the config dir, the lowest settings layer.
+pub const CLAUDE_USER_SETTINGS: &str = "settings.json";
+/// The settings key of the output style, and the built-in style Yulius sessions start in.
+const OUTPUT_STYLE: (&str, &str) = ("outputStyle", "Concise");
 /// Claude Code's preference for its diff side panel; `false` keeps the panel from opening itself.
 const DIFF_SIDEBAR_OPEN: &str = "diffSidebarOpen";
 /// Store ids of the built-in diff plugin: the current one, then the legacy one Claude Code carries
@@ -30,12 +35,14 @@ const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Merges onboarding completion, trust for `worktree` (and, for a linked git worktree, its main
 /// repository) and a closed diff side panel into the
-/// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also
+/// Claude global config of `config_dir` (created 0700 when missing), and defaults its user settings
+/// to the Concise output style. `bypass_permissions` also
 /// records acceptance of the `--dangerously-skip-permissions` warning (contained runs only).
 /// Idempotent.
 ///
 /// # Errors
-/// I/O failures, or an existing config that is not a JSON object or is larger than 8 MiB.
+/// I/O failures, or an existing config that is not a regular file (a link, a FIFO), not a JSON
+/// object, or larger than 8 MiB.
 pub fn ensure_claude_config(
     config_dir: &Path,
     worktree: &Path,
@@ -47,8 +54,8 @@ pub fn ensure_claude_config(
         .mode(0o700)
         .create(config_dir)?;
     let path = config_dir.join(CLAUDE_GLOBAL_CONFIG);
-    let mut root = match std::fs::File::open(&path) {
-        Ok(file) => {
+    let mut root = match open_regular(&path) {
+        Ok(Some(file)) => {
             let mut text = String::new();
             file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
             if text.len() as u64 > MAX_CONFIG_BYTES {
@@ -63,7 +70,7 @@ pub fn ensure_claude_config(
                 }
             }
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Map::new(),
+        Ok(None) => Map::new(),
         Err(err) => return Err(err),
     };
     let keys: Vec<String> = std::iter::once(worktree.to_path_buf())
@@ -116,7 +123,43 @@ pub fn ensure_claude_config(
         .write()?;
     }
     close_diff_pane(config_dir);
+    default_output_style(config_dir);
     Ok(())
+}
+
+/// Adds `"outputStyle": "Concise"` to the user settings when they name no style (SPEC-210,
+/// ADR-0166). The user layer is the lowest one, so `/output-style` (local settings) and a style a
+/// repository commits still win; forced through `--settings`, `/output-style` would report a switch
+/// that never happens (measured on 2.1.292). A chosen style, `default` included, is kept, and a
+/// file that is not a JSON object is left to Claude Code: the style never blocks a launch.
+fn default_output_style(config_dir: &Path) {
+    let path = config_dir.join(CLAUDE_USER_SETTINGS);
+    let Some(text) = read_regular(&path) else {
+        return;
+    };
+    let mut map = if text.trim().is_empty() {
+        Map::new()
+    } else {
+        match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(map)) => map,
+            _ => return,
+        }
+    };
+    let (key, style) = OUTPUT_STYLE;
+    if map.contains_key(key) {
+        return;
+    }
+    map.insert(key.into(), Value::String(style.into()));
+    if let Ok(mut contents) = serde_json::to_vec_pretty(&Value::Object(map)) {
+        contents.push(b'\n');
+        // Best effort, like the read: a failed write leaves the session in its current style.
+        let _ = PlannedFile {
+            path,
+            contents,
+            mode: 0o600,
+        }
+        .write();
+    }
 }
 
 /// The main repository of a linked git worktree, read from its files as Git lays them out (no
@@ -125,13 +168,9 @@ pub fn ensure_claude_config(
 /// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
 /// that do not read like that.
 fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
-    // Regular files only: a FIFO planted in their place would block the launch.
-    let small_file = |path: &Path| {
-        path.metadata()
-            .is_ok_and(|m| m.is_file())
-            .then(|| read_small(path).ok().flatten())
-            .flatten()
-    };
+    // Regular files only (`read_small`): a link would make the host read a file outside the
+    // worktree, a FIFO block the launch.
+    let small_file = |path: &Path| read_small(path).ok().flatten();
     let dot_git = small_file(&worktree.join(".git"))?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
     let admin = worktree.join(admin);
@@ -210,21 +249,60 @@ fn plugin_store_file(id: &str) -> String {
     format!("{name}-{hex}.json")
 }
 
-/// The file at `path` when it exists and fits in [`MAX_CONFIG_BYTES`].
+/// The text of the regular file at `path`, empty when there is none; `None` for anything else (a
+/// link, a FIFO, a directory, a file that is not UTF-8 or larger than [`MAX_CONFIG_BYTES`]).
+fn read_regular(path: &Path) -> Option<String> {
+    match read_small(path) {
+        Ok(Some(text)) => Some(text),
+        // Absent at the open, yet there now (a link planted just after it), or oversized: left
+        // alone. A dangling link at the open already fails with ELOOP under `O_NOFOLLOW`.
+        Ok(None) => path.symlink_metadata().is_err().then(String::new),
+        Err(_) => None,
+    }
+}
+
+/// The regular file at `path` when it fits in [`MAX_CONFIG_BYTES`]; `None` when it is missing or
+/// larger. Anything but a regular file is an error ([`open_regular`]).
 fn read_small(path: &Path) -> io::Result<Option<String>> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
+    let Some(file) = open_regular(path)? else {
+        return Ok(None);
     };
     let mut text = String::new();
     file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
     Ok((text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text))
 }
 
+/// Opens the regular file at `path` for reading; `None` when it is missing. The agent owns its
+/// config dir and worktree, which the host reads before a launch (#634): the file is opened
+/// without following a link (ELOOP) and without blocking, so a link cannot make the host copy
+/// another file into the sandbox or trust another directory, and a FIFO cannot hold the launch.
+fn open_regular(path: &Path) -> io::Result<Option<std::fs::File>> {
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.raw_os_error() == Some(nix::errno::Errno::ELOOP as i32) => {
+            return Err(io::Error::other(format!("{} is a link", path.display())));
+        }
+        Err(err) => return Err(err),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(Some(file))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CLAUDE_GLOBAL_CONFIG, ensure_claude_config};
+    use super::{CLAUDE_GLOBAL_CONFIG, CLAUDE_USER_SETTINGS, ensure_claude_config};
     use serde_json::{Value, json};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -450,6 +528,179 @@ mod tests {
         std::fs::write(&current, "not json")?;
         ensure_claude_config(&config, dir.path(), false)?;
         assert_eq!(std::fs::read_to_string(&current)?, "not json");
+        Ok(())
+    }
+
+    /// SPEC-210 CON-001..003: every launch defaults the sandbox's user settings to the Concise
+    /// output style; a style already chosen, the file's other keys and a file Yulius cannot read
+    /// as a JSON object are kept.
+    #[test]
+    fn sessions_default_to_the_concise_output_style() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        let settings = config.join(CLAUDE_USER_SETTINGS);
+        let read = |path: &std::path::Path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+        };
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&settings)?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // An existing file gains the key and keeps the rest.
+        std::fs::write(
+            &settings,
+            r#"{"verbose":true,"enabledPlugins":{"a@b":false}}"#,
+        )?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(
+            read(&settings)?,
+            json!({ "verbose": true, "enabledPlugins": { "a@b": false }, "outputStyle": "Concise" })
+        );
+        // A style a person chose, `default` included, is theirs: the file is not rewritten.
+        for chosen in [
+            r#"{"outputStyle":"Explanatory"}"#,
+            r#"{"outputStyle":"default","verbose":true}"#,
+        ] {
+            std::fs::write(&settings, chosen)?;
+            ensure_claude_config(&config, dir.path(), false)?;
+            assert_eq!(std::fs::read_to_string(&settings)?, chosen);
+        }
+        // A file that is not a JSON object is Claude Code's to report; the launch goes on.
+        for corrupt in ["not json", "[1,2]", "{\"outputStyle\":"] {
+            std::fs::write(&settings, corrupt)?;
+            ensure_claude_config(&config, dir.path(), false)?;
+            assert_eq!(std::fs::read_to_string(&settings)?, corrupt);
+        }
+        let huge = format!("{{\"x\":\"{}\"}}", "a".repeat(8 * 1024 * 1024));
+        std::fs::write(&settings, &huge)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(
+            std::fs::read_to_string(&settings)? == huge,
+            "an oversized file is untouched"
+        );
+        // An empty file reads as no settings, as `.claude.json` does.
+        std::fs::write(&settings, "\n")?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
+        Ok(())
+    }
+
+    /// SPEC-210 CON-003: only a regular file (or none) is read or replaced. The agent owns its
+    /// config dir: a link would make the host copy another file into it, and a FIFO would block
+    /// the launch.
+    #[test]
+    fn the_output_style_default_touches_only_a_regular_settings_file() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        std::fs::create_dir_all(&config)?;
+        let settings = config.join(CLAUDE_USER_SETTINGS);
+        let outside = dir.path().join("outside.json");
+        std::fs::write(&outside, r#"{"private":"host"}"#)?;
+        symlink(&outside, &settings)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(settings.symlink_metadata()?.file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&outside)?, r#"{"private":"host"}"#);
+        // A dangling link stays a link: it is neither replaced nor created through.
+        std::fs::remove_file(&settings)?;
+        symlink(dir.path().join("missing.json"), &settings)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(settings.symlink_metadata()?.file_type().is_symlink());
+        assert!(!dir.path().join("missing.json").exists());
+        std::fs::remove_file(&settings)?;
+        // A FIFO returns at once instead of waiting for a writer.
+        nix::unistd::mkfifo(&settings, nix::sys::stat::Mode::S_IRWXU)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(!settings.metadata()?.is_file());
+        std::fs::remove_file(&settings)?;
+        // A directory and a file that is not UTF-8 are left as they are.
+        std::fs::create_dir(&settings)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(settings.is_dir());
+        std::fs::remove_dir(&settings)?;
+        std::fs::write(&settings, b"{\"a\":\"\xff\"}")?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(std::fs::read(&settings)?, b"{\"a\":\"\xff\"}");
+        Ok(())
+    }
+
+    /// #634: every host-side read of the agent-owned config dir and worktree opens a regular file
+    /// only, never through a link and never blocking on a FIFO. A link would make the host copy
+    /// another file into the sandbox (or trust another directory); a FIFO would hold the launch.
+    #[test]
+    fn host_reads_never_follow_a_link_or_wait_on_a_fifo() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let outside = dir.path().join("host.json");
+        std::fs::write(&outside, r#"{"userID":"host","open":true}"#)?;
+        // `.claude.json` as a link or a FIFO is refused, its target untouched.
+        let config = dir.path().join(".claude");
+        std::fs::create_dir_all(&config)?;
+        let global = config.join(CLAUDE_GLOBAL_CONFIG);
+        symlink(&outside, &global)?;
+        let refused = ensure_claude_config(&config, dir.path(), false)
+            .err()
+            .ok_or("a linked .claude.json is refused")?;
+        assert!(
+            refused.to_string().ends_with(".claude.json is a link"),
+            "{refused}"
+        );
+        assert!(global.symlink_metadata()?.file_type().is_symlink());
+        std::fs::remove_file(&global)?;
+        nix::unistd::mkfifo(&global, nix::sys::stat::Mode::S_IRWXU)?;
+        assert!(ensure_claude_config(&config, dir.path(), false).is_err());
+        std::fs::remove_file(&global)?;
+        // A diff-plugin store that is a link is left alone, and so is its target.
+        let store = config.join("plugins").join("store");
+        std::fs::create_dir_all(&store)?;
+        let current = store.join("cc-plugin-diff_builtin-3903e77c01b1.json");
+        symlink(&outside, &current)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(current.symlink_metadata()?.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&outside)?,
+            r#"{"userID":"host","open":true}"#
+        );
+        // A worktree `.git` that links to a gitdir file elsewhere trusts the worktree alone.
+        let main = dir.path().join("main");
+        let admin = main.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&admin)?;
+        std::fs::write(admin.join("commondir"), "../..\n")?;
+        let gitfile = dir.path().join("gitfile");
+        std::fs::write(&gitfile, format!("gitdir: {}\n", admin.display()))?;
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(&worktree)?;
+        symlink(&gitfile, worktree.join(".git"))?;
+        let config = dir.path().join(".claude-wt");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &main)?);
+        // A `commondir` that is a link is not followed either.
+        std::fs::remove_file(worktree.join(".git"))?;
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )?;
+        let common = dir.path().join("common");
+        std::fs::write(&common, "../..\n")?;
+        std::fs::remove_file(admin.join("commondir"))?;
+        symlink(&common, admin.join("commondir"))?;
+        let config = dir.path().join(".claude-common");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &main)?);
+        // A `.git` FIFO returns at once and trusts the worktree alone.
+        std::fs::remove_file(worktree.join(".git"))?;
+        nix::unistd::mkfifo(&worktree.join(".git"), nix::sys::stat::Mode::S_IRWXU)?;
+        let config = dir.path().join(".claude-fifo");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &main)?);
         Ok(())
     }
 
