@@ -34,8 +34,9 @@ for any secret an agent did not create.
 - Agents already use secrets without seeing them (ADR-0144, ADR-0150): `secrets_list`,
   `secret_request_hosts` (a person binds hosts), `secret_copy_to_env` (a person allows `.env`
   copies), `secret_verify` (Superagent only, by SHA-256). New tools reach running Superagents
-  through the launch digest (ADR-0150); Claude Code asks the person before any Superagent tool not
-  in `COCKPIT_READ_ONLY_TOOLS`.
+  through the launch digest (ADR-0150); on an uncontained server Claude Code asks the person
+  before any Superagent tool not in `COCKPIT_READ_ONLY_TOOLS` (on a contained one the Superagent
+  bypasses approvals, ADR-0165).
 - Yulius runs outside the agent's containment and with more rights than it.
   `secret_copy_to_env` already opens a folder of the worktree one component at a time without
   following links and checks its real path (`vault/env_files.rs::open_folder`), so a folder
@@ -110,8 +111,8 @@ for any secret an agent did not create.
 - AC-5: A task whose person can only read the sandbox is refused, and nothing is created.
 - AC-6: With `delete_file: true` the file is gone after the secret is stored; without it the
   file stays.
-- AC-7: The Superagent is served the tool, which is not among those it runs without asking, and it stores a key
-  from its person's home, audited as `cockpit:<login>`.
+- AC-7: The Superagent is served the tool, which is not among those it runs without asking, and
+  it stores a key from its person's home, audited as `cockpit:<login>`.
 - AC-8: Right after the call, a tool result holding the value shows `[secret:NAME]`.
 
 ## Test plan
