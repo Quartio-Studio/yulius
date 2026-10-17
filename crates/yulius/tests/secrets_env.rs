@@ -674,7 +674,7 @@ async fn an_env_request_is_announced_to_open_secrets_pages() -> TestResult {
     Ok(())
 }
 
-/// A synthetic key file:`-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
+/// A synthetic key file: `-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
 /// its own line, with a final line break (the armour is built at run time so no scanner takes
 /// the source for a key).
 pub(crate) fn key_file(label: &str, body: &[&str]) -> String {

@@ -51,6 +51,13 @@ reloading the page.
   on a stream `resync`. It stops listening when it unmounts or switches to Team secrets.
 - SRE-004. A request that changes nothing (hosts already bound or already waiting, or the same
   `.env` requester again) publishes nothing.
+- SRE-006. A live update keeps SPEC-121's guarantee that nothing is allowed unseen. When a
+  card's waiting hosts change after the page has shown it, its Allow and Dismiss are drawn
+  disabled for one second, with the note "The hosts asked for changed while this page was open."
+  A click or Enter meant for the earlier buttons therefore cannot allow a host the person never
+  saw.
+- SRE-007. A live update waits while an answer is on its way. Otherwise it would bring back
+  enabled buttons for a request about to be gone. The reload after the answer catches up.
 - SRE-005. The web mock announces an agent's request as the server does, so e2e tests can drive
   it.
 
@@ -74,8 +81,9 @@ reloading the page.
 ## Test plan
 
 - `crates/yulius/tests/secrets.rs`: a new test subscribes to the event bus, covers SRE-001,
-  SRE-002 and SRE-004 for a task agent, and covers a `.env` request on an instance-wide secret.
-  It fails before the fix because no event arrives.
+  SRE-002 and SRE-004 for a task agent's host requests, on a sandbox secret and on an
+  instance-wide one. `crates/yulius/tests/secrets_env.rs` covers a `.env` request. Both fail
+  before the fix because no event arrives.
 - `crates/yulius/tests/cockpit.rs`: the Superagent's host request in the existing test also
   asserts the event. This is the reported case.
 - `e2e/tests/secrets.e2e.ts`: a request that arrives while the page is open shows Allow with no
@@ -97,6 +105,14 @@ reloading the page.
   person-side change, so that a second open tab follows too, is a broader change. Stale buttons
   there are already safe, because the server refuses an answer to a request that changed
   (SPEC-121).
+- **A short settle time, not a confirmation step** (review round 1, M1). Re-rendering a card
+  replaces its Allow with one that carries the new hosts. A click already on its way, or a
+  keyboard user whose focus `keepFocus` moves to the same place, could then allow a host they
+  never saw. That is the case SPEC-121's "answer what you saw" exists to refuse. A second of
+  disabled buttons and a visible note cover the moment of the swap without adding a confirmation
+  step to every request. Firefox uses the same one-second delay on its security prompts. Keeping
+  the old buttons until the person acknowledged the change was rejected. The card would show
+  hosts that no longer match the request, and the server would refuse the answer anyway.
 - **Polling rejected.** A timer would add load on every open page and still lag, while the event
   stream is already there.
 
@@ -115,6 +131,24 @@ reloading the page.
 - `cd e2e && npx e2e run`: 59 files passed (1 skipped), 608 tests passed (1 skipped). After
   merging `origin/dev` (#630 also changed the Secrets page), `tests/secrets.e2e.ts` was run again:
   17 passed. `scripts/check_repository.py` passed.
+- Review round 1 (independent, fresh session): REQUEST CHANGES with two medium findings, both
+  fixed test-first:
+  - M1: a live re-render could put new hosts under a click. Fixed by SRE-006. The test `an
+    Allow whose hosts just changed is off for a moment` failed before the fix (the new Allow was
+    drawn enabled).
+  - M2: the other-sandbox check could not fail. It now counts list reads (exactly one for this
+    sandbox's event after another sandbox's).
+  - Lows fixed: an answer in flight (SRE-007; `a live update waits for an answer on its way`
+    failed before, 2 reads instead of 1), the test plan text, the mock giving a production secret
+    a host request (it now refuses, and the e2e uses an instance-wide non-production secret), the
+    store's topic list, and a doc comment's space.
+  - Answered without change: an instance-wide event reaches every signed-in person but names
+    nothing (SRE-002 by design), and a `.env` request naming N secrets sends N events (bounded,
+    and the loader keeps only the newest read).
+  - After the fixes, `tests/secrets.e2e.ts` passed 19 of 19. Unrelated to this change, dev's
+    test "a failed copy shows no check…" (#630) fails its axe target-size check about 1 run in 5
+    when run alone. It covers Team secrets, which this change does not touch, and is reported as
+    #640.
 - `scripts/dev security`: exit 0, no open critical or high finding. One low finding is in
   `requester()` (`vault/requests.rs`, joining askers on `", "`). This change does not touch that
   code, and its inputs (GitHub logins, sandbox slugs, `#N`) cannot contain `", "`.
