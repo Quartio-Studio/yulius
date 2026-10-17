@@ -28,15 +28,16 @@ vault key), so anything it reads on an agent's behalf must stay where the agent 
   and the Superagent. Yulius reads the file and stores its text as an agent secret of the
   caller's sandbox. The value never goes through the tool call, the result or the transcript.
 - **Only the work folder and the home.** `file` is relative to the folder the caller works in (a
-  task's worktree, the Superagent's sandbox repository) or `~/…` in its home (a task's: the
-  sandbox home; the Superagent's: its person's home, shared by their projects). Absolute paths, `..` and
+  task's worktree, the Superagent's sandbox repository) or `~/…` in its home (a task's: the sandbox
+  home; the Superagent's: its person's home, shared by their projects). Absolute paths, `..` and
   `.git` are refused. The walk starts at a folder the agent cannot replace (the canonical sandbox
   folder; for the Superagent's home, its person's folder `users/<id>`), never at the home or
-  repository path, which the agent can swap for a link. From there the folders on the way, the
-  home or repository included, are opened one at a time without following links,
-  as `secret_copy_to_env` opens its target (`open_folder`), and the folder reached must lie inside
-  its root. The file is opened without following a link and without blocking, and must be a
-  regular file of at most 16 KiB in UTF-8.
+  repository path, which the agent can swap for a link (a task's worktree is first resolved to a
+  real folder inside the sandbox folder, which the agent reads anyway). From there the folders on
+  the way, the home or repository included, are opened one at a time without following links, as
+  `secret_copy_to_env` opens its target (`open_folder`), and the folder reached must lie inside its
+  root. The file is opened without following a link and without blocking, and must be a regular
+  file of at most 16 KiB in UTF-8.
 - **The file's text, as the page stores it.** One final line break is dropped. A multi-line text
   is stored only if it is a key block, with literal `\n` (ADR-0156) through
   `dotenv::agent_value_from_file`. The CLI import now uses the same function. Then

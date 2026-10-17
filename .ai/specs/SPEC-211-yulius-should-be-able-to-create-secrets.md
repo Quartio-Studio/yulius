@@ -52,21 +52,21 @@ for any secret an agent did not create.
   asking: Claude Code asks the person first.
 - SCF-002 (where the file may be): `file` relative to the folder the caller works in (a task's
   worktree, the Superagent's sandbox repository) or starting with `~/` for the caller's home (a
-  task's: the sandbox home; the Superagent's: its person's home, shared by their projects). Absolute paths,
-  `..`, `.git` and NUL are refused. The walk starts at a folder the agent cannot replace (the
-  canonical sandbox folder, or the person's folder for the Superagent's home), so a home or
-  repository swapped for a link is never followed. Every folder on the way is opened without following links and
-  the folder reached must lie inside that root; the file itself is opened without following a
-  link and without blocking, and must be a regular file of at most 16 KiB. Errors name the path,
-  never content.
+  task's: the sandbox home; the Superagent's: its person's home, shared by their projects).
+  Absolute paths, `..`, `.git` and NUL are refused. The walk starts at a folder the agent cannot
+  replace (the canonical sandbox folder, or the person's folder for the Superagent's home), so a
+  home or repository swapped for a link is never followed. Every folder on the way is opened
+  without following links and the folder reached must lie inside that root; the file itself is
+  opened without following a link and without blocking, and must be a regular file of at most 16
+  KiB. Errors name the path, never content.
 - SCF-003 (value): The file must be UTF-8. One final line break (LF or CRLF) is dropped. A text
   that still spans lines is stored only when it is a key block (PEM, OpenSSH, a key with its
   certificate), with blank lines around it dropped and each line break written as literal `\n`, as
   the Secrets page and the CLI import store it; any other multi-line text is refused. The result
   then passes `check_agent_value`. The same conversion serves the CLI import.
 - SCF-004 (creation): The name passes `SecretName`; a name that already applies to the project (a
-  sandbox or instance-wide agent secret) is refused, nothing is overwritten; so is
-  `VIDOC_API_KEY`, which would replace the instance's Vidoc key for the sandbox (ADR-0157). The person on whose
+  sandbox or instance-wide agent secret) is refused, nothing is overwritten; so is `VIDOC_API_KEY`,
+  which would replace the instance's Vidoc key for the sandbox (ADR-0157). The person on whose
   authority the caller acts (a task's person, the Superagent's person) must be able to manage the
   sandbox's agent secrets (write access), as on the Secrets page. The secret applies to this
   sandbox only, with no hosts, no `.env` allowance and not for production deploys; its description
@@ -129,8 +129,8 @@ for any secret an agent did not create.
   argument, puts the value in the tool call, the transcript and the screen; that is what the
   person wanted to avoid. ADR-0167.
 - **Tasks get it too, not only the Superagent.** Creating a secret reveals nothing and grants
-  nothing: the secret starts with no hosts and no `.env` allowance, so a person still decides
-  every use. A task that generates a deploy key is the same situation as the screenshot.
+  nothing: the secret starts with no hosts and no `.env` allowance, so a person still decides every
+  use. A task that generates a deploy key is the same situation as the screenshot.
 - **Only the working folder and home, without links.** Yulius has more rights than the agent; a
   link or an absolute path could make it read Yulius' own files (its vault key) into a secret the
   agent then asks to use. The two roots cover the cases (a generated key in the worktree, a key in

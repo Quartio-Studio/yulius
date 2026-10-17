@@ -97,10 +97,13 @@ pub(super) fn source(file: &str) -> AppResult<(Root, Vec<String>)> {
 }
 
 /// The text of `name` in `folder`: a regular file (not a link, a FIFO or a device) of at most
-/// [`MAX_FIELD_BYTES`], in UTF-8, wiped from memory when dropped. Messages name the file, never
-/// its content.
-pub(super) fn read_secret_file(folder: &Folder, name: &str) -> AppResult<Zeroizing<String>> {
-    let shown = folder.path_of(name);
+/// [`MAX_FIELD_BYTES`], in UTF-8, wiped from memory when dropped. Messages name the file as
+/// `shown`, never its content.
+pub(super) fn read_secret_file(
+    folder: &Folder,
+    name: &str,
+    shown: &str,
+) -> AppResult<Zeroizing<String>> {
     // Its type first, so a device or socket is never opened (a link is not followed).
     match fstatat(&folder.fd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(stat) => {
@@ -237,13 +240,15 @@ impl App {
         // Anchored on a folder the agent cannot replace, and walked down without links: the
         // home or repository itself may be a link the agent planted (review of SPEC-211, 1).
         let (anchor, mut below) = self.secret_source_root(user, &sandbox, &root).await?;
+        let hidden = below.len();
         below.extend(folders.iter().cloned());
-        let folder = open_folder(&anchor, &below, root.named())?;
+        let folder = open_folder(&anchor, &below, root.named(), hidden)?;
+        // Messages name the path as the caller gave it, never the anchor's folders.
         let shown = match root {
             Root::Work => parts.join("/"),
             Root::Home => format!("~/{}", parts.join("/")),
         };
-        let text = read_secret_file(&folder, file_name)?;
+        let text = read_secret_file(&folder, file_name, &shown)?;
         let value = Zeroizing::new(
             agent_value_from_file(&text)
                 .map_err(|err| AppError::Invalid(format!("{shown}: {err}")))?,
@@ -410,9 +415,9 @@ mod tests {
         std::fs::write(wt.join("binary"), [0xff, 0xfe, 0x00, 0x41])?;
         std::fs::create_dir(wt.join("folder"))?;
 
-        let folder = open_folder(&wt, &[], WORK_FOLDER)?;
+        let folder = open_folder(&wt, &[], WORK_FOLDER, 0)?;
         assert_eq!(
-            read_secret_file(&folder, "token.txt")?.as_str(),
+            read_secret_file(&folder, "token.txt", "token.txt")?.as_str(),
             "synthetic-token-1234\n"
         );
         for (name, forbidden) in [
@@ -423,7 +428,7 @@ mod tests {
             ("binary", false),
             ("missing", false),
         ] {
-            let err = read_secret_file(&folder, name)
+            let err = read_secret_file(&folder, name, name)
                 .err()
                 .ok_or(format!("{name} was read"))?;
             assert_eq!(

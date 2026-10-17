@@ -316,6 +316,23 @@ async fn files_yulius_must_not_read_are_refused() -> TestResult {
     }
     assert_eq!(names(&w).await?, before, "nothing is created");
     assert!(outside.exists());
+
+    // Review of SPEC-211 round 2: errors name the path as the agent gave it.
+    for (file, says) in [
+        ("missing.txt", "missing.txt does not exist"),
+        ("~/.ssh/missing", "~/.ssh/missing does not exist"),
+        (
+            "~/nowhere/key",
+            "the folder nowhere does not exist in your home",
+        ),
+    ] {
+        let refused = create(&w, TOKEN, json!({"name": "SOME_KEY", "file": file})).await?;
+        let raw = refused.to_string();
+        assert!(raw.contains(says), "{file}: {raw}");
+        for internal in ["worktrees/", "home/"] {
+            assert!(!raw.contains(internal), "{file}: {raw}");
+        }
+    }
     Ok(())
 }
 
@@ -377,8 +394,8 @@ async fn names_in_use_and_readers_are_refused() -> TestResult {
     Ok(())
 }
 
-/// Review of SPEC-211, finding 1: the home (or the worktree) swapped for a link to elsewhere, such
-/// as Yulius' data folder, is never followed: Yulius anchors the root on the sandbox folder and
+/// Review of SPEC-211, finding 1: the home swapped for a link to elsewhere, such as Yulius' data
+/// folder, is never followed: Yulius anchors the root on the sandbox folder and
 /// walks down without links, so nothing outside the agent's own folders is read. The instance's
 /// Vidoc key's name is reserved (finding 3): a project secret of that name would hide it.
 #[tokio::test]
