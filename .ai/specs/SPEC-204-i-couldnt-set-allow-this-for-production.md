@@ -1,11 +1,11 @@
 ---
 yulius-task: 0cbba338-520f-462f-8c85-f4509cf397bf
-status: draft
+status: done
 ---
 
 # SPEC-204: The Secrets page offers the production allowance only where it can be given
 
-Status: draft
+Status: done
 Date: 2026-10-17
 Owner: task #191
 Scope authorization: task #191 (requested by MrFishPL): "i couldnt set allow this for production
@@ -42,10 +42,13 @@ secret has no Allow for agents' requests.
 ## Requirements
 
 - PXA-001. A secret agents can use (bound hosts, or `.env` copies allowed) shows no "Allow for
-  production deploys" button and no warning badge. It shows a neutral note: production deploys
-  never get a secret agents use, so add a separate secret for them.
+  production deploys" button and no warning badge, but a neutral "Not for production" badge. Its
+  note says that production deploys never get a secret agents use, and names both ways forward:
+  remove its hosts and `.env` copies, or add a separate secret for production.
 - PXA-002. A production secret (`cd_prod`) whose host or `.env` request still waits offers
-  Dismiss but not Allow. It says that production secrets are never given to agents.
+  Dismiss but not Allow, and its `.env` text does not say what allowing would do. One note on
+  the card says that production secrets are never given to agents. Only people who can manage
+  the secret are told to dismiss the request.
 - PXA-003. The web mock refuses, with the server's messages, what the server refuses: the
   production allowance for a secret agents use, and the host and `.env` allowances for a
   production secret.
@@ -55,9 +58,9 @@ secret has no Allow for agents' requests.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -89,3 +92,33 @@ secret has no Allow for agents' requests.
   presentation decision. The server stays the authority and still refuses.
 - **The note is neutral, not a warning.** Most agent secrets are not for production, so a
   warning on each would read as a fault where there is none.
+
+## Evidence
+
+- **Reproduced.** Before the fix, the regression test failed on the STRIPE_KEY card: the
+  explanation was missing and the button was still there (`e2e/tests/secrets.e2e.ts`,
+  commit `ff13e299`). The review's additional assertions failed before their fix: both tests,
+  commit `5bd4b9e3`.
+- `scripts/dev ci` (after `scripts/bootstrap.py --install-rustup`): exit 0, 2095 tests, then
+  docs built.
+- `cd e2e && npx e2e run`: 605 passed, 1 skipped (that test was already skipped), at
+  `ed0d5794`. After the review fixes, the secrets, CD, phone, quality and places suites passed
+  69 of 69. The full suite and the gate ran again on the final head (see below).
+- `python3 scripts/vidoc_scan.py` (the CI `security` job's scan): exit 0, no critical or high
+  finding. Its one low finding is in `copyValue` (`secrets.js:30`, the clipboard is not cleared
+  while the page has no focus), which this change does not touch. Browsers refuse a clipboard
+  write without focus, so it is left alone.
+- **Review, round 1** (fresh session, `om-code-review`): approved `ed0d5794`, no blocker or
+  major. Own-code findings fixed test-first:
+  - The `.env` text said "Allowing lets…" without an Allow button.
+  - People who cannot manage the secret were told to dismiss.
+  - The mock's refusals were in a different order from the server's.
+  - The badge was the same as a real production secret's.
+  - Nits: the note named one way forward, and could show twice.
+  
+  The one pre-existing finding is #622: the Edit dialog offers Hosts on a production secret.
+  The mock's 409 routes are not reached by any test, because the page no longer offers those
+  actions. That is accepted.
+- What could not be tested here: the real server page against a live vault. The server rule is
+  unchanged and already covered by `crates/yulius/tests/cd.rs` and `secrets.rs`.
+
