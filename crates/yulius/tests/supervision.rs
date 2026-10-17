@@ -572,7 +572,7 @@ fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
             .await?;
         let id = record.id;
         wait_for("the goal command", Duration::from_secs(60), || {
-            screen_contains(&app, &id, "ECHO: /goal Ship the widget with tests")
+            screen_contains(&app, &id, "ECHO: /goal Ship the widget")
         })
         .await?;
         let attempts = app.deps.store.attempts(&id).await?;
@@ -580,7 +580,7 @@ fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
         let launch =
             std::fs::read_to_string(std::path::Path::new(&first.run_dir).join("fake-launch.txt"))?;
         assert!(
-            launch.contains("prompt: Some(\"/goal Ship the widget with tests | Done = "),
+            launch.contains("prompt: Some(\"/goal Ship the widget\\nwith tests\\n\\nDone = "),
             "{launch}"
         );
         support::stop_tasks(&app, &[&id]).await?;
