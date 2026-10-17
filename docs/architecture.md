@@ -425,7 +425,12 @@ A resumed goal session (Continue, a switch) gets its `/goal` typed after its con
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
 (only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
-a worktree's trust up there when `.claude/settings.json` pre-approves tools. If a trust prompt
+a worktree's trust up there when `.claude/settings.json` pre-approves tools. The same preparation,
+for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the config dir's user
+`settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
+`/output-style` and a repository's committed style still win
+([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task

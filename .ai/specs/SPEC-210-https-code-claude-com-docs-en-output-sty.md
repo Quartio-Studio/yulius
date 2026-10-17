@@ -56,8 +56,8 @@ that stays so; "everywhere" means every session Yulius launches.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Sessions default to the Concise style through the sandbox's user settings
-- [ ] Docs, ADR and the changes log describe the Concise default
+- [x] Sessions default to the Concise style through the sandbox's user settings
+- [x] Docs, ADR and the changes log describe the Concise default
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
