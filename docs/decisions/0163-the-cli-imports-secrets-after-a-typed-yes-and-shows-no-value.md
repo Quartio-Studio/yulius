@@ -30,7 +30,8 @@ error messages that quote input, temporary files, and memory that outlives the r
 - **Values never come from arguments.** They come from a dotenv file, from stdin (`-`), or typed at
   the terminal with echo off, one name and value at a time. No option takes a value.
 - **Values never go out.** What the command prints holds names, classes, counts and server
-  messages; never a value or its length. Dotenv errors name line numbers. Nothing is written to
+  messages; never a value or its length. Dotenv errors name line numbers. A commented-out
+  assignment above a key (often an old key) never becomes its description, which agents read. Nothing is written to
   disk; values live in a wrapper without `Display` whose `Debug` is redacted and which is wiped
   from memory when dropped. Creates are sent once, never retried (a retried create could make a
   duplicate). The vault audit keeps the name, as it does for the page.

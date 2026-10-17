@@ -12,8 +12,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every name as new, existing (skipped, never overwritten) or invalid with the reason, and sends
   nothing until `yes` is typed at the terminal; no flag skips that. Values never appear in
   arguments, output, errors or files, and are wiped from memory when dropped. A comment above a key
-  becomes its description or notes, and a PEM or OpenSSH key is stored as the Secrets page stores it.
-
+  becomes its description or notes (a commented-out old key never does), and a PEM or OpenSSH key
+  is stored as the Secrets page stores it.
 - The Secrets page offers the production allowance only where it can be given (SPEC-204, task
   #191, fixes #621). A secret agents use, through its hosts or `.env` copies, showed a warning
   badge and an "Allow for production deploys" button. The server always refused that button,

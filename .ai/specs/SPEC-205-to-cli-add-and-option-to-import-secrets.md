@@ -51,8 +51,9 @@ the list of names and typed `yes` at the terminal.
 - SIM-003 (dotenv): Blank lines and `#` comment lines are skipped; an optional `export ` prefix;
   `NAME=value` with spaces around `=` and the value trimmed; an unquoted value ends at ` #`; a
   single-quoted value is literal and may span lines; a double-quoted value may span lines and
-  reads `\n`, `\r`, `\t`, `\"`, `\\`; `${…}` is kept literally (never expanded). The comment lines
-  directly above a key become its description (agent) or notes (team). A malformed line, an
+  reads `\n`, `\r`, `\t`, `\"`, `\\`; `${…}` is kept literally (never expanded); a byte order mark is
+  ignored. The comment lines directly above a key become its description (agent) or notes (team),
+  except a commented-out assignment (`# NAME=…`, often an old key), which is never kept. A malformed line, an
   unterminated quote or a name defined twice refuses the whole file before anything is asked,
   naming the line numbers and never quoting a value.
 - SIM-004 (target): `--to team` creates team secrets titled by the name. `--to agent` creates
@@ -62,16 +63,19 @@ the list of names and typed `yes` at the terminal.
   Agent secrets start with no hosts: agents propose them and a person allows them (SPEC-121).
 - SIM-005 (checks): Before asking, each secret is classified: `new`; `exists` (same team title, or
   same agent name in the same scope), skipped and never overwritten; or `invalid` with the reason
-  (agent name rules, value too short, too long, empty, or a multi-line value that is not a key
-  block), skipped. An agent value that spans lines and is a PEM/OpenSSH key is sent with literal
+  (agent name rules, value too short, too long, empty, a multi-line value that is not a key
+  block, or a key's first line alone, as a key pasted at the hidden prompt arrives), skipped; the
+  hidden prompt refuses such a value at once. An agent value that spans lines and is a PEM/OpenSSH key is sent with literal
   `\n`, as the Secrets page stores it.
-- SIM-006 (confirmation): The command shows the server, the target and every name with its class,
-  then asks to type `yes` at the terminal (`/dev/tty`, so stdin can carry the file). Anything else,
+- SIM-006 (confirmation): The target (sandbox, existing names) is checked before anything is
+  typed. The command shows the server, the target and every name with its class (also at the
+  terminal when stdout is redirected), then asks to type `yes` at the terminal (`/dev/tty`, so stdin can carry the file). Anything else,
   end of input or no terminal cancels: nothing is sent. No flag skips the confirmation. With no
   `new` secret nothing is asked or sent.
 - SIM-007 (import): New secrets are created one by one; a refused one is reported with the
   server's message and the rest go on; an expired sign-in or an unreachable server stops the run,
-  saying which were imported. The summary counts imported, skipped and failed; the exit code is 0
+  saying which were imported; so does a 403 (no right to manage them), which would refuse every
+  other. Creates are never retried. The summary counts imported, skipped and failed; the exit code is 0
   when nothing was invalid, failed or cancelled, 1 otherwise.
 - SIM-008 (no traces): Values are never printed, never part of an error, never written to disk by
   the command and are wiped from memory when dropped. Output shows names only (no lengths). After
@@ -100,7 +104,11 @@ the list of names and typed `yes` at the terminal.
   only the valid new secrets.
 - AC-4: Answering anything but `yes`, end of input or no terminal sends no create request; a file
   with nothing new asks nothing.
-- AC-5: A refused create is reported and the next one still goes; a 401 stops the run.
+- AC-5: A refused create is reported and the next one still goes; a 401, a 403 or a 5xx stops
+  the run after one request.
+- AC-8 (review): a commented-out assignment never becomes a description; a byte order mark and
+  `export<TAB>` are read; a key's first line alone is skipped and refused at the hidden prompt; an
+  unknown sandbox is refused before anything is typed.
 - AC-6: Nothing the command prints (plan, prompts, errors, summary), for success, refusal or
   failure, contains any imported value.
 - AC-7: `yulius secrets import --to team <malformed file>` exits 1 before asking anything, naming

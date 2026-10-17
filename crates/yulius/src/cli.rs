@@ -1,7 +1,7 @@
 //! `yulius login`, `yulius onboard` / `yulius import` (client side of SPEC-001 IMP-001..009) and
 //! `yulius secrets import` (SPEC-205).
 
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,8 +9,8 @@ use console::style;
 use yulius_import::{
     DeviceLoginOptions, ImportError, ImportOptions, MAX_DOTENV_BYTES, Secret, SecretsImportError,
     SecretsImportOptions, SecretsIo, SecretsTarget, SessionChoice, TerminalIo, TokenStore, Url,
-    VaultClient, device_login, import_secrets, parse_dotenv, prompt_secrets, run_import,
-    set_colors,
+    VaultClient, device_login, import_secrets, parse_dotenv, prepare_target, prompt_secrets,
+    run_import, set_colors,
 };
 
 fn install_tls() {
@@ -168,8 +168,8 @@ pub struct SecretsImportArgs {
     pub no_color: bool,
 }
 
-/// The terminal of `yulius secrets import`: lines on stdout, questions at `/dev/tty` (so stdin
-/// can carry the file), values read without echo.
+/// The terminal of `yulius secrets import`: lines on stdout (and the terminal when stdout is
+/// redirected), questions at `/dev/tty` (so stdin can carry the file), values read without echo.
 struct TtyIo;
 
 impl TtyIo {
@@ -184,6 +184,12 @@ impl TtyIo {
 impl SecretsIo for TtyIo {
     fn say(&mut self, line: &str) {
         println!("{line}");
+        // With stdout redirected, the person answering at the terminal still sees the names.
+        if !io::stdout().is_terminal()
+            && let Ok(mut tty) = Self::tty()
+        {
+            let _ = writeln!(tty, "{line}");
+        }
     }
 
     fn ask(&mut self, prompt: &str) -> io::Result<String> {
@@ -264,15 +270,6 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
                 format!("not signed in to {server}; run `yulius login --server {server}`")
             })?;
         let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
-        let mut io = TtyIo;
-        let entries = match parsed {
-            Some(entries) => entries,
-            None => prompt_secrets(&mut io).map_err(|e| e.to_string())?,
-        };
-        if entries.is_empty() {
-            io.say("No secrets given; nothing was imported.");
-            return Ok(true);
-        }
         let options = SecretsImportOptions {
             target: match args.to {
                 VaultChoice::Team => SecretsTarget::Team,
@@ -288,7 +285,19 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
                 .filter(|f| f.as_os_str() != "-")
                 .map(|f| f.display().to_string()),
         };
-        match import_secrets(entries, &options, &client, &mut io) {
+        // Checked before anything is typed: a wrong --sandbox throws nothing away.
+        let target =
+            prepare_target(&options, &client).map_err(|e| format!("{e}; nothing was imported"))?;
+        let mut io = TtyIo;
+        let entries = match parsed {
+            Some(entries) => entries,
+            None => prompt_secrets(&mut io).map_err(|e| e.to_string())?,
+        };
+        if entries.is_empty() {
+            io.say("No secrets given; nothing was imported.");
+            return Ok(true);
+        }
+        match import_secrets(entries, &target, &client, &mut io) {
             Ok(summary) => Ok(summary.ok()),
             Err(SecretsImportError::Cancelled) => Err("cancelled; nothing was imported".into()),
             Err(err) => Err(format!("{err}; nothing was imported")),

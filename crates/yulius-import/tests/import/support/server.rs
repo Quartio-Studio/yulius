@@ -89,6 +89,8 @@ pub struct ServerState {
     pub create_requests: usize,
     /// Names whose create answers 422.
     pub refuse_names: Vec<String>,
+    /// Every create answers this status.
+    pub fail_creates: Option<u16>,
     /// After this many creates every request answers 401.
     pub expire_after_creates: Option<usize>,
 }
@@ -596,6 +598,10 @@ async fn agent_list(
 /// Counts a create; `Some(response)` when it is refused.
 fn create_refusal(state: &mut ServerState, headers: &HeaderMap, name: &str) -> Option<Response> {
     state.create_requests += 1;
+    if let Some(status) = state.fail_creates {
+        let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return Some(error(status, "failed", "the server failed"));
+    }
     if !vault_allowed(state, headers) {
         return Some(unauthorized());
     }

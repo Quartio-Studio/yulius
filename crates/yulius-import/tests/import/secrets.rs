@@ -6,7 +6,7 @@ use std::io;
 
 use yulius_import::{
     Secret, SecretsImportError, SecretsImportOptions, SecretsIo, SecretsSummary, SecretsTarget,
-    VaultClient, import_secrets, parse_dotenv, prompt_secrets,
+    VaultClient, import_secrets, parse_dotenv, prepare_target, prompt_secrets,
 };
 
 use crate::support::TestResult;
@@ -103,9 +103,13 @@ fn run(
     terminal: &mut Terminal,
 ) -> TestResult<Result<SecretsSummary, SecretsImportError>> {
     let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = match prepare_target(options, &client) {
+        Ok(target) => target,
+        Err(err) => return Ok(Err(err)),
+    };
     Ok(import_secrets(
         parse_dotenv(file)?,
-        options,
+        &target,
         &client,
         terminal,
     ))
@@ -358,7 +362,8 @@ fn prompted_secrets_are_read_hidden_until_an_empty_name() -> TestResult {
         source_file: None,
         ..team()
     };
-    let summary = import_secrets(entries, &options, &client, &mut terminal)?;
+    let target = prepare_target(&options, &client)?;
+    let summary = import_secrets(entries, &target, &client, &mut terminal)?;
     assert_eq!(summary.imported, vec!["TYPED_KEY"]);
     let created = server.with(|s| s.team_created.clone())?;
     assert_eq!(created[0].value.as_deref(), Some("hidden-typed-value-9"));
@@ -374,5 +379,83 @@ fn prompted_secrets_are_read_hidden_until_an_empty_name() -> TestResult {
         prompt_secrets(&mut closed),
         Err(SecretsImportError::Terminal(_))
     ));
+    Ok(())
+}
+
+/// Review finding: the first line of a key alone (a paste cut at the hidden prompt) is never
+/// imported as if it were the key.
+#[test]
+fn a_key_cut_to_its_first_line_is_skipped() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let file = "CUT_KEY=-----BEGIN OPENSSH PRIVATE KEY-----\n";
+    for options in [team(), agent("sb-1", false)] {
+        let mut terminal = Terminal::answering(&["yes"]);
+        let summary = run(&server, file, &options, &mut terminal)??;
+        assert_eq!(summary.invalid, vec!["CUT_KEY"]);
+        assert!(
+            terminal.said.contains("import a key from a file"),
+            "{}",
+            terminal.said
+        );
+    }
+    assert_eq!(server.with(|s| s.create_requests)?, 0);
+
+    let mut terminal = Terminal::answering(&["PASTED_KEY", ""]);
+    terminal.hidden = VecDeque::from(["-----BEGIN RSA PRIVATE KEY-----".to_owned()]);
+    let entries = prompt_secrets(&mut terminal)?;
+    assert!(entries.is_empty());
+    assert!(
+        terminal.said.contains("import a key from a file"),
+        "{}",
+        terminal.said
+    );
+    assert!(
+        !terminal.asked.iter().any(|a| a.starts_with("Description")),
+        "{:?}",
+        terminal.asked
+    );
+    Ok(())
+}
+
+/// Review finding: an unreachable server stops the run after one attempt (a create is never
+/// retried) and says what was not sent.
+#[test]
+fn a_server_error_stops_the_run_without_retrying() -> TestResult {
+    let server = FakeServer::start()?;
+    server.with(|s| s.fail_creates = Some(503))?;
+    let file = "NEW_KEY=sk_live_new_value_1\nNEXT_KEY=after-value-4\n";
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(&server, file, &team(), &mut terminal)??;
+    assert!(summary.imported.is_empty());
+    assert_eq!(summary.unsent, vec!["NEW_KEY", "NEXT_KEY"]);
+    assert_eq!(server.with(|s| s.create_requests)?, 1, "never retried");
+    terminal.assert_no_value();
+    Ok(())
+}
+
+/// Review nit: a 403 (no right to manage them) stops the run instead of failing every secret.
+#[test]
+fn a_forbidden_create_stops_the_run() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| s.fail_creates = Some(403))?;
+    let file = "NEW_KEY=sk_live_new_value_1\nNEXT_KEY=after-value-4\n";
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(&server, file, &agent("sb-1", true), &mut terminal)??;
+    assert_eq!(summary.unsent, vec!["NEW_KEY", "NEXT_KEY"]);
+    assert_eq!(server.with(|s| s.create_requests)?, 1);
+    Ok(())
+}
+
+/// Review finding: the target is checked before anything is typed, so a wrong sandbox does not
+/// throw away typed values.
+#[test]
+fn the_target_is_checked_before_secrets_are_typed() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let outcome = prepare_target(&agent("nope/missing", false), &client);
+    assert!(matches!(outcome, Err(SecretsImportError::Sandbox(_))));
     Ok(())
 }

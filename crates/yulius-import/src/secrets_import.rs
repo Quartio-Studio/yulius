@@ -185,7 +185,10 @@ impl VaultClient {
 /// [`SecretsImportError::Terminal`] without a terminal; [`SecretsImportError::TooMany`].
 pub fn prompt_secrets(io: &mut dyn SecretsIo) -> Result<Vec<DotenvEntry>, SecretsImportError> {
     let terminal = |e: io::Error| SecretsImportError::Terminal(format!("no terminal to ask: {e}"));
-    io.say("Enter each secret's name and value; the value is not shown. An empty name finishes.");
+    io.say(
+        "Enter each secret's name and value; the value is not shown. An empty name finishes. \
+         A key that spans lines (PEM, OpenSSH) goes in a file instead.",
+    );
     let mut entries: Vec<DotenvEntry> = Vec::new();
     loop {
         let name = io.ask("Name: ").map_err(terminal)?.trim().to_owned();
@@ -202,6 +205,10 @@ pub fn prompt_secrets(io: &mut dyn SecretsIo) -> Result<Vec<DotenvEntry>, Secret
         let value = io
             .ask_hidden(&format!("Value of {name} (hidden): "))
             .map_err(terminal)?;
+        if cut_key(value.expose()) {
+            io.say(CUT_KEY);
+            continue;
+        }
         let comment = io
             .ask("Description (optional): ")
             .map_err(terminal)?
@@ -216,27 +223,34 @@ pub fn prompt_secrets(io: &mut dyn SecretsIo) -> Result<Vec<DotenvEntry>, Secret
     }
 }
 
-/// One secret's fate before anything is sent.
-enum Class {
-    New(Secret),
-    Exists,
-    Invalid(String),
+/// Why a key's first line alone is refused.
+const CUT_KEY: &str =
+    "that is only the first line of a key: import a key from a file, where it spans lines";
+
+/// Whether `value` opens a PEM or OpenSSH key that never closes: a key pasted on one line lost
+/// everything after its first line.
+fn cut_key(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("-----BEGIN ") && !value.contains("-----END ")
 }
 
-/// Imports `entries`: classifies each, shows the plan, asks for `yes` and creates the new ones.
+/// Where a run's secrets go, checked before anything is read or typed.
+pub struct PreparedTarget {
+    heading: String,
+    sandbox: Option<String>,
+    instance: bool,
+    existing: Vec<String>,
+    source_file: Option<String>,
+}
+
+/// Resolves the sandbox (agent secrets) and lists the names that exist there.
 ///
 /// # Errors
-/// [`SecretsImportError::Cancelled`] without `yes`; a sandbox or API failure before anything was
-/// sent. Failures while creating are in the summary.
-pub fn import_secrets(
-    entries: Vec<DotenvEntry>,
+/// [`SecretsImportError::Sandbox`] when no single sandbox matches; an API failure.
+pub fn prepare_target(
     options: &SecretsImportOptions,
     client: &VaultClient,
-    io: &mut dyn SecretsIo,
-) -> Result<SecretsSummary, SecretsImportError> {
-    if entries.len() > MAX_DOTENV_ENTRIES {
-        return Err(SecretsImportError::TooMany);
-    }
+) -> Result<PreparedTarget, SecretsImportError> {
     let (heading, sandbox, instance) = match &options.target {
         SecretsTarget::Team => ("the team secrets (for people)".to_owned(), None, false),
         SecretsTarget::Agent { sandbox, instance } => {
@@ -248,7 +262,7 @@ pub fn import_secrets(
             };
             (
                 format!("the agent secrets of {} ({reach})", found.full_name()),
-                Some(found),
+                Some(found.id),
                 *instance,
             )
         }
@@ -259,16 +273,53 @@ pub fn import_secrets(
             .into_iter()
             .map(|t| t.title.trim().to_owned())
             .collect(),
-        Some(found) => {
+        Some(id) => {
             let scope = if instance { "instance" } else { "sandbox" };
             client
-                .get::<Vec<AgentName>>(&["api", "sandboxes", &found.id, "agent-secrets"])?
+                .get::<Vec<AgentName>>(&["api", "sandboxes", id, "agent-secrets"])?
                 .into_iter()
                 .filter(|a| a.scope == scope)
                 .map(|a| a.name)
                 .collect()
         }
     };
+    Ok(PreparedTarget {
+        heading,
+        sandbox,
+        instance,
+        existing,
+        source_file: options.source_file.clone(),
+    })
+}
+
+/// One secret's fate before anything is sent.
+enum Class {
+    New(Secret),
+    Exists,
+    Invalid(String),
+}
+
+/// Imports `entries`: classifies each, shows the plan, asks for `yes` and creates the new ones.
+///
+/// # Errors
+/// [`SecretsImportError::Cancelled`] without `yes`. Failures while creating are in the summary.
+pub fn import_secrets(
+    entries: Vec<DotenvEntry>,
+    target: &PreparedTarget,
+    client: &VaultClient,
+    io: &mut dyn SecretsIo,
+) -> Result<SecretsSummary, SecretsImportError> {
+    if entries.len() > MAX_DOTENV_ENTRIES {
+        return Err(SecretsImportError::TooMany);
+    }
+    let PreparedTarget {
+        heading,
+        sandbox,
+        instance,
+        existing,
+        source_file,
+    } = target;
+    let instance = *instance;
     let classes: Vec<(DotenvEntry, Class)> = entries
         .into_iter()
         .map(|entry| {
@@ -285,7 +336,11 @@ pub fn import_secrets(
 
     let mut summary = SecretsSummary::default();
     io.say(&format!("Import into {heading} on {}:", client.server()));
-    let width = classes.iter().map(|(e, _)| e.name.len()).max().unwrap_or(0);
+    let width = classes
+        .iter()
+        .map(|(e, _)| e.name.chars().count())
+        .max()
+        .unwrap_or(0);
     for (entry, class) in &classes {
         let (mark, what) = match class {
             Class::New(_) => ('+', "new".to_owned()),
@@ -327,18 +382,16 @@ pub fn import_secrets(
         }
         let sent = match &sandbox {
             None => send_team(client, &entry, &value),
-            Some(found) => send_agent(client, &found.id, instance, &entry, &value),
+            Some(id) => send_agent(client, id, instance, &entry, &value),
         };
         match sent {
             Ok(()) => {
                 io.say(&format!("  imported {}", entry.name));
                 summary.imported.push(entry.name);
             }
+            // One secret refused; a 403 (no right to manage them) would refuse every other.
             Err(
-                err @ (ApiError::Forbidden(_)
-                | ApiError::NotFound(_)
-                | ApiError::Conflict(_)
-                | ApiError::Rejected { .. }),
+                err @ (ApiError::NotFound(_) | ApiError::Conflict(_) | ApiError::Rejected { .. }),
             ) => {
                 io.say(&format!("  failed {}: {err}", entry.name));
                 summary.failed.push(entry.name);
@@ -362,7 +415,7 @@ pub fn import_secrets(
             format!(", {} not sent", summary.unsent.len())
         }
     ));
-    if let Some(file) = &options.source_file {
+    if let Some(file) = source_file {
         io.say(&format!(
             "{file} still holds the values: delete it once you no longer need it."
         ));
@@ -408,7 +461,9 @@ fn resolve_sandbox(
 fn team_value(entry: &DotenvEntry) -> Class {
     let title = entry.name.trim();
     let value = entry.value.expose();
-    if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS {
+    if cut_key(value) {
+        Class::Invalid(CUT_KEY.into())
+    } else if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS {
         Class::Invalid(format!(
             "a title of 1–{MAX_TITLE_CHARS} characters is required"
         ))
@@ -428,10 +483,14 @@ fn agent_value(entry: &DotenvEntry) -> Class {
         return Class::Invalid(e.to_string());
     }
     let raw = entry.value.expose();
+    if cut_key(raw) {
+        return Class::Invalid(CUT_KEY.into());
+    }
     let value = if raw.contains('\n') {
         // A key file is stored as the Secrets page stores it: its line breaks as literal `\n`.
-        let mut joined = raw
-            .replace("\r\n", "\n")
+        let normalized = Secret::new(raw.replace("\r\n", "\n"));
+        let mut joined = normalized
+            .expose()
             .trim_end_matches('\n')
             .replace('\n', "\\n");
         let key = dotenv::key_block(&joined).is_some();

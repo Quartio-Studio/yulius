@@ -35,7 +35,9 @@ pub fn parse_dotenv(text: &str) -> Result<Vec<DotenvEntry>, DotenvError> {
     if text.len() > MAX_DOTENV_BYTES {
         return Err(DotenvError("the file is larger than 1 MiB".into()));
     }
-    // The copy holds every value: it is wiped when dropped, as the caller's text is.
+    // The copy holds every value: it is wiped when dropped, as the caller's text is. A byte order
+    // mark (Windows editors) is not part of the first name.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = Secret::new(text.replace("\r\n", "\n"));
     let text = text.expose();
     let mut entries: Vec<DotenvEntry> = Vec::new();
@@ -48,13 +50,14 @@ pub fn parse_dotenv(text: &str) -> Result<Vec<DotenvEntry>, DotenvError> {
             comment.clear();
             (end + 1, line + 1)
         } else if let Some(note) = trimmed.strip_prefix('#') {
-            comment.push(note.trim());
+            // A commented-out assignment is often an old key: it never becomes a description,
+            // which agents read in plain text.
+            if !is_assignment(note.trim()) {
+                comment.push(note.trim());
+            }
             (end + 1, line + 1)
         } else {
-            let body = trimmed
-                .strip_prefix("export ")
-                .map_or(trimmed, str::trim_start);
-            let (name, rest) = body
+            let (name, rest) = without_export(trimmed)
                 .split_once('=')
                 .ok_or_else(|| DotenvError(format!("line {line} is not NAME=value")))?;
             let name = name.trim();
@@ -105,6 +108,20 @@ fn line_end(text: &str, pos: usize) -> usize {
 /// The byte offset of `part`, a slice of `text`, in `text`.
 fn offset(text: &str, part: &str) -> usize {
     part.as_ptr() as usize - text.as_ptr() as usize
+}
+
+/// `text` without a leading `export` and the blanks after it.
+fn without_export(text: &str) -> &str {
+    text.strip_prefix("export")
+        .filter(|rest| rest.starts_with([' ', '\t']))
+        .map_or(text, str::trim_start)
+}
+
+/// Whether `text` reads as `[export ]NAME=…`.
+fn is_assignment(text: &str) -> bool {
+    without_export(text)
+        .split_once('=')
+        .is_some_and(|(name, _)| is_variable_name(name.trim()))
 }
 
 fn is_variable_name(name: &str) -> bool {
@@ -242,6 +259,32 @@ EMPTY=
         assert_eq!(
             entries("# orphan\r\n\r\nA=1\r\nB='x'\r\n"),
             vec![row("A", "1", "", 3), row("B", "x", "", 4)]
+        );
+    }
+
+    /// Review finding: a commented-out assignment (an old key) never becomes a description.
+    #[test]
+    fn commented_out_assignments_are_not_comments() {
+        let text = "\
+# Live key
+# OPENAI_KEY=sk-old-secret-value
+#export OLD_TOKEN = old-secret-value
+OPENAI_KEY=sk-new
+# OTHER=old-secret-value
+B=1
+";
+        let read = entries(text);
+        assert_eq!(read[0].2, "Live key");
+        assert_eq!(read[1].2, "");
+        assert!(read.iter().all(|r| !r.2.contains("old-secret-value")));
+    }
+
+    /// Review finding: a byte order mark and `export<TAB>` are read, not refused.
+    #[test]
+    fn a_byte_order_mark_and_a_tab_after_export_are_read() {
+        assert_eq!(
+            entries("\u{feff}A=1\nexport\tB=2\n"),
+            vec![row("A", "1", "", 1), row("B", "2", "", 2)]
         );
     }
 

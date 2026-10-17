@@ -969,10 +969,11 @@ yulius secrets import --to agent                           # type each name and 
 The file is dotenv: `NAME=value` lines (optionally `export`), values bare, in single quotes
 (literal) or double quotes (`\n`, `\t`, `\"`, `\\` read), quoted values may span lines, `${…}` is
 kept as written, and the `#` comment lines directly above a key become its description (agent) or
-notes (team). A malformed file is refused before anything is asked, by line number. The command
+notes (team), except commented-out assignments (`# NAME=old-key`), which are never kept. A malformed file is refused before anything is asked, by line number. The command
 lists the server, the target and every name as `new`, `exists` (skipped: nothing is overwritten)
 or skipped with the reason (agent names are `[A-Z][A-Z0-9_]*`, values at least 8 characters on one
-line; a PEM or OpenSSH key is kept as a key file), then sends nothing until `yes` is typed at the
+line; a PEM or OpenSSH key is kept as a key file, but its first line alone is refused: put keys
+in a file rather than pasting them at the hidden prompt), then sends nothing until `yes` is typed at the
 terminal; there is no flag to skip it, so it cannot run unattended. `--instance` makes agent
 secrets apply to every sandbox (instance administrators). Agent secrets start bound to no host, as
 on the Secrets page.
@@ -981,7 +982,8 @@ Values never appear: no option takes one, the output holds names only, nothing i
 and the server logs no request bodies; the vault audit records who added which name. The command
 reminds you that the source file still holds the values. Exit 0 when every secret was imported or
 already there, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
-sign-in).
+sign-in, a 403 or an unreachable server; creates are never retried, and a second run skips the
+imported ones as existing).
 
 ### Dropped files
 
