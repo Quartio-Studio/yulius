@@ -527,6 +527,56 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     Ok(())
 }
 
+/// SPEC-206 RMV-003 (#624): removing a sandbox ends its Superagents and terminals. They kept
+/// running, and a person watching one saw the removed sandbox's Superagent go on working.
+#[tokio::test]
+async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    f.h.github.set_perm("alice", "acme/fixture", perms("admin"));
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let terminal = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/shells",
+        Some(json!({})),
+        &f.carol,
+    )
+    .await?;
+    assert_eq!(terminal.status, StatusCode::CREATED, "{:?}", terminal.body);
+    assert_eq!(f.h.app.sandbox_shells(&sid()).len(), 2);
+
+    let removed = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    wait_for("the removed sandbox's shells to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+    // The watcher's terminal is told and closed: nothing of the sandbox goes on behind it.
+    let closed = tokio::time::timeout(WAIT, async {
+        while let Some(Ok(message)) = socket.next().await {
+            if matches!(message, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the viewer's socket closes");
+    assert_eq!(run_dirs(&f), 0, "no shell host is left");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestResult {
     let f = fixture().await?;
