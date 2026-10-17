@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
-from zig_install import install, unpack
+import sys
+from zig_install import host_key, install, unpack
 
 VERSION = "0.17.0"
 NAME = f"zig-x86_64-linux-{VERSION}"
@@ -83,13 +84,26 @@ class Install(unittest.TestCase):
 
     def test_machine_names_are_normalized(self):
         pins = {"version": VERSION, "aarch64-linux": "0" * 64}
+        opener = Opener(self.body)
         with self.assertRaises(SystemExit):
-            self.run_install(Opener(self.body), machine="ARM64", pins=pins)
+            self.run_install(opener, machine="ARM64", pins=pins)
+        self.assertEqual(opener.urls, [f"https://ziglang.org/download/{VERSION}/zig-aarch64-linux-{VERSION}.tar.xz"])
+
+    def test_the_host_key_is_the_pinned_one_or_none(self):
+        self.assertEqual(host_key("AMD64", self.pins), "x86_64-linux")
+        self.assertIsNone(host_key("riscv64", self.pins))
 
     def test_without_the_data_filter_tar_unpacks(self):
         tarball = self.root / "zig.tar.xz"
         tarball.write_bytes(self.body)
         with mock.patch("zig_install.tarfile", SimpleNamespace(open=tarfile.open)):
+            unpack(tarball, self.root / "out")
+        self.assertTrue((self.root / "out" / NAME / "zig").exists())
+
+    def test_without_lzma_tar_unpacks(self):
+        tarball = self.root / "zig.tar.xz"
+        tarball.write_bytes(self.body)
+        with mock.patch.dict(sys.modules, {"lzma": None}):
             unpack(tarball, self.root / "out")
         self.assertTrue((self.root / "out" / NAME / "zig").exists())
 
