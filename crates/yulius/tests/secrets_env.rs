@@ -651,7 +651,30 @@ async fn secrets_of_every_project_are_answered_by_administrators() -> TestResult
     Ok(())
 }
 
-/// A synthetic key file: `-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
+/// SPEC-209 SRE-001/004 (#631): an agent's `.env` request is announced to the open Secrets pages
+/// of the secret's sandbox; the same asker again changes nothing and is not announced.
+#[tokio::test]
+async fn an_env_request_is_announced_to_open_secrets_pages() -> TestResult {
+    let w = world().await?;
+    let mut announced = support::SecretAnnouncements::new(&w.h.app);
+    let copy = || {
+        support::mcp_tool(
+            &w.h,
+            TOKEN,
+            "secret_copy_to_env",
+            json!({"secrets": ["STRIPE_KEY"]}),
+        )
+    };
+    let asked = copy().await?;
+    assert_ne!(asked["isError"], true, "{asked}");
+    assert_eq!(announced.take(), vec![Some("s1".to_owned())]);
+    let again = copy().await?;
+    assert_ne!(again["isError"], true, "{again}");
+    assert_eq!(announced.take(), Vec::<Option<String>>::new());
+    Ok(())
+}
+
+/// A synthetic key file:`-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
 /// its own line, with a final line break (the armour is built at run time so no scanner takes
 /// the source for a key).
 pub(crate) fn key_file(label: &str, body: &[&str]) -> String {
