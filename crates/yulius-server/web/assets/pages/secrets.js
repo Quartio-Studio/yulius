@@ -468,8 +468,14 @@ function agentProductionOnly(secret) {
   return [h('span', { class: 'muted small' }, secret.can_manage ? `${text} Dismiss the request, or add a separate secret for agents.` : text)];
 }
 
-/** Where a secret goes: its bound hosts, or that it goes nowhere yet; and what an agent asks for. */
-function agentHosts(ctx, secret, reload) {
+/** How long an Allow whose hosts just changed stays off (Firefox waits as long on security prompts). */
+const ALLOW_SETTLE_MS = 1000;
+
+/**
+ * Where a secret goes: its bound hosts, or that it goes nowhere yet; and what an agent asks for.
+ * `changed`: the waiting hosts are not those this page showed before (a live update, SPEC-209).
+ */
+function agentHosts(ctx, secret, act, changed) {
   const parts = [];
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
   else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
@@ -477,39 +483,50 @@ function agentHosts(ctx, secret, reload) {
     // The answer names the hosts shown here: the server refuses it if an agent asked for more
     // meanwhile, so nothing is allowed unseen (SPEC-121).
     const shown = [...secret.requested_hosts];
-    const answer = async (allow) => {
+    let settling = changed;
+    const answer = (allow) => !settling && act(async () => {
       buttons.forEach((b) => { b.disabled = true; });
       try {
         const saved = await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow, hosts: shown });
         toast(allow ? `Allowed. Agents can use ${saved.name} on ${shown.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
       } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t dismiss'); }
-      reload();
-    };
+    });
     const asked = shown.join(', ');
     const buttons = secret.can_manage ? [
       secret.cd_prod ? null : smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
       smallButton('Dismiss', `Dismiss the hosts asked for ${secret.name}`, () => answer(false)),
     ].filter(Boolean) : [];
+    // Hosts that changed under the person's pointer or keyboard: a click or Enter meant for the
+    // earlier buttons must not allow hosts never seen (SPEC-121), so these stay off for a moment.
+    // aria-disabled, not disabled: they keep the keyboard focus, which would otherwise move on to
+    // another grant of the card.
+    if (changed && buttons.length) {
+      buttons.forEach((b) => b.setAttribute('aria-disabled', 'true'));
+      setTimeout(() => {
+        settling = false;
+        buttons.forEach((b) => b.removeAttribute('aria-disabled'));
+      }, ALLOW_SETTLE_MS);
+    }
     parts.push(h('div', { class: 'row-wrap' },
       h('span', { class: 'small' }, secret.requested_by ? `Task ${secret.requested_by} asks to send it to` : 'An agent asks to send it to'),
       h('div', { class: 'chips' }, shown.map((name) => iconBadge('globe', hostText(name), 'warn', 'Requested host'))),
       buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null));
+    if (changed) parts.push(h('span', { class: 'muted small' }, 'The hosts asked for changed while this page was open.'));
   }
   return parts;
 }
 
 /** Whether agents may copy a secret into the project's git-ignored .env files (SPEC-129). */
-function agentEnvFiles(ctx, secret, reload) {
+function agentEnvFiles(ctx, secret, act) {
   if (secret.env_files !== 'asked' && secret.env_files !== 'allowed') return [];
-  const answer = async (allow) => {
+  const answer = (allow) => act(async () => {
     buttons.forEach((b) => { b.disabled = true; });
     try {
       // The answer names what is shown here: the server refuses it if it changed meanwhile.
       await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/env`, { allow, env_files: secret.env_files, env_requested_by: secret.env_requested_by });
       toast(allow ? `Allowed. Agents can copy ${secret.name} into .env files.` : (secret.env_files === 'allowed' ? 'Revoked. Copies already written stay until someone removes them or rotates the value.' : 'Dismissed.'), { kind: 'ok' });
     } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t change it'); }
-    reload();
-  };
+  });
   const asked = secret.env_files === 'asked';
   const buttons = !secret.can_manage ? [] : asked ? [
     secret.cd_prod ? null : smallButton('Allow', `Allow copying ${secret.name} into .env files`, () => answer(true), { class: 'btn-primary' }),
@@ -530,7 +547,7 @@ function agentEnvFiles(ctx, secret, reload) {
  * Whether production CD runs get the secret (SPEC-134): an allowance of its own, apart from .env
  * copies (which any agent of the project could then use). Only people who manage it change it.
  */
-function agentCdProd(ctx, secret, reload) {
+function agentCdProd(ctx, secret, act) {
   if (!secret.cd_prod && !secret.can_manage) return [];
   // Most secrets agents use are not for production: a note, not a warning (SPEC-204).
   if (!secret.cd_prod && agentsUse(secret)) {
@@ -538,14 +555,13 @@ function agentCdProd(ctx, secret, reload) {
       iconBadge('upload', 'Not for production', '', 'Not for production deploys'),
       h('span', { class: 'muted small' }, 'Production deploys never get a secret agents use (its hosts or .env copies). To use this value in production, remove its hosts and .env copies, or add a separate secret for production and allow that one here.'))];
   }
-  const answer = async (allow) => {
+  const answer = (allow) => act(async () => {
     button.disabled = true;
     try {
       await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/cd-prod`, { allow });
       toast(allow ? `Allowed. Production deploys get ${secret.name}.` : `Revoked. Production deploys no longer get ${secret.name}.`, { kind: 'ok' });
     } catch (error) { errorToast(error, 'Couldn’t change it'); }
-    reload();
-  };
+  });
   const button = !secret.can_manage ? null : secret.cd_prod
     ? smallButton('Revoke', `Stop production deploys getting ${secret.name}`, () => answer(false))
     : smallButton('Allow for production deploys', `Let production deploys (CD) get ${secret.name}`, () => answer(true));
@@ -562,7 +578,7 @@ function mountAgents(ctx, sandbox, host, actions) {
   if (!sandbox) {
     setChildren(actions);
     setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a sandbox (or to every sandbox). Open one to see and add them.' }));
-    return;
+    return () => {};
   }
   const write = allows(sandbox.access, 'write');
   const list = h('div');
@@ -574,7 +590,23 @@ function mountAgents(ctx, sandbox, host, actions) {
       h('code', null, '[secret:NAME]'), ' instead.')),
     list);
 
+  // The waiting hosts each card last showed, to tell a live change from what the person saw.
+  const shownHosts = new Map();
+  let drawn = false;
+  function changedRequest(secret) {
+    const now = secret.requested_hosts.join(', ');
+    const before = shownHosts.get(secret.id);
+    shownHosts.set(secret.id, now);
+    return drawn && now !== '' && now !== before;
+  }
+
   function render(secrets) {
+    const view = draw(secrets);
+    drawn = true;
+    return view;
+  }
+
+  function draw(secrets) {
     if (secrets.length === 0) return emptyState({ iconName: 'key', title: 'No agent secrets yet', text: 'Add an API key or a login an agent needs: its name, value and what it is for. Agents find where it goes and ask you to allow it.', action: write ? createButton('Add agent secret', () => edit(null)) : null });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
@@ -589,10 +621,10 @@ function mountAgents(ctx, sandbox, host, actions) {
         // SPEC-193 MLK-003: saved before #591, a key whose line breaks became spaces; it is not
         // rewritten, since the spaces cannot all be told from the key's own.
         secret.flattened ? h('span', { class: 'small' }, 'Its line breaks were lost when it was saved, so it no longer works as a key file. Edit it and paste the key again: they are kept now.') : null,
-        ...agentHosts(ctx, secret, reload),
-        ...agentEnvFiles(ctx, secret, reload),
+        ...agentHosts(ctx, secret, act, changedRequest(secret)),
+        ...agentEnvFiles(ctx, secret, act),
         ...agentProductionOnly(secret),
-        ...agentCdProd(ctx, secret, reload),
+        ...agentCdProd(ctx, secret, act),
         h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [
         secret.can_manage ? smallButton('Show', `Show ${secret.name}`, async () => {
@@ -608,6 +640,23 @@ function mountAgents(ctx, sandbox, host, actions) {
   }
 
   const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render, { shape: 'items' });
+  // An answer on its way holds live updates back: they would bring its buttons back for a request
+  // about to be gone. The read after the answer catches up.
+  let answering = 0;
+  async function act(run) {
+    answering += 1;
+    try { await run(); } finally {
+      answering -= 1;
+      reload();
+    }
+  }
+  // An agent asked for hosts or a .env copy, here or for every sandbox, or the stream reconnected
+  // and may have missed that: read the list again, keeping it shown meanwhile (SPEC-209).
+  const follow = () => { if (!answering) reload({ quiet: true }); };
+  const offs = [
+    ctx.store.on('secrets', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) follow(); }),
+    ctx.store.on('resync', follow),
+  ];
 
   function edit(secret) {
     const form = agentForm(ctx, secret);
@@ -637,6 +686,8 @@ function mountAgents(ctx, sandbox, host, actions) {
       reload();
     } catch (error) { errorToast(error, 'Couldn’t delete'); }
   }
+
+  return () => offs.forEach((off) => off());
 }
 
 /** Mount the Secrets page: `/s/<slug>/secrets` (with the sandbox's agent secrets) or `/secrets`. */
@@ -669,11 +720,14 @@ export function mountSecretsPage(ctx, sandbox, route) {
   }
   renderTabs();
   frame.body.append(tabs, host);
+  let unmount = () => {};
   function show() {
-    if (current === 'agents') mountAgents(ctx, sandbox, host, frame.actions);
+    unmount();
+    unmount = () => {};
+    if (current === 'agents') unmount = mountAgents(ctx, sandbox, host, frame.actions);
     else mountTeam(ctx, host, frame.actions);
   }
   show();
-  return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}` };
+  return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}`, destroy: () => unmount() };
 }
 
