@@ -236,6 +236,50 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(dialog.getByText('More options')).toBeHidden();
 });
 
+type Asking = { __yuliusMock: { askHosts(name: string, hosts: string[], by: string, announce?: boolean): void; announceSecrets(sandboxId: string | null): void; goOffline(): void; goOnline(): void }; pageKept?: boolean };
+
+// Task #196 (SPEC-209, #631): "Allow didnt show instantly but i needed to refresh the page." An
+// agent's request reaches the open page through the event stream; the page itself never reloads.
+test('an agent’s host request shows its Allow on the open page at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Asking).pageKept = true; });
+
+  // Another sandbox's secrets changed: this page has nothing to read again.
+  await browser.evaluate(() => {
+    const mocked = (window as unknown as Asking).__yuliusMock;
+    mocked.askHosts('OLD_DEPLOY_KEY', ['staging.example.test'], '#120', false);
+    mocked.announceSecrets('sb_product');
+  });
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+
+  // Its own sandbox's: the request and its Allow show, with no reload of the page.
+  await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.announceSecrets('sb_studio'));
+  await expect(card.getByText('Task #120 asks to send it to')).toBeVisible();
+  await expect(screen.getByRole('button', 'Allow staging.example.test for OLD_DEPLOY_KEY')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as Asking).pageKept)).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A secret of every sandbox is announced to every sandbox's page.
+  const shared = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
+  await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askHosts('PROD_API_TOKEN', ['api2.prod.test'], '#121'));
+  await expect(shared.getByText('api2.prod.test')).toBeVisible();
+});
+
+test('a request made while the stream was down shows once it reconnects', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await browser.evaluate(() => {
+    const mocked = (window as unknown as Asking).__yuliusMock;
+    mocked.goOffline();
+    mocked.askHosts('OLD_DEPLOY_KEY', ['staging.example.test'], '#120', false);
+    mocked.goOnline();
+  });
+  await expect(screen.getByRole('button', 'Allow staging.example.test for OLD_DEPLOY_KEY')).toBeVisible({ timeout: 15000 });
+});
+
 // SPEC-129 R4: an agent asks to copy a secret into the project's .env; a person allows it here,
 // and can revoke it later.
 test('a person allows an agent to copy a secret into .env, then revokes it', async ({ app, browser, screen }) => {

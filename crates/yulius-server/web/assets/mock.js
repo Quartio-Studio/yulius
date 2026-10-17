@@ -4833,6 +4833,16 @@ export function createMockTransport(params) {
     if (announce) announcePulls(db, sandboxId);
   };
   db.announcePulls = (sandboxId) => announcePulls(db, sandboxId);
+  // An agent asks for hosts of an agent secret (`secret_request_hosts`, SPEC-121): announced as
+  // the server does (SPEC-209), unless `announce` is false (a change the page missed).
+  db.askHosts = (name, hosts, by, announce = true) => {
+    const secret = vaultOf(db).agent.find((s) => s.name === name);
+    secret.requested_hosts = [...new Set([...secret.requested_hosts, ...hosts])];
+    secret.requested_by = by;
+    audit(db, 'vault.agent.request', secret.id, `${secret.name} → ${hosts.join(', ')}`);
+    if (announce) db.announceSecrets(secret.sandbox);
+  };
+  db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for
