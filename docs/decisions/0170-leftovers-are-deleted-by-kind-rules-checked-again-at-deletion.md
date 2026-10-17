@@ -43,8 +43,20 @@ without SSH.
   (`target`, `node_modules`, declared caches) after 30 quiet minutes. A waiting task keeps the 4 h
   rule, and ended tasks keep their 10 minute grace. The worktree, uncommitted work and the branch
   always stay. Continuing the task rebuilds the caches.
-- **Git metadata.** `git worktree prune` runs in a clone whose `.git/worktrees/<name>` points at a
-  missing directory. That is Git's own rule, so it is safe for any sandbox.
+- **Git metadata.** A clone's `.git/worktrees/<name>` goes when its worktree lay inside the
+  sandbox directory, is gone, and the record is not locked. Only that record goes, never through
+  `git worktree prune`, which would also drop the records of worktrees an agent keeps in its own
+  `/tmp` (the host does not see them).
+- **No link is ever followed.** A sandbox's agents and shells can write anywhere in their sandbox
+  directory, so they could swap a directory for a link. An item reached through a link is never
+  listed. The removal opens every directory from the data directory down with `O_NOFOLLOW` and
+  removes through the opened directory (`/proc/self/fd/<fd>/<name>`), so a link that appears
+  after the last check fails the removal instead of steering it. Below that, std's
+  `remove_dir_all` removes links as links. Only the mapped removal of a removed sandbox's system
+  trees goes by path, where no run of that sandbox is left.
+- **Run directories.** `runs/<name>` stays while an attempt record owns it (an ended task's last
+  run holds its terminal's final screen), a run is live, or a CI job or deploy of it runs. One no
+  record owns goes a day after it was last touched.
 - **Manual only**: worktrees no task owns (they may hold uncommitted work), directories no
   sandbox record owns (except a smoke test's whose process is gone), and everything of a removed
   sandbox. The host's `/var/lib/docker` and `/var/lib/containerd` are reported, never deleted:
@@ -80,5 +92,7 @@ without SSH.
 - Done tasks keep about 50–100 MB each instead of 10–20 GB. Continuing one costs a rebuild.
 - An item that turned live between the list and the click is kept, never deleted. The person sees
   "kept" and why.
+- A part of the data directory that is a link (moved to another disk) hides its leftovers: the
+  server logs it once per scan. Bind-mount such a directory instead.
 - The isolation port gains `holder_live`, `remove_owned_tree` and `unused_bases`. Adapters without
   isolation keep the defaults: no holder, plain removal, no bases.

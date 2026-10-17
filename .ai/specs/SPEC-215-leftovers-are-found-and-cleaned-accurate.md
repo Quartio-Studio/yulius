@@ -48,7 +48,9 @@ Root causes, from the code on `dev` (4e4ce7c2):
   and before that only quota pressure (90 %) prunes them. The person continues done tasks rarely.
   Once delivered, a done task's 11–23 GB `target/` is dead weight.
 - **Git metadata**: a worktree directory deleted by hand (or by `remove_dir_all`) leaves
-  `repo/.git/worktrees/<name>` behind. `git worktree prune` removes it.
+  `repo/.git/worktrees/<name>` behind. Git's records of worktrees inside the sandbox directory
+  whose directories are gone are removed one by one. `git worktree prune` is not used, because
+  it would also drop the records of worktrees agents keep in their own `/tmp`.
 
 ### Inventory: every path, its owner and when it becomes garbage
 
@@ -71,11 +73,11 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 | `sandboxes/<sid>/worktrees/<task>/<cache>` | task | task ended (closed, stopped, failed) after 10 min; **done** after 30 min; waiting 4 h (ADR-0170) | `task-cache` (auto) |
 | `sandboxes/<sid>/worktrees/<task>` | task | closed or cancelled and clean (unchanged: `disk.rs`) | existing upkeep |
 | `sandboxes/<sid>/worktrees/<name>` with no task record | none | always (may hold uncommitted work) | `orphan-worktree` (manual) |
-| `repo/.git/worktrees/<name>` whose directory is gone | git | always | `git-metadata` (auto, `git worktree prune`) |
+| `repo/.git/worktrees/<name>` whose worktree, inside the sandbox directory, is gone | git | not locked | `git-metadata` (auto, that record only) |
 | `sandboxes/<sid>/ci/jobs/<name>` whose job no run used in 14 days | sandbox (CI) | no CI run in its sandbox | `stale-ci-checkout` (auto, under the CI claim) |
 | `sandboxes/<sid>/attachments/drafts/<user>/<file>` | user's draft | older than 7 days (`DRAFT_MAX_AGE`) | `old-draft` (auto) |
-| `runs/<attempt>` | attempt | not live, untouched for a day | `ended-run` (auto) |
-| `runs/ci-<job>`, `runs/cd-<run>` | CI job / CD run | untouched for a day (longer than any job or deploy) | `ended-run` (auto) |
+| `runs/<attempt>` | attempt record | no attempt record owns it (an ended task's last run holds the final screen), untouched for a day | `ended-run` (auto) |
+| `runs/ci-<job>`, `runs/cd-<run>` | CI job / CD run | no active CI run has the job, no running deploy is the run, untouched for a day | `ended-run` (auto) |
 | `transcripts/<task>` with no task record | none | always (task deletion failed half-way) | `orphan-transcripts` (auto) |
 | `sandboxes/docker-smoke-<pid>`, `sysroots/…`, `runtime/sandboxes/…` | smoke process | its process is gone | `stale-smoke` (auto, mapped removal) |
 | `sandboxes/<x>`, `sysroots/<x>`, `runtime/sandboxes/<x>`, `cd/<x>` with no sandbox record | none | always | `unowned` (manual) |
@@ -100,8 +102,10 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
   the removed sandbox", which the superadmin can delete after a confirmation naming the size. The
   database records stay (PRJ-009 amended).
 - **LFT-004** A partly-cleaned removed sandbox (some directories already deleted by hand) is
-  finished without errors. A missing path is not an error. `git worktree prune` runs in every
-  clone whose `.git/worktrees/<name>` points at a missing directory.
+  finished without errors. A missing path is not an error. A clone's `.git/worktrees/<name>` goes
+  when its worktree lay inside the sandbox directory, is gone, and the record is not locked. Only
+  that record goes, so the records of worktrees outside the sandbox directory (an agent's `/tmp`)
+  stay.
 - **LFT-005** Policy for finished tasks (ADR-0170): a running task whose activity is **done** has
   its rebuildable caches deleted once it has not moved for 30 minutes. Its worktree and
   uncommitted work stay. A waiting task keeps the 4 h rule, and ended tasks keep the 10 min grace.
@@ -156,7 +160,11 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 - A done task idle for 31 minutes loses `target/`. One idle for 20 minutes keeps it, and so does a
   waiting task idle for 1 hour. Its worktree stays.
 - A removed sandbox whose `worktrees` and `sysroots` were already deleted by hand: the round
-  deletes the rest without failures, and `git worktree prune` clears `.git/worktrees/<name>`.
+  deletes the rest without failures, and `.git/worktrees/<name>` goes. A record of a worktree in an
+  agent's own `/tmp` stays.
+- A link a sandbox puts in its directory (`attachments/drafts/<user>`, `ci/jobs`) never steers a
+  deletion outside it: not when the scan lists items, and not when the link appears after the last
+  check.
 - A removed sandbox with a live shell, a running CI run or a live holder keeps the guarded paths.
   An item listed as safe but blocked by the time of the deletion (a shell started meanwhile) is
   kept and reported.

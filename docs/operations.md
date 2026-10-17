@@ -1032,10 +1032,10 @@ task that started working again keeps its files. Every deletion is audited as `l
 | Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-*.json` | kept (PRJ-009); the database records always stay | **only a person** |
 | A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota | yes (the worktree and uncommitted work stay) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
-| Git's record of a worktree whose directory is gone (`.git/worktrees/<name>`) | always (`git worktree prune`) | yes |
+| Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
 | A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
 | A draft attachment older than 7 days | always | yes |
-| `<data>/runs/<name>` of no live run, untouched for a day | always | yes |
+| `<data>/runs/<name>` that no attempt record, live run, active CI job or running deploy owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
 | An unused sandbox base (not current, no live holder mounts it) | always | yes |
 | A worktree no task owns; a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/` or `displays/` that no sandbox record owns | listed | **only a person** |
@@ -1053,6 +1053,11 @@ sudo -u yulius yulius leftovers list                 # rescans; id, size, safe/n
 sudo -u yulius yulius leftovers delete --all-safe    # shows them and the total, then asks for yes
 sudo -u yulius yulius leftovers delete 3f9c0a1b2c3d4e5f 0a1b2c3d4e5f6a7b --yes
 ```
+
+Nothing reached through a link is listed or deleted: a sandbox can put links in its own directory,
+and Yulius never follows one. So if you moved part of the data directory (`sandboxes/`, `runs/`,
+`sysroots/`, …) to another disk with a link, its leftovers are not listed, and the server logs a
+warning at each scan. Bind-mount such a directory instead.
 
 The command talks to the loopback listener (`--url`, default `http://127.0.0.1:8081`) with the key
 the server writes to `<data>/leftovers-cli.key` (0600, new at every start; `--data-dir` if the data

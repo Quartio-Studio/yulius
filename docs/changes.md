@@ -15,7 +15,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   again right before deleting and auditing every deletion. A removed sandbox's disposable parts go
   10 minutes after the removal once nothing of it runs (its system layer once its holder has
   stopped), and a done task's caches go after 30 quiet minutes. Partly cleaned sandboxes are
-  finished (`git worktree prune`). Its clone, sessions, transcripts and export stay, as one item
+  finished (stale Git worktree records go). Nothing is reached through a link a sandbox could plant.
+  Its clone, sessions, transcripts and export stay, as one item
   only the superadmin deletes. Settings → Instance → Leftovers and `yulius leftovers list|delete`
   list and delete them by hand.
 - An agent's secret request shows on an open Secrets page at once (SPEC-209, task #196, fixes

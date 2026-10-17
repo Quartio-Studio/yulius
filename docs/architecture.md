@@ -302,7 +302,9 @@ worktrees, and instance directories no record owns. It deletes one item at a tim
 `still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
 `holder_live` is false, and a CI claim is held while checkouts go. Trees whose files belong to a
 sandbox's mapped ids go through the isolation's `remove_owned_tree` (`base::remove_tree` as root
-of a mapped namespace). The automatic round runs at every start and hourly. People reach the
+of a mapped namespace). No link is followed: an item reached through one is never listed, and the
+removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
+the opened directory, so a link a sandbox swaps in after the check fails the removal. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
 loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
 
@@ -315,7 +317,7 @@ flowchart LR
   SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, runs/, transcripts/, system/"]
   SC --> L["items: kind, path, size, owner, reason, safe?"]
   L -->|"safe only (round) or chosen (person)"| G{"guard again: removed 10 min, nothing runs, no deploy, holder stopped, CI claimed"}
-  G -->|"holds"| D["delete: plain, git worktree prune, or isolation remove_owned_tree"]
+  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then through the opened directory; or isolation remove_owned_tree"]
   G -->|"no longer holds"| K["kept, reported"]
   D --> A[("audit: leftovers.delete / leftovers.failed")]
 ```

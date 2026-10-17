@@ -121,6 +121,8 @@ pub struct LeftoverState {
 
 #[derive(Default)]
 struct Inner {
+    /// Grows with every job started (a job's own [`JobEnd`] knows it).
+    generation: u64,
     /// The CLI's key, as written to [`CLI_KEY_FILE`].
     key: Option<String>,
     items: Vec<Leftover>,
@@ -175,13 +177,28 @@ impl Drop for CiClaim<'_> {
 
 /// Ends the job when whatever ran it stopped without ending it (a panic, a dropped task), so
 /// the slot never stays taken (later rounds and requests would be refused until a restart).
-struct JobEnd<'a>(&'a App);
+/// Disarmed by the normal end; it only ever ends its own job (its generation), never one started
+/// after it.
+struct JobEnd<'a>(&'a App, u64);
 
 impl Drop for JobEnd<'_> {
     fn drop(&mut self) {
-        self.0
-            .end_leftover_job(Some("the job stopped before its end".into()));
+        let generation = self.1;
+        self.0.with_leftovers(|inner| {
+            if inner.generation == generation
+                && let Some(job) = inner.job.as_mut().filter(|job| job.running)
+            {
+                job.running = false;
+                job.failed.push("the job stopped before its end".into());
+            }
+        });
     }
+}
+
+/// What one deletion pass reads once: the CI job keys each sandbox used.
+#[derive(Default)]
+struct Pass {
+    ci_keys: std::collections::HashMap<SandboxId, Option<HashSet<String>>>,
 }
 
 fn exists(path: &Path) -> bool {
@@ -256,6 +273,68 @@ fn no_link_between(root: &Path, path: &Path) -> bool {
     true
 }
 
+/// Removes `path` (a file, a link or a tree) below `root` without ever following a link on the
+/// way: each directory from `root` down is opened with `O_NOFOLLOW`, so a directory a sandbox
+/// swapped for a link (also after the last check) fails the open instead of steering the removal
+/// elsewhere. The removal then goes through the opened directory (`/proc/self/fd/<fd>/<name>`
+/// resolves to that very directory, whatever its path points at by then), and std's
+/// `remove_dir_all` never follows a link below it. A missing path is fine.
+///
+/// # Errors
+/// `path` is not below `root`, a link lies on the way, or the removal failed.
+fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+    use std::os::fd::AsRawFd as _;
+    let refused = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not below the data directory",
+        )
+    };
+    let relative = path.strip_prefix(root).map_err(|_| refused())?;
+    let parts: Vec<&std::ffi::OsStr> = relative
+        .components()
+        .map(|c| match c {
+            Component::Normal(part) => Ok(part),
+            _ => Err(refused()),
+        })
+        .collect::<Result<_, _>>()?;
+    let (last, ancestors) = parts.split_last().ok_or_else(refused)?;
+    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut dir = open(root, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())
+        .map_err(std::io::Error::from)?;
+    for part in ancestors {
+        dir = match openat(&dir, *part, flags, Mode::empty()) {
+            Ok(next) => next,
+            Err(nix::errno::Errno::ENOENT) => return Ok(()),
+            Err(err) => {
+                return Err(std::io::Error::other(format!(
+                    "{} on the way to {}: {err}",
+                    part.to_string_lossy(),
+                    path.display()
+                )));
+            }
+        };
+    }
+    let through = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd())).join(last);
+    let meta = match std::fs::symlink_metadata(&through) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let removed = if meta.is_dir() {
+        delete_tree(&through)
+    } else {
+        std::fs::remove_file(&through)
+    };
+    drop(dir);
+    match removed {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 /// The directory a worktree's Git record (`.git/worktrees/<name>/gitdir`) points at, when that
 /// directory lies inside `sandbox_dir` (where the host sees it) and is gone. A worktree outside it
 /// (an agent's own `/tmp`, which only its run sees) or a locked record is never gone.
@@ -292,11 +371,11 @@ fn gone_worktree(record: &Path, sandbox_dir: &Path) -> Option<PathBuf> {
 
 /// Removes the Git records of `repo` whose worktrees lay under `removed` and are gone now (what
 /// `git worktree prune` does for them, without touching any other record).
-fn drop_records_under(repo: &Path, removed: &Path, sandbox_dir: &Path) {
+fn drop_records_under(root: &Path, repo: &Path, removed: &Path, sandbox_dir: &Path) {
     for (_, record) in entries(&repo.join(".git").join("worktrees")) {
         if let Some(worktree) = gone_worktree(&record, sandbox_dir)
             && worktree.starts_with(removed)
-            && let Err(err) = delete_tree(&record)
+            && let Err(err) = remove_below(root, &record)
         {
             tracing::warn!(record = %record.display(), error = %err, "a worktree record stays");
         }
@@ -323,6 +402,23 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn leftovers_scan(&self) -> AppResult<Vec<Leftover>> {
+        // Nothing below a link is ever listed (a link could point anywhere): say so when part of
+        // the data directory itself is one (moved to another disk), or its leftovers stay unseen.
+        for top in [
+            "sandboxes",
+            "sysroots",
+            "runtime",
+            "runs",
+            "cd",
+            "displays",
+            "transcripts",
+            "system",
+        ] {
+            let path = self.data_path(&[top]);
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                tracing::warn!(path = %path.display(), "a link in the data directory: no leftover below it is listed; bind-mount it instead");
+            }
+        }
         let store = &self.deps.store;
         let live = store.sandboxes().await?;
         let removed = store.removed_sandboxes().await?;
@@ -775,7 +871,11 @@ impl App {
 
     /// Checks `item`'s rule again on fresh state right before it is deleted (LFT-007). `Ok`
     /// with a CI claim when its sandbox's checkouts are touched; `Err` with why it stays.
-    async fn leftover_guard(&self, item: &Leftover) -> Result<Option<CiClaim<'_>>, String> {
+    async fn leftover_guard(
+        &self,
+        item: &Leftover,
+        pass: &mut Pass,
+    ) -> Result<Option<CiClaim<'_>>, String> {
         if !item.kind.deletable() {
             return Err("reported only: the host's own data".into());
         }
@@ -862,10 +962,14 @@ impl App {
             }
             Kind::StaleCiCheckout => {
                 let sandbox = sandbox.ok_or("no sandbox")?;
-                let used = self
-                    .ci_keys_used(&sandbox.id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                if !pass.ci_keys.contains_key(&sandbox.id) {
+                    let used = self
+                        .ci_keys_used(&sandbox.id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    pass.ci_keys.insert(sandbox.id.clone(), used);
+                }
+                let used = pass.ci_keys.get(&sandbox.id).cloned().flatten();
                 let stale = used.is_some_and(|used| {
                     self.checkout_stale(&file_name(&item.path), &used).is_some()
                 });
@@ -977,27 +1081,23 @@ impl App {
         if mapped && let Some(isolation) = self.isolation.get() {
             return isolation.remove_owned_tree(path).await;
         }
-        let target = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let meta = std::fs::symlink_metadata(&target)?;
-            if meta.is_dir() {
-                delete_tree(&target)
-            } else {
-                match std::fs::remove_file(&target) {
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    other => other,
-                }
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        let (root, target) = (self.config.data_dir.clone(), path.to_path_buf());
+        tokio::task::spawn_blocking(move || remove_below(&root, &target))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
     }
 
     /// Deletes one item after its guard: measured, removed, audited.
-    async fn delete_leftover(&self, item: &Leftover, actor: &str, report: &mut DeleteReport) {
+    async fn delete_leftover(
+        &self,
+        item: &Leftover,
+        actor: &str,
+        pass: &mut Pass,
+        report: &mut DeleteReport,
+    ) {
         let label = item.path.to_string_lossy().into_owned();
-        let guard = match self.leftover_guard(item).await {
+        let guard = match self.leftover_guard(item, pass).await {
             Ok(guard) => guard,
             Err(why) => {
                 report.kept.push(format!("{label}: {why}"));
@@ -1029,9 +1129,12 @@ impl App {
             && let (Some(repo), Some(sandbox)) = (&item.repo, &item.sandbox)
             && item.kind != Kind::GitMetadata
         {
+            let root = self.config.data_dir.clone();
             let (repo, removed, dir) = (repo.clone(), item.path.clone(), self.sandbox_dir(sandbox));
-            let _ = tokio::task::spawn_blocking(move || drop_records_under(&repo, &removed, &dir))
-                .await;
+            let _ = tokio::task::spawn_blocking(move || {
+                drop_records_under(&root, &repo, &removed, &dir);
+            })
+            .await;
         }
         drop(guard);
         let target = item.slug.clone().unwrap_or_else(|| "instance".into());
@@ -1069,9 +1172,11 @@ impl App {
     /// Deletes `items` one after the other, each after its guard, updating the job's progress.
     pub async fn delete_leftovers(&self, items: &[Leftover], actor: &str) -> DeleteReport {
         let mut report = DeleteReport::default();
+        let mut pass = Pass::default();
         for item in items {
             let (kept, failed) = (report.kept.len(), report.failed.len());
-            self.delete_leftover(item, actor, &mut report).await;
+            self.delete_leftover(item, actor, &mut pass, &mut report)
+                .await;
             let (freed, deleted) = (report.freed, report.deleted);
             let new_kept = report.kept[kept..].to_vec();
             let new_failed = report.failed[failed..].to_vec();
@@ -1104,13 +1209,15 @@ impl App {
         f(&mut inner)
     }
 
-    /// Takes the job slot for `action`; `false` when a scan or a deletion runs.
-    fn begin_leftover_job(&self, action: &str, actor: &str, total: usize) -> bool {
+    /// Takes the job slot for `action` and returns the job's generation; `None` when a scan or a
+    /// deletion runs.
+    fn begin_leftover_job(&self, action: &str, actor: &str, total: usize) -> Option<u64> {
         let started_at = rfc3339(self.now());
         self.with_leftovers(|inner| {
             if inner.job.as_ref().is_some_and(|job| job.running) {
-                return false;
+                return None;
             }
+            inner.generation += 1;
             inner.job = Some(LeftoverJobView {
                 action: action.to_owned(),
                 running: true,
@@ -1119,7 +1226,7 @@ impl App {
                 started_at,
                 ..LeftoverJobView::default()
             });
-            true
+            Some(inner.generation)
         })
     }
 
@@ -1150,10 +1257,8 @@ impl App {
     /// One automatic round (LFT-009): scan, delete every item that needs no person. Skipped
     /// while a person's scan or deletion runs.
     pub async fn run_leftovers_round(&self) -> Option<DeleteReport> {
-        if !self.begin_leftover_job("scan", "yulius", 0) {
-            return None;
-        }
-        let _end = JobEnd(self);
+        let generation = self.begin_leftover_job("scan", "yulius", 0)?;
+        let _end = JobEnd(self, generation);
         if let Err(err) = self.scan_into_state().await {
             tracing::warn!(error = %err, "the leftovers scan failed");
             self.end_leftover_job(Some(err.to_string()));
@@ -1325,14 +1430,14 @@ impl App {
     /// # Errors
     /// `Conflict` while a scan or deletion runs.
     pub async fn start_leftovers_scan(self: &Arc<Self>, actor: &str) -> AppResult<LeftoversView> {
-        if !self.begin_leftover_job("scan", actor, 0) {
+        let Some(generation) = self.begin_leftover_job("scan", actor, 0) else {
             return Err(AppError::Conflict(
                 "a leftovers scan or deletion runs".into(),
             ));
-        }
+        };
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            let _end = JobEnd(&app);
+            let _end = JobEnd(&app, generation);
             let result = app.scan_into_state().await;
             app.end_leftover_job(result.err().map(|e| e.to_string()));
         });
@@ -1397,15 +1502,15 @@ impl App {
         if chosen.is_empty() {
             return Err(AppError::Invalid("nothing to delete".into()));
         }
-        if !self.begin_leftover_job("delete", actor, chosen.len()) {
+        let Some(generation) = self.begin_leftover_job("delete", actor, chosen.len()) else {
             return Err(AppError::Conflict(
                 "a leftovers scan or deletion runs".into(),
             ));
-        }
+        };
         let app = Arc::clone(self);
         let actor = actor.to_owned();
         tokio::spawn(async move {
-            let _end = JobEnd(&app);
+            let _end = JobEnd(&app, generation);
             app.delete_leftovers(&chosen, &actor).await;
             app.end_leftover_job(None);
         });
@@ -1423,5 +1528,56 @@ fn task_state(task: &crate::model::TaskRecord) -> String {
         (TaskStatus::Stopped(_), _) => "stopped".into(),
         (TaskStatus::Failed(_), _) => "failed".into(),
         _ => "idle for 4 hours".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Review round 2 (blocker): the removal itself refuses a link on the way, whenever it
+    /// appears (a sandbox can swap a directory for a link right after the last check), so it
+    /// never reaches outside; a real path goes, a missing one is fine.
+    #[test]
+    fn the_removal_never_goes_through_a_link_on_the_way() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let data = tmp.path().join("data");
+        let drafts = data.join("sandboxes/s1/attachments/drafts");
+        std::fs::create_dir_all(&drafts)?;
+        std::fs::write(data.join("master.key"), "the key")?;
+        std::os::unix::fs::symlink(&data, drafts.join("u"))?;
+        assert!(remove_below(&data, &drafts.join("u/master.key")).is_err());
+        assert!(data.join("master.key").exists(), "never through the link");
+
+        let victim = data.join("sandboxes/victim/repo");
+        std::fs::create_dir_all(&victim)?;
+        std::fs::write(victim.join("README.md"), "kept")?;
+        let jobs = data.join("sandboxes/s1/ci/jobs");
+        std::fs::create_dir_all(jobs.parent().ok_or("parent")?)?;
+        std::os::unix::fs::symlink(data.join("sandboxes/victim"), &jobs)?;
+        assert!(remove_below(&data, &jobs.join("repo")).is_err());
+        assert!(victim.join("README.md").exists());
+
+        // The item itself may be a link: the link goes, not what it points at.
+        let own = data.join("sandboxes/s1/attachments/drafts/old.png");
+        std::os::unix::fs::symlink(data.join("master.key"), &own)?;
+        remove_below(&data, &own)?;
+        assert!(!exists(&own) && data.join("master.key").exists());
+
+        let tree = data.join("sandboxes/s1/worktrees/t1/target/debug");
+        std::fs::create_dir_all(&tree)?;
+        std::fs::write(tree.join("blob"), "built")?;
+        std::os::unix::fs::symlink(&victim, tree.join("escape"))?;
+        remove_below(&data, &data.join("sandboxes/s1/worktrees/t1"))?;
+        assert!(!data.join("sandboxes/s1/worktrees/t1").exists());
+        assert!(
+            victim.join("README.md").exists(),
+            "a link inside goes as a link"
+        );
+        remove_below(&data, &data.join("sandboxes/s1/worktrees/t1"))?;
+        assert!(remove_below(&data, &tmp.path().join("elsewhere")).is_err());
+        Ok(())
     }
 }

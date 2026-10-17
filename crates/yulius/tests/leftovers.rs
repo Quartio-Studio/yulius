@@ -908,14 +908,13 @@ async fn a_link_in_a_sandbox_never_steers_a_deletion_outside_it() -> BoxResult<(
     ci_run(&w, "live", "r1", now - 60_000, &["gate"]).await?;
 
     let items = w.scan().await?;
-    let outside: Vec<_> = items
-        .iter()
-        .filter(|i| {
-            !i.path.starts_with(&live) && i.sandbox.as_ref().is_some_and(|s| s.as_str() == "live")
-        })
-        .map(|i| i.path.clone())
-        .collect();
-    assert!(outside.is_empty(), "{outside:?}");
+    assert!(
+        !items
+            .iter()
+            .any(|i| matches!(i.kind, Kind::OldDraft | Kind::StaleCiCheckout)),
+        "nothing reached through a link is listed: {:?}",
+        kinds(&items)
+    );
     let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
     assert!(w.at("master.key").exists(), "{report:?}");
     for kept in [
