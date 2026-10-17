@@ -57,7 +57,8 @@ test('team secrets are a title, a value and notes, shown after a two-factor code
 
   await screen.getByRole('button', 'Add team secret').click();
   const add = screen.getByRole('dialog', 'Add team secret');
-  const labels = await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].map((l) => l.textContent!.trim()));
+  // The scope (this sandbox by default, SPEC-216) waits under More options, closed.
+  const labels = await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => (l as HTMLElement).checkVisibility()).map((l) => l.textContent!.trim()));
   expect(labels).toEqual(['Title', 'Value', 'Notes']);
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByLabel('Title').fill('AWS root');
@@ -485,6 +486,71 @@ test('editing a team secret loads its current notes after a two-factor code', as
 test('members who only read a sandbox cannot add agent secrets', async ({ app, screen }) => {
   await app.open(mock('/s/sandbox-3/secrets?section=agents'));
   await expect(screen.getByRole('button', 'Add agent secret')).toBeDisabled();
+});
+
+// Task #203 (SPEC-216): "Agent's secrets for default should allow the agent to set the url by
+// itself and prod permission without confirming it by the user, but while creating the secret,
+// user can disable the option. Also, team and agent's secrets should be split to per sandbox and
+// teamwise. By default they should be per specific sandbox".
+test('a new agent secret lets agents set it up unless turned off, and secrets belong to the sandbox by default', async ({ app, browser, screen }) => {
+  const scope = () => browser.evaluate(() => (document.querySelector('dialog.modal select') as HTMLSelectElement).value);
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await screen.getByRole('button', 'Add agent secret').first().click();
+  const dialog = screen.getByRole('dialog', 'Add agent secret');
+  await expect(dialog.getByRole('switch', 'Let agents set it up')).toBeChecked();
+  await dialog.getByText('More options').click();
+  expect(await scope()).toBe('sandbox');
+  expect(await browser.evaluate(() => [...document.querySelectorAll('dialog.modal option')].map((o) => o.textContent))).toEqual(['This sandbox', 'Team-wide (every sandbox)']);
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByLabel('Name').fill('AUTO_KEY');
+  await screen.getByLabel('Value').fill('auto-mock-value-1');
+  await dialog.getByRole('button', 'Add').click();
+  await expect(dialog).toBeHidden();
+  const auto = browser.locator('.item-card:has-text("AUTO_KEY")');
+  await expect(auto.getByText('Agents set it up')).toBeVisible();
+  await expect(auto.getByText(/Not sent anywhere yet: agents bind its hosts/)).toBeVisible();
+  await expect(auto.getByText(/Production deploys \(CD\) get it: agents set it up/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Let production deploys (CD) get AUTO_KEY')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Turned off while adding: a person allows its hosts and production deploys, as before.
+  await screen.getByRole('button', 'Add agent secret').first().click();
+  const manual = screen.getByRole('dialog', 'Add agent secret');
+  await manual.getByRole('switch', 'Let agents set it up').click();
+  await screen.getByLabel('Name').fill('MANUAL_KEY');
+  await screen.getByLabel('Value').fill('manual-mock-value-1');
+  await manual.getByRole('button', 'Add').click();
+  await expect(manual).toBeHidden();
+  const card = browser.locator('.item-card:has-text("MANUAL_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet: agents ask for its hosts/)).toBeVisible();
+  await expect(card.getByText('Agents set it up')).toBeHidden();
+  await expect(screen.getByRole('button', 'Let production deploys (CD) get MANUAL_KEY')).toBeVisible();
+  // Its manager turns it on in Edit.
+  await screen.getByRole('button', 'Edit MANUAL_KEY').click();
+  const edit = screen.getByRole('dialog', 'Edit MANUAL_KEY');
+  await expect(edit.getByRole('switch', 'Let agents set it up')).not.toBeChecked();
+  await edit.getByRole('switch', 'Let agents set it up').click();
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  await expect(card.getByText('Agents set it up')).toBeVisible();
+
+  // Team secrets: this sandbox's by default, team-wide on request; each badged.
+  await screen.getByRole('radio', 'Team secrets').click();
+  await expect(browser.locator('.item-card:has-text("Shared Gmail")').getByText('Team-wide')).toBeVisible();
+  await screen.getByRole('button', 'Add team secret').click();
+  const team = screen.getByRole('dialog', 'Add team secret');
+  await team.getByText('More options').click();
+  expect(await scope()).toBe('sandbox');
+  await screen.getByLabel('Title').fill('Studio deploy box');
+  await screen.getByLabel('Value').fill('mock-deploy-box-value');
+  await team.getByRole('button', 'Add').click();
+  await expect(team).toBeHidden();
+  await expect(browser.locator('.item-card:has-text("Studio deploy box")').getByText('This sandbox')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  // Another sandbox has the team-wide one, not this sandbox's.
+  await app.open(mock('/s/sandbox-3/secrets'));
+  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  await expect(screen.getByText('Studio deploy box')).toBeHidden();
 });
 
 // Founder feedback 2026-10-11 ("ux is a little broken"): the add button sat in a row glued to the
