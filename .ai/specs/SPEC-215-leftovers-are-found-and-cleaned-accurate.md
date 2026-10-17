@@ -138,17 +138,18 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 ## Plan
 
 - [x] Spec with the inventory, and ADR-0170
-- [ ] A removed sandbox's worktrees, CI, browser and CD directories are deleted once nothing of it runs
-- [ ] A removed sandbox's system layer and runtime state are deleted once its holder has stopped
-- [ ] Partly-cleaned sandboxes and stale Git worktree metadata are finished
-- [ ] A done task's caches are deleted after 30 quiet minutes
-- [ ] Instance-wide orphans are found and deleted by their rules
-- [ ] Automatic rounds at every start and every hour
-- [ ] Superadmin API lists, rescans and deletes in the background with progress
-- [ ] Leftovers section in Settings → Instance
-- [ ] yulius leftovers list and delete from the command line
-- [ ] Operations, architecture, PRJ-009 and changes documented; every gate green
+- [x] A removed sandbox's worktrees, CI, browser and CD directories are deleted once nothing of it runs
+- [x] A removed sandbox's system layer and runtime state are deleted once its holder has stopped
+- [x] Partly-cleaned sandboxes and stale Git worktree metadata are finished
+- [x] A done task's caches are deleted after 30 quiet minutes
+- [x] Instance-wide orphans are found and deleted by their rules
+- [x] Automatic rounds at every start and every hour
+- [x] Superadmin API lists, rescans and deletes in the background with progress
+- [x] Leftovers section in Settings → Instance
+- [x] yulius leftovers list and delete from the command line
+- [x] Operations, architecture, PRJ-009 and changes documented
 - [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green on the reviewed head, spec evidence recorded
 
 ## Acceptance criteria
 
