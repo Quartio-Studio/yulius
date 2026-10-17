@@ -11,3 +11,19 @@ enabled = true
 # origin, so this holds only while mock.js has no DOM sink (innerHTML, eval, document.write,
 # location assignment): rendering stays in scanned code. Remove the exclusion if it gains one.
 exclude = ["crates/yulius-server/web/assets/mock.js"]
+
+# A false positive: `write_scaffold`'s paths are compile-time literals of the built-in templates
+# (`scaffold_files` in yulius-domain: AGENTS.md, docs/…, per template kind); no request field
+# reaches a path, only file contents. Reported when task #193 (SPEC-206) changed projects.rs.
+[[ignore]]
+path = "crates/yulius-app/src/projects.rs"
+title = "write_scaffold"
+reason = "false positive: scaffold paths are built-in template literals, no input reaches them"
+
+# Reported against the browser port's documented trust model, not code of this file: the
+# endpoint is the adapter's Chromium launch (yulius-browser). The weakness is real and tracked in
+# #626; remove this entry with its fix. Reported when task #193 (SPEC-206) added `stop`.
+[[ignore]]
+path = "crates/yulius-app/src/ports/browser.rs"
+title = "Unauthenticated"
+reason = "pre-existing, documented trust model of the browser adapter; tracked in #626"
