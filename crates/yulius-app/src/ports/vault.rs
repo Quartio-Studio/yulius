@@ -173,8 +173,8 @@ pub trait VaultStore: Send + Sync {
     async fn vault_delete(&self, id: &str) -> AppResult<bool>;
     /// One secret.
     async fn vault_get(&self, id: &str) -> AppResult<Option<VaultSecretRecord>>;
-    /// Team secrets by name.
-    async fn vault_team(&self) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Team secrets by name: those of `sandbox` and the team-wide ones, or every one (`None`).
+    async fn vault_team(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
     /// Agent secrets that apply to `sandbox` (its own and the instance-wide ones), or every
     /// agent secret when `None`.
     async fn vault_agent(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;

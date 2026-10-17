@@ -1,10 +1,13 @@
-//! Team secrets (VLT-001..002, SPEC-040): a title, a value and notes; flat access for every
-//! member, reveals behind a two-factor unlock, everything audited.
+//! Team secrets (VLT-001..002, SPEC-040): a title, a value and notes; reveals behind a two-factor
+//! unlock, everything audited. A team secret belongs to one sandbox, for the people who can view
+//! it, or is team-wide, for every member (SPEC-216 SCO-001/002).
 
 use yulius_contracts::api::secrets::{
     ReauthStatus, RevealRequest, SecretReveal, TeamSecretInput, TeamSecretPatch, TeamSecretView,
     TotpCode, VaultActivity,
 };
+use yulius_domain::ids::SandboxId;
+use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
 use yulius_domain::vault::totp::{code_from_hmac, counter, parse_otp, remaining_seconds};
 use yulius_domain::vault::{REAUTH_WINDOW_MS, ROTATE_AFTER_MS, reauth_fresh};
@@ -99,6 +102,11 @@ impl App {
         Ok(TeamSecretView {
             id: record.id.clone(),
             title: record.name.clone(),
+            scope: if record.sandbox_id.is_some() {
+                "sandbox".into()
+            } else {
+                "instance".into()
+            },
             has_value: payload.value.is_some(),
             has_notes: payload.notes.is_some(),
             created_by: self.login_of_id(&record.created_by).await,
@@ -117,37 +125,89 @@ impl App {
         }
     }
 
-    async fn team_record(&self, id: &str) -> AppResult<VaultSecretRecord> {
-        self.deps
+    /// A team secret the caller may see: a sandbox's one needs view access to that sandbox
+    /// (otherwise it answers like a missing one).
+    async fn team_record(&self, ctx: &AuthContext, id: &str) -> AppResult<VaultSecretRecord> {
+        let record = self
+            .deps
             .store
             .vault_get(id)
             .await?
             .filter(|r| r.section == VaultSection::Team)
-            .ok_or(AppError::NotFound)
+            .ok_or(AppError::NotFound)?;
+        if let Some(sandbox) = &record.sandbox_id {
+            self.require(&ctx.user, sandbox, Action::View).await?;
+        }
+        Ok(record)
     }
 
-    /// `GET /api/team-secrets`: every member sees every team secret (titles; the value and the
-    /// notes only flagged).
+    /// `GET /api/team-secrets`: the team-wide secrets, which every member sees (titles; the
+    /// value and the notes only flagged).
     ///
     /// # Errors
     /// Store or decryption failures.
     pub async fn team_secrets(&self, _ctx: &AuthContext) -> AppResult<Vec<TeamSecretView>> {
         let mut out = Vec::new();
-        for record in self.deps.store.vault_team().await? {
+        for record in self.deps.store.vault_team(None).await? {
+            if record.sandbox_id.is_none() {
+                out.push(self.team_view(&record).await?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `GET /api/sandboxes/{sid}/team-secrets`: the sandbox's team secrets and the team-wide
+    /// ones. Needs view access to the sandbox.
+    ///
+    /// # Errors
+    /// `NotFound` for invisible sandboxes; store or decryption failures.
+    pub async fn sandbox_team_secrets(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+    ) -> AppResult<Vec<TeamSecretView>> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sid, Action::View).await?;
+        let mut out = Vec::new();
+        for record in self.deps.store.vault_team(Some(&sid)).await? {
             out.push(self.team_view(&record).await?);
         }
         Ok(out)
     }
 
-    /// `POST /api/team-secrets`.
+    /// `POST /api/sandboxes/{sid}/team-secrets` (`sandbox`; `scope` defaults to it) and
+    /// `POST /api/team-secrets` (team-wide).
     ///
     /// # Errors
-    /// `Invalid` input; store failures.
+    /// `NotFound` for invisible sandboxes, `Invalid` input; store failures.
     pub async fn create_team_secret(
         &self,
         ctx: &AuthContext,
+        sandbox: Option<&str>,
         input: &TeamSecretInput,
     ) -> AppResult<TeamSecretView> {
+        let sid = match sandbox {
+            Some(text) => {
+                let sid = SandboxId::parse(text).map_err(|_| AppError::NotFound)?;
+                self.require(&ctx.user, &sid, Action::View).await?;
+                Some(sid)
+            }
+            None => None,
+        };
+        let scope = match (input.scope.as_deref(), sid) {
+            (Some("instance"), _) | (None, None) => None,
+            (Some("sandbox") | None, Some(sid)) => Some(sid),
+            (Some("sandbox"), None) => {
+                return Err(AppError::Invalid(
+                    "a sandbox's team secret is added under that sandbox".into(),
+                ));
+            }
+            _ => {
+                return Err(AppError::Invalid(
+                    "scope must be sandbox or instance".into(),
+                ));
+            }
+        };
         let payload = TeamPayload {
             value: field(input.value.as_deref(), "value", false)?,
             notes: field(input.notes.as_deref(), "notes", false)?,
@@ -157,7 +217,7 @@ impl App {
         let record = VaultSecretRecord {
             id: id.clone(),
             section: VaultSection::Team,
-            sandbox_id: None,
+            sandbox_id: scope.clone(),
             name: title(&input.title)?,
             description: String::new(),
             hosts: Vec::new(),
@@ -183,7 +243,15 @@ impl App {
             &Self::vault_actor(ctx),
             "vault.team.create",
             Some(&id),
-            &record.name,
+            &format!(
+                "{} ({})",
+                record.name,
+                if scope.is_some() {
+                    "this sandbox"
+                } else {
+                    "team-wide"
+                }
+            ),
         )
         .await?;
         self.team_view(&record).await
@@ -200,7 +268,7 @@ impl App {
         id: &str,
         patch: &TeamSecretPatch,
     ) -> AppResult<TeamSecretView> {
-        let mut record = self.team_record(id).await?;
+        let mut record = self.team_record(ctx, id).await?;
         let mut payload: TeamPayload = self.open_payload(&record)?;
         let mut changed: Vec<&str> = Vec::new();
         let mut value_changed = false;
@@ -244,7 +312,7 @@ impl App {
     /// # Errors
     /// `NotFound`, store failures.
     pub async fn delete_team_secret(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
-        let record = self.team_record(id).await?;
+        let record = self.team_record(ctx, id).await?;
         if !self.deps.store.vault_delete(id).await? {
             return Err(AppError::NotFound);
         }
@@ -390,7 +458,7 @@ impl App {
         request: &RevealRequest,
     ) -> AppResult<Revealed<SecretReveal>> {
         let (purpose, wanted) = reveal_request(request)?;
-        let record = self.team_record(id).await?;
+        let record = self.team_record(ctx, id).await?;
         if let Some(status) = self.fresh_or_status(ctx).await? {
             return Ok(Revealed::ReauthRequired(status));
         }
@@ -426,10 +494,10 @@ impl App {
         })
     }
 
-    /// `GET /api/secrets/activity`: the vault's audit trail, newest first. Team entries and
-    /// re-authentications are shown to every member; an agent secret's entries only to members
-    /// who can view its sandbox (instance-wide and deleted ones: instance administrators and
-    /// members who can view a sandbox, respectively instance administrators).
+    /// `GET /api/secrets/activity`: the vault's audit trail, newest first. Re-authentications
+    /// and team-wide secrets' entries are shown to every member; a sandbox's secret's entries
+    /// (team or agent) only to members who can view that sandbox; an instance-wide agent
+    /// secret's to every member, and a deleted secret's only to instance administrators.
     ///
     /// # Errors
     /// Store failures.
@@ -440,19 +508,19 @@ impl App {
     ) -> AppResult<Vec<VaultActivity>> {
         use std::collections::HashMap;
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
-        let agents: HashMap<String, Option<yulius_domain::ids::SandboxId>> = self
-            .deps
-            .store
+        let store = &self.deps.store;
+        let secrets: HashMap<String, Option<SandboxId>> = store
             .vault_agent(None)
             .await?
             .into_iter()
+            .chain(store.vault_team(None).await?)
             .map(|r| (r.id, r.sandbox_id))
             .collect();
         let mut visible: HashMap<String, bool> = HashMap::new();
         let mut out = Vec::new();
         for entry in self.deps.store.vault_audit(limit.clamp(1, 500)).await? {
-            if entry.action.starts_with("vault.agent.") {
-                let allowed = match entry.target.as_ref().map(|t| agents.get(t)) {
+            if entry.action.starts_with("vault.agent.") || entry.action.starts_with("vault.team.") {
+                let allowed = match entry.target.as_ref().map(|t| secrets.get(t)) {
                     Some(Some(Some(sandbox))) => match visible.get(sandbox.as_str()) {
                         Some(known) => *known,
                         None => {

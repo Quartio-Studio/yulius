@@ -205,14 +205,17 @@ impl VaultStore for SqliteStore {
         .await
     }
 
-    async fn vault_team(&self) -> AppResult<Vec<VaultSecretRecord>> {
-        self.call(|c| {
+    async fn vault_team(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>> {
+        let sandbox = sandbox.map(|s| s.as_str().to_owned());
+        self.call(move |c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' ORDER BY name COLLATE NOCASE, created_at"
+                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' \
+                     AND (?1 IS NULL OR sandbox_id IS NULL OR sandbox_id = ?1) \
+                     ORDER BY name COLLATE NOCASE, created_at"
                 ))
                 .map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
+            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
@@ -839,7 +842,7 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["e".to_owned(), "a".to_owned()]);
         assert_eq!(store.vault_agent(None).await?.len(), 3);
-        assert_eq!(store.vault_team().await?.len(), 2);
+        assert_eq!(store.vault_team(None).await?.len(), 2);
         Ok(())
     }
 

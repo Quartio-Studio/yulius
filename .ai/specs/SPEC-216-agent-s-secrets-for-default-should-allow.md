@@ -101,7 +101,7 @@ Two changes to the vault, one request:
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Agents bind the hosts of a self-set-up agent secret, opt-out at creation and in Edit
 - [x] Production deploys get a self-set-up agent secret without a person's allowance
-- [ ] Team secrets belong to a sandbox or are team-wide, with sandbox access
+- [x] Team secrets belong to a sandbox or are team-wide, with sandbox access
 - [ ] Existing team-wide secrets are assigned to every sandbox once
 - [ ] The Secrets page offers the option and the scopes, the mock and e2e follow
 - [ ] The CLI imports team secrets into a sandbox or team-wide

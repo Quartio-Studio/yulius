@@ -1089,6 +1089,14 @@ async fn add_agent_secret(
     .await
 }
 
+async fn get_as(
+    w: &World,
+    path: &str,
+    creds: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(&w.h.router, Method::GET, path, None, creds).await
+}
+
 /// A browser session for a seeded user (signed in now).
 async fn browser_session(
     h: &support::Harness,
@@ -1113,6 +1121,111 @@ async fn browser_session(
         csrf: Some(format!("csrf-of-{user}")),
         bearer: None,
     })
+}
+
+/// SPEC-216 SCO-001/002, AC-5: a team secret belongs to a sandbox (the default) or is team-wide;
+/// a sandbox's one is seen and changed only by people who can view that sandbox.
+#[tokio::test]
+async fn team_secrets_belong_to_a_sandbox_unless_team_wide() -> TestResult {
+    let w = world().await?;
+    let titles = |body: &Value| -> Vec<String> {
+        body.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s["title"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mine = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "App Gmail", "value": MAIL_PASSWORD})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(mine.status, StatusCode::CREATED, "{}", mine.body);
+    assert_eq!(mine.body["scope"], "sandbox");
+    let id = mine.body["id"].as_str().ok_or("id")?.to_owned();
+    let wide = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "Office wifi", "value": "wifi-pass-1234", "scope": "instance"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(wide.status, StatusCode::CREATED, "{}", wide.body);
+    assert_eq!(wide.body["scope"], "instance");
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "Bad", "scope": "galaxy"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let s1 = get_as(&w, "/api/sandboxes/s1/team-secrets", &w.reader).await?;
+    assert_eq!(
+        titles(&s1.body),
+        vec!["App Gmail", "Office wifi"],
+        "{}",
+        s1.body
+    );
+    let s2 = get_as(&w, "/api/sandboxes/s2/team-secrets", &w.writer).await?;
+    assert_eq!(titles(&s2.body), vec!["Office wifi"], "{}", s2.body);
+    let all = get_as(&w, "/api/team-secrets", &w.outsider).await?;
+    assert_eq!(titles(&all.body), vec!["Office wifi"], "{}", all.body);
+    let hidden = get_as(&w, "/api/sandboxes/s1/team-secrets", &w.outsider).await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+
+    // Someone who cannot view s1 finds nothing to change, delete or reveal.
+    let path = format!("/api/team-secrets/{id}");
+    let rename = Some(json!({"title": "Renamed"}));
+    let edit = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        rename.clone(),
+        &w.outsider,
+    )
+    .await?;
+    assert_eq!(edit.status, StatusCode::NOT_FOUND);
+    let reveal = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{id}/reveal"),
+        Some(json!({})),
+        &w.outsider,
+    )
+    .await?;
+    assert_eq!(reveal.status, StatusCode::NOT_FOUND, "{}", reveal.body);
+    let gone = call(&w.h.router, Method::DELETE, &path, None, &w.outsider).await?;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    // People who can view it change it, as members change team secrets.
+    let renamed = call(&w.h.router, Method::PATCH, &path, rename, &w.reader).await?;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["scope"], "sandbox");
+
+    // Its activity is theirs only; team-wide activity stays everyone's.
+    let targets = |body: &Value| -> Vec<String> {
+        body.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e["secret_id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let wide_id = wide.body["id"].as_str().ok_or("id")?.to_owned();
+    let outsider = targets(&get_as(&w, "/api/secrets/activity", &w.outsider).await?.body);
+    assert!(!outsider.contains(&id), "{outsider:?}");
+    assert!(outsider.contains(&wide_id), "{outsider:?}");
+    assert!(targets(&get_as(&w, "/api/secrets/activity", &w.reader).await?.body).contains(&id));
+    Ok(())
 }
 
 /// SPEC-040 R3/R7 (second review): an older agent secret's stored user name and TOTP seed stay

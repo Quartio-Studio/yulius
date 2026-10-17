@@ -11,6 +11,9 @@ pub struct TeamSecretView {
     pub id: String,
     /// Title, e.g. "Shared Gmail".
     pub title: String,
+    /// `sandbox` (one sandbox's people) or `instance` (team-wide) (SPEC-216).
+    #[serde(default)]
+    pub scope: String,
     /// Whether a value is stored.
     pub has_value: bool,
     /// Whether notes are stored.
@@ -31,6 +34,10 @@ pub struct TeamSecretView {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamSecretInput {
+    /// `sandbox` (the default under a sandbox) or `instance` (team-wide, the only one without a
+    /// sandbox) (SPEC-216 SCO-001).
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Title.
     pub title: String,
     /// The secret value (a password, a key, a recovery code…).

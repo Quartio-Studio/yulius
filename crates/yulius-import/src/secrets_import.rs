@@ -518,6 +518,7 @@ fn agent_value(entry: &DotenvEntry) -> Class {
 
 fn send_team(client: &VaultClient, entry: &DotenvEntry, value: &Secret) -> Result<(), ApiError> {
     let mut input = TeamSecretInput {
+        scope: None,
         title: entry.name.clone(),
         value: Some(value.expose().to_owned()),
         notes: (!entry.comment.is_empty()).then(|| entry.comment.clone()),
