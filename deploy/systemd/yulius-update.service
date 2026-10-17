@@ -31,4 +31,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
+# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list
+# and the needrestart rule.
+ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
 UMask=0022

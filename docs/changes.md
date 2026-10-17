@@ -4,6 +4,25 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-17
+
+- Docker in sandboxes works out of the box (SPEC-203, ADR-0162, task #188). `sudo yulius host
+  setup` is now the install path after the binary. It checks and fixes, in one order: a
+  needrestart rule, written before any install, so installs never restart `yulius.service`; Git
+  and the isolation packages; Docker Engine with buildx and compose from Docker's repository; the
+  host's own Docker units stopped, unless they run containers; the kernel modules, persisted for
+  every boot; the service user and its ids; the unit's delegation, by drop-in; a root-owned
+  binary; and a base build that keeps live bases. It ends with the contained doctor and the smoke
+  test, and a second run changes nothing. Every update then runs the new version's `yulius host
+  check`, which applies only safe fixes, and a regression shows in the update's outcome and on a
+  new Sandbox Docker card in Settings → Instance. The card gives the doctor's verdict, when a
+  rebuilt base will be ready, the sandboxes running their own `docker.io` with the way back, and
+  a Run smoke check button with each check as it ends. `yulius doctor` now names a writable
+  binary and a base without `dockerd`, and without `--contained` it says that flag adds the
+  check. A real fresh install in an Ubuntu 24.04 container found two bugs, both fixed: Docker's
+  packages had no install candidate (apt's lists were read before the source was added), and a
+  unit systemd did not report would have been rewritten.
+
 ## 2026-10-16
 
 - The two documented Docker operator commands are safe (SPEC-202, ADR-0161, task #187, fixes #617

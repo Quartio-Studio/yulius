@@ -526,6 +526,26 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// Takes the lock of base builds under `dir` (`.build.lock`), waiting for the build that holds
+/// it: the server's build, a hand-run one and `yulius host setup`'s may overlap on a running
+/// instance, and a second build would remove the first one's partial tree and reuse its id
+/// (SPEC-203). Released when the file is dropped (also when the process dies).
+///
+/// # Errors
+/// The lock file cannot be opened or locked.
+pub fn lock_builds(dir: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(dir.join(".build.lock"))?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
+    Ok(file)
+}
+
 /// Builds a new base (see the module docs) and makes it current.
 ///
 /// # Errors
@@ -533,6 +553,9 @@ fn now_ms() -> i64 {
 pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
     std::fs::create_dir_all(&bases.dir).map_err(|e| e.to_string())?;
     let _ = std::fs::set_permissions(&bases.dir, std::fs::Permissions::from_mode(0o700));
+    // One build at a time: a partial tree left now is a dead build's.
+    let asked = now_ms();
+    let _lock = lock_builds(&bases.dir).map_err(|e| format!("the build lock: {e}"))?;
     for entry in std::fs::read_dir(&bases.dir)
         .into_iter()
         .flatten()
@@ -547,6 +570,16 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
         }
     }
     let fingerprint = fingerprint(&config.host_root, &config.sudo_shim);
+    // A build this one waited for may have made the same base meanwhile (review of SPEC-203).
+    // Only that one is reused: a base from before the call is rebuilt, since the fingerprint
+    // does not see every file and an operator may be replacing a damaged base.
+    if let Some(current) = bases
+        .current()
+        .filter(|c| c.fingerprint == fingerprint && c.built_at_ms >= asked)
+    {
+        tracing::info!(base = %current.id, "the sandbox base already matches the host");
+        return Ok(current);
+    }
     let id = bases.next_id();
     let partial = bases.dir.join(format!(".building-{id}"));
     let (mut owners, stats) =
@@ -1015,6 +1048,142 @@ mod tests {
             .map(|id| bases.path(id).is_dir())
             .collect();
         assert_eq!(left, [false, true, false, true, true]);
+        Ok(())
+    }
+
+    /// SPEC-203 (review): the setup's build and the server's may overlap on a running instance.
+    /// A build waits for the one running, and never removes its partial tree meanwhile.
+    #[test]
+    fn a_build_waits_for_the_running_one() -> TestResult {
+        let host = host()?;
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        std::fs::create_dir_all(&bases.dir)?;
+        let running = bases.dir.join(".building-base-1");
+        std::fs::create_dir_all(&running)?;
+        std::fs::write(running.join("first-build"), "")?;
+        let lock = lock_builds(&bases.dir)?;
+        let config = BuildConfig {
+            host_root: host.path().to_path_buf(),
+            data_dir: data.path().to_path_buf(),
+            sudo_shim: "#!/bin/sh\n".into(),
+            mapper: Mapper {
+                bwrap: "/nonexistent/bwrap".into(),
+                newuidmap: "/nonexistent/newuidmap".into(),
+                newgidmap: "/nonexistent/newgidmap".into(),
+                uid: yulius_contracts::sandbox::IdMap {
+                    host: 1,
+                    sub_start: 100_000,
+                    count: 65_536,
+                },
+                gid: yulius_contracts::sandbox::IdMap {
+                    host: 1,
+                    sub_start: 100_000,
+                    count: 65_536,
+                },
+            },
+            exe: "/nonexistent/yulius".into(),
+        };
+        let (done, ended) = std::sync::mpsc::channel();
+        let waiting = bases.clone();
+        let builder = std::thread::spawn(move || {
+            let _ = done.send(build(&config, &waiting).map(|b| b.id));
+        });
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "the second build waits"
+        );
+        assert!(
+            running.join("first-build").is_file(),
+            "the running build's tree is kept"
+        );
+        drop(lock);
+        let _result = ended.recv_timeout(std::time::Duration::from_secs(60))?;
+        // The waiting build removed the dead build's tree (and then made its own, which the
+        // fake mapper stopped).
+        assert!(
+            !running.join("first-build").exists(),
+            "a stale partial tree goes"
+        );
+        builder.join().map_err(|_| "builder panicked")?;
+        Ok(())
+    }
+
+    /// Review rounds 2 and 3 of SPEC-203: a build that waited for another one, which made a base
+    /// matching the host meanwhile, builds nothing; a base built before the call is rebuilt even
+    /// when its fingerprint matches (the fingerprint does not see every file, and an operator may
+    /// replace a damaged base).
+    #[test]
+    fn only_a_build_finished_during_the_wait_is_reused() -> TestResult {
+        let host = host()?;
+        let data = tempfile::tempdir()?;
+        let bases = Bases::new(data.path());
+        std::fs::create_dir_all(bases.path("base-1"))?;
+        let shim = "#!/bin/sh\n";
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-1".into(),
+                fingerprint: fingerprint(host.path(), shim),
+                built_at_ms: 1,
+                format: BASE_FORMAT,
+            },
+        )?;
+        let unusable = Mapper {
+            bwrap: "/nonexistent/bwrap".into(),
+            newuidmap: "/nonexistent/newuidmap".into(),
+            newgidmap: "/nonexistent/newgidmap".into(),
+            uid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+            gid: yulius_contracts::sandbox::IdMap {
+                host: 1,
+                sub_start: 100_000,
+                count: 65_536,
+            },
+        };
+        let config = BuildConfig {
+            host_root: host.path().to_path_buf(),
+            data_dir: data.path().to_path_buf(),
+            sudo_shim: shim.into(),
+            mapper: unusable,
+            exe: "/nonexistent/yulius".into(),
+        };
+        // Built before the call: rebuilt (here the fake mapper stops it after the copy).
+        assert!(build(&config, &bases).is_err());
+        assert!(bases.dir.join(".building-base-2").is_dir());
+
+        // Finished while this build waited: reused.
+        let lock = lock_builds(&bases.dir)?;
+        let (done, ended) = std::sync::mpsc::channel();
+        let waiting = bases.clone();
+        let waiting_config = config.clone();
+        let builder = std::thread::spawn(move || {
+            let _ = done.send(build(&waiting_config, &waiting).map(|b| b.id));
+        });
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+        std::fs::create_dir_all(bases.path("base-2"))?;
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-2".into(),
+                fingerprint: fingerprint(host.path(), shim),
+                built_at_ms: now_ms(),
+                format: BASE_FORMAT,
+            },
+        )?;
+        drop(lock);
+        let reused = ended.recv_timeout(std::time::Duration::from_secs(60))?;
+        assert_eq!(reused, Ok("base-2".to_owned()));
+        builder.join().map_err(|_| "builder panicked")?;
         Ok(())
     }
 }

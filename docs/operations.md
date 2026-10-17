@@ -10,12 +10,13 @@ been performed or verified** as part of the implementation work.
 | Component | Needed for | Notes |
 | --- | --- | --- |
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
-| `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
+| `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
+| Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
-| bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
-| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
-| `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
+| bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
+| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
+| `slirp4netns` | sandbox egress (isolation) | `yulius host setup` installs it. |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
 | `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
@@ -28,24 +29,83 @@ from the sandbox's own system layer, a copy-on-write view of the host system). I
 default `~/.local/bin/claude` is invisible to contained runs unless its directories are added with
 `--contained-readonly <dir>[:<dir>…]` (`YULIUS_CONTAINED_READONLY`).
 
-Run `yulius doctor --data-dir /var/lib/yulius [--contained]` to check all of these, the data directory
+`yulius host setup` (§2) installs and fixes what it can of these. Run `yulius doctor --data-dir
+/var/lib/yulius [--contained]` to check all of them, the data directory
 permissions and the session socket path budget (the data directory path must be short enough that
 `<data>/logins/<uuid>/pty.sock` fits the 103-byte Unix socket path limit).
 
 ## 2. Build and install
 
+Two commands on a fresh Ubuntu 24.04 (or Debian) host: install the binary, then run the host
+setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+
 ```sh
 cargo build --release -p yulius            # from a checkout; output: target/release/yulius
 sudo install -m 0755 target/release/yulius /usr/local/bin/yulius
-sudo useradd --system --create-home --home-dir /var/lib/yulius --shell /usr/sbin/nologin yulius
-sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained
+sudo yulius host setup --public-url https://yulius.example.com
 ```
+
+`yulius host setup` prints one line per item, `ok` (left alone), `changed`, `manual` (with the
+reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
+
+1. **needrestart**: `/etc/needrestart/conf.d/yulius.conf` keeps package installs from restarting
+   `yulius.service`, written before any install. A restart outside an update pauses no task.
+2. **host packages**: `git`, `uidmap`, `slirp4netns`, `bubblewrap`.
+3. **Docker Engine**: `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin` and
+   `docker-compose-plugin` from Docker's repository. The source goes to
+   `/etc/apt/sources.list.d/docker.sources` and the key to `/etc/apt/keyrings/docker.asc`, unless
+   a source already names `download.docker.com`. A host with Ubuntu's `docker.io` keeps it and
+   only gets `docker-buildx` and `docker-compose-v2`. A broken third-party apt source does not
+   stop the install.
+4. **host Docker units**: `docker.socket`, `docker.service` and `containerd.service` are
+   disabled and stopped; sandboxes run their own engines. A host Docker or containerd that runs
+   containers (`docker ps`, and `ctr` tasks outside Docker's namespace), or whose containers
+   cannot be counted, is left running, and the item says so (manual).
+5. **kernel modules**: `/etc/modules-load.d/yulius-docker.conf` lists the engine's modules for
+   every boot, and missing ones are loaded now.
+6. **service user**: the data directory's owner, else `--user` (default `yulius`), created as a
+   system user with the data directory (mode 0700) as its home.
+7. **subordinate ids**: a range of 65,536 ids after every range in use.
+8. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
+   Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
+   `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
+   it is manual: run it when it suits. A unit file systemd has not loaded is never overwritten.
+9. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
+   write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
+10. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
+    writable by root alone. A binary in a directory the service user or others may write fails
+    instead: fixing the file would not stop it being replaced.
+11. **sandbox base**: built now, as the service user, when there is none, when it lacks the
+    host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
+    ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
+    safe while sandboxes run.
+12. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
+    contained doctor as the service user; and the Docker smoke test (`--no-smoke` skips it; it
+    needs Docker Hub).
+
+Running it again changes nothing ("nothing to change"); it is safe on a running instance.
+`--dry-run` prints what it would change and changes nothing. With a unit named other than
+`yulius.service`, pass `--service <name>` (the update helper passes its `YULIUS_UPDATE_SERVICE`).
+A setup or `yulius host check` run keeps its report in `/var/lib/yulius-update/host-check.json`
+when that directory exists, so Settings → Instance shows the latest root check. A helper with
+another `YULIUS_UPDATE_STATE` needs `--update-state <dir>`.
+
+**Still manual**, and why:
+
+- the reverse proxy and TLS (§4): they depend on your domain;
+- Claude Code: it is installed system-wide, and its version is yours to choose (§1);
+- the GitHub CLI: it comes from GitHub's own repository (§1), and the doctor warns without it;
+- the sandbox browser's packages (Chrome, `xvfb`, `ffmpeg`, fonts): optional;
+- the update helper (§8): it needs root's Rust toolchain and this server's values.
 
 The agent CLIs must be installed for (and logged-in state is never taken from) the `yulius` user:
 Claude subscriptions are added inside Yulius (user menu → Administration → Subscriptions), not with the CLIs' own
 `login` on the VM.
 
 ## 3. systemd unit
+
+`yulius host setup` writes this unit when there is none (§2), and gives an existing one
+`Delegate=yes`, `DelegateSubgroup=server` and `KillMode=process` by a drop-in.
 
 `KillMode=process` is required: each agent session and each user terminal (sandbox shell) runs in
 its own detached `yulius ptyhost` process so that they survive a restart or upgrade of the server
@@ -415,21 +475,11 @@ shells and CI jobs join it. A sandbox gets:
   Superagent, a Shell or a CI job, also in sessions started before, and stopped once idle. See
   "Docker in sandboxes" below.
 
-**Install once** (as root):
-
-```sh
-apt install uidmap slirp4netns bubblewrap gh
-# A free subordinate range of 65,536 ids for the service user (check /etc/subuid and /etc/subgid
-# for ranges already used; on the reference VM 100000–231071 are taken):
-usermod --add-subuids 231072-296607 --add-subgids 231072-296607 yulius
-# Delegate=yes and DelegateSubgroup=server in the unit (§3), then:
-systemctl daemon-reload
-# Build the first base before restarting, so new sessions are isolated at once (a few minutes,
-# about 6 GB under <data>/system):
-sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius
-sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained
-systemctl restart yulius
-```
+**Install once** (as root): `sudo yulius host setup` (§2). It installs the packages, gives the
+service user a subordinate range, gives the unit its delegation, and builds the first base (a
+few minutes, about 6 GB under `<data>/system`). Then, if it added the drop-in, restart once:
+`systemctl restart yulius`. Install `gh` from GitHub's repository (§1) before the setup, so
+the base copies it.
 
 **A build by hand** (`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`, for
 example after installing a package on the host) is safe while sandboxes run: it keeps the new
@@ -437,7 +487,9 @@ current base, every base named by `--keep` and every base a live holder has moun
 `<data>/runtime/sandboxes/*/host.json`, [ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)).
 Running sandboxes stay on their base until their holder restarts (after the idle time, or a
 minute without runs once superseded); a later build removes the base once no holder uses it. Run
-it as the service user (or root), which can see the holders.
+it as the service user (or root), which can see the holders. Builds take turns under a lock
+(`<data>/system/.build.lock`): a hand-run build, the setup's and the server's wait for each
+other instead of overlapping.
 
 **Settings** (environment of the unit):
 
@@ -486,6 +538,11 @@ from a sandbox, and no daemon needs to run on the host.
   After an update the server adopts the holders and gives each a front. Within one upkeep tick
   (30 s) it moves the Docker directory into sessions that started without it, so nothing needs a
   restart or a new session.
+- **Settings → Instance** (superadmin) has a **Sandbox Docker** card. It shows whether sandboxes
+  get Docker, why not and the fix (the doctor's words); the base being rebuilt and when it will
+  be ready; the sandboxes on their own Docker; and the last update's re-check. **Run smoke check**
+  runs the smoke test below from the server, as its child in its delegated cgroup. One runs at a
+  time, bounded to 40 minutes, and each check appears as it ends.
 - **Verify on the host** (as root, after a deploy):
 
   ```sh
@@ -509,20 +566,35 @@ from a sandbox, and no daemon needs to run on the host.
   Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
   `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
   port published in the sandbox's port range is relayed like a dev server's.
-- **Prerequisites.**
+- **Prerequisites.** `sudo yulius host setup` (§2) brings all of them and proves them with the
+  smoke test. Every update re-checks them (§8), and a reboot keeps them (the modules file, the
+  disabled units, the drop-ins and the base are on disk).
   - `dockerd` in the sandbox's system
     ([ADR-0160](decisions/0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md)).
-    Docker installed on the host (`docker-ce` with `docker-buildx-plugin` and
-    `docker-compose-plugin`) gives it to every new base, which copies `dockerd`, `containerd`,
-    `runc`, `docker-proxy` and the CLI plugins. Without it, an agent installs it in its own
-    sandbox (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`) and the front
-    starts an engine at the next tick (30 s). Ubuntu's `docker.io` alone has no buildx or compose
-    (SPEC-201); the same command adds a missing plugin to a sandbox whose engine is Ubuntu's. On a
-    base copied from a `docker-ce` host apt refuses it (`containerd.io` conflicts with
-    `containerd`) and removes nothing, so a missing plugin there is
-    `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`. A sandbox keeps its
-    base's `dockerd` until its holder next starts on a newer base (after the idle time); one
-    installed in the sandbox stays. The host does not need to run its own Docker daemon.
+    Docker on the host (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`)
+    gives it to every new base, which copies `dockerd`, `containerd`, `runc`, `docker-proxy` and
+    the CLI plugins. The host's own daemon is not needed, and the setup stops it. While the host
+    has `dockerd` and the current base has none, the server checks the host at every tick, so
+    the rebuild starts 10 minutes after the host last changed (Settings → Instance says when it
+    will be ready); `sudo yulius host setup` builds it at once.
+    - Without Docker on the host, an agent installs it in its own sandbox
+      (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`), and the front starts
+      an engine at the next tick (30 s). Ubuntu's `docker.io` alone has no buildx or compose
+      (SPEC-201); the same command adds a missing plugin to a sandbox whose engine is Ubuntu's.
+    - On a base copied from a `docker-ce` host, apt refuses that command (`containerd.io`
+      conflicts with `containerd`) and removes nothing. A missing plugin there is
+      `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`.
+    - A sandbox keeps its base's `dockerd` until its holder next starts on a newer base (after
+      the idle time). One installed in the sandbox stays.
+  - **A sandbox on its own `docker.io`.** Docker an agent installed in a sandbox is kept: Yulius
+    removes nothing a sandbox installed. Ubuntu's `docker.io` puts `dockerd` in `/usr/sbin`, which
+    comes before the base's `/usr/bin/dockerd`, so that sandbox runs its own, older engine. The
+    product sandbox ran 29.1.3 while the base had 29.9.1. `yulius doctor` ("sandbox own Docker")
+    and Settings → Instance list such sandboxes. To use Docker's packages, as the base does, run
+    in that sandbox `sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+    docker-buildx-plugin docker-compose-plugin`: apt replaces `docker.io`, and the engine switches
+    when it next starts, after it was idle. Never `sudo apt-get remove docker.io`: the removal's
+    whiteouts hide the base's files at the same paths, and that sandbox loses Docker.
   - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
     in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
     and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
@@ -531,18 +603,16 @@ from a sandbox, and no daemon needs to run on the host.
     …/sandboxes/<sandbox>/engine: No such file or directory" after every update, until a new run
     prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
-    nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
+    nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`,
+    listed in `/etc/modules-load.d/yulius-docker.conf` so that they load at every boot.
   - The `yulius` executable owned by root and writable by no group or other, as §2 installs it.
     The engine's read-only binds are not locked, so an executable the service user owns or may
     write could be remounted and rewritten. With one, sandboxes get no engine.
 
-  `yulius doctor` checks the first three ("sandbox Docker"):
-
-  ```sh
-  printf '%s\n' overlay bridge veth nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack \
-    xt_MASQUERADE xt_addrtype xt_conntrack > /etc/modules-load.d/yulius-docker.conf
-  systemctl restart systemd-modules-load
-  ```
+  `yulius doctor` checks all of them ("sandbox Docker", the same words as Settings → Instance).
+  Without `--contained` its "sandbox Docker" line names that flag (`yulius.service` sets
+  `YULIUS_CONTAINED=true`); run it as the service user: `sudo -u yulius yulius doctor
+  --contained`.
 
 - **Disk.** Images, containers and volumes live in `<data>/sysroots/<sandbox>/docker` and count
   toward the sandbox's soft quota as "containers". This is a lower bound: directories that a
@@ -958,6 +1028,13 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    `/var/lib/yulius-update/backups/<run>/`, installs the new binary, starts the service and waits
    up to 2 minutes until `/internal/version` reports the new commit. If it does not, it stops the
    service, restores the previous binary **and database**, and starts them again ("rolled back").
+   Once the new version is healthy, the helper runs **its** `yulius host check --json` (at most 2
+   minutes; SPEC-203). That re-checks what sandboxes need for Docker, with only safe, idempotent
+   fixes: the needrestart rule, the host's own Docker units, the modules file and loading, the
+   binary's owner. A failed item, or a "sandbox Docker" that does not hold, is a regression. It
+   is shown in the update's outcome ("Sandboxes may have lost Docker with this update", with the
+   reasons) and on the Sandbox Docker card, never only in a log. A regression does not roll the
+   update back. The report is kept in `/var/lib/yulius-update/host-check.json`.
 4. **Resume**: the server that started releases and thaws the tasks one by one; they go on as if
    nothing happened, except the tasks a person paused, which stay paused until they resume them.
    A server that starts with no update open thaws any run group left frozen but those.
@@ -1020,8 +1097,15 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
+# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list
+# and the needrestart rule.
+ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
 UMask=0022
 ```
+
+A helper unit installed before SPEC-203 lacks the second `ReadWritePaths` line. `yulius host
+setup` adds it with a drop-in (`yulius-update.service.d/10-yulius-host-check.conf`), so the unit's
+local edits stay.
 
 No sudo rule or polkit rule is needed: the path unit is the only way in, and it starts a fixed
 command. The build needs Rust through rustup for root (the checkout's `rust-toolchain.toml` picks
@@ -1056,6 +1140,32 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 --release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
 
 ### Notes for specific upgrades
+
+- Upgrading to the host setup (SPEC-203, task #188, ADR-0162): no migration. The helper that
+  installs this version is the previous one, so this update is not re-checked; the next ones are.
+  On the reference VM, after promotion to `main` and **Update now**, as root:
+
+  ```sh
+  curl -s http://127.0.0.1:8081/internal/version     # the new commit
+  yulius host setup --dry-run                        # what it would change
+  yulius host setup
+  ```
+
+  Expected: `ok` for Docker Engine (docker-ce 29.9.1 from `docker.list`), the kernel modules
+  file, the service user, its subordinate ids (set by hand) and the binary. Expected
+  `changed`: the needrestart rule (new), the update helper's drop-in (new), and the host Docker
+  units if `docker.socket` is still active (`Disabling 'docker.service', but its triggering units
+  are still active` on 2026-10-16). Also `changed`: the sandbox base, if the host changed since
+  `base-9`. Then "sandbox Docker" `ok`, the contained doctor, and the smoke test's lines ending
+  `sandboxes get Docker on this host`. A second `yulius host setup` prints `nothing to change`.
+  Then:
+  1. Settings → Instance → Sandbox Docker: "sandboxes get Docker". The product sandbox is listed
+     on its own `docker.io` with the way back (it ran 29.1.3).
+  2. **Run smoke check** on that card: each check appears, and it ends "Smoke check passed".
+  3. Reboot once (a kernel upgrade is pending), then `lsmod | grep -E '^(overlay|veth|xt_MASQUERADE)'`
+     lists them; `systemctl is-enabled docker.socket docker.service containerd.service` says
+     `disabled`; `yulius host setup` prints `nothing to change`; and in a sandbox,
+     `docker run --rm hello-world` works.
 
 - Upgrading to CD (deployment) (SPEC-134, task #113): migration 0027 adds `cd_runs` and
   `tasks.needs_you`. Nothing deploys until a project defines `[cd.dev]` or `[cd.prod]`. The agent

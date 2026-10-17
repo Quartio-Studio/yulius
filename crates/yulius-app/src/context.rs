@@ -236,6 +236,8 @@ pub struct App {
     pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
     pub(crate) supertask_holds: crate::supertask::Holds,
+    /// The last Docker smoke test started from Settings → Instance (SPEC-203 HST-015).
+    pub(crate) docker_smoke: crate::sandbox_docker::SmokeState,
 }
 
 impl App {
@@ -275,6 +277,7 @@ impl App {
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             supertask_holds: crate::supertask::Holds::default(),
+            docker_smoke: crate::sandbox_docker::SmokeState::default(),
         })
     }
 

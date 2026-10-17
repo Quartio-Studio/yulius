@@ -37,9 +37,10 @@ const WAIT: Duration = Duration::from_secs(90);
 
 /// Why the smoke cannot run: its throwaway sandbox has only the current base's system. It builds
 /// and composes, so the host install brings buildx and compose (SPEC-201 DBX-002).
-const NO_DOCKERD_IN_BASE: &str = "the current sandbox base has no `dockerd`: an operator installs \
-    Docker on the host (docker-ce with docker-buildx-plugin and docker-compose-plugin), waits \
-    until `yulius doctor` shows the base rebuilt, and runs the smoke test again";
+const NO_DOCKERD_IN_BASE: &str = "the current sandbox base has no `dockerd`: an operator runs \
+    `sudo yulius host setup`, which installs Docker on the host (docker-ce with \
+    docker-buildx-plugin and docker-compose-plugin) and rebuilds the base, and runs the smoke \
+    test again";
 
 const DOCKERFILE: &str =
     "FROM busybox\nRUN echo built-in-the-sandbox > /built\nCMD [\"cat\", \"/built\"]\n";
@@ -81,9 +82,10 @@ pub struct Check {
     pub detail: String,
 }
 
-/// `systemd-run` running the smoke as `uid` in a delegated transient unit.
+/// `systemd-run` running the smoke as `uid` in a delegated transient unit (`json`: its lines as
+/// JSON).
 #[must_use]
-pub fn systemd_run_argv(exe: &Path, data_dir: &Path, uid: u32) -> Vec<OsString> {
+pub fn systemd_run_argv(exe: &Path, data_dir: &Path, uid: u32, json: bool) -> Vec<OsString> {
     let mut argv: Vec<OsString> = [
         "systemd-run",
         "--quiet",
@@ -101,7 +103,11 @@ pub fn systemd_run_argv(exe: &Path, data_dir: &Path, uid: u32) -> Vec<OsString> 
     .map(OsString::from)
     .collect();
     argv.push(exe.as_os_str().to_owned());
-    argv.extend(["doctor", "--docker-smoke", "--data-dir"].map(OsString::from));
+    argv.extend(["doctor", "--docker-smoke"].map(OsString::from));
+    if json {
+        argv.push("--json".into());
+    }
+    argv.push("--data-dir".into());
     argv.push(data_dir.as_os_str().to_owned());
     argv
 }
@@ -115,6 +121,22 @@ enum Start<D> {
     AsOwner(u32),
     /// It cannot run: why.
     Refused(String),
+}
+
+/// One check as printed: a table line, or with `json` one JSON object.
+#[must_use]
+pub fn check_line(check: &Check, json: bool) -> String {
+    if json {
+        serde_json::to_string(&yulius_contracts::api::updates::DockerSmokeCheck {
+            name: check.name.to_owned(),
+            ok: check.ok,
+            detail: check.detail.clone(),
+        })
+        .unwrap_or_default()
+    } else {
+        let tag = if check.ok { "ok  " } else { "FAIL" };
+        format!("{tag}  {:<44} {}", check.name, check.detail)
+    }
 }
 
 /// Decides how the smoke starts. `owner` is the data directory's owner, `delegation` this
@@ -149,9 +171,10 @@ fn start<D>(
     }
 }
 
-/// Body of `yulius doctor --docker-smoke`.
+/// Body of `yulius doctor --docker-smoke`; `json` prints each check as one JSON line
+/// ([`yulius_contracts::api::updates::DockerSmokeCheck`]) instead of a table line.
 #[must_use]
-pub fn main(data_dir: &Path) -> ExitCode {
+pub fn main(data_dir: &Path, json: bool) -> ExitCode {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yulius"));
     let owner = || {
         std::fs::metadata(data_dir)
@@ -166,7 +189,7 @@ pub fn main(data_dir: &Path) -> ExitCode {
         Start::Here(delegation) => delegation,
         Start::AsOwner(owner) => {
             eprintln!("running in a delegated transient unit as uid {owner}");
-            let argv = systemd_run_argv(&exe, data_dir, owner);
+            let argv = systemd_run_argv(&exe, data_dir, owner, json);
             return match std::process::Command::new(&argv[0])
                 .args(&argv[1..])
                 .status()
@@ -195,11 +218,12 @@ pub fn main(data_dir: &Path) -> ExitCode {
         }
     };
     match runtime.block_on(smoke(data_dir, &exe, delegation, &mut |check| {
-        let tag = if check.ok { "ok  " } else { "FAIL" };
-        println!("{tag}  {:<44} {}", check.name, check.detail);
+        println!("{}", check_line(check, json));
     })) {
         Ok(checks) if checks.iter().all(|c| c.ok) => {
-            println!("sandboxes get Docker on this host");
+            if !json {
+                println!("sandboxes get Docker on this host");
+            }
             ExitCode::SUCCESS
         }
         Ok(_) => ExitCode::FAILURE,
@@ -668,6 +692,7 @@ mod tests {
             Path::new("/usr/local/bin/yulius"),
             Path::new("/var/lib/yulius"),
             999,
+            false,
         );
         let text: Vec<String> = argv
             .iter()
@@ -875,5 +900,25 @@ mod tests {
             assert!(OLD_RUN.contains(line), "{line}");
         }
         assert!(NEW_RUN.contains("echo done"));
+    }
+
+    /// SPEC-203 HST-015: with `--json` each check is one JSON line (Settings → Instance reads
+    /// them as they end), and root passes the flag on to the service user's run.
+    #[test]
+    fn json_lines_carry_each_check() -> Result<(), Box<dyn std::error::Error>> {
+        let check = Check {
+            name: "docker run --rm hello-world in the old run",
+            ok: true,
+            detail: "Hello from Docker!".into(),
+        };
+        let line = check_line(&check, true);
+        let parsed: yulius_contracts::api::updates::DockerSmokeCheck = serde_json::from_str(&line)?;
+        assert_eq!(parsed.name, check.name);
+        assert!(parsed.ok);
+        assert_eq!(parsed.detail, "Hello from Docker!");
+        assert!(check_line(&check, false).starts_with("ok  "));
+        let argv = systemd_run_argv(Path::new("/y"), Path::new("/d"), 5, true);
+        assert!(argv.iter().any(|a| a == "--json"));
+        Ok(())
     }
 }

@@ -22,6 +22,7 @@ pub mod base;
 pub mod cgroup;
 pub mod docker_bind;
 pub mod docker_front;
+pub mod docker_status;
 pub mod engine;
 pub mod engine_supervisor;
 pub mod enter;

@@ -198,10 +198,26 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
     });
     checks.extend(browser_display_checks());
     checks.extend(containment_visibility(contained, extra));
-    if contained && cfg!(target_os = "linux") {
-        checks.extend(isolation_checks(data_dir));
+    if cfg!(target_os = "linux") {
+        if contained {
+            checks.extend(isolation_checks(data_dir));
+        } else {
+            checks.push(not_contained_docker_check());
+        }
     }
     checks
+}
+
+/// Without `--contained` the sandboxes' checks do not run; the "sandbox Docker" line says which
+/// flag adds them (SPEC-203 HST-013), since a contained server (`YULIUS_CONTAINED=true` in
+/// `yulius.service`) is the one that gives sandboxes Docker.
+fn not_contained_docker_check() -> Check {
+    check(
+        yulius_sandbox::docker_status::NAME,
+        Level::Ok,
+        "not checked: add --contained (yulius.service sets YULIUS_CONTAINED=true) to check sandbox \
+         isolation and Docker, as the service user: `sudo -u yulius yulius doctor --contained`",
+    )
 }
 
 /// GitHub's own package repositories for `gh`; distributions ship versions that are too old.
@@ -311,103 +327,49 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
     let delegation = delegation_check();
     let delegated = delegation.level == Level::Ok;
     checks.push(delegation);
-    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
-    checks.push(docker_check(
-        std::env::var("YULIUS_SANDBOX_DOCKER").as_deref() != Ok("off"),
-        which("dockerd"),
-        delegated,
-        &std::fs::read_to_string("/proc/modules").unwrap_or_default(),
-        &std::fs::read_to_string(format!("/lib/modules/{}/modules.builtin", release.trim()))
-            .unwrap_or_default(),
+    let setting = if std::env::var("YULIUS_SANDBOX_DOCKER").as_deref() == Ok("off") {
+        Err(yulius_sandbox::manager::DOCKER_OFF.to_owned())
+    } else {
+        Ok(())
+    };
+    checks.extend(docker_checks(
+        &yulius_sandbox::docker_status::Facts::read(data_dir, &exe, setting, delegated, false),
+        &yulius_sandbox::docker_status::own_engines(data_dir),
     ));
     checks
 }
 
-/// Kernel modules a sandbox's Docker engine needs and cannot load itself (bridges, veths,
-/// overlay layers, NAT through `iptables-nft`).
-const ENGINE_MODULES: [&str; 11] = [
-    "overlay",
-    "bridge",
-    "veth",
-    "nf_tables",
-    "nft_compat",
-    "nft_chain_nat",
-    "nf_nat",
-    "nf_conntrack",
-    "xt_MASQUERADE",
-    "xt_addrtype",
-    "xt_conntrack",
-];
-
-/// Whether isolated sandboxes get a Docker engine of their own (SPEC-187 DKR-011), from the
-/// setting, the cgroup delegation, the kernel's modules (the text of `/proc/modules` and of
-/// `modules.builtin`) and the host's `dockerd` (which new bases copy; SPEC-199 DSY-004). The
-/// reasons are those the sandboxes' Docker socket answers with (SPEC-196 DKL-005).
-fn docker_check(
-    on: bool,
-    dockerd: Option<PathBuf>,
-    delegated: bool,
-    loaded: &str,
-    builtin: &str,
-) -> Check {
-    use yulius_sandbox::manager::{DOCKER_NO_DELEGATION, DOCKER_OFF};
-    const NAME: &str = "sandbox Docker";
-    if !on {
-        return check(
-            NAME,
+/// The "sandbox Docker" verdict (SPEC-203 HST-013, one function for the doctor, the host setup
+/// and the server), and a line naming the sandboxes that run Docker installed in them instead of
+/// their base's (HST-017).
+fn docker_checks(
+    facts: &yulius_sandbox::docker_status::Facts,
+    own: &[yulius_sandbox::docker_status::OwnEngine],
+) -> Vec<Check> {
+    use yulius_sandbox::docker_status::{NAME, OWN_ENGINE_FIX, verdict};
+    let verdict = verdict(facts);
+    let mut checks = vec![check(
+        NAME,
+        if verdict.ok { Level::Ok } else { Level::Warn },
+        verdict.detail,
+    )];
+    if !own.is_empty() {
+        let list: Vec<String> = own
+            .iter()
+            .map(|o| format!("{} (/{})", o.sandbox, o.dockerd))
+            .collect();
+        checks.push(check(
+            "sandbox own Docker",
             Level::Ok,
-            format!("no engine in sandboxes: {DOCKER_OFF}"),
-        );
-    }
-    if !delegated {
-        return check(
-            NAME,
-            Level::Warn,
-            format!("no engine in sandboxes: {DOCKER_NO_DELEGATION}"),
-        );
-    }
-    let mut present: Vec<String> = loaded
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_owned)
-        .collect();
-    present.extend(builtin.lines().filter_map(|line| {
-        let name = line.rsplit('/').next()?.strip_suffix(".ko")?;
-        Some(name.replace('-', "_"))
-    }));
-    let missing: Vec<&str> = ENGINE_MODULES
-        .into_iter()
-        .filter(|module| !present.iter().any(|p| p == module))
-        .collect();
-    if !missing.is_empty() {
-        let list = missing.join(" ");
-        return check(
-            NAME,
-            Level::Warn,
             format!(
-                "kernel modules a sandbox cannot load are missing: {list}; run `sudo modprobe -a \
-                 {list}` and list them in /etc/modules-load.d/yulius-docker.conf"
+                "these sandboxes run Docker installed in them instead of their base's: {}; \
+                 {OWN_ENGINE_FIX}",
+                list.join(", ")
             ),
-        );
+        ));
     }
-    if dockerd.is_none() {
-        check(NAME, Level::Warn, NO_HOST_DOCKERD)
-    } else {
-        check(
-            NAME,
-            Level::Ok,
-            "each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on \
-             first use; `yulius doctor --docker-smoke` proves it on this host",
-        )
-    }
+    checks
 }
-
-/// The host has no `dockerd` (SPEC-199 DSY-004): new bases copy none, but a sandbox's engine
-/// runs its own system's, so it can install one itself, with buildx and compose (SPEC-201).
-const NO_HOST_DOCKERD: &str = "the host has no `dockerd`, so new sandbox bases have none: a \
-    sandbox gets its engine once Docker is installed in it (`sudo apt-get install -y docker.io \
-    docker-buildx docker-compose-v2`), or an operator installs Docker on the host (docker-ce with \
-    docker-buildx-plugin and docker-compose-plugin) so every new base copies it";
 
 fn delegation_check() -> Check {
     if let Ok(found) = crate::wiring::sandbox::delegation_detect() {
@@ -568,7 +530,7 @@ pub fn doctor(
 #[cfg(test)]
 mod tests {
     use super::{
-        GH_INSTALL_URL, Level, docker_check, github_cli_check, proxy_secret_check, run_checks,
+        GH_INSTALL_URL, Level, docker_checks, github_cli_check, proxy_secret_check, run_checks,
         version_of, visible_when_contained,
     };
     use std::path::{Path, PathBuf};
@@ -624,88 +586,69 @@ mod tests {
         assert!(checks.iter().any(|c| c.name == "GitHub CLI"));
     }
 
-    /// SPEC-187 DKR-011: whether sandboxes get Docker, and if not why; the kernel modules a
-    /// sandbox cannot load itself that are neither loaded nor built in.
+    /// SPEC-203 HST-013 (#6 of the task): without `--contained` the "sandbox Docker" line is
+    /// still there and names the flag that checks it.
     #[test]
-    fn the_docker_check_names_what_sandboxes_lack() {
-        let all = "overlay 1 0 - Live 0\nbridge 1 0 - Live 0\nveth 1 0 - Live 0\n\
-                   nf_tables 1 0 - Live 0\nnft_compat 1 0 - Live 0\nnft_chain_nat 1 0 - Live 0\n\
-                   nf_nat 1 0 - Live 0\nnf_conntrack 1 0 - Live 0\nxt_MASQUERADE 1 0 - Live 0\n\
-                   xt_addrtype 1 0 - Live 0\nxt_conntrack 1 0 - Live 0\n";
-        let dockerd = Some(PathBuf::from("/usr/bin/dockerd"));
-        let ok = docker_check(true, dockerd.clone(), true, all, "");
-        assert_eq!(ok.level, Level::Ok, "{}", ok.detail);
-        assert_eq!(ok.name, "sandbox Docker");
+    fn without_contained_the_sandbox_docker_line_names_the_flag() {
+        let dir = Path::new("/tmp");
+        let checks = run_checks(dir, false, &[]);
+        let docker = checks
+            .iter()
+            .find(|c| c.name == "sandbox Docker")
+            .map(|c| c.detail.clone())
+            .unwrap_or_default();
+        assert!(docker.contains("--contained"), "{docker}");
+        assert!(docker.contains("YULIUS_CONTAINED=true"), "{docker}");
+    }
 
-        let off = docker_check(false, dockerd.clone(), true, all, "");
-        assert_eq!(off.level, Level::Ok);
+    /// SPEC-187 DKR-011, SPEC-203 HST-013/HST-017: the verdict's words, and the sandboxes on
+    /// their own Docker with the way back.
+    #[test]
+    fn the_docker_lines_are_the_verdict_and_the_own_engines() {
+        use yulius_sandbox::docker_status::{BaseFacts, Facts, OwnEngine};
+        let facts = Facts {
+            setting: Ok(()),
+            delegated: true,
+            exe_writable: true,
+            missing_modules: Vec::new(),
+            host_dockerd: true,
+            base: Some(BaseFacts {
+                id: "base-9".into(),
+                dockerd: true,
+            }),
+            building: false,
+        };
+        let lines = docker_checks(&facts, &[]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].level, Level::Warn);
         assert!(
-            off.detail.contains("YULIUS_SANDBOX_DOCKER=off"),
+            lines[0].detail.contains("owned by root"),
             "{}",
-            off.detail
+            lines[0].detail
         );
-
-        // SPEC-199 DSY-004: without the host's `dockerd`, new bases have none; a sandbox can
-        // install it itself, and the delegation and modules still count.
-        let none = docker_check(true, None, true, all, "");
-        assert_eq!(none.level, Level::Warn);
-        // SPEC-201 DBX-001/002 (#610): both installs bring buildx and compose.
+        let own = [OwnEngine {
+            sandbox: "product".into(),
+            dockerd: "usr/sbin/dockerd",
+        }];
+        let lines = docker_checks(
+            &Facts {
+                exe_writable: false,
+                ..facts
+            },
+            &own,
+        );
+        assert_eq!(lines[0].level, Level::Ok);
+        assert_eq!(lines[1].name, "sandbox own Docker");
         for needle in [
-            "`dockerd`",
-            "sudo apt-get install -y docker.io docker-buildx docker-compose-v2",
-            "on the host",
-            "docker-buildx-plugin",
-            "docker-compose-plugin",
+            "product (/usr/sbin/dockerd)",
+            "apt-get install -y docker-ce",
+            "never",
         ] {
-            assert!(none.detail.contains(needle), "{needle}: {}", none.detail);
-        }
-        let none_undelegated = docker_check(true, None, false, all, "");
-        assert!(
-            none_undelegated.detail.contains("Delegate=yes"),
-            "{}",
-            none_undelegated.detail
-        );
-
-        let undelegated = docker_check(true, dockerd.clone(), false, all, "");
-        assert_eq!(undelegated.level, Level::Warn);
-        assert!(
-            undelegated.detail.contains("Delegate=yes"),
-            "{}",
-            undelegated.detail
-        );
-
-        // `bridge` built into the kernel counts; `veth` and `overlay` missing are named.
-        let loaded: String = all
-            .lines()
-            .filter(|l| {
-                !["bridge", "veth", "overlay"]
-                    .iter()
-                    .any(|m| l.starts_with(&format!("{m} ")))
-            })
-            .map(|l| format!("{l}\n"))
-            .collect();
-        let builtin = "kernel/net/bridge/bridge.ko\nkernel/fs/ext4/ext4.ko\n";
-        let none_missing = docker_check(true, None, true, &loaded, builtin);
-        assert!(
-            none_missing.detail.contains("overlay veth"),
-            "{}",
-            none_missing.detail
-        );
-        let missing = docker_check(true, dockerd, true, &loaded, builtin);
-        assert_eq!(missing.level, Level::Warn);
-        assert!(
-            missing.detail.contains("overlay veth"),
-            "{}",
-            missing.detail
-        );
-        assert!(!missing.detail.contains("bridge"), "{}", missing.detail);
-        assert!(
-            missing.detail.contains("/etc/modules-load.d/"),
-            "{}",
-            missing.detail
-        );
-        for warned in [&none, &undelegated, &missing] {
-            assert!(!warned.detail.contains("  "), "{}", warned.detail);
+            assert!(
+                lines[1].detail.contains(needle),
+                "{needle}: {}",
+                lines[1].detail
+            );
         }
     }
 

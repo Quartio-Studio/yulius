@@ -6,8 +6,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use yulius_app::model::Secret;
 use yulius_contracts::api::updates::{
-    JevKeyView, JevTestResult, SetJevKey, SetVidocKey, StartUpdate, UpdateView, VidocKeyView,
-    VidocTestResult,
+    JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocKey, StartUpdate, UpdateView,
+    VidocKeyView, VidocTestResult,
 };
 use yulius_contracts::update::VersionInfo;
 
@@ -121,6 +121,25 @@ pub async fn test_vidoc(
     Auth(ctx): Auth,
 ) -> ApiResult<Json<VidocTestResult>> {
     Ok(Json(app.test_vidoc_key(&ctx).await?))
+}
+
+/// `GET /api/admin/sandbox-docker` (SPEC-203 HST-014).
+pub async fn sandbox_docker(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<SandboxDockerView>> {
+    Ok(Json(app.sandbox_docker_view(&ctx).await?))
+}
+
+/// `POST /api/admin/sandbox-docker/smoke` (SPEC-203 HST-015).
+pub async fn sandbox_docker_smoke(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<(StatusCode, Json<SandboxDockerView>)> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(app.start_docker_smoke(&ctx).await?),
+    ))
 }
 
 /// `GET /internal/version` (internal listener): the build commit the update helper's health

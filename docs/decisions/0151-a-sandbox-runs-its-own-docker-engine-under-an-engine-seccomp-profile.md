@@ -7,7 +7,8 @@ task #172, #551. Amends [0003](0003-sandbox-isolation.md) (SPEC-002 ADR-22). Sup
 [0140](0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md). Amended by
 [0158](0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md): the
 socket is a Docker front's beside every holder, runs bind its directory, and live runs get it.
-Amended by [0160](0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md): `dockerd` comes from the sandbox's own system, not the host's.
+Amended by [0160](0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md): `dockerd` comes from the sandbox's own system, not the host's. Amended by [0162](0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md):
+`yulius host setup` installs the host prerequisites; every update re-checks them.
 
 ## Context
 

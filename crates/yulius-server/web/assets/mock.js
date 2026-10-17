@@ -152,6 +152,10 @@ function seed(params) {
       checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
       run: null,
     },
+    // Whether sandboxes get Docker (SPEC-203): `docker=rebuild` (the base lacks the host's
+    // dockerd and is being rebuilt; a sandbox on its own docker.io; the update's re-check found a
+    // problem), `docker=legacy` (sandboxes not isolated); `smoke=fail` (the smoke's pull fails).
+    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
@@ -3264,7 +3268,11 @@ function runUpdate(db, id) {
       moveUpdate(db, 'rolled_back', { message: 'The update was rolled back; the previous version runs.', error: 'The new server did not become healthy within 120 s (HTTP 500). The previous version and its database were restored.', log_tail: ['yulius update-helper: checking', 'yulius update-helper: rolling_back'] });
     } else {
       db.update.offer = null;
-      moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.` });
+      // The new version's re-check of sandboxes' Docker (SPEC-203 HST-012).
+      const docker = db.docker.mode === 'rebuild'
+        ? { ok: false, commit: db.update.current, checked_at: Date.now(), error: null, lines: [{ name: 'kernel modules', outcome: 'failed', detail: 'cannot load overlay: modprobe: FATAL: Module overlay not found' }] }
+        : { ok: true, commit: db.update.current, checked_at: Date.now(), error: null, lines: [] };
+      moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.`, docker });
     }
   }, UPDATE_STEP_MS * 4);
 }
@@ -3304,6 +3312,55 @@ route('POST', '/api/admin/update/proceed', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
   return updateView(db);
+});
+
+const OWN_ENGINE_FIX = 'to use Docker’s packages, as the base does, run in that sandbox `sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin` (apt replaces docker.io; the engine switches when it next starts, after it was idle); never `sudo apt-get remove docker.io`, which hides the base’s Docker too';
+const SMOKE_CHECKS = [
+  ['a run older than the engine gets the socket', '/var/run/docker.sock'],
+  ['its refusal names the reason', 'the sandbox’s Docker engine is not available: Docker is turned off'],
+  ['docker run --rm hello-world in the old run', 'Hello from Docker!'],
+  ['docker build in the old run', 'built-in-the-sandbox'],
+  ['docker compose up (two services) in the old run', 'probe-1 exited with code 0'],
+];
+
+function sandboxDockerView(db) {
+  const d = db.docker;
+  const base = { own_engine_fix: OWN_ENGINE_FIX, smoke: clone(d.smoke), host_check: null, own_engines: [], rebuild: null };
+  if (d.mode === 'legacy') {
+    return { ...base, ok: false, isolated: false, base: null, host_dockerd: false, detail: 'sandboxes are not isolated on this server, so they get no Docker: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs; `sudo -u yulius yulius doctor --contained` says what is missing' };
+  }
+  if (d.mode === 'rebuild') {
+    return {
+      ...base, ok: false, isolated: true, host_dockerd: true, base: { id: 'base-3', dockerd: false },
+      detail: 'the current sandbox base (base-3) has no `dockerd` though the host has one: a new base is being built; until then only a sandbox with Docker installed in it gets an engine',
+      rebuild: { building_since: iso(2 * MIN), pending_since: null, starts_at: null, ready_by: isoIn(MIN), last_build_secs: 190, error: null },
+      own_engines: [{ sandbox: '6b76ccc7-0000-4000-8000-000000000001', name: 'quartio/product', dockerd: 'usr/sbin/dockerd' }],
+      host_check: { ok: false, commit: db.update.current, checked_at: Date.now() - 20 * MIN, error: null, lines: [{ name: 'host Docker units', outcome: 'changed', detail: 'disabled and stopped docker.service' }, { name: 'kernel modules', outcome: 'failed', detail: 'cannot load overlay: modprobe: FATAL: Module overlay not found' }] },
+    };
+  }
+  return { ...base, ok: true, isolated: true, host_dockerd: true, base: { id: 'base-9', dockerd: true }, detail: 'each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on first use; `sudo yulius doctor --docker-smoke` proves it on this host' };
+}
+
+route('GET', '/api/admin/sandbox-docker', ({ db }) => { superadminOnly(db); return sandboxDockerView(db); });
+route('POST', '/api/admin/sandbox-docker/smoke', ({ db }) => {
+  superadminOnly(db);
+  const d = db.docker;
+  if (d.mode === 'legacy') fail(409, 'conflict', sandboxDockerView(db).detail);
+  if (d.smoke && d.smoke.state === 'running') fail(409, 'conflict', 'a Docker smoke test is running already');
+  const run = { state: 'running', started_by: db.me.user.login, started_at: new Date().toISOString(), finished_at: null, checks: [], error: null };
+  d.smoke = run;
+  SMOKE_CHECKS.forEach(([name, detail], i) => {
+    later(() => {
+      if (d.smoke !== run || run.state !== 'running') return;
+      const failed = d.smokeFails && i === 2;
+      run.checks.push({ name, ok: !failed, detail: failed ? 'toomanyrequests: You have reached your pull rate limit' : detail });
+      if (failed || i === SMOKE_CHECKS.length - 1) {
+        run.state = failed ? 'failed' : 'passed';
+        run.finished_at = new Date().toISOString();
+      }
+    }, 1000 * (i + 1));
+  });
+  return json(202, sandboxDockerView(db));
 });
 
 function jevView(db) {

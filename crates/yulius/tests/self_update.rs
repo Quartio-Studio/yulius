@@ -450,6 +450,50 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
     Ok(())
 }
 
+/// SPEC-203 HST-012: the update succeeded, but the new version's re-check found that sandboxes
+/// lost Docker: the outcome says so, with the reason, not only the helper's log.
+#[tokio::test]
+async fn a_docker_regression_after_an_update_is_in_its_outcome() -> TestResult {
+    use yulius_contracts::update::{HostCheckReport, HostLine, HostOutcome};
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    built(&i).await?;
+    i.h.app.proceed_update(&support_ctx(&i).await?).await?;
+    let _ = i.h.app.update_round().await;
+    let install = i.helper.last().ok_or("install")?;
+    i.helper
+        .report(&install, HelperState::Done, "succeeded", None);
+    i.helper.report_host_check(HostCheckReport {
+        ok: false,
+        lines: vec![HostLine {
+            name: "kernel modules".into(),
+            outcome: HostOutcome::Failed,
+            detail: "cannot load overlay: modprobe: FATAL: Module overlay not found".into(),
+        }],
+        error: None,
+        commit: Some(NEW.into()),
+        checked_at: 1,
+    });
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(NEW, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    let view = restarted.update_view(&support_ctx(&i).await?).await?;
+    let run = view.run.ok_or("run")?;
+    assert_eq!(run.state, "succeeded");
+    let docker = run.docker.ok_or("no Docker re-check in the outcome")?;
+    assert!(!docker.ok);
+    assert!(
+        docker
+            .problems()
+            .join(" ")
+            .contains("Module overlay not found"),
+        "{docker:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_rolled_back_install_releases_the_tasks_and_says_why() -> TestResult {
     let i = instance().await?;

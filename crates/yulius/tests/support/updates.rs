@@ -85,6 +85,8 @@ pub struct FakeHelper {
     pub requests: Mutex<Vec<HelperRequest>>,
     pub status: Mutex<Option<HelperStatus>>,
     pub cleared: AtomicUsize,
+    /// The kept re-check of the host (SPEC-203 HST-012).
+    pub host_check: Mutex<Option<yulius_contracts::update::HostCheckReport>>,
 }
 
 impl FakeHelper {
@@ -120,8 +122,20 @@ impl FakeHelper {
                 error: error.map(str::to_owned),
                 previous: None,
                 log_tail: vec!["error: example".into()],
+                host_check: None,
                 updated_at: 0,
             });
+        }
+    }
+}
+
+impl FakeHelper {
+    /// Adds the new version's host re-check to the current status (SPEC-203 HST-012).
+    pub fn report_host_check(&self, report: yulius_contracts::update::HostCheckReport) {
+        if let Ok(mut status) = self.status.lock()
+            && let Some(status) = status.as_mut()
+        {
+            status.host_check = Some(report);
         }
     }
 }
@@ -136,6 +150,9 @@ impl UpdateHelper for FakeHelper {
             .map_err(|_| "lock".to_owned())?
             .push(request.clone());
         Ok(())
+    }
+    fn host_check(&self) -> Option<yulius_contracts::update::HostCheckReport> {
+        self.host_check.lock().ok()?.clone()
     }
     fn status(&self) -> Option<HelperStatus> {
         self.status.lock().ok()?.clone()
