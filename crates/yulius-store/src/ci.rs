@@ -517,12 +517,15 @@ impl CiStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         fingerprint: &str,
+        issue: u64,
     ) -> AppResult<()> {
         let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        let issue = i64::try_from(issue).map_err(AppError::internal)?;
         self.call(move |c| {
             c.execute(
-                "DELETE FROM security_findings WHERE sandbox_id = ?1 AND fingerprint = ?2",
-                params![sandbox, fingerprint],
+                "DELETE FROM security_findings \
+                 WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number = ?3",
+                params![sandbox, fingerprint, issue],
             )
             .map_err(db)?;
             Ok(())
@@ -880,7 +883,22 @@ mod tests {
         );
         store.resolve_security_finding(&one, print, None).await?;
         assert_eq!(store.unresolved_security_findings(&one, 10).await?, [filed]);
-        store.forget_security_finding(&one, print).await?;
+        // Another run already filed it anew as #43: forgetting the stale #42 keeps that record.
+        store.forget_security_finding(&one, print, 42).await?;
+        assert!(
+            store.claim_security_finding(&one, finding, at).await?,
+            "the issue-42 record is forgotten"
+        );
+        store.settle_security_finding(&one, print, Some(43)).await?;
+        store.forget_security_finding(&one, print, 42).await?;
+        assert!(
+            store
+                .filed_security_finding(&one, print)
+                .await?
+                .is_some_and(|f| f.issue == 43),
+            "a stale forget keeps the newer record"
+        );
+        store.forget_security_finding(&one, print, 43).await?;
         assert_eq!(store.filed_security_finding(&one, print).await?, None);
         assert!(
             store.claim_security_finding(&one, finding, at).await?,

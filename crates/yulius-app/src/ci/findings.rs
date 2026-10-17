@@ -496,13 +496,12 @@ impl App {
             Ok(false) => (None, false),
             Err(crate::error::AppError::NotFound) => {
                 let forgotten = store
-                    .forget_security_finding(&sandbox.id, &filed.fingerprint)
+                    .forget_security_finding(&sandbox.id, &filed.fingerprint, filed.issue)
                     .await
                     .is_ok();
                 (
                     Some(format!(
-                        "[yulius] issue #{} of finding {} is gone from GitHub: the finding is \
-                         filed anew",
+                        "[yulius] issue #{} of finding {} is gone from GitHub",
                         filed.issue, filed.fingerprint
                     )),
                     forgotten,

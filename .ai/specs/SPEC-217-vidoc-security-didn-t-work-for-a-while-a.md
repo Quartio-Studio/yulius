@@ -137,7 +137,8 @@ but make sure it's in the default ci pipeline and will generalise for every othe
     anchored and no line of the file has its fingerprint any more, Yulius closes the issue
     (completed), comments why, and marks the finding resolved. An issue GitHub no longer has
     (404, or 410 when deleted) is marked resolved too. A finding reported again whose issue
-    GitHub no longer has is forgotten and filed anew.
+    GitHub no longer has is forgotten (only the record of that issue, so a concurrent run's newer
+    one is kept) and filed anew.
   - Recomputing the fingerprint is exact (the same SHA-256 as the scanner, asserted on both sides
     by one constant). So a model that skips a finding on one run never closes an issue, and code
     still on a pull request branch closes nothing.
@@ -274,8 +275,8 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
 
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
-  with 18 skipped, plus lint, macOS, doctests, deps and docs. At
-  e93af855, the last code change, it passed with 2211 tests (18 skipped).
+  with 18 skipped, plus lint, macOS, doctests, deps and docs. The final
+  head's gate: GATE_LINE.
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
@@ -323,12 +324,19 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
     store's `forget_security_finding`;
   - the VSI-001 path rule in this spec, and line lengths.
 
-  These were fixed in a406a6c1 and 7837d6c4. The change scan at 7837d6c4 exited 0, with one
-  **low finding in the change** for the executor to decide: `repository_path` refused `.git`
-  only as the first segment. I fixed it test-first (a `sub/.git/config` case). The fake-GitHub
-  fixture's ignore entry was widened to `credentials`, because Vidoc worded its title
-  differently on that run. The change scan at e93af855 exited 0: nothing fails, no low finding in the
-  change, and one low finding outside it (`briefing.rs:877`) for CI to file.
+  These were fixed in a406a6c1 and 7837d6c4. The change scan at 7837d6c4 exited 0, with one **low
+  finding in the change** for the executor to decide: `repository_path` refused `.git` only as the
+  first segment. I fixed it test-first (a `sub/.git/config` case). The fake-GitHub fixture's ignore
+  entry was widened to `credentials`, because Vidoc worded its title differently on that run. The
+  change scan at e93af855 exited 0: nothing fails, no low finding in the change, and one low finding
+  outside it (`briefing.rs:877`) for CI to file.
+- Independent review round 4 (fresh session, at 27aa73cc) verified the round-3 fixes. It found
+  one race in my code: two concurrent runs seeing a deleted issue could each forget the finding,
+  and one run's forget deleted the other's new record, filing the finding twice. Now a run forgets
+  only the record of the issue it saw gone (`AND issue_number = ?3`). The store test
+  `security_findings_are_claimed_once_per_sandbox` was extended first: a stale forget keeps the
+  newer #43. The note now says only that the issue is gone, the migration comment mentions the
+  forget, and the long line was rewrapped.
 
 ### Not tested here
 
