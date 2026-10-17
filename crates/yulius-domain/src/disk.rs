@@ -360,7 +360,12 @@ mod tests {
             "a waiting task keeps the 4 h rule"
         );
         assert_eq!(
-            owner_of(TaskStatus::Running, Some(Activity::Done), true, IDLE_PRUNE_AFTER_MS),
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Done),
+                true,
+                IDLE_PRUNE_AFTER_MS
+            ),
             None,
             "background shells keep a done task's caches"
         );

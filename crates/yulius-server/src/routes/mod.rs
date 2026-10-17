@@ -13,6 +13,7 @@ mod files;
 mod git;
 mod imports;
 mod internal;
+mod leftovers;
 mod mcp;
 mod mcp_servers;
 mod notes;
@@ -201,6 +202,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/admin/update/check", post(updates::check))
         .route("/api/admin/update/cancel", post(updates::cancel))
         .route("/api/admin/update/proceed", post(updates::proceed))
+        // Leftovers on the server's disk (SPEC-215).
+        .route("/api/admin/leftovers", get(leftovers::view))
+        .route("/api/admin/leftovers/scan", post(leftovers::scan))
+        .route("/api/admin/leftovers/delete", post(leftovers::delete))
         // Whether sandboxes get Docker, and the smoke test (SPEC-203).
         .route("/api/admin/sandbox-docker", get(updates::sandbox_docker))
         .route(
@@ -387,6 +392,9 @@ pub fn internal(_app: Arc<App>) -> Router<AppState> {
         .merge(secrets::internal())
         .route("/internal/healthz", get(|| async { "ok" }))
         .route("/internal/version", get(updates::version))
+        .route("/internal/leftovers", get(leftovers::cli_view))
+        .route("/internal/leftovers/scan", post(leftovers::cli_scan))
+        .route("/internal/leftovers/delete", post(leftovers::cli_delete))
         .route("/internal/preview-tls", get(previews::tls_ask))
         .route("/browser/welcome", get(internal::browser_welcome))
         .route(

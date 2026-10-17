@@ -193,6 +193,8 @@ pub trait SandboxStore: Send + Sync {
     async fn sandbox_by_repo(&self, owner: &str, name: &str) -> AppResult<Option<SandboxRecord>>;
     /// Active sandboxes.
     async fn sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
+    /// Removed sandboxes, oldest removal first (their leftovers, SPEC-215).
+    async fn removed_sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
     /// Next free port base (multiples of `count` from `start`).
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16>;
     /// Replaces the profile JSON.

@@ -122,6 +122,19 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
+    async fn removed_sandboxes(&self) -> AppResult<Vec<SandboxRecord>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLS} FROM sandboxes WHERE removed_at IS NOT NULL ORDER BY removed_at"
+                ))
+                .map_err(db)?;
+            let rows = stmt.query_map([], from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16> {
         self.call(move |c| {
             let mut stmt = c.prepare("SELECT port_base FROM sandboxes").map_err(db)?;
