@@ -98,8 +98,8 @@ Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a p
 
 ## Evidence
 
-- `scripts/dev ci` at `d75b97bb`: exit 0, 2132 tests passed, 18 skipped (lint, deps, checks
-  included).
+- `scripts/dev ci` at `cc23034a` (`origin/dev` merged): exit 0, 2134 tests passed, 18 skipped
+  (lint, deps, checks included). Earlier at `d75b97bb`: exit 0, 2132 passed.
 - New tests:
   - `claude_config::tests::sessions_default_to_the_concise_output_style` failed before the
     change (no `settings.json`).
@@ -121,6 +121,13 @@ Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a p
     agreement.
   - The pre-existing host-side reads of the agent-owned config dir (links, FIFOs in
     `.claude.json` and the plugin stores) are tracked in #634.
+- `scripts/dev security` at `cc23034a`: no open critical or high finding. One low finding, on
+  the pre-existing `read_small`, is #634.
 - Review round 1 (fresh reviewer) requested changes; all own-code findings are fixed in
-  `d75b97bb`.
+  `d75b97bb`. Round 2 requested changes, all fixed in `cc23034a`:
+  - the dangling-link assertion;
+  - the ignore title narrowed to "as trusted";
+  - `CockpitLaunch.contained` from dev.
+  Round 2 also agreed that the folder-trust finding is a false positive, on condition the title
+  was narrowed.
 - Not tested here: a full task run in the web UI after deployment (no deploy in this task).
