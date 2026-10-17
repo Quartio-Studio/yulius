@@ -521,7 +521,7 @@ function mountAgents(ctx, sandbox, host, actions) {
   if (!sandbox) {
     setChildren(actions);
     setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a sandbox (or to every sandbox). Open one to see and add them.' }));
-    return;
+    return () => {};
   }
   const write = allows(sandbox.access, 'write');
   const list = h('div');
@@ -567,6 +567,12 @@ function mountAgents(ctx, sandbox, host, actions) {
   }
 
   const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render, { shape: 'items' });
+  // An agent asked for hosts or a .env copy, here or for every sandbox, or the stream reconnected
+  // and may have missed that: read the list again, keeping it shown meanwhile (SPEC-209).
+  const offs = [
+    ctx.store.on('secrets', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) reload({ quiet: true }); }),
+    ctx.store.on('resync', () => reload({ quiet: true })),
+  ];
 
   function edit(secret) {
     const form = agentForm(ctx, secret);
@@ -596,6 +602,8 @@ function mountAgents(ctx, sandbox, host, actions) {
       reload();
     } catch (error) { errorToast(error, 'Couldn’t delete'); }
   }
+
+  return () => offs.forEach((off) => off());
 }
 
 /** Mount the Secrets page: `/s/<slug>/secrets` (with the sandbox's agent secrets) or `/secrets`. */
@@ -628,11 +636,14 @@ export function mountSecretsPage(ctx, sandbox, route) {
   }
   renderTabs();
   frame.body.append(tabs, host);
+  let unmount = () => {};
   function show() {
-    if (current === 'agents') mountAgents(ctx, sandbox, host, frame.actions);
+    unmount();
+    unmount = () => {};
+    if (current === 'agents') unmount = mountAgents(ctx, sandbox, host, frame.actions);
     else mountTeam(ctx, host, frame.actions);
   }
   show();
-  return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}` };
+  return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}`, destroy: () => unmount() };
 }
 
