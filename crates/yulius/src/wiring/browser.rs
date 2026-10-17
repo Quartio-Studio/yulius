@@ -85,6 +85,16 @@ impl BrowserPort for ChromiumBrowsers {
         self.manager.reap_idle(Instant::now()).await
     }
 
+    async fn stop(&self, sandbox: &SandboxId) -> bool {
+        self.manager
+            .shutdown(sandbox)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%sandbox, %error, "the browser could not be stopped");
+                false
+            })
+    }
+
     async fn shutdown_all(&self) -> Vec<SandboxId> {
         self.manager.shutdown_all().await
     }
@@ -354,6 +364,10 @@ impl BrowserPort for UnavailableBrowser {
 
     async fn reap_idle(&self) -> Vec<SandboxId> {
         Vec::new()
+    }
+
+    async fn stop(&self, _: &SandboxId) -> bool {
+        false
     }
 
     async fn shutdown_all(&self) -> Vec<SandboxId> {

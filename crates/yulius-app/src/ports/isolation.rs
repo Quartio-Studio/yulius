@@ -155,6 +155,10 @@ pub trait SandboxIsolation: Send + Sync {
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 
+    /// `sandbox` was removed (SPEC-206 RMV-004): its holder, with every process in it, stops
+    /// once no run holds a lease, and is never adopted again (may finish in the background).
+    fn retire(&self, _sandbox: &SandboxId) {}
+
     /// Prunes `sandbox`'s Docker engine: build cache and images no container uses (never
     /// containers or volumes). Returns the bytes freed; `None` without an engine or a live holder
     /// (SPEC-187 DKR-006).

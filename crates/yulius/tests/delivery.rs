@@ -3467,6 +3467,39 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     Ok(())
 }
 
+/// SPEC-206 RMV-001 (#624): nothing armed in a removed sandbox is merged. A CI run that ends
+/// after the removal (green) calls `merge_armed`; the removed sandbox's pull request stays open.
+#[tokio::test]
+async fn a_removed_sandbox_merges_nothing_it_had_armed() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    t.arm().await?;
+
+    let removed = f
+        .req(Method::DELETE, "/api/sandboxes/s1", None, &f.alice)
+        .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+
+    let record =
+        f.h.store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("delivery")?;
+    assert_eq!(record.stage, DeliveryStage::PrOpen, "nothing merged");
+    let states: Vec<String> =
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .iter()
+            .map(|p| p.state.clone())
+            .collect();
+    assert_eq!(states, ["open"], "the pull request stays open on GitHub");
+    Ok(())
+}
+
 /// What `yulius wait` decides from a wait state the server answered.
 fn settled(now: &Value, before: Option<&Value>) -> BoxResult<Option<String>> {
     let now: WaitState = serde_json::from_value(now.clone())?;
