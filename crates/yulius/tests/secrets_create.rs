@@ -201,6 +201,8 @@ async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResul
         assert_eq!(record.injection, "none", "{name}");
         assert_eq!(record.env_files, EnvFiles::No, "{name}");
         assert!(!record.cd_prod, "{name}");
+        // SPEC-216: an agent never creates a secret that agents set up themselves.
+        assert!(!record.auto_allow, "{name}");
         assert_eq!(record.created_by, "u-alice", "{name}");
     }
     let activity = call(

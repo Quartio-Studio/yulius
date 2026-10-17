@@ -86,6 +86,9 @@ pub struct VaultSecretRecord {
     /// Agent: a person allowed production CD runs to get its value (SPEC-134); only
     /// [`VaultStore::vault_set_cd_prod`] writes it.
     pub cd_prod: bool,
+    /// Agent: agents set it up themselves (SPEC-216): the hosts they ask for are bound at once
+    /// and production CD runs get its value. Never together with `cd_prod`.
+    pub auto_allow: bool,
 }
 
 /// Whether agents may copy an agent secret's value into the project's git-ignored `.env` files
@@ -163,15 +166,21 @@ pub struct VaultAuditEntry {
 pub trait VaultStore: Send + Sync {
     /// Inserts a secret; `Conflict` for an agent name taken in the same scope.
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
-    /// Replaces every mutable column of the secret `record.id` but its host request; `false` when
-    /// it is gone.
-    async fn vault_update(&self, record: &VaultSecretRecord) -> AppResult<bool>;
+    /// Replaces every mutable column of the secret `record.id` but its host request, only while
+    /// its hosts and `auto_allow` still are those of `seen` (the row the change was read from:
+    /// an automatic binding or a switch meanwhile is never undone unseen) and agents setting it
+    /// up would not meet a production-only allowance; `false` otherwise or when it is gone.
+    async fn vault_update(
+        &self,
+        record: &VaultSecretRecord,
+        seen: &VaultSecretRecord,
+    ) -> AppResult<bool>;
     /// Deletes a secret; `false` when it is gone.
     async fn vault_delete(&self, id: &str) -> AppResult<bool>;
     /// One secret.
     async fn vault_get(&self, id: &str) -> AppResult<Option<VaultSecretRecord>>;
-    /// Team secrets by name.
-    async fn vault_team(&self) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Team secrets by name: those of `sandbox` and the team-wide ones, or every one (`None`).
+    async fn vault_team(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
     /// Agent secrets that apply to `sandbox` (its own and the instance-wide ones), or every
     /// agent secret when `None`.
     async fn vault_agent(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
@@ -196,6 +205,15 @@ pub trait VaultStore: Send + Sync {
         by: &str,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Binds the hosts an agent asked for of a secret it sets up itself (SPEC-216 SSA-002):
+    /// `hosts` replace its bindings and `requested` its waiting request, only while they still
+    /// are `bound` and `waiting` and the secret still has `auto_allow`; `false` otherwise.
+    async fn vault_auto_bind(
+        &self,
+        id: &str,
+        (bound, hosts): (&[String], &[String]),
+        (waiting, requested): (&[String], &[String]),
+    ) -> AppResult<bool>;
     /// Sets whether agents may copy an agent secret into `.env` files, and who asks, only while
     /// they still are `from` (compare and set); `false` otherwise. Nothing else in the row
     /// changes.
@@ -206,8 +224,17 @@ pub trait VaultStore: Send + Sync {
         to: (EnvFiles, Option<&str>),
     ) -> AppResult<bool>;
     /// Sets whether production CD runs get the agent secret `id` (SPEC-134) when it still is
-    /// `from` (compare and set); `false` otherwise.
+    /// `from` (compare and set) and agents do not set it up themselves (`auto_allow`, SPEC-216
+    /// SSA-004); `false` otherwise.
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool>;
+    /// The secrets that applied to every sandbox when schema version 35 was reached and are not
+    /// assigned to sandboxes yet (SPEC-216 SCO-004).
+    async fn vault_scope_pending(&self) -> AppResult<Vec<String>>;
+    /// Replaces the pending secret `id` by `copies` (one per sandbox) and takes it off the
+    /// pending list, in one transaction; with no copies it stays as it is (team-wide) and only
+    /// leaves the list. `false`, and nothing but the list changes, when it was not pending or no
+    /// longer applies to every sandbox.
+    async fn vault_assign(&self, id: &str, copies: &[VaultSecretRecord]) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Records a re-authentication of a browser session.

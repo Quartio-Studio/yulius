@@ -75,12 +75,16 @@ pub struct ServerState {
     pub device_interval_s: u64,
     /// Sandboxes listed by `GET /api/sandboxes`: (id, slug, owner, name).
     pub sandboxes: Vec<(String, String, String, String)>,
-    /// Team secret titles that exist.
+    /// Team-wide team secret titles that exist.
     pub team_titles: Vec<String>,
+    /// Titles of team secrets of a sandbox (SPEC-216), listed by every sandbox.
+    pub sandbox_team_titles: Vec<String>,
     /// Agent secrets that exist: (name, scope).
     pub agent_names: Vec<(String, String)>,
     /// Team secrets created, as sent.
     pub team_created: Vec<TeamSecretInput>,
+    /// Team secrets created under a sandbox, as sent, with the sandbox of the path.
+    pub sandbox_team_created: Vec<(String, TeamSecretInput)>,
     /// Agent secrets created, as sent, with the sandbox of the path.
     pub agent_created: Vec<(String, AgentSecretInput)>,
     /// Create requests accepted past authentication (team or agent).
@@ -119,6 +123,10 @@ impl FakeServer {
             .route("/api/device/poll", post(device_poll))
             .route("/api/sandboxes", get(sandboxes))
             .route("/api/team-secrets", get(team_list).post(team_create))
+            .route(
+                "/api/sandboxes/{sid}/team-secrets",
+                get(sandbox_team_list).post(sandbox_team_create),
+            )
             .route(
                 "/api/sandboxes/{sid}/agent-secrets",
                 get(agent_list).post(agent_create),
@@ -574,6 +582,45 @@ async fn team_list(State(state): State<Shared>, headers: HeaderMap) -> Response 
         .map(|title| serde_json::json!({"id": "t", "title": title, "has_value": true}))
         .collect();
     Json(list).into_response()
+}
+
+async fn sandbox_team_list(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(_sid): Path<String>,
+) -> Response {
+    let Some(state) = lock(&state) else {
+        return poisoned();
+    };
+    if !vault_allowed(&state, &headers) {
+        return unauthorized();
+    }
+    let scoped = |titles: &[String], scope: &str| -> Vec<serde_json::Value> {
+        titles
+            .iter()
+            .map(|title| serde_json::json!({"id": "t", "title": title, "scope": scope}))
+            .collect()
+    };
+    let mut list = scoped(&state.sandbox_team_titles, "sandbox");
+    list.extend(scoped(&state.team_titles, "instance"));
+    Json(list).into_response()
+}
+
+async fn sandbox_team_create(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(sid): Path<String>,
+    Json(input): Json<TeamSecretInput>,
+) -> Response {
+    let Some(mut state) = lock(&state) else {
+        return poisoned();
+    };
+    if let Some(refused) = create_refusal(&mut state, &headers, &input.title) {
+        return refused;
+    }
+    state.sandbox_team_titles.push(input.title.clone());
+    state.sandbox_team_created.push((sid, input));
+    (StatusCode::CREATED, Json(serde_json::json!({"id": "new"}))).into_response()
 }
 
 async fn agent_list(

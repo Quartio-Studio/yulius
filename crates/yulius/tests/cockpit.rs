@@ -2797,7 +2797,9 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         &f.h.router,
         Method::POST,
         "/api/sandboxes/s1/agent-secrets",
-        Some(json!({"name": "PROD_KEY", "value": "prod-synthetic-value-12345"})),
+        Some(
+            json!({"name": "PROD_KEY", "value": "prod-synthetic-value-12345", "auto_allow": false}),
+        ),
         &f.alice,
     )
     .await?;
@@ -2865,7 +2867,8 @@ async fn add_secret(
         &f.h.router,
         Method::POST,
         "/api/sandboxes/s1/agent-secrets",
-        Some(json!({"name": name, "value": value})),
+        // A person confirms hosts and production (SPEC-216: agents do not set it up).
+        Some(json!({"name": name, "value": value, "auto_allow": false})),
         &f.alice,
     )
     .await?;
@@ -3092,7 +3095,7 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
         "/api/sandboxes/s1/agent-secrets",
         Some(
             json!({"name": "PROD_KEY", "hosts": ["prod.quartio.test"], "injection": "bearer",
-            "value": "prod-synthetic-value-12345"}),
+            "value": "prod-synthetic-value-12345", "auto_allow": false}),
         ),
         &f.alice,
     )

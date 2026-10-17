@@ -782,12 +782,39 @@ flowchart LR
 
 An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Since SPEC-121
 (ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
-nothing. The agent works out the service's host and proposes it; the request waits on the secret
-(`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
-so an agent misled by injected content cannot send a secret to another server. Storing a host or
-`.env` request publishes `secrets.updated` to the secret's sandbox (to every sandbox for an
-instance-wide secret), so an open Secrets page reads its list again and shows Allow without a
-reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
+nothing. The agent works out the service's host and proposes it with `secret_request_hosts`.
+
+Since SPEC-216 (ADR-0171) a new secret has `auto_allow` ("Let agents set it up") unless the person
+turns it off when adding it or in Edit. Then the proposed hosts are bound at once (audited
+`vault.agent.auto_allow` with the asking task) and production CD runs get the value
+(`allowed_for`), with no person in between. Secrets added before keep it off. Without it the
+request waits on the secret (`requested_hosts`) until a person who manages it allows it, so an
+agent misled by injected content cannot send that secret to another server; and production gets
+it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`.
+
+Every team and agent secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
+(`NULL`). A sandbox's team secret is read by the people who can view that sandbox
+(`/api/sandboxes/{sid}/team-secrets`, 404 elsewhere, its activity hidden) and changed by those
+who write to it; team-wide ones are everyone's (`/api/team-secrets`). Schema version 35 listed
+the team secrets (none had a sandbox) in `vault_scope_pending`; at the next start, before
+serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
+replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
+secrets an administrator made team-wide stay team-wide.
+
+Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
+secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its
+list again without a reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
+
+```mermaid
+flowchart LR
+  A["Agent: secret_request_hosts(NAME, host)"] --> Q{"auto_allow?"}
+  Q -->|"yes (default for new secrets)"| B["bound now (vault.agent.auto_allow)"]
+  Q -->|"no"| W["requested_hosts: waits for a person"]
+  W -->|"Allow on the Secrets page"| B
+  B --> X["Egress proxy adds it toward the bound hosts"]
+  P{"production CD run names it"} -->|"auto_allow or cd_prod"| R["gets the value"]
+  P -->|"neither"| N["nothing ran: a person allows it"]
+```
 
 ```mermaid
 sequenceDiagram

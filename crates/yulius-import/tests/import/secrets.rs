@@ -77,9 +77,13 @@ impl SecretsIo for Terminal {
     }
 }
 
+/// Team-wide team secrets (`--instance`).
 fn team() -> SecretsImportOptions {
     SecretsImportOptions {
-        target: SecretsTarget::Team,
+        target: SecretsTarget::Team {
+            sandbox: None,
+            instance: true,
+        },
         checkout: std::env::temp_dir(),
         source_file: Some("secrets.env".into()),
     }
@@ -90,6 +94,7 @@ fn agent(sandbox: &str, instance: bool) -> SecretsImportOptions {
         target: SecretsTarget::Agent {
             sandbox: Some(sandbox.into()),
             instance,
+            confirm_hosts: false,
         },
         checkout: std::env::temp_dir(),
         source_file: None,
@@ -193,7 +198,14 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
     let created = server.with(|s| s.agent_created.clone())?;
     assert!(created.iter().all(|(sid, input)| sid == "sb-1"
         && input.scope.as_deref() == Some("sandbox")
-        && input.hosts.is_empty()));
+        && input.hosts.is_empty()
+        && input.auto_allow.is_none()));
+    // SPEC-216: the server's default (agents set them up) is said before yes.
+    assert!(
+        terminal.said.contains("Agents set them up"),
+        "{}",
+        terminal.said
+    );
     let key = created
         .iter()
         .find(|(_, i)| i.name == "DEPLOY_KEY")
@@ -219,6 +231,130 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
     );
     assert!(terminal.said.contains("GLOBAL_KEY  new\n"));
     terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-216 SCO-005: team secrets go to the sandbox by default (checked against its own), and
+/// team-wide only with `--instance`.
+#[test]
+fn team_import_goes_to_the_sandbox_unless_team_wide() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| {
+        s.sandbox_team_titles = vec!["OLD_KEY".into()];
+        s.team_titles = vec!["WIDE_KEY".into()];
+    })?;
+    let file = "NEW_KEY=sk_live_new_value_1
+OLD_KEY=existing-value-2
+WIDE_KEY=wide-value-3
+";
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Team {
+            sandbox: Some("sb-2".into()),
+            instance: false,
+        },
+        ..team()
+    };
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(&server, file, &options, &mut terminal)??;
+    assert_eq!(summary.imported, vec!["NEW_KEY", "WIDE_KEY"]);
+    assert_eq!(summary.existing, vec!["OLD_KEY"]);
+    let created = server.with(|s| s.sandbox_team_created.clone())?;
+    assert!(
+        created
+            .iter()
+            .all(|(sid, input)| sid == "sb-2" && input.scope.as_deref() == Some("sandbox")),
+        "{created:?}"
+    );
+    assert!(server.with(|s| s.team_created.is_empty())?);
+    assert!(
+        terminal
+            .said
+            .contains("the team secrets of Quartio-Studio/other (this sandbox only"),
+        "{}",
+        terminal.said
+    );
+
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(
+        &server,
+        "WIDE_KEY=wide-value-3
+ALL_KEY=all-value-4
+",
+        &team(),
+        &mut terminal,
+    )??;
+    assert_eq!(summary.imported, vec!["ALL_KEY"]);
+    let created = server.with(|s| s.team_created.clone())?;
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].scope, None, "team-wide is that route's default");
+    assert!(terminal.said.contains("team-wide"), "{}", terminal.said);
+    Ok(())
+}
+
+/// SPEC-216 review M1: `--confirm-hosts` turns agents setting them up off, and says so; an
+/// absent choice is not sent, so an older server still takes the import.
+#[test]
+fn confirmed_hosts_are_asked_for_and_nothing_new_is_sent_by_default() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Agent {
+            sandbox: Some("sb-1".into()),
+            instance: false,
+            confirm_hosts: true,
+        },
+        ..agent("sb-1", false)
+    };
+    let mut terminal = Terminal::answering(&["yes"]);
+    run(
+        &server,
+        "NEW_KEY=sk_live_new_value_1\n",
+        &options,
+        &mut terminal,
+    )??;
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert_eq!(created[0].1.auto_allow, Some(false));
+    assert!(
+        terminal.said.contains("a person allows each host"),
+        "{}",
+        terminal.said
+    );
+    let plain = serde_json::to_value(yulius_contracts::api::secrets::AgentSecretInput::default())?;
+    assert!(plain.get("auto_allow").is_none(), "{plain}");
+    let team = serde_json::to_value(yulius_contracts::api::secrets::TeamSecretInput::default())?;
+    assert!(team.get("scope").is_none(), "{team}");
+    Ok(())
+}
+
+/// SPEC-216 review round 4: outside a checkout, team secrets point to `--instance` (team-wide,
+/// what `--to team` did before) beside `--sandbox`.
+#[test]
+fn team_import_outside_a_checkout_names_both_ways() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let elsewhere = tempfile::tempdir()?;
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Team {
+            sandbox: None,
+            instance: false,
+        },
+        checkout: elsewhere.path().to_path_buf(),
+        source_file: None,
+    };
+    let mut terminal = Terminal::answering(&["yes"]);
+    match run(
+        &server,
+        "NEW_KEY=sk_live_new_value_1\n",
+        &options,
+        &mut terminal,
+    )? {
+        Err(SecretsImportError::Sandbox(message)) => {
+            assert!(message.contains("--sandbox"), "{message}");
+            assert!(message.contains("--instance"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
     Ok(())
 }
 

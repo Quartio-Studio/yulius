@@ -365,6 +365,10 @@ impl App {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
             .await?;
+        // Agents set it up: production already gets it (SPEC-216 SSA-004).
+        if allow && record.auto_allow {
+            return Err(AppError::Conflict(AUTO_PRODUCTION.into()));
+        }
         // A secret agents can use (its `.env` copies, its hosts) is no production secret
         // (round 2, M-B).
         if allow && (record.env_files == EnvFiles::Allowed || !record.hosts.is_empty()) {
@@ -382,7 +386,9 @@ impl App {
                 .await?
             {
                 return Err(AppError::Conflict(
-                    "the secret changed since you looked: reload and answer again".into(),
+                    "the secret changed since you looked (or agents set it up meanwhile): reload \
+                     and answer again"
+                        .into(),
                 ));
             }
             record.cd_prod = allow;
@@ -754,14 +760,19 @@ impl CdSecretState {
     }
 }
 
+/// Why a secret agents set up takes no production-only allowance (SPEC-216 SSA-004).
+const AUTO_PRODUCTION: &str = "agents set this secret up, so production deploys already get it: \
+turn that off in Edit first to keep it for production deploys only";
+
 /// Whether a run of `env` may get `record`'s value (SPEC-134, ADR-0109): dev runs the secrets a
 /// person allowed outside the proxy (`env_files`, ADR-0105: dev is the agents' own ground, as
 /// `.env` is), production only those a person allowed for production deploys (`cd_prod`), which
-/// no agent can use otherwise.
+/// no agent can use otherwise, and those whose creator let agents set them up (`auto_allow`,
+/// SPEC-216 SSA-003).
 fn allowed_for(record: &VaultSecretRecord, env: yulius_domain::cd::CdEnv) -> bool {
     match env {
         yulius_domain::cd::CdEnv::Dev => record.env_files == EnvFiles::Allowed,
-        yulius_domain::cd::CdEnv::Prod => record.cd_prod,
+        yulius_domain::cd::CdEnv::Prod => record.cd_prod || record.auto_allow,
     }
 }
 

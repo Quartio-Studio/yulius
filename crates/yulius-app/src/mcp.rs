@@ -386,7 +386,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "secret_request_hosts".into(),
-            description: "Ask for the hosts an agent secret should be sent to or typed into (SPEC-121). A person adds a secret with only a name, a value and a description; you find the service's API or sign-in host from the description and the service's documentation (e.g. api.vidoc.com, *.vidoc.com for subdomains) and request it here. Nothing is bound until a person who manages the secret allows it on the Secrets page: print the returned link for them, go on with other work, and use the secret once secrets_list shows the host bound.".into(),
+            description: "Ask for the hosts an agent secret should be sent to or typed into (SPEC-121). A person adds a secret with only a name, a value and a description; you find the service's API or sign-in host from the description and the service's documentation (e.g. api.vidoc.com, *.vidoc.com for subdomains) and request it here. Nothing is bound until a person who manages the secret allows it on the Secrets page: print the returned link for them, go on with other work, and use the secret once secrets_list shows the host bound. A secret with auto_allow (its creator let agents set it up, the default for new secrets) binds the hosts at once: ask only for the service's own documented hosts.".into(),
             input_schema: schema(json!({
                 "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
                 "hosts": {"type": "array", "items": {"type": "string"}, "description": "Host names like api.example.com, *.example.com or api.example.com:8443"},
