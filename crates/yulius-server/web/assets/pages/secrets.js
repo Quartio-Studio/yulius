@@ -484,8 +484,7 @@ function agentHosts(ctx, secret, act, changed) {
     // meanwhile, so nothing is allowed unseen (SPEC-121).
     const shown = [...secret.requested_hosts];
     let settling = changed;
-    const answer = (allow) => act(async () => {
-      settling = false;
+    const answer = (allow) => !settling && act(async () => {
       buttons.forEach((b) => { b.disabled = true; });
       try {
         const saved = await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow, hosts: shown });
@@ -497,11 +496,16 @@ function agentHosts(ctx, secret, act, changed) {
       secret.cd_prod ? null : smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
       smallButton('Dismiss', `Dismiss the hosts asked for ${secret.name}`, () => answer(false)),
     ].filter(Boolean) : [];
-    // Hosts that changed under the person's pointer or keyboard: a click meant for the earlier
-    // buttons must not allow hosts never seen (SPEC-121), so these stay off for a moment.
+    // Hosts that changed under the person's pointer or keyboard: a click or Enter meant for the
+    // earlier buttons must not allow hosts never seen (SPEC-121), so these stay off for a moment.
+    // aria-disabled, not disabled: they keep the keyboard focus, which would otherwise move on to
+    // another grant of the card.
     if (changed && buttons.length) {
-      buttons.forEach((b) => { b.disabled = true; });
-      setTimeout(() => { if (settling) buttons.forEach((b) => { b.disabled = false; }); }, ALLOW_SETTLE_MS);
+      buttons.forEach((b) => b.setAttribute('aria-disabled', 'true'));
+      setTimeout(() => {
+        settling = false;
+        buttons.forEach((b) => b.removeAttribute('aria-disabled'));
+      }, ALLOW_SETTLE_MS);
     }
     parts.push(h('div', { class: 'row-wrap' },
       h('span', { class: 'small' }, secret.requested_by ? `Task ${secret.requested_by} asks to send it to` : 'An agent asks to send it to'),
