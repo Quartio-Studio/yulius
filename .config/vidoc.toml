@@ -341,3 +341,13 @@ reason = "a test fixture: in-memory stores in temporary directories"
 path = "scripts/test_vidoc_scan.py"
 title = "Hardcoded fake API key constant"
 reason = "the placeholder name the egress proxy replaces, used against a loopback fake Vidoc; not a credential"
+
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Prompt injection through user-supplied repository name"
+reason = "owner/name are GitHub's own names (letters, digits, '.', '-', '_'), checked by the GitHub port's validate::owner and repo_name; they cannot carry instructions"
+
+[[ignore]]
+path = "crates/yulius-github/src/fake/mod.rs"
+title = "Hardcoded credentials"
+reason = "the in-process fake GitHub for tests (feature fake); its constants are synthetic"

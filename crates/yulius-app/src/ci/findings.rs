@@ -53,13 +53,24 @@ fn cut(text: &str, max: usize) -> String {
     text[..end].to_owned()
 }
 
+/// A path as Git names a tracked file: relative, `/`-separated, no empty, `.` or `..` segment,
+/// not starting with `-` and not in `.git`. Only such a path is read from the integration branch.
+fn repository_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('-')
+        && !path.contains('\\')
+        && path.split('/').enumerate().all(|(index, part)| {
+            !part.is_empty() && part != "." && part != ".." && !(index == 0 && part == ".git")
+        })
+}
+
 fn valid(mut finding: Finding) -> Option<Finding> {
     let fingerprint_ok = finding.fingerprint.len() == 16
         && finding
             .fingerprint
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    let file_ok = !finding.file.trim().is_empty()
+    let file_ok = repository_path(&finding.file)
         && finding.file.len() <= MAX_FILE_BYTES
         && !finding.file.chars().any(|c| c.is_control() || c == '`');
     if !fingerprint_ok || !file_ok || !matches!(finding.severity.as_str(), "medium" | "low") {
@@ -585,6 +596,27 @@ mod tests {
                 "{FINDING_MARK}{}",
                 serde_json::json!({"severity": "low", "file": "a`@team`.rs", "line": 1,
                     "title": "t", "detail": "d", "fingerprint": "5555555555555555"})
+            ),
+            // Not a repository-relative path: never read from Git (Vidoc, task #160's own scan).
+            format!(
+                "{FINDING_MARK}{}",
+                serde_json::json!({"severity": "low", "file": "../../etc/passwd", "line": 1,
+                    "title": "t", "detail": "d", "fingerprint": "6666666666666666"})
+            ),
+            format!(
+                "{FINDING_MARK}{}",
+                serde_json::json!({"severity": "low", "file": "/etc/passwd", "line": 1,
+                    "title": "t", "detail": "d", "fingerprint": "7777777777777777"})
+            ),
+            format!(
+                "{FINDING_MARK}{}",
+                serde_json::json!({"severity": "low", "file": "-x/./a", "line": 1,
+                    "title": "t", "detail": "d", "fingerprint": "8888888888888888"})
+            ),
+            format!(
+                "{FINDING_MARK}{}",
+                serde_json::json!({"severity": "low", "file": ".git/config", "line": 1,
+                    "title": "t", "detail": "d", "fingerprint": "9999999999999999"})
             ),
         ]
         .join("\n");
