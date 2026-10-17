@@ -2664,6 +2664,16 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .sandbox-docker-checks li.ok .icon { color: var(--ok); }
 .sandbox-docker-checks li.failed .icon { color: var(--danger); }
 .sandbox-docker-checks li .mono { grid-column: 2; overflow-wrap: anywhere; }
+/* Leftovers (Settings → Instance, SPEC-215). */
+.leftovers-body { gap: 12px; padding: 16px 20px; }
+.leftovers-disk { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.leftovers-actions { flex-wrap: wrap; }
+.leftovers-result ul { margin: 4px 0 0; padding-left: 16px; overflow-wrap: anywhere; }
+.leftovers-table .leftovers-check { width: 32px; }
+.leftovers-what { min-width: 0; }
+.leftovers-owner { white-space: nowrap; }
+.leftovers-what > div + div { margin-top: 2px; }
+.leftovers-path { overflow-wrap: anywhere; color: var(--muted); }
 .update-confirm-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
