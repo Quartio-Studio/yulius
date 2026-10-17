@@ -411,6 +411,22 @@ function hostText(name) {
   return name.startsWith('*.') ? `${name} (any subdomain of ${name.slice(2)})` : name;
 }
 
+/**
+ * A production secret is exclusive (SPEC-134, ADR-0109): the server refuses it for production
+ * while agents can use it, and refuses agents a production secret. The page offers neither
+ * (SPEC-204).
+ */
+function agentsUse(secret) {
+  return secret.hosts.length > 0 || secret.env_files === 'allowed';
+}
+
+/** Why a production secret's waiting requests offer no Allow, said once for all of them. */
+function agentProductionOnly(secret) {
+  if (!secret.cd_prod || (!secret.requested_hosts.length && secret.env_files !== 'asked')) return [];
+  const text = 'This is a production secret: agents never get it.';
+  return [h('span', { class: 'muted small' }, secret.can_manage ? `${text} Dismiss the request, or add a separate secret for agents.` : text)];
+}
+
 /** Where a secret goes: its bound hosts, or that it goes nowhere yet; and what an agent asks for. */
 function agentHosts(ctx, secret, reload) {
   const parts = [];
@@ -430,9 +446,9 @@ function agentHosts(ctx, secret, reload) {
     };
     const asked = shown.join(', ');
     const buttons = secret.can_manage ? [
-      smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
+      secret.cd_prod ? null : smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
       smallButton('Dismiss', `Dismiss the hosts asked for ${secret.name}`, () => answer(false)),
-    ] : [];
+    ].filter(Boolean) : [];
     parts.push(h('div', { class: 'row-wrap' },
       h('span', { class: 'small' }, secret.requested_by ? `Task ${secret.requested_by} asks to send it to` : 'An agent asks to send it to'),
       h('div', { class: 'chips' }, shown.map((name) => iconBadge('globe', hostText(name), 'warn', 'Requested host'))),
@@ -455,13 +471,13 @@ function agentEnvFiles(ctx, secret, reload) {
   };
   const asked = secret.env_files === 'asked';
   const buttons = !secret.can_manage ? [] : asked ? [
-    smallButton('Allow', `Allow copying ${secret.name} into .env files`, () => answer(true), { class: 'btn-primary' }),
+    secret.cd_prod ? null : smallButton('Allow', `Allow copying ${secret.name} into .env files`, () => answer(true), { class: 'btn-primary' }),
     smallButton('Dismiss', `Dismiss copying ${secret.name} into .env files`, () => answer(false)),
-  ] : [smallButton('Revoke', `Stop agents copying ${secret.name} into .env files`, () => answer(false))];
+  ].filter(Boolean) : [smallButton('Revoke', `Stop agents copying ${secret.name} into .env files`, () => answer(false))];
   // One answer covers every task, and for a secret of every sandbox every sandbox.
   const where = secret.scope === 'instance' ? 'every sandbox' : 'this sandbox';
   const text = asked
-    ? `${secret.env_requested_by ? `Task ${secret.env_requested_by} asks` : 'An agent asks'} to copy its value into the project’s git-ignored .env, for code that runs outside ${BRAND.name}. Allowing lets every task in ${where} copy it.`
+    ? `${secret.env_requested_by ? `Task ${secret.env_requested_by} asks` : 'An agent asks'} to copy its value into the project’s git-ignored .env, for code that runs outside ${BRAND.name}.${secret.cd_prod ? '' : ` Allowing lets every task in ${where} copy it.`}`
     : `Agents in ${where} may copy its value into git-ignored .env files`;
   return [h('div', { class: 'row-wrap' },
     iconBadge('file', '.env', asked ? 'warn' : '', asked ? 'Requested .env copy' : 'Allowed .env copies'),
@@ -475,6 +491,12 @@ function agentEnvFiles(ctx, secret, reload) {
  */
 function agentCdProd(ctx, secret, reload) {
   if (!secret.cd_prod && !secret.can_manage) return [];
+  // Most secrets agents use are not for production: a note, not a warning (SPEC-204).
+  if (!secret.cd_prod && agentsUse(secret)) {
+    return [h('div', { class: 'row-wrap' },
+      iconBadge('upload', 'Not for production', '', 'Not for production deploys'),
+      h('span', { class: 'muted small' }, 'Production deploys never get a secret agents use (its hosts or .env copies). To use this value in production, remove its hosts and .env copies, or add a separate secret for production and allow that one here.'))];
+  }
   const answer = async (allow) => {
     button.disabled = true;
     try {
@@ -528,6 +550,7 @@ function mountAgents(ctx, sandbox, host, actions) {
         secret.flattened ? h('span', { class: 'small' }, 'Its line breaks were lost when it was saved, so it no longer works as a key file. Edit it and paste the key again: they are kept now.') : null,
         ...agentHosts(ctx, secret, reload),
         ...agentEnvFiles(ctx, secret, reload),
+        ...agentProductionOnly(secret),
         ...agentCdProd(ctx, secret, reload),
         h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [
