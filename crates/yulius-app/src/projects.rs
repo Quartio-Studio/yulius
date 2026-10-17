@@ -934,9 +934,9 @@ impl App {
         Ok(())
     }
 
-    /// `DELETE /api/sandboxes/{sid}` (admin, PRJ-009): stops live and queued tasks and marks
-    /// the sandbox removed. The GitHub repository, the clone, worktrees, transcripts and task
-    /// records are kept.
+    /// `DELETE /api/sandboxes/{sid}` (admin, PRJ-009): stops live and queued tasks, marks the
+    /// sandbox removed and ends everything else of it (SPEC-206). The GitHub repository, the
+    /// clone, worktrees, transcripts and task records are kept.
     ///
     /// # Errors
     /// `NotFound` without access, `Forbidden` without admin.
@@ -973,7 +973,22 @@ impl App {
             )
             .await?;
         self.publish_resync(None);
+        self.end_removed_sandbox(id);
         Ok(())
+    }
+
+    /// Ends in the background what still runs for a sandbox just removed besides its tasks
+    /// (SPEC-206): its shells (Superagents and terminals) and its browser. The removal already
+    /// refuses new ones, so none starts behind it.
+    fn end_removed_sandbox(self: &Arc<Self>, id: SandboxId) {
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let shells = app.sandbox_shells(&id);
+            if !app.end_shells(&shells).await {
+                tracing::warn!(sandbox = %id, "a shell of the removed sandbox could not be ended");
+            }
+            app.deps.browser.stop(&id).await;
+        });
     }
 }
 
