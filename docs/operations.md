@@ -896,7 +896,9 @@ commit's tree, `HOME` and log, removed after each run); none is visible to agent
 
 - **Secrets.** A dev run gets the real value of each secret its table names once a person allowed
   it outside the proxy on the Secrets page (the same allowance as copying it into `.env`); a
-  production run only once someone who manages it chose "Allow for production deploys". Output is
+  production run only once someone who manages it chose "Allow for production deploys". That
+  choice is not offered for a secret agents use (bound hosts or `.env` copies): a production
+  secret is exclusive, so production needs a separate secret with its own name (ADR-0109). Output is
   redacted, but scripts hold the values while they run, so allow only what a deploy needs.
 - **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
   deploys (which use the sandbox's network) have none either.

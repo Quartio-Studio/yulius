@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   arguments, output, errors or files, and are wiped from memory when dropped. A comment above a key
   becomes its description or notes, and a PEM or OpenSSH key is stored as the Secrets page stores it.
 
+- The Secrets page offers the production allowance only where it can be given (SPEC-204, task
+  #191, fixes #621). A secret agents use, through its hosts or `.env` copies, showed a warning
+  badge and an "Allow for production deploys" button. The server always refused that button,
+  since a production secret is exclusive (ADR-0109). The card now says that production deploys
+  never get a secret agents use, and that production needs a separate secret. A production
+  secret whose host or `.env` request still waits offers Dismiss only. The web mock now refuses
+  what the server refuses.
 - Docker in sandboxes works out of the box (SPEC-203, ADR-0162, task #188). `sudo yulius host
   setup` is now the install path after the binary. It checks and fixes, in one order: a
   needrestart rule, written before any install, so installs never restart `yulius.service`; Git
