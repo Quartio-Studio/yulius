@@ -492,14 +492,35 @@ pub trait CiStore: Send + Sync {
     /// Deletes finished runs (and their jobs) beyond the newest `keep` of each sandbox and
     /// those queued before `before`; returns how many runs were deleted.
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
-    /// Claims a Vidoc finding's `fingerprint` for `sandbox` before its issue is opened (SPEC-217
-    /// VSI-002); `false` when it was claimed or filed before.
+    /// Claims a Vidoc finding (`fingerprint` in `file`; `anchored` when it names a line's text)
+    /// for `sandbox` before its issue is opened (SPEC-217 VSI-002); `false` when it was claimed or
+    /// filed before.
     async fn claim_security_finding(
         &self,
         sandbox: &SandboxId,
-        fingerprint: &str,
+        finding: (&str, &str, bool),
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// One filed finding of `sandbox` (with its issue), if any.
+    async fn filed_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+    ) -> AppResult<Option<crate::ci::FiledFinding>>;
+    /// The filed findings of `sandbox` not resolved yet, oldest first, at most `limit`.
+    async fn unresolved_security_findings(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::FiledFinding>>;
+    /// Marks a filed finding resolved at `at` (its issue was closed), or, with `None`, not
+    /// resolved (reported again) (SPEC-217 VSI-004).
+    async fn resolve_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        at: Option<Timestamp>,
+    ) -> AppResult<()>;
     /// Records the issue a claimed finding was filed as, or, with `None` (opening it failed),
     /// releases the claim so a later run files it.
     async fn settle_security_finding(

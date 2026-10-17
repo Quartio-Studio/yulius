@@ -1,9 +1,12 @@
-//! Vidoc findings outside a change become GitHub issues (SPEC-217 VSI-001..003, ADR-0172). The
-//! security scan prints each medium or low finding in code a pull request did not touch as one
-//! `::yulius-finding <json>` line; when the `security` job of a pull request head ends, Yulius
-//! files each fingerprint the sandbox has not filed before, a few per job, and says so in the
-//! job's output. The lines are scanner output (and, in a repository that runs its own scanner,
-//! the pull request's): they are validated, bounded and quoted as data in the issue.
+//! Vidoc findings outside a change follow the code as GitHub issues (SPEC-217 VSI-001..004,
+//! ADR-0172). The security scan prints each medium or low finding in code a pull request did not
+//! touch as one `::yulius-finding <json>` line. When the `security` job of a pull request head
+//! ends, Yulius files each fingerprint the sandbox has not filed before and reopens the issue of
+//! one filed before that was closed. When a `security` job of a pull request or of the integration
+//! branch ends, Yulius closes the issues whose code is gone from the integration branch: no line of
+//! the file has the fingerprint any more (or the file is gone). A few per job, said in the job's
+//! output. The lines are scanner output (and, in a repository that runs its own scanner, the pull
+//! request's): they are validated, bounded and quoted as data in the issue.
 
 use serde::Deserialize;
 use yulius_domain::ci::CiRef;
@@ -34,6 +37,10 @@ pub(crate) struct Finding {
     pub title: String,
     pub detail: String,
     pub fingerprint: String,
+    /// The fingerprint names the text of its line (else its title): Yulius can tell when that
+    /// line is gone.
+    #[serde(default)]
+    pub anchored: bool,
 }
 
 fn cut(text: &str, max: usize) -> String {
@@ -129,47 +136,128 @@ pub(crate) fn issue_for(finding: &Finding, pull: u64, run: &str) -> NewIssue {
     }
 }
 
+/// Most issues one job reopens, and most it closes.
+const MAX_STATE_CHANGES: usize = 5;
+/// Most filed findings reported again whose issue one job looks at.
+const MAX_REOPEN_CHECKS: usize = 10;
+/// Most unresolved filed findings one job follows, and most files it reads for them.
+const MAX_FOLLOWED: u32 = 200;
+const MAX_FILES_READ: usize = 50;
+
+/// The scanner's fingerprint of a line of `file` (`scripts/vidoc_scan.py` `classify`): SHA-256
+/// of the path and the line's text with its whitespace collapsed, 16 hex characters.
+pub(crate) fn line_fingerprint(file: &str, line: &str) -> String {
+    use sha2::Digest;
+    let text = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let digest = sha2::Sha256::digest(format!("{file}\nline:{text}").as_bytes());
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether some line of `text` (the file `file`) has `fingerprint`.
+fn still_there(file: &str, text: &str, fingerprint: &str) -> bool {
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.trim().is_empty())
+        .any(|line| line_fingerprint(file, line) == fingerprint)
+}
+
 impl App {
-    /// Files the findings of a `security` job's `output` that ended on a pull request head
-    /// (SPEC-217 VSI-001): returns the lines to add to the job's output, empty when there was
-    /// nothing to file.
-    pub(super) async fn ci_file_findings(
+    /// Follows the findings of a `security` job that ended (SPEC-217 VSI-001, VSI-004): files and
+    /// reopens what a pull request head reports, and closes what is gone from the integration
+    /// branch. Returns the lines to add to the job's output.
+    pub(super) async fn ci_follow_findings(
         &self,
         sandbox: &SandboxRecord,
         run: &CiRunRecord,
         output: &str,
     ) -> Vec<String> {
-        let CiRef::PullRequest(pull) = run.reference else {
-            return Vec::new();
+        let branch = self.profile_of(sandbox).integration_branch;
+        let pull = match &run.reference {
+            CiRef::PullRequest(pull) => Some(*pull),
+            CiRef::Branch(name) if *name == branch => None,
+            _ => return Vec::new(),
         };
-        let findings = parse_findings(output);
-        if findings.is_empty() {
+        let findings = if pull.is_some() {
+            parse_findings(output)
+        } else {
+            Vec::new()
+        };
+        let unresolved = self
+            .deps
+            .store
+            .unresolved_security_findings(&sandbox.id, MAX_FOLLOWED)
+            .await
+            .unwrap_or_default();
+        if findings.is_empty() && unresolved.is_empty() {
             return Vec::new();
         }
         let token = match self.dlv_installation_token(sandbox).await {
             Ok(token) => token,
             Err(err) => {
                 return vec![format!(
-                    "[yulius] {} finding(s) outside the change not filed as issues: {}",
-                    findings.len(),
+                    "[yulius] security findings not followed as issues: {}",
                     err.public_message()
                 )];
             }
         };
+        let mut notes = Vec::new();
+        if let Some(pull) = pull {
+            notes.extend(
+                self.ci_file_findings(sandbox, (run, pull), &token, &findings)
+                    .await,
+            );
+        }
+        let reported: Vec<&str> = findings.iter().map(|f| f.fingerprint.as_str()).collect();
+        let gone: Vec<_> = unresolved
+            .into_iter()
+            .filter(|f| !reported.contains(&f.fingerprint.as_str()))
+            .collect();
+        notes.extend(
+            self.ci_close_gone_findings(sandbox, &branch, &token, gone)
+                .await,
+        );
+        notes
+    }
+
+    /// Files each new finding (at most [`MAX_FILED`]) and reopens the closed issue of one filed
+    /// before.
+    async fn ci_file_findings(
+        &self,
+        sandbox: &SandboxRecord,
+        (run, pull): (&CiRunRecord, u64),
+        token: &crate::model::Secret,
+        findings: &[Finding],
+    ) -> Vec<String> {
         let store = &self.deps.store;
         let (mut notes, mut filed, mut waiting, mut known) = (Vec::new(), 0, 0, 0);
-        for finding in &findings {
+        let (mut checked, mut reopened) = (0, 0);
+        for finding in findings {
             if filed == MAX_FILED {
                 waiting += 1;
                 continue;
             }
+            let claim = (
+                finding.fingerprint.as_str(),
+                finding.file.as_str(),
+                finding.anchored,
+            );
             match store
-                .claim_security_finding(&sandbox.id, &finding.fingerprint, self.now())
+                .claim_security_finding(&sandbox.id, claim, self.now())
                 .await
             {
                 Ok(true) => {}
                 Ok(false) => {
                     known += 1;
+                    if checked < MAX_REOPEN_CHECKS && reopened < MAX_STATE_CHANGES {
+                        checked += 1;
+                        if let Some(note) = self
+                            .ci_reopen_finding(sandbox, (run, pull), token, finding)
+                            .await
+                        {
+                            reopened += 1;
+                            notes.push(note);
+                        }
+                    }
                     continue;
                 }
                 Err(err) => {
@@ -185,7 +273,7 @@ impl App {
             let opened = self
                 .deps
                 .github
-                .create_issue(&token, &sandbox.repo_owner, &sandbox.repo_name, &issue)
+                .create_issue(token, &sandbox.repo_owner, &sandbox.repo_name, &issue)
                 .await;
             let number = opened.as_ref().ok().map(|issue| issue.number);
             if let Err(err) = store
@@ -219,6 +307,151 @@ impl App {
                 "[yulius] {waiting} more finding(s) outside the change wait for a later run (at \
                  most {MAX_FILED} issues per job)"
             ));
+        }
+        notes
+    }
+
+    /// Reopens the issue of a finding filed before that is reported again, when it was closed;
+    /// the note, or `None` when it was open (or there is no issue yet).
+    async fn ci_reopen_finding(
+        &self,
+        sandbox: &SandboxRecord,
+        (run, pull): (&CiRunRecord, u64),
+        token: &crate::model::Secret,
+        finding: &Finding,
+    ) -> Option<String> {
+        let store = &self.deps.store;
+        let filed = store
+            .filed_security_finding(&sandbox.id, &finding.fingerprint)
+            .await
+            .ok()
+            .flatten()?;
+        let comment = format!(
+            "Yulius reopened this: Vidoc reports this finding again on pull request #{pull} (CI \
+             run `{}`), so the code is still there. Fix it, or, for a false positive, add an \
+             `[[ignore]]` entry with its reason to `.config/vidoc.toml` once a reviewer agrees: an \
+             ignored finding is no longer reported.",
+            run.id
+        );
+        let reopened = self
+            .deps
+            .github
+            .set_issue_state(
+                token,
+                &sandbox.repo_owner,
+                &sandbox.repo_name,
+                filed.issue,
+                true,
+                &comment,
+            )
+            .await;
+        if filed.resolved && reopened.is_ok() {
+            let _ = store
+                .resolve_security_finding(&sandbox.id, &filed.fingerprint, None)
+                .await;
+        }
+        match reopened {
+            Ok(true) => Some(format!(
+                "[yulius] reopened issue #{}: finding {} is reported again",
+                filed.issue, filed.fingerprint
+            )),
+            Ok(false) => None,
+            Err(err) => Some(format!(
+                "[yulius] issue #{} of finding {} not reopened: {}",
+                filed.issue,
+                filed.fingerprint,
+                err.public_message()
+            )),
+        }
+    }
+
+    /// Closes the issues (at most [`MAX_STATE_CHANGES`]) of filed findings whose code is gone from
+    /// the integration branch: the file is gone, or no line of it has the fingerprint any more.
+    async fn ci_close_gone_findings(
+        &self,
+        sandbox: &SandboxRecord,
+        branch: &str,
+        token: &crate::model::Secret,
+        unresolved: Vec<super::FiledFinding>,
+    ) -> Vec<String> {
+        let repo = self.sandbox_repo(&sandbox.id);
+        let git = &self.deps.git;
+        let Ok(Some(head)) = git.resolve_commit(&repo, &format!("origin/{branch}")).await else {
+            return Vec::new();
+        };
+        let short = head.get(..7).unwrap_or(&head).to_owned();
+        let mut files: Vec<(String, Option<String>)> = Vec::new();
+        let (mut notes, mut closed) = (Vec::new(), 0);
+        for finding in unresolved {
+            if closed == MAX_STATE_CHANGES {
+                break;
+            }
+            let text = match files.iter().find(|(file, _)| *file == finding.file) {
+                Some((_, text)) => text.clone(),
+                None if files.len() < MAX_FILES_READ => {
+                    let Ok(text) = git.show_file(&repo, &head, &finding.file).await else {
+                        continue;
+                    };
+                    files.push((finding.file.clone(), text.clone()));
+                    text
+                }
+                None => continue,
+            };
+            let why = match &text {
+                None => format!("`{}` is no longer on `{branch}` at {short}", finding.file),
+                Some(text)
+                    if finding.anchored
+                        && !still_there(&finding.file, text, &finding.fingerprint) =>
+                {
+                    format!(
+                        "no line of `{}` on `{branch}` at {short} has its fingerprint any more",
+                        finding.file
+                    )
+                }
+                Some(_) => continue,
+            };
+            let comment = format!(
+                "Yulius closed this: the code this finding pointed at is gone ({why}). A new finding \
+                 there gets a new issue."
+            );
+            match self
+                .deps
+                .github
+                .set_issue_state(
+                    token,
+                    &sandbox.repo_owner,
+                    &sandbox.repo_name,
+                    finding.issue,
+                    false,
+                    &comment,
+                )
+                .await
+            {
+                Ok(changed) => {
+                    let _ = self
+                        .deps
+                        .store
+                        .resolve_security_finding(
+                            &sandbox.id,
+                            &finding.fingerprint,
+                            Some(self.now()),
+                        )
+                        .await;
+                    if changed {
+                        closed += 1;
+                        notes.push(format!(
+                            "[yulius] closed issue #{}: the code of finding {} is gone from {branch}",
+                            finding.issue, finding.fingerprint
+                        ));
+                    }
+                }
+                Err(err) => notes.push(format!(
+                    "[yulius] issue #{} of finding {} not closed: {}",
+                    finding.issue,
+                    finding.fingerprint,
+                    err.public_message()
+                )),
+            }
         }
         notes
     }
@@ -262,6 +495,19 @@ mod tests {
         assert_eq!(found[0].detail, "Use `x`. Then y.");
     }
 
+    /// The same constant as `scripts/test_vidoc_scan.py`
+    /// `test_the_fingerprint_is_the_one_yulius_recomputes`.
+    #[test]
+    fn line_fingerprints_are_the_scanners() {
+        assert_eq!(
+            line_fingerprint("src/a.rs", "  let  x =\tinput; "),
+            "bdc84ab0dda861f0"
+        );
+        let text = "fn a() {}\r\n  let x = input;\n";
+        assert!(still_there("src/a.rs", text, "bdc84ab0dda861f0"));
+        assert!(!still_there("src/b.rs", text, "bdc84ab0dda861f0"));
+    }
+
     #[test]
     fn at_most_64_lines_are_read_and_long_texts_are_cut() {
         let many: Vec<String> = (0..100)
@@ -274,7 +520,9 @@ mod tests {
                 "title": "é".repeat(300), "detail": "d".repeat(5000),
                 "fingerprint": "4444444444444444"})
         );
-        let [finding] = parse_findings(&long).try_into().unwrap_or_else(|_| unreachable!());
+        let [finding] = parse_findings(&long)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!());
         assert!(finding.title.len() <= 200 && finding.detail.len() == 2000);
     }
 
@@ -297,7 +545,11 @@ mod tests {
         assert!(issue.body.contains("pull request #12"), "{}", issue.body);
         assert!(issue.body.contains("`src/a.rs:3`"), "{}", issue.body);
         assert!(issue.body.contains("## Acceptance criteria\n\n- [ ]"));
-        assert!(issue.body.contains("```text\nWeak check\n\nUse 'x'. Then y.\n```"));
+        assert!(
+            issue
+                .body
+                .contains("```text\nWeak check\n\nUse 'x'. Then y.\n```")
+        );
         assert!(
             issue
                 .body

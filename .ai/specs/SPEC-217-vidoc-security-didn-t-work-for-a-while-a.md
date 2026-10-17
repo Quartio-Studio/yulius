@@ -79,7 +79,7 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   there is no line or it is blank). Old code that shifts keeps its fingerprint, and so does a
   finding whose severity or title the model words differently on another run. In `--ci` mode, each such finding is also
   printed as one line, `::yulius-finding <json>`, with `severity`, `file`, `line`, `title`,
-  `detail` and `fingerprint`.
+  `detail`, `fingerprint` and `anchored`.
 - **VSP-005.** The JSON report (`--report`) gives each finding `scope` (`change` or `outside`) and
   `fingerprint`.
 
@@ -93,8 +93,8 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   for findings.
 - **VSI-002. De-duplication.** Filed fingerprints are kept per sandbox (migration 0036,
   `security_findings`). A fingerprint is claimed before the issue is opened and released if
-  opening fails, so concurrent runs cannot file it twice. A fingerprint whose issue was closed is
-  not filed again: closing it was the decision.
+  opening fails, so concurrent runs cannot file it twice. The row also keeps the finding's file,
+  whether its fingerprint names a line's text (`anchored`), and when Yulius resolved it.
 - **VSI-003. The issue.**
   - Title: `security: <title> in <file>`.
   - Labels: `type: bug`, `priority: medium` or `priority: low`, `area: security` and
@@ -105,6 +105,22 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 
   The job's output gets one line for each issue filed, each one already filed, and each failure.
   A playground or a sandbox without a GitHub token files nothing, and the output says so.
+
+- **VSI-004. Issues follow the code** (the person's follow-up, 2026-10-17: "fix this issue
+  thingy and close those that are already closed in the scope").
+  - **Reopened while reported.** A pull request head reports a fingerprint filed before whose
+    issue is closed: Yulius reopens the issue with a comment and clears its resolution. A
+    false positive is meant to get a reviewed `[[ignore]]` entry, which stops it being reported.
+    At most 10 such issues are looked up and 5 reopened per job.
+  - **Closed once the code is gone.** When a `security` job of a pull request head or of the
+    integration branch ends (passed, failed or skipped), Yulius looks at the unresolved filed
+    findings that the job did not report: at most 200 of them, in at most 50 files. For each, it
+    reads the file on `origin/<integration branch>`. If the file is gone, or if the finding is
+    anchored and no line of the file has its fingerprint any more, Yulius closes the issue
+    (completed), comments why, and marks the finding resolved. That is at most 5 closed per job.
+  - Recomputing the fingerprint is exact (the same SHA-256 as the scanner, asserted on both sides
+    by one constant). So a model that skips a finding on one run never closes an issue, and code
+    still on a pull request branch closes nothing.
 
 ### Default pipeline (VDP)
 
@@ -138,6 +154,7 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 - [ ] Findings outside the change are printed with fingerprints for CI to file
 - [ ] Yulius CI files each outside-the-change finding once as an issue
 - [ ] Every project with a Vidoc key gets the security job in its CI
+- [ ] Filed issues follow the code: reopened while reported, closed once the line is gone from dev
 - [ ] Briefing, onboarding, infra bootstrap, AGENTS.md, docs and ADR-0172 describe the policy
 - [ ] Audit findings fixed, ignored with reasons, or filed
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -154,6 +171,9 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   - in `--ci` mode only outside findings are printed as `::yulius-finding` lines.
 - A `security` job whose output holds finding lines files one issue per new fingerprint, with DoR
   labels. A second run with the same fingerprints files nothing. Another job's lines file nothing.
+- A filed finding's closed issue is reopened when it is reported again. An issue whose file is
+  gone from the integration branch is closed with a comment. An issue whose line is still there
+  stays open.
 - A sandbox with the instance's Vidoc key and a project gate without a security job runs a
   `security` job in CI and is granted `VIDOC_API_KEY`. A project that has its own job is
   unchanged.
@@ -174,7 +194,10 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   - a `security` job whose command prints finding lines files issues once;
   - a second run files nothing;
   - another job's lines are ignored;
-  - the built-in job appears for a sandbox with a Vidoc key.
+  - the built-in job appears for a sandbox with a Vidoc key;
+  - a closed issue is reopened while reported, and an issue whose code is gone is closed.
+- `yulius-github` client test against the fake GitHub: reopening and closing with a comment, a
+  no-op when already in that state, and 404.
 - The store migration's test: claim and release.
 - The live CI `security` job on this pull request runs the new scanner.
 

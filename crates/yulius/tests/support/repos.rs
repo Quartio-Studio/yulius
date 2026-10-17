@@ -562,6 +562,17 @@ impl GitHubPort for RepoGitHub {
     async fn create_issue(&self, t: &Secret, o: &str, r: &str, i: &NewIssue) -> AppResult<GhIssue> {
         self.base.create_issue(t, o, r, i).await
     }
+    async fn set_issue_state(
+        &self,
+        t: &Secret,
+        o: &str,
+        r: &str,
+        n: u64,
+        open: bool,
+        comment: &str,
+    ) -> AppResult<bool> {
+        self.base.set_issue_state(t, o, r, n, open, comment).await
+    }
     async fn get_pull(&self, t: &Secret, o: &str, r: &str, n: u64) -> AppResult<GhPull> {
         self.base.get_pull(t, o, r, n).await
     }

@@ -84,6 +84,17 @@ impl GitHubPort for UnavailableGitHub {
     async fn create_issue(&self, _: &Secret, _: &str, _: &str, _: &NewIssue) -> AppResult<GhIssue> {
         unavailable()
     }
+    async fn set_issue_state(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: bool,
+        _: &str,
+    ) -> AppResult<bool> {
+        unavailable()
+    }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, _: u64) -> AppResult<GhPull> {
         unavailable()
     }

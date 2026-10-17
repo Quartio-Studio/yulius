@@ -652,11 +652,14 @@ impl App {
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
-        // The findings outside the change become issues (SPEC-217 VSI-001).
+        // The findings outside the change follow the code as issues (SPEC-217 VSI-001, VSI-004).
         if job.key == super::findings::SECURITY_JOB
-            && matches!(state, RunState::Passed | RunState::Failed)
+            && matches!(
+                state,
+                RunState::Passed | RunState::Failed | RunState::Skipped
+            )
         {
-            for note in self.ci_file_findings(sandbox, run, &ring.text()).await {
+            for note in self.ci_follow_findings(sandbox, run, &ring.text()).await {
                 ring.push_str(&format!("{note}\n"));
             }
         }

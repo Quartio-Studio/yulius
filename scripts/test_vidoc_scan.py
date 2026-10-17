@@ -770,10 +770,22 @@ class Policy(Scanning):
                                  env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
         self.assertEqual(code, 0, output)
         [finding] = ci_findings(output)
-        self.assertEqual(sorted(finding), ["detail", "file", "fingerprint", "line", "severity",
-                                           "title"])
+        self.assertEqual(sorted(finding), ["anchored", "detail", "file", "fingerprint", "line",
+                                           "severity", "title"])
+        self.assertTrue(finding["anchored"], "its fingerprint names its line's text")
         self.assertEqual((finding["severity"], finding["file"], finding["line"]),
                          ("medium", "a.py", 1))
+
+    def test_the_fingerprint_is_the_one_yulius_recomputes(self):
+        # The same constant is asserted by yulius-app's ci::findings tests: Yulius closes an issue
+        # once no line of the file on the integration branch has its fingerprint.
+        finding = vidoc_scan.Finding("medium", "src/a.rs", 2, "T", "d")
+        vidoc_scan.classify(finding, None, {"src/a.rs": ["fn a() {}", "  let  x =\tinput; "]})
+        self.assertEqual(finding.fingerprint, "bdc84ab0dda861f0")
+        self.assertTrue(finding.anchored)
+        blank = vidoc_scan.Finding("low", "src/a.rs", 1, "Weak  Check", "d")
+        vidoc_scan.classify(blank, None, {"src/a.rs": ["   "]})
+        self.assertFalse(blank.anchored, "a blank line falls back to the title")
 
     def test_outside_findings_are_not_printed_for_issues_without_ci_mode(self):
         base = "x = 1  # vidoc:medium\n" + FILLER

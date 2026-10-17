@@ -545,6 +545,57 @@ async fn a_branch_is_guarded_only_by_rules_the_token_cannot_bypass() -> TestResu
     Ok(())
 }
 
+/// SPEC-217 VSI-004: an issue is reopened or closed with a comment saying why, and left alone
+/// when it already is in that state.
+#[tokio::test]
+async fn issues_are_reopened_and_closed_with_a_comment() -> TestResult {
+    let (fake, client) = setup().await?;
+    fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let issue = NewIssue {
+        title: "Weak check".into(),
+        body: "b".into(),
+        labels: Vec::new(),
+    };
+    let opened = client.create_issue(&token, "acme", "app", &issue).await?;
+    assert!(
+        !client
+            .set_issue_state(&token, "acme", "app", opened.number, true, "still here")
+            .await?,
+        "already open"
+    );
+    assert!(
+        client
+            .set_issue_state(
+                &token,
+                "acme",
+                "app",
+                opened.number,
+                false,
+                "the line is gone"
+            )
+            .await?
+    );
+    let stored = &fake.issues("acme", "app")[0];
+    assert_eq!(stored["state"], "closed");
+    assert_eq!(stored["comments"][0], "the line is gone");
+    assert!(
+        client
+            .set_issue_state(&token, "acme", "app", opened.number, true, "reported again")
+            .await?
+    );
+    assert_eq!(fake.issues("acme", "app")[0]["state"], "open");
+    assert!(matches!(
+        client
+            .set_issue_state(&token, "acme", "app", 99, false, "x")
+            .await,
+        Err(GitHubError::NotFound)
+    ));
+    Ok(())
+}
+
 /// DLV-008 (#139): agents log issues with Definition-of-Ready labels; labels the repository does
 /// not have yet are created first, existing ones are reused, and bad input never reaches GitHub.
 #[tokio::test]

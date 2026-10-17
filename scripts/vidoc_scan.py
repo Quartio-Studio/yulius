@@ -172,6 +172,9 @@ class Finding:
     ignored: object = None
     scope: str = "change"
     fingerprint: str = ""
+    # The fingerprint names the line's text (else the title): Yulius recomputes it to tell
+    # whether the line is still there.
+    anchored: bool = False
 
     def where(self):
         return f"{self.file}:{self.line}" if self.line else self.file
@@ -183,7 +186,7 @@ class Finding:
     def as_json(self):
         out = {"severity": self.severity, "file": self.file, "line": self.line,
                "title": self.title, "detail": self.detail, "scope": self.scope,
-               "fingerprint": self.fingerprint}
+               "fingerprint": self.fingerprint, "anchored": self.anchored}
         if self.ignored:
             out["ignored"] = self.ignored
         return out
@@ -364,6 +367,7 @@ def classify(finding, changes, lines):
         text = " ".join(file_lines[finding.line - 1].split())
     basis = f"line:{text}" if text else "title:" + " ".join(finding.title.lower().split())
     finding.fingerprint = hashlib.sha256(f"{finding.file}\n{basis}".encode()).hexdigest()[:16]
+    finding.anchored = bool(text)
     if changes is None or finding.file in changes.new:
         finding.scope = "change"
     elif finding.line is None:
@@ -782,7 +786,8 @@ def run(args, env, root, sleep, out):
         if args.ci:
             for finding in outside:
                 record = {k: v for k, v in finding.as_json().items()
-                          if k in ("severity", "file", "line", "title", "detail", "fingerprint")}
+                          if k in ("severity", "file", "line", "title", "detail", "fingerprint",
+                                   "anchored")}
                 print(f"{FINDING_MARK} {json.dumps(record, ensure_ascii=True)}", file=out)
     for finding in ignored:
         print(f"  ignored [{finding.severity}] {finding.where()} {finding.title}: {finding.ignored}",

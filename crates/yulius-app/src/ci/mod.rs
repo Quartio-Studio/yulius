@@ -119,6 +119,21 @@ impl Default for CiSettings {
     }
 }
 
+/// A Vidoc finding outside a change that Yulius CI filed as an issue (SPEC-217 VSI-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiledFinding {
+    /// The scanner's fingerprint.
+    pub fingerprint: String,
+    /// The file it is in.
+    pub file: String,
+    /// The fingerprint names the text of a line of `file` (else the finding's title).
+    pub anchored: bool,
+    /// Its issue.
+    pub issue: u64,
+    /// Yulius closed the issue: the code is gone from the integration branch.
+    pub resolved: bool,
+}
+
 /// One CI run (one commit).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiRunRecord {

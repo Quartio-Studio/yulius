@@ -28,6 +28,11 @@ struct WireIssue {
     html_url: String,
 }
 
+#[derive(Deserialize)]
+struct WireIssueState {
+    state: String,
+}
+
 fn invalid(what: &'static str, reason: &str) -> GitHubError {
     GitHubError::InvalidInput {
         what,
@@ -122,5 +127,49 @@ impl GitHubClient {
             number: wire.number,
             url: wire.html_url,
         })
+    }
+
+    /// Reopens (`open`) or closes issue `number`, first adding `comment` (why), unless it already
+    /// is in that state. Returns whether it changed (SPEC-217 VSI-004).
+    ///
+    /// # Errors
+    /// [`GitHubError::InvalidInput`] for an empty or oversized comment,
+    /// [`GitHubError::NotFound`] for no such issue, or other typed errors.
+    pub async fn set_issue_state(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        open: bool,
+        comment: &str,
+    ) -> Result<bool, GitHubError> {
+        validate::owner(owner)?;
+        validate::repo_name(repo)?;
+        if comment.trim().is_empty() || comment.len() > MAX_ISSUE_BODY_BYTES {
+            return Err(invalid("issue comment", "empty or longer than 64 KiB"));
+        }
+        let number = number.to_string();
+        let url = self.api_url(&["repos", owner, repo, "issues", &number])?;
+        let current: WireIssueState = self.get_json(url.clone(), Some(token)).await?;
+        if (current.state == "open") == open {
+            return Ok(false);
+        }
+        let comments = self.api_url(&["repos", owner, repo, "issues", &number, "comments"])?;
+        self.send_json::<serde_json::Value>(
+            Method::POST,
+            comments,
+            Some(token),
+            serde_json::json!({"body": comment}),
+        )
+        .await?;
+        let state = if open {
+            serde_json::json!({"state": "open"})
+        } else {
+            serde_json::json!({"state": "closed", "state_reason": "completed"})
+        };
+        self.send_json::<serde_json::Value>(Method::PATCH, url, Some(token), state)
+            .await?;
+        Ok(true)
     }
 }

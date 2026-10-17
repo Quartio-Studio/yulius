@@ -418,6 +418,17 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         issue: &NewIssue,
     ) -> AppResult<GhIssue>;
+    /// Reopens (`open`) or closes issue `number`, first commenting `comment`, unless it already
+    /// is in that state; whether it changed (SPEC-217 VSI-004).
+    async fn set_issue_state(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        open: bool,
+        comment: &str,
+    ) -> AppResult<bool>;
     /// Gets a pull request.
     async fn get_pull(
         &self,

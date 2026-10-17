@@ -1494,9 +1494,35 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 "title": body["title"],
                 "body": body["body"],
                 "labels": labels,
+                "state": "open",
+                "comments": [],
             });
             repo.issues.push(issue.clone());
             reply(201, issue)
+        }
+        ("GET" | "PATCH", ["issues", number]) | ("POST", ["issues", number, "comments"]) => {
+            let Some(issue) = repo
+                .issues
+                .iter_mut()
+                .find(|i| number.parse::<u64>().is_ok_and(|n| i["number"] == n))
+            else {
+                return error(404, "Not Found");
+            };
+            match method.as_str() {
+                "PATCH" => {
+                    if let Some(state) = body["state"].as_str() {
+                        issue["state"] = json!(state);
+                    }
+                }
+                "POST" => {
+                    if let Some(list) = issue["comments"].as_array_mut() {
+                        list.push(body["body"].clone());
+                    }
+                    return reply(201, json!({"body": body["body"]}));
+                }
+                _ => {}
+            }
+            reply(200, issue.clone())
         }
         ("GET", ["pulls"]) => {
             let wanted = query.get("state").map_or("open", String::as_str);

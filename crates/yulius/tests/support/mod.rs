@@ -78,6 +78,11 @@ pub struct FakeGitHub {
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
     /// Issues opened (DLV-008).
     pub issues: Mutex<Vec<(String, NewIssue)>>,
+    /// Issues closed (number to the comments said, in order) by `set_issue_state`; any other
+    /// issue is open.
+    pub closed_issues: Mutex<HashMap<u64, Vec<String>>>,
+    /// Every comment `set_issue_state` added: (number, comment).
+    pub issue_comments: Mutex<Vec<(u64, String)>>,
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
@@ -279,6 +284,32 @@ impl GitHubPort for FakeGitHub {
             number,
             html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
         })
+    }
+    async fn set_issue_state(
+        &self,
+        token: &Secret,
+        _owner: &str,
+        _repo: &str,
+        number: u64,
+        open: bool,
+        comment: &str,
+    ) -> AppResult<bool> {
+        let mut closed = self.closed_issues.lock().map_err(AppError::internal)?;
+        if closed.contains_key(&number) != open {
+            return Ok(false);
+        }
+        if open {
+            closed.remove(&number);
+        } else {
+            closed.insert(number, vec![comment.to_owned()]);
+        }
+        drop(closed);
+        self.issue_comments
+            .lock()
+            .map_err(AppError::internal)?
+            .push((number, comment.to_owned()));
+        self.record(token, format!("set_issue_state #{number} open={open}"));
+        Ok(true)
     }
     async fn create_pull(
         &self,

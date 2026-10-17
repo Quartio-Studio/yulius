@@ -1768,8 +1768,85 @@ fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
     format!(
         "::yulius-finding {}\n",
         serde_json::json!({"severity": severity, "file": file, "line": 4,
-            "title": "Weak check", "detail": "Fix it.", "fingerprint": fingerprint})
+            "title": "Weak check", "detail": "Fix it.", "fingerprint": fingerprint,
+            "anchored": true})
     )
+}
+
+/// SPEC-217 VSI-004: a filed finding's issue follows the code. Closed while Vidoc still reports
+/// the finding, it is reopened; once no line of its file on the integration branch has its
+/// fingerprint (here: the file is gone), it is closed; while its line is still there, it stays
+/// open.
+#[tokio::test]
+async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_gone() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    // `# app` is README.md's line on dev; src/gone.rs is not on dev.
+    let readme = "8464a81d5a585dd2";
+    let both = finding_line("medium", "README.md", readme)
+        + &finding_line("low", "src/gone.rs", "fedcba9876543210");
+    f.push_feature("findings.txt", Some(&both))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 2);
+    // A person closes #101 without fixing it; the next head reports only that finding.
+    f.h.github
+        .closed_issues
+        .lock()
+        .map_err(|_| "closed")?
+        .insert(101, vec!["won't fix".into()]);
+    let sha = f.push_feature(
+        "findings.txt",
+        Some(&finding_line("medium", "README.md", readme)),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains(&format!(
+            "reopened issue #101: finding {readme} is reported again"
+        )),
+        "{security}"
+    );
+    assert!(
+        security
+            .contains("closed issue #102: the code of finding fedcba9876543210 is gone from dev"),
+        "{security}"
+    );
+    let closed: Vec<u64> =
+        f.h.github
+            .closed_issues
+            .lock()
+            .map_err(|_| "closed")?
+            .keys()
+            .copied()
+            .collect();
+    assert_eq!(closed, [102], "#101 reopened, #102 closed");
+    // A head that reports nothing: README.md's line is still on dev, so #101 stays open.
+    let quiet = f.push_feature("findings.txt", Some("nothing\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &quiet).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(!security.contains("closed issue #101"), "{security}");
+    assert_eq!(
+        f.h.github.issues.lock().map_err(|_| "issues")?.len(),
+        2,
+        "nothing refiled"
+    );
+    assert_eq!(
+        f.h.github
+            .issue_comments
+            .lock()
+            .map_err(|_| "comments")?
+            .len(),
+        2,
+        "one reopening, one closing"
+    );
+    Ok(())
 }
 
 /// SPEC-217 VSI-001..003: the `security` job's findings outside the change become one issue per
@@ -1808,12 +1885,20 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
     let issues = filed(&f)?;
     assert_eq!(
         issues.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
-        ["security: Weak check in src/a.rs", "security: Weak check in src/b.rs"],
+        [
+            "security: Weak check in src/a.rs",
+            "security: Weak check in src/b.rs"
+        ],
         "one issue per valid finding of the security job only: {security}"
     );
     assert_eq!(
         issues[0].1,
-        ["type: bug", "priority: medium", "area: security", "source: vidoc"]
+        [
+            "type: bug",
+            "priority: medium",
+            "area: security",
+            "source: vidoc"
+        ]
     );
     assert!(
         security.contains("[yulius] filed issue #101 for the medium finding 0123456789abcdef"),
