@@ -19,6 +19,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Its clone, sessions, transcripts and export stay, as one item
   only the superadmin deletes. Settings → Instance → Leftovers and `yulius leftovers list|delete`
   list and delete them by hand.
+- Yulius builds on macOS again, and CI keeps it so (SPEC-214, ADR-0169, task #201, fixes #636).
+  #620 had put Linux-only calls in the sandbox and app crates (a build lock through a Linux-only
+  crate, the Docker engine's `O_PATH` socket, a file mode's width), so the `yulius` CLI could not
+  be installed on a Mac. They now compile there, and `scripts/dev ci` compiles every target for
+  macOS (`scripts/dev macos`), with a pinned zig compiling the vendored C on Linux. Linking and
+  tests on a Mac stay a manual check before a release.
 - An agent's secret request shows on an open Secrets page at once (SPEC-209, task #196, fixes
   #631). When an agent or a Superagent asked for a secret's hosts or a `.env` copy, the Agent
   secrets page already open showed no request and no Allow until it was reloaded: nothing told

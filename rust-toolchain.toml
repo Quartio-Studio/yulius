@@ -2,3 +2,5 @@
 channel = "1.99.0"
 profile = "minimal"
 components = ["clippy", "rustfmt", "rust-analyzer"]
+# The gate compiles every target for macOS too (scripts/dev macos, ADR-0169).
+targets = ["aarch64-apple-darwin"]

@@ -540,9 +540,9 @@ pub fn lock_builds(dir: &Path) -> io::Result<std::fs::File> {
         .truncate(false)
         .write(true)
         .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
         .open(dir.join(".build.lock"))?;
-    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
+    file.lock()?;
     Ok(file)
 }
 
