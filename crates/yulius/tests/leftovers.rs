@@ -29,6 +29,7 @@ use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::leftovers::{Kind, REMOVED_KEEP_MS};
 use yulius_domain::task::TaskStatus;
+use yulius_domain::time::Timestamp;
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -624,5 +625,65 @@ async fn the_superadmin_lists_rescans_and_deletes_through_the_api() -> BoxResult
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     settled(&w.h, &admin).await?;
     assert!(!old.exists(), "the person's explicit delete");
+    Ok(())
+}
+
+/// Waits (bounded) until `path` is gone; `false` after `limit`.
+async fn gone_within(path: &Path, limit: Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while path.exists() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
+
+/// LFT-009: the automatic round runs at start (two minutes in, so after every update) and
+/// again every period (an hour); starting writes the CLI's key (0600). The test shortens the
+/// periods to 100 ms and 600 ms.
+#[tokio::test]
+async fn the_round_runs_at_start_and_every_period() -> BoxResult<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let w = world().await?;
+    let old = w.sandbox("old").await?;
+    w.remove("old").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+
+    let started = std::time::Instant::now();
+    w.h.app
+        .start_leftovers_rounds_with(Duration::from_millis(100), Duration::from_millis(600));
+    let key = w.at(yulius_app::leftovers::CLI_KEY_FILE);
+    assert_eq!(std::fs::metadata(&key)?.permissions().mode() & 0o777, 0o600);
+    let next = w.h.app.leftovers_overview().await.next_auto_at;
+    assert_eq!(
+        next.as_deref(),
+        Some(yulius_app::auth::rfc3339(Timestamp(w.h.app.now().0 + 100)).as_str())
+    );
+    assert!(
+        gone_within(&old.join("ci"), Duration::from_secs(10)).await,
+        "the round at start"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "not before its delay"
+    );
+
+    // A leftover made after that round waits for the next one.
+    let stray = w.at("runs/a-ended");
+    write(&stray.join("launch.json"), "{}")?;
+    let now_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    w.h.clock
+        .0
+        .store(now_ms + 2 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+    assert!(
+        gone_within(&stray, Duration::from_secs(10)).await,
+        "the next round"
+    );
     Ok(())
 }

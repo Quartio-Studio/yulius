@@ -1069,26 +1069,28 @@ impl App {
 
     /// The automatic rounds: at start (after [`AUTO_FIRST`]) and every hour. The CLI's key is
     /// written first.
-    pub(crate) fn start_leftovers_rounds(self: &Arc<Self>) {
+    pub fn start_leftovers_rounds(self: &Arc<Self>) {
+        let every = Duration::from_millis(u64::try_from(AUTO_EVERY_MS).unwrap_or(u64::MAX));
+        self.start_leftovers_rounds_with(AUTO_FIRST, every);
+    }
+
+    /// [`App::start_leftovers_rounds`] with its periods (tests shorten them).
+    pub fn start_leftovers_rounds_with(self: &Arc<Self>, first: Duration, every: Duration) {
         if let Err(err) = self.write_leftovers_key() {
             tracing::warn!(error = %err, "cannot write the key of yulius leftovers");
         }
+        let ms = |d: Duration| i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
+        let next = Timestamp(self.now().0.saturating_add(ms(first)));
+        self.with_leftovers(|inner| inner.next_auto_at = Some(next));
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            let every_ms = AUTO_EVERY_MS;
-            let first_ms = i64::try_from(AUTO_FIRST.as_millis()).unwrap_or(every_ms);
-            app.with_leftovers(|inner| {
-                inner.next_auto_at = Some(Timestamp(app.now().0 + first_ms))
-            });
-            tokio::time::sleep(AUTO_FIRST).await;
-            let mut every =
-                tokio::time::interval(Duration::from_millis(u64::try_from(every_ms).unwrap_or(1)));
+            tokio::time::sleep(first).await;
+            let mut ticks = tokio::time::interval(every);
             loop {
-                every.tick().await;
+                ticks.tick().await;
                 app.run_leftovers_round().await;
-                app.with_leftovers(|inner| {
-                    inner.next_auto_at = Some(Timestamp(app.now().0 + every_ms));
-                });
+                let next = Timestamp(app.now().0.saturating_add(ms(every)));
+                app.with_leftovers(|inner| inner.next_auto_at = Some(next));
             }
         });
     }
