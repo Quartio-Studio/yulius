@@ -1679,3 +1679,39 @@ impl PullAnnouncements {
         count
     }
 }
+
+/// The `secrets.updated` events (SPEC-209) on an event bus subscription, checking that each is
+/// scoped like the secret it names (a sandbox's viewers, or everyone for a secret of every
+/// sandbox) and carries nothing else.
+pub struct SecretAnnouncements {
+    events: tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+}
+
+impl SecretAnnouncements {
+    /// Subscribes to `app`'s events now.
+    pub fn new(app: &App) -> Self {
+        Self {
+            events: app.events.subscribe(),
+        }
+    }
+
+    /// The sandboxes of the announcements delivered since the last call (`None`: every sandbox).
+    pub fn take(&mut self) -> Vec<Option<String>> {
+        let mut sandboxes = Vec::new();
+        while let Ok(envelope) = self.events.try_recv() {
+            let yulius_contracts::events::UiEvent::SecretsUpdated { sandbox_id } = &envelope.event
+            else {
+                continue;
+            };
+            assert_eq!(
+                envelope.sandbox.as_ref().map(ToString::to_string).as_ref(),
+                sandbox_id.as_ref(),
+                "scoped like the secret"
+            );
+            assert!(!envelope.admin_only && !envelope.writers_only);
+            assert!(envelope.user.is_none());
+            sandboxes.push(sandbox_id.clone());
+        }
+        sandboxes
+    }
+}

@@ -726,7 +726,10 @@ An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Sinc
 (ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
 nothing. The agent works out the service's host and proposes it; the request waits on the secret
 (`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
-so an agent misled by injected content cannot send a secret to another server.
+so an agent misled by injected content cannot send a secret to another server. Storing a host or
+`.env` request publishes `secrets.updated` to the secret's sandbox (to every sandbox for an
+instance-wide secret), so an open Secrets page reads its list again and shows Allow without a
+reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
 
 ```mermaid
 sequenceDiagram
@@ -739,6 +742,7 @@ sequenceDiagram
     UI->>App: POST agent-secrets (hosts [], injection none)
     A->>App: secrets_list, then secret_request_hosts(model.vidocsecurity.com)
     App-->>A: requested, waiting for a person (task needs attention)
+    App-->>UI: secrets.updated (open page reads the list again, shows Allow)
     A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: forwarded without the secret (not bound yet)
     P->>UI: Allow

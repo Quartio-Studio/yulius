@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- An agent's secret request shows on an open Secrets page at once (SPEC-209, task #196, fixes
+  #631). When an agent or a Superagent asked for a secret's hosts or a `.env` copy, the Agent
+  secrets page already open showed no request and no Allow until it was reloaded: nothing told
+  the browser. The request now publishes `secrets.updated` for the secret's sandbox (every
+  sandbox for a secret of every sandbox), and the page reads its list again on it and after a
+  reconnect, keeping what it shows meanwhile.
 - The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
   ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
   check blocked commands the person asked for and its "Teach auto mode about your environment?"
