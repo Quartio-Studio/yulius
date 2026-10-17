@@ -173,7 +173,7 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
     })?;
     let file = format!(
         "# For tests\nNEW_KEY=sk_live_new_value_1\nOLD_KEY=existing-value-2\nGLOBAL_KEY=after-value-4\n\
-         lower_key=refused-value-3\nDEPLOY_KEY='{PEM}'\nNOTE=\"multi-line-value\nsecond\"\nTINY=tiny-v1\n"
+         lower_key=refused-value-3\nDEPLOY_KEY='{PEM}'\nTRAILING=\"trailing-line-value\n\"\nNOTE=\"multi-line-value\nsecond\"\nTINY=tiny-v1\n"
     );
     let mut terminal = Terminal::answering(&["YES"]);
     let summary = run(
@@ -185,7 +185,7 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
 
     assert_eq!(
         summary.imported,
-        vec!["NEW_KEY", "GLOBAL_KEY", "DEPLOY_KEY"]
+        vec!["NEW_KEY", "GLOBAL_KEY", "DEPLOY_KEY", "TRAILING"]
     );
     assert_eq!(summary.existing, vec!["OLD_KEY"]);
     assert_eq!(summary.invalid, vec!["lower_key", "NOTE", "TINY"]);
@@ -199,6 +199,13 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
         .find(|(_, i)| i.name == "DEPLOY_KEY")
         .map(|(_, i)| i.value.clone());
     assert_eq!(key, Some(PEM.replace('\n', "\\n")));
+    // SPEC-211 SCF-003: a value whose only line break ends it is stored without it, as a file
+    // is (the shared conversion).
+    let trailing = created
+        .iter()
+        .find(|(_, i)| i.name == "TRAILING")
+        .map(|(_, i)| i.value.clone());
+    assert_eq!(trailing.as_deref(), Some("trailing-line-value"));
     assert!(
         terminal
             .said
