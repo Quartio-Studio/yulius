@@ -1,11 +1,11 @@
 ---
 yulius-task: 67f022d5-fa83-485c-8405-ff108aa3ad0a
-status: in-progress
+status: done
 ---
 
 # SPEC-203: Docker in sandboxes works out of the box on a fresh install and after every update
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #188
 Scope authorization: task #188 (requested by MrFishPL): "Make it work by default: a fresh install
@@ -173,7 +173,7 @@ Code today:
 - [x] Fresh-install run in an Ubuntu 24.04 container
 - [x] ADR-0162, operations guide, architecture and changes updated
 - [x] Gates green and review round 1 answered
-- [ ] Review round 2 approved and delivered on green CI
+- [x] Review round 2 approved and delivered on green CI
 
 ## Acceptance criteria
 
@@ -321,5 +321,6 @@ Code today:
     rebuilt, since the fingerprint does not see `dockerd` outside dpkg, or a damaged base.
     `only_a_build_finished_during_the_wait_is_reused` failed first. Kept: the items keep their
     stable names ("yulius.service") whatever `--service` names; their text names the unit.
+  - Round 4 at a4420905: approve; the round-3 minor confirmed fixed, nothing new.
   - Kept by choice: Docker's key is not pinned by fingerprint. It is fetched over HTTPS from
     `download.docker.com`, as Docker documents, and apt checks every package against it.
