@@ -34,6 +34,7 @@
 pub mod cd;
 mod disk_wait;
 mod exec;
+mod findings;
 pub mod hygiene;
 pub(crate) mod playground;
 mod tools;

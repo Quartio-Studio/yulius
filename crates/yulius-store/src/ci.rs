@@ -414,6 +414,53 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn claim_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        self.call(move |c| {
+            let added = c
+                .execute(
+                    "INSERT OR IGNORE INTO security_findings (sandbox_id, fingerprint, claimed_at) \
+                     VALUES (?1, ?2, ?3)",
+                    params![sandbox, fingerprint, at.0],
+                )
+                .map_err(db)?;
+            Ok(added == 1)
+        })
+        .await
+    }
+
+    async fn settle_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        issue: Option<u64>,
+    ) -> AppResult<()> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        let issue = issue.map(i64::try_from).transpose().map_err(AppError::internal)?;
+        self.call(move |c| {
+            match issue {
+                Some(number) => c.execute(
+                    "UPDATE security_findings SET issue_number = ?3 \
+                     WHERE sandbox_id = ?1 AND fingerprint = ?2",
+                    params![sandbox, fingerprint, number],
+                ),
+                None => c.execute(
+                    "DELETE FROM security_findings \
+                     WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number IS NULL",
+                    params![sandbox, fingerprint],
+                ),
+            }
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
             let changed = c
@@ -644,6 +691,24 @@ mod tests {
         assert_eq!(store.prune_ci_runs(2, Timestamp(100)).await?, 1);
         assert!(store.ci_run("m1").await?.is_some(), "main's verdict stays");
         assert!(store.ci_run("m0").await?.is_none());
+        Ok(())
+    }
+
+    /// SPEC-217 VSI-002: a fingerprint is claimed once per sandbox; a failed filing releases it,
+    /// a filed one stays.
+    #[tokio::test]
+    async fn security_findings_are_claimed_once_per_sandbox() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let (one, two) = (SandboxId::parse("s1")?, SandboxId::parse("s2")?);
+        let at = Timestamp(5);
+        assert!(store.claim_security_finding(&one, "0123456789abcdef", at).await?);
+        assert!(!store.claim_security_finding(&one, "0123456789abcdef", at).await?);
+        assert!(store.claim_security_finding(&two, "0123456789abcdef", at).await?, "per sandbox");
+        store.settle_security_finding(&one, "0123456789abcdef", None).await?;
+        assert!(store.claim_security_finding(&one, "0123456789abcdef", at).await?, "released");
+        store.settle_security_finding(&one, "0123456789abcdef", Some(42)).await?;
+        store.settle_security_finding(&one, "0123456789abcdef", None).await?;
+        assert!(!store.claim_security_finding(&one, "0123456789abcdef", at).await?, "filed stays");
         Ok(())
     }
 

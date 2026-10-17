@@ -1763,6 +1763,76 @@ async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
     Ok(())
 }
 
+/// One `::yulius-finding` line, as the security scan prints it (SPEC-217 VSP-004).
+fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
+    format!(
+        "::yulius-finding {}\n",
+        serde_json::json!({"severity": severity, "file": file, "line": 4,
+            "title": "Weak check", "detail": "Fix it.", "fingerprint": fingerprint})
+    )
+}
+
+/// SPEC-217 VSI-001..003: the `security` job's findings outside the change become one issue per
+/// fingerprint, with the Definition-of-Ready labels; a later run files nothing again, and
+/// another job's lines file nothing.
+#[tokio::test]
+async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n\n\
+         [[ci.jobs]]\nname = \"other\"\ncommand = \"cat other.txt\"\n"
+            .to_owned()
+    })
+    .await?;
+    let lines = finding_line("medium", "src/a.rs", "0123456789abcdef")
+        + &finding_line("low", "src/b.rs", "fedcba9876543210")
+        + &finding_line("high", "src/c.rs", "1111111111111111");
+    f.push_feature("findings.txt", Some(&lines))?;
+    let sha = f.push_feature(
+        "other.txt",
+        Some(&finding_line("low", "src/d.rs", "2222222222222222")),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let filed = |f: &Fixture| -> BoxResult<Vec<(String, Vec<String>)>> {
+        Ok(f.h
+            .github
+            .issues
+            .lock()
+            .map_err(|_| "issues")?
+            .iter()
+            .map(|(_, issue)| (issue.title.clone(), issue.labels.clone()))
+            .collect())
+    };
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    let issues = filed(&f)?;
+    assert_eq!(
+        issues.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+        ["security: Weak check in src/a.rs", "security: Weak check in src/b.rs"],
+        "one issue per valid finding of the security job only: {security}"
+    );
+    assert_eq!(
+        issues[0].1,
+        ["type: bug", "priority: medium", "area: security", "source: vidoc"]
+    );
+    assert!(
+        security.contains("[yulius] filed issue #101 for the medium finding 0123456789abcdef"),
+        "{security}"
+    );
+    // The next head reports the same findings: nothing is filed again.
+    let next = f.push_feature("more.txt", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(filed(&f)?.len(), 2, "filed once");
+    let outputs = job_outputs(&f, &next).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("2 finding(s) outside the change were filed before"),
+        "{security}"
+    );
+    Ok(())
+}
+
 /// SPEC-195 VSC-001 (review round 1): inside the containment too, a job finds `yulius` (bound
 /// read-only) and runs the embedded scan.
 #[tokio::test]

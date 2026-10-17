@@ -492,6 +492,22 @@ pub trait CiStore: Send + Sync {
     /// Deletes finished runs (and their jobs) beyond the newest `keep` of each sandbox and
     /// those queued before `before`; returns how many runs were deleted.
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
+    /// Claims a Vidoc finding's `fingerprint` for `sandbox` before its issue is opened (SPEC-217
+    /// VSI-002); `false` when it was claimed or filed before.
+    async fn claim_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Records the issue a claimed finding was filed as, or, with `None` (opening it failed),
+    /// releases the claim so a later run files it.
+    async fn settle_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        issue: Option<u64>,
+    ) -> AppResult<()>;
 }
 
 /// CD (deployment) runs (SPEC-134, table `cd_runs`).
