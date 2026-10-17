@@ -3,3 +3,10 @@
 cargo-nextest = "0.9.146"
 cargo-deny = "0.20.2"
 cargo-shear = "1.14.0"
+
+# zig compiles the C that dependencies vendor (ring, SQLite) for the gate's macOS check on Linux
+# (ADR-0169; scripts/zig_macos.py). Official tarballs of ziglang.org/download and their SHA-256.
+[zig]
+version = "0.17.0"
+x86_64-linux = "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+aarch64-linux = "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8"
