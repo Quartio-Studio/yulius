@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-114](../../.ai/specs/SPEC-114-value-in-passwords-should-be-hidden-by-d.md).
+The hover copy and the kept Copy button are superseded by
+[0164](0164-a-secret-box-holds-its-text-and-an-always-visible-copy.md): one always-visible copy in the box.
 
 ## Context
 
