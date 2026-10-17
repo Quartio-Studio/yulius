@@ -1,11 +1,11 @@
 ---
 yulius-task: 338ed358-62f1-41df-a050-fdb829a22367
-status: draft
+status: done
 ---
 
 # SPEC-216: Agent secrets set themselves up by default; secrets belong to a sandbox unless team-wide
 
-Status: draft
+Status: done
 Date: 2026-10-17
 Owner: Yulius task #203
 Scope authorization: task #203, requested by MrFishPL: "Agent's secrets for default should allow
@@ -115,8 +115,8 @@ Two changes to the vault, one request:
 - [x] The Secrets page offers the option and the scopes, the mock and e2e follow
 - [x] The CLI imports team secrets into a sandbox or team-wide
 - [x] Review round 1 findings fixed test-first, dev merged
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -177,3 +177,58 @@ Two changes to the vault, one request:
 - **Self-set-up stays the CLI default too** (review M1), said in the list before `yes`, with
   `--confirm-hosts` to turn it off: the request asks for one default everywhere, with the choice
   at creation.
+
+## Evidence
+
+- **Tests that failed first.** Each new test was run before its change and failed for the
+  intended reason. `agents_bind_the_hosts_of_a_secret_they_set_up` failed because `auto_allow`
+  was null. `production_gets_a_secret_agents_set_up` failed with state `not_allowed`.
+  `team_secrets_belong_to_a_sandbox_unless_team_wide` got 404 (no route). The e2e test failed
+  because there was no "Let agents set it up" switch. The review round 2 stale-hosts PATCH got
+  422 (unknown `expect_hosts`).
+- **Tests that did not compile before their change.** `existing_secrets_are_assigned_to_every_sandbox_once`
+  needed `assign_vault_scopes`. The store guard test needed `vault_update(record, seen)`. The CLI
+  `--confirm-hosts` test needed the new target field.
+- **Existing tests that relied on a person allowing hosts** now opt out with `auto_allow: false`:
+  `cd.rs`, `cockpit.rs`, `local_ci.rs` and `secrets.rs`, including SPEC-209's tests merged from
+  dev.
+- **`scripts/dev ci`**, exit 0:
+  - at 1d1c2624: 2138 tests;
+  - at a6ced0ff (review round 1 fixes): 2142 tests;
+  - at cc98e45a (review round 2 fix): 2142 tests;
+  - at afa1579f, after merging dev #644 (bootstrap rerun first): 2144 tests passed, 18 skipped,
+    then docs.
+- **`cd e2e && npx e2e run`:**
+  - secrets, cd and phone suites, 35/35 at a6ced0ff;
+  - secrets suite, 20/20 at cc98e45a.
+- **`scripts/dev security` (Vidoc vidoc-1).** At 1d1c2624 it failed on one high finding: a
+  sandbox's team secret could be changed with view access. That is fixed in a6ced0ff (write
+  access is required). At a6ced0ff it exits 0 with no open critical or high finding. Its medium
+  and low findings are in code this change does not touch:
+  - `runtime.rs` egress cache and header building;
+  - the two-factor reset route and the internal routes;
+  - the `otpauth` link.
+- **Review, round 1** (fresh session, 1d1c2624): request changes. Own-code findings, all fixed:
+  - M1: the CLI now says that agents set the secrets up, and takes `--confirm-hosts`.
+  - M2: edits compare the hosts and `auto_allow` they read.
+  - m1/m2: store guard tests, and the waiting-host, `auto_allow_on` and removed-sandbox tests.
+  - m3: SCO-002 reconciled.
+  - m4: `docs/api.md` updated.
+  - m5: absent fields are not serialized.
+  - nits: assignment audits are best-effort; the update detail wording.
+  - Integration: `auto_bind` announces `secrets.updated`.
+  - Not changed: a sandbox's team import treats a team-wide title as new, which is correct, since
+    the scopes differ.
+- **Review, round 2** (fresh session, 1c0290f8): request changes on one major: an open Edit
+  dialog still dropped a host bound since it opened. Fixed test-first in cc98e45a: hosts are sent
+  only when changed, with `expect_hosts`, and the server answers 409. Also fixed:
+  - the empty-state Add button for readers;
+  - the SCO-005 wording;
+  - the ADR wrap.
+
+  Left as is: a sandbox reader adds team-wide team secrets from `/secrets`, not from the sandbox
+  page. That is consistent with the scope default; a nit.
+- **What could not be tested here:** the assignment against this instance's real vault and
+  sandboxes (it runs at the first start after the update), and the live Secrets page against a
+  running server (the page was tested against the mock).
+
