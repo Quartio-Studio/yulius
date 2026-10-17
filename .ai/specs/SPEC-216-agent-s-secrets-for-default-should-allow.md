@@ -113,6 +113,7 @@ Two changes to the vault, one request:
 - [x] Existing team-wide secrets are assigned to every sandbox once
 - [x] The Secrets page offers the option and the scopes, the mock and e2e follow
 - [x] The CLI imports team secrets into a sandbox or team-wide
+- [x] Review round 1 findings fixed test-first, dev merged
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
