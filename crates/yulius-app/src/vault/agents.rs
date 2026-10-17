@@ -314,6 +314,15 @@ impl App {
         }
         // SPEC-216 SSA-005 (review round 2): hosts edited from what the person saw, which an
         // agent may have changed since the dialog opened.
+        // Agents bind hosts of a secret they set up at any time: its hosts change only against
+        // those the editor saw (review round 4).
+        if patch.hosts.is_some() && patch.expect_hosts.is_none() && record.auto_allow {
+            return Err(AppError::Conflict(
+                "agents bind this secret's hosts themselves: send expect_hosts, the hosts you saw, \
+                 with the new hosts"
+                    .into(),
+            ));
+        }
         if let Some(seen) = &patch.expect_hosts {
             let seen = parse_hosts(seen).map_err(invalid)?;
             let bound: Vec<HostPattern> = record

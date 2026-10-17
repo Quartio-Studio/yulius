@@ -320,6 +320,37 @@ fn confirmed_hosts_are_asked_for_and_nothing_new_is_sent_by_default() -> TestRes
     Ok(())
 }
 
+/// SPEC-216 review round 4: outside a checkout, team secrets point to `--instance` (team-wide,
+/// what `--to team` did before) beside `--sandbox`.
+#[test]
+fn team_import_outside_a_checkout_names_both_ways() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let elsewhere = tempfile::tempdir()?;
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Team {
+            sandbox: None,
+            instance: false,
+        },
+        checkout: elsewhere.path().to_path_buf(),
+        source_file: None,
+    };
+    let mut terminal = Terminal::answering(&["yes"]);
+    match run(
+        &server,
+        "NEW_KEY=sk_live_new_value_1\n",
+        &options,
+        &mut terminal,
+    )? {
+        Err(SecretsImportError::Sandbox(message)) => {
+            assert!(message.contains("--sandbox"), "{message}");
+            assert!(message.contains("--instance"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    Ok(())
+}
+
 #[test]
 fn instance_scope_is_sent_and_checked_against_instance_secrets() -> TestResult {
     let server = FakeServer::start()?;

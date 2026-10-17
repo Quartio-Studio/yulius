@@ -2423,7 +2423,7 @@ function teamSecret(db, id, change = false) {
   const secret = vaultOf(db).team.find((s) => s.id === id) || fail(404, 'not_found', 'not found');
   if (secret.sandbox) {
     const sandbox = sandboxOf(db, secret.sandbox);
-    if (change) need(sandbox, 'write');
+    need(sandbox, change ? 'write' : 'read');
   }
   return secret;
 }

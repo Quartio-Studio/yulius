@@ -757,8 +757,7 @@ mod tests {
     /// SPEC-216 SCO-004: the upgrade to version 35 lists the team secrets (all of every sandbox
     /// then), and turns agents setting a secret up off for every existing one.
     #[tokio::test]
-    async fn the_upgrade_lists_the_secrets_of_every_sandbox()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn the_upgrade_lists_the_team_secrets() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("v34.db");
         {

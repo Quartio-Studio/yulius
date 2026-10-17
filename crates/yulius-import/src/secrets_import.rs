@@ -284,7 +284,15 @@ pub fn prepare_target(
             sandbox,
             instance: false,
         } => {
-            let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout)?;
+            // Team-wide is what `--to team` did before SPEC-216: name it beside --sandbox.
+            let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout).map_err(
+                |e| match e {
+                    SecretsImportError::Sandbox(message) => SecretsImportError::Sandbox(format!(
+                        "{message}; or --instance for team-wide team secrets"
+                    )),
+                    other => other,
+                },
+            )?;
             (
                 format!(
                     "the team secrets of {} (this sandbox only, for people)",

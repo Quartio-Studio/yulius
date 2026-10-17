@@ -25,8 +25,9 @@ Two changes to the vault, one request:
    allowance.
 2. **Every secret belongs to one sandbox unless it is team-wide.** Team secrets gain the scope
    agent secrets already have. A new team or agent secret belongs to the open sandbox unless the
-   person picks team-wide. The secrets that exist today apply to every sandbox; each becomes a
-   secret of every sandbox it applied to.
+   person picks team-wide. The team secrets that exist today apply to every sandbox; each becomes
+   a secret of every sandbox (agent secrets already were a sandbox's, unless an administrator made
+   them team-wide).
 
 ## Context
 
@@ -94,9 +95,9 @@ Two changes to the vault, one request:
   stays limited to instance administrators. The cards badge "This sandbox" or "Team-wide".
   Without an open sandbox the Team tab shows and adds team-wide secrets.
 - SCO-004. Existing team secrets are assigned to sandboxes once, at the first start after the
-  update: every team secret (all had no sandbox) is copied into each sandbox that exists (re-sealed under the copy's id, every other column kept), and the original
-  is removed, in one transaction per secret. Each copy is audited `vault.team.assign` or
-  `vault.agent.assign` by `yulius`. Secrets created later as team-wide are never assigned. With no
+  update: every team secret (all had no sandbox) is copied into each sandbox that exists
+  (re-sealed under the copy's id, every other column kept), and the original is removed, in one
+  transaction per secret. Each copy is audited `vault.team.assign` by `yulius`. Secrets created later as team-wide are never assigned. With no
   sandbox, a secret stays team-wide. A failure is logged and retried at the next start. Agent
   secrets were already a sandbox's by default; those an instance administrator made team-wide
   stay team-wide (review round 3): copies would let every sandbox's writers reveal, rebind and
@@ -247,6 +248,14 @@ Two changes to the vault, one request:
 
   Not changed: n1, the CLI's note against a server without SPEC-216 (stricter, the safe
   direction).
+- **Review, round 4** (fresh session, 3eafb8e4): approve, no blocker or major. Its minors and
+  nits are own code, so they were fixed rather than filed:
+  - Minor 1: outside a checkout, `--to team` now names `--instance` beside `--sandbox`.
+    Test-first: the new CLI test failed on the old message.
+  - Minor 2: changing the hosts of a secret agents set up now needs `expect_hosts` (409 without
+    it). Test-first: the PATCH answered 200 and dropped the bound host.
+  - Nits: the `vault.agent.assign` leftovers are gone; the Goal and the upgrade test name say
+    "team secrets"; the mock checks view access for a sandbox's team secret.
 - **What could not be tested here:** the assignment against this instance's real vault and
   sandboxes (it runs at the first start after the update), and the live Secrets page against a
   running server (the page was tested against the mock).

@@ -2327,10 +2327,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     .await?;
     let assigned = activity.body.as_array().map_or(0, |a| {
         a.iter()
-            .filter(|e| {
-                e["actor"] == "yulius"
-                    && (e["action"] == "vault.team.assign" || e["action"] == "vault.agent.assign")
-            })
+            .filter(|e| e["actor"] == "yulius" && e["action"] == "vault.team.assign")
             .count()
     });
     assert_eq!(assigned, 2, "{}", activity.body);
@@ -2514,13 +2511,13 @@ async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
         Some("Bearer yulius-secret-VIDOC_API_KEY"),
         "the placeholder stays: the host is not bound"
     );
-    // People may still bind (and unbind) hosts directly.
+    // People may still bind (and unbind) hosts directly, against the hosts they saw (SPEC-216).
     let id = created.body["id"].as_str().ok_or("id")?;
     let bound = call(
         &w.h.router,
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
-        Some(json!({"hosts": ["api.vidoc.test"]})),
+        Some(json!({"hosts": ["api.vidoc.test"], "expect_hosts": []})),
         &w.writer,
     )
     .await?;
@@ -2530,7 +2527,7 @@ async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
         &w.h.router,
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
-        Some(json!({"hosts": []})),
+        Some(json!({"hosts": [], "expect_hosts": ["api.vidoc.test"]})),
         &w.writer,
     )
     .await?;
@@ -2796,6 +2793,21 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     )
     .await?;
     assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    // Review round 4: hosts of a secret agents set up change only against those seen.
+    let unseen = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(unseen.status, StatusCode::CONFLICT, "{}", unseen.body);
+    assert!(
+        unseen.body.to_string().contains("expect_hosts"),
+        "{}",
+        unseen.body
+    );
     let kept = call(
         &w.h.router,
         Method::PATCH,

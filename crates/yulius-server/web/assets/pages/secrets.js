@@ -381,7 +381,6 @@ const ACTIONS = {
   'vault.agent.auto_allow_on': 'let agents set up',
   'vault.agent.auto_allow_off': 'stopped agents setting up',
   'vault.team.assign': 'gave a sandbox its copy of',
-  'vault.agent.assign': 'gave a sandbox its copy of agent secret',
 };
 
 // ---------------------------------------------------------------- agent secrets
