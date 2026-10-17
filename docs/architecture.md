@@ -735,12 +735,13 @@ agent misled by injected content cannot send that secret to another server; and 
 it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`.
 
 Every team and agent secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
-(`NULL`). A sandbox's team secret is for the people who can view that sandbox
-(`/api/sandboxes/{sid}/team-secrets`, 404 elsewhere, its activity hidden); team-wide ones are
-everyone's (`/api/team-secrets`). Schema version 35 listed the secrets that had no sandbox in
-`vault_scope_pending`; at the next start, before serving, `App::assign_vault_scopes`
-(`vault/scopes.rs`) re-seals each into a copy per sandbox and replaces it in one transaction
-(`vault_assign`), audited `vault.*.assign` by `yulius`.
+(`NULL`). A sandbox's team secret is read by the people who can view that sandbox
+(`/api/sandboxes/{sid}/team-secrets`, 404 elsewhere, its activity hidden) and changed by those
+who write to it; team-wide ones are everyone's (`/api/team-secrets`). Schema version 35 listed
+the team secrets (none had a sandbox) in `vault_scope_pending`; at the next start, before
+serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
+replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
+secrets an administrator made team-wide stay team-wide.
 
 Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
 secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its

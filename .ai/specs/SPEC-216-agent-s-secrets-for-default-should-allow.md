@@ -93,12 +93,14 @@ Two changes to the vault, one request:
   "This sandbox" (default) or "Team-wide (every sandbox)". For agent secrets the team-wide choice
   stays limited to instance administrators. The cards badge "This sandbox" or "Team-wide".
   Without an open sandbox the Team tab shows and adds team-wide secrets.
-- SCO-004. Existing secrets are assigned to sandboxes once, at the first start after the update:
-  every team secret and every agent secret with no sandbox at that moment is copied into each
-  sandbox that exists (re-sealed under the copy's id, every other column kept), and the original
+- SCO-004. Existing team secrets are assigned to sandboxes once, at the first start after the
+  update: every team secret (all had no sandbox) is copied into each sandbox that exists (re-sealed under the copy's id, every other column kept), and the original
   is removed, in one transaction per secret. Each copy is audited `vault.team.assign` or
   `vault.agent.assign` by `yulius`. Secrets created later as team-wide are never assigned. With no
-  sandbox, a secret stays team-wide. A failure is logged and retried at the next start.
+  sandbox, a secret stays team-wide. A failure is logged and retried at the next start. Agent
+  secrets were already a sandbox's by default; those an instance administrator made team-wide
+  stay team-wide (review round 3): copies would let every sandbox's writers reveal, rebind and
+  hand them to agents, which only administrators could.
 - SCO-005. `yulius secrets import --to team` imports into a sandbox (`--sandbox` or the
   checkout's remote) by default, and `--instance` imports team-wide, as for agent secrets.
   `--to agent` says before `yes` that agents set the secrets up, and `--confirm-hosts` turns that
@@ -131,9 +133,9 @@ Two changes to the vault, one request:
 - AC-5. A team secret created in sandbox s1 is listed in s1 with `scope: sandbox`, not in s2 nor
   in `/api/team-secrets`; a person who cannot view s1 gets 404 on it; a team-wide one is listed
   everywhere.
-- AC-6. After the assignment, a team secret and an instance-wide agent secret that existed before
-  are one secret per sandbox, each revealing the original value; the originals are gone; a
-  second run changes nothing.
+- AC-6. After the assignment, a team secret that existed before is one secret per sandbox, each
+  revealing the original value; the original is gone; an instance-wide agent secret is unchanged;
+  a second run changes nothing.
 - AC-7. On the Secrets page, the Add agent secret dialog has "Let agents set it up" checked, and
   both Add dialogs default to "This sandbox".
 
@@ -163,6 +165,10 @@ Two changes to the vault, one request:
   turns the option off and allows production as today (ADR-0109 unchanged for those). A
   self-set-up secret is reachable by agents and production alike: the person chose that at
   creation; `[cd.prod]` is still read only from the branch a person promotes.
+- **Team-wide agent secrets are not copied** (review round 3). Only instance administrators
+  manage an agent secret of every sandbox; a sandbox's copy is managed by its writers, so the
+  copy would widen who reveals it and who lets agents bind it. They already are the "team-wide"
+  half of the split; team secrets, which had no scope at all, are the ones assigned.
 - **Copy into every sandbox rather than pick one.** Nothing records which sandbox a team secret is
   for; a copy per sandbox keeps every sandbox working as before and makes each per sandbox, as
   asked. The cost (a rotation per copy) is said on the page through the scope badge; people
@@ -228,6 +234,17 @@ Two changes to the vault, one request:
 
   Left as is: a sandbox reader adds team-wide team secrets from `/secrets`, not from the sandbox
   page. That is consistent with the scope default; a nit.
+- **Review, round 3** (fresh session, 280ba635): the round 2 fix holds. One major, own code:
+  copying "every sandbox" agent secrets into each sandbox would let every sandbox writer reveal,
+  rebind and hand to agents a key only instance administrators managed. Fixed test-first: the
+  upgrade test failed with `["team", "wide"]`; schema 35 now lists team secrets only, and the
+  app test checks that the agent secret stays team-wide. Also fixed:
+  - m1: `changes.md` says earlier team-secret activity goes to administrators;
+  - n2: the mock compares `expect_hosts` as a set;
+  - n3: the ADR index order.
+
+  Not changed: n1, the CLI's note against a server without SPEC-216 (stricter, the safe
+  direction).
 - **What could not be tested here:** the assignment against this instance's real vault and
   sandboxes (it runs at the first start after the update), and the live Secrets page against a
   running server (the page was tested against the mock).

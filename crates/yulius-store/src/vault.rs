@@ -754,8 +754,8 @@ mod tests {
         Ok(store)
     }
 
-    /// SPEC-216 SCO-004: the upgrade to version 35 lists the secrets that applied to every
-    /// sandbox then, and turns agents setting a secret up off for every existing one.
+    /// SPEC-216 SCO-004: the upgrade to version 35 lists the team secrets (all of every sandbox
+    /// then), and turns agents setting a secret up off for every existing one.
     #[tokio::test]
     async fn the_upgrade_lists_the_secrets_of_every_sandbox()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -777,7 +777,9 @@ mod tests {
             )?;
         }
         let store = SqliteStore::open(&path)?;
-        assert_eq!(store.vault_scope_pending().await?, ["team", "wide"]);
+        // Review round 3: an administrator's team-wide agent secret stays team-wide; copies would
+        // let every sandbox's writers reveal and rebind it.
+        assert_eq!(store.vault_scope_pending().await?, ["team"]);
         assert!(!store.vault_get("own").await?.ok_or("own")?.auto_allow);
         Ok(())
     }

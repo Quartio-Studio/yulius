@@ -1,7 +1,8 @@
-//! Existing secrets join their sandboxes (SPEC-216 SCO-004): before SPEC-216 every team secret,
-//! and every agent secret of every sandbox, applied to the whole instance. The upgrade listed
-//! them (`vault_scope_pending`); at the next start each becomes one secret per sandbox, re-sealed
-//! under the copy's id, and the original is removed, in one transaction per secret.
+//! Existing team secrets join their sandboxes (SPEC-216 SCO-004): before SPEC-216 every team
+//! secret applied to the whole instance. The upgrade listed them (`vault_scope_pending`); at the
+//! next start each becomes one secret per sandbox, re-sealed under the copy's id, and the original
+//! is removed, in one transaction per secret. Agent secrets an administrator made team-wide stay
+//! so: copies would let every sandbox's writers reveal and rebind them.
 
 use super::aad;
 use crate::context::App;

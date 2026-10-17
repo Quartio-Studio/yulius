@@ -35,10 +35,12 @@ Team secrets were all instance-wide; agent secrets were a sandbox's or every san
   activity hidden) and changed by those who write to it; a team-wide one is every member's. New
   ones default to the open sandbox; team-wide is under More options (agent secrets: instance
   administrators only, as before).
-- **Existing secrets are copied into each sandbox once.** Schema version 35 lists the secrets with
-  no sandbox (`vault_scope_pending`). At the next start, before serving, each is re-sealed under a
-  new id per sandbox and replaced by those copies in one transaction (audited `vault.*.assign` by
-  `yulius`). With no sandbox it stays team-wide.
+- **Existing team secrets are copied into each sandbox once.** Schema version 35 lists the team
+  secrets (all had no sandbox) in `vault_scope_pending`. At the next start, before serving, each is
+  re-sealed under a new id per sandbox and replaced by those copies in one transaction (audited
+  `vault.team.assign` by `yulius`). With no sandbox it stays team-wide. Agent secrets an instance
+  administrator made team-wide stay team-wide: a sandbox's copy would be managed by its writers,
+  who could then reveal it, rebind it and let agents set it up.
 
 ## Alternatives
 
@@ -59,7 +61,7 @@ Team secrets were all instance-wide; agent secrets were a sandbox's or every san
 - An agent misled by injected content can send a self-set-up secret to a host it chose. The
   person accepts that per secret; the binding is audited with the asking task and shown on the
   card, and the tool descriptions tell agents to ask only for the service's documented hosts.
-- A secret that applied to every sandbox now exists once per sandbox: rotating it means each copy.
-  People delete the copies they do not need.
-- Activity entries of secrets removed by the assignment (and of deleted ones) are shown to
-  instance administrators only.
+- A team secret now exists once per sandbox: rotating it means each copy. People delete the copies
+  they do not need.
+- Activity entries of team secrets replaced by the assignment (and of deleted ones) are shown to
+  instance administrators only: members see their copies' history from the update on.

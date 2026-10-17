@@ -2214,9 +2214,9 @@ async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
     Ok(())
 }
 
-/// SPEC-216 SCO-004, AC-6: the secrets that applied to every sandbox when the upgrade ran become
-/// one secret per sandbox, each with the original value and state, once; team-wide secrets added
-/// afterwards stay team-wide.
+/// SPEC-216 SCO-004, AC-6: the team secrets (all of every sandbox) when the upgrade ran become one
+/// secret per sandbox, each with the original value and notes, once; team-wide ones added
+/// afterwards, and agent secrets an administrator made team-wide, stay team-wide.
 #[tokio::test]
 async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -2245,7 +2245,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
     // As the upgrade found them; s3 was removed (its copy would outlive it).
     rusqlite::Connection::open(&path)?.execute_batch(
-        "INSERT INTO vault_scope_pending (id) SELECT id FROM vault_secrets WHERE sandbox_id IS NULL;
+        "INSERT INTO vault_scope_pending (id) SELECT id FROM vault_secrets WHERE section = 'team' AND sandbox_id IS NULL;
          UPDATE sandboxes SET removed_at = 1 WHERE id = 's3';",
     )?;
     let later = call(
@@ -2258,7 +2258,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     .await?;
     assert_eq!(later.status, StatusCode::CREATED, "{}", later.body);
 
-    assert_eq!(h.app.assign_vault_scopes().await?, 2);
+    assert_eq!(h.app.assign_vault_scopes().await?, 1);
     assert_eq!(h.app.assign_vault_scopes().await?, 0, "only once");
     let in_removed: i64 = rusqlite::Connection::open(&path)?.query_row(
         "SELECT COUNT(*) FROM vault_secrets WHERE sandbox_id = 's3'",
@@ -2313,21 +2313,9 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
             .as_array()
             .and_then(|a| a.iter().find(|s| s["name"] == "GLOBAL_KEY"))
             .ok_or("GLOBAL_KEY")?;
-        assert_eq!(key["scope"], "sandbox", "{}", agents.body);
-        assert_eq!(key["hosts"], json!(["api.global.test"]));
-        assert_eq!(key["auto_allow"], false);
-        let revealed = call(
-            &h.router,
-            Method::POST,
-            &format!(
-                "/api/agent-secrets/{}/reveal",
-                key["id"].as_str().ok_or("id")?
-            ),
-            Some(json!({"purpose": "show"})),
-            &admin,
-        )
-        .await?;
-        assert_eq!(revealed.body["value"], STRIPE, "{}", revealed.body);
+        // An administrator's team-wide agent secret stays theirs (review round 3).
+        assert_eq!(key["scope"], "instance", "{}", agents.body);
+        assert_eq!(key["id"], global.body["id"]);
     }
     let activity = call(
         &h.router,
@@ -2345,7 +2333,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
             })
             .count()
     });
-    assert_eq!(assigned, 4, "{}", activity.body);
+    assert_eq!(assigned, 2, "{}", activity.body);
     Ok(())
 }
 

@@ -12,7 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   confirming; turned off (when adding it or in Edit), a person allows each as before. Secrets
   added earlier keep their confirmations. Team secrets now have a scope like agent secrets: the
   open sandbox's (the default, seen only by people who can view it) or team-wide. At the first
-  start after the update, every secret that applied to every sandbox becomes one copy per sandbox.
+  start after the update, every team secret becomes one copy per sandbox (their earlier activity
+  is then shown to instance administrators only); agent secrets an administrator made team-wide
+  stay team-wide.
   `yulius secrets import --to team` imports into the checkout's sandbox, `--instance` team-wide.
 - Yulius builds on macOS again, and CI keeps it so (SPEC-214, ADR-0169, task #201, fixes #636).
   #620 had put Linux-only calls in the sandbox and app crates (a build lock through a Linux-only
