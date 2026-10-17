@@ -54,6 +54,10 @@ that stays so; "everywhere" means every session Yulius launches.
   directory), not UTF-8, not a JSON object, or larger than 8 MiB, is left untouched and the launch
   goes on at once (Claude Code reports its own settings errors). The file is opened without
   following links or blocking: the agent owns its config dir, which the host prepares.
+- CON-005 (#634, found by this change's CI scan): every host-side read made before a launch, of
+  `.claude.json`, the diff-plugin stores and the worktree's `.git` and `commondir`, opens a
+  regular file only, without following a link or blocking. A `.claude.json` that is a link or a
+  FIFO fails the launch, as a corrupt one does. A store or `.git` file that is a link is ignored.
 - CON-004: Run settings (`--settings`) do not set `outputStyle`, so `/output-style` and a project's
   committed `outputStyle` keep working.
 
@@ -65,6 +69,8 @@ that stays so; "everywhere" means every session Yulius launches.
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Final review round approves the exact head
 - [x] Every gate green, docs and the changes log updated
+- [x] Host reads of the agent-owned config dir open regular files only
+- [ ] Review of the read fix approves the exact head
 
 ## Acceptance criteria
 
@@ -132,4 +138,10 @@ Live check: `claude -p "/output-style"` with `CLAUDE_CONFIG_DIR` pointing at a p
   was narrowed.
 - Review round 3 approved `79fd93d6`: all round-2 fixes verified, and CON-004 holds after dev's
   SPEC-208 merge. Its one nit, the name of the review step in this Plan, is applied here.
+- CI run `133f62e5` at `e62b2591` failed its `security` job. The finding was a high on the
+  pre-existing `read_small`, which follows links and blocks on FIFOs (#634).
+  - New test `claude_config::tests::host_reads_never_follow_a_link_or_wait_on_a_fifo` failed: the
+    `.claude.json` link was followed.
+  - The fix is one `open_regular` (`O_NOFOLLOW | O_NONBLOCK`, then an fstat regular-file check),
+    used by every reader, and the test now passes.
 - Not tested here: a full task run in the web UI after deployment (no deploy in this task).

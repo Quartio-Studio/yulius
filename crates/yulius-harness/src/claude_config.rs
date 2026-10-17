@@ -41,7 +41,8 @@ const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 /// Idempotent.
 ///
 /// # Errors
-/// I/O failures, or an existing config that is not a JSON object or is larger than 8 MiB.
+/// I/O failures, or an existing config that is not a regular file (a link, a FIFO), not a JSON
+/// object, or larger than 8 MiB.
 pub fn ensure_claude_config(
     config_dir: &Path,
     worktree: &Path,
@@ -53,8 +54,8 @@ pub fn ensure_claude_config(
         .mode(0o700)
         .create(config_dir)?;
     let path = config_dir.join(CLAUDE_GLOBAL_CONFIG);
-    let mut root = match std::fs::File::open(&path) {
-        Ok(file) => {
+    let mut root = match open_regular(&path) {
+        Ok(Some(file)) => {
             let mut text = String::new();
             file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
             if text.len() as u64 > MAX_CONFIG_BYTES {
@@ -69,7 +70,7 @@ pub fn ensure_claude_config(
                 }
             }
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Map::new(),
+        Ok(None) => Map::new(),
         Err(err) => return Err(err),
     };
     let keys: Vec<String> = std::iter::once(worktree.to_path_buf())
@@ -167,13 +168,9 @@ fn default_output_style(config_dir: &Path) {
 /// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
 /// that do not read like that.
 fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
-    // Regular files only: a FIFO planted in their place would block the launch.
-    let small_file = |path: &Path| {
-        path.metadata()
-            .is_ok_and(|m| m.is_file())
-            .then(|| read_small(path).ok().flatten())
-            .flatten()
-    };
+    // Regular files only (`read_small`): a link would let the worktree name any directory, a FIFO
+    // block the launch.
+    let small_file = |path: &Path| read_small(path).ok().flatten();
     let dot_git = small_file(&worktree.join(".git"))?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
     let admin = worktree.join(admin);
@@ -253,10 +250,33 @@ fn plugin_store_file(id: &str) -> String {
 }
 
 /// The text of the regular file at `path`, empty when there is none; `None` for anything else (a
-/// link, a FIFO, a directory, a file that is not UTF-8 or larger than [`MAX_CONFIG_BYTES`]). The
-/// agent owns its config dir: opened without following a link and without blocking, so a link
-/// cannot make the host copy another file into it and a FIFO cannot hold the launch.
+/// link, a FIFO, a directory, a file that is not UTF-8 or larger than [`MAX_CONFIG_BYTES`]).
 fn read_regular(path: &Path) -> Option<String> {
+    match read_small(path) {
+        Ok(Some(text)) => Some(text),
+        // Absent at the open, yet there now (a link planted just after it), or oversized: left
+        // alone. A dangling link at the open already fails with ELOOP under `O_NOFOLLOW`.
+        Ok(None) => path.symlink_metadata().is_err().then(String::new),
+        Err(_) => None,
+    }
+}
+
+/// The regular file at `path` when it fits in [`MAX_CONFIG_BYTES`]; `None` when it is missing or
+/// larger. Anything but a regular file is an error ([`open_regular`]).
+fn read_small(path: &Path) -> io::Result<Option<String>> {
+    let Some(file) = open_regular(path)? else {
+        return Ok(None);
+    };
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
+    Ok((text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text))
+}
+
+/// Opens the regular file at `path` for reading; `None` when it is missing. The agent owns its
+/// config dir and worktree, which the host reads before a launch (#634): the file is opened
+/// without following a link (ELOOP) and without blocking, so a link cannot make the host copy
+/// another file into the sandbox or trust another directory, and a FIFO cannot hold the launch.
+fn open_regular(path: &Path) -> io::Result<Option<std::fs::File>> {
     use nix::fcntl::OFlag;
     use std::os::unix::fs::OpenOptionsExt;
     let file = match std::fs::OpenOptions::new()
@@ -265,33 +285,16 @@ fn read_regular(path: &Path) -> Option<String> {
         .open(path)
     {
         Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            // Absent at the open, yet a link now: one planted just after it is left alone too. (A
-            // dangling link at the open already fails with ELOOP under `O_NOFOLLOW`.)
-            return path.symlink_metadata().is_err().then(String::new);
-        }
-        Err(_) => return None,
-    };
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    file.take(MAX_CONFIG_BYTES + 1)
-        .read_to_string(&mut text)
-        .ok()?;
-    (text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text)
-}
-
-/// The file at `path` when it exists and fits in [`MAX_CONFIG_BYTES`].
-fn read_small(path: &Path) -> io::Result<Option<String>> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
-    let mut text = String::new();
-    file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
-    Ok((text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text))
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(Some(file))
 }
 
 #[cfg(test)]
@@ -620,6 +623,54 @@ mod tests {
         std::fs::write(&settings, b"{\"a\":\"\xff\"}")?;
         ensure_claude_config(&config, dir.path(), false)?;
         assert_eq!(std::fs::read(&settings)?, b"{\"a\":\"\xff\"}");
+        Ok(())
+    }
+
+    /// #634: every host-side read of the agent-owned config dir and worktree opens a regular file
+    /// only, never through a link and never blocking on a FIFO. A link would make the host copy
+    /// another file into the sandbox (or trust another directory); a FIFO would hold the launch.
+    #[test]
+    fn host_reads_never_follow_a_link_or_wait_on_a_fifo() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let outside = dir.path().join("host.json");
+        std::fs::write(&outside, r#"{"userID":"host","open":true}"#)?;
+        // `.claude.json` as a link or a FIFO is refused, its target untouched.
+        let config = dir.path().join(".claude");
+        std::fs::create_dir_all(&config)?;
+        let global = config.join(CLAUDE_GLOBAL_CONFIG);
+        symlink(&outside, &global)?;
+        assert!(ensure_claude_config(&config, dir.path(), false).is_err());
+        assert!(global.symlink_metadata()?.file_type().is_symlink());
+        std::fs::remove_file(&global)?;
+        nix::unistd::mkfifo(&global, nix::sys::stat::Mode::S_IRWXU)?;
+        assert!(ensure_claude_config(&config, dir.path(), false).is_err());
+        std::fs::remove_file(&global)?;
+        // A diff-plugin store that is a link is left alone, and so is its target.
+        let store = config.join("plugins").join("store");
+        std::fs::create_dir_all(&store)?;
+        let current = store.join("cc-plugin-diff_builtin-3903e77c01b1.json");
+        symlink(&outside, &current)?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(current.symlink_metadata()?.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&outside)?,
+            r#"{"userID":"host","open":true}"#
+        );
+        // A worktree `.git` that links to a gitdir file elsewhere trusts the worktree alone.
+        let main = dir.path().join("main");
+        let admin = main.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&admin)?;
+        std::fs::write(admin.join("commondir"), "../..\n")?;
+        let gitfile = dir.path().join("gitfile");
+        std::fs::write(&gitfile, format!("gitdir: {}\n", admin.display()))?;
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(&worktree)?;
+        symlink(&gitfile, worktree.join(".git"))?;
+        let config = dir.path().join(".claude-wt");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &main)?);
         Ok(())
     }
 

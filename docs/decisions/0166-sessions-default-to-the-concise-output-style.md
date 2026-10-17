@@ -39,7 +39,8 @@ settings never set `outputStyle`.
   `/output-style` writes the working directory's `.claude/settings.local.json`: the Superagent keeps
   the choice, and each new task worktree starts concise again.
 - The settings file is read only when it is a regular file, never through a link and never
-  blocking on a FIFO, since the agent owns its config dir.
+  blocking on a FIFO, since the agent owns its config dir. The other host reads before a launch
+  (`.claude.json`, the diff-plugin stores, the worktree's `.git`) share that open (#634).
 - Setting `"outputStyle": "default"` in the sandbox's user settings opts out for good; deleting the
   key brings Concise back at the next launch.
 - Subagents other than forks keep their own prompts (Claude Code applies no style to them).
