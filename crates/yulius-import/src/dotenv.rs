@@ -35,12 +35,14 @@ pub fn parse_dotenv(text: &str) -> Result<Vec<DotenvEntry>, DotenvError> {
     if text.len() > MAX_DOTENV_BYTES {
         return Err(DotenvError("the file is larger than 1 MiB".into()));
     }
-    let text = text.replace("\r\n", "\n");
+    // The copy holds every value: it is wiped when dropped, as the caller's text is.
+    let text = Secret::new(text.replace("\r\n", "\n"));
+    let text = text.expose();
     let mut entries: Vec<DotenvEntry> = Vec::new();
     let mut comment: Vec<&str> = Vec::new();
     let (mut pos, mut line) = (0, 1);
     while pos < text.len() {
-        let end = line_end(&text, pos);
+        let end = line_end(text, pos);
         let trimmed = text[pos..end].trim();
         let (next, next_line) = if trimmed.is_empty() {
             comment.clear();
@@ -64,8 +66,8 @@ pub fn parse_dotenv(text: &str) -> Result<Vec<DotenvEntry>, DotenvError> {
             let rest = rest.trim_start();
             let (value, next, next_line) = match rest.chars().next() {
                 Some(quote @ ('\'' | '"')) => {
-                    let open = offset(&text, rest);
-                    quoted(&text, open, quote, line)?
+                    let open = offset(text, rest);
+                    quoted(text, open, quote, line)?
                 }
                 _ => (Secret::new(bare(rest)), end + 1, line + 1),
             };
