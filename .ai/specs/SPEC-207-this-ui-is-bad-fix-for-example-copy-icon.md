@@ -1,11 +1,11 @@
 ---
 yulius-task: c6a411ec-cfaa-412a-8191-26a60b2118a9
-status: in-progress
+status: done
 ---
 
 # SPEC-207: a shown secret's value, notes and key each sit in one box with their own copy icon
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: Yulius task #194
 Scope authorization: the person's request (task #194), "this UI is bad, fix. For example copy
@@ -52,11 +52,11 @@ not only in a toast.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The value box always shows its eye and copy icons, with copied feedback, and no separate Copy button
-- [ ] Notes and the two-factor key sit in framed read-only boxes with their own copy icon
-- [ ] Docs, decision record and changes log describe the new secret dialog
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The value box always shows its eye and copy icons, with copied feedback, and no separate Copy button
+- [x] Notes and the two-factor key sit in framed read-only boxes with their own copy icon
+- [x] Docs, decision record and changes log describe the new secret dialog
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -98,5 +98,31 @@ not only in a toast.
   value; copying them clears the clipboard after 30 s like the value.
 - **Notes stay shown** (not masked), as SPEC-114 decided.
 - **The setup key uses the same box** so the vault's dialogs share one pattern; it stays shown.
+- **Review round 1 (approved at 70425f3e, six minor findings and two nits, all own code but the
+  last).** Taken, test-first: the "Copied" assertion now runs right after the click, so it cannot
+  race the 2 s timer; a failed copy is tested and, right after one that worked, now brings the
+  copy icon back (it kept the check); long notes are tested to wrap and scroll at 390 px, which
+  found that axe flags the notes scroller as not focusable (the pre-existing nit), so the notes
+  take focus (`tabindex="0"`); the setup dialog asserts its single copy; SPEC-114's PWV-003 and
+  PWV-004 are marked superseded; this Evidence section.
 - **Not taken:** a read-only `<input>` for the value (announced as an editable field, ADR-0093);
   a text "Copy" button inside the box (wider, and it squeezes the value at 390 px).
+
+## Evidence
+
+- Red first: with the changed tests on `dev`'s code, `npx e2e run tests/secrets.e2e.ts` failed 6 of
+  14 (no copy without hover, a second `Copy value` after the box, no key or notes box); after the
+  change 14 of 14 passed. The review's failure test failed first on the stale check
+  (`{"title":"Copied","icon":false}`) and on axe `scrollable-region-focusable: pre`, then passed:
+  15 of 15.
+- Screenshots in the Yulius browser (mock mode, 1280 px) checked by eye: the setup key in its box
+  with a copy icon; the value box with dots, eye and copy, and the check after a copy; the notes in
+  a framed box with their copy.
+- `scripts/dev ci` at 2b5e53f1 (after a clean merge of `dev`): exit 0, 2129 nextest tests passed
+  (repository check, fmt, clippy, doctests, deny, shear, doc included).
+- `scripts/dev security` at 70425f3e: Vidoc vidoc-1 reviewed the 3 changed code files, no open
+  critical or high finding.
+- `E2E_TELEMETRY_DISABLED=1 npx e2e run` (full suite) at 70425f3e: 59 files passed, 1 skipped;
+  606 tests passed. `tests/secrets.e2e.ts` at 2b5e53f1: 15 of 15.
+- Not tested here: a real clipboard (the tests stub `navigator.clipboard.writeText`), touch
+  devices and screen readers other than the accessibility tree and axe.
