@@ -101,10 +101,10 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   - a title and detail, cut to 200 and 2000 bytes.
 
   Yulius files each one whose fingerprint the sandbox has not filed before, at most 5 attempts per
-  job, failed ones included. No other job's output is read for findings. A finding whose code is no longer on
-  `origin/<integration branch>` is neither filed nor reopened, because a branch behind it still
-  reports code that is already gone; the output says how many were left out that way. A file name
-  with a backtick or a control character is refused.
+  job, failed ones included. No other job's output is read for findings. A finding whose code is no
+  longer on `origin/<integration branch>` is neither filed nor reopened, because a branch behind it
+  still reports code that is already gone; the output says how many were left out that way. A file
+  name with a backtick or a control character is refused.
 - **VSI-002. De-duplication.** Filed fingerprints are kept per sandbox (migration 0036,
   `security_findings`). A fingerprint is claimed before the issue is opened and released if
   opening fails, so concurrent runs cannot file it twice. The row also keeps the finding's file,
