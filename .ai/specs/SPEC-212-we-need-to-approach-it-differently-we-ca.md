@@ -188,6 +188,8 @@ points at a file in the sandbox home.
     above.
   - `scripts/dev ci` on 8a349108 (review fixes plus `origin/dev` merged): exit 0, nextest 2135
     passed, 18 skipped.
+  - `scripts/dev ci` on 007a19b4 (review round 2 fixes plus `origin/dev` merged again): exit 0,
+    nextest 2138 passed, 18 skipped.
   - `scripts/dev security` on 847ee49c: exit 0, no critical or high finding. Two findings were
     reported in code this change does not touch:
     - Medium, `opening_pastes`: `Request::parse` already drops control characters, and
