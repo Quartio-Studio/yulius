@@ -53,7 +53,8 @@ reloading the page.
   `.env` requester again) publishes nothing.
 - SRE-006. A live update keeps SPEC-121's guarantee that nothing is allowed unseen. When a
   card's waiting hosts change after the page has shown it, its Allow and Dismiss are drawn
-  disabled for one second, with the note "The hosts asked for changed while this page was open."
+  off (`aria-disabled`, so keyboard focus stays on them and does not move to another grant of
+  the card) for one second, with the note "The hosts asked for changed while this page was open."
   A click or Enter meant for the earlier buttons therefore cannot allow a host the person never
   saw.
 - SRE-007. A live update waits while an answer is on its way. Otherwise it would bring back
@@ -149,6 +150,12 @@ reloading the page.
     test "a failed copy shows no check…" (#630) fails its axe target-size check about 1 run in 5
     when run alone. It covers Team secrets, which this change does not touch, and is reported as
     #640.
+- Review round 2 approved `72f0e60d` and raised one new low finding in this change's code. The
+  settling buttons used `disabled`, so `keepFocus` moved a keyboard user's focus to the card's
+  next grant (production or `.env`). Fixed test-first: the settle test now focuses the Allow,
+  changes its hosts, and clicks the new one as it is drawn. It failed before the fix (`settling:
+  false, focused: false`). It now sees focus kept, nothing posted, and Enter allowing once
+  settled. `tests/secrets.e2e.ts` passed 19 of 19.
 - `scripts/dev security`: exit 0, no open critical or high finding. One low finding is in
   `requester()` (`vault/requests.rs`, joining askers on `", "`). This change does not touch that
   code, and its inputs (GitHub logins, sandbox slugs, `#N`) cannot contain `", "`.
