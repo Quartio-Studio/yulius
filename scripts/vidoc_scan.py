@@ -341,13 +341,30 @@ class Changes:
     new: set = field(default_factory=set)
 
 
+def renames(git, merge_base):
+    """New path to old path of each file `HEAD` moved since the merge base."""
+    out = git.text("diff", "--name-status", "-z", "-M", "--diff-filter=R", merge_base, "HEAD")
+    fields = [f for f in out.split("\0") if f]
+    moved, index = {}, 0
+    while index + 2 < len(fields) and fields[index].startswith("R"):
+        moved[fields[index + 2]] = fields[index + 1]
+        index += 3
+    return moved
+
+
 def changed_lines(git, merge_base, paths):
     changes = Changes()
+    moved = renames(git, merge_base)
+    common = ("diff", "-U0", "--text", "--no-color", "--no-ext-diff", "--no-textconv")
     for path in paths:
-        diff = git.text("--literal-pathspecs", "diff", "-U0", "--no-renames", "--no-color",
-                        "--no-ext-diff", "--no-textconv", merge_base, "HEAD", "--", path)
+        if path in moved:
+            # A moved file is compared with where it came from, not taken as new.
+            diff = git.text(*common, f"{merge_base}:{moved[path]}", f"HEAD:{path}")
+        else:
+            diff = git.text("--literal-pathspecs", *common, "--no-renames", merge_base, "HEAD",
+                            "--", path)
         head = diff.split("\n@@", 1)[0]
-        if re.search(r"^new file mode ", head, re.MULTILINE):
+        if path not in moved and re.search(r"^new file mode ", head, re.MULTILINE):
             changes.new.add(path)
         ranges = []
         for match in HUNK.finditer(diff):
@@ -357,6 +374,12 @@ def changed_lines(git, merge_base, paths):
     return changes
 
 
+def collapse(text):
+    """Whitespace runs as one space, as Yulius (Rust's `split_whitespace`) collapses them:
+    Unicode White_Space, which, unlike Python's `str.split`, leaves out U+001C..U+001F."""
+    return " ".join(part for part in re.split(r"[^\S\x1c-\x1f]+", text) if part)
+
+
 def classify(finding, changes, lines):
     """Sets the finding's fingerprint (SHA-256 of its path and its line's text, whitespace
     collapsed, else its title) and its scope: `change` or `outside`; with no `changes` (the broad
@@ -364,11 +387,12 @@ def classify(finding, changes, lines):
     text = ""
     file_lines = lines.get(finding.file) or []
     if finding.line and 1 <= finding.line <= len(file_lines):
-        text = " ".join(file_lines[finding.line - 1].split())
-    basis = f"line:{text}" if text else "title:" + " ".join(finding.title.lower().split())
+        text = collapse(file_lines[finding.line - 1])
+    basis = f"line:{text}" if text else "title:" + collapse(finding.title.lower())
     finding.fingerprint = hashlib.sha256(f"{finding.file}\n{basis}".encode()).hexdigest()[:16]
     finding.anchored = bool(text)
-    if changes is None or finding.file in changes.new:
+    if changes is None or finding.file in changes.new or finding.file not in lines:
+        # A file that was not sent is a name the model got wrong: it fails closed.
         finding.scope = "change"
     elif finding.line is None:
         finding.scope = "outside"
@@ -488,6 +512,12 @@ def _json_object(text):
         raise Unreadable(f"the answer's JSON is malformed ({err})") from err
 
 
+def one_line(text):
+    """`text` printable on one output line: whitespace collapsed, other control characters
+    dropped, so an answer cannot start a line of its own (a `::yulius-finding` line)."""
+    return "".join(c for c in " ".join(text.split()) if c.isprintable())
+
+
 def parse_answer(message, chunk):
     """The findings of one Messages API answer for `chunk` (VSC-006)."""
     if not isinstance(message, dict) or not isinstance(message.get("content"), list):
@@ -514,8 +544,9 @@ def parse_answer(message, chunk):
         line = item.get("line")
         if type(line) is not int or not any(a <= line <= b for a, b in ranges.get(file, [])):
             line = None
-        findings.append(Finding(severity, file, line, str(item.get("title") or "untitled")[:200],
-                                " ".join(str(item.get("detail") or "").split())[:2000]))
+        findings.append(Finding(severity, one_line(file)[:512], line,
+                                one_line(str(item.get("title") or "untitled"))[:200],
+                                one_line(str(item.get("detail") or ""))[:2000]))
     return findings
 
 
@@ -708,6 +739,8 @@ def run(args, env, root, sleep, out):
     toplevel = git.text("rev-parse", "--show-toplevel", check=False)
     if not toplevel:
         raise Usage(f"{root} is not a Git repository")
+    # Paths are the repository's (`git diff --name-only`): every command runs at its top.
+    git = Git(toplevel.strip())
     config = committed_config(git, toplevel.strip())
     if not config.enabled:
         print(f"Security scan disabled: {SWITCH} sets enabled = false; nothing was scanned.", file=out)
