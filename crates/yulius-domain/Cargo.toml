@@ -16,3 +16,4 @@ layer = "domain"
 
 [dependencies]
 thiserror = { workspace = true }
+zeroize = { workspace = true }
