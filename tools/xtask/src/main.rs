@@ -11,7 +11,8 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   test      Run nextest and documentation tests
   deps      Check advisories, licenses, sources, and unused dependencies
   ci        Run all required gates, failing on the first failed command
-  security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings;
+  security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
+            and on open medium ones in the changed lines;
             --all scans the whole repository (needs a Vidoc key; not in ci)";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when

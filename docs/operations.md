@@ -690,7 +690,12 @@ wins over the file.
 Optional ([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
 ADR-0157). With a Vidoc key, every project's agents and granted CI jobs can run
 `yulius security-scan`. Vidoc's `vidoc-1` model reviews the files a branch changed (or, with
-`--all`, the whole repository) and the scan fails on open critical or high findings. **The scanned
+`--all`, the whole repository). The scan fails on open critical or high findings, and on open
+medium findings in the lines the branch changed. Findings in code the branch did not touch become
+GitHub issues, which Yulius files once, reopens while they are reported and closes once their code is
+gone (ADR-0172). When the sandbox can use a Vidoc key (its own `VIDOC_API_KEY` agent secret or the
+instance's), Yulius CI adds a built-in `security` job to every project whose CI does not scan
+already. **The scanned
 code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key the scan says "not run",
 and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
 

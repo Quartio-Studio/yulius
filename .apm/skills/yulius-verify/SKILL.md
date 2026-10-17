@@ -25,10 +25,13 @@ the spec's Evidence. Exit 2 means unrun (no key, a refused key, no quota, Vidoc 
 report the scan as unrun, never as passed. When `.config/vidoc.toml` sets `enabled = false`
 (ADR-0107), the gate prints "Security scan disabled" and exits 0: report the scan as disabled,
 never as passed. `scripts/dev security --all --report FILE` is the broad scan of the whole
-repository, for an audit task. Yulius CI's `security` job runs the change scan on every pull
-request head (ADR-0116): its findings fail the check, and a scan that cannot run ends the job
-**skipped** ("security scan skipped", ADR-0133). Read the job's output, and report that scan as
-unrun, never as passed.
+repository, for an audit task. The scan fails on critical or high findings in the changed files
+and on medium findings in the changed lines; low findings in the change are yours to decide (fix,
+or say why not in Evidence); findings outside the change become issues that Yulius CI files once
+(ADR-0172). Yulius CI's `security` job runs the change scan on every pull request head
+(ADR-0116): its findings fail the check, and a scan that cannot run ends the job **skipped**
+("security scan skipped", ADR-0133). Read the job's output, and report that scan as unrun, never
+as passed.
 
 If a command fails, distinguish missing prerequisite/network failure from product
 or test defects. Record the exact failing command and output location. Repair
