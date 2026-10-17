@@ -1348,7 +1348,8 @@ merge gate (#223, SPEC-069). The steps it took, in order:
      GitHub's event with a token. Jobs have neither, so the policy moves into Yulius's merge gate (a
      follow-up) or stays a GitHub check until then. Done in SPEC-069: the merge gate checks it and
      the script is removed.
-   - macOS becomes a manual check.
+   - macOS becomes a manual check (amended: the gate compiles every target for macOS on Linux,
+     [ADR-0169](../../docs/decisions/0169-the-gate-compiles-every-target-for-macos-on-linux.md)).
 3. Let Yulius run beside Actions until its results match for a few days.
 4. Switch the rulesets' required checks to `yulius/ci`, or drop the rulesets on a free plan.
 5. Delete `.github/workflows/`.
@@ -1360,7 +1361,8 @@ merge gate (#223, SPEC-069). The steps it took, in order:
 - Cache poisoning stays within a sandbox's trust domain. A pull request's job can write the caches a
   later integration run reads, as with shared Actions caches. Agents of the sandbox can already
   write there.
-- macOS and Windows targets are not covered (Linux VM only).
+- macOS and Windows targets are not covered (Linux VM only); macOS is compiled, not linked or
+  tested, since ADR-0169.
 - Forks' pull requests are not tested.
 - The gate binds merges made through Yulius. An agent that extracts a token from the credential
   helper could still merge through GitHub's API (§8).

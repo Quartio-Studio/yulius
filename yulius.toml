@@ -33,7 +33,8 @@ CARGO_BUILD_JOBS = "{cpus}"
 NEXTEST_TEST_THREADS = "{cpus}"
 RUST_TEST_THREADS = "{cpus}"
 
-# macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion. Each job gets an
+# macOS has no Yulius runner: the gate compiles every target for macOS (ADR-0169); run
+# `scripts/dev ci` on a Mac before a release to link and test there. Each job gets an
 # equal share of the sandbox (two jobs: half each), and a run's jobs wait for theirs.
 [[ci.jobs]]
 name = "quality"
