@@ -11,10 +11,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use support::{
-    Harness, HarnessOptions, TestResult, harness_with, mcp_tool, perms, seed_github_user,
+    Harness, HarnessOptions, TestResult, call, harness_with, mcp_tool, perms, seed_github_user,
     seed_live_attempt, seed_sandbox, seed_task, serve, tool_text, ws_connect, ws_refusal_status,
 };
 use tokio::net::TcpStream;
@@ -29,7 +30,7 @@ use yulius_browser::fake::{
 use yulius_browser::{BrowserConfig, DisplayInput, StopTimeouts};
 use yulius_contracts::browser::{decode_frame, decode_video_frame};
 use yulius_contracts::events::UiEvent;
-use yulius_domain::ids::TaskId;
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -191,6 +192,57 @@ where
 /// The fixture's fake display.
 fn display_of(f: &Fixture) -> Result<&FakeDisplay, Box<dyn std::error::Error>> {
     Ok(f.display.as_ref().ok_or("no display")?)
+}
+
+/// SPEC-206 RMV-003 (#624): removing a sandbox stops its browser at once (it waited for the
+/// 30-minute idle reaper); another sandbox's browser goes on.
+#[tokio::test]
+async fn removing_the_sandbox_stops_its_browser() -> TestResult {
+    with_fixture(|f| async move {
+        f.h.github.set_perm("alice", "acme/fixture", perms("admin"));
+        let data = f.h.app.config.data_dir.clone();
+        let mut pids = Vec::new();
+        for sandbox in ["s1", "s2"] {
+            let profile = data.join("sandboxes").join(sandbox).join("browser");
+            f.h.app
+                .deps
+                .browser
+                .ensure(&SandboxId::parse(sandbox)?, &profile)
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            pids.push(
+                std::fs::read_to_string(profile.join(FAKE_PID_FILE))?
+                    .trim()
+                    .parse::<i32>()?,
+            );
+        }
+
+        let removed = call(
+            &f.h.router,
+            Method::DELETE,
+            "/api/sandboxes/s1",
+            None,
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+        assert!(
+            wait_dead(pids[0]).await,
+            "the removed sandbox's browser is stopped"
+        );
+        assert!(pid_alive(pids[1]), "the other sandbox's browser goes on");
+        assert!(
+            f.h.app
+                .deps
+                .browser
+                .running(&SandboxId::parse("s2")?)
+                .await
+                .is_some()
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
