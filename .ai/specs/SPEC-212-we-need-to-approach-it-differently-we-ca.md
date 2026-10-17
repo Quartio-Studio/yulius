@@ -1,11 +1,11 @@
 ---
 yulius-task: f35669fb-b2c2-4718-9d5e-397c387b6548
-status: in-progress
+status: done
 ---
 
 # SPEC-212: A goal task's first message is the person's whole request
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #199
 Scope authorization: the person's request (task #199), with a screenshot of a session whose first
@@ -75,12 +75,12 @@ points at a file in the sandbox home.
 
 - [x] Read the product context, docs and earlier sessions on the topic
 - [x] Measure Claude Code's /goal natively against a mock API
-- [ ] Spec and ADR for a goal that carries the whole request
-- [ ] The launch /goal carries the whole request with its files in place
-- [ ] A typed goal stays short enough to be a command
-- [ ] The briefing carries the definition of done natively
-- [ ] Docs, changes and every gate green
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Spec and ADR for a goal that carries the whole request
+- [x] The launch /goal carries the whole request with its files in place
+- [x] A typed goal stays short enough to be a command
+- [x] The briefing carries the definition of done natively
+- [x] Docs, changes and every gate green
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Merge into dev on green CI
 
 ## Test plan
@@ -130,5 +130,62 @@ points at a file in the sandbox home.
   the condition, and the delivery path and the waiting rule were already in the briefing. So the
   summary's content went into `Done = …`, where the judge rules on it. Only the Read-tool line,
   needed only with files, went into the briefing.
+- **Review round 1** (fresh read-only session, om-code-review) approved 847ee49c, with no blocker or
+  major finding. Minor and nit findings fixed:
+  - SPEC-011 TSK-010 and SPEC-117's acceptance criteria now point here.
+  - The flaky test's wait ends on its last expected text.
+  - The 700-unit typed bound is measured, not asserted on constants (Evidence).
+  - A cut no longer leaves half a file marker (test-first: it failed at pad 3558).
+  - A long comment was re-wrapped.
+  The reviewer did not run the Vidoc scan.
 - **The request file stays.** It is the full record for a cut request and the fallback of the typed
   goal, and SPEC-011 tools may read it. Writing it costs nothing.
+
+## Evidence
+
+- **Measurements.** Claude Code 2.1.292 (`/usr/local/bin/claude`) was run against a local mock of
+  the Messages API. The mock was a Python HTTP server on 127.0.0.1:201xx that logged every request
+  body and answered with SSE text. Claude Code ran in a PTY driven by `pexpect`, with a scratch
+  `HOME` and `CLAUDE_CONFIG_DIR` (onboarding done, folder trusted) and a SessionStart command hook
+  that printed a marker as `additionalContext`. The scripts were scratch only, not committed.
+  - Launch `claude "/goal <3 lines with backticks and quotes>"`: `<command-args>`, `Goal set: …`
+    and the condition kept every line. The goal's Stop-hook judge request held the SessionStart
+    marker as a system reminder, then the transcript and `Condition: …`.
+  - Launch `/goal` with a 3803-character, 9-paragraph condition: the goal was set.
+  - Typed into the TUI as one write, followed by Enter:
+    - `/goal` plus 378 or 693 characters: the command.
+    - Plus 828 or 1368 characters: a plain user prompt, so no goal was set.
+    - A bracketed paste starting with `/goal`: a plain prompt.
+    - `/goal ` plus exactly 700 units, as 700 ASCII characters, 699 `ż` and a `Z` (1399 bytes), or
+      349 emoji and `ZZ`: the command, each time.
+  - From the 2.1.292 bundle:
+    - `Yve()` keeps everything after the command name, trimmed.
+    - `NEt=4000` is compared with `t.length` (UTF-16 code units).
+    - `lnt()` is the only place that sets a goal (session Stop hook of type `prompt` plus
+      `goal_status`).
+    - No CLI flag or setting sets a goal.
+- **Tests first.**
+  - `request.rs`: 4 tests (whole request, files in place, control characters, cut) failed before
+    the change. `a_typed_goal_is_one_short_line` did not compile without `typed_goal_condition`.
+    The marker case failed before its fix.
+  - `briefing.rs`: the Read-tool test failed with the line left out (checked).
+  - `task_done::the_goal_is_typed_after_the_turn_continued_past_a_limit` with a 3-line request
+    failed with the launch condition typed: only `/goal Make the header blue` reached the goal.
+- **Flaky test.** `task_done::an_attached_image_is_pasted_into_the_first_message` (prompt mode,
+  untouched by this change) failed once in the gate under load. A 400 ms probe delay between the
+  fake agent's output lines reproduced it every time: the test read the screen at the answer's
+  first line. It now waits for the last expected text and passes with the probe.
+- **Gate.**
+  - `scripts/dev ci` on 847ee49c: exit 0, nextest 2133 passed and 18 skipped; check, fmt, clippy,
+    doctests, deps and docs all passed. The first run, on b6f41022, failed only on the flaky test
+    above.
+  - `scripts/dev ci` on 8a349108 (review fixes plus `origin/dev` merged): exit 0, nextest 2135
+    passed, 18 skipped.
+  - `scripts/dev security` on 847ee49c: exit 0, no critical or high finding. Two findings were
+    reported in code this change does not touch:
+    - Medium, `opening_pastes`: `Request::parse` already drops control characters, and
+      `a_typed_first_message_carries_no_control_character` covers it.
+    - Low, `transcript_path`.
+- **Not tested here.**
+  - A live model judging a long condition (needs a paid credential).
+  - The exact paste threshold between 700 and 828 units. Yulius stays at 700, which was measured.
