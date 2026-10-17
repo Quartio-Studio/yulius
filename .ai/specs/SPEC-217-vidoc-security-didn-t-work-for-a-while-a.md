@@ -280,7 +280,8 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
   with 18 skipped, plus lint, macOS, doctests, deps and docs. The final
-  head's gate: GATE_LINE.
+  head's gate: at 6023905c (code as of 544cb5b7, the last code change), it passed with 2213
+  tests (18 skipped).
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
@@ -348,6 +349,10 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   placeholder. Fixed test-first:
   `local_ci::a_pull_request_with_its_own_jobs_cannot_drop_the_security_job` failed (the fake job
   ran), and passes with `keep_security_jobs`, which also has a domain test.
+- The change scan at 746369c7 exited 0, after two more entries were recorded. One is the write
+  side of the editor's path checks, `files.rs:409`, pre-existing and tracked in #657. The other
+  is the placeholder-only Vidoc key grant, `onboarding.rs:138`, by design (ADR-0116). Both are
+  near lines this branch changed, so they counted as in the change.
 
 ### Not tested here
 
