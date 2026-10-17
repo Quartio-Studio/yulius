@@ -1208,7 +1208,59 @@ async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult 
     assert_eq!(launch.config_dir_host, home_host.join(".claude"));
     assert_eq!(launch.cwd, repo);
     assert_eq!(launch.resume.as_deref(), Some("earlier"));
+    // A contained server's Superagent bypasses approvals, as its tasks do (SPEC-208 BYP-001).
+    assert!(launch.contained);
     assert!(h.app.sandbox_shells(&sid()).is_empty());
+    Ok(())
+}
+
+/// SPEC-208 BYP-001, BYP-002: a contained Superagent starts in bypass-permissions mode as root of
+/// its sandbox, its person's Claude config records the bypass accepted; uncontained, neither.
+#[test]
+fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let cwd = dir.path().join("repo");
+    std::fs::create_dir_all(&cwd)?;
+    let adapter = yulius::wiring::harness::HarnessAdapter::new(
+        PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        "http://127.0.0.1:9",
+    );
+    let launch = |home: &str, contained: bool| CockpitLaunch {
+        cwd: cwd.clone(),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        config_dir_host: dir.path().join(home),
+        resume: None,
+        continue_interrupted: false,
+        credential: yulius_app::model::Secret(TOKEN.into()),
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        mcp: Vec::new(),
+        contained,
+    };
+    let settled = |home: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        let path = dir.path().join(home).join(".claude.json");
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    };
+
+    let plan = adapter.plan_cockpit(&launch("contained", true))?;
+    assert_eq!(
+        plan.argv.last().map(String::as_str),
+        Some("--dangerously-skip-permissions"),
+        "{:?}",
+        plan.argv
+    );
+    assert!(plan.env.contains(&("IS_SANDBOX".into(), "1".into())));
+    assert_eq!(settled("contained")?["bypassPermissionsModeAccepted"], true);
+
+    let plain = adapter.plan_cockpit(&launch("plain", false))?;
+    assert!(
+        !plain
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions")
+    );
+    assert!(!plain.env.iter().any(|(k, _)| k == "IS_SANDBOX"));
+    assert!(settled("plain")?["bypassPermissionsModeAccepted"].is_null());
     Ok(())
 }
 
@@ -2871,7 +2923,9 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     assert_eq!(verified["match"], "escaped_newlines", "{verified}");
     assert_eq!(verified["lines"], 7, "{verified}");
 
-    // Not allowed yet: asked for, as alice's Superagent, and nothing is written.
+    // Not allowed yet: asked for, as alice's Superagent, and nothing is written; the open
+    // Secrets pages hear of it (SPEC-209).
+    let mut announced = support::SecretAnnouncements::new(&f.h.app);
     let copy = |secrets: Value, path: Option<&str>| {
         let mut args = json!({"secrets": secrets, "reason": "the deploy script signs in"});
         if let Some(path) = path {
@@ -2890,6 +2944,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
         "{asked}"
     );
     assert!(!repo.join(".env").exists(), "nothing is written");
+    assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(record.env_files, EnvFiles::Asked);
     assert_eq!(
@@ -2947,6 +3002,8 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(!is_error, "{requested}");
     assert_eq!(requested["requested"], json!(["deploy.quartio.test"]));
+    // #631: the person's open Secrets page shows the request and its Allow at once.
+    assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(
         record.requested_hosts,

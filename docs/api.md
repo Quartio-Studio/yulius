@@ -1091,10 +1091,11 @@ resolves to nothing, the run gets the server without that variable or token.
   it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
-    <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
+    <newest conversation>] --model claude-opus-5-5 --effort high [--dangerously-skip-permissions]`
+    (SPEC-023; the bypass with `IS_SANDBOX=1` on a contained server, SPEC-208) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
-    terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
+    terminal's environment (Git as the caller); no Yulius hooks or settings. It
     gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
@@ -1102,7 +1103,8 @@ resolves to nothing, the run gets the server without that variable or token.
     `task_create`, `task_stop`, `task_archive`, `task_delete`, `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
-    for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
+    for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
+    tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     A usage limit Claude Code records in its conversation after it started is recorded on its
     subscription, and the Cockpit starts again on one with capacity, resuming the conversation
@@ -1401,7 +1403,10 @@ the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","ro
 open in the editor, only to people with write access to that sandbox; SPEC-127),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
-it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`,
+it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updated","sandbox_id"|null}`
+(an agent asked for an agent secret's hosts or a `.env` copy; to the secret's sandbox's viewers, or
+everyone for a secret of every sandbox, `null`; open Secrets pages read
+`GET /api/sandboxes/{sid}/agent-secrets` again; SPEC-209), `{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
 which resyncs; SPEC-191).

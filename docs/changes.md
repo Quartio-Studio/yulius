@@ -18,6 +18,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   finished (`git worktree prune`). Its clone, sessions, transcripts and export stay, as one item
   only the superadmin deletes. Settings → Instance → Leftovers and `yulius leftovers list|delete`
   list and delete them by hand.
+- An agent's secret request shows on an open Secrets page at once (SPEC-209, task #196, fixes
+  #631). When an agent or a Superagent asked for a secret's hosts or a `.env` copy, the Agent
+  secrets page already open showed no request and no Allow until it was reloaded: nothing told
+  the browser. The request now publishes `secrets.updated` for the secret's sandbox (every
+  sandbox for a secret of every sandbox), and the page reads its list again on it and after a
+  reconnect, keeping what it shows meanwhile.
+- The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
+  ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
+  check blocked commands the person asked for and its "Teach auto mode about your environment?"
+  dialog interrupted the panel. It now starts with `--dangerously-skip-permissions` and
+  `IS_SANDBOX=1` (it is root of its sandbox), the bypass warning already accepted; running
+  Superagents restart into it once idle. Tasks already ran this way (checked on this instance's
+  transcripts); an uncontained server still bypasses nothing.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,

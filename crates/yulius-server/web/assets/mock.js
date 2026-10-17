@@ -3796,6 +3796,11 @@ async function handleFetch(db, url, init = {}) {
     const asked = new URL(url, ORIGIN).pathname;
     db.asked = db.asked || {};
     db.asked[asked] = (db.asked[asked] || 0) + 1;
+  } else {
+    // `sent` counts the other requests by method and path (SPEC-209: nothing sent while settling).
+    const sent = `${init.method} ${new URL(url, ORIGIN).pathname}`;
+    db.sent = db.sent || {};
+    db.sent[sent] = (db.sent[sent] || 0) + 1;
   }
   if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
   // The Editor's file reads, as asked, and whether a save of a file was on its way (SPEC-181).
@@ -4906,6 +4911,17 @@ export function createMockTransport(params) {
     if (announce) announcePulls(db, sandboxId);
   };
   db.announcePulls = (sandboxId) => announcePulls(db, sandboxId);
+  // An agent asks for hosts of an agent secret (`secret_request_hosts`, SPEC-121): announced as
+  // the server does (SPEC-209), unless `announce` is false (a change the page missed).
+  db.askHosts = (name, hosts, by, announce = true) => {
+    const secret = vaultOf(db).agent.find((s) => s.name === name);
+    if (secret.cd_prod) throw new Error(PRODUCTION_SECRET); // refused, as by the server
+    secret.requested_hosts = [...new Set([...secret.requested_hosts, ...hosts])];
+    secret.requested_by = by;
+    audit(db, 'vault.agent.request', secret.id, `${secret.name} → ${hosts.join(', ')}`);
+    if (announce) db.announceSecrets(secret.sandbox);
+  };
+  db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for

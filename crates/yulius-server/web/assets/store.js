@@ -1,7 +1,8 @@
 // Application state store and the UI event stream (docs/api.md "UI event stream").
 // Topics: sandboxes, tasks (sid), task (TaskSummary), task-removed (tid), steps (tid),
 // message ({task_id, message}), browser-action (event), automation-run (event),
-// account (Account), update ({phase}), resync, events-status (status), pulls (sandbox id).
+// account (Account), update ({phase}), resync, events-status (status), pulls (sandbox id),
+// secrets ({sandbox_id}: an agent asked about an agent secret, SPEC-209).
 //
 // The server sends `resync` (not `sandbox.updated`) after sandbox changes, and sandbox
 // counters (running / needs you / queued) are not pushed at all: task events and a changed
@@ -226,6 +227,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'note.presence': emit('note-presence', event); break;
       case 'file.presence': emit('file-presence', event); break;
       case 'pulls.updated': pullsChanged(event.sandbox_id); break;
+      case 'secrets.updated': emit('secrets', event); break;
       case 'resync': emit('resync'); break;
       default: break;
     }

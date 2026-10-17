@@ -619,7 +619,10 @@ Every user has one plain Claude Code session per sandbox, shown as the **Superag
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
-conversation resumed whenever it starts again. Its start, like a terminal's, runs detached from
+conversation resumed whenever it starts again. On a contained server it runs in Claude Code's
+bypass-permissions mode, as task runs do (`--dangerously-skip-permissions`, `IS_SANDBOX=1`,
+[SPEC-208](../.ai/specs/SPEC-208-tasks-and-the-superagent-should-run-in-d.md),
+[decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)). Its start, like a terminal's, runs detached from
 the request, so a client that goes away mid-start never leaves a second or half-started session
 ([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
 [decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
@@ -753,7 +756,10 @@ An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Sinc
 (ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
 nothing. The agent works out the service's host and proposes it; the request waits on the secret
 (`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
-so an agent misled by injected content cannot send a secret to another server.
+so an agent misled by injected content cannot send a secret to another server. Storing a host or
+`.env` request publishes `secrets.updated` to the secret's sandbox (to every sandbox for an
+instance-wide secret), so an open Secrets page reads its list again and shows Allow without a
+reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
 
 ```mermaid
 sequenceDiagram
@@ -766,6 +772,7 @@ sequenceDiagram
     UI->>App: POST agent-secrets (hosts [], injection none)
     A->>App: secrets_list, then secret_request_hosts(model.vidocsecurity.com)
     App-->>A: requested, waiting for a person (task needs attention)
+    App-->>UI: secrets.updated (open page reads the list again, shows Allow)
     A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: forwarded without the secret (not bound yet)
     P->>UI: Allow

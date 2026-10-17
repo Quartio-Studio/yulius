@@ -7,7 +7,11 @@ task #171. Supersedes, in [ADR-0144](0144-the-superagent-reads-the-agent-vault-a
 "The rest stays a task's" and the alternatives it left for later or rejected (the egress proxy,
 `secret_copy_to_env`, `secret_request_hosts` for the Superagent); its `secret_verify` stands.
 Settles the decision [ADR-0121](0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)
-left open (the Superagent behind the proxy). Amends SPEC-037 MGT-006 again.
+left open (the Superagent behind the proxy). Amends SPEC-037 MGT-006 again. Amended by
+[0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md): on a contained server the
+Superagent bypasses approvals, so "Asked before each change" holds only on an uncontained one;
+the server-side checks of the two tools (the person's one-time allowance, Git ignoring the file)
+still apply.
 
 ## Context
 
