@@ -12,6 +12,7 @@ use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, Foundations, MAX_RECENT_CHANGES, ParallelTask,
     RecentChange, TaskBrief, build_briefing,
 };
+use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
@@ -272,24 +273,49 @@ impl App {
         ))
     }
 
+    /// Sets a running task's activity and publishes it. `NeedsAttention` is raised from the task
+    /// as it is now, not as `task` says ([`Self::flag_needs_attention`]).
     pub(crate) async fn set_task_activity(
         &self,
         task: &TaskRecord,
         activity: Activity,
     ) -> AppResult<()> {
+        if activity == Activity::NeedsAttention {
+            return self.flag_needs_attention(&task.id).await;
+        }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
         }
-        if activity != Activity::NeedsAttention {
-            self.runtime(&task.id)
-                .notice_attention_ms
-                .store(0, Ordering::SeqCst);
-        }
+        self.runtime(&task.id)
+            .notice_attention_ms
+            .store(0, Ordering::SeqCst);
         self.deps
             .store
             .set_activity(&task.id, Some(activity), self.now())
             .await?;
         self.publish_task(&task.id).await;
+        Ok(())
+    }
+
+    /// Flags a running task as needing a person, for anything but a secret request: a flag
+    /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
+    /// the task's attention lock, from the task as it is now, so that a secret request's answer
+    /// ending its flag at the same moment cannot swallow this one.
+    async fn flag_needs_attention(&self, task_id: &TaskId) -> AppResult<()> {
+        let runtime = self.runtime(task_id);
+        let _held = runtime.attention_lock.lock().await;
+        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        let Some(task) = self.deps.store.task(task_id).await? else {
+            return Ok(());
+        };
+        if task.status != TaskStatus::Running || task.activity == Some(Activity::NeedsAttention) {
+            return Ok(());
+        }
+        self.deps
+            .store
+            .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
+            .await?;
+        self.publish_task(task_id).await;
         Ok(())
     }
 
@@ -1126,7 +1152,8 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoDocs, foundations, notice_answered_by_work, notification_needs_a_person, repo_path,
+        RepoDocs, foundations, notice_answered_by_work, notification_needs_a_person, read_repo_doc,
+        repo_doc_exists, repo_path,
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
@@ -1267,6 +1294,30 @@ mod tests {
             0,
             "a linked directory is not read"
         );
+        Ok(())
+    }
+
+    /// #70: a document that is itself a link (a file in the repository root linked to a host
+    /// file, or even to a file of the repository) is never read, nor counted as present; a
+    /// regular file is.
+    #[test]
+    fn linked_documents_are_not_read() -> Result<(), Box<dyn std::error::Error>> {
+        let host = tempfile::tempdir()?;
+        let secret = host.path().join("secret.txt");
+        std::fs::write(&secret, "host secret")?;
+        let repo = tempfile::tempdir()?;
+        let root = repo.path();
+        std::fs::write(root.join("real.md"), "# real")?;
+        std::os::unix::fs::symlink(&secret, root.join("p.md"))?;
+        std::os::unix::fs::symlink(root.join("real.md"), root.join("inside.md"))?;
+        std::fs::create_dir(root.join("docs"))?;
+        std::os::unix::fs::symlink(&secret, root.join("docs/product.md"))?;
+        for linked in ["p.md", "inside.md", "docs/product.md"] {
+            assert_eq!(read_repo_doc(root, linked), None, "{linked}");
+            assert!(!repo_doc_exists(root, linked), "{linked}");
+        }
+        assert_eq!(read_repo_doc(root, "real.md").as_deref(), Some("# real"));
+        assert!(repo_doc_exists(root, "real.md"));
         Ok(())
     }
 

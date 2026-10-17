@@ -154,6 +154,12 @@ pub struct TaskRuntime {
     /// When (ms) a notice that asks a person to act flagged the task `needs_attention` (0 = no
     /// such flag): the agent's work after it shows the person answered (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
+    /// The state time (ms) of the `needs_attention` flag an agent's secret request raised (0 =
+    /// none): a person's answer ends only that flag, while the task still reads it (SPEC-213).
+    pub(crate) secret_wait_at: AtomicI64,
+    /// Held while a `needs_attention` flag is raised, or a secret request's flag is marked or
+    /// ended, so that none of them reads a state another is changing (SPEC-213).
+    pub(crate) attention_lock: tokio::sync::Mutex<()>,
     /// When (ms) the record that closes a turn was last seen: the background agents it counts
     /// are known from then on (STA-001), which the chain and Done decisions wait for.
     pub(crate) turn_record_ms: AtomicI64,
@@ -260,6 +266,8 @@ impl TaskRuntime {
             shells_since_ms: AtomicI64::new(0),
             background_agents: AtomicU32::new(0),
             notice_attention_ms: AtomicI64::new(0),
+            secret_wait_at: AtomicI64::new(0),
+            attention_lock: tokio::sync::Mutex::new(()),
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),

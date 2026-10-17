@@ -307,6 +307,15 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Sets the activity of a running task only while it still reads `from`: that activity
+    /// (or none), entered at that state time (SPEC-213); whether it did.
+    async fn set_activity_from(
+        &self,
+        id: &TaskId,
+        from: (Option<Activity>, Timestamp),
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
