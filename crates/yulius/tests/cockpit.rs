@@ -2926,7 +2926,9 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     assert_eq!(verified["match"], "escaped_newlines", "{verified}");
     assert_eq!(verified["lines"], 7, "{verified}");
 
-    // Not allowed yet: asked for, as alice's Superagent, and nothing is written.
+    // Not allowed yet: asked for, as alice's Superagent, and nothing is written; the open
+    // Secrets pages hear of it (SPEC-209).
+    let mut announced = support::SecretAnnouncements::new(&f.h.app);
     let copy = |secrets: Value, path: Option<&str>| {
         let mut args = json!({"secrets": secrets, "reason": "the deploy script signs in"});
         if let Some(path) = path {
@@ -2945,6 +2947,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
         "{asked}"
     );
     assert!(!repo.join(".env").exists(), "nothing is written");
+    assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(record.env_files, EnvFiles::Asked);
     assert_eq!(
@@ -3002,6 +3005,8 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(!is_error, "{requested}");
     assert_eq!(requested["requested"], json!(["deploy.quartio.test"]));
+    // #631: the person's open Secrets page shows the request and its Allow at once.
+    assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(
         record.requested_hosts,

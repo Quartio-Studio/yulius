@@ -243,6 +243,112 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(dialog.getByText('More options')).toBeHidden();
 });
 
+type Asking = { __yuliusMock: { askHosts(name: string, hosts: string[], by: string, announce?: boolean): void; announceSecrets(sandboxId: string | null): void; goOffline(): void; goOnline(): void; request(method: string, path: string, body?: object): Promise<number>; asked: Record<string, number>; sent?: Record<string, number>; heldWaiting: number; release(): void }; pageKept?: boolean; drawnAllow?: { settling: boolean; focused: boolean } | null };
+
+const LIST = '/api/sandboxes/sb_studio/agent-secrets';
+
+// Task #196 (SPEC-209, #631): "Allow didnt show instantly but i needed to refresh the page." An
+// agent's request reaches the open page through the event stream; the page itself never reloads.
+test('an agent’s host request shows its Allow on the open page at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Asking).pageKept = true; });
+
+  const reads = () => browser.evaluate((path: string) => (window as unknown as Asking).__yuliusMock.asked[path] || 0, LIST);
+  const before = await reads();
+
+  // Another sandbox's secrets changed, then this one's: only this one's is read again, once, and
+  // the request and its Allow show with no reload of the page.
+  await browser.evaluate(() => {
+    const mocked = (window as unknown as Asking).__yuliusMock;
+    mocked.askHosts('OLD_DEPLOY_KEY', ['staging.example.test'], '#120', false);
+    mocked.announceSecrets('sb_product');
+    mocked.announceSecrets('sb_studio');
+  });
+  await expect(card.getByText('Task #120 asks to send it to')).toBeVisible();
+  await expect(screen.getByRole('button', 'Allow staging.example.test for OLD_DEPLOY_KEY')).toBeEnabled();
+  expect(await reads()).toBe(before + 1);
+  expect(await browser.evaluate(() => (window as unknown as Asking).pageKept)).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A secret of every sandbox is announced to every sandbox's page.
+  expect(await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.request('POST', '/api/sandboxes/sb_studio/agent-secrets', { scope: 'instance', name: 'SHARED_KEY', description: 'Shared', value: 'mock-shared-value-1' }))).toBe(201);
+  const shared = browser.locator('.item-card:has-text("SHARED_KEY")');
+  await expect(shared).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askHosts('SHARED_KEY', ['api.shared.test'], '#121 in product'));
+  await expect(shared.getByText('api.shared.test')).toBeVisible();
+});
+
+// SPEC-121 holds while the page follows requests live (review of SPEC-209, M1): Allow answers the
+// hosts it shows, and a request that changes under the person's pointer or keyboard gets an Allow
+// that is off for a moment, so a click meant for the old one cannot allow a host never seen.
+test('an Allow whose hosts just changed is off for a moment', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeEnabled();
+  // The person is on the Allow (keyboard focus) when the hosts change. The moment the new Allow
+  // is drawn, before any timer could change it, its state is noted and it is clicked.
+  await browser.evaluate(() => {
+    const page = window as unknown as Asking;
+    page.drawnAllow = null;
+    document.querySelector<HTMLButtonElement>('button[aria-label="Allow api.vidoc.test for VIDOC_API_KEY"]')!.focus();
+    const watch = new MutationObserver(() => {
+      const allow = document.querySelector<HTMLButtonElement>('button[aria-label="Allow api.vidoc.test, evil.test for VIDOC_API_KEY"]');
+      if (!allow) return;
+      watch.disconnect();
+      page.drawnAllow = { settling: allow.getAttribute('aria-disabled') === 'true', focused: document.activeElement === allow };
+      allow.click();
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    page.__yuliusMock.askHosts('VIDOC_API_KEY', ['evil.test'], '#107, #121');
+  });
+  const allow = screen.getByRole('button', 'Allow api.vidoc.test, evil.test for VIDOC_API_KEY');
+  await expect(allow).toBeVisible();
+  // Off, yet focus stays on it: never moved to another grant on the card (review round 2).
+  expect(await browser.evaluate(() => (window as unknown as Asking).drawnAllow)).toEqual({ settling: true, focused: true });
+  await expect(browser.locator('.item-card:has-text("VIDOC_API_KEY")').getByText('The hosts asked for changed while this page was open.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.querySelector('button[aria-label="Allow api.vidoc.test, evil.test for VIDOC_API_KEY"]')!.getAttribute('aria-disabled'))).toBe(null);
+  // The click while it settled sent nothing; Enter now allows what is shown.
+  expect(await browser.evaluate(() => ((window as unknown as Asking).__yuliusMock.sent || {})['POST /api/agent-secrets/as_vidoc/request'] || 0)).toBe(0);
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByText('Allowed. Agents can use VIDOC_API_KEY on api.vidoc.test, evil.test.')).toBeVisible();
+});
+
+// Review of SPEC-209 (L1): an answer on its way is not undone by a live update, which would give
+// back enabled buttons for a request about to be gone; the reload after the answer catches up.
+test('a live update waits for an answer on its way', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents', '&holdpost=/api/agent-secrets/as_stripe/env'));
+  const allow = screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files');
+  await allow.click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Asking).__yuliusMock.heldWaiting)).toBe(1);
+  const reads = () => browser.evaluate((path: string) => (window as unknown as Asking).__yuliusMock.asked[path] || 0, LIST);
+  const before = await reads();
+  await browser.evaluate(() => {
+    (window as unknown as Asking).__yuliusMock.announceSecrets('sb_studio');
+    // The mock delivers an event on a 0 ms timer: one queued after it runs once the page heard it.
+    return new Promise((resolve) => { setTimeout(resolve, 0); });
+  });
+  expect(await reads()).toBe(before);
+  await expect(allow).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.release());
+  await expect(screen.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
+  expect(await reads()).toBe(before + 1);
+});
+
+test('a request made while the stream was down shows once it reconnects', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await browser.evaluate(() => {
+    const mocked = (window as unknown as Asking).__yuliusMock;
+    mocked.goOffline();
+    mocked.askHosts('OLD_DEPLOY_KEY', ['staging.example.test'], '#120', false);
+    mocked.goOnline();
+  });
+  await expect(screen.getByRole('button', 'Allow staging.example.test for OLD_DEPLOY_KEY')).toBeVisible({ timeout: 15000 });
+});
+
 // SPEC-129 R4: an agent asks to copy a secret into the project's .env; a person allows it here,
 // and can revoke it later.
 test('a person allows an agent to copy a secret into .env, then revokes it', async ({ app, browser, screen }) => {

@@ -742,6 +742,10 @@ everyone's (`/api/team-secrets`). Schema version 35 listed the secrets that had 
 (`vault/scopes.rs`) re-seals each into a copy per sandbox and replaces it in one transaction
 (`vault_assign`), audited `vault.*.assign` by `yulius`.
 
+Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
+secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its
+list again without a reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
+
 ```mermaid
 flowchart LR
   A["Agent: secret_request_hosts(NAME, host)"] --> Q{"auto_allow?"}
@@ -764,6 +768,7 @@ sequenceDiagram
     UI->>App: POST agent-secrets (hosts [], injection none)
     A->>App: secrets_list, then secret_request_hosts(model.vidocsecurity.com)
     App-->>A: requested, waiting for a person (task needs attention)
+    App-->>UI: secrets.updated (open page reads the list again, shows Allow)
     A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: forwarded without the secret (not bound yet)
     P->>UI: Allow
