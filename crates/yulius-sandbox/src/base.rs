@@ -554,6 +554,7 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
     std::fs::create_dir_all(&bases.dir).map_err(|e| e.to_string())?;
     let _ = std::fs::set_permissions(&bases.dir, std::fs::Permissions::from_mode(0o700));
     // One build at a time: a partial tree left now is a dead build's.
+    let asked = now_ms();
     let _lock = lock_builds(&bases.dir).map_err(|e| format!("the build lock: {e}"))?;
     for entry in std::fs::read_dir(&bases.dir)
         .into_iter()
@@ -569,8 +570,13 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
         }
     }
     let fingerprint = fingerprint(&config.host_root, &config.sudo_shim);
-    // A build this one waited for may have made the same base already (review of SPEC-203).
-    if let Some(current) = bases.current().filter(|c| c.fingerprint == fingerprint) {
+    // A build this one waited for may have made the same base meanwhile (review of SPEC-203).
+    // Only that one is reused: a base from before the call is rebuilt, since the fingerprint
+    // does not see every file and an operator may be replacing a damaged base.
+    if let Some(current) = bases
+        .current()
+        .filter(|c| c.fingerprint == fingerprint && c.built_at_ms >= asked)
+    {
         tracing::info!(base = %current.id, "the sandbox base already matches the host");
         return Ok(current);
     }
@@ -1105,10 +1111,12 @@ mod tests {
         Ok(())
     }
 
-    /// Review round 2 of SPEC-203: a build that waited for another and finds the base already
-    /// matching the host builds nothing (no second copy of the same system).
+    /// Review rounds 2 and 3 of SPEC-203: a build that waited for another one, which made a base
+    /// matching the host meanwhile, builds nothing; a base built before the call is rebuilt even
+    /// when its fingerprint matches (the fingerprint does not see every file, and an operator may
+    /// replace a damaged base).
     #[test]
-    fn a_build_after_a_matching_one_builds_nothing() -> TestResult {
+    fn only_a_build_finished_during_the_wait_is_reused() -> TestResult {
         let host = host()?;
         let data = tempfile::tempdir()?;
         let bases = Bases::new(data.path());
@@ -1145,9 +1153,37 @@ mod tests {
             mapper: unusable,
             exe: "/nonexistent/yulius".into(),
         };
-        let built = build(&config, &bases)?;
-        assert_eq!(built.id, "base-1");
-        assert!(!bases.dir.join(".building-base-2").exists());
+        // Built before the call: rebuilt (here the fake mapper stops it after the copy).
+        assert!(build(&config, &bases).is_err());
+        assert!(bases.dir.join(".building-base-2").is_dir());
+
+        // Finished while this build waited: reused.
+        let lock = lock_builds(&bases.dir)?;
+        let (done, ended) = std::sync::mpsc::channel();
+        let waiting = bases.clone();
+        let waiting_config = config.clone();
+        let builder = std::thread::spawn(move || {
+            let _ = done.send(build(&waiting_config, &waiting).map(|b| b.id));
+        });
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+        std::fs::create_dir_all(bases.path("base-2"))?;
+        write_json(
+            &bases.dir.join("current.json"),
+            &BaseInfo {
+                id: "base-2".into(),
+                fingerprint: fingerprint(host.path(), shim),
+                built_at_ms: now_ms(),
+                format: BASE_FORMAT,
+            },
+        )?;
+        drop(lock);
+        let reused = ended.recv_timeout(std::time::Duration::from_secs(60))?;
+        assert_eq!(reused, Ok("base-2".to_owned()));
+        builder.join().map_err(|_| "builder panicked")?;
         Ok(())
     }
 }

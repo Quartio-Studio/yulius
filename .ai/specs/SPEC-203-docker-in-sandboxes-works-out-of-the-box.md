@@ -315,5 +315,11 @@ Code today:
     - Nits: the key download has 90 s; the helper replaces control characters, so the bounds
       hold in bytes (the oversized test now includes them); `--update-state` is documented; this
       test plan's wording.
+  - Round 3 at 9ce3f5d9: approve, with one minor in own code, fixed before merge. The early
+    return reused any base that matched the host's fingerprint; now it reuses only one finished
+    while the build waited for the lock (`built_at_ms` after the call). A base from before is
+    rebuilt, since the fingerprint does not see `dockerd` outside dpkg, or a damaged base.
+    `only_a_build_finished_during_the_wait_is_reused` failed first. Kept: the items keep their
+    stable names ("yulius.service") whatever `--service` names; their text names the unit.
   - Kept by choice: Docker's key is not pinned by fingerprint. It is fetched over HTTPS from
     `download.docker.com`, as Docker documents, and apt checks every package against it.
