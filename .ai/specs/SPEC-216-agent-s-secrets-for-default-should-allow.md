@@ -204,6 +204,8 @@ Two changes to the vault, one request:
   - at cc98e45a (review round 2 fix): 2142 tests;
   - at afa1579f, after merging dev #644 (bootstrap rerun first): 2144 tests passed, 18 skipped,
     then docs.
+  - at 279a1fbf (review round 3 fix, dev #641 and #648 merged, bootstrap rerun): 2153 tests
+    passed, 18 skipped, then docs.
 - **`cd e2e && npx e2e run`:**
   - secrets, cd and phone suites, 35/35 at a6ced0ff;
   - secrets suite, 20/20 at cc98e45a.
