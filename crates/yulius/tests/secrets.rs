@@ -2190,6 +2190,133 @@ async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
     Ok(())
 }
 
+/// SPEC-216 SCO-004, AC-6: the secrets that applied to every sandbox when the upgrade ran become
+/// one secret per sandbox, each with the original value and state, once; team-wide secrets added
+/// afterwards stay team-wide.
+#[tokio::test]
+async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().canonicalize()?.join("yulius.db");
+    let h = support::harness_with(support::HarnessOptions {
+        store: Some(yulius_store::SqliteStore::open(&path)?),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "app", "u-alice").await?;
+    seed_sandbox(&h, "s2", "other", "u-alice").await?;
+    create_team_secret(&h, &admin).await?;
+    let global = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "instance", "name": "GLOBAL_KEY", "hosts": ["api.global.test"],
+            "value": STRIPE, "auto_allow": false}),
+        ),
+        &admin,
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    // As the upgrade found them.
+    rusqlite::Connection::open(&path)?.execute_batch(
+        "INSERT INTO vault_scope_pending (id) SELECT id FROM vault_secrets WHERE sandbox_id IS NULL",
+    )?;
+    let later = call(
+        &h.router,
+        Method::POST,
+        "/api/team-secrets",
+        Some(json!({"title": "Office wifi", "value": "wifi-pass-1234"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(later.status, StatusCode::CREATED, "{}", later.body);
+
+    assert_eq!(h.app.assign_vault_scopes().await?, 2);
+    assert_eq!(h.app.assign_vault_scopes().await?, 0, "only once");
+
+    let wide = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
+    assert_eq!(wide.body.as_array().map(Vec::len), Some(1), "{}", wide.body);
+    assert_eq!(wide.body[0]["title"], "Office wifi");
+    enroll(&h, &admin).await?;
+    for sandbox in ["s1", "s2"] {
+        let team = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/sandboxes/{sandbox}/team-secrets"),
+            None,
+            &admin,
+        )
+        .await?;
+        let gmail = team
+            .body
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["title"] == "Shared Gmail"))
+            .ok_or("Shared Gmail")?;
+        assert_eq!(gmail["scope"], "sandbox", "{}", team.body);
+        let shown = call(
+            &h.router,
+            Method::POST,
+            &format!(
+                "/api/team-secrets/{}/reveal",
+                gmail["id"].as_str().ok_or("id")?
+            ),
+            None,
+            &admin,
+        )
+        .await?;
+        assert_eq!(shown.body["value"], MAIL_PASSWORD, "{}", shown.body);
+        assert_eq!(shown.body["notes"], "recovery: 1111-2222");
+
+        let agents = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/sandboxes/{sandbox}/agent-secrets"),
+            None,
+            &admin,
+        )
+        .await?;
+        let key = agents
+            .body
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["name"] == "GLOBAL_KEY"))
+            .ok_or("GLOBAL_KEY")?;
+        assert_eq!(key["scope"], "sandbox", "{}", agents.body);
+        assert_eq!(key["hosts"], json!(["api.global.test"]));
+        assert_eq!(key["auto_allow"], false);
+        let revealed = call(
+            &h.router,
+            Method::POST,
+            &format!(
+                "/api/agent-secrets/{}/reveal",
+                key["id"].as_str().ok_or("id")?
+            ),
+            Some(json!({"purpose": "show"})),
+            &admin,
+        )
+        .await?;
+        assert_eq!(revealed.body["value"], STRIPE, "{}", revealed.body);
+    }
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
+    let assigned = activity.body.as_array().map_or(0, |a| {
+        a.iter()
+            .filter(|e| {
+                e["actor"] == "yulius"
+                    && (e["action"] == "vault.team.assign" || e["action"] == "vault.agent.assign")
+            })
+            .count()
+    });
+    assert_eq!(assigned, 4, "{}", activity.body);
+    Ok(())
+}
+
 /// AC-VLT-7: no value, user name or seed in the database file, its WAL or a backup; the API
 /// still reads them back.
 #[tokio::test]

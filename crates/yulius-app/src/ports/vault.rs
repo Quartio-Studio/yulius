@@ -221,6 +221,14 @@ pub trait VaultStore: Send + Sync {
     /// `from` (compare and set) and agents do not set it up themselves (`auto_allow`, SPEC-216
     /// SSA-004); `false` otherwise.
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool>;
+    /// The secrets that applied to every sandbox when schema version 35 was reached and are not
+    /// assigned to sandboxes yet (SPEC-216 SCO-004).
+    async fn vault_scope_pending(&self) -> AppResult<Vec<String>>;
+    /// Replaces the pending secret `id` by `copies` (one per sandbox) and takes it off the
+    /// pending list, in one transaction; with no copies it stays as it is (team-wide) and only
+    /// leaves the list. `false`, and nothing but the list changes, when it was not pending or no
+    /// longer applies to every sandbox.
+    async fn vault_assign(&self, id: &str, copies: &[VaultSecretRecord]) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Records a re-authentication of a browser session.

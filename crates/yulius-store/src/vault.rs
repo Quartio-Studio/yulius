@@ -100,45 +100,52 @@ fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppR
     }
 }
 
+/// Inserts a row, keeping agent names unique where they apply.
+fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
+    ensure_agent_unique(tx, r)?;
+    tx.execute(
+        &format!(
+            "INSERT INTO vault_secrets ({COLS}, cd_prod) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)"
+        ),
+        params![
+            r.id,
+            r.section.as_str(),
+            r.sandbox_id.as_ref().map(SandboxId::as_str),
+            r.name,
+            r.description,
+            to_json(&r.hosts),
+            r.injection,
+            r.header_name,
+            to_json(&r.fields),
+            i64::from(r.envelope.kek_id),
+            r.envelope.wrapped_key,
+            r.envelope.ciphertext,
+            r.created_by,
+            r.created_at.0,
+            r.updated_by,
+            r.updated_at.0,
+            r.value_updated_at.0,
+            r.last_used_at.map(|t| t.0),
+            to_json(&r.requested_hosts),
+            r.requested_by,
+            r.env_files.as_str(),
+            r.env_requested_by,
+            i64::from(r.auto_allow),
+            i64::from(r.cd_prod),
+        ],
+    )
+    .map_err(db)?;
+    Ok(())
+}
+
 #[async_trait]
 impl VaultStore for SqliteStore {
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()> {
         let r = record.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            ensure_agent_unique(&tx, &r)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO vault_secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)"
-                ),
-                params![
-                    r.id,
-                    r.section.as_str(),
-                    r.sandbox_id.as_ref().map(SandboxId::as_str),
-                    r.name,
-                    r.description,
-                    to_json(&r.hosts),
-                    r.injection,
-                    r.header_name,
-                    to_json(&r.fields),
-                    i64::from(r.envelope.kek_id),
-                    r.envelope.wrapped_key,
-                    r.envelope.ciphertext,
-                    r.created_by,
-                    r.created_at.0,
-                    r.updated_by,
-                    r.updated_at.0,
-                    r.value_updated_at.0,
-                    r.last_used_at.map(|t| t.0),
-                    to_json(&r.requested_hosts),
-                    r.requested_by,
-                    r.env_files.as_str(),
-                    r.env_requested_by,
-                    i64::from(r.auto_allow),
-                ],
-            )
-            .map_err(db)?;
+            insert_row(&tx, &r)?;
             tx.commit().map_err(db)?;
             Ok(())
         })
@@ -362,6 +369,51 @@ impl VaultStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn vault_scope_pending(&self) -> AppResult<Vec<String>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare("SELECT id FROM vault_scope_pending ORDER BY id")
+                .map_err(db)?;
+            let rows = stmt.query_map([], |r| r.get(0)).map_err(db)?;
+            rows.collect::<Result<Vec<String>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_assign(&self, id: &str, copies: &[VaultSecretRecord]) -> AppResult<bool> {
+        let (id, copies) = (id.to_owned(), copies.to_vec());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let pending = tx
+                .execute("DELETE FROM vault_scope_pending WHERE id = ?1", [&id])
+                .map_err(db)?
+                == 1;
+            let everywhere = tx
+                .query_row(
+                    "SELECT 1 FROM vault_secrets WHERE id = ?1 AND sandbox_id IS NULL",
+                    [&id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(db)?
+                .is_some();
+            if !(pending && everywhere) {
+                tx.commit().map_err(db)?;
+                return Ok(false);
+            }
+            if !copies.is_empty() {
+                tx.execute("DELETE FROM vault_secrets WHERE id = ?1", [&id])
+                    .map_err(db)?;
+                for copy in &copies {
+                    insert_row(&tx, copy)?;
+                }
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -692,6 +744,89 @@ mod tests {
             })
             .await?;
         Ok(store)
+    }
+
+    /// SPEC-216 SCO-004: the upgrade to version 35 lists the secrets that applied to every
+    /// sandbox then, and turns agents setting a secret up off for every existing one.
+    #[tokio::test]
+    async fn the_upgrade_lists_the_secrets_of_every_sandbox()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v34.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &crate::MIGRATIONS[..34] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 34)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO vault_secrets (id, section, sandbox_id, name, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, value_updated_at) VALUES
+                   ('team', 'team', NULL, 'Gmail', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1),
+                   ('wide', 'agent', NULL, 'WIDE', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1),
+                   ('own', 'agent', 's1', 'OWN', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        assert_eq!(store.vault_scope_pending().await?, ["team", "wide"]);
+        assert!(!store.vault_get("own").await?.ok_or("own")?.auto_allow);
+        Ok(())
+    }
+
+    /// SPEC-216 SCO-004: a pending secret is replaced by its copies in one step, once; with no
+    /// copies it stays team-wide and only leaves the list; one that no longer applies to every
+    /// sandbox is left alone.
+    #[tokio::test]
+    async fn a_pending_secret_is_replaced_by_its_copies_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        for r in [
+            record("g", VaultSection::Agent, None, "GLOBAL"),
+            record("t", VaultSection::Team, None, "Gmail"),
+            record("k", VaultSection::Team, None, "Kept"),
+            record("m", VaultSection::Team, Some("s1"), "Moved"),
+        ] {
+            store.vault_insert(&r).await?;
+        }
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO vault_scope_pending (id) VALUES ('g'), ('t'), ('k'), ('m'), ('gone')",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let mut pending = store.vault_scope_pending().await?;
+        pending.sort();
+        assert_eq!(pending, ["g", "gone", "k", "m", "t"]);
+
+        let copies = [
+            record("g1", VaultSection::Agent, Some("s1"), "GLOBAL"),
+            record("g2", VaultSection::Agent, Some("s2"), "GLOBAL"),
+        ];
+        assert!(store.vault_assign("g", &copies).await?);
+        assert!(store.vault_get("g").await?.is_none());
+        assert_eq!(
+            store.vault_agent(Some(&SandboxId::parse("s2")?)).await?[0].id,
+            "g2"
+        );
+        assert!(!store.vault_assign("g", &copies).await?, "only once");
+        assert!(store.vault_assign("k", &[]).await?);
+        assert!(store.vault_get("k").await?.is_some(), "kept team-wide");
+        assert!(
+            !store
+                .vault_assign(
+                    "m",
+                    &[record("m2", VaultSection::Team, Some("s2"), "Moved")]
+                )
+                .await?,
+            "no longer applies to every sandbox"
+        );
+        assert!(store.vault_get("m2").await?.is_none());
+        assert!(!store.vault_assign("gone", &[]).await?);
+        assert_eq!(store.vault_scope_pending().await?, ["t"]);
+        Ok(())
     }
 
     #[tokio::test]
