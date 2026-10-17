@@ -20,7 +20,7 @@ use yulius_contracts::events::UiEvent;
 use yulius_contracts::mcp::{ToolDescriptor, text_result};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::Activity;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -336,12 +336,8 @@ impl App {
             browser.request_user_action(&params.tab_id, &params.reason, Some(&ctx.task.id))?;
         let store = &self.deps.store;
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        if task.status == TaskStatus::Running && task.activity != Some(Activity::NeedsAttention) {
-            store
-                .set_activity(&task.id, Some(Activity::NeedsAttention), self.now())
-                .await?;
-            self.publish_task(&task.id).await;
-        }
+        self.set_task_activity(&task, Activity::NeedsAttention)
+            .await?;
         let sandbox = store
             .sandbox(&task.sandbox_id)
             .await?

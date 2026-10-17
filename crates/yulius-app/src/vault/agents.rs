@@ -520,7 +520,10 @@ impl App {
             Some(id),
             &record.name,
         )
-        .await
+        .await?;
+        // Its requests went with it (SPEC-213).
+        self.settle_secret_waits(record.sandbox_id.as_ref()).await;
+        Ok(())
     }
 
     /// `POST /api/agent-secrets/{id}/reveal`: the value and the notes (its description) for a

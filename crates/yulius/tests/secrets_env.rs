@@ -271,6 +271,11 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
 
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(
+        task_activity(&w).await?,
+        Some(yulius_domain::task::Activity::Working),
+        "SPEC-213 SRA-001: nothing waits for a person any more"
+    );
     let copied = support::mcp_tool(
         &w.h,
         TOKEN,
@@ -328,6 +333,134 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
         .filter(|e| e["action"] == "vault.agent.env_request")
         .count();
     assert_eq!(requests, 1);
+    Ok(())
+}
+
+async fn task_activity(
+    w: &World,
+) -> Result<Option<yulius_domain::task::Activity>, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::TaskStore as _;
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    Ok(task.activity)
+}
+
+/// SPEC-213 SRA-001 to SRA-003 (#633): the answer to the last request a task waits for ends the
+/// "Needs your action" its request raised; a task with a request still waiting, or flagged by
+/// something else, keeps it.
+#[tokio::test]
+async fn the_answer_to_the_last_waiting_request_ends_the_flag() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "MAPS_KEY", "value": "maps-value"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let maps = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let ask = |names: Value| {
+        support::mcp_tool(&w.h, TOKEN, "secret_copy_to_env", json!({"secrets": names}))
+    };
+    let asked = ask(json!(["STRIPE_KEY", "MAPS_KEY"])).await?;
+    assert_eq!(
+        support::tool_text(&asked)["waiting"],
+        json!(["STRIPE_KEY", "MAPS_KEY"]),
+        "{asked}"
+    );
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+
+    // SRA-002: MAPS_KEY still waits.
+    let allowed = answer(&w, &w.writer, true).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+
+    // SRA-001: a dismissal answers too; nothing waits any more.
+    let dismissed = answer_seen(&w, &w.writer, &maps, false, "asked", Some("#1")).await?;
+    assert_eq!(dismissed.status, StatusCode::OK, "{}", dismissed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::Working));
+
+    // SRA-003: a task flagged by something else before it asks keeps that flag.
+    w.h.store
+        .set_activity(
+            &yulius_domain::ids::TaskId::parse("t1")?,
+            Some(Activity::NeedsAttention),
+            yulius_domain::time::Timestamp(1),
+        )
+        .await?;
+    let again = ask(json!(["MAPS_KEY"])).await?;
+    assert_eq!(support::tool_text(&again)["waiting"], json!(["MAPS_KEY"]));
+    let allowed = answer_seen(&w, &w.writer, &maps, true, "asked", Some("#1")).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// SPEC-213 SRA-003 (review of #633, round 1): a flag raised after the request, while the task
+/// already reads `needs_attention` (a question of the agent's), is not the request's: the answer
+/// leaves it.
+#[tokio::test]
+async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    let notice = call(
+        &w.h.internal,
+        Method::POST,
+        "/hooks/claude/Notification",
+        Some(json!({"notification_type": "elicitation_dialog", "message": "Pick one"})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    let allowed = answer(&w, &w.writer, true).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// SPEC-213 SRA-001 (review of #633, round 1): deleting the secret a task waits for ends the
+/// request, and with it the flag.
+#[tokio::test]
+async fn deleting_the_asked_secret_ends_the_flag() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    let deleted = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/agent-secrets/{}", w.id),
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert!(deleted.status.is_success(), "{}", deleted.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::Working));
     Ok(())
 }
 
@@ -645,9 +778,13 @@ async fn secrets_of_every_project_are_answered_by_administrators() -> TestResult
     assert!(by.ends_with(" in app"), "{by}");
     let refused = answer_seen(&w, &w.writer, &id, true, "asked", Some(&by)).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    use yulius_domain::task::Activity;
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
     let allowed = answer_seen(&w, &admin, &id, true, "asked", Some(&by)).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["env_files"], "allowed");
+    // SPEC-213 SRA-001: the task asked as `#1 in app`.
+    assert_eq!(task_activity(&w).await?, Some(Activity::Working));
     Ok(())
 }
 

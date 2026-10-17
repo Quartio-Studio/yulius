@@ -53,3 +53,13 @@ reason = "agent_secret_value reads stored secrets only (vault_agent), never the 
 path = "crates/yulius-harness/src/claude_config.rs"
 title = "as trusted"
 reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); host-side reads tracked in #634"
+
+# `read_repo_doc` reads no link: `symlink_metadata(..).is_file()` is false for a symlink, whether it
+# names a file or a directory, and the resolved path and (on Linux) the opened fd's real path must
+# stay under the root (#70). `hooks::tests::linked_documents_are_not_read` proves a file linked to
+# a host file is neither read nor counted. Reported (high) on task #200's change scan (SPEC-213),
+# which sent hooks.rs for set_task_activity; the code predates it.
+[[ignore]]
+path = "crates/yulius-app/src/hooks.rs"
+title = "Symlink file read escapes the repository root"
+reason = "symlink_metadata().is_file() refuses every link before any read; proven by hooks::tests::linked_documents_are_not_read (#70)"

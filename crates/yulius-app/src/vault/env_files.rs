@@ -344,6 +344,9 @@ impl App {
             },
         )
         .await?;
+        if seen == EnvFiles::Asked {
+            self.settle_secret_waits(record.sandbox_id.as_ref()).await;
+        }
         self.agent_view(&record, true).await
     }
 
