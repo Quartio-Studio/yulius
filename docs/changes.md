@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- The Superagent runs in bypass-permissions mode on a contained server, as tasks do (SPEC-208,
+  ADR-0165, task #195). It started as plain Claude Code, which now opens in auto mode: its safety
+  check blocked commands the person asked for and its "Teach auto mode about your environment?"
+  dialog interrupted the panel. It now starts with `--dangerously-skip-permissions` and
+  `IS_SANDBOX=1` (it is root of its sandbox), the bypass warning already accepted; running
+  Superagents restart into it once idle. Tasks already ran this way (checked on this instance's
+  transcripts); an uncontained server still bypasses nothing.
 - Removing a sandbox stops everything of it (SPEC-206, task #193, fixes #624). It stopped only the
   tasks: the sandbox's Superagents and terminals went on running (a person watching one saw it keep
   working), a CI run in progress ran to its end and published its status, the browser waited for

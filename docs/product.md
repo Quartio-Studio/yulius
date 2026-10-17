@@ -47,7 +47,8 @@ watching, steering and unblocking.
   the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
-  deleted and comes back with its conversation. It manages the project for its owner: asked to
+  deleted and comes back with its conversation. On a contained server it runs in Claude Code's
+  bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
   automations and enables the ready-made ones, asking the person before each change. Task agents

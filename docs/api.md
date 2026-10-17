@@ -1091,10 +1091,11 @@ resolves to nothing, the run gets the server without that variable or token.
   it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
-    <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
+    <newest conversation>] --model claude-opus-5-5 --effort high [--dangerously-skip-permissions]`
+    (SPEC-023; the bypass with `IS_SANDBOX=1` on a contained server, SPEC-208) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
-    terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
+    terminal's environment (Git as the caller); no Yulius hooks or settings. It
     gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
