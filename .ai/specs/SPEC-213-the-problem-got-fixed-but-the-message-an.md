@@ -93,5 +93,9 @@ and it leaves the sidebar's Needs you list.
   so a flag replaced since, or raised by another cause, stays (SRA-003). The runtime is memory: after
   a Yulius restart the flag ends at the turn's Stop, as before this fix. A stored column would
   survive restarts but costs a migration for a few minutes of a banner; not worth it.
+- **The write is not a compare-and-set on the activity.** A Stop that settles the task between
+  the check and the write would be overwritten with Working until the next activity change. The
+  store has no activity compare-and-set, and the other writers (`resume_working`, the hooks) share
+  that window; the cost is one wrong status for one turn, so no new store primitive here.
 - No ADR: this restores the documented meaning of the flag (SPEC-129: the task is flagged while it
   waits for a person) and changes no contract.
