@@ -789,3 +789,49 @@ async fn the_cli_lists_and_deletes_with_the_server_s_key() -> BoxResult<()> {
     assert!(String::from_utf8_lossy(&out).contains("cannot reach"));
     Ok(())
 }
+
+/// LFT-012: the loopback routes refuse a request without the key, with an empty one, a wrong
+/// one, and every request before the server wrote its key.
+#[tokio::test]
+async fn the_loopback_routes_need_the_server_s_key() -> BoxResult<()> {
+    let w = world().await?;
+    let get = |auth: Option<String>| {
+        let router = w.h.internal.clone();
+        async move {
+            let mut request = axum::http::Request::builder().uri("/internal/leftovers");
+            if let Some(auth) = auth {
+                request = request.header("authorization", auth);
+            }
+            let response =
+                tower::ServiceExt::oneshot(router, request.body(axum::body::Body::empty())?)
+                    .await?;
+            Ok::<_, Box<dyn std::error::Error>>(response.status())
+        }
+    };
+    assert_eq!(
+        get(Some("Bearer ".into())).await?,
+        StatusCode::UNAUTHORIZED,
+        "no key written yet"
+    );
+    w.h.app.write_leftovers_key()?;
+    let key = std::fs::read_to_string(w.at(yulius_app::leftovers::CLI_KEY_FILE))?;
+    assert!(
+        !w.at(".leftovers-cli.key.new").exists(),
+        "no staged copy is left"
+    );
+    for refused in [
+        None,
+        Some("Bearer ".to_owned()),
+        Some(format!("Bearer {}", &key[1..])),
+        Some(format!("Bearer {key}0")),
+        Some(key.clone()),
+    ] {
+        assert_eq!(
+            get(refused.clone()).await?,
+            StatusCode::UNAUTHORIZED,
+            "{refused:?}"
+        );
+    }
+    assert_eq!(get(Some(format!("Bearer {key}"))).await?, StatusCode::OK);
+    Ok(())
+}

@@ -1039,32 +1039,43 @@ impl App {
         let path = self.config.data_dir.join(CLI_KEY_FILE);
         let staged = self.config.data_dir.join(format!(".{CLI_KEY_FILE}.new"));
         let _ = std::fs::remove_file(&staged);
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staged)?;
-        file.write_all(key.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&staged, &path)?;
+        let written = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&staged)?;
+            file.write_all(key.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&staged, &path)
+        })();
+        if let Err(err) = written {
+            // Never leave a copy of the key behind.
+            let _ = std::fs::remove_file(&staged);
+            return Err(err);
+        }
         self.with_leftovers(|inner| inner.key = Some(key));
         Ok(())
     }
 
-    /// Whether `presented` is the CLI's key (compared in constant time; none before it is
-    /// written).
+    /// Whether `presented` is the CLI's key: never an empty one, none before the key is written,
+    /// and compared as SHA-256 digests in constant time (no length or prefix shows).
     #[must_use]
     pub fn leftovers_key_matches(&self, presented: &str) -> bool {
-        self.with_leftovers(|inner| {
-            inner.key.as_ref().is_some_and(|key| {
-                key.len() == presented.len()
-                    && key
-                        .bytes()
-                        .zip(presented.bytes())
-                        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
-                        == 0
-            })
-        })
+        let Some(key) = self.with_leftovers(|inner| inner.key.clone()) else {
+            return false;
+        };
+        if presented.is_empty() {
+            return false;
+        }
+        let ours = self.deps.crypto.sha256_hex(key.as_bytes());
+        let theirs = self.deps.crypto.sha256_hex(presented.as_bytes());
+        ours.len() == theirs.len()
+            && ours
+                .bytes()
+                .zip(theirs.bytes())
+                .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+                == 0
     }
 
     /// The automatic rounds: at start (after [`AUTO_FIRST`]) and every hour. The CLI's key is
