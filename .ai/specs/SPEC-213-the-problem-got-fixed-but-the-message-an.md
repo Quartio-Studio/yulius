@@ -117,6 +117,9 @@ and it leaves the sidebar's Needs you list.
 - **A request written while the answer is handled flags the task again.** The agent writes its
   request before it flags (which waits for the lock and finds the task flagged), so the check
   after the answer's write sees it and flags anew: at worst a moment of Working, no lost flag.
+  The other way round, a person answering between the request's write and its flag finds no flag
+  to end; the request, once flagged, looks again and ends its own flag when nothing waits
+  (review round 4).
 - These interleavings are argued here and in the code, not tested: reproducing them needs probes
   inside the store calls; the sequential cases they protect are tested.
 - No ADR: this restores the documented meaning of the flag (SPEC-129: the task is flagged while it
@@ -134,6 +137,8 @@ and it leaves the sidebar's Needs you list.
 - After the fix: `cargo nextest run -p yulius -p yulius-store -p yulius-app` over `secrets_env::`,
   `secrets::`, `browser::`, `agent_hooks::`, `cd::`, `context_full::`, `task_done::`,
   `first_message::`, `delivery::`, `stages::` and the store and app crates: 531 passed.
+- After round 4: 361 passed over `secrets_env::`, `secrets::`, `browser::`, `agent_hooks::`,
+  `cd::` and the app crate.
 - `scripts/dev ci` on af275ac2 (with `dev` merged): exit 0, 2136 tests passed, 18 skipped; deny:
   advisories, bans, licenses, sources ok.
 - `scripts/dev security` on af275ac2: exit 0, no critical or high finding. The medium and low
@@ -141,7 +146,8 @@ and it leaves the sidebar's Needs you list.
   are tracked for triage in #639.
 - Independent review in fresh sessions: round 1 requested changes (one major: a later flag of
   another cause was cleared; four minors), all fixed test-first; round 2 approved with one minor
-  race, fixed in 0d9fd70e; round 3 approved with two minor races, fixed with the per-task lock
-  (Decisions); the delivered head is reviewed again.
+  race, fixed in 0d9fd70e; round 3 approved with two minor races, fixed with the per-task lock;
+  round 4 approved with one minor race and two nits, fixed (Decisions); the delivered head is
+  reviewed again.
 - Not testable here: the live UI banner itself (the tests read the task's activity, which the
   banner and the Needs you list render from), and the interleavings argued under Decisions.

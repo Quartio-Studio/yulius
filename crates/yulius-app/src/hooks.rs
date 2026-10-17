@@ -12,6 +12,7 @@ use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, Foundations, MAX_RECENT_CHANGES, ParallelTask,
     RecentChange, TaskBrief, build_briefing,
 };
+use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
@@ -272,6 +273,8 @@ impl App {
         ))
     }
 
+    /// Sets a running task's activity and publishes it. `NeedsAttention` is raised from the task
+    /// as it is now, not as `task` says ([`Self::flag_needs_attention`]).
     pub(crate) async fn set_task_activity(
         &self,
         task: &TaskRecord,
@@ -298,7 +301,7 @@ impl App {
     /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
     /// the task's attention lock, from the task as it is now, so that a secret request's answer
     /// ending its flag at the same moment cannot swallow this one.
-    async fn flag_needs_attention(&self, task_id: &yulius_domain::ids::TaskId) -> AppResult<()> {
+    async fn flag_needs_attention(&self, task_id: &TaskId) -> AppResult<()> {
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
         runtime.secret_wait_at.store(0, Ordering::SeqCst);

@@ -110,6 +110,14 @@ impl App {
         if let Err(err) = self.raise_secret_flag(&ctx.task.id).await {
             tracing::warn!(task = %ctx.task.id, error = %err, "could not flag {what}");
         }
+        // A person who answered between the request and its flag found no flag to end: it ends
+        // now, as nothing waits any more (review round 4).
+        if let Some(task) = self.deps.store.task(&ctx.task.id).await?
+            && task.activity == Some(Activity::NeedsAttention)
+            && let Err(err) = self.settle_secret_wait(&task).await
+        {
+            tracing::warn!(task = %task.id, error = %err, "could not end the flag of its answered secret request");
+        }
         Ok(())
     }
 
