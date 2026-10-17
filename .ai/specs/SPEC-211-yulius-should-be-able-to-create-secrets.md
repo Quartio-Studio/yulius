@@ -77,7 +77,9 @@ for any secret an agent did not create.
   agent.
 - SCF-005 (result): Name, file, whether the file was deleted, and what to do next (bind hosts with
   `secret_request_hosts`, `.env` with `secret_copy_to_env`, delete the file if the vault should
-  hold the only copy). Never the value, its length or a hash of it.
+  hold the only copy). Never the value, its length or a hash of it. The open Secrets pages of the
+  sandbox are told to read the list again (`secrets.updated`, SPEC-209), so the secret shows
+  without a reload.
 - SCF-006 (deleting the file): With `delete_file: true`, once the secret is stored, Yulius removes
   the file through the folder it opened. A removal that fails leaves the secret and says so.
 - SCF-007 (guidance): The tool's description, the Superagent's instructions and `secrets_list`'s
@@ -172,6 +174,9 @@ for any secret an agent did not create.
   - `cockpit::the_superagent_stores_a_key_from_its_persons_home` (AC-7, review 1).
   - `manage_tools::the_cockpit_asks_before_every_changing_tool` (AC-7).
   - The CLI import's `TRAILING` case (SCF-003).
+- After merging dev with SPEC-209 (#637): `secrets_create::
+  a_created_secret_is_announced_to_open_secrets_pages` failed before `announce_request` was
+  called on creation and passes after; a refused create announces nothing.
 - Mutation check: following links when opening the file, and checking `Action::View` instead of
   `Configure`, each made `files_yulius_must_not_read_are_refused` and
   `names_in_use_and_readers_are_refused` fail. The anchor tests failed before the anchoring fix.

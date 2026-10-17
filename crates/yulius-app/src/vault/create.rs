@@ -290,6 +290,8 @@ impl App {
             })
             .await?;
         drop(payload);
+        // Open Secrets pages show it without a reload (SPEC-209).
+        self.announce_request(&record);
 
         let (deleted, warning) = if args.delete_file {
             delete_stored(&folder, file_name, &shown)

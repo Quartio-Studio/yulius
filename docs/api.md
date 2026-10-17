@@ -1483,7 +1483,8 @@ task; other hooks answer as usual.
   time without links, a regular UTF-8 file of at most 16 KiB, and stores it as an agent secret of
   the sandbox (a key block with literal `\n`) with no hosts, no `.env` allowance, not for
   production. It needs the person's write access, never replaces a name, refuses
-  `VIDOC_API_KEY`, is audited `vault.agent.create` with the agent as actor, deletes the file only
+  `VIDOC_API_KEY`, is audited `vault.agent.create` with the agent as actor, publishes
+  `secrets.updated` for the sandbox (SPEC-209), deletes the file only
   with `delete_file`, and never returns the value.
 - MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
   `sha256sum`'s line) →

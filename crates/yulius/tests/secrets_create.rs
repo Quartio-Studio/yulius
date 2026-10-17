@@ -437,3 +437,19 @@ async fn a_root_swapped_for_a_link_and_reserved_names_are_refused() -> TestResul
     assert_eq!(names(&w).await?, before, "nothing is created");
     Ok(())
 }
+
+/// SPEC-211 with SPEC-209: a secret an agent creates is announced to the open Secrets pages of its
+/// sandbox, so it shows without a reload; a refused create announces nothing.
+#[tokio::test]
+async fn a_created_secret_is_announced_to_open_secrets_pages() -> TestResult {
+    let w = world().await?;
+    std::fs::write(w.worktree.join("token.txt"), format!("{API_TOKEN}\n"))?;
+    let mut announced = support::SecretAnnouncements::new(&w.h.app);
+    let created = create(&w, TOKEN, json!({"name": "API_TOKEN", "file": "token.txt"})).await?;
+    assert_ne!(created["isError"], true, "{created}");
+    assert_eq!(announced.take(), vec![Some("s1".to_owned())]);
+    let refused = create(&w, TOKEN, json!({"name": "API_TOKEN", "file": "token.txt"})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(announced.take(), Vec::<Option<String>>::new());
+    Ok(())
+}
