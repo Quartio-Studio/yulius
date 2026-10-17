@@ -1,11 +1,11 @@
 ---
 yulius-task: 32fd28f3-76f8-46ba-9b51-97cf6d4f16fe
-status: in-progress
+status: done
 ---
 
 # SPEC-205: `yulius secrets import` brings team and agent secrets in from the CLI, safely
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: Yulius task #192
 Scope authorization: task #192, requested by MrFishPL: "To cli add and option to import secrets
@@ -89,8 +89,8 @@ the list of names and typed `yes` at the terminal.
 - [x] The import client lists, checks and creates team and agent secrets over the existing API
 - [x] `yulius secrets import` asks for typed confirmation and imports from a file, stdin or hidden prompts
 - [x] Docs, ADR and changes log describe the import
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -121,8 +121,10 @@ the list of names and typed `yes` at the terminal.
 - Integration (`crates/yulius-import/tests/import/secrets.rs`, fake server with vault routes,
   scripted terminal): AC-2..AC-6.
 - Binary (`crates/yulius/tests/cli.rs`): AC-7.
-- Manual: the built binary against a local Yulius server is not possible in this sandbox without a
-  signed-in CLI; the fake server covers the HTTP contract, which is the server's existing one.
+- Manual: the built binary under a pseudo-terminal (Python `pty`, a controlling terminal of its
+  own) against a local mock of the four vault endpoints, recorded in Evidence. A real Yulius
+  server needs a signed-in CLI, which this sandbox has not; the mock follows the existing
+  contracts, which the fake server's types share.
 
 ## Decisions
 
@@ -136,3 +138,33 @@ the list of names and typed `yes` at the terminal.
   different secret into the vault.
 - The source file is left in place: deleting a person's file is not the command's job; it reminds
   them instead.
+
+## Evidence
+
+- Test-first: the dotenv tests failed against a stub ("not implemented"), the CLI binary test
+  failed with "unrecognized subcommand 'secrets'", and each review fix's test failed before its
+  change (commented-out assignment kept as a comment, BOM refused, `prepare_target` missing, plan
+  without "with notes"). The import tests were written after the first code, so a mutation check
+  proved them: accepting any answer, never skipping existing names, printing a value, keeping
+  real line breaks in a key and going on after a stop each failed at least one test (the last
+  only after the fake server counted every create request).
+- `cargo nextest run -p yulius-import`: 90 passed (dotenv 7, secrets import 13).
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^cli::/)'`: 3 passed (AC-7).
+- `scripts/dev ci` at `af80fee9` (round-1 fixes, `origin/dev` merged): exit 0; nextest 2116
+  passed, 18 skipped; doc build, lint and deps passed (the `thiserror` 1/2 duplicate warnings were
+  there before). Rerun at the final head before delivery.
+- `scripts/dev security` at `4ee2020c` and `af80fee9`: exit 0, Vidoc vidoc-1 ran (2 and 3 chunks
+  reviewed), no open critical or high finding.
+- Manual, built binary in a pseudo-terminal against a mock vault on 127.0.0.1:20101: a file to
+  team secrets (one new, one existing skipped, notes from the comment), typed hidden values to a
+  sandbox's agent secrets, stdin to team secrets answered `no` (nothing sent, exit 1) and `yes`,
+  typed values with stderr redirected to a file, stdout redirected (the plan still shown at the
+  terminal), a key pasted at the hidden prompt (refused), and a wrong `--sandbox` (refused before
+  `Name:`). Every value reached the mock intact; none appeared in the terminal, stdout or stderr.
+- Independent review (fresh session, `om-code-review`): round 1 asked for changes (1 high: a
+  commented-out old key became an agent-visible description; 1 medium: a key pasted at the
+  hidden prompt was cut to its first line and imported; 4 low, 3 nits; all own code, all fixed
+  in `af80fee9`); round 2 approved `af80fee9` with 2 low and 1 nit, fixed in `ab0b3a8d` (the plan
+  marks a comment that goes along; the paste limit is documented; long lines rewrapped).
+- Not testable here: a run against a real Yulius server with a signed-in CLI (the create, list
+  and sandbox calls are the Secrets page's own, unchanged).
