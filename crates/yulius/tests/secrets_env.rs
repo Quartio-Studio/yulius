@@ -403,6 +403,67 @@ async fn the_answer_to_the_last_waiting_request_ends_the_flag() -> TestResult {
     Ok(())
 }
 
+/// SPEC-213 SRA-003 (review of #633, round 1): a flag raised after the request, while the task
+/// already reads `needs_attention` (a question of the agent's), is not the request's: the answer
+/// leaves it.
+#[tokio::test]
+async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    let notice = call(
+        &w.h.internal,
+        Method::POST,
+        "/hooks/claude/Notification",
+        Some(json!({"notification_type": "elicitation_dialog", "message": "Pick one"})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    let allowed = answer(&w, &w.writer, true).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// SPEC-213 SRA-001 (review of #633, round 1): deleting the secret a task waits for ends the
+/// request, and with it the flag.
+#[tokio::test]
+async fn deleting_the_asked_secret_ends_the_flag() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    let deleted = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/agent-secrets/{}", w.id),
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert!(deleted.status.is_success(), "{}", deleted.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::Working));
+    Ok(())
+}
+
 /// SPEC-129 R2, AC2: nothing is written where Git could commit it, outside the worktree, into a
 /// template or through a link; unknown secrets and unallowed ones are not copied either.
 #[tokio::test]
@@ -717,9 +778,13 @@ async fn secrets_of_every_project_are_answered_by_administrators() -> TestResult
     assert!(by.ends_with(" in app"), "{by}");
     let refused = answer_seen(&w, &w.writer, &id, true, "asked", Some(&by)).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    use yulius_domain::task::Activity;
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
     let allowed = answer_seen(&w, &admin, &id, true, "asked", Some(&by)).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["env_files"], "allowed");
+    // SPEC-213 SRA-001: the task asked as `#1 in app`.
+    assert_eq!(task_activity(&w).await?, Some(Activity::Working));
     Ok(())
 }
 
