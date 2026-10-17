@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
+  icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
+  same thing. The value box now holds the masked value, the eye and one copy icon, always visible,
+  which shows a check after a copy. The notes and the two-factor setup key sit in the same framed
+  box with their own copy; every copy still clears the clipboard after 30 seconds.
 - Secrets can be imported from the CLI (SPEC-205, ADR-0163, task #192). `yulius secrets import
   --to team|agent [FILE|-]` reads a dotenv file, stdin or hidden prompts and creates team secrets
   or a sandbox's agent secrets (`--sandbox`, `--instance`) through the existing vault API. It lists
