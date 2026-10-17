@@ -245,6 +245,45 @@ async fn removing_the_sandbox_stops_its_browser() -> TestResult {
     .await
 }
 
+/// SPEC-206 RMV-003 (review of #193): a task of a removed sandbox still stopping can call the
+/// browser tools; they start no browser for the removed sandbox (it lived until the 30-minute
+/// reaper).
+#[tokio::test]
+async fn a_removed_sandbox_gets_no_browser_from_its_stopping_task() -> TestResult {
+    with_fixture(|f| async move {
+        f.h.github.set_perm("alice", "acme/fixture", perms("admin"));
+        let removed = call(
+            &f.h.router,
+            Method::DELETE,
+            "/api/sandboxes/s1",
+            None,
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+        let opened = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example"}),
+        )
+        .await?;
+        assert_eq!(opened["result"]["isError"], true, "{opened}");
+        assert!(
+            f.h.app
+                .deps
+                .browser
+                .running(&SandboxId::parse("s1")?)
+                .await
+                .is_none(),
+            "no browser of the removed sandbox"
+        );
+        Ok(())
+    })
+    .await
+}
+
 #[tokio::test]
 async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResult {
     with_fixture(|f| async move {

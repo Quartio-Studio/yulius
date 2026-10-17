@@ -577,6 +577,50 @@ async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult 
     Ok(())
 }
 
+/// SPEC-206 RMV-003 (review of #193): a Superagent whose start was under way when its sandbox
+/// was removed ends once it registers; it outlived the removal (the removal ended only the
+/// shells registered by then).
+#[tokio::test]
+async fn a_superagent_starting_while_the_sandbox_is_removed_ends() -> TestResult {
+    let f = fixture().await?;
+    f.h.github.set_perm("alice", "acme/fixture", perms("admin"));
+    f.gate.arm();
+    let app = f.h.app.clone();
+    let router = f.h.router.clone();
+    let alice = f.alice.clone();
+    let open = tokio::spawn(async move {
+        call(
+            &router,
+            Method::POST,
+            "/api/sandboxes/s1/cockpit",
+            None,
+            &alice,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    });
+    f.gate.reached().await;
+    assert!(app.sandbox_shells(&sid()).is_empty(), "not registered yet");
+
+    let removed = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+    f.gate.release();
+    let _ = open.await?;
+
+    wait_for("the late Superagent to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty() && run_dirs(&f) == 0
+    })
+    .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestResult {
     let f = fixture().await?;
