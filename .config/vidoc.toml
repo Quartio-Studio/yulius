@@ -293,3 +293,51 @@ reason = "server names and env keys are whitelisted by validate() for people's a
 path = "crates/yulius/src/wiring/harness.rs"
 title = "Resume session id used to build transcript path"
 reason = "plan_cockpit rejects an invalid resume id (valid_session_id) before step_back runs"
+
+# Task #160's change scan of its own branch (SPEC-217) on files it touched: by design, false
+# positives, test fixtures, or tracked (#657).
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "No process isolation when containment is disabled"
+reason = "an uncontained instance is the operator's documented choice (runs marked not contained; --contained recommended in production, docs/operations.md); with containment every CD run is contained (cd_containment)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Shell execution of unvalidated config commands"
+reason = "CD runs the [cd.*] scripts of the GitHub-verified protected-branch head from a Yulius-only mirror by design; dev runs contained, production only on an admin's confirmation (SPEC-134)"
+
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "Revoked API tokens still authenticate"
+reason = "the store's api_token lookup selects only rows with revoked_at IS NULL (yulius-store sessions.rs), so a revoked token resolves to no record"
+
+[[ignore]]
+path = "crates/yulius-store/src/lib.rs"
+title = "backup_to writes to caller-supplied"
+reason = "only the operator's yulius backup CLI calls it, with the destination the operator typed; no HTTP route reaches it"
+
+[[ignore]]
+path = "crates/yulius-app/src/files.rs"
+title = "TOCTOU in file_write existence check"
+reason = "real: the write-side race is tracked in #657 (task #206); remove this entry with its fix"
+
+[[ignore]]
+path = "crates/yulius-app/src/ports/github.rs"
+title = "OAuth state interpolated into URL"
+reason = "the state is Yulius's own random hex token, never caller input"
+
+[[ignore]]
+path = "crates/yulius-store/src/ci.rs"
+title = "SQL filter composed via format!"
+reason = "select_runs is private and every caller passes a constant filter; values are bound parameters"
+
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+title = "Hardcoded crypto master key in test code"
+reason = "a test fixture: in-memory stores in temporary directories"
+
+[[ignore]]
+path = "scripts/test_vidoc_scan.py"
+title = "Hardcoded fake API key constant"
+reason = "the placeholder name the egress proxy replaces, used against a loopback fake Vidoc; not a credential"
