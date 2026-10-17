@@ -159,6 +159,10 @@ pub struct AgentSecretView {
     /// Production CD runs get its value (SPEC-134): a person's allowance of its own.
     #[serde(default)]
     pub cd_prod: bool,
+    /// Agents set it up themselves (SPEC-216): the hosts they ask for are bound at once and
+    /// production CD runs get its value, with no person's allowance.
+    #[serde(default)]
+    pub auto_allow: bool,
     /// `none`, `bearer`, `basic` or `header`.
     pub injection: String,
     /// Header of the `header` injection.
@@ -215,6 +219,9 @@ pub struct AgentSecretInput {
     pub username: Option<String>,
     /// The value (at least 8 characters).
     pub value: String,
+    /// Agents set it up themselves (SPEC-216 SSA-001); `true` when absent.
+    #[serde(default)]
+    pub auto_allow: Option<bool>,
 }
 
 /// Update body: an absent field stays; an empty `username` clears it; `value` replaces the
@@ -243,6 +250,9 @@ pub struct AgentSecretPatch {
     /// New value.
     #[serde(default)]
     pub value: Option<String>,
+    /// Agents set it up themselves (SPEC-216 SSA-005).
+    #[serde(default)]
+    pub auto_allow: Option<bool>,
 }
 
 /// `POST /api/agent-secrets/{id}/request` body: answers the hosts an agent asked for (SPEC-121).

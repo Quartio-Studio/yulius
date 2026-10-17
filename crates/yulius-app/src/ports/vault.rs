@@ -86,6 +86,9 @@ pub struct VaultSecretRecord {
     /// Agent: a person allowed production CD runs to get its value (SPEC-134); only
     /// [`VaultStore::vault_set_cd_prod`] writes it.
     pub cd_prod: bool,
+    /// Agent: agents set it up themselves (SPEC-216): the hosts they ask for are bound at once
+    /// and production CD runs get its value. Never together with `cd_prod`.
+    pub auto_allow: bool,
 }
 
 /// Whether agents may copy an agent secret's value into the project's git-ignored `.env` files
@@ -196,6 +199,15 @@ pub trait VaultStore: Send + Sync {
         by: &str,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Binds the hosts an agent asked for of a secret it sets up itself (SPEC-216 SSA-002):
+    /// `hosts` replace its bindings and `requested` its waiting request, only while they still
+    /// are `bound` and `waiting` and the secret still has `auto_allow`; `false` otherwise.
+    async fn vault_auto_bind(
+        &self,
+        id: &str,
+        (bound, hosts): (&[String], &[String]),
+        (waiting, requested): (&[String], &[String]),
+    ) -> AppResult<bool>;
     /// Sets whether agents may copy an agent secret into `.env` files, and who asks, only while
     /// they still are `from` (compare and set); `false` otherwise. Nothing else in the row
     /// changes.
@@ -206,7 +218,8 @@ pub trait VaultStore: Send + Sync {
         to: (EnvFiles, Option<&str>),
     ) -> AppResult<bool>;
     /// Sets whether production CD runs get the agent secret `id` (SPEC-134) when it still is
-    /// `from` (compare and set); `false` otherwise.
+    /// `from` (compare and set) and agents do not set it up themselves (`auto_allow`, SPEC-216
+    /// SSA-004); `false` otherwise.
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;

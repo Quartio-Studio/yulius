@@ -1,7 +1,9 @@
 //! Hosts agents ask for (SPEC-121, ADR-0098): a person adds an agent secret with a name, a value
 //! and a description; the agent works out the service's hosts and proposes them with
 //! `secret_request_hosts`; a person who manages the secret allows or dismisses them. An agent
-//! never binds a host itself: the binding is what keeps a secret from leaving for another server.
+//! binds a host itself only for a secret whose creator let agents set it up (SPEC-216,
+//! `auto_allow`, the default for new secrets); otherwise the binding is what keeps a secret from
+//! leaving for another server.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -139,6 +141,11 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let link = self.agent_secrets_link(&sandbox.slug);
+        if record.auto_allow {
+            return self
+                .auto_bind(user, &record, &asked, merged, link, args.reason.as_deref())
+                .await;
+        }
         if merged.fresh.is_empty() {
             return Ok(json!({
                 "requested": [],
@@ -196,6 +203,85 @@ impl App {
             "link": link,
             "next": format!(
                 "A person who manages {} allows these hosts on the Secrets page: print the link so they can. Until then requests go out without the secret; go on with other work and use it once secrets_list shows the hosts bound.",
+                record.name
+            ),
+        }))
+    }
+
+    /// `secret_request_hosts` for a secret agents set up themselves (SPEC-216 SSA-002): every
+    /// host asked for that is not bound yet is bound at once (also one that waited for a person),
+    /// audited as `vault.agent.auto_allow`; no person is needed.
+    async fn auto_bind(
+        &self,
+        user: SecretUser<'_>,
+        record: &crate::ports::vault::VaultSecretRecord,
+        asked: &[HostPattern],
+        merged: Merged,
+        link: String,
+        why: Option<&str>,
+    ) -> AppResult<Value> {
+        let bound = patterns(&record.hosts);
+        let mut to_bind: Vec<HostPattern> = Vec::new();
+        for host in asked {
+            if !bound.contains(host) && !to_bind.contains(host) {
+                to_bind.push(host.clone());
+            }
+        }
+        let fresh: Vec<String> = to_bind.iter().map(ToString::to_string).collect();
+        let waiting: Vec<String> = merged
+            .waiting
+            .iter()
+            .filter(|h| !fresh.contains(h) && !record.hosts.contains(h))
+            .cloned()
+            .collect();
+        if !fresh.is_empty() {
+            let all: Vec<String> = record.hosts.iter().chain(&fresh).cloned().collect();
+            let hosts: Vec<String> = parse_hosts(&all)
+                .map_err(invalid)?
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if !self
+                .deps
+                .store
+                .vault_auto_bind(
+                    &record.id,
+                    (&record.hosts, &hosts),
+                    (&record.requested_hosts, &waiting),
+                )
+                .await?
+            {
+                return Err(AppError::Conflict(
+                    "the secret changed meanwhile: ask again".into(),
+                ));
+            }
+            self.vault.bump();
+            let why = reason(why);
+            self.vault_audit(
+                &user.actor(),
+                "vault.agent.auto_allow",
+                Some(&record.id),
+                &format!(
+                    "{} → {}{}",
+                    record.name,
+                    fresh.join(", "),
+                    if why.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({why})")
+                    }
+                ),
+            )
+            .await?;
+        }
+        Ok(json!({
+            "bound": fresh,
+            "requested": [],
+            "already_bound": merged.already_bound,
+            "waiting": waiting,
+            "link": link,
+            "next": format!(
+                "Agents set {} up themselves: these hosts are bound now. Call them, the proxy adds the secret.",
                 record.name
             ),
         }))

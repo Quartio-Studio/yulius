@@ -58,8 +58,8 @@ Two changes to the vault, one request:
   confirm).
 - SSA-002. With `auto_allow`, `secret_request_hosts` binds the hosts it asks for at once (same
   parsing, at most 16 hosts in all), audits `vault.agent.auto_allow` with the asker and the
-  reason, does not mark the task as needing a person, and answers that they are bound. Hosts
-  that already waited for a person stay waiting.
+  reason, does not mark the task as needing a person, and answers that they are bound (`bound`).
+  A host it asks for that already waited for a person is bound too; other waiting hosts stay.
 - SSA-003. With `auto_allow`, production deploys get the secret (as `cd_prod` would) without a
   person allowing it. Dev deploys, `.env` copies, CI and the Superagent are unchanged.
 - SSA-004. `auto_allow` and the production-only allowance (`cd_prod`) exclude each other: turning
@@ -99,7 +99,7 @@ Two changes to the vault, one request:
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Agents bind the hosts of a self-set-up agent secret, opt-out at creation and in Edit
+- [x] Agents bind the hosts of a self-set-up agent secret, opt-out at creation and in Edit
 - [ ] Production deploys get a self-set-up agent secret without a person's allowance
 - [ ] Team secrets belong to a sandbox or are team-wide, with sandbox access
 - [ ] Existing team-wide secrets are assigned to every sandbox once

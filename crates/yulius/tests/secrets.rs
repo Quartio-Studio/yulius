@@ -904,6 +904,7 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         })
         .await?;
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
@@ -1152,6 +1153,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         })
         .await?;
     let alice = browser_session(&w.h, "u-alice").await?;
@@ -1263,6 +1265,7 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         })
         .await?;
     let flags = |body: &Value| -> Vec<(String, String)> {
@@ -1775,7 +1778,7 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
     for body in [
         json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
         json!({"name": "HDR_KEY", "hosts": ["*.hdr.test", "api.stripe.test"], "injection": "header", "header_name": "X-Api-Key", "value": "hdr-value-12345"}),
-        json!({"name": "PROD_KEY", "hosts": ["prod.test"], "injection": "bearer", "value": "prod-value-12345"}),
+        json!({"name": "PROD_KEY", "hosts": ["prod.test"], "injection": "bearer", "value": "prod-value-12345", "auto_allow": false}),
     ] {
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -2320,7 +2323,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
         &w,
         &w.writer,
         "s1",
-        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456", "auto_allow": false}),
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -2471,6 +2474,134 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     Ok(())
 }
 
+/// SPEC-216 SSA-001/002/005, AC-1/AC-2: a new agent secret lets agents set it up (its hosts bind
+/// at once, no person needed) unless its creator turned that off; its managers change it in Edit.
+#[tokio::test]
+async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["auto_allow"], true, "on by default");
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+
+    let asked = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["API.vidoc.test"], "reason": "scan"}),
+        )
+        .await?,
+    );
+    assert_eq!(asked["bound"], json!(["api.vidoc.test"]), "{asked}");
+    assert_eq!(asked["waiting"], json!([]), "{asked}");
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!(["api.vidoc.test"]));
+    assert_eq!(secret["requested_hosts"], json!([]));
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_ne!(
+        task.activity,
+        Some(yulius_domain::task::Activity::NeedsAttention),
+        "no person is needed"
+    );
+    let listed = tool_text(&mcp_tool(&w.h, TOKEN_S1, "secrets_list", json!({})).await?);
+    assert_eq!(listed["secrets"][0]["auto_allow"], true, "{listed}");
+
+    // Only its managers turn it off; then a host waits for a person again.
+    let path = format!("/api/agent-secrets/{id}");
+    let reader = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"auto_allow": false})),
+        &w.reader,
+    )
+    .await?;
+    assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
+    let off = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"auto_allow": false})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    assert_eq!(off.body["auto_allow"], false);
+    assert_eq!(
+        off.body["hosts"],
+        json!(["api.vidoc.test"]),
+        "bound hosts stay"
+    );
+    let waits = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["eu.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(waits["requested"], json!(["eu.vidoc.test"]), "{waits}");
+    assert!(!app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
+
+    // Turned off at creation: today's flow.
+    let confirmed = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "STRIPE_KEY", "value": STRIPE, "auto_allow": false}),
+    )
+    .await?;
+    assert_eq!(confirmed.status, StatusCode::CREATED, "{}", confirmed.body);
+    assert_eq!(confirmed.body["auto_allow"], false);
+    let held = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "STRIPE_KEY", "hosts": ["api.stripe.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(held["requested"], json!(["api.stripe.test"]), "{held}");
+    assert!(!app.egress_intercepts(&s1, "api.stripe.test", 443).await);
+
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    for action in ["vault.agent.auto_allow", "vault.agent.auto_allow_off"] {
+        assert!(
+            activity
+                .body
+                .as_array()
+                .is_some_and(|a| a.iter().any(|e| e["action"] == action)),
+            "{action}: {}",
+            activity.body
+        );
+    }
+    Ok(())
+}
+
 /// SPEC-121 review round 1: an answer covers exactly the hosts the person saw. A host an agent
 /// added while the page was open is never allowed unseen; the answer changes only the hosts and
 /// the request; limits and instance-wide secrets hold.
@@ -2481,7 +2612,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         &w,
         &w.writer,
         "s1",
-        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456", "auto_allow": false}),
     )
     .await?;
     let id = created.body["id"].as_str().ok_or("id")?.to_owned();
@@ -2556,7 +2687,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         &w,
         &w.admin,
         "s1",
-        json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123"}),
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123", "auto_allow": false}),
     )
     .await?;
     assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);

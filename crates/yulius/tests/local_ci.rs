@@ -1619,6 +1619,7 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
                     "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
                     "injection": "bearer",
                     "value": format!("{name}-value-0123456789"),
+                    "auto_allow": false,
                 })),
             )
             .await?;
@@ -1930,6 +1931,7 @@ async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
                     "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
                     "injection": "bearer",
                     "value": format!("{name}-value-0123456789"),
+                    "auto_allow": false,
                 })),
             )
             .await?;

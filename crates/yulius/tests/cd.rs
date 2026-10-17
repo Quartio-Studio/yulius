@@ -194,7 +194,10 @@ async fn fixture(cd: &str) -> BoxResult<Fixture> {
         &h.router,
         Method::POST,
         "/api/sandboxes/s1/agent-secrets",
-        Some(json!({"name": "DEV_TOKEN", "description": "dev machine", "value": VALUE})),
+        // A person confirms its hosts and production (SPEC-216: agents do not set it up).
+        Some(
+            json!({"name": "DEV_TOKEN", "description": "dev machine", "value": VALUE, "auto_allow": false}),
+        ),
         &alice,
     )
     .await?;

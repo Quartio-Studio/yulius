@@ -15,7 +15,8 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
-     value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by";
+     value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by, \
+     auto_allow";
 
 fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
     let text: String = row.get(column)?;
@@ -57,6 +58,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         },
         env_requested_by: row.get("env_requested_by")?,
         cd_prod: row.get::<_, i64>("cd_prod")? != 0,
+        auto_allow: row.get::<_, i64>("auto_allow")? != 0,
     })
 }
 
@@ -108,7 +110,7 @@ impl VaultStore for SqliteStore {
             tx.execute(
                 &format!(
                     "INSERT INTO vault_secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"
+                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)"
                 ),
                 params![
                     r.id,
@@ -133,6 +135,7 @@ impl VaultStore for SqliteStore {
                     r.requested_by,
                     r.env_files.as_str(),
                     r.env_requested_by,
+                    i64::from(r.auto_allow),
                 ],
             )
             .map_err(db)?;
@@ -151,7 +154,8 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET name = ?2, description = ?3, hosts = ?4, injection = ?5, \
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
-                     updated_by = ?11, updated_at = ?12, value_updated_at = ?13 WHERE id = ?1",
+                     updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
+                     WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1)",
                     params![
                         r.id,
                         r.name,
@@ -166,6 +170,7 @@ impl VaultStore for SqliteStore {
                         r.updated_by,
                         r.updated_at.0,
                         r.value_updated_at.0,
+                        i64::from(r.auto_allow),
                     ],
                 )
                 .map_err(db)?;
@@ -288,6 +293,34 @@ impl VaultStore for SqliteStore {
         .await
     }
 
+    async fn vault_auto_bind(
+        &self,
+        id: &str,
+        (bound, hosts): (&[String], &[String]),
+        (waiting, requested): (&[String], &[String]),
+    ) -> AppResult<bool> {
+        let (id, bound, hosts, waiting, requested) = (
+            id.to_owned(),
+            to_json(bound),
+            to_json(hosts),
+            to_json(waiting),
+            to_json(requested),
+        );
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE vault_secrets SET hosts = ?3, requested_hosts = ?5, \
+                     requested_by = CASE WHEN ?5 = '[]' THEN NULL ELSE requested_by END \
+                     WHERE id = ?1 AND section = 'agent' AND auto_allow = 1 AND hosts = ?2 \
+                     AND requested_hosts = ?4",
+                    params![id, bound, hosts, waiting, requested],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn vault_set_env_files(
         &self,
         id: &str,
@@ -321,7 +354,7 @@ impl VaultStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE vault_secrets SET cd_prod = ?3 \
-                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2",
+                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2 AND NOT (?3 = 1 AND auto_allow = 1)",
                     params![id, i64::from(from), i64::from(to)],
                 )
                 .map_err(db)?;
@@ -639,6 +672,7 @@ mod tests {
             env_files: EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         }
     }
 

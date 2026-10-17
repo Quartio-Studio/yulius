@@ -449,5 +449,6 @@ fn instance_vidoc_record() -> VaultSecretRecord {
         env_files: crate::ports::vault::EnvFiles::No,
         env_requested_by: None,
         cd_prod: false,
+        auto_allow: false,
     }
 }

@@ -136,6 +136,7 @@ impl App {
             env_files: record.env_files.as_str().into(),
             env_requested_by: record.env_requested_by.clone(),
             cd_prod: record.cd_prod,
+            auto_allow: record.auto_allow,
             injection: injection.kind().into(),
             header_name: record.header_name.clone(),
             injection_text: injection.describe(),
@@ -244,6 +245,7 @@ impl App {
             env_files: crate::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: input.auto_allow.unwrap_or(true),
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault.bump();
@@ -252,7 +254,7 @@ impl App {
             "vault.agent.create",
             Some(&id),
             &format!(
-                "{} ({}) → {}",
+                "{} ({}) → {}{}",
                 record.name,
                 if scope.is_some() {
                     "this sandbox"
@@ -263,6 +265,11 @@ impl App {
                     "no hosts yet".to_owned()
                 } else {
                     record.hosts.join(", ")
+                },
+                if record.auto_allow {
+                    ", agents set it up"
+                } else {
+                    ""
                 }
             ),
         )
@@ -305,6 +312,11 @@ impl App {
         if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
         }
+        // SPEC-216 SSA-004: a production-only secret is never set up by agents.
+        if record.cd_prod && patch.auto_allow == Some(true) {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
+        let toggled = patch.auto_allow.filter(|on| *on != record.auto_allow);
         let mut payload: AgentPayload = self.open_payload(&record)?;
         let meta = meta(
             patch.name.as_deref().unwrap_or(&record.name),
@@ -356,8 +368,16 @@ impl App {
         record.envelope = self.seal_payload(&record.id, VaultSection::Agent, &payload)?;
         record.updated_by = ctx.user.id.as_str().to_owned();
         record.updated_at = now;
+        if let Some(on) = toggled {
+            record.auto_allow = on;
+            changed.push("agents set it up");
+        }
         if !self.deps.store.vault_update(&record).await? {
-            return Err(AppError::NotFound);
+            // Gone, or allowed for production meanwhile (the store keeps them exclusive).
+            return Err(match self.deps.store.vault_get(id).await? {
+                Some(_) => AppError::Conflict(super::PRODUCTION_SECRET.into()),
+                None => AppError::NotFound,
+            });
         }
         self.vault.bump();
         self.vault_audit(
@@ -367,6 +387,19 @@ impl App {
             &format!("{} ({})", record.name, changed.join(", ")),
         )
         .await?;
+        if let Some(on) = toggled {
+            self.vault_audit(
+                &Self::vault_actor(ctx),
+                if on {
+                    "vault.agent.auto_allow_on"
+                } else {
+                    "vault.agent.auto_allow_off"
+                },
+                Some(id),
+                &record.name,
+            )
+            .await?;
+        }
         self.agent_view(&record, true).await
     }
 
