@@ -56,8 +56,10 @@ skip rule of [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md) and 
     fingerprint any more, or the file is gone, Yulius closes the issue as completed, with a
     comment.
 
-  Both checks are deterministic. A model that skips a finding on one run never closes its issue,
-  and code that is only on a pull request branch closes nothing.
+  Filing and reopening also look at the integration branch: a finding whose code is gone from it
+  is neither filed nor reopened, because a branch behind it still reports old code. All of these
+  checks are deterministic. A model that skips a finding on one run never closes its issue, and
+  code that is only on a pull request branch closes nothing.
 - **The job is in every project's default pipeline.** When a sandbox's applied agent secrets
   include `VIDOC_API_KEY` (its own, or the instance's Vidoc key), Yulius adds a built-in job,
   `security`: `yulius security-scan --ci`, granted `VIDOC_API_KEY`. Two conditions apply:
@@ -97,7 +99,12 @@ skip rule of [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md) and 
 - The issues are created by the GitHub App installation. In a repository that runs its own
   scanner (this one), a pull request controls the finding lines its job prints. That gives it no
   more than an agent's `issue_create` already does, and the run is bounded: at most 64 lines read,
-  5 issues filed, 5 reopened and 5 closed per job. The text is quoted as untrusted data.
+  5 issue filings and 10 reopen or close calls per job. The text is quoted as untrusted data. The
+  scanner prints the model's titles and file names on one line each, so a prompt injection in the
+  scanned code cannot forge a finding line.
+- A claim is taken over after an hour without an issue. If GitHub opens an issue but its answer
+  is lost, the claim is released and a later run files a duplicate. That is rare, and a person
+  closes the duplicate.
 - The model's line numbers are approximate. The 3-line margin trades a few old findings blocking
   for a fix-or-ignore, against real new findings slipping into issues.
 - The built-in job and the issue handling reach other projects only when the instance runs this

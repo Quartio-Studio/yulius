@@ -59,10 +59,16 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 ### Scan policy (VSP)
 
 - **VSP-001. Changed lines.** The change scan works out, for each sent file, the lines `HEAD`
-  added or modified since the merge base: `git diff -U0` per file, with literal pathspecs. A new
-  file is changed in full. A finding is **in the change** when its line is within 3 lines of a
-  changed line (the model's line attribution is approximate). A finding with no line is in the
-  change only when its file is new. Everything else is **outside the change**.
+  added or modified since the merge base: `git diff -U0 --text` per file, from the repository's
+  top, with literal pathspecs. A moved file (`-M`) is compared with its old path, and any other
+  new file is changed in full. A finding is **in the change** in three cases:
+  - its line is within 3 lines of a changed line (the model's line attribution is approximate);
+  - it has no line and its file is new;
+  - it names a file that was not sent: the model got the name wrong, so it fails closed.
+
+  Everything else is **outside the change**. The model's titles and file names are printed on one
+  line each (whitespace collapsed, control characters dropped), so an answer cannot print a
+  `::yulius-finding` line of its own.
 - **VSP-002. Verdict.**
   - Exit 1 on any open critical or high finding, wherever it is, as before.
   - Exit 1 on any open medium finding in the change.
@@ -85,16 +91,22 @@ but make sure it's in the default ci pipeline and will generalise for every othe
 
 ### Issues from CI (VSI)
 
-- **VSI-001.** When a job keyed `security` ends with `passed` or `failed` on a pull request head,
+- **VSI-001.** When a job keyed `security` ends (passed, failed or skipped) on a pull request head,
   Yulius reads its output's `::yulius-finding` lines. It reads at most 64 of them, and each must
   be a valid finding: severity medium or low, a non-empty file of at most 512 bytes, a 16-hex
   fingerprint, and a title and detail cut to 200 and 2000 bytes. Yulius files each one whose
-  fingerprint the sandbox has not filed before, at most 5 per job. No other job's output is read
-  for findings.
+  fingerprint the sandbox has not filed before, at most 5 attempts per job, failed ones included.
+  No other job's output is read for findings. A finding whose code is no longer on
+  `origin/<integration branch>` is neither filed nor reopened, because a branch behind it still
+  reports code that is already gone; the output says how many were left out that way. A file name
+  with a backtick or a control character is refused.
 - **VSI-002. De-duplication.** Filed fingerprints are kept per sandbox (migration 0036,
   `security_findings`). A fingerprint is claimed before the issue is opened and released if
   opening fails, so concurrent runs cannot file it twice. The row also keeps the finding's file,
-  whether its fingerprint names a line's text (`anchored`), and when Yulius resolved it.
+  whether its fingerprint names a line's text (`anchored`), and when Yulius resolved it. A claim
+  that got no issue within an hour (its process stopped) is taken over. Known limit: if GitHub
+  opened an issue but its answer was lost, the claim is released, and a later run files a
+  duplicate.
 - **VSI-003. The issue.**
   - Title: `security: <title> in <file>`.
   - Labels: `type: bug`, `priority: medium` or `priority: low`, `area: security` and
@@ -111,13 +123,15 @@ but make sure it's in the default ci pipeline and will generalise for every othe
   - **Reopened while reported.** A pull request head reports a fingerprint filed before whose
     issue is closed: Yulius reopens the issue with a comment and clears its resolution. A
     false positive is meant to get a reviewed `[[ignore]]` entry, which stops it being reported.
-    At most 10 such issues are looked up and 5 reopened per job.
+    Together with closing, at most 10 issue state calls are made per job, failed ones included.
   - **Closed once the code is gone.** When a `security` job of a pull request head or of the
     integration branch ends (passed, failed or skipped), Yulius looks at the unresolved filed
-    findings that the job did not report: at most 200 of them, in at most 50 files. For each, it
-    reads the file on `origin/<integration branch>`. If the file is gone, or if the finding is
+    findings that the job did not report while their code is on the integration branch: a random
+    sample of at most 200, in at most 50 files. For each, it reads the file on
+    `origin/<integration branch>`. If the file is gone, or if the finding is
     anchored and no line of the file has its fingerprint any more, Yulius closes the issue
-    (completed), comments why, and marks the finding resolved. That is at most 5 closed per job.
+    (completed), comments why, and marks the finding resolved. An issue GitHub no longer has
+    (404) is marked resolved too.
   - Recomputing the fingerprint is exact (the same SHA-256 as the scanner, asserted on both sides
     by one constant). So a model that skips a finding on one run never closes an issue, and code
     still on a pull request branch closes nothing.
