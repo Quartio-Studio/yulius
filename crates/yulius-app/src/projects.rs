@@ -978,11 +978,17 @@ impl App {
     }
 
     /// Ends in the background what still runs for a sandbox just removed besides its tasks
-    /// (SPEC-206): its shells (Superagents and terminals) and its browser. The removal already
-    /// refuses new ones, so none starts behind it.
+    /// (SPEC-206): its CI runs, its shells (Superagents and terminals) and its browser. The
+    /// removal already refuses new ones, so none starts behind it.
     fn end_removed_sandbox(self: &Arc<Self>, id: SandboxId) {
         let app = Arc::clone(self);
         tokio::spawn(async move {
+            let runs = app.deps.store.active_ci_runs().await.unwrap_or_default();
+            for run in runs.iter().filter(|run| run.sandbox_id == id) {
+                if let Err(err) = app.ci_cancel(&run.id, "the sandbox was removed").await {
+                    tracing::warn!(sandbox = %id, run = %run.id, error = %err, "a CI run of the removed sandbox could not be cancelled");
+                }
+            }
             let shells = app.sandbox_shells(&id);
             if !app.end_shells(&shells).await {
                 tracing::warn!(sandbox = %id, "a shell of the removed sandbox could not be ended");
