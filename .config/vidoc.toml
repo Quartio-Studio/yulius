@@ -41,3 +41,15 @@ reason = "gh-token prints only what /internal/git-credential gives the caller's 
 path = "crates/yulius-app/src/vault/runtime.rs"
 title = "Instance Vidoc key leaked through MCP"
 reason = "agent_secret_value reads stored secrets only (vault_agent), never the virtual Vidoc record; tested by vidoc_key::the_instance_key_is_never_handed_out_in_clear"
+
+# The folder trust `ensure_claude_config` records (SPEC-106) is written into the sandbox's own
+# Claude config dir, which the contained agent can already edit: an agent that plants a `.git`
+# file to have some directory trusted could write that trust entry itself, and the trust only
+# skips Claude Code's folder prompt for sessions started from that config dir. The host-side
+# reads of that agent-owned dir (links, FIFOs) are tracked in #634. Reported on task #197's
+# change scan (SPEC-210), which sent claude_config.rs for the new output-style default; the code
+# predates it.
+[[ignore]]
+path = "crates/yulius-harness/src/claude_config.rs"
+title = "as trusted"
+reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); host-side reads tracked in #634"
