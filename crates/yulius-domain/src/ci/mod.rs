@@ -333,6 +333,35 @@ pub fn effective_gate(profile: Option<&str>, project: &[Job]) -> Option<Gate> {
     })
 }
 
+/// The key of the built-in Vidoc security job (SPEC-217 VDP-001).
+pub const SECURITY_JOB: &str = "security";
+/// What the built-in security job runs: Yulius's embedded scanner in CI mode (SPEC-195).
+pub const SECURITY_COMMAND: &str = "yulius security-scan --ci";
+/// The agent secret the built-in security job is granted.
+pub const VIDOC_SECRET: &str = "VIDOC_API_KEY";
+
+/// `gate` with the built-in security job (SPEC-217 VDP-001) added, unless it already has a job
+/// keyed `security` or one that runs the scanner (`security-scan`, `vidoc_scan`), or is full.
+#[must_use]
+pub fn with_security_job(mut gate: Gate) -> Gate {
+    let scans = gate.jobs.iter().any(|job| {
+        job.key == SECURITY_JOB
+            || job.command.contains("security-scan")
+            || job.command.contains("vidoc_scan")
+    });
+    if !scans && gate.jobs.len() < MAX_JOBS {
+        gate.jobs.push(Job {
+            name: SECURITY_JOB.to_owned(),
+            key: SECURITY_JOB.to_owned(),
+            command: SECURITY_COMMAND.to_owned(),
+            matrix: None,
+            need: Need::default(),
+            secrets: vec![VIDOC_SECRET.to_owned()],
+        });
+    }
+    gate
+}
+
 /// The state of a run from its jobs' states: running while any job is active, then failed if
 /// any failed, error if any errored, cancelled if any was cancelled, else passed (skipped jobs
 /// included, SPEC-162). A run without jobs is an error.
@@ -991,6 +1020,40 @@ mod tests {
             Some((GateSource::ProjectConfig, 1))
         );
         assert_eq!(effective_gate(None, &[]), None);
+        Ok(())
+    }
+
+    /// SPEC-217 VDP-001: the built-in security job joins a gate once, granted the Vidoc key; a
+    /// gate that already scans keeps its own job.
+    #[test]
+    fn the_built_in_security_job_joins_a_gate_that_does_not_scan() -> Result<(), CiConfigError> {
+        let def = |name: &str, command: &str| JobDef {
+            name: name.into(),
+            command: command.into(),
+            matrix: Vec::new(),
+            need: Need::default(),
+            secrets: Vec::new(),
+        };
+        let gate = |defs: &[JobDef]| -> Result<Gate, CiConfigError> {
+            Ok(Gate {
+                jobs: expand_jobs(defs)?,
+                source: GateSource::ProjectConfig,
+            })
+        };
+        let added = with_security_job(gate(&[def("test", "make test")])?);
+        let names: Vec<_> = added.jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, ["test", "security"]);
+        assert_eq!(added.jobs[1].command, "yulius security-scan --ci");
+        assert_eq!(added.jobs[1].secrets, ["VIDOC_API_KEY"]);
+        assert_eq!(with_security_job(added.clone()), added, "added once");
+        for own in [
+            def("security", "make audit"),
+            def("scan", "yulius security-scan --ci"),
+            def("vidoc", "python3 scripts/vidoc_scan.py --ci"),
+        ] {
+            let mine = gate(&[def("test", "make test"), own])?;
+            assert_eq!(with_security_job(mine.clone()), mine);
+        }
         Ok(())
     }
 

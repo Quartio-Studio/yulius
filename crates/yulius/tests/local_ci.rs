@@ -1925,6 +1925,50 @@ async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() ->
     Ok(())
 }
 
+/// SPEC-217 VDP-001: with the instance's Vidoc key, a project whose CI does not scan gets the
+/// built-in `security` job, granted the key; without a key it gets none.
+#[tokio::test]
+async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    assert_eq!(
+        outputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["plain"],
+        "no key, no scan"
+    );
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let next = f.push_feature("notes.txt", Some("two\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &next).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] agent secrets: VIDOC_API_KEY (the instance's Vidoc key)"),
+        "{security}"
+    );
+    // The change holds only prose: the scanner checks nothing and the job ends skipped.
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]

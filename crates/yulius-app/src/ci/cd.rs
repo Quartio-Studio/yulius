@@ -715,10 +715,11 @@ impl App {
             .ci_jobs_at(&self.cd_mirror(&sandbox.id), &head)
             .await
             .map_err(AppError::Conflict)?;
-        Ok(yulius_domain::ci::effective_gate(
+        let gate = yulius_domain::ci::effective_gate(
             crate::delivery::profile_gate(sandbox).as_deref(),
             &jobs,
-        ))
+        );
+        Ok(self.ci_with_security(sandbox, gate).await)
     }
 
     /// `[cd.*]` of the verified commit `sha` in the CD mirror.

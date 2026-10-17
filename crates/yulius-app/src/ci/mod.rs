@@ -430,8 +430,38 @@ impl App {
         dom::project_jobs(config.commands.gate.as_deref(), &config.ci).map_err(|e| e.to_string())
     }
 
-    /// The sandbox's CI as configured now (cached for a minute per integration head).
+    /// The sandbox's CI as configured now (cached for a minute per integration head), with the
+    /// built-in security job when the sandbox can reach Vidoc (SPEC-217 VDP-001).
     pub(crate) async fn ci_gate(&self, sandbox: &SandboxRecord) -> GateView {
+        let mut view = self.ci_configured_gate(sandbox).await;
+        view.gate = self.ci_with_security(sandbox, view.gate).await;
+        view
+    }
+
+    /// `gate` with the built-in security job when the sandbox, not a playground, has
+    /// `VIDOC_API_KEY` among its applied agent secrets (its own, or the instance's Vidoc key);
+    /// a sandbox without CI gets none (SPEC-217 VDP-001).
+    pub(crate) async fn ci_with_security(
+        &self,
+        sandbox: &SandboxRecord,
+        gate: Option<Gate>,
+    ) -> Option<Gate> {
+        let gate = gate?;
+        if sandbox.is_playground() {
+            return Some(gate);
+        }
+        let vidoc = self
+            .applied_agent_secrets(&sandbox.id)
+            .await
+            .is_ok_and(|records| records.iter().any(|r| r.name == dom::VIDOC_SECRET));
+        Some(if vidoc {
+            dom::with_security_job(gate)
+        } else {
+            gate
+        })
+    }
+
+    async fn ci_configured_gate(&self, sandbox: &SandboxRecord) -> GateView {
         let now = self.now().0;
         let repo = self.sandbox_repo(&sandbox.id);
         let profile = delivery_profile(sandbox);

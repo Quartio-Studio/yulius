@@ -16,7 +16,7 @@ use crate::ports::github::NewIssue;
 /// The prefix of a finding line in a job's output.
 pub(crate) const FINDING_MARK: &str = "::yulius-finding ";
 /// The job whose output is read for findings (the built-in one and the projects' own).
-pub(crate) const SECURITY_JOB: &str = "security";
+pub(crate) use yulius_domain::ci::SECURITY_JOB;
 /// Most finding lines read from one job's output.
 const MAX_LINES: usize = 64;
 /// Most issues one job files; the rest wait for a later run.
