@@ -15,6 +15,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   retires its holder: nothing new is prepared for it, and a minute later, once its runs ended, the
   holder stops with its engine and containers. A CD deploy already running finishes. Nothing
   armed in a removed sandbox is merged (already true, now tested).
+- Secrets can be imported from the CLI (SPEC-205, ADR-0163, task #192). `yulius secrets import
+  --to team|agent [FILE|-]` reads a dotenv file, stdin or hidden prompts and creates team secrets
+  or a sandbox's agent secrets (`--sandbox`, `--instance`) through the existing vault API. It lists
+  every name as new, existing (skipped, never overwritten) or invalid with the reason, and sends
+  nothing until `yes` is typed at the terminal; no flag skips that. Values never appear in
+  arguments, output, errors or files, and are wiped from memory when dropped. A comment above a key
+  becomes its description or notes (a commented-out old key never does), and a PEM or OpenSSH key
+  is stored as the Secrets page stores it.
 - The Secrets page offers the production allowance only where it can be given (SPEC-204, task
   #191, fixes #621). A secret agents use, through its hosts or `.env` copies, showed a warning
   badge and an "Allow for production deploys" button. The server always refused that button,

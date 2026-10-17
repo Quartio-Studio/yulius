@@ -78,3 +78,38 @@ fn doctor_fails_on_a_data_dir_too_long_for_session_sockets() -> TestResult {
     assert!(text.contains("git"), "{text}");
     Ok(())
 }
+
+/// SPEC-205 AC-7: a malformed file is refused before anything is asked or sent, naming the line
+/// and never the value.
+#[test]
+fn secrets_import_refuses_a_malformed_file_without_showing_values() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("secrets.env");
+    std::fs::write(&file, "GOOD=first-value-123\nnot-a-line-secret-456\n")?;
+    let out = Command::new(EXE)
+        .args([
+            "secrets",
+            "import",
+            "--to",
+            "team",
+            "--server",
+            "http://127.0.0.1:9",
+        ])
+        .arg(&file)
+        .env("HOME", dir.path())
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(all.contains("line 2"), "{all}");
+    assert!(
+        !all.contains("first-value-123") && !all.contains("secret-456"),
+        "{all}"
+    );
+    assert!(!all.contains("Type yes"), "{all}");
+    Ok(())
+}

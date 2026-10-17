@@ -1,13 +1,16 @@
-//! `yulius login` and `yulius onboard` / `yulius import` (client side of SPEC-001
-//! IMP-001..009).
+//! `yulius login`, `yulius onboard` / `yulius import` (client side of SPEC-001 IMP-001..009) and
+//! `yulius secrets import` (SPEC-205).
 
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use console::style;
 use yulius_import::{
-    DeviceLoginOptions, ImportError, ImportOptions, SessionChoice, TerminalIo, TokenStore, Url,
-    device_login, run_import, set_colors,
+    DeviceLoginOptions, ImportError, ImportOptions, MAX_DOTENV_BYTES, Secret, SecretsImportError,
+    SecretsImportOptions, SecretsIo, SecretsTarget, SessionChoice, TerminalIo, TokenStore, Url,
+    VaultClient, device_login, import_secrets, parse_dotenv, prepare_target, prompt_secrets,
+    run_import, set_colors,
 };
 
 fn install_tls() {
@@ -134,6 +137,177 @@ pub fn onboard(args: OnboardArgs) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("\n{} {err}", style("yulius onboard:").red().bold());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Which vault `yulius secrets import` fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum VaultChoice {
+    /// Team secrets, for people.
+    Team,
+    /// Agent secrets of a sandbox, used by agents who never see them.
+    Agent,
+}
+
+/// Command-line options of `yulius secrets import` (SPEC-205). None takes a value.
+#[derive(Debug, Clone)]
+pub struct SecretsImportArgs {
+    /// The vault.
+    pub to: VaultChoice,
+    /// A dotenv file, `-` for stdin, `None` to type each secret.
+    pub file: Option<PathBuf>,
+    /// The sandbox of agent secrets (id, slug or `owner/name`).
+    pub sandbox: Option<String>,
+    /// Agent secrets for every sandbox.
+    pub instance: bool,
+    /// Server URL (`None`: the only signed-in server).
+    pub server: Option<String>,
+    /// No colours.
+    pub no_color: bool,
+}
+
+/// The terminal of `yulius secrets import`: lines on stdout (and the terminal when stdout is
+/// redirected), questions at `/dev/tty` (so stdin can carry the file), values read without echo.
+struct TtyIo;
+
+impl TtyIo {
+    fn tty() -> io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+    }
+}
+
+impl SecretsIo for TtyIo {
+    fn say(&mut self, line: &str) {
+        println!("{line}");
+        // With stdout redirected, the person answering at the terminal still sees the names.
+        if !io::stdout().is_terminal()
+            && let Ok(mut tty) = Self::tty()
+        {
+            let _ = writeln!(tty, "{line}");
+        }
+    }
+
+    fn ask(&mut self, prompt: &str) -> io::Result<String> {
+        let mut tty = Self::tty()?;
+        tty.write_all(prompt.as_bytes())?;
+        tty.flush()?;
+        let mut answer = String::new();
+        if BufReader::new(tty).read_line(&mut answer)? == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "end of input"));
+        }
+        Ok(answer.trim_end_matches(['\r', '\n']).to_owned())
+    }
+
+    fn ask_hidden(&mut self, prompt: &str) -> io::Result<Secret> {
+        // The terminal itself, not stderr: `console` answers "" without asking when its
+        // terminal is not attended, which stderr redirected to a file is not.
+        let term = console::Term::read_write_pair(Self::tty()?, Self::tty()?);
+        term.write_str(prompt)?;
+        Ok(Secret::new(term.read_secure_line()?))
+    }
+}
+
+/// Reads the dotenv text of `file` (`-`: stdin), at most [`MAX_DOTENV_BYTES`], into a buffer
+/// that is wiped when dropped.
+fn read_source(file: &std::path::Path) -> Result<Secret, String> {
+    let reader: Box<dyn Read> = if file.as_os_str() == "-" {
+        Box::new(io::stdin())
+    } else {
+        Box::new(
+            std::fs::File::open(file)
+                .map_err(|e| format!("cannot read {}: {e}", file.display()))?,
+        )
+    };
+    let mut bytes = Vec::new();
+    let read = reader
+        .take(MAX_DOTENV_BYTES as u64 + 1)
+        .read_to_end(&mut bytes);
+    let text = String::from_utf8(bytes).map_err(|e| {
+        let mut bytes = e.into_bytes();
+        zeroize::Zeroize::zeroize(&mut bytes);
+        format!("{} is not UTF-8 text", file.display())
+    });
+    let text = Secret::new(text?);
+    read.map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+    if text.expose().len() > MAX_DOTENV_BYTES {
+        return Err(format!("{} is larger than 1 MiB", file.display()));
+    }
+    Ok(text)
+}
+
+/// `yulius secrets import --to team|agent [FILE|-] [--sandbox <owner/name>] [--instance]
+/// [--server <url>] [--no-color]`: exit 0 when every secret was imported or already there.
+pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
+    install_tls();
+    set_colors(args.no_color);
+    let result = (|| -> Result<bool, String> {
+        if args.instance && args.to != VaultChoice::Agent {
+            return Err("--instance applies to --to agent".into());
+        }
+        if args.sandbox.is_some() && args.to != VaultChoice::Agent {
+            return Err("--sandbox applies to --to agent".into());
+        }
+        let parsed = match &args.file {
+            Some(file) => {
+                let text = read_source(file)?;
+                let entries = parse_dotenv(text.expose())
+                    .map_err(|e| format!("{}: {e}; nothing was imported", file.display()))?;
+                Some(entries)
+            }
+            None => None,
+        };
+        let store = TokenStore::default_location().map_err(|e| e.to_string())?;
+        let server = resolve_server(args.server.as_deref(), &store)?;
+        let token = store
+            .load(&server)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!("not signed in to {server}; run `yulius login --server {server}`")
+            })?;
+        let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
+        let options = SecretsImportOptions {
+            target: match args.to {
+                VaultChoice::Team => SecretsTarget::Team,
+                VaultChoice::Agent => SecretsTarget::Agent {
+                    sandbox: args.sandbox.clone(),
+                    instance: args.instance,
+                },
+            },
+            checkout: std::env::current_dir().map_err(|e| e.to_string())?,
+            source_file: args
+                .file
+                .as_ref()
+                .filter(|f| f.as_os_str() != "-")
+                .map(|f| f.display().to_string()),
+        };
+        // Checked before anything is typed: a wrong --sandbox throws nothing away.
+        let target =
+            prepare_target(&options, &client).map_err(|e| format!("{e}; nothing was imported"))?;
+        let mut io = TtyIo;
+        let entries = match parsed {
+            Some(entries) => entries,
+            None => prompt_secrets(&mut io).map_err(|e| e.to_string())?,
+        };
+        if entries.is_empty() {
+            io.say("No secrets given; nothing was imported.");
+            return Ok(true);
+        }
+        match import_secrets(entries, &target, &client, &mut io) {
+            Ok(summary) => Ok(summary.ok()),
+            Err(SecretsImportError::Cancelled) => Err("cancelled; nothing was imported".into()),
+            Err(err) => Err(format!("{err}; nothing was imported")),
+        }
+    })();
+    match result {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(err) => {
+            eprintln!("{} {err}", style("yulius secrets import:").red().bold());
             ExitCode::FAILURE
         }
     }

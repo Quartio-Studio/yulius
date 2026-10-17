@@ -32,6 +32,7 @@ rustls = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
 dialoguer = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
