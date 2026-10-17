@@ -134,9 +134,9 @@ and it leaves the sidebar's Needs you list.
 - After the fix: `cargo nextest run -p yulius -p yulius-store -p yulius-app` over `secrets_env::`,
   `secrets::`, `browser::`, `agent_hooks::`, `cd::`, `context_full::`, `task_done::`,
   `first_message::`, `delivery::`, `stages::` and the store and app crates: 531 passed.
-- `scripts/dev ci` on 0d9fd70e: exit 0, 2134 tests passed, 18 skipped; deny: advisories, bans,
-  licenses, sources ok.
-- `scripts/dev security` on 0d9fd70e: exit 0, no critical or high finding. The medium and low
+- `scripts/dev ci` on af275ac2 (with `dev` merged): exit 0, 2136 tests passed, 18 skipped; deny:
+  advisories, bans, licenses, sources ok.
+- `scripts/dev security` on af275ac2: exit 0, no critical or high finding. The medium and low
   findings of both scans are in code this change does not touch (present on `dev` before it) and
   are tracked for triage in #639.
 - Independent review in fresh sessions: round 1 requested changes (one major: a later flag of
