@@ -18,6 +18,10 @@ async function setUpTwoFactor(screen: any, browser: any) {
   await expect(setup.getByRole('link', 'Open in an authenticator app')).toHaveAttribute('href', /^otpauth:\/\/totp\//);
   // The key sits in a box with its copy icon (SPEC-207), not beside a text button.
   await expect(browser.locator('dialog.modal .secret-box .secret-copy[aria-label="Copy key"]')).toBeVisible();
+  expect(await browser.evaluate(() => ({
+    copies: document.querySelectorAll('dialog.modal button[aria-label^="Copy"]').length,
+    after: document.querySelector('dialog.modal .secret-box + *'),
+  }))).toEqual({ copies: 1, after: null });
   await screen.getByLabel('Code from your app').fill('000000');
   await setup.getByRole('button', 'Unlock').click();
   await expect(setup.getByRole('alert')).toHaveText(/wrong code/i);
@@ -348,12 +352,12 @@ test('a shown value stays masked until the eye is pressed, and its box always of
   }))).toEqual({ copies: 1, after: null });
   // It copies while masked, and says so on itself for a moment.
   await copy.click();
+  await expect(copy).toHaveAttribute('title', 'Copied');
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-check')).toBeVisible();
+  await expect(copy).toHaveAttribute('aria-label', 'Copy value');
   await expect(screen.getByText(/Value copied/).first()).toBeVisible();
   expect(await copied()).toEqual([TEAM_VALUE]);
   expect(await inPage()).toBe(false);
-  await expect(copy).toHaveAttribute('title', 'Copied');
-  await expect(copy).toHaveAttribute('aria-label', 'Copy value');
-  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-check')).toBeVisible();
   await expect(copy).toHaveAttribute('title', 'Copy value');
   await expect(browser.locator('dialog.modal .secret-eye + .secret-copy svg.icon-copy')).toBeVisible();
 
@@ -407,6 +411,50 @@ test('a shown value stays masked until the eye is pressed, and its box always of
     });
     expect(outside).toEqual({ parts: 5, outside: 0 });
   }
+});
+
+// SPEC-207 review: a failed copy says so and never shows the check, even right after a copy that
+// worked; long notes wrap inside their box and scroll past 240 px, also at 390 px.
+test('a failed copy shows no check, and long notes wrap and scroll in their box', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  const notes = `${'x'.repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n')}`;
+  await browser.evaluate((text: string) => {
+    (window as any).__yuliusMock.vault.team[0].notes = text;
+    (window as any).__fail = false;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { if ((window as any).__fail) throw new Error('Clipboard blocked'); } } });
+  }, notes);
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'Shared Gmail');
+  const copy = browser.locator('dialog.modal .secret-eye + .secret-copy');
+
+  // A copy that worked shows the check; one that fails right after brings the copy icon back.
+  await copy.click();
+  await expect(copy).toHaveAttribute('title', 'Copied');
+  await browser.evaluate(() => { (window as any).__fail = true; });
+  await copy.click();
+  await expect(screen.getByText(/Couldn’t copy/).first()).toBeVisible();
+  // Read at once, not waited on: the check of the first copy would clear by itself after 2 s.
+  expect(await browser.evaluate(() => {
+    const button = document.querySelector('dialog.modal .secret-eye + .secret-copy')!;
+    return { title: button.getAttribute('title'), icon: button.querySelector('svg')!.classList.contains('icon-copy') };
+  })).toEqual({ title: 'Copy value', icon: true });
+  // A first copy that fails never shows the check.
+  await shown.getByRole('button', 'Copy notes').click();
+  await expect(browser.locator('dialog.modal button[aria-label="Copy notes"]')).toHaveAttribute('title', 'Copy notes');
+  await expect(browser.locator('dialog.modal button[aria-label="Copy notes"] svg.icon-copy')).toBeVisible();
+
+  // Long notes wrap (no sideways scroll) and scroll past 240 px, inside the dialog at 390 px.
+  await browser.setViewport({ width: 390, height: 844 });
+  const box = await browser.evaluate(() => {
+    const pre = document.querySelector('dialog.modal .secret-notes')!;
+    const dialog = document.querySelector('dialog.modal')!.getBoundingClientRect();
+    const outer = pre.closest('.secret-box')!.getBoundingClientRect();
+    return { wraps: pre.scrollWidth <= pre.clientWidth, capped: pre.clientHeight <= 240, scrolls: pre.scrollHeight > pre.clientHeight, inside: outer.left >= dialog.left && outer.right <= dialog.right };
+  });
+  expect(box).toEqual({ wraps: true, capped: true, scrolls: true, inside: true });
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its

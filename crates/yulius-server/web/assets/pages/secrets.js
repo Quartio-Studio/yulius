@@ -142,20 +142,21 @@ function namedIcon(name) {
  */
 function copyButton(label, text, what) {
   let timer = null;
+  const draw = (copied) => {
+    setChildren(button, namedIcon(copied ? 'check' : 'copy'));
+    button.title = copied ? 'Copied' : label;
+  };
   const button = h('button', { type: 'button', class: 'btn-icon secret-copy', 'aria-label': label, title: label, onClick: async () => {
+    clearTimeout(timer);
     try {
       await copyValue(text, what);
     } catch (error) {
+      draw(false);
       errorToast(error, 'Couldn’t copy');
       return;
     }
-    setChildren(button, namedIcon('check'));
-    button.title = 'Copied';
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      setChildren(button, namedIcon('copy'));
-      button.title = label;
-    }, COPIED_MS);
+    draw(true);
+    timer = setTimeout(() => draw(false), COPIED_MS);
   } }, namedIcon('copy'));
   return button;
 }
@@ -192,11 +193,14 @@ function maskedValue(value) {
   return h('div', { class: 'secret-box' }, text, eye, copyButton('Copy value', value, 'Value'));
 }
 
-/** Shows a revealed value (masked until its eye is pressed) and notes, each in a box with its copy. */
+/**
+ * Shows a revealed value (masked until its eye is pressed) and notes, each in a box with its copy.
+ * The notes take focus so a keyboard can scroll long ones.
+ */
 function showRevealed(title, revealed) {
   const rows = [];
   if (revealed.value) rows.push(readField('Value', maskedValue(revealed.value)));
-  if (revealed.notes) rows.push(readField('Notes', h('div', { class: 'secret-box secret-box-notes' }, h('pre', { class: 'mono secret-notes' }, revealed.notes), copyButton('Copy notes', revealed.notes, 'Notes'))));
+  if (revealed.notes) rows.push(readField('Notes', h('div', { class: 'secret-box secret-box-notes' }, h('pre', { class: 'mono secret-notes', tabindex: 0 }, revealed.notes), copyButton('Copy notes', revealed.notes, 'Notes'))));
   if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no value or notes.'));
   openModal({ title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }] });
 }

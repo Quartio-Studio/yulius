@@ -41,8 +41,8 @@ the keyboard into it) shows a copy button inside the value box. The current **Co
 | --- | --- | --- |
 | PWV-001 | The Show dialog's Value opens masked: a fixed run of dots that does not reveal the value's length, and the value is not in the page's DOM until it is revealed. Screen readers hear "Value hidden". | e2e |
 | PWV-002 | An eye button in the value box (`aria-label="Show value"`, `aria-pressed`) reveals the value; pressed again it masks the value and removes it from the DOM. Every new Show dialog opens masked again. | e2e |
-| PWV-003 | Hovering the value box, or focus inside it, shows a copy icon button (`Copy`) in the box; it copies the value whether masked or not, with the same toast and 30-second clipboard clearing as the Copy button. Without hover or focus it takes no space a click could reach. | e2e |
-| PWV-004 | The current `Copy` button (`Copy value`) stays beside the box and behaves as before. | e2e |
+| PWV-003 | *Superseded by SPEC-207 (ADR-0164): the copy icon is always visible in the box.* Hovering the value box, or focus inside it, shows a copy icon button (`Copy`) in the box; it copies the value whether masked or not, with the same toast and 30-second clipboard clearing as the Copy button. Without hover or focus it takes no space a click could reach. | e2e |
+| PWV-004 | *Superseded by SPEC-207 (ADR-0164): the box's copy icon is the only copy.* The current `Copy` button (`Copy value`) stays beside the box and behaves as before. | e2e |
 | PWV-005 | The dialog has no WCAG A/AA violations masked or revealed, in both themes; the box fits a 390 px window. | e2e (axe) |
 | PWV-006 | SPEC-001 (VLT-010), the product summary, a decision record, `e2e/README.md` and `docs/changes.md` describe it. | review |
 
