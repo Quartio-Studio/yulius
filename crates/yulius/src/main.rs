@@ -210,8 +210,9 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum SecretsAction {
     /// Import secrets from a dotenv file, stdin or typed prompts (SPEC-205): team secrets for
-    /// people, or agent secrets of a sandbox. Names are shown, values never; a secret that exists
-    /// is skipped, never overwritten; nothing is sent before you type yes at the terminal.
+    /// people, or agent secrets, of a sandbox or team-wide (SPEC-216). Names are shown, values
+    /// never; a secret that exists is skipped, never overwritten; nothing is sent before you type
+    /// yes at the terminal.
     Import {
         /// Team secrets (for people) or agent secrets (for agents, who never see them).
         #[arg(long, value_enum)]
@@ -219,11 +220,11 @@ enum SecretsAction {
         /// A dotenv file (NAME=value lines; a comment above a key becomes its description), `-`
         /// for stdin; without it, type each name and its hidden value.
         file: Option<PathBuf>,
-        /// The sandbox of agent secrets: owner/name, slug or id (default: this checkout's GitHub
+        /// The sandbox of the secrets: owner/name, slug or id (default: this checkout's GitHub
         /// repository).
         #[arg(long)]
         sandbox: Option<String>,
-        /// Agent secrets for every sandbox (instance administrators).
+        /// Team-wide secrets, for every sandbox (agent secrets: instance administrators).
         #[arg(long)]
         instance: bool,
         /// Yulius URL (default: the only server you signed in to).

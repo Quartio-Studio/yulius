@@ -27,8 +27,13 @@ const MAX_TITLE_CHARS: usize = 200;
 /// Where the secrets go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretsTarget {
-    /// Team secrets, for people, titled by the name.
-    Team,
+    /// Team secrets, for people, titled by the name: a sandbox's (SPEC-216), or team-wide.
+    Team {
+        /// `--sandbox`: an id, slug or `owner/name` (`None`: the checkout's GitHub repository).
+        sandbox: Option<String>,
+        /// `--instance`: team-wide, for every sandbox (no sandbox is resolved).
+        instance: bool,
+    },
     /// Agent secrets of a sandbox.
     Agent {
         /// `--sandbox`: an id, slug or `owner/name` (`None`: the checkout's GitHub repository).
@@ -133,6 +138,8 @@ impl SandboxRef {
 #[derive(Deserialize)]
 struct TeamName {
     title: String,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +244,7 @@ fn cut_key(value: &str) -> bool {
 /// Where a run's secrets go, checked before anything is read or typed.
 pub struct PreparedTarget {
     heading: String,
+    team: bool,
     sandbox: Option<String>,
     instance: bool,
     existing: Vec<String>,
@@ -251,8 +259,31 @@ pub fn prepare_target(
     options: &SecretsImportOptions,
     client: &VaultClient,
 ) -> Result<PreparedTarget, SecretsImportError> {
-    let (heading, sandbox, instance) = match &options.target {
-        SecretsTarget::Team => ("the team secrets (for people)".to_owned(), None, false),
+    let (heading, team, sandbox, instance) = match &options.target {
+        SecretsTarget::Team {
+            instance: true,
+            sandbox: _,
+        } => (
+            "the team-wide team secrets (for people)".to_owned(),
+            true,
+            None,
+            true,
+        ),
+        SecretsTarget::Team {
+            sandbox,
+            instance: false,
+        } => {
+            let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout)?;
+            (
+                format!(
+                    "the team secrets of {} (this sandbox only, for people)",
+                    found.full_name()
+                ),
+                true,
+                Some(found.id),
+                false,
+            )
+        }
         SecretsTarget::Agent { sandbox, instance } => {
             let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout)?;
             let reach = if *instance {
@@ -262,18 +293,26 @@ pub fn prepare_target(
             };
             (
                 format!("the agent secrets of {} ({reach})", found.full_name()),
+                false,
                 Some(found.id),
                 *instance,
             )
         }
     };
-    let existing: Vec<String> = match &sandbox {
-        None => client
+    let existing: Vec<String> = match (team, &sandbox) {
+        (true, None) => client
             .get::<Vec<TeamName>>(&["api", "team-secrets"])?
             .into_iter()
             .map(|t| t.title.trim().to_owned())
             .collect(),
-        Some(id) => {
+        (true, Some(id)) => client
+            .get::<Vec<TeamName>>(&["api", "sandboxes", id, "team-secrets"])?
+            .into_iter()
+            .filter(|t| t.scope.as_deref() == Some("sandbox"))
+            .map(|t| t.title.trim().to_owned())
+            .collect(),
+        (false, None) => Vec::new(),
+        (false, Some(id)) => {
             let scope = if instance { "instance" } else { "sandbox" };
             client
                 .get::<Vec<AgentName>>(&["api", "sandboxes", id, "agent-secrets"])?
@@ -285,6 +324,7 @@ pub fn prepare_target(
     };
     Ok(PreparedTarget {
         heading,
+        team,
         sandbox,
         instance,
         existing,
@@ -314,6 +354,7 @@ pub fn import_secrets(
     }
     let PreparedTarget {
         heading,
+        team,
         sandbox,
         instance,
         existing,
@@ -325,10 +366,10 @@ pub fn import_secrets(
         .map(|entry| {
             let class = if existing.contains(&entry.name) {
                 Class::Exists
-            } else if sandbox.is_some() {
-                agent_value(&entry)
-            } else {
+            } else if *team {
                 team_value(&entry)
+            } else {
+                agent_value(&entry)
             };
             (entry, class)
         })
@@ -345,9 +386,7 @@ pub fn import_secrets(
         let (mark, what) = match class {
             // A comment goes along in plain view of agents (or as sealed notes): say so.
             Class::New(_) if entry.comment.is_empty() => ('+', "new".to_owned()),
-            Class::New(_) if sandbox.is_some() => {
-                ('+', "new, with description (agents read it)".to_owned())
-            }
+            Class::New(_) if !team => ('+', "new, with description (agents read it)".to_owned()),
             Class::New(_) => ('+', "new, with notes".to_owned()),
             Class::Exists => ('=', "exists: skipped, never overwritten".to_owned()),
             Class::Invalid(why) => ('!', format!("skipped: {why}")),
@@ -385,9 +424,10 @@ pub fn import_secrets(
             summary.unsent.push(entry.name);
             continue;
         }
-        let sent = match &sandbox {
-            None => send_team(client, &entry, &value),
-            Some(id) => send_agent(client, id, instance, &entry, &value),
+        let sent = match (team, &sandbox) {
+            (true, sandbox) => send_team(client, sandbox.as_deref(), &entry, &value),
+            (false, Some(id)) => send_agent(client, id, instance, &entry, &value),
+            (false, None) => Err(ApiError::NotFound("no sandbox".into())),
         };
         match sent {
             Ok(()) => {
@@ -516,14 +556,30 @@ fn agent_value(entry: &DotenvEntry) -> Class {
     }
 }
 
-fn send_team(client: &VaultClient, entry: &DotenvEntry, value: &Secret) -> Result<(), ApiError> {
+/// A team secret of `sandbox` (SPEC-216), or team-wide without one.
+fn send_team(
+    client: &VaultClient,
+    sandbox: Option<&str>,
+    entry: &DotenvEntry,
+    value: &Secret,
+) -> Result<(), ApiError> {
     let mut input = TeamSecretInput {
-        scope: None,
+        scope: Some(
+            if sandbox.is_some() {
+                "sandbox"
+            } else {
+                "instance"
+            }
+            .to_owned(),
+        ),
         title: entry.name.clone(),
         value: Some(value.expose().to_owned()),
         notes: (!entry.comment.is_empty()).then(|| entry.comment.clone()),
     };
-    let sent = client.post(&["api", "team-secrets"], &input);
+    let sent = match sandbox {
+        Some(id) => client.post(&["api", "sandboxes", id, "team-secrets"], &input),
+        None => client.post(&["api", "team-secrets"], &input),
+    };
     if let Some(value) = input.value.as_mut() {
         value.zeroize();
     }

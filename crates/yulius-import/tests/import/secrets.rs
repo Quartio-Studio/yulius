@@ -77,9 +77,13 @@ impl SecretsIo for Terminal {
     }
 }
 
+/// Team-wide team secrets (`--instance`).
 fn team() -> SecretsImportOptions {
     SecretsImportOptions {
-        target: SecretsTarget::Team,
+        target: SecretsTarget::Team {
+            sandbox: None,
+            instance: true,
+        },
         checkout: std::env::temp_dir(),
         source_file: Some("secrets.env".into()),
     }
@@ -212,6 +216,64 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
     );
     assert!(terminal.said.contains("GLOBAL_KEY  new\n"));
     terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-216 SCO-005: team secrets go to the sandbox by default (checked against its own), and
+/// team-wide only with `--instance`.
+#[test]
+fn team_import_goes_to_the_sandbox_unless_team_wide() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| {
+        s.sandbox_team_titles = vec!["OLD_KEY".into()];
+        s.team_titles = vec!["WIDE_KEY".into()];
+    })?;
+    let file = "NEW_KEY=sk_live_new_value_1
+OLD_KEY=existing-value-2
+WIDE_KEY=wide-value-3
+";
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Team {
+            sandbox: Some("sb-2".into()),
+            instance: false,
+        },
+        ..team()
+    };
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(&server, file, &options, &mut terminal)??;
+    assert_eq!(summary.imported, vec!["NEW_KEY", "WIDE_KEY"]);
+    assert_eq!(summary.existing, vec!["OLD_KEY"]);
+    let created = server.with(|s| s.sandbox_team_created.clone())?;
+    assert!(
+        created
+            .iter()
+            .all(|(sid, input)| sid == "sb-2" && input.scope.as_deref() == Some("sandbox")),
+        "{created:?}"
+    );
+    assert!(server.with(|s| s.team_created.is_empty())?);
+    assert!(
+        terminal
+            .said
+            .contains("the team secrets of Quartio-Studio/other (this sandbox only"),
+        "{}",
+        terminal.said
+    );
+
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(
+        &server,
+        "WIDE_KEY=wide-value-3
+ALL_KEY=all-value-4
+",
+        &team(),
+        &mut terminal,
+    )??;
+    assert_eq!(summary.imported, vec!["ALL_KEY"]);
+    let created = server.with(|s| s.team_created.clone())?;
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].scope.as_deref(), Some("instance"));
+    assert!(terminal.said.contains("team-wide"), "{}", terminal.said);
     Ok(())
 }
 
