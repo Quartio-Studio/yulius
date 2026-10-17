@@ -577,6 +577,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "automation_delete",
         "automation_run_now",
         "automation_template_enable",
+        "secret_create_from_file",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),

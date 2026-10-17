@@ -40,6 +40,8 @@ const MAX_SECRETS: usize = 16;
 const MAX_ENV_BYTES: u64 = 256 * 1024;
 /// The tracked template next to every dotenv file.
 const EXAMPLE: &str = ".env.example";
+/// How messages name the folder an agent works in.
+pub(super) const WORK_FOLDER: &str = "the folder you work in";
 /// Flags of every folder opened on the way to the target.
 const DIR_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_DIRECTORY)
@@ -59,14 +61,14 @@ struct CopyArgs {
 
 /// A folder of the worktree, opened once: its handle and its real path below the worktree
 /// (`""` for the worktree itself).
-struct Folder {
-    fd: OwnedFd,
+pub(super) struct Folder {
+    pub(super) fd: OwnedFd,
     relative: String,
 }
 
 impl Folder {
     /// The worktree-relative path of `name` in this folder.
-    fn path_of(&self, name: &str) -> String {
+    pub(super) fn path_of(&self, name: &str) -> String {
         if self.relative.is_empty() {
             name.to_owned()
         } else {
@@ -75,7 +77,7 @@ impl Folder {
     }
 }
 
-fn os_error(err: Errno) -> AppError {
+pub(super) fn os_error(err: Errno) -> AppError {
     crate::files::io_error(&std::io::Error::from(err))
 }
 
@@ -102,19 +104,47 @@ fn real_path(fd: &OwnedFd) -> AppResult<PathBuf> {
     }
 }
 
+/// How [`open_folder`]'s messages name its folders: the root it walks from as `within` ("the
+/// folder you work in", "your home"), leaving out the first `hidden` folders (those between an
+/// anchor and the folder the caller names its paths from) and writing the rest after `prefix`
+/// (`~/` for the home), as the caller gave them.
+pub(super) struct Naming<'a> {
+    pub(super) within: &'a str,
+    pub(super) hidden: usize,
+    pub(super) prefix: &'a str,
+}
+
+/// The folder an agent works in, named from itself.
+pub(super) const WORK: Naming<'static> = Naming {
+    within: WORK_FOLDER,
+    hidden: 0,
+    prefix: "",
+};
+
 /// Opens `folders` below `worktree` one component at a time without following links, and checks
 /// that the folder reached is inside the worktree and out of `.git`.
-fn open_folder(worktree: &Path, folders: &[String]) -> AppResult<Folder> {
-    let shown = || folders.join("/");
+pub(super) fn open_folder(
+    worktree: &Path,
+    folders: &[String],
+    naming: &Naming<'_>,
+) -> AppResult<Folder> {
+    let within = naming.within;
+    let visible = folders.get(naming.hidden..).unwrap_or_default().join("/");
+    let shown = format!("{}{visible}", naming.prefix);
     let refused = |err: Errno| match err {
+        // The root itself (a folder the caller does not name) is the one refused.
+        Errno::ELOOP | Errno::ENOTDIR if visible.is_empty() => AppError::Forbidden(format!(
+            "{within} is a link or not a folder: Yulius follows no links"
+        )),
         Errno::ELOOP | Errno::ENOTDIR => AppError::Forbidden(format!(
-            "a folder on the way to {} is a link or not a folder: Yulius follows no links",
-            shown()
+            "a folder on the way to {shown} is a link or not a folder: Yulius follows no links"
         )),
-        Errno::ENOENT => AppError::Invalid(format!(
-            "the folder {} does not exist in the folder you work in",
-            shown()
-        )),
+        Errno::ENOENT if visible.is_empty() => {
+            AppError::Invalid(format!("{within} does not exist on this machine"))
+        }
+        Errno::ENOENT => {
+            AppError::Invalid(format!("the folder {shown} does not exist in {within}"))
+        }
         other => os_error(other),
     };
     let mut fd = nix::fcntl::open(worktree, DIR_FLAGS, Mode::empty()).map_err(refused)?;
@@ -123,14 +153,15 @@ fn open_folder(worktree: &Path, folders: &[String]) -> AppResult<Folder> {
     }
     let real = real_path(&fd)?;
     if !inside(worktree, &real) {
-        return Err(AppError::Forbidden(format!(
-            "{} is outside the folder you work in",
-            shown()
-        )));
+        return Err(AppError::Forbidden(if visible.is_empty() {
+            format!("{within} is outside where Yulius looks")
+        } else {
+            format!("{shown} is outside {within}")
+        }));
     }
     let relative = real
         .strip_prefix(worktree)
-        .map_err(|_| AppError::Forbidden("outside the folder you work in".into()))?
+        .map_err(|_| AppError::Forbidden(format!("outside {within}")))?
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
@@ -427,7 +458,7 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let worktree = self.secret_user_folder(user, &sandbox).await?;
-        let folder = open_folder(&worktree, folders)?;
+        let folder = open_folder(&worktree, folders, &WORK)?;
         let target = folder.path_of(file_name);
         let existing = read_in(&folder, file_name)?;
         if !self.deps.git.is_disposable(&worktree, &target).await? {
@@ -642,7 +673,7 @@ mod tests {
     fn a_folder_swapped_for_a_link_after_the_check_is_not_followed() -> TestResult {
         let (_dir, wt, outside) = worktree()?;
         std::fs::write(outside.join(".env"), "OTHER_PROJECT_KEY=theirs\n")?;
-        let folder = open_folder(&wt, &["deploy".to_owned()])?;
+        let folder = open_folder(&wt, &["deploy".to_owned()], &WORK)?;
         assert_eq!(folder.relative, "deploy");
         std::fs::rename(wt.join("deploy"), wt.join("moved"))?;
         std::os::unix::fs::symlink(&outside, wt.join("deploy"))?;
@@ -672,17 +703,20 @@ mod tests {
         std::os::unix::fs::symlink(wt.join("deploy"), wt.join("inner"))?;
         for folders in [vec!["link".to_owned()], vec!["inner".to_owned()]] {
             assert!(
-                matches!(open_folder(&wt, &folders), Err(AppError::Forbidden(_))),
+                matches!(
+                    open_folder(&wt, &folders, &WORK),
+                    Err(AppError::Forbidden(_))
+                ),
                 "{folders:?}"
             );
         }
         assert!(matches!(
-            open_folder(&wt, &["missing".to_owned()]),
+            open_folder(&wt, &["missing".to_owned()], &WORK),
             Err(AppError::Invalid(_))
         ));
         std::fs::write(wt.join("deploy/target"), "x")?;
         std::os::unix::fs::symlink(wt.join("deploy/target"), wt.join("deploy/.env"))?;
-        let folder = open_folder(&wt, &["deploy".to_owned()])?;
+        let folder = open_folder(&wt, &["deploy".to_owned()], &WORK)?;
         assert!(matches!(
             read_in(&folder, ".env"),
             Err(AppError::Forbidden(_))

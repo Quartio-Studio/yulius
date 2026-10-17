@@ -74,6 +74,59 @@ pub fn flattened_key(value: &str) -> bool {
         && !body.trim().is_empty()
 }
 
+/// The value an agent secret stores for a file's text (SPEC-211 SCF-003): one final line break
+/// (LF or CRLF) dropped; a text that still spans lines only when it is a key block, its blank
+/// lines around dropped, the spaces around each line trimmed and each break written as literal
+/// `\n`, as the Secrets page stores a pasted key (ADR-0156). The result passes
+/// [`super::check_agent_value`]; a file holding one line that opens a key (cut or flattened) does
+/// not. Callers hold the value in a wiping wrapper; a refused one is overwritten here.
+///
+/// # Errors
+/// [`VaultError::Value`] naming the rule, never quoting the text.
+pub fn agent_value_from_file(text: &str) -> Result<String, VaultError> {
+    let text = text
+        .strip_suffix('\n')
+        .map_or(text, |rest| rest.strip_suffix('\r').unwrap_or(rest));
+    let value = if text.contains('\n') {
+        let lines: Vec<&str> = text.split('\n').map(str::trim).collect();
+        let first = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
+        let last = lines.iter().rposition(|l| !l.is_empty()).unwrap_or(0);
+        let joined = lines.get(first..=last).unwrap_or_default().join("\\n");
+        // The key file `key_block` builds is a copy of the key: wiped too.
+        if let Some(file) = key_block(&joined) {
+            wipe(file);
+        } else {
+            wipe(joined);
+            return Err(VaultError::Value(
+                "an agent secret cannot span lines (a PEM or OpenSSH key can), and this is not a \
+                 key"
+                .into(),
+            ));
+        }
+        joined
+    } else if text.trim_start().starts_with("-----BEGIN ") {
+        // One line opening a key: the key was cut (or flattened), never a usable key file.
+        return Err(VaultError::Value(
+            "the file holds a key on one line: a PEM or OpenSSH key spans lines".into(),
+        ));
+    } else {
+        text.to_owned()
+    };
+    if let Err(err) = super::check_agent_value(&value) {
+        wipe(value);
+        return Err(err);
+    }
+    Ok(value)
+}
+
+/// Overwrites a refused value's bytes before they are freed (best effort: the domain has no
+/// `zeroize`; `black_box` keeps the writes from being dropped as dead).
+fn wipe(value: String) {
+    let mut bytes = value.into_bytes();
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+}
+
 /// The lines of a key block's file that hold key material (its armour excluded): a copied key
 /// file shows them one per line, so redaction looks for each (SPEC-186 SAV-005). Empty for a
 /// value that is not a key block.
@@ -538,5 +591,55 @@ mod tests {
         assert_eq!(same, out);
         assert!(none.is_empty());
         assert_eq!(example("", &names[..1]).0, "API_KEY=\n");
+    }
+
+    /// SPEC-211 SCF-003 (AC-1): a file's text becomes the value an agent secret stores: a token
+    /// without its final line break, a key file (LF or CRLF, blank lines around it) with literal
+    /// `\n`, which reads back as the file; anything else that spans lines, or that no agent
+    /// secret may hold, is refused without quoting it.
+    #[test]
+    fn a_file_becomes_the_stored_agent_value() -> Result<(), VaultError> {
+        let token = "tok_synthetic_0123456789";
+        for file in [
+            token.to_owned(),
+            format!("{token}\n"),
+            format!("{token}\r\n"),
+        ] {
+            assert_eq!(agent_value_from_file(&file)?, token, "{file:?}");
+        }
+        let openssh = key_file(
+            &format!("{} PRIVATE KEY", "OPENSSH"),
+            &[
+                "b3BlbnNzaC1rZXktdjEAAAAAc3ludGhldGljLTAx",
+                "c3ludGhldGljLW9wZW5zc2gta2V5LWxpbmUtMDIA",
+            ],
+        );
+        let stored = openssh.trim_end_matches('\n').replace('\n', "\\n");
+        for file in [
+            openssh.clone(),
+            openssh.trim_end_matches('\n').to_owned(),
+            openssh.replace('\n', "\r\n"),
+            format!("\n\n{openssh}\n\n"),
+            openssh.replace('\n', "  \n"),
+        ] {
+            let value = agent_value_from_file(&file)?;
+            assert_eq!(value, stored, "{file:?}");
+            assert_eq!(key_block(&value).as_deref(), Some(openssh.as_str()));
+        }
+        let secret = "synthetic-content-never-shown";
+        for refused in [
+            format!("{secret}\nsecond line\n"),
+            format!("{{\n  \"key\": \"{secret}\"\n}}\n"),
+            "short\n".to_owned(),
+            format!("{secret}\tx"),
+            String::new(),
+            format!("{}\n", armour("BEGIN", "KEY")),
+        ] {
+            let err = agent_value_from_file(&refused)
+                .err()
+                .ok_or_else(|| VaultError::Value(format!("{refused:?} was accepted")))?;
+            assert!(!err.to_string().contains(secret), "{err}");
+        }
+        Ok(())
     }
 }

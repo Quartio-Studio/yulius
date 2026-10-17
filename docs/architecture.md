@@ -679,6 +679,20 @@ for the people who manage it
 ([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
 [decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
 
+Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
+a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
+folder or `~/` for the caller's home (the sandbox home for a task, its person's home for the
+Superagent, shared by their projects). Yulius walks to it from a folder the agent cannot replace (the
+canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` opens
+its target (`open_folder`: one folder at a time without following links, real path checked), reads a regular
+file of at most 16 KiB, converts it with `dotenv::agent_value_from_file` (the CLI import's
+conversion too) and stores it through `App::insert_agent_secret`, the Secrets page's path. The
+secret has no hosts and no `.env` allowance, its creator is the person the caller acts for (write
+access required) and its audit actor is the agent. The file is removed through the same folder
+handle only when asked
+([SPEC-211](../.ai/specs/SPEC-211-yulius-should-be-able-to-create-secrets.md),
+[decision 0167](decisions/0167-agents-create-agent-secrets-from-a-file-yulius-reads.md)).
+
 `yulius secrets import` (`crates/yulius/src/cli.rs`, `yulius-import`'s `secrets_import` and
 `dotenv`) adds secrets from a computer through the same create calls as the Secrets page, with
 the CLI's bearer token: it reads a dotenv file, stdin or hidden prompts, lists the caller's
@@ -725,6 +739,7 @@ flowchart LR
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management and vault tools"]
   MCP -->|"secret_copy_to_env (SecretUser::Superagent)"| ENV[".env in the sandbox repository"]
+  MCP -->|"secret_create_from_file: reads a work-folder or ~/ file, no links"| VA[("Agent vault: new secret, no hosts")]
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]

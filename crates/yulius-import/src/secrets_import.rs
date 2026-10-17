@@ -493,20 +493,10 @@ fn agent_value(entry: &DotenvEntry) -> Class {
     }
     let value = if raw.contains('\n') {
         // A key file is stored as the Secrets page stores it: its line breaks as literal `\n`.
-        let normalized = Secret::new(raw.replace("\r\n", "\n"));
-        let mut joined = normalized
-            .expose()
-            .trim_end_matches('\n')
-            .replace('\n', "\\n");
-        let key = dotenv::key_block(&joined).is_some();
-        let value = Secret::new(joined.clone());
-        joined.zeroize();
-        if !key {
-            return Class::Invalid(
-                "an agent secret cannot span lines (a PEM or OpenSSH key can)".into(),
-            );
+        match dotenv::agent_value_from_file(raw) {
+            Ok(value) => Secret::new(value),
+            Err(e) => return Class::Invalid(e.to_string()),
         }
-        value
     } else {
         entry.value.clone()
     };
