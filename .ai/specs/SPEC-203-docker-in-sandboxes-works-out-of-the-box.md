@@ -81,8 +81,9 @@ Code today:
   manual. `apt-get` runs non-interactively with needrestart suspended; a failing `apt-get update`
   (another broken source) does not stop the install.
 - **HST-004** The host's `docker.socket`, `docker.service` and `containerd.service` are disabled
-  and stopped when enabled or active. When the host's Docker runs containers, they are left alone
-  and the item is manual (the operator uses host Docker for something else).
+  and stopped when enabled or active. When the host's Docker (`docker ps`) or containerd (`ctr`
+  tasks outside Docker's `moby` namespace) runs containers, or they cannot be counted, they are
+  left alone and the item is manual (the operator uses them for something else).
 - **HST-005** `/etc/modules-load.d/yulius-docker.conf` lists exactly the engine's modules (one
   per line, after a comment); a different file is rewritten. Modules neither loaded nor built in
   are loaded with `modprobe -a`.
@@ -101,11 +102,15 @@ Code today:
 - **HST-009** With `yulius-update.service` installed, a drop-in lets it write
   `/etc/modules-load.d` and `/etc/needrestart/conf.d` (HST-012 needs it under
   `ProtectSystem=strict`). Without the helper, the item is manual (§8: root's Rust toolchain).
-- **HST-010** The running binary and the unit's `ExecStart` binary are made root-owned and not
-  writable by group or others.
+- **HST-010** The running binary and the unit's `ExecStart` binary (links resolved to their
+  targets) are made root-owned and not writable by group or others, through one descriptor
+  opened without following a link. A binary in a directory the service user or others may write
+  fails the item instead. A linked data directory is judged at its target too.
 - **HST-011** The base: when there is none, it has no `dockerd` while the host has one, or it no
   longer matches the host, it is built now as the service user (`yulius sandbox-base build`, which
-  keeps live holders' bases, SPEC-202 RSB-002), so it is safe while sandboxes run.
+  keeps live holders' bases, SPEC-202 RSB-002), so it is safe while sandboxes run. Base builds
+  take turns under a lock (`<data>/system/.build.lock`), so the setup's build and the server's
+  never overlap.
 
 ### Updates
 
@@ -115,7 +120,10 @@ Code today:
   installed binary's `host check --json` (bounded to 2 minutes) and stores the report in its
   status (`HelperStatus.host_check`) and in `<state>/host-check.json`. A failed item or a "sandbox
   Docker" that is not ok is a regression: the update's outcome and Settings → Instance show it
-  with its reason. A binary without `host check` is reported as not checked.
+  with its reason. A binary without `host check` is reported as not checked. The helper passes
+  its unit's name (`--service`, `YULIUS_UPDATE_SERVICE`) and bounds every field of the report.
+  A setup or check run as root also keeps its report in `host-check.json`, so the card shows the
+  latest root check.
 
 ### Visible status
 
@@ -154,16 +162,16 @@ Code today:
 
 ## Plan
 
-- [ ] Spec SPEC-203 written and validated
-- [ ] One "sandbox Docker" verdict for doctor and server, shown without --contained
-- [ ] Host setup items: Docker Engine, host units, modules, needrestart, with fake-host tests
-- [ ] Host setup items: user, ids, units, binary, base, doctor and smoke; the host CLI
-- [ ] Update helper re-checks the host and reports regressions
-- [ ] Server sandbox Docker status: verdict, rebuild estimate, own engines, re-check
-- [ ] Smoke check started from the server with per-check results
-- [ ] Settings → Instance Sandbox Docker card with end-to-end test
-- [ ] Fresh-install run in a systemd Ubuntu 24.04 container
-- [ ] ADR-0162, operations guide, architecture and changes updated
+- [x] Spec SPEC-203 written and validated
+- [x] One "sandbox Docker" verdict for doctor and server, shown without --contained
+- [x] Host setup items: Docker Engine, host units, modules, needrestart, with fake-host tests
+- [x] Host setup items: user, ids, units, binary, base, doctor and smoke; the host CLI
+- [x] Update helper re-checks the host and reports regressions
+- [x] Server sandbox Docker status: verdict, rebuild estimate, own engines, re-check
+- [x] Smoke check started from the server with per-check results
+- [x] Settings → Instance Sandbox Docker card with end-to-end test
+- [x] Fresh-install run in an Ubuntu 24.04 container
+- [x] ADR-0162, operations guide, architecture and changes updated
 - [ ] Gates green and independent review answered
 
 ## Acceptance criteria
@@ -181,9 +189,14 @@ Code today:
   with the fix; doctor without `--contained` names the flag.
 - Server test: the sandbox Docker view for a superadmin only; the smoke run's checks arrive as
   they end. E2E: the Instance card shows the verdict, runs the smoke and lists each check.
-- A real run of `yulius host setup` in a systemd Ubuntu 24.04 container: Docker from Docker's
-  repository, host units disabled, modules file, needrestart rule, user, ids, unit; a second run
-  changes nothing; after a container restart nothing changes.
+- A real run of `yulius host setup` in an Ubuntu 24.04 container, as close to a fresh host as
+  this sandbox allows: Docker from Docker's repository, the modules file, the needrestart rule
+  (read by needrestart itself), the user, the ids, the binary's owner; a second run changes
+  nothing; after a container restart nothing changes. Amended (task #188): systemd cannot be PID
+  1 in a sandbox engine's container (a threaded cgroup; `--privileged` cannot mount sysfs in the
+  sandbox's user namespace), and nested user namespaces are refused. The systemd items, the base
+  build and the smoke are therefore proven against the fake host, and on the VM by the operator's
+  commands in docs/operations.md.
 
 ## Test plan
 
@@ -219,4 +232,74 @@ Code today:
 
 ## Evidence
 
-(to be filled)
+- **Gate** `scripts/dev ci` (check, lint, test, deps, doc): exit 0 at 606c4b09 (2085 passed, 18
+  skipped). Two earlier runs failed and were fixed: the repository check (a padding off the 4 px
+  scale; modulepreload list, synced) and `cargo doc` (links to private constants).
+- **E2E** (`cd e2e && npx e2e run`): 604 passed, 1 skipped, exit 0; the new
+  `sandbox-docker.e2e.ts` 6/6.
+- **Security** `scripts/dev security`: **unrun**, exit 2: Vidoc refused the agent's key (HTTP 401,
+  as since PR #600). The CI `security` job scans the pull request head.
+- **Tests first.** Red before the change, green after:
+  - `self_update::a_docker_regression_after_an_update_is_in_its_outcome` failed to compile (no
+    `UpdateRunView.docker`), passes after HST-012's view.
+  - `host_setup::tests` (fake host): after the real run found that Docker's packages had no
+    install candidate, the fake was taught that apt lists are read by `apt-get update`; 8 tests
+    then failed exactly as the real host did, and pass after the lists are read again once a
+    source is added. `an_unanswering_systemd_never_gets_its_units_rewritten` failed (the unit was
+    rewritten), passes after the fix.
+  - The other new tests exercise functions the change adds (verdict, host items, `--json`,
+    `run_smoke`, the API): they could not compile before it.
+- **Real fresh install** (step 9), `ubuntu:24.04` container in this sandbox's Docker engine,
+  `yulius` debug build of this branch installed `-m 0755` to `/usr/local/bin`:
+  - run 1: `changed` needrestart rule, git/uidmap/slirp4netns/bubblewrap, Docker Engine
+    (docker-ce 5:29.9.1, containerd.io 2.4.2, buildx 0.38.0, compose 5.6.0 from Docker's
+    repository through `docker.sources`), modules file, system user `yulius` with
+    `/var/lib/yulius` 0700, ids 165536–231071 (after `ubuntu`'s 100000–165535); the contained
+    doctor passed as `yulius` ("sandbox isolation: namespace holder available").
+  - needrestart's own config loading maps `yulius.service` to 0 (never restarted); apt printed
+    "packages have been installed but needrestart is suspended".
+  - run 2: `changed 0`; after `docker restart` (the reboot), run 3: `changed 0`.
+  - `chown 1000; chmod 775` on the binary, then `yulius host check --json`: the binary is back
+    to root 755 (`changed`), the report is JSON with every item.
+  - In an earlier build the unit written from `--public-url` had `User=yulius`,
+    `YULIUS_CONTAINED=true`, `Delegate=yes`, `DelegateSubgroup=server`, `KillMode=process`,
+    `ExecStart=/usr/local/bin/yulius serve`.
+- **Sandbox side**, in this task's sandbox (base from the VM's docker-ce): `docker run --rm
+  hello-world` ("Hello from Docker!"), `docker buildx build` (`built-by-buildx`) and a
+  two-service `docker compose up` (`probe-1 | compose-web`, exit 0), engine 29.9.1.
+- **Not testable here**, and why:
+  - systemd as PID 1: a sandbox engine's container gets a *threaded* cgroup (systemd: "Structure
+    needs cleaning"), and `--privileged` cannot mount sysfs in the sandbox's user namespace. So
+    unit operations (disabling the host's Docker units, the drop-ins, `daemon-reload`, enable and
+    start, `systemd-run` for the smoke) ran only against the fake host; in the container
+    systemctl answers "Failed to connect to bus" and the setup reports it.
+  - a base build, a holder, an engine and the smoke test in the fresh container: nested user
+    namespaces are refused by the sandbox's seccomp profile ("bwrap did not start its namespace").
+  - `modprobe` and a kernel reboot: the container shares the host's kernel, whose modules are
+    loaded.
+  - The operator runs these on the VM after promotion (docs/operations.md, "Notes for specific
+    upgrades").
+- **Independent review**, round 1 at 606c4b09 (fresh session, `om-code-review`): request changes.
+  Two majors and seven minors, all in this change's own code, were answered and fixed test-first:
+  - **Overlapping base builds** (major): `base::build` takes `<data>/system/.build.lock`.
+    `a_build_waits_for_the_running_one` failed ("the second build waits"); it passes now.
+  - **Evidence and acceptance criterion** (major): this section, and the amended criterion
+    (no systemd manager in a sandbox engine's container).
+  - **`own_by_root` followed links** (minor): it now uses one descriptor opened with
+    `O_NOFOLLOW`, and a writable directory fails the item. `owning_a_link_never_touches_its_target`
+    and `a_binary_in_a_writable_directory_fails` are new.
+  - **Linked binary and data directory** (minor): both are judged at their targets
+    (`links_are_judged_by_their_targets`).
+  - **Hard-coded unit name** (minor): `--service`; the helper passes its own
+    (`the_service_name_is_an_option`, and the helper's argument test).
+  - **Containers that cannot be counted, and containerd's tasks** (minor): manual
+    (`uncounted_or_busy_containers_keep_the_host_runtime`).
+  - **Unbounded report fields** (minor): `an_oversized_report_is_bounded` failed; it passes now.
+  - **Stale re-check on the card** (minor): root runs keep their report
+    (`a_root_check_replaces_the_kept_report`), and the card says "The last host check".
+  - Nits: apt keeps changed configuration files (`--force-confdef`, `--force-confold`).
+    Commands are bounded to 30 s each (2 minutes to stop the host's Docker); the helper's
+    re-check gets 4 minutes. The card polls every 30 s during a rebuild, and retries after a
+    failed read.
+  - Kept by choice: Docker's key is not pinned by fingerprint. It is fetched over HTTPS from
+    `download.docker.com`, as Docker documents, and apt checks every package against it.

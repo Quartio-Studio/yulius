@@ -57,7 +57,7 @@ impl Cmd {
             argv: argv.iter().map(|&a| a.to_owned()).collect(),
             env: Vec::new(),
             show: false,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(30),
         }
     }
 
@@ -133,6 +133,8 @@ pub trait Host {
     fn list(&self, dir: &Path) -> Vec<String>;
     /// A path's owner and mode bits, not following a final link.
     fn stat(&self, path: &Path) -> Option<(u32, u32)>;
+    /// The path with every link resolved, when it exists.
+    fn canonical(&self, path: &Path) -> Option<PathBuf>;
     /// Makes `path` owned by root and not writable by group or others.
     ///
     /// # Errors
@@ -160,6 +162,11 @@ pub struct Options {
     pub exe: PathBuf,
     /// Run the Docker smoke test at the end of a setup.
     pub smoke: bool,
+    /// The server's unit (`yulius.service`; the update helper's `YULIUS_UPDATE_SERVICE`).
+    pub service: String,
+    /// The update helper's state directory, where a run keeps its report (`host-check.json`)
+    /// when it exists; `None`: nowhere.
+    pub update_state: Option<PathBuf>,
 }
 
 /// The packages of Docker's repository (HST-003).
@@ -184,12 +191,37 @@ pub const DOCKER_SOURCE: &str = "/etc/apt/sources.list.d/docker.sources";
 pub const DOCKER_KEY: &str = "/etc/apt/keyrings/docker.asc";
 /// The needrestart rule (HST-006).
 pub const NEEDRESTART_RULE_FILE: &str = "/etc/needrestart/conf.d/yulius.conf";
-/// Its content.
-pub const NEEDRESTART_RULE: &str = "# Written by `yulius host setup`: package installs never \
-restart Yulius behind the operator's\n# back. Its update flow pauses tasks before a restart \
-(docs/operations.md, \"Upgrades\").\n$nrconf{override_rc}{qr(^yulius\\.service$)} = 0;\n";
 
-/// The drop-in that gives `yulius.service` what sandboxes need (HST-008).
+/// The needrestart rule's content for the unit `service` (HST-006): its name is a regular
+/// expression in Perl, so `.` and `@` are escaped.
+#[must_use]
+pub fn needrestart_rule(service: &str) -> String {
+    let pattern: String = service
+        .chars()
+        .flat_map(|c| match c {
+            '.' | '@' => vec!['\\', c],
+            c => vec![c],
+        })
+        .collect();
+    format!(
+        "# Written by `yulius host setup`: package installs never restart Yulius behind the \
+         operator's\n# back. Its update flow pauses tasks before a restart (docs/operations.md, \
+         \"Upgrades\").\n$nrconf{{override_rc}}{{qr(^{pattern}$)}} = 0;\n"
+    )
+}
+
+/// Whether `service` is a unit name the setup accepts (`[A-Za-z0-9@._-]+.service`).
+fn service_name_ok(service: &str) -> bool {
+    service.strip_suffix(".service").is_some_and(|stem| {
+        !stem.is_empty()
+            && !stem.starts_with('-')
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b'_' | b'-'))
+    })
+}
+
+/// The drop-in that gives the default `yulius.service` what sandboxes need (HST-008).
 pub const UNIT_DROP_IN: &str = "/etc/systemd/system/yulius.service.d/10-yulius-sandboxes.conf";
 /// Its content.
 pub const UNIT_DROP_IN_TEXT: &str = "# Written by `yulius host setup`: per-sandbox cgroups (limits, \
@@ -371,7 +403,16 @@ impl<'a> Run<'a> {
     /// Installs `packages`; `Err(why)` when apt failed.
     fn apt_install(&mut self, packages: &[&str]) -> Result<Option<String>, String> {
         let note = self.apt_update();
-        let mut args = vec!["install", "-y", "--no-install-recommends"];
+        // Without a terminal a changed configuration file keeps the operator's version.
+        let mut args = vec![
+            "install",
+            "-y",
+            "--no-install-recommends",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+        ];
         args.extend(packages);
         let out = self.run_cmd(&Cmd::apt(&args));
         if out.ok() {
@@ -387,6 +428,11 @@ impl<'a> Run<'a> {
 
     /// Every item in order; the verdict last. Returns the lines.
     pub fn all(mut self) -> Vec<HostLine> {
+        if !service_name_ok(&self.opts.service) {
+            let service = self.opts.service.clone();
+            self.failed("yulius.service", format!("{service:?} is not a unit name"));
+            return self.lines;
+        }
         self.docker_off = self.unit_env("YULIUS_SANDBOX_DOCKER").as_deref() == Some("off");
         self.needrestart();
         self.host_packages();
@@ -408,12 +454,25 @@ impl<'a> Run<'a> {
         self.lines
     }
 
-    /// The value of `name` in `yulius.service`'s environment.
+    /// The server's unit file when the setup writes it.
+    fn unit_file(&self) -> PathBuf {
+        Path::new("/etc/systemd/system").join(&self.opts.service)
+    }
+
+    /// The server unit's drop-in.
+    fn unit_drop_in(&self) -> PathBuf {
+        Path::new("/etc/systemd/system")
+            .join(format!("{}.d", self.opts.service))
+            .join("10-yulius-sandboxes.conf")
+    }
+
+    /// The value of `name` in the server unit's environment.
     fn unit_env(&mut self, name: &str) -> Option<String> {
+        let service = self.opts.service.clone();
         let out = self.run_cmd(&Cmd::new(&[
             "systemctl",
             "show",
-            "yulius.service",
+            &service,
             "--property=Environment",
         ]));
         let prefix = format!("{name}=");
@@ -435,15 +494,17 @@ impl<'a> Run<'a> {
             return;
         }
         let path = Path::new(NEEDRESTART_RULE_FILE);
-        if self.host.read(path).as_deref() == Some(NEEDRESTART_RULE) {
+        let rule = needrestart_rule(&self.opts.service);
+        let service = self.opts.service.clone();
+        if self.host.read(path).as_deref() == Some(rule.as_str()) {
             self.ok(
                 ITEM,
-                format!("never restarts yulius.service ({NEEDRESTART_RULE_FILE})"),
+                format!("never restarts {service} ({NEEDRESTART_RULE_FILE})"),
             );
             return;
         }
         if self.may(true)
-            && let Err(why) = self.host.write(path, NEEDRESTART_RULE, 0o644)
+            && let Err(why) = self.host.write(path, &rule, 0o644)
         {
             return self.failed(ITEM, format!("cannot write {NEEDRESTART_RULE_FILE}: {why}"));
         }
@@ -680,23 +741,35 @@ impl<'a> Run<'a> {
             );
         }
         // Asking an idle daemon would start it through its socket: only a running one is asked.
+        // What cannot be counted is someone's: left running (review of SPEC-203).
+        let mut busy = 0;
         if running.contains(&"docker.service") {
-            let out = self.run_cmd(&Cmd::new(&["docker", "ps", "--quiet"]));
-            let containers = out.stdout.lines().filter(|l| !l.trim().is_empty()).count();
-            if containers > 0 {
-                return self.manual(
-                    ITEM,
-                    format!(
-                        "the host's Docker runs {containers} container(s), so it is left running; \
-                         Yulius never uses it (each sandbox runs its own engine): stop them and run \
-                         the setup again to disable it"
-                    ),
-                );
+            match self.count_lines(&["docker", "ps", "--quiet"]) {
+                Ok(n) => busy += n,
+                Err(why) => return self.uncounted(ITEM, "Docker", &why),
             }
+        }
+        if running.contains(&"containerd.service") {
+            match self.containerd_tasks() {
+                Ok(n) => busy += n,
+                Err(why) => return self.uncounted(ITEM, "containerd", &why),
+            }
+        }
+        if busy > 0 {
+            return self.manual(
+                ITEM,
+                format!(
+                    "the host's Docker or containerd runs {busy} container(s), so it is left \
+                     running; Yulius never uses it (each sandbox runs its own engine): stop them \
+                     and run the setup again to disable it"
+                ),
+            );
         }
         let list = on.join(" ");
         if self.may(true) {
+            // Stopping a daemon waits for its containers' stop timeouts.
             let mut cmd = Cmd::new(&["systemctl", "disable", "--now"]);
+            cmd.timeout = Duration::from_secs(120);
             cmd.argv.extend(on.iter().map(|&u| u.to_owned()));
             let out = self.run_cmd(&cmd);
             if !out.ok() {
@@ -710,6 +783,43 @@ impl<'a> Run<'a> {
             ITEM,
             &format!("disabled and stopped {list}: Yulius never uses the host's Docker"),
             &format!("disable and stop {list}"),
+        );
+    }
+
+    /// The non-empty lines a command prints, or why it failed.
+    fn count_lines(&mut self, argv: &[&str]) -> Result<usize, String> {
+        let out = self.run_cmd(&Cmd::new(argv));
+        if out.ok() {
+            Ok(out.stdout.lines().filter(|l| !l.trim().is_empty()).count())
+        } else {
+            Err(out.why())
+        }
+    }
+
+    /// Tasks containerd runs for others than Docker (Docker's own are `docker ps`'s).
+    fn containerd_tasks(&mut self) -> Result<usize, String> {
+        let out = self.run_cmd(&Cmd::new(&["ctr", "namespaces", "list", "--quiet"]));
+        if !out.ok() {
+            return Err(out.why());
+        }
+        let mut tasks = 0;
+        for namespace in out.stdout.lines().map(str::trim) {
+            if namespace.is_empty() || namespace == "moby" {
+                continue;
+            }
+            tasks +=
+                self.count_lines(&["ctr", "--namespace", namespace, "tasks", "list", "--quiet"])?;
+        }
+        Ok(tasks)
+    }
+
+    fn uncounted(&mut self, item: &str, runtime: &str, why: &str) {
+        self.manual(
+            item,
+            format!(
+                "the host's {runtime} runs, and its containers could not be counted ({why}), so \
+                 it is left running; Yulius never uses it: check it and run the setup again"
+            ),
         );
     }
 
@@ -740,6 +850,7 @@ impl<'a> Run<'a> {
             let list = missing.join(" ");
             if self.may(true) {
                 let mut cmd = Cmd::new(&["modprobe", "-a"]);
+                cmd.timeout = Duration::from_secs(60);
                 cmd.argv.extend(missing.iter().map(|&m| m.to_owned()));
                 let out = self.run_cmd(&cmd);
                 let still = self.missing_modules();
@@ -775,7 +886,9 @@ impl<'a> Run<'a> {
                 f.nth(1)?.parse::<u32>().ok()
             })
         };
-        if let Some((owner, mode)) = self.host.stat(&data) {
+        // A linked data directory is judged at its target, as the doctor and the helper do.
+        let resolved = self.host.canonical(&data).unwrap_or_else(|| data.clone());
+        if let Some((owner, mode)) = self.host.stat(&resolved) {
             if owner == 0 {
                 return self.failed(
                     ITEM,
@@ -921,10 +1034,11 @@ impl<'a> Run<'a> {
 
     /// What systemd says about `yulius.service`; `Err` when it does not answer.
     fn read_unit(&mut self) -> Result<UnitState, String> {
+        let service = self.opts.service.clone();
         let out = self.run_cmd(&Cmd::new(&[
             "systemctl",
             "show",
-            "yulius.service",
+            &service,
             "--property=LoadState,Delegate,DelegateSubgroup,KillMode,ActiveState,ExecStart",
         ]));
         if !out.ok() {
@@ -956,6 +1070,11 @@ impl<'a> Run<'a> {
     /// by a drop-in (HST-008).
     fn service_unit(&mut self) {
         const ITEM: &str = "yulius.service";
+        let service = self.opts.service.clone();
+        let unit_path = self.unit_file();
+        let unit_file = unit_path.display().to_string();
+        let drop_in_path = self.unit_drop_in();
+        let drop_in = drop_in_path.display().to_string();
         let state = match self.read_unit() {
             Ok(state) => state,
             Err(why) => {
@@ -971,11 +1090,11 @@ impl<'a> Run<'a> {
                 return self.needs_setup(ITEM, "not installed");
             }
             // A unit file systemd has not loaded is the operator's: never overwritten.
-            if self.host.is_file(Path::new(UNIT_FILE)) {
+            if self.host.is_file(&unit_path) {
                 return self.failed(
                     ITEM,
                     format!(
-                        "{UNIT_FILE} exists but systemd has not loaded it: `sudo systemctl \
+                        "{unit_file} exists but systemd has not loaded it: `sudo systemctl \
                          daemon-reload`, then run the setup again"
                     ),
                 );
@@ -1012,12 +1131,12 @@ impl<'a> Run<'a> {
             }
             if self.may(false) {
                 let text = unit_text(&exe, &user, &data, &url);
-                if let Err(why) = self.host.write(Path::new(UNIT_FILE), &text, 0o644) {
-                    return self.failed(ITEM, format!("cannot write {UNIT_FILE}: {why}"));
+                if let Err(why) = self.host.write(&unit_path, &text, 0o644) {
+                    return self.failed(ITEM, format!("cannot write {unit_file}: {why}"));
                 }
                 for cmd in [
                     Cmd::new(&["systemctl", "daemon-reload"]),
-                    Cmd::new(&["systemctl", "enable", "yulius.service"]),
+                    Cmd::new(&["systemctl", "enable", &service]),
                 ] {
                     let out = self.run_cmd(&cmd);
                     if !out.ok() {
@@ -1037,8 +1156,8 @@ impl<'a> Run<'a> {
             };
             return self.changed(
                 ITEM,
-                &format!("wrote and enabled {UNIT_FILE} for {url} (started at the end)"),
-                &format!("write and enable {UNIT_FILE} for {url}"),
+                &format!("wrote and enabled {unit_file} for {url} (started at the end)"),
+                &format!("write and enable {unit_file} for {url}"),
             );
         }
         if state.delegated {
@@ -1056,11 +1175,8 @@ impl<'a> Run<'a> {
             );
         }
         if self.may(false) {
-            if let Err(why) = self
-                .host
-                .write(Path::new(UNIT_DROP_IN), UNIT_DROP_IN_TEXT, 0o644)
-            {
-                return self.failed(ITEM, format!("cannot write {UNIT_DROP_IN}: {why}"));
+            if let Err(why) = self.host.write(&drop_in_path, UNIT_DROP_IN_TEXT, 0o644) {
+                return self.failed(ITEM, format!("cannot write {drop_in}: {why}"));
             }
             let out = self.run_cmd(&Cmd::new(&["systemctl", "daemon-reload"]));
             if !out.ok() {
@@ -1076,19 +1192,17 @@ impl<'a> Run<'a> {
         };
         self.changed(
             ITEM,
-            &format!(
-                "wrote {UNIT_DROP_IN} (Delegate=yes, DelegateSubgroup=server, KillMode=process)"
-            ),
-            &format!(
-                "write {UNIT_DROP_IN} (Delegate=yes, DelegateSubgroup=server, KillMode=process)"
-            ),
+            &format!("wrote {drop_in} (Delegate=yes, DelegateSubgroup=server, KillMode=process)"),
+            &format!("write {drop_in} (Delegate=yes, DelegateSubgroup=server, KillMode=process)"),
         );
         if self.unit.active {
             self.manual(
                 "yulius.service restart",
-                "the drop-in applies at the next start: `sudo systemctl restart yulius` when it \
-                 suits (sessions and terminals survive it with KillMode=process), or the next \
-                 update restarts it",
+                format!(
+                    "the drop-in applies at the next start: `sudo systemctl restart {service}` \
+                     when it suits (sessions and terminals survive it with KillMode=process), or \
+                     the next update restarts it"
+                ),
             );
         }
     }
@@ -1169,10 +1283,36 @@ impl<'a> Run<'a> {
             .unwrap_or(u32::MAX);
         let mut fixed = Vec::new();
         let mut fine = Vec::new();
+        // A link is judged, and fixed, at its target, as the server and the doctor judge it.
+        let mut targets: Vec<PathBuf> = Vec::new();
         for path in paths {
+            let target = self.host.canonical(&path).unwrap_or(path);
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        for path in targets {
             let Some((owner, mode)) = self.host.stat(&path) else {
                 continue;
             };
+            // Fixing the file is pointless where the service user may replace it.
+            if let Some(dir) = path.parent()
+                && self
+                    .host
+                    .stat(dir)
+                    .is_some_and(|(owner, mode)| owner == service_uid || mode & 0o022 != 0)
+            {
+                return self.failed(
+                    ITEM,
+                    format!(
+                        "{} is in {}, which the service user or others may write, so it could be \
+                         replaced: install yulius in a root-owned directory such as \
+                         /usr/local/bin (docs/operations.md §2)",
+                        path.display(),
+                        dir.display()
+                    ),
+                );
+            }
             if owner == 0 && !exe_writable(owner, mode, service_uid) {
                 fine.push(path.display().to_string());
                 continue;
@@ -1287,7 +1427,8 @@ impl<'a> Run<'a> {
         }
         if self.unit.written {
             if self.may(false) {
-                let out = self.run_cmd(&Cmd::new(&["systemctl", "start", "yulius.service"]));
+                let service = self.opts.service.clone();
+                let out = self.run_cmd(&Cmd::new(&["systemctl", "start", &service]));
                 if !out.ok() {
                     return self.failed(
                         ITEM,
@@ -1319,6 +1460,7 @@ impl<'a> Run<'a> {
             .exec
             .clone()
             .unwrap_or_else(|| self.opts.exe.clone());
+        let exe = self.host.canonical(&exe).unwrap_or(exe);
         let facts = Facts {
             setting: if self.docker_off {
                 Err(yulius_sandbox::manager::DOCKER_OFF.to_owned())
@@ -1479,6 +1621,25 @@ pub fn report(lines: Vec<HostLine>) -> HostCheckReport {
     }
 }
 
+/// Keeps `report` as `<state>/host-check.json` when the update helper's state directory exists,
+/// so Settings → Instance shows the latest root check, not a regression a setup has fixed since
+/// (review of SPEC-203).
+///
+/// # Errors
+/// The file cannot be written.
+pub fn keep_report(state: &Path, report: &HostCheckReport) -> Result<(), String> {
+    if !state.is_dir() {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec_pretty(report).map_err(|e| e.to_string())?;
+    crate::wiring::update_files::write_atomic(
+        &state.join(crate::update_helper::HOST_CHECK_FILE),
+        &bytes,
+        0o644,
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// One line as the terminal shows it.
 #[must_use]
 pub fn format_line(line: &HostLine) -> String {
@@ -1528,17 +1689,28 @@ pub fn main(mode: Mode, opts: Options, json: bool) -> ExitCode {
             println!("{}", format_line(line));
         }
     };
+    let state = opts.update_state.clone();
     let lines = Run::new(&mut host, mode, opts, &mut print).all();
     let ok = passed(&lines);
+    let summary = summary(&lines, mode);
+    let mut report = report(lines);
+    report.checked_at = system::now_ms();
+    if mode != Mode::DryRun
+        && let Some(state) = state
+        && let Err(error) = keep_report(&state, &report)
+    {
+        eprintln!(
+            "yulius: cannot keep the report in {}: {error}",
+            state.display()
+        );
+    }
     if json {
-        let mut report = report(lines);
-        report.checked_at = system::now_ms();
         match serde_json::to_string(&report) {
             Ok(text) => println!("{text}"),
             Err(error) => eprintln!("yulius: {error}"),
         }
     } else {
-        println!("{}", summary(&lines, mode));
+        println!("{summary}");
     }
     if ok {
         ExitCode::SUCCESS

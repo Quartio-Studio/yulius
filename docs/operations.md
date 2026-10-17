@@ -58,8 +58,9 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    only gets `docker-buildx` and `docker-compose-v2`. A broken third-party apt source does not
    stop the install.
 4. **host Docker units**: `docker.socket`, `docker.service` and `containerd.service` are
-   disabled and stopped; sandboxes run their own engines. A host Docker that runs containers is
-   left running, and the item says so (manual).
+   disabled and stopped; sandboxes run their own engines. A host Docker or containerd that runs
+   containers (`docker ps`, and `ctr` tasks outside Docker's namespace), or whose containers
+   cannot be counted, is left running, and the item says so (manual).
 5. **kernel modules**: `/etc/modules-load.d/yulius-docker.conf` lists the engine's modules for
    every boot, and missing ones are loaded now.
 6. **service user**: the data directory's owner, else `--user` (default `yulius`), created as a
@@ -71,8 +72,9 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    it is manual: run it when it suits. A unit file systemd has not loaded is never overwritten.
 9. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
    write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
-10. **yulius binary**: the running binary and the unit's are made root-owned, writable by root
-    alone.
+10. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
+    writable by root alone. A binary in a directory the service user or others may write fails
+    instead: fixing the file would not stop it being replaced.
 11. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
     ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
@@ -82,7 +84,10 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     needs Docker Hub).
 
 Running it again changes nothing ("nothing to change"); it is safe on a running instance.
-`--dry-run` prints what it would change and changes nothing.
+`--dry-run` prints what it would change and changes nothing. With a unit named other than
+`yulius.service`, pass `--service <name>` (the update helper passes its `YULIUS_UPDATE_SERVICE`).
+A setup or `yulius host check` run keeps its report in `/var/lib/yulius-update/host-check.json`
+when that directory exists, so Settings → Instance shows the latest root check.
 
 **Still manual**, and why:
 
@@ -481,7 +486,9 @@ current base, every base named by `--keep` and every base a live holder has moun
 `<data>/runtime/sandboxes/*/host.json`, [ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)).
 Running sandboxes stay on their base until their holder restarts (after the idle time, or a
 minute without runs once superseded); a later build removes the base once no holder uses it. Run
-it as the service user (or root), which can see the holders.
+it as the service user (or root), which can see the holders. Builds take turns under a lock
+(`<data>/system/.build.lock`): a hand-run build, the setup's and the server's wait for each
+other instead of overlapping.
 
 **Settings** (environment of the unit):
 

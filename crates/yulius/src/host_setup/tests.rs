@@ -7,9 +7,8 @@ use yulius_contracts::update::{HostLine, HostOutcome};
 use yulius_sandbox::docker_status::{ENGINE_MODULES, MODULES_FILE, modules_file_content};
 
 use super::{
-    Cmd, DOCKER_CE, DOCKER_SOURCE, HELPER_DROP_IN, Host, Mode, NEEDRESTART_RULE,
-    NEEDRESTART_RULE_FILE, Options, Out, Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, passed,
-    summary,
+    Cmd, DOCKER_CE, DOCKER_SOURCE, HELPER_DROP_IN, Host, Mode, NEEDRESTART_RULE_FILE, Options, Out,
+    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, passed, summary,
 };
 
 const DATA: &str = "/var/lib/yulius";
@@ -47,6 +46,12 @@ struct Fake {
     docker_lists: bool,
     /// systemd does not answer (`systemctl` cannot reach its manager).
     systemd_down: bool,
+    /// Symbolic links: path → target.
+    links: BTreeMap<PathBuf, PathBuf>,
+    /// `docker ps` fails.
+    docker_ps_fails: bool,
+    /// Tasks containerd runs for others than Docker (k3s, nerdctl).
+    containerd_tasks: usize,
 }
 
 impl Fake {
@@ -66,6 +71,9 @@ impl Fake {
             smoke_fails: false,
             docker_lists: false,
             systemd_down: false,
+            links: BTreeMap::new(),
+            docker_ps_fails: false,
+            containerd_tasks: 0,
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -211,7 +219,18 @@ impl Host for Fake {
     }
 
     fn stat(&self, path: &Path) -> Option<(u32, u32)> {
+        if self.links.contains_key(path) {
+            return Some((0, 0o120_777));
+        }
         self.files.get(path).map(|(_, uid, mode)| (*uid, *mode))
+    }
+
+    fn canonical(&self, path: &Path) -> Option<PathBuf> {
+        let mut path = path.to_path_buf();
+        while let Some(target) = self.links.get(&path) {
+            path.clone_from(target);
+        }
+        (self.files.contains_key(&path)).then_some(path)
     }
 
     fn fingerprint(&self) -> String {
@@ -290,12 +309,11 @@ impl Host for Fake {
                     ok("")
                 }
             }
-            [
-                "systemctl",
-                "show",
-                "yulius.service",
-                "--property=Environment",
-            ] => ok(self.text("/fake/yulius.env").unwrap_or("Environment=")),
+            ["systemctl", "show", service, "--property=Environment"]
+                if service.ends_with(".service") =>
+            {
+                ok(self.text("/fake/yulius.env").unwrap_or("Environment="))
+            }
             [
                 "systemctl",
                 "show",
@@ -320,7 +338,22 @@ impl Host for Fake {
                 }
                 ok("")
             }
-            ["docker", "ps", "--quiet"] => ok(&"abc123\n".repeat(self.containers)),
+            ["docker", "ps", "--quiet"] => {
+                if self.docker_ps_fails {
+                    fail(1, "Cannot connect to the Docker daemon")
+                } else {
+                    ok(&"abc123\n".repeat(self.containers))
+                }
+            }
+            ["ctr", "namespaces", "list", "--quiet"] => ok("moby\nk8s.io\n"),
+            ["ctr", "--namespace", ns, "tasks", "list", "--quiet"] => {
+                let n = if *ns == "k8s.io" {
+                    self.containerd_tasks
+                } else {
+                    0
+                };
+                ok(&"task\n".repeat(n))
+            }
             ["install", "-m", "0755", "-d", _] | ["chmod", "a+r", _] => ok(""),
             ["curl", .., url] => {
                 assert_eq!(*url, "https://download.docker.com/linux/ubuntu/gpg");
@@ -385,15 +418,18 @@ impl Host for Fake {
                 }
                 ok("")
             }
-            ["systemctl", "show", "yulius.service", props] if props.contains("Delegate") => {
+            ["systemctl", "show", service, props] if props.contains("Delegate") => {
                 let unit = self
-                    .text(UNIT_FILE)
+                    .text(&format!("/etc/systemd/system/{service}"))
                     .map(str::to_owned)
                     .or_else(|| self.text("/fake/unit").map(str::to_owned));
                 match unit {
                     None => ok("LoadState=not-found\n"),
                     Some(text) => {
-                        let delegated = text.contains("Delegate=yes") || self.has(UNIT_DROP_IN);
+                        let delegated = text.contains("Delegate=yes")
+                            || self.has(&format!(
+                                "/etc/systemd/system/{service}.d/10-yulius-sandboxes.conf"
+                            ));
                         ok(&format!(
                             "LoadState=loaded\nDelegate={}\nDelegateSubgroup={}\nKillMode={}\nActiveState={}\nExecStart={{ path={EXE} ; argv[]={EXE} serve ; ignore_errors=no }}\n",
                             if delegated { "yes" } else { "no" },
@@ -426,8 +462,9 @@ impl Host for Fake {
                     ok("LoadState=not-found\nReadWritePaths=\n")
                 }
             }
-            ["systemctl", "daemon-reload"] | ["systemctl", "enable", "yulius.service"] => ok(""),
-            ["systemctl", "start", "yulius.service"] => {
+            ["systemctl", "daemon-reload"] => ok(""),
+            ["systemctl", "enable", service] if service.ends_with(".service") => ok(""),
+            ["systemctl", "start", service] if service.ends_with(".service") => {
                 self.service_active = true;
                 ok("")
             }
@@ -494,6 +531,8 @@ fn options() -> Options {
         public_url: Some("https://yulius.example.com".into()),
         exe: PathBuf::from(EXE),
         smoke: true,
+        service: "yulius.service".into(),
+        update_state: None,
     }
 }
 
@@ -541,7 +580,10 @@ fn a_fresh_host_gets_every_change_in_order() {
         .iter()
         .position(|c| c.starts_with("apt-get install"));
     assert!(rule.is_some() && rule < first_install, "{:#?}", fake.log);
-    assert_eq!(fake.text(NEEDRESTART_RULE_FILE), Some(NEEDRESTART_RULE));
+    assert_eq!(
+        fake.text(NEEDRESTART_RULE_FILE),
+        Some(super::needrestart_rule("yulius.service").as_str())
+    );
     for package in DOCKER_CE {
         assert!(fake.packages.contains(package), "{package}");
     }
@@ -1072,4 +1114,170 @@ fn an_unanswering_systemd_never_gets_its_units_rewritten() {
         assert_eq!(l.outcome, HostOutcome::Failed, "{name}: {lines:#?}");
         assert!(l.detail.contains("systemd"), "{name}: {}", l.detail);
     }
+}
+
+/// Review of SPEC-203: the real host never follows a link when it makes a file root's (a link
+/// swapped in by the service user must not make root chmod its target).
+#[test]
+fn owning_a_link_never_touches_its_target() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    let target = dir.path().join("shadow");
+    std::fs::write(&target, "secret")?;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640))?;
+    let link = dir.path().join("yulius");
+    std::os::unix::fs::symlink(&target, &link)?;
+    let mut host = super::system::RealHost { quiet: true };
+    assert!(host.own_by_root(&link).is_err());
+    assert_eq!(
+        std::fs::metadata(&target)?.permissions().mode() & 0o7777,
+        0o640
+    );
+    Ok(())
+}
+
+/// Review of SPEC-203: a binary in a directory the service user may write cannot be made safe by
+/// fixing the file: the item fails, naming the directory, and nothing is changed.
+#[test]
+fn a_binary_in_a_writable_directory_fails() {
+    let mut fake = Fake::set_up();
+    fake.files.insert(
+        PathBuf::from("/usr/local/bin"),
+        (String::new(), SERVICE_UID, 0o040_755),
+    );
+    fake.files
+        .insert(PathBuf::from(EXE), (String::new(), SERVICE_UID, 0o100_755));
+    let lines = run(&mut fake, Mode::Check);
+    let binary = line(&lines, "yulius binary");
+    assert_eq!(binary.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(
+        binary.detail.contains("/usr/local/bin"),
+        "{}",
+        binary.detail
+    );
+    assert!(!fake.ran("own"), "{:#?}", fake.log);
+}
+
+/// Review of SPEC-203: a linked binary and a linked data directory are judged by their targets,
+/// as the doctor and the server judge them.
+#[test]
+fn links_are_judged_by_their_targets() {
+    let mut fake = Fake::set_up();
+    let target = PathBuf::from("/opt/yulius/bin/yulius");
+    fake.files.remove(Path::new(EXE));
+    fake.files
+        .insert(target.clone(), (String::new(), 0, 0o100_755));
+    fake.links.insert(PathBuf::from(EXE), target.clone());
+    let data = fake.files.remove(Path::new(DATA)).unwrap_or_default();
+    fake.files.insert(PathBuf::from("/srv/yulius"), data);
+    fake.links
+        .insert(PathBuf::from(DATA), PathBuf::from("/srv/yulius"));
+    let lines = run(&mut fake, Mode::Setup);
+    for name in ["yulius binary", "service user", "sandbox Docker"] {
+        assert_eq!(outcome(&lines, name), HostOutcome::Ok, "{name}: {lines:#?}");
+    }
+    fake.files
+        .insert(target.clone(), (String::new(), 0, 0o100_775));
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        outcome(&lines, "yulius binary"),
+        HostOutcome::Changed,
+        "{lines:#?}"
+    );
+    assert_eq!(
+        fake.stat(&target),
+        Some((0, 0o100_755)),
+        "the target is fixed"
+    );
+}
+
+/// Review of SPEC-203: the unit's name is the server's (`YULIUS_UPDATE_SERVICE` is a local value),
+/// so another name is asked for, written and kept from needrestart.
+#[test]
+fn the_service_name_is_an_option() {
+    let mut fake = Fake::fresh();
+    let lines = Run::new(
+        &mut fake,
+        Mode::Setup,
+        Options {
+            service: "yq.service".into(),
+            ..options()
+        },
+        &mut |_| {},
+    )
+    .all();
+    assert!(passed(&lines), "{lines:#?}");
+    assert!(fake.ran("systemctl show yq.service"), "{:#?}", fake.log);
+    assert!(fake.has("/etc/systemd/system/yq.service"));
+    assert!(!fake.has(UNIT_FILE));
+    assert!(fake.ran("systemctl start yq.service"));
+    assert!(
+        fake.text(NEEDRESTART_RULE_FILE)
+            .is_some_and(|t| t.contains(r"qr(^yq\.service$)"))
+    );
+    assert!(
+        !fake.ran("systemctl show yulius.service"),
+        "{:#?}",
+        fake.log
+    );
+}
+
+/// Review of SPEC-203: a host Docker whose containers cannot be counted, or a containerd that
+/// runs someone's tasks, is left running (manual); an idle containerd is stopped.
+#[test]
+fn uncounted_or_busy_containers_keep_the_host_runtime() {
+    let running = |fake: &mut Fake, units: &[&str]| {
+        for unit in units {
+            fake.units.insert(
+                (*unit).into(),
+                Unit {
+                    enabled: true,
+                    active: true,
+                },
+            );
+        }
+    };
+    let mut fake = Fake::set_up();
+    running(&mut fake, &["docker.service", "containerd.service"]);
+    fake.docker_ps_fails = true;
+    let lines = run(&mut fake, Mode::Check);
+    let units = line(&lines, "host Docker units");
+    assert_eq!(units.outcome, HostOutcome::Manual, "{lines:#?}");
+    assert!(units.detail.contains("Cannot connect"), "{}", units.detail);
+    assert!(!fake.ran("systemctl disable"));
+
+    let mut fake = Fake::set_up();
+    running(&mut fake, &["containerd.service"]);
+    fake.containerd_tasks = 3;
+    let lines = run(&mut fake, Mode::Check);
+    let units = line(&lines, "host Docker units");
+    assert_eq!(units.outcome, HostOutcome::Manual, "{lines:#?}");
+    assert!(units.detail.contains("3"), "{}", units.detail);
+
+    fake.containerd_tasks = 0;
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        outcome(&lines, "host Docker units"),
+        HostOutcome::Changed,
+        "{lines:#?}"
+    );
+    assert!(fake.ran("systemctl disable --now containerd.service"));
+}
+
+/// Review of SPEC-203: a setup or check keeps its report where the update helper keeps its own,
+/// so Settings → Instance shows the latest root check, not a regression already fixed.
+#[test]
+fn a_root_check_replaces_the_kept_report() -> Result<(), Box<dyn std::error::Error>> {
+    let state = tempfile::tempdir()?;
+    let report = super::report(vec![]);
+    super::keep_report(state.path(), &report)?;
+    let kept: yulius_contracts::update::HostCheckReport = serde_json::from_slice(&std::fs::read(
+        state.path().join(crate::update_helper::HOST_CHECK_FILE),
+    )?)?;
+    assert_eq!(kept, report);
+    assert!(
+        super::keep_report(&state.path().join("missing"), &report).is_ok(),
+        "no helper: nothing kept"
+    );
+    Ok(())
 }

@@ -662,8 +662,9 @@ fn a_healthy_install_re_checks_the_host_with_the_new_version() -> TestResult {
     assert_eq!(
         args.trim(),
         format!(
-            "host check --json --data-dir {}",
-            env.args.data_dir.display()
+            "host check --json --data-dir {} --service yqa-test.service --update-state {}",
+            env.args.data_dir.display(),
+            env.args.state_dir.display()
         )
     );
     let kept: HostCheckReport =
@@ -724,5 +725,40 @@ fn a_version_without_host_check_is_not_checked() -> TestResult {
     assert!(error.contains("not re-checked"), "{error}");
     assert!(error.contains("unrecognized subcommand 'host'"), "{error}");
     assert!(error.contains("sudo yulius host check"), "{error}");
+    Ok(())
+}
+
+/// Review of SPEC-203: whatever the new version prints, the status stays readable by the server
+/// (under `MAX_STATUS_BYTES`): every field of the report is bounded.
+#[test]
+fn an_oversized_report_is_bounded() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    // Under the 1 MiB the helper reads, so the report is parsed and must be bounded itself.
+    let huge = "x".repeat(100_000);
+    let lines: Vec<String> = (0..60)
+        .map(|_| format!(r#"{{"name":"{huge}","outcome":"failed","detail":"{huge}"}}"#))
+        .collect();
+    host_check(
+        &mut env,
+        &format!(
+            r#"{{"ok":false,"error":"{huge}","lines":[{}]}}"#,
+            lines[..3].join(",")
+        ),
+        1,
+    )?;
+    env.stage(&env.c)?;
+    env.request("run-0023-install", HelperAction::Install, &env.c)?;
+    let status = env.run()?;
+    let bytes = std::fs::read(env.args.state_dir.join(STATUS_FILE))?;
+    assert!(
+        (bytes.len() as u64) < yulius_contracts::update::MAX_STATUS_BYTES,
+        "{} bytes",
+        bytes.len()
+    );
+    let report = status.host_check.ok_or("no host check")?;
+    assert!(!report.ok);
+    assert!(report.lines.iter().all(|l| l.name.len() <= 200));
+    assert!(report.error.as_deref().is_some_and(|e| e.len() <= 2000));
     Ok(())
 }

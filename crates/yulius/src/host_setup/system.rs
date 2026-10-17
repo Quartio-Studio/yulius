@@ -65,16 +65,29 @@ impl Host for RealHost {
             .map(|m| (m.uid(), m.mode()))
     }
 
+    fn canonical(&self, path: &Path) -> Option<std::path::PathBuf> {
+        std::fs::canonicalize(path).ok()
+    }
+
+    /// Through one descriptor opened without following a link, so a link swapped in after a
+    /// check never makes root change its target (review of SPEC-203).
     fn own_by_root(&mut self, path: &Path) -> Result<(), String> {
-        let meta =
-            std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
+            .open(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let meta = file
+            .metadata()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         if !meta.is_file() {
             return Err(format!("{} is not a regular file", path.display()));
         }
-        std::os::unix::fs::lchown(path, Some(0), Some(0))
+        std::os::unix::fs::fchown(&file, Some(0), Some(0))
             .map_err(|e| format!("chown {}: {e}", path.display()))?;
         let mode = meta.mode() & 0o7777 & !0o022;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        file.set_permissions(std::fs::Permissions::from_mode(mode))
             .map_err(|e| format!("chmod {}: {e}", path.display()))
     }
 

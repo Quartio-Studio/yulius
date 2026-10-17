@@ -37,14 +37,17 @@ rediscover it:
   - the host packages (`git`, `uidmap`, `slirp4netns`, `bubblewrap`);
   - Docker Engine with buildx and compose from Docker's apt repository (Ubuntu's `docker.io`
     is kept, with its plugins);
-  - the host's own Docker units disabled and stopped, unless they run containers;
+  - the host's own Docker units disabled and stopped, unless they run containers or their
+    containers cannot be counted;
   - the modules file `/etc/modules-load.d/yulius-docker.conf`, and the modules loaded;
   - the service user, its data directory and a subordinate id range;
   - `yulius.service`, written when missing (with `--public-url`), else given `Delegate=yes`,
     `DelegateSubgroup=server` and `KillMode=process` by a drop-in;
   - the update helper's write access (a drop-in);
   - the binary owned by root and writable by root alone;
-  - a base built now, as the service user, which keeps live holders' bases (ADR-0161);
+  - a base built now, as the service user, which keeps live holders' bases (ADR-0161). Base
+    builds take turns under a lock (`<data>/system/.build.lock`), so the setup's build never
+    overlaps the server's;
   - then the contained doctor and the smoke test.
 
   Each item prints `ok`, `changed`, `manual` (with the reason) or `FAIL`. A second run changes
@@ -54,7 +57,8 @@ rediscover it:
   install, the update helper runs the **installed** binary's `host check --json`. The report
   goes in the status (`HelperStatus.host_check`) and in `<state>/host-check.json`. A failed item
   or a "sandbox Docker" that does not hold is shown in the update's outcome and in Settings →
-  Instance.
+  Instance. The helper passes its unit's name and bounds every field of the report. A setup or
+  check run as root also keeps its report there, so the card shows the latest root check.
 - **One verdict.** `yulius_sandbox::docker_status::verdict` is the one "sandbox Docker" verdict
   for the doctor, the setup, the check and the server. It covers the setting, the delegation,
   the binary's owner, the modules, the host's `dockerd`, and the current base's `dockerd` and

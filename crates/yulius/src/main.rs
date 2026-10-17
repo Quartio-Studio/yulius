@@ -228,6 +228,16 @@ enum HostAction {
         /// Skip the Docker smoke test at the end (it pulls from Docker Hub).
         #[arg(long)]
         no_smoke: bool,
+        /// The server's systemd unit.
+        #[arg(long, env = "YULIUS_UPDATE_SERVICE", default_value = "yulius.service")]
+        service: String,
+        /// The update helper's state directory: the report is kept there when it exists.
+        #[arg(
+            long,
+            env = "YULIUS_UPDATE_STATE",
+            default_value = "/var/lib/yulius-update"
+        )]
+        update_state: PathBuf,
     },
     /// Check the same prerequisites, applying only safe fixes (the update helper runs it after
     /// each update).
@@ -243,6 +253,16 @@ enum HostAction {
         /// Print one JSON report instead of lines.
         #[arg(long)]
         json: bool,
+        /// The server's systemd unit.
+        #[arg(long, env = "YULIUS_UPDATE_SERVICE", default_value = "yulius.service")]
+        service: String,
+        /// The update helper's state directory: the report is kept there when it exists.
+        #[arg(
+            long,
+            env = "YULIUS_UPDATE_STATE",
+            default_value = "/var/lib/yulius-update"
+        )]
+        update_state: PathBuf,
     },
 }
 
@@ -256,6 +276,8 @@ fn host(action: HostAction) -> ExitCode {
             public_url,
             dry_run,
             no_smoke,
+            service,
+            update_state,
         } => main(
             if dry_run { Mode::DryRun } else { Mode::Setup },
             Options {
@@ -264,10 +286,17 @@ fn host(action: HostAction) -> ExitCode {
                 public_url,
                 exe,
                 smoke: !no_smoke,
+                service,
+                update_state: Some(update_state),
             },
             false,
         ),
-        HostAction::Check { data, json } => main(
+        HostAction::Check {
+            data,
+            json,
+            service,
+            update_state,
+        } => main(
             Mode::Check,
             Options {
                 data_dir: data,
@@ -275,6 +304,8 @@ fn host(action: HostAction) -> ExitCode {
                 public_url: None,
                 exe,
                 smoke: false,
+                service,
+                update_state: Some(update_state),
             },
             json,
         ),

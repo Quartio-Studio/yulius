@@ -8,8 +8,11 @@ import { h, icon, setChildren, errorToast, badge, skeleton } from './dom.js';
 import { relLong, dateTime } from './format.js';
 
 const API = '/api/admin/sandbox-docker';
-/** While a smoke test or a rebuild runs, the card asks again this often (ms). */
+/** While a smoke test runs, the card asks again this often (ms); while a rebuild runs or waits,
+ * less often; after a failed read, it tries again. */
 const POLL_MS = 2000;
+const REBUILD_POLL_MS = 30000;
+const RETRY_MS = 10000;
 
 function short(commit) {
   return commit ? commit.slice(0, 7) : 'unknown';
@@ -33,13 +36,13 @@ function rebuildBanner(rebuild) {
     icon(rebuild.error ? 'warn' : 'clock', { size: 16 }), h('span', { class: 'banner-text' }, parts.join(' ')));
 }
 
-/** The last update's re-check of the host. */
+/** The last root check of the host: an update's re-check, or `yulius host setup`/`check` since. */
 function hostCheck(report) {
   if (!report) return null;
   const when = report.checked_at ? relLong(new Date(report.checked_at).toISOString()) : '';
-  const head = `After the update to ${short(report.commit)}${when ? `, ${when}` : ''}`;
+  const head = `The last host check (yulius ${short(report.commit)}${when ? `, ${when}` : ''})`;
   if (report.ok) {
-    return h('p', { class: 'muted small sandbox-docker-recheck' }, icon('check', { size: 14 }), ` ${head}: the host still gives sandboxes Docker.`);
+    return h('p', { class: 'muted small sandbox-docker-recheck' }, icon('check', { size: 14 }), ` ${head}: the host gives sandboxes Docker.`);
   }
   const problems = [];
   if (report.error) problems.push(report.error);
@@ -48,7 +51,7 @@ function hostCheck(report) {
   }
   return h('div', { class: 'banner banner-warn sandbox-docker-recheck', role: 'status' }, icon('warn', { size: 16 }),
     h('div', { class: 'banner-text' },
-      h('strong', null, `${head}, sandboxes may have lost Docker.`),
+      h('strong', null, `${head} found that sandboxes may have lost Docker.`),
       h('ul', null, problems.map((p) => h('li', null, p)))));
 }
 
@@ -90,6 +93,8 @@ export function sandboxDockerCard(ctx) {
     body);
   let timer = null;
   let gone = false;
+  let polling = false;
+  let failed = false;
 
   function render(view) {
     const running = view.smoke && view.smoke.state === 'running';
@@ -108,15 +113,21 @@ export function sandboxDockerCard(ctx) {
     setChildren(body, ...parts.filter(Boolean));
     clearTimeout(timer);
     const rebuilding = view.rebuild && (view.rebuild.building_since || view.rebuild.pending_since);
-    if (!gone && (running || rebuilding)) timer = setTimeout(refresh, POLL_MS);
+    polling = running || Boolean(rebuilding);
+    if (!gone && polling) timer = setTimeout(refresh, running ? POLL_MS : REBUILD_POLL_MS);
   }
 
   async function refresh() {
     try {
       render(await ctx.api.get(API));
+      failed = false;
     } catch (error) {
       setChildren(body, h('p', { class: 'muted small' }, 'Couldn’t read whether sandboxes get Docker.'));
-      errorToast(error, 'Couldn’t read sandboxes’ Docker');
+      // One toast per outage; a smoke check or a rebuild in progress is asked again.
+      if (!failed) errorToast(error, 'Couldn’t read sandboxes’ Docker');
+      failed = true;
+      clearTimeout(timer);
+      if (!gone && polling) timer = setTimeout(refresh, RETRY_MS);
     }
   }
 

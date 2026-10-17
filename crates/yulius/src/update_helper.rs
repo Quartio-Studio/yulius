@@ -49,13 +49,16 @@ const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const KEEP_BACKUPS: usize = 3;
 /// Requests handled in one run (a request written while the helper was busy is picked up).
 const MAX_REQUESTS_PER_RUN: usize = 3;
-/// Longest `yulius host check` after an install.
-const HOST_CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+/// Longest `yulius host check` after an install (its commands are bounded to 30 s each, or 2
+/// minutes for stopping the host's Docker; tasks resume once it ends).
+const HOST_CHECK_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 /// Where the last re-check is kept (the status is replaced by the next request).
 pub const HOST_CHECK_FILE: &str = "host-check.json";
 /// Lines of a re-check kept, and characters of each detail.
 const HOST_CHECK_LINES: usize = 40;
 const HOST_CHECK_DETAIL: usize = 1000;
+const HOST_CHECK_NAME: usize = 100;
+const HOST_CHECK_ERROR: usize = 2000;
 
 /// Status writes while building, at most one per this.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
@@ -899,7 +902,11 @@ impl Helper {
         let output = run_bounded(
             Command::new(&program)
                 .args(["host", "check", "--json", "--data-dir"])
-                .arg(&self.args.data_dir),
+                .arg(&self.args.data_dir)
+                .arg("--service")
+                .arg(&self.args.service)
+                .arg("--update-state")
+                .arg(&self.args.state_dir),
             HOST_CHECK_TIMEOUT,
             "yulius host check",
         );
@@ -918,11 +925,20 @@ impl Helper {
                 }),
             Err(err) => not_checked(err),
         };
+        // The new version is untrusted here: every field is bounded, so the status stays under
+        // what the server reads (`MAX_STATUS_BYTES`).
+        let cut = |text: &mut String, max: usize| {
+            if text.chars().count() > max {
+                *text = text.chars().take(max).collect();
+            }
+        };
         report.lines.truncate(HOST_CHECK_LINES);
         for line in &mut report.lines {
-            if line.detail.chars().count() > HOST_CHECK_DETAIL {
-                line.detail = line.detail.chars().take(HOST_CHECK_DETAIL).collect();
-            }
+            cut(&mut line.name, HOST_CHECK_NAME);
+            cut(&mut line.detail, HOST_CHECK_DETAIL);
+        }
+        if let Some(error) = report.error.as_mut() {
+            cut(error, HOST_CHECK_ERROR);
         }
         report.commit = Some(commit.to_owned());
         report.checked_at = now_ms();
