@@ -1,11 +1,11 @@
 ---
 yulius-task: 2de5309f-4a54-4c08-8cd1-3f617a0d266e
-status: in-progress
+status: done
 ---
 
 # SPEC-215: Leftovers are found and cleaned accurately
 
-Status: in-progress
+Status: done
 Date: 2026-10-17
 Owner: task #202
 Scope authorization: task #202 (requested by MrFishPL): "Make Yulius find and clean every kind of
@@ -148,8 +148,8 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 - [x] Leftovers section in Settings → Instance
 - [x] yulius leftovers list and delete from the command line
 - [x] Operations, architecture, PRJ-009 and changes documented
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green on the reviewed head, spec evidence recorded
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green on the reviewed head, spec evidence recorded
 
 ## Acceptance criteria
 
@@ -227,3 +227,64 @@ See ADR-0170 for the lasting ones. Summary:
   history and the analytics keep working.
 - **One pull request.** The pieces share one engine and one rule table. Splitting them would ship
   a list that cannot delete, or deletions nobody can see.
+
+## Evidence
+
+Reviewed head `a1ac1831` (task branch `feat/202-leftovers-are-found-and-cleaned-accurate`, on
+`dev` 9fb8c539).
+
+- **Measured on the Yulius sandbox** (2026-10-17, before the change): the worktrees of tasks
+  #191–#194 ("running (done)") held `target/` of 11, 14, 22 and 23 GB. Here `/var/lib/yulius` is
+  a sandbox's tmpfs view, so the VM's own disk and the removed product sandbox cannot be measured
+  from the task.
+- **Fails before, passes after** (each checked by reverting the fix locally):
+  - `disk::a_done_task_loses_its_caches_after_half_an_hour_and_keeps_its_worktree`: with the old
+    4 h rule, "31 quiet minutes: a done task's caches go (DiskReport { freed: 0, caches: 0, … })".
+  - `leftovers::a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_keeps` (#625):
+    with dev's `WHERE removed_at IS NULL` filter, "worktrees of the removed sandbox is gone"
+    fails.
+  - `leftovers::the_system_layer_waits_for_the_holder_to_stop` (#582): with the holder check
+    disabled, "kept while its holder runs" fails.
+  - Review round 1: `a_link_in_a_sandbox_never_steers_a_deletion_outside_it` (failed with 11
+    deletions, `master.key` among them), `git_records_of_worktrees_outside_the_sandbox_are_kept`
+    and `an_existing_task_keeps_its_run_directories` failed before their fixes.
+  - Review round 2: `leftovers::tests::the_removal_never_goes_through_a_link_on_the_way`
+    (yulius-app) fails with `O_NOFOLLOW` removed.
+- **Leftovers suite:** 16 integration tests in `crates/yulius/tests/leftovers.rs` (#625, #582,
+  partly cleaned, blocked by a CI run or a live holder, the re-check at deletion, instance
+  leftovers, the API, the schedule, the CLI, the loopback key, links, Git records, run
+  directories, CI checkouts, a cache whose task works again), 2 yulius-app unit tests, 4 new
+  yulius-sandbox manager tests and 4 yulius-domain tests: all pass.
+- **`scripts/dev ci` at `a1ac1831`:** exit 0. 2161 tests passed, 18 skipped; lint, format, docs,
+  deny, shear, and the macOS cross-check (ADR-0169) all passed. An earlier run at `ee6e8cf6` had
+  one failure in an untouched ptyhost test
+  (`shutdown_escalates_past_ignored_signals_and_reaps_descendants`, `ParseIntError` under load).
+  It passed 5 of 5 when rerun alone and is filed as #647.
+- **Security** (`scripts/vidoc_scan.py --base origin/dev`, run directly beside the gate, as
+  `scripts/dev security` does): exit 0, no open critical or high finding at `a1ac1831`.
+  - The first scan (at `68e3dac7`) raised 3 medium findings about the CLI key: a staged copy left
+    on a failed write, a length-leaking comparison, and an empty key. All three were fixed in
+    `ee6e8cf6`: no staged copy is left, the comparison runs over digests, and an empty key never
+    matches.
+  - Its claim that the delete selection is not validated is a false positive: ids resolve against
+    the server's own last scan, and every path is checked again.
+  - The last scan's notes on `base.rs`, `manager.rs` and `purge.rs` concern existing code. Its note
+    on the route's key comparison is a false positive: the comparison happens in the app, over
+    SHA-256 digests in constant time.
+- **e2e:** the full suite at `a1ac1831` (`cd e2e && npx e2e run`): 61 files, 615 tests passed and 1
+  skipped, exit 0. That includes `tests/leftovers.e2e.ts` (4) and `tests/sandbox-docker.e2e.ts`
+  (6).
+- **Independent review:** four rounds in a fresh read-only session. Approved at `a1ac1831` with no
+  blocker or major left.
+  - Fixed along the way: deletions that a sandbox's link could steer (at the scan, at the guard,
+    at the removal itself, and in the permission fallback); `git worktree prune` dropping the
+    records of `/tmp` worktrees; the run directories that hold an ended task's final screen; tests
+    for the CI checkout and re-check rules; the job slot after a stop; the docs.
+  - Filed: #649 (the disk upkeep's existing variant of the link problem).
+  - Kept as noted: a directory its owner cannot even read (mode 0o000) is not made removable. Its
+    removal fails and is audited as `leftovers.failed`, which fails safe.
+- **Not testable here:** the real mapped removal of a holder's files (needs the contained service
+  user and `bwrap`; the opt-in isolation suite). On the VM after promotion and update, the operator
+  checks the steps in docs/operations.md, "Upgrading to leftovers cleanup": the Leftovers view
+  before and after, `df -h /var/lib/yulius`, and that the product sandbox's leftovers are gone.
+  Nothing was deleted on the live host from this task.
