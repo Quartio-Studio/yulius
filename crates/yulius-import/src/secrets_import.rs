@@ -343,7 +343,12 @@ pub fn import_secrets(
         .unwrap_or(0);
     for (entry, class) in &classes {
         let (mark, what) = match class {
-            Class::New(_) => ('+', "new".to_owned()),
+            // A comment goes along in plain view of agents (or as sealed notes): say so.
+            Class::New(_) if entry.comment.is_empty() => ('+', "new".to_owned()),
+            Class::New(_) if sandbox.is_some() => {
+                ('+', "new, with description (agents read it)".to_owned())
+            }
+            Class::New(_) => ('+', "new, with notes".to_owned()),
             Class::Exists => ('=', "exists: skipped, never overwritten".to_owned()),
             Class::Invalid(why) => ('!', format!("skipped: {why}")),
         };

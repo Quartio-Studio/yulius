@@ -151,6 +151,11 @@ fn team_import_creates_only_new_secrets_after_yes() -> TestResult {
     assert_eq!(created[0].value.as_deref(), Some("sk_live_new_value_1"));
     assert_eq!(created[0].notes.as_deref(), Some("Stripe live key"));
     assert!(terminal.said.contains("exists: skipped, never overwritten"));
+    assert!(
+        terminal.said.contains("NEW_KEY  new, with notes"),
+        "the plan says a comment goes along:\n{}",
+        terminal.said
+    );
     assert!(terminal.said.contains("secrets.env still holds the values"));
     terminal.assert_no_value();
     Ok(())
@@ -167,7 +172,7 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
         ];
     })?;
     let file = format!(
-        "NEW_KEY=sk_live_new_value_1\nOLD_KEY=existing-value-2\nGLOBAL_KEY=after-value-4\n\
+        "# For tests\nNEW_KEY=sk_live_new_value_1\nOLD_KEY=existing-value-2\nGLOBAL_KEY=after-value-4\n\
          lower_key=refused-value-3\nDEPLOY_KEY='{PEM}'\nNOTE=\"multi-line-value\nsecond\"\nTINY=tiny-v1\n"
     );
     let mut terminal = Terminal::answering(&["YES"]);
@@ -200,6 +205,12 @@ fn agent_import_checks_names_and_values_and_sends_keys_with_literal_line_breaks(
             .contains("the agent secrets of Quartio-Studio/yulius (this sandbox only)")
     );
     assert!(terminal.said.contains("cannot span lines"));
+    assert!(
+        terminal
+            .said
+            .contains("NEW_KEY     new, with description (agents read it)")
+    );
+    assert!(terminal.said.contains("GLOBAL_KEY  new\n"));
     terminal.assert_no_value();
     Ok(())
 }
