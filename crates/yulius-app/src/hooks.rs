@@ -278,12 +278,16 @@ impl App {
         activity: Activity,
     ) -> AppResult<()> {
         // A flag raised for anything else, even over one already set, is no secret request's
-        // to end (SPEC-213 SRA-003); `flag_secret_wait` marks its own after this.
-        if activity == Activity::NeedsAttention {
-            self.runtime(&task.id)
-                .secret_wait_at
-                .store(0, Ordering::SeqCst);
-        }
+        // to end (SPEC-213 SRA-003): its mark goes, also after this write, so a secret request
+        // flagging meanwhile does not take this flag for its own.
+        let forget_secret_wait = || {
+            if activity == Activity::NeedsAttention {
+                self.runtime(&task.id)
+                    .secret_wait_at
+                    .store(0, Ordering::SeqCst);
+            }
+        };
+        forget_secret_wait();
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
         }
@@ -296,6 +300,7 @@ impl App {
             .store
             .set_activity(&task.id, Some(activity), self.now())
             .await?;
+        forget_secret_wait();
         self.publish_task(&task.id).await;
         Ok(())
     }

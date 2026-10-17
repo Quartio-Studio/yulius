@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
@@ -15,6 +15,9 @@ use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::vault::EnvFiles;
+
+/// How often a secret request tries to flag a task whose state changes under it.
+const RAISE_TRIES: usize = 3;
 
 /// A caller of the vault tools that use a secret.
 #[derive(Clone, Copy)]
@@ -104,26 +107,51 @@ impl App {
         let SecretUser::Task(ctx) = user else {
             return Ok(());
         };
-        let Some(task) = self.deps.store.task(&ctx.task.id).await? else {
-            return Ok(());
-        };
-        if task.activity == Some(Activity::NeedsAttention) {
-            return Ok(());
-        }
-        if let Err(err) = self.raise_secret_flag(&task).await {
-            tracing::warn!(task = %task.id, error = %err, "could not flag {what}");
+        if let Err(err) = self.raise_secret_flag(&ctx.task.id).await {
+            tracing::warn!(task = %ctx.task.id, error = %err, "could not flag {what}");
         }
         Ok(())
     }
 
-    /// Flags `task` for its secret request and remembers the flag's state time as its own.
-    async fn raise_secret_flag(&self, task: &TaskRecord) -> AppResult<()> {
-        self.set_task_activity(task, Activity::NeedsAttention)
-            .await?;
-        if let Some(times) = self.deps.store.task_times(&task.id).await? {
-            self.runtime(&task.id)
-                .secret_wait_at
-                .store(times.state_at.0, Ordering::SeqCst);
+    /// Flags a running task for its secret request, unless it reads flagged already, and marks
+    /// the flag as its own only when its own write raised it: a compare-and-set from the state it
+    /// read, marked before the write so that a flag raised by anything else meanwhile clears the
+    /// mark after its own write (SPEC-213 SRA-003, review round 2).
+    async fn raise_secret_flag(&self, task_id: &TaskId) -> AppResult<()> {
+        let store = &self.deps.store;
+        let runtime = self.runtime(task_id);
+        for _ in 0..RAISE_TRIES {
+            let (Some(task), Some(times)) =
+                (store.task(task_id).await?, store.task_times(task_id).await?)
+            else {
+                return Ok(());
+            };
+            if task.status != TaskStatus::Running || task.activity == Some(Activity::NeedsAttention)
+            {
+                return Ok(());
+            }
+            let now = self.now();
+            runtime.secret_wait_at.store(now.0, Ordering::SeqCst);
+            let from = (task.activity, times.state_at);
+            if store
+                .set_activity_from(task_id, from, Some(Activity::NeedsAttention), now)
+                .await?
+            {
+                self.publish_task(task_id).await;
+                return Ok(());
+            }
+            let _ = runtime.secret_wait_at.compare_exchange(
+                now.0,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+        // The task kept changing: flagged all the same, not as the request's (it ends at the
+        // turn's end, as before SPEC-213).
+        if let Some(task) = store.task(task_id).await? {
+            self.set_task_activity(&task, Activity::NeedsAttention)
+                .await?;
         }
         Ok(())
     }
@@ -162,7 +190,7 @@ impl App {
             return Ok(());
         }
         // Only the flag it raised (SRA-003); a Stop that settled the task meanwhile stays.
-        let from = (Activity::NeedsAttention, Timestamp(flagged));
+        let from = (Some(Activity::NeedsAttention), Timestamp(flagged));
         let now = self.now();
         if !self
             .deps
@@ -172,15 +200,17 @@ impl App {
         {
             return Ok(());
         }
-        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        // Only its mark: one the agent's next request set since stays.
+        let _ =
+            runtime
+                .secret_wait_at
+                .compare_exchange(flagged, 0, Ordering::SeqCst, Ordering::SeqCst);
         tracing::info!(task = %task.id, "its secret requests are answered: the task works on");
         self.publish_task(&task.id).await;
         // The agent asked again while this looked: that request was written before it saw the
         // flag, so it shows here, and flags the task anew.
-        if self.secret_waits_for(task).await?
-            && let Some(fresh) = self.deps.store.task(&task.id).await?
-        {
-            self.raise_secret_flag(&fresh).await?;
+        if self.secret_waits_for(task).await? {
+            self.raise_secret_flag(&task.id).await?;
         }
         Ok(())
     }

@@ -307,12 +307,12 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<()>;
-    /// Sets the activity of a running task only while it still reads `from`: that activity,
-    /// entered at that state time (SPEC-213); whether it did.
+    /// Sets the activity of a running task only while it still reads `from`: that activity
+    /// (or none), entered at that state time (SPEC-213); whether it did.
     async fn set_activity_from(
         &self,
         id: &TaskId,
-        from: (Activity, Timestamp),
+        from: (Option<Activity>, Timestamp),
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<bool>;

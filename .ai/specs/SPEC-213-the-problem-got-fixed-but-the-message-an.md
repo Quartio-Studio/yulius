@@ -107,5 +107,12 @@ and it leaves the sidebar's Needs you list.
   typed). An agent asking again while the answer is handled wrote its request before it read the
   flag, so the check after the write sees it and flags the task again: at worst a moment of
   Working, never a lost flag (review round 1).
+- **The request marks only a flag its own write raised.** It flags with the same
+  compare-and-set, from the state it read, and sets its mark (the state time it writes) before the
+  write; every other cause clears the mark after its own write too, and the answer releases only
+  its mark (`compare_exchange`). So a flag another cause raises in the same moment is never taken
+  for the request's (review round 2). A task whose state keeps changing under three tries is
+  flagged unmarked: that flag ends at the turn's end, as before. These interleavings are argued
+  here and in the code, not tested: reproducing them needs probes inside the store calls.
 - No ADR: this restores the documented meaning of the flag (SPEC-129: the task is flagged while it
   waits for a person) and changes no contract.

@@ -275,8 +275,9 @@ async fn the_state_time_moves_only_when_the_state_changes() -> R {
     assert_eq!(store.task_times(&t.id).await?, times(60, None));
     // SPEC-213: a conditional change applies only to the state it saw.
     for stale in [
-        (Activity::NeedsAttention, Timestamp(55)),
-        (Activity::Waiting, Timestamp(60)),
+        (Some(Activity::NeedsAttention), Timestamp(55)),
+        (Some(Activity::Waiting), Timestamp(60)),
+        (None, Timestamp(60)),
     ] {
         assert!(
             !store
@@ -289,7 +290,7 @@ async fn the_state_time_moves_only_when_the_state_changes() -> R {
         store
             .set_activity_from(
                 &t.id,
-                (Activity::NeedsAttention, Timestamp(60)),
+                (Some(Activity::NeedsAttention), Timestamp(60)),
                 Some(Activity::Working),
                 Timestamp(65)
             )

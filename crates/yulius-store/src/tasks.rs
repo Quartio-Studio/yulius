@@ -368,7 +368,7 @@ impl TaskStore for SqliteStore {
     async fn set_activity_from(
         &self,
         id: &TaskId,
-        from: (Activity, Timestamp),
+        from: (Option<Activity>, Timestamp),
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<bool> {
@@ -381,12 +381,12 @@ impl TaskStore for SqliteStore {
                      working_since = CASE WHEN ?1 = 'needs_attention' THEN NULL \
                        WHEN ?1 = 'working' OR ?1 IS NULL THEN COALESCE(working_since, ?2) \
                        ELSE working_since END \
-                     WHERE id = ?3 AND status = 'running' AND activity = ?4 AND state_at = ?5",
+                     WHERE id = ?3 AND status = 'running' AND activity IS ?4 AND state_at = ?5",
                     params![
                         activity.map(Activity::as_str),
                         at.0,
                         id,
-                        from.0.as_str(),
+                        from.0.map(Activity::as_str),
                         from.1.0
                     ],
                 )

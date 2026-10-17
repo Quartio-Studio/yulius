@@ -336,16 +336,16 @@ impl App {
             browser.request_user_action(&params.tab_id, &params.reason, Some(&ctx.task.id))?;
         let store = &self.deps.store;
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        // No secret request's flag any more (SPEC-213 SRA-003).
-        self.runtime(&task.id)
-            .secret_wait_at
-            .store(0, std::sync::atomic::Ordering::SeqCst);
         if task.status == TaskStatus::Running && task.activity != Some(Activity::NeedsAttention) {
             store
                 .set_activity(&task.id, Some(Activity::NeedsAttention), self.now())
                 .await?;
             self.publish_task(&task.id).await;
         }
+        // No secret request's flag any more, also one raised meanwhile (SPEC-213 SRA-003).
+        self.runtime(&task.id)
+            .secret_wait_at
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         let sandbox = store
             .sandbox(&task.sandbox_id)
             .await?
