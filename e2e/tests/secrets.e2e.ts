@@ -265,6 +265,33 @@ test('a person allows a secret for production deploys, then revokes it', async (
   await expect(card.getByText(/do not get it until/)).toBeVisible();
 });
 
+// Task #191 (SPEC-204, #621): "i couldnt set allow this for production deploys". A production
+// secret is exclusive (ADR-0109), so the page offers neither side of it where the server refuses.
+test('a secret agents use offers no production allowance, and a production secret no Allow for agents', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  // STRIPE_KEY is sent to api.stripe.com: no button, no warning, and what to do instead.
+  const stripe = browser.locator('.item-card:has-text("STRIPE_KEY")');
+  await expect(stripe.getByText(/Production deploys never get a secret agents use/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Let production deploys (CD) get STRIPE_KEY')).toBeHidden();
+  await expect(stripe.locator('.badge-warn:has-text("Production")')).toBeHidden();
+  // PROD_API_TOKEN is a production secret an agent asked to copy into .env: Dismiss only.
+  const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
+  await expect(prod.getByText(/Task #112 asks to copy its value/)).toBeVisible();
+  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Allow copying PROD_API_TOKEN into .env files')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files').click();
+  await expect(prod.getByText(/asks to copy/)).toBeHidden();
+  // VIDOC_API_KEY has no hosts yet, so it can become one; then its waiting host request is Dismiss only.
+  const vidoc = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
+  await screen.getByRole('button', 'Let production deploys (CD) get VIDOC_API_KEY').click();
+  await expect(vidoc.getByText('Production deploys (CD) get its value; agents never do.')).toBeVisible();
+  await expect(vidoc.getByText(/production secret: agents never get it/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeHidden();
+  await screen.getByRole('button', 'Dismiss the hosts asked for VIDOC_API_KEY').click();
+  await expect(vidoc.getByText(/asks to send it to/)).toBeHidden();
+});
+
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
 // shown after explicitly clicking eye icon. On hover there should be option to copy + the current
 // copy button." (SPEC-114)
