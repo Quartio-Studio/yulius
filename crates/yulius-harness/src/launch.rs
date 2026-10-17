@@ -653,6 +653,9 @@ pub struct CockpitRequest {
     /// The `yulius` executable of the `PostToolUse` redaction hook (SPEC-147 SAM-002); `None` for
     /// no hook.
     pub redaction_exe: Option<PathBuf>,
+    /// Bypass-permissions mode (`--dangerously-skip-permissions`, with `IS_SANDBOX=1`: a contained
+    /// Cockpit is root of its sandbox), as a task run of a contained server has (SPEC-208).
+    pub bypass_permissions: bool,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -664,6 +667,8 @@ pub struct CockpitYulius {
     pub token: Secret<String>,
 }
 
+/// Declares the session a sandbox, so Claude Code accepts `--dangerously-skip-permissions` as root.
+pub const IS_SANDBOX_ENV: (&str, &str) = ("IS_SANDBOX", "1");
 /// Environment variable holding a Cockpit's Yulius MCP bearer.
 pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
 /// The Yulius tools a Cockpit may call without asking: they only read (`secret_verify` writes
@@ -681,10 +686,11 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 8] = [
 
 /// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius and the
 /// sandbox's servers>] [--allowedTools <read-only tools>] [--settings <redaction hook, rejected
-/// .mcp.json servers>] --model <default> --effort <default>` (SPEC-023 DEF-004) with the
-/// subscription's token (and the Cockpit's Yulius bearer) in the secret environment and none of a
-/// task's lifecycle hooks, status line, briefing or approval bypass (SPEC-021 CKP-002, SPEC-037
-/// MGT-004 as amended by SPEC-147, ADR-0121). The MCP config is inline JSON naming
+/// .mcp.json servers>] --model <default> --effort <default> [--dangerously-skip-permissions]`
+/// (SPEC-023 DEF-004) with the subscription's token (and the Cockpit's Yulius bearer) in the secret
+/// environment and none of a task's lifecycle hooks, status line or briefing (SPEC-021 CKP-002,
+/// SPEC-037 MGT-004 as amended by SPEC-147, ADR-0121). The approval bypass comes with
+/// `bypass_permissions`, as a contained task run's does (SPEC-208, decision 0165). The MCP config is inline JSON naming
 /// `${YULIUS_COCKPIT_TOKEN}` and the servers' `${VAR}` references, never a value; it is not
 /// strict, so the person's own MCP servers keep working. The settings are the `PostToolUse`
 /// redaction hook and `disabledMcpjsonServers` (SPEC-095 PMC-004).
@@ -778,6 +784,12 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
             DISABLE_AUTOUPDATER_ENV.1.into(),
         ),
     ];
+    // Bypass-permissions mode rather than Claude Code's auto mode (SPEC-208 BYP-001); as uid 0
+    // Claude Code takes the flag only inside a declared sandbox.
+    if request.bypass_permissions {
+        argv.push("--dangerously-skip-permissions".into());
+        env.push((IS_SANDBOX_ENV.0.into(), IS_SANDBOX_ENV.1.into()));
+    }
     if request.continue_interrupted && request.resume.is_some() {
         env.push((
             RESUME_INTERRUPTED_TURN_ENV.0.into(),
