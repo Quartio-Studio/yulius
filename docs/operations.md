@@ -1,7 +1,7 @@
 # Operating Yulius
 
 Yulius is one Rust binary, `yulius`, that serves the web UI and API, supervises agent sessions and
-provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`). This guide covers a single Linux VM with a TLS
+provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`, `yulius secrets import`). This guide covers a single Linux VM with a TLS
 reverse proxy in front. It satisfies SPEC-001 AC-OPS-1 as documentation only: **a deployment has not
 been performed or verified** as part of the implementation work.
 
@@ -950,6 +950,36 @@ already removed one through the API). Its `<data>/playgrounds/<id>.git` and
 `<data>/sandboxes/<id>/` are deleted once no agent run, shell, browser, CI run or other process of
 it is left, within a disk upkeep round (5 minutes); task records, the removal's export under
 `<data>/exports/` and the audit (`sandbox.purge_requested`, `sandbox.purged`) stay (ADR-0139).
+
+### Importing secrets (`yulius secrets import`)
+
+Keys held on a computer go into the vault from the CLI, signed in with `yulius login`
+(SPEC-205, ADR-0163):
+
+```sh
+yulius secrets import --to agent .env                      # agent secrets of this checkout's sandbox
+yulius secrets import --to agent --sandbox acme/shop keys.env
+yulius secrets import --to team shared.env                 # team secrets, for people
+gpg -d keys.env.gpg | yulius secrets import --to team -   # a dotenv text on stdin
+yulius secrets import --to agent                           # type each name and its hidden value
+```
+
+The file is dotenv: `NAME=value` lines (optionally `export`), values bare, in single quotes
+(literal) or double quotes (`\n`, `\t`, `\"`, `\\` read), quoted values may span lines, `${…}` is
+kept as written, and the `#` comment lines directly above a key become its description (agent) or
+notes (team). A malformed file is refused before anything is asked, by line number. The command
+lists the server, the target and every name as `new`, `exists` (skipped: nothing is overwritten)
+or skipped with the reason (agent names are `[A-Z][A-Z0-9_]*`, values at least 8 characters on one
+line; a PEM or OpenSSH key is kept as a key file), then sends nothing until `yes` is typed at the
+terminal; there is no flag to skip it, so it cannot run unattended. `--instance` makes agent
+secrets apply to every sandbox (instance administrators). Agent secrets start bound to no host, as
+on the Secrets page.
+
+Values never appear: no option takes one, the output holds names only, nothing is written to disk,
+and the server logs no request bodies; the vault audit records who added which name. The command
+reminds you that the source file still holds the values. Exit 0 when every secret was imported or
+already there, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
+sign-in).
 
 ### Dropped files
 

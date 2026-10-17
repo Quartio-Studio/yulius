@@ -80,10 +80,10 @@ the list of names and typed `yes` at the terminal.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A dotenv reader turns a file into named secrets without echoing values
-- [ ] The import client lists, checks and creates team and agent secrets over the existing API
-- [ ] `yulius secrets import` asks for typed confirmation and imports from a file, stdin or hidden prompts
-- [ ] Docs, ADR and changes log describe the import
+- [x] A dotenv reader turns a file into named secrets without echoing values
+- [x] The import client lists, checks and creates team and agent secrets over the existing API
+- [x] `yulius secrets import` asks for typed confirmation and imports from a file, stdin or hidden prompts
+- [x] Docs, ADR and changes log describe the import
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

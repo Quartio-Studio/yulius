@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- Secrets can be imported from the CLI (SPEC-205, ADR-0163, task #192). `yulius secrets import
+  --to team|agent [FILE|-]` reads a dotenv file, stdin or hidden prompts and creates team secrets
+  or a sandbox's agent secrets (`--sandbox`, `--instance`) through the existing vault API. It lists
+  every name as new, existing (skipped, never overwritten) or invalid with the reason, and sends
+  nothing until `yes` is typed at the terminal; no flag skips that. Values never appear in
+  arguments, output, errors or files, and are wiped from memory when dropped. A comment above a key
+  becomes its description or notes, and a PEM or OpenSSH key is stored as the Secrets page stores it.
+
 - Docker in sandboxes works out of the box (SPEC-203, ADR-0162, task #188). `sudo yulius host
   setup` is now the install path after the binary. It checks and fixes, in one order: a
   needrestart rule, written before any install, so installs never restart `yulius.service`; Git
