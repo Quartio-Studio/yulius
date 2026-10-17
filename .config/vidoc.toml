@@ -29,3 +29,15 @@ reason = "pre-existing, documented trust model of the browser adapter; tracked i
 path = "crates/yulius/src/main.rs"
 title = "gh-token"
 reason = "gh-token prints only what /internal/git-credential gives the caller's own bearer; the server authorizes (SPEC-004 GH-001/GH-006, ADR-0114)"
+
+# The folder trust `ensure_claude_config` records (SPEC-106) is written into the sandbox's own
+# Claude config dir, which the contained agent can already edit: an agent that plants a `.git`
+# file to have some directory trusted could write that trust entry itself, and the trust only
+# skips Claude Code's folder prompt for sessions started from that config dir. The host-side
+# reads of that agent-owned dir (links, FIFOs) are tracked in #634. Reported on task #197's
+# change scan (SPEC-210), which sent claude_config.rs for the new output-style default; the code
+# predates it.
+[[ignore]]
+path = "crates/yulius-harness/src/claude_config.rs"
+title = "as trusted"
+reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); host-side reads tracked in #634"
