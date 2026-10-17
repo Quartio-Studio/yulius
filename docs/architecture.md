@@ -411,9 +411,13 @@ default) is launched with `/goal <condition>` as Claude Code's prompt argument: 
 typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. Until it
 is confirmed the run directory holds `launch-goal-pending`, so a restarted server watches it again
 ([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md)). The
-condition names the request file in the sandbox home, which keeps the whole request, and the
-attached files, which the agent opens with its Read tool (a `/goal` carries no image
-block); the request file writes each file inside the text where it sits (`[file N: <path>]`). A
+condition is the person's whole request, its lines kept and each attached file at its place as
+`[file N: <path>]` (the agent opens it with its Read tool, since a `/goal` carries no image block),
+then a blank line and the definition of done. Past Claude Code's 4000 UTF-16 code units it is cut
+and points at the request file in the sandbox home, which keeps the whole request with the same
+markers. Yulius's other rules reach the agent and the goal's judge natively, in the SessionStart
+briefing ([SPEC-212](../.ai/specs/SPEC-212-we-need-to-approach-it-differently-we-ca.md),
+[decision 0168](decisions/0168-the-goal-is-the-whole-request-and-the-briefing-carries-the-rules.md)). A
 prompt task's first message is its request. Without an image it is the CLI prompt argument, each
 file mentioned where it sits (`@"<path>"`). With an image the session starts with no prompt and
 Yulius types the message into the TUI, in order: the text, each image's path pasted on its own
@@ -421,7 +425,9 @@ where it sits (Claude Code shows `[Image #N]` at the cursor and sends an image b
 files mentioned in the text, then Enter (an `@` mention of an image would only be a Read tool
 call). Until that
 Enter a person's keys are not written into the session; the first one is answered with a notice.
-A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn; a
+A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn, as
+one line of at most 700 code units (Claude Code takes a longer write as a paste, which is no
+command): the request when it fits, else the request file named; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
 (only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
@@ -456,7 +462,7 @@ sequenceDiagram
     UI->>S: create task (prompt, each file in place as @'path')
     alt goal mode
         S->>S: write the request file (request with [file N: path] in place, attached files, definition of done)
-        S->>C: launch with prompt /goal <condition naming the request file and attached files>
+        S->>C: launch with prompt /goal <the whole request, [file N: path] in place, then Done = …>
         opt Claude Code shows its folder-trust prompt
             S-->>UI: notice: answer it in the terminal (flagged if unanswered)
             UI->>C: a person answers (not a draft)

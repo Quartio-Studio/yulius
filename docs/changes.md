@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-17
 
+- A goal task's first message is the person's whole request (SPEC-212, ADR-0168, task #199). It
+  read `/goal Everything requested in /var/lib/yulius/…/tasks/1.md is done. Done = …`, so the
+  request hid behind a path in the sandbox home. The launch `/goal` is now the request as written,
+  its lines kept and each attached file at its place as `[file N: <path>]`, followed by the
+  definition of done, which now also says what the closing summary holds. Claude Code 2.1.292 has
+  no other goal entry point, and its goal's judge reads the SessionStart briefing (measured
+  against a mock API). So the rest of Yulius's rules stay in the briefing, which now says to open
+  attached files with the Read tool. A request past Claude Code's 4000-unit cap is cut and points
+  at the request file. A goal typed into a resumed session is one line of at most 700 units. It
+  could reach 2000 characters before, and Claude Code takes a write of about 800 as a paste, which
+  sets no goal.
 - A shown secret's dialog is one box per field (SPEC-207, ADR-0164, task #194). The value's copy
   icon was hidden until hover, leaving a gap after the eye, and a detached Copy text button did the
   same thing. The value box now holds the masked value, the eye and one copy icon, always visible,
