@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- The automatic leftovers round deletes a removed sandbox's `ci`, worktrees and browser profile,
+  and a live sandbox's stale CI checkout, even when CI jobs wrote files there as the sandbox's
+  sub-uids (SPEC-228, ADR-0176, task #214, fixes #675). Settings → Instance → Leftovers showed
+  "Failed: …/ci: Permission denied" after every round. Every leftover below `sandboxes/` is now
+  removed as root of the sandbox's mapped namespace, walking down from the data directory without
+  following a link, and a removal that fails names the file that stayed.
 - One Start onboarding shows one toast again (SPEC-224, task #210, fixes #581). A sandbox page the
   person had already left (it had opened the onboarding task) still rendered once the
   superadmin's recovery state answered, and took back the opened task's "Onboarding started:

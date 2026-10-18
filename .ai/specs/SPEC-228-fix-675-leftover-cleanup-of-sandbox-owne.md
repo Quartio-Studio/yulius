@@ -74,7 +74,7 @@ Confirmed against `dev` at c3ba79d0.
   `sandboxes/live/ci/jobs/old` (fails on `dev`: none of them reached it).
 - `remove_below` refuses a link on the way (existing test) and the `remove-tree --below` helper
   does too: a tree reached through a link is not removed, the target is kept.
-- A removal that fails reports the entry (`…/attr/current: …`), not only the item.
+- A removal that fails reports the entry (`/proc/self/ns/<entry>: …`), not only the item.
 
 ## Test plan
 

@@ -88,6 +88,9 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 | `runs/ci-*`, `runs/cd-*` | job / run | ended | already removed at the job's end and on requeue |
 | `yulius.db`, `master.key`, `skills/`, `users/`, `runtime/bin`, `*.json` state | instance | never | not leftovers |
 
+Since SPEC-228 (ADR-0176), every path of this table below `sandboxes/` is removed through the
+isolation's mapped removal, walking down from the data directory without links, whatever its kind.
+
 ## Requirements
 
 - **LFT-001** A removed sandbox's `worktrees`, `ci`, `browser`, `cd`, `displays` and run

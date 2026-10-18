@@ -301,8 +301,12 @@ worktrees, and instance directories no record owns. It deletes one item at a tim
 **guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
 `still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
 `holder_live` is false, and a CI claim is held while checkouts go. Trees whose files belong to a
-sandbox's mapped ids go through the isolation's `remove_owned_tree` (`base::remove_tree` as root
-of a mapped namespace). No link is followed: an item reached through one is never listed, and the
+sandbox's mapped ids go through the isolation's `remove_owned_tree`: the system trees by
+`base::remove_tree` as root of a mapped namespace, and every path below `sandboxes/` (its CI jobs
+and agents write there as sub-uids) by `sandbox-host remove-tree --below <data dir>`, the same
+link-safe walk as root of the mapped namespace
+([decision 0176](decisions/0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md)); a
+failure names the entry that stayed. No link is followed: an item reached through one is never listed, and the
 removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
 the opened directory, so a link a sandbox swaps in after the check fails the removal. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
@@ -317,7 +321,7 @@ flowchart LR
   SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, runs/, transcripts/, system/"]
   SC --> L["items: kind, path, size, owner, reason, safe?"]
   L -->|"safe only (round) or chosen (person)"| G{"guard again: removed 10 min, nothing runs, no deploy, holder stopped, CI claimed"}
-  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then through the opened directory; or isolation remove_owned_tree"]
+  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then handle by handle; below sandboxes/ and system trees: isolation remove_owned_tree (mapped root)"]
   G -->|"no longer holds"| K["kept, reported"]
   D --> A[("audit: leftovers.delete / leftovers.failed")]
 ```
