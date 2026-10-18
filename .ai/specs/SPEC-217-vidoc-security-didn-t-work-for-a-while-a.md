@@ -282,7 +282,8 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
   with 18 skipped, plus lint, macOS, doctests, deps and docs. The final
-  head's gate: GATE_LINE.
+  head's gate: at 4a1339cc (code as of 80160826, the last code change), it passed with 2214
+  tests (18 skipped). The change scan there exited 0.
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
