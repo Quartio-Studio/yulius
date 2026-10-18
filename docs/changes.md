@@ -11,6 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   stopped the first server once the run was recorded, not once it was spawned, so under load the
   stop cut the spawn, the next server found no run it could reattach and ended it as lost, and no
   watch could flag it. The test now waits for the spawned run. No product change.
+- Undoing past a pasted image takes it out of the composer's tray again after an IME composition
+  that changed nothing (cancelled with Esc) (SPEC-225, task #211, fixes #513). Such a composition
+  marked the history as typing, so the next keystroke replaced the paste's undo step and the
+  upload, ending later, was attached to every step and sent after the text. A record that changes
+  nothing now leaves the history alone, and typing updates its step in place.
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
