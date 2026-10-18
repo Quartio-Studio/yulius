@@ -13,7 +13,7 @@
 //! tolerate a concurrent run), and each job keeps a persistent checkout per lane
 //! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -966,6 +966,11 @@ impl App {
         ),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<(Ended, Used), String> {
+        // Opened before the process starts, and read only through this handle: the run can
+        // replace the file at `log` (a link to a host file, a FIFO), never what Yulius reads.
+        let mut tail = LogTail::open(log)
+            .await
+            .map_err(|e| format!("opening the job log failed: {e}"))?;
         let host = &self.deps.session_host;
         host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
@@ -981,7 +986,6 @@ impl App {
             }
         };
         let (mut reader, mut writer) = (attached.reader, attached.writer);
-        let mut tail = LogTail::new(log.to_path_buf());
         let deadline = tokio::time::Instant::now() + self.config.ci.job_timeout;
         let mut tick = tokio::time::interval(READ_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1112,9 +1116,9 @@ async fn wait_cancel(cancel: &mut watch::Receiver<Option<String>>) -> String {
     }
 }
 
-/// Follows a job's log file.
+/// Follows a job's log file through the handle opened before the job started.
 struct LogTail {
-    path: PathBuf,
+    file: tokio::fs::File,
     offset: u64,
     size: u64,
     strip: AnsiStripper,
@@ -1124,14 +1128,25 @@ struct LogTail {
 }
 
 impl LogTail {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
+    /// Opens the log at `path`, which must be a regular file and not a link (it is never
+    /// followed, and a FIFO is never waited on).
+    async fn open(path: &Path) -> std::io::Result<Self> {
+        let flags = nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK;
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(flags.bits())
+            .open(path)
+            .await?;
+        if !file.metadata().await?.is_file() {
+            return Err(std::io::Error::other("the log is not a regular file"));
+        }
+        Ok(Self {
+            file,
             offset: 0,
             size: 0,
             strip: AnsiStripper::default(),
             fresh: Vec::new(),
-        }
+        })
     }
 
     /// The output read since the last call.
@@ -1145,7 +1160,7 @@ impl LogTail {
 
     /// Reads at most [`READ_CHUNK`] new bytes into `ring`; returns the file size.
     async fn read(&mut self, ring: &mut OutputRing) -> std::io::Result<u64> {
-        let mut file = tokio::fs::File::open(&self.path).await?;
+        let file = &mut self.file;
         self.size = file.metadata().await?.len();
         if self.size <= self.offset {
             return Ok(self.size);
