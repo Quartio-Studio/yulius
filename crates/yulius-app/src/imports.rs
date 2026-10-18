@@ -1911,7 +1911,8 @@ fn copy_rewritten(
 }
 
 /// Copies Claude auxiliary files (subagent transcripts) from `src` to the folder `name` in
-/// `parent`, with `cwd` rewritten, bounded; every folder is opened through its parent's handle.
+/// `parent`, with `cwd` rewritten, bounded ([`MAX_AUX_FILES`], [`MAX_AUX_DEPTH`]); every folder
+/// is opened through its parent's handle, and only the folders on the way down stay open.
 fn copy_claude_aux(
     src: &Path,
     parent: &std::os::fd::OwnedFd,
@@ -1923,25 +1924,33 @@ fn copy_claude_aux(
         return Ok(());
     }
     let top = crate::files::open_dir_at(parent, name, true).map_err(link_refused)?;
-    let mut pending = vec![(src.to_path_buf(), top)];
-    let mut copied = 0_usize;
-    while let Some((from, dir)) = pending.pop() {
-        for entry in fs::read_dir(&from).map_err(AppError::internal)? {
-            let entry = entry.map_err(AppError::internal)?;
-            let kind = entry.file_type().map_err(AppError::internal)?;
-            let child = entry.file_name();
-            if kind.is_dir() {
-                let opened = crate::files::open_dir_at(&dir, &child, true).map_err(link_refused)?;
-                pending.push((entry.path(), opened));
-            } else if kind.is_file() {
-                copied += 1;
-                if copied > MAX_AUX_FILES {
-                    return Ok(());
-                }
-                rewrite_transcript(&entry.path(), &dir, &child, suffix, |record| {
-                    rewrite_claude(record, cwd)
-                })?;
+    copy_aux_level(src, &top, cwd, suffix, 0, &mut 0)
+}
+
+/// One folder level of [`copy_claude_aux`]; `copied` counts the files copied so far.
+fn copy_aux_level(
+    from: &Path,
+    dir: &std::os::fd::OwnedFd,
+    cwd: &str,
+    suffix: &str,
+    depth: usize,
+    copied: &mut usize,
+) -> AppResult<()> {
+    for entry in fs::read_dir(from).map_err(AppError::internal)? {
+        let entry = entry.map_err(AppError::internal)?;
+        let kind = entry.file_type().map_err(AppError::internal)?;
+        let child = entry.file_name();
+        if kind.is_dir() && depth < MAX_AUX_DEPTH {
+            let opened = crate::files::open_dir_at(dir, &child, true).map_err(link_refused)?;
+            copy_aux_level(&entry.path(), &opened, cwd, suffix, depth + 1, copied)?;
+        } else if kind.is_file() {
+            *copied += 1;
+            if *copied > MAX_AUX_FILES {
+                return Ok(());
             }
+            rewrite_transcript(&entry.path(), dir, &child, suffix, |record| {
+                rewrite_claude(record, cwd)
+            })?;
         }
     }
     Ok(())
