@@ -592,8 +592,10 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   `TERM`, `NO_COLOR`, `GIT_TERMINAL_PROMPT`, `YULIUS_ENVIRONMENT`, `YULIUS_BRANCH` and
   `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept, and the CI job
   timeout (30 minutes by default) after which the whole process group is killed (`state:
-  "failed"`). Nothing of a run reads the sandbox clone or the sandbox home, which the sandbox's
-  agents write. Commands are visible to every reader of the sandbox:
+  "failed"`). Yulius's own Git never reads the sandbox clone for a run, whose configuration the
+  sandbox's agents write; the command itself, in the sandbox's containment, sees the sandbox as
+  its agents do. A server with containment off (`contained = false`, development only) runs the
+  command on the host. Commands are visible to every reader of the sandbox:
   keep secrets out of them. Runs left `running` by a server restart have their process host
   terminated and become `error`.
 

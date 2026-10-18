@@ -14,7 +14,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   token never passes through the clone's configuration), writes its files into the run's own
   directory with a fresh `HOME`, and runs the command through the process host in the sandbox's
   containment, as CD dev runs do (production environments as CD production runs). It times out
-  with the CI job timeout, and a restart stops a running command.
+  with the CI job timeout, and a restart stops a running command. A deploy command that relied on
+  the sandbox's home, or (for production environments) on host paths, must change: its `HOME` is
+  empty at every run. CI, CD and environment runs also no longer let a job point the log Yulius
+  reads at another file, and a run's files are written without the server's own Git filters.
 
 ## 2026-10-17
 

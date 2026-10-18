@@ -5249,3 +5249,58 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
     assert!(!run_dir.exists(), "the run's directory goes with it");
     Ok(())
 }
+
+/// SPEC-219 ENV-003: a production environment's run, which only a person starts, runs as a CD
+/// production run: rooted at its own directory, not the sandbox, with a fresh `HOME` there.
+#[tokio::test]
+async fn a_production_environment_run_starts_in_production_containment() -> TestResult {
+    let host = Arc::new(RecordingHost::default());
+    let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "rollout", "after": "production", "verify": "command",
+                    "command": "./roll.sh"}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let started = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/environments/rollout/runs",
+            Some(json!({"confirm": true})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let run = f
+        .wait_run(started.body["run_id"].as_str().ok_or("run id")?)
+        .await?;
+    assert_eq!(run["commit"], f.origin_sha("main")?.as_str(), "{run}");
+    let (run_dir, plan) = host
+        .plan
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .ok_or("no run was started")?;
+    let work = run_dir.join("work");
+    let Containment::Bubblewrap {
+        sandbox_root, home, ..
+    } = &plan.containment
+    else {
+        return Err(format!("not contained: {:?}", plan.containment).into());
+    };
+    assert_eq!(
+        sandbox_root, &work,
+        "production is not rooted at the sandbox"
+    );
+    assert_eq!(home, &work.join("home"));
+    assert_eq!(plan.cwd, work.join("src"));
+    Ok(())
+}

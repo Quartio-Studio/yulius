@@ -145,21 +145,6 @@ title = "authorization check in tool_cd_status"
 reason = "a task's agent sees only its own sandbox's runs (sandbox filter), at Write level by design, with secret-redacted output"
 
 [[ignore]]
-path = "crates/yulius-app/src/delivery.rs"
-title = "Environment commands run with server privileges"
-reason = "real: environment runs are uncontained, tracked in #656 (task #205); remove this entry with its fix"
-
-[[ignore]]
-path = "crates/yulius-app/src/delivery.rs"
-title = "Server-side shell execution of profile-defined"
-reason = "real: environment runs are uncontained, tracked in #656 (task #205); remove this entry with its fix"
-
-[[ignore]]
-path = "crates/yulius-app/src/delivery/runner.rs"
-title = "Subprocess execution from potentially untrusted configuration"
-reason = "a generic argv runner without a shell; trust is decided by its callers; the environment-run gap is #656"
-
-[[ignore]]
 path = "crates/yulius-app/src/disk.rs"
 title = "path traversal via untrusted yulius.toml cache"
 reason = "check_repo_path rejects absolute and .. segments and real_dir_below refuses links (config.rs and tests/disk.rs)"
@@ -370,5 +355,5 @@ reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, w
 # launch predates it.
 [[ignore]]
 path = "crates/yulius-app/src/ci/exec.rs"
-title = "command execution"
+title = "from pull request-defined CI jobs"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"

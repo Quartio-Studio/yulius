@@ -66,8 +66,9 @@ use crate::ports::github::{self as gh, GhPull, NewPull};
 use crate::ports::store::TaskFieldUpdate;
 use runner::{CommandEnd, OutputRing};
 
-/// What fetching a run's commit may take before its command starts (Git's network limit).
-const PREPARE_ALLOWANCE: Duration = Duration::from_secs(30 * 60);
+/// What preparing a run may take before its command starts: the fetch (Git's 30-minute network
+/// limit), the token, the files and the containment.
+const PREPARE_ALLOWANCE: Duration = Duration::from_secs(35 * 60);
 /// Output kept per environment run (the tail).
 pub const ENVIRONMENT_OUTPUT_BYTES: usize = 1 << 20;
 /// Largest spec file read.

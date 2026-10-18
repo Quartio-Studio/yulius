@@ -53,5 +53,10 @@ clone, where repository-local transport settings (`http.proxy` with `http.sslVer
 - The first run of a project fetches one commit of its branch from GitHub; later runs fetch what
   changed.
 - Environment runs record no Pipeline spans (no span subject exists for them).
+- Containment is the server's: with `contained = false` (development) the command runs on the host,
+  as CD runs do; only the Git that prepares it stays out of the sandbox clone.
+- Review round 1 found two holes this path shared with CD and CI and fixed them for all three: the
+  host read a run's log by path (a run could link it to a host file), and the tree export applied
+  the server's global Git configuration (a git-lfs filter) to the commit's attributes.
 - Yulius's other Git in the sandbox clone with a token (CI, merges, hygiene, CD's refresh) is
   still #54 part B.
