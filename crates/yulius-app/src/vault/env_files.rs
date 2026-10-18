@@ -13,7 +13,7 @@
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat, renameat};
@@ -31,7 +31,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::files::{inside, relative_components};
+use crate::files::{inside, real_path, relative_components};
 use crate::ports::vault::{EnvFiles, VaultSecretRecord};
 
 /// Most secrets copied in one call.
@@ -79,29 +79,6 @@ impl Folder {
 
 pub(super) fn os_error(err: Errno) -> AppError {
     crate::files::io_error(&std::io::Error::from(err))
-}
-
-/// Where an open folder really is.
-fn real_path(fd: &OwnedFd) -> AppResult<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd as _;
-        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-            .map_err(|e| crate::files::io_error(&e))
-    }
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        let mut path = PathBuf::new();
-        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path)).map_err(os_error)?;
-        Ok(path)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
-    {
-        let _ = fd;
-        Err(AppError::Forbidden(
-            "copying into .env files needs Linux or macOS".into(),
-        ))
-    }
 }
 
 /// How [`open_folder`]'s messages name its folders: the root it walks from as `within` ("the
@@ -663,6 +640,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

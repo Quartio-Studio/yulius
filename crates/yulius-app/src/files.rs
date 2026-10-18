@@ -85,6 +85,53 @@ pub(crate) fn inside(root: &Path, path: &Path) -> bool {
         .is_ok_and(|rest| !rest.components().any(|part| part.as_os_str() == ".git"))
 }
 
+/// Where an open file or folder really is (`/proc/self/fd` on Linux, `F_GETPATH` on macOS).
+pub(crate) fn real_path(fd: &impl std::os::fd::AsFd) -> AppResult<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd()))
+            .map_err(|e| io_error(&e))
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let mut path = PathBuf::new();
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path))
+            .map_err(|err| io_error(&std::io::Error::from(err)))?;
+        Ok(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+    {
+        let _ = fd;
+        Err(AppError::Forbidden(
+            "reaching sandbox files needs Linux or macOS".into(),
+        ))
+    }
+}
+
+/// Opens the resolved `path` with `flags`, without following a link at its end and without
+/// blocking, and checks that what was opened is still inside `root` and out of `.git`. A folder
+/// on the way swapped for a link after `path` was resolved is refused: the handle, not the path,
+/// is what gets read or written (#657, ADR-0174).
+pub(crate) fn open_inside(
+    root: &Path,
+    path: &Path,
+    flags: nix::fcntl::OFlag,
+) -> AppResult<std::os::fd::OwnedFd> {
+    use nix::fcntl::OFlag;
+    let outside = || AppError::Forbidden("the path leads outside the folder".into());
+    let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let fd = match nix::fcntl::open(path, flags, nix::sys::stat::Mode::empty()) {
+        Ok(fd) => fd,
+        Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => return Err(outside()),
+        Err(err) => return Err(io_error(&std::io::Error::from(err))),
+    };
+    if !inside(root, &real_path(&fd)?) {
+        return Err(outside());
+    }
+    Ok(fd)
+}
+
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
 fn is_sha256_hex(sha: &str) -> bool {
     sha.len() == 64
@@ -277,9 +324,17 @@ impl App {
         }
         let file = Self::existing(&target)?;
         crate::race::reached(crate::race::Point::FileRead, &file);
-        let meta = std::fs::metadata(&file).map_err(|e| io_error(&e))?;
+        let file = std::fs::File::from(open_inside(
+            &target.root,
+            &file,
+            nix::fcntl::OFlag::O_RDONLY,
+        )?);
+        let meta = file.metadata().map_err(|e| io_error(&e))?;
         if meta.is_dir() {
             return Err(AppError::Invalid("that path is a directory".into()));
+        }
+        if !meta.is_file() {
+            return Err(AppError::Invalid("that path is not a regular file".into()));
         }
         if meta.len() > MAX_FILE_BYTES {
             return Ok(Some(FileContent {
@@ -292,7 +347,14 @@ impl App {
             }));
         }
         // Read every 2 s while someone has the file in front: off the runtime's threads.
-        let bytes = tokio::fs::read(&file).await.map_err(|e| io_error(&e))?;
+        let bytes = tokio::task::spawn_blocking(move || {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(file, MAX_FILE_BYTES), &mut bytes)
+                .map(|_| bytes)
+        })
+        .await
+        .map_err(AppError::internal)?
+        .map_err(|e| io_error(&e))?;
         let sha256 = self.deps.crypto.sha256_hex(&bytes);
         if known == Some(sha256.as_str()) {
             return Ok(None);
