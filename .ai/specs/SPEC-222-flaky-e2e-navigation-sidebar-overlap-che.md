@@ -1,11 +1,11 @@
 ---
 yulius-task: 21ae408c-cc79-4cec-887f-1b5b2442664c
-status: in-progress
+status: done
 ---
 
 # SPEC-222: The sidebar's hover overlap checks run on a still list (#515)
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: Yulius task #208
 Scope authorization: the person's request (task #208). Fix GitHub issue #515 in
@@ -69,10 +69,10 @@ hover state shows.
 ## Plan
 
 - [x] Spec with the reproduced cause of the 18 px overlap
-- [ ] Overlap checks wait for the hover state and poll the layout
-- [ ] Twenty runs in a row under a held 0.2 CPU share
-- [ ] Independent review answered, docs and changes entry
-- [ ] Gates green, PR merged into dev on green CI
+- [x] Overlap checks wait for the hover state and poll the layout
+- [x] Twenty runs in a row under a held 0.2 CPU share
+- [x] Independent review answered, docs and changes entry
+- [x] Gates green, PR merged into dev on green CI (merge armed on the reviewed head)
 
 ## Acceptance criteria
 
@@ -111,3 +111,39 @@ hover state shows.
   None is reported failing. `ambient=0` is now available to them.
 
 ## Evidence
+
+All runs were on `feat/208` at dev a3b9b04a, in a sandbox with 12 cores. A load controller held a
+CPU-bound probe at 0.2 of a CPU: it added or removed busy loops (`sh -c 'while :; do :; done'`)
+every ~20 s from the median of three 2 s probes.
+
+- **Unchanged test under load, before the fix.** `npx e2e run tests/navigation.e2e.ts --grep
+  "task number apart"` passed 31 of 31 runs, at 23.8-42.9 s per run against 7.7 s at rest. The
+  CI failure is rare, so a plain loop does not show it.
+- **Mechanism probe (throwaway file, removed).** It hovered "Improve the code" and "Checkout API"
+  in turn until 24 s after load and read `row.matches(':hover')` right after each `hover()`:
+  - Ambient on: 4 of 8 page loads missed once each, at 14132, 13692, 13809 and 14490 ms. Each miss
+    was `{"name":"Checkout API","hover":false,"on":"Nightly feedback digest"}`, with the link's
+    padding at 12 px.
+  - `ambient=0`: 0 misses in 8 page loads (114 hovers).
+  - An earlier probe polled `:hover` on a miss: it was still `false` after 5 s
+    (`expect.poll ... timed out after 5000 ms`).
+- **Probes that did not reproduce.** These were not committed. Holding the unchanged test after its
+  264 px hover until the tick had started #8 passed 3 of 3: `:hover` stays on the element that
+  moved. A DOM swap timed 0, 10, 20, 30, 45, 60 or 90 ms into `hover()` passed 7 of 7. A patched
+  `elementsFromPoint` passed 3 of 3: Playwright's hit check runs in its own world.
+- **After the fix, 20 runs in a row under load.** Each ran
+  `npx e2e run tests/navigation.e2e.ts --grep "task number apart"`: 20 of 20 passed, at
+  24.0-39.4 s per run. Between 10:23:38 and 10:39:04 the controller logged 51 samples: mean share
+  0.203 (min 0.100, max 0.370), with 39 loops on average. No retries (`retries: 0`) and no sleeps.
+- **Mutation.** With the hover padding rule removed from `styles.css`, the case fails at
+  `navigation.e2e.ts:309` with `expect.poll(...).toBeLessThanOrEqual(...) timed out after 5000 ms`,
+  `last: expected 18 to be less than or equal to 0`. That is the CI signature, and the poll does
+  not hide it.
+- **Full e2e suite, without load.** `E2E_TELEMETRY_DISABLED=1 npx e2e run`: 60 files passed and 1
+  skipped. 617 tests passed and 1 was skipped (the agent step without a model), in 18 min 49 s.
+- **Gate.** `python3 scripts/bootstrap.py && scripts/dev ci` exited 0.
+- **Security.** `scripts/dev security` ran Vidoc on vidoc-1 over 5 changed files (1 sent):
+  "no open critical or high finding, and no open medium one in the change".
+- **Not tested.** Yulius CI's own load, before the PR's CI run. The hover miss under the real
+  ambient tick is statistical (about 1 in 2 page loads that hover through the tick window), not a
+  deterministic regression test.
