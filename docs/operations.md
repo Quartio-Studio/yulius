@@ -1127,10 +1127,16 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    Once the new version is healthy, the helper runs **its** `yulius host check --json` (at most 2
    minutes; SPEC-203). That re-checks what sandboxes need for Docker, with only safe, idempotent
    fixes: the needrestart rule, the host's own Docker units, the modules file and loading, the
-   binary's owner. A failed item, or a "sandbox Docker" that does not hold, is a regression. It
-   is shown in the update's outcome ("Sandboxes may have lost Docker with this update", with the
-   reasons) and on the Sandbox Docker card, never only in a log. A regression does not roll the
-   update back. The report is kept in `/var/lib/yulius-update/host-check.json`.
+   binary's owner. A failed item, or a "sandbox Docker" that does not hold, is a regression. The
+   update's outcome says it in one line ("Sandboxes may have lost Docker with this update" when
+   the report's "sandbox Docker" does not hold; "Sandboxes still get Docker; the host check after
+   it left N items to fix" when only other items failed), and the Sandbox Docker card lists the
+   items of the latest root check (naming `sudo yulius host setup` when Docker held), never only
+   in a log (SPEC-227).
+   A helper unit installed before SPEC-203 keeps `/etc` read-only, so its re-check fails the
+   needrestart rule, the modules file and "update helper" until `sudo yulius host setup` runs once.
+   A regression does not roll the update back. The report is kept in
+   `/var/lib/yulius-update/host-check.json`.
 4. **Resume**: the server that started releases and thaws the tasks one by one; they go on as if
    nothing happened, except the tasks a person paused, which stay paused until they resume them.
    A server that starts with no update open thaws any run group left frozen but those.

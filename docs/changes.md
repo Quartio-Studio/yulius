@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- Settings → Instance no longer says "sandboxes may have lost Docker" twice when they have not
+  (SPEC-227, task #213, fixes #674). An update helper unit from before SPEC-203 keeps `/etc`
+  read-only, so the re-check failed its needrestart rule, modules list and drop-in items while
+  its own "sandbox Docker" verdict held. The headline now follows that verdict ("Sandboxes get
+  Docker; run `sudo yulius host setup` on the server"), the update's outcome is one line pointing
+  to the Sandbox Docker card instead of repeating its list, and a failed host write names its
+  file once.
 - One Start onboarding shows one toast again (SPEC-224, task #210, fixes #581). A sandbox page the
   person had already left (it had opened the onboarding task) still rendered once the
   superadmin's recovery state answered, and took back the opened task's "Onboarding started:

@@ -10,7 +10,7 @@ import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { keySettingsCard } from '../instancekeys.js';
-import { sandboxDockerCard } from '../sandboxdocker.js';
+import { sandboxDockerCard, hostCheckKeptDocker, hostCheckItems } from '../sandboxdocker.js';
 import { leftoversCard } from '../leftovers.js';
 import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
 
@@ -89,13 +89,16 @@ function outcome(run) {
       : null);
 }
 
-/** The new version's re-check of sandboxes' Docker after the install (SPEC-203 HST-012). */
+/** The new version's re-check of sandboxes' Docker after the install (SPEC-203 HST-012), in one
+ * line: its items are the Sandbox Docker card's, which shows the latest root check (#674). */
 function dockerRecheck(report) {
   if (!report) return null;
   if (report.ok) return h('p', { class: 'muted small' }, icon('check', { size: 14 }), ' Sandboxes still get Docker.');
-  const problems = [report.error, ...(report.lines || []).filter((l) => l.outcome === 'failed').map((l) => `${l.name}: ${l.detail}`)].filter(Boolean);
+  if (hostCheckKeptDocker(report)) {
+    return h('p', { class: 'muted small' }, icon('warn', { size: 14 }), ` Sandboxes still get Docker; the host check after it left ${hostCheckItems(report)} to fix (Sandbox Docker, below).`);
+  }
   return h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }),
-    h('div', { class: 'banner-text' }, h('strong', null, 'Sandboxes may have lost Docker with this update.'), h('ul', null, problems.map((p) => h('li', null, p)))));
+    h('div', { class: 'banner-text' }, h('strong', null, 'Sandboxes may have lost Docker with this update.'), ' The Sandbox Docker card below has the latest host check.'));
 }
 
 /** Superadmin: version, updates, sandboxes' Docker, the Jev and Vidoc keys. */
@@ -115,9 +118,17 @@ export function mountInstancePage(ctx) {
   const leftovers = leftoversCard(ctx);
   frame.body.append(updatesCard, docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
+  /** The run outcome last rendered; `undefined` before the first render. */
+  let shownOutcome;
+
   function render(view) {
     if (!view) return;
     const run = view.run;
+    // An update that ends while the page is open wrote a new host check: the Sandbox Docker
+    // card, which the outcome points to, reads it again (#674).
+    const ended = run && OUTCOMES.has(run.state) ? `${run.id}:${run.state}:${run.docker ? 'checked' : ''}` : null;
+    if (shownOutcome !== undefined && ended && ended !== shownOutcome) docker.refresh();
+    shownOutcome = ended;
     const running = run && !OUTCOMES.has(run.state);
     const check = view.check || {};
     const available = view.available;

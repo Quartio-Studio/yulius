@@ -54,6 +54,8 @@ struct Fake {
     docker_ps_fails: bool,
     /// Tasks containerd runs for others than Docker (k3s, nerdctl).
     containerd_tasks: usize,
+    /// Files whose write fails as on a read-only `/etc` (the update helper's, #674).
+    read_only: BTreeSet<PathBuf>,
 }
 
 impl Fake {
@@ -77,6 +79,7 @@ impl Fake {
             gids: BTreeMap::new(),
             docker_ps_fails: false,
             containerd_tasks: 0,
+            read_only: BTreeSet::new(),
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -202,6 +205,10 @@ impl Host for Fake {
 
     fn write(&mut self, path: &Path, content: &str, mode: u32) -> Result<(), String> {
         self.log.push(format!("write {}", path.display()));
+        if self.read_only.contains(path) {
+            // As `RealHost` says it: the caller names the file.
+            return Err("Read-only file system (os error 30)".to_owned());
+        }
         self.files.insert(
             path.to_path_buf(),
             (content.to_owned(), 0, 0o100_000 | mode),
@@ -1319,5 +1326,27 @@ fn a_group_writable_directory_counts_only_with_the_service_users_group() {
         outcome(&lines, "yulius binary"),
         HostOutcome::Failed,
         "{lines:#?}"
+    );
+}
+
+/// A file that cannot be written is named once, with why (#674): the update helper's re-check
+/// under a read-only `/etc`, and the setup's Docker source.
+#[test]
+fn a_file_that_cannot_be_written_is_named_once() {
+    let mut fake = Fake::set_up();
+    fake.files.remove(Path::new(NEEDRESTART_RULE_FILE));
+    fake.read_only.insert(PathBuf::from(NEEDRESTART_RULE_FILE));
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        line(&lines, "needrestart").detail,
+        format!("cannot write {NEEDRESTART_RULE_FILE}: Read-only file system (os error 30)")
+    );
+
+    let mut fake = Fake::fresh();
+    fake.read_only.insert(PathBuf::from(DOCKER_SOURCE));
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        line(&lines, "Docker Engine").detail,
+        format!("cannot write {DOCKER_SOURCE}: Read-only file system (os error 30)")
     );
 }

@@ -154,8 +154,10 @@ function seed(params) {
     },
     // Whether sandboxes get Docker (SPEC-203): `docker=rebuild` (the base lacks the host's
     // dockerd and is being rebuilt; a sandbox on its own docker.io; the update's re-check found a
-    // problem), `docker=legacy` (sandboxes not isolated); `smoke=fail` (the smoke's pull fails).
-    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null },
+    // problem), `docker=kept` (the last host check failed items but kept Docker, #674; with
+    // `update=1` there is none until the update's), `docker=legacy` (sandboxes not isolated);
+    // `smoke=fail` (the smoke's pull fails).
+    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
@@ -3327,8 +3329,11 @@ function runUpdate(db, id) {
       db.update.offer = null;
       // The new version's re-check of sandboxes' Docker (SPEC-203 HST-012).
       const docker = db.docker.mode === 'rebuild'
-        ? { ok: false, commit: db.update.current, checked_at: Date.now(), error: null, lines: [{ name: 'kernel modules', outcome: 'failed', detail: 'cannot load overlay: modprobe: FATAL: Module overlay not found' }] }
-        : { ok: true, commit: db.update.current, checked_at: Date.now(), error: null, lines: [] };
+        ? { ok: false, commit: db.update.current, checked_at: Date.now(), error: null, lines: [{ name: 'kernel modules', outcome: 'failed', detail: 'cannot load overlay: modprobe: FATAL: Module overlay not found' }, { name: 'sandbox Docker', outcome: 'failed', detail: 'the kernel lacks overlay, which a sandbox engine needs' }] }
+        : db.docker.mode === 'kept'
+          ? keptHostCheck(db.update.current, Date.now())
+          : { ok: true, commit: db.update.current, checked_at: Date.now(), error: null, lines: [] };
+      if (db.docker.mode === 'kept') db.docker.hostCheck = docker;
       moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.`, docker });
     }
   }, UPDATE_STEP_MS * 4);
@@ -3391,6 +3396,19 @@ const SMOKE_CHECKS = [
   ['docker compose up (two services) in the old run', 'probe-1 exited with code 0'],
 ];
 
+/** `docker=kept`: a re-check whose safe fixes failed (a helper unit from before SPEC-203 keeps
+ * /etc read-only) while its own "sandbox Docker" verdict holds (#674). */
+function keptHostCheck(commit, checkedAt) {
+  const lines = [
+    { name: 'needrestart', outcome: 'failed', detail: 'cannot write /etc/needrestart/conf.d/yulius.conf: Read-only file system (os error 30)' },
+    { name: 'host Docker units', outcome: 'ok', detail: 'not installed' },
+    { name: 'kernel modules', outcome: 'failed', detail: 'cannot write /etc/modules-load.d/yulius-docker.conf: Read-only file system (os error 30)' },
+    { name: 'update helper', outcome: 'failed', detail: 'cannot write /etc/modules-load.d after an update; run `sudo yulius host setup`' },
+    { name: 'sandbox Docker', outcome: 'ok', detail: 'each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on first use' },
+  ];
+  return { ok: false, commit, checked_at: checkedAt, error: null, lines };
+}
+
 function sandboxDockerView(db) {
   const d = db.docker;
   const base = { own_engine_fix: OWN_ENGINE_FIX, smoke: clone(d.smoke), host_check: null, own_engines: [], rebuild: null };
@@ -3403,10 +3421,12 @@ function sandboxDockerView(db) {
       detail: 'the current sandbox base (base-3) has no `dockerd` though the host has one: a new base is being built; until then only a sandbox with Docker installed in it gets an engine',
       rebuild: { building_since: iso(2 * MIN), pending_since: null, starts_at: null, ready_by: isoIn(MIN), last_build_secs: 190, error: null },
       own_engines: [{ sandbox: '6b76ccc7-0000-4000-8000-000000000001', name: 'quartio/product', dockerd: 'usr/sbin/dockerd' }],
-      host_check: { ok: false, commit: db.update.current, checked_at: Date.now() - 20 * MIN, error: null, lines: [{ name: 'host Docker units', outcome: 'changed', detail: 'disabled and stopped docker.service' }, { name: 'kernel modules', outcome: 'failed', detail: 'cannot load overlay: modprobe: FATAL: Module overlay not found' }] },
+      host_check: { ok: false, commit: db.update.current, checked_at: Date.now() - 20 * MIN, error: null, lines: [{ name: 'host Docker units', outcome: 'changed', detail: 'disabled and stopped docker.service' }, { name: 'kernel modules', outcome: 'failed', detail: 'cannot load overlay: modprobe: FATAL: Module overlay not found' }, { name: 'sandbox Docker', outcome: 'failed', detail: 'the kernel lacks overlay, which a sandbox engine needs' }] },
     };
   }
-  return { ...base, ok: true, isolated: true, host_dockerd: true, base: { id: 'base-9', dockerd: true }, detail: 'each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on first use; `sudo yulius doctor --docker-smoke` proves it on this host' };
+  if (d.mode === 'kept' && d.hostCheck === undefined) d.hostCheck = db.update.fail || db.update.offer ? null : keptHostCheck(db.update.current, Date.now() - 41 * MIN);
+  const hostCheck = d.mode === 'kept' ? d.hostCheck : null;
+  return { ...base, ok: true, isolated: true, host_dockerd: true, base: { id: 'base-9', dockerd: true }, host_check: hostCheck, detail: 'each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on first use; `sudo yulius doctor --docker-smoke` proves it on this host' };
 }
 
 route('GET', '/api/admin/sandbox-docker', ({ db }) => { superadminOnly(db); return sandboxDockerView(db); });
