@@ -35,6 +35,8 @@ pub const MAX_SKILL_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_SKILL_ENTRIES: usize = 2_000;
 /// Maximum directory depth inside one skill.
 pub const MAX_SKILL_DEPTH: usize = 16;
+/// Most entries read from one folder of the skills folder (the agent can fill it).
+const MAX_LISTED_ENTRIES: usize = 10_000;
 /// Deepest tree removed from the skills folder (each level holds one open handle).
 const MAX_REMOVE_DEPTH: usize = 64;
 /// Flags of every folder opened in the skills folder.
@@ -443,6 +445,27 @@ mod tests {
         };
         let result = install_skills(&[skill], dir.path(), Path::new("home/.claude/skills"));
         assert_eq!(fs::read_to_string(&victim)?, "precious", "{result:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_skills_folder_with_too_many_entries_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("catalog/review");
+        fs::create_dir_all(&source)?;
+        fs::write(source.join("SKILL.md"), "---\nname: review\n---\n")?;
+        // The agent filled its skills folder: the server never lists it all into memory.
+        let skills = dir.path().join("home/.claude/skills");
+        fs::create_dir_all(&skills)?;
+        for n in 0..=MAX_LISTED_ENTRIES {
+            fs::write(skills.join(format!("f{n}")), "")?;
+        }
+        let skill = SkillDir {
+            name: "review".into(),
+            path: source,
+        };
+        let result = install_skills(&[skill], dir.path(), Path::new("home/.claude/skills"));
+        assert!(result.is_err(), "{result:?}");
         Ok(())
     }
 
