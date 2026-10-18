@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- The test of a launch `/goal` watched again after a restart runs in CI again (SPEC-223, task
+  #209, fixes #514). It was quarantined as flaky under load; the cause was its own setup: it
+  stopped the first server once the run was recorded, not once it was spawned, so under load the
+  stop cut the spawn, the next server found no process and ended the run as lost, and no watch
+  could flag it. The test now waits for the spawned run. No product change.
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
