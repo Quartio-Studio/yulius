@@ -638,7 +638,7 @@ impl App {
         if let Some(every) = services.check_every {
             let due = self.updates.next_check_ms.load(Ordering::SeqCst);
             if now >= due {
-                self.check_releases().await;
+                self.check_releases(None).await;
                 let next = now.saturating_add(i64::try_from(every.as_millis()).unwrap_or(i64::MAX));
                 self.updates.next_check_ms.store(next, Ordering::SeqCst);
             }
@@ -701,7 +701,9 @@ impl App {
     }
 
     /// Reads `main` now and caches the result; tells viewers when the offered update changed.
-    async fn check_releases(&self) {
+    /// With `reuse_within`, a result stored meanwhile (by the check this one waited for) that is
+    /// younger than that many milliseconds is kept instead.
+    async fn check_releases(&self, reuse_within: Option<i64>) {
         let Some(services) = self.update_services() else {
             return;
         };
@@ -709,6 +711,11 @@ impl App {
             return;
         };
         let _guard = self.updates.checking.lock().await;
+        if let Some(gap) = reuse_within
+            && self.last_check_within(gap)
+        {
+            return;
+        }
         let mut outcome: Option<(Result<ReleaseState, SourceError>, &'static str)> = None;
         for (token, via) in self.release_tokens(services).await {
             let result = source
@@ -783,20 +790,24 @@ impl App {
     }
 
     /// `POST /api/admin/update/check` (superadmin): reads `main` now (a check younger than
-    /// 30 s is reused).
+    /// 30 s is reused, also one that ended while this one waited for it).
     ///
     /// # Errors
     /// `Forbidden` for others.
     pub async fn check_updates_now(&self, ctx: &AuthContext) -> AppResult<UpdateView> {
         self.require_superadmin(ctx)?;
-        let fresh = self.updates.check.lock().ok().and_then(|slot| {
-            slot.as_ref()
-                .map(|s| self.now().millis_since(s.at) < MANUAL_CHECK_GAP_MS)
-        });
-        if fresh != Some(true) {
-            self.check_releases().await;
+        if !self.last_check_within(MANUAL_CHECK_GAP_MS) {
+            self.check_releases(Some(MANUAL_CHECK_GAP_MS)).await;
         }
         self.update_view(ctx).await
+    }
+
+    /// Whether the last check is younger than `gap` milliseconds.
+    fn last_check_within(&self, gap: i64) -> bool {
+        self.updates.check.lock().is_ok_and(|slot| {
+            slot.as_ref()
+                .is_some_and(|s| self.now().millis_since(s.at) < gap)
+        })
     }
 
     /// `POST /api/admin/update` (superadmin): installs the offered commit. Tasks keep working
