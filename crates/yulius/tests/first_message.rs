@@ -876,8 +876,8 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
         .await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Tidy the parser", TaskMode::Goal).await?;
-        // The run is up, not only recorded: a server stopped while it spawns leaves no process
-        // to reattach, and the next server ends the run as lost instead of watching it (#514).
+        // The run is up, not only recorded: a server stopped while it spawns leaves no run the
+        // next server can reattach, so that server ends it as lost instead of watching it (#514).
         wait_for("the run", Duration::from_secs(30), || async {
             matches!(
                 app.deps.store.live_attempt(&id).await,
