@@ -122,7 +122,8 @@ Code today:
   Docker" that is not ok is a regression: the update's outcome and Settings → Instance show it
   with its reason (since SPEC-227 the headline follows the report's own "sandbox Docker" line,
   and the outcome is one line pointing to the card's list). A binary without `host check` is
-  reported as not checked. The helper passes its unit's name (`--service`, `YULIUS_UPDATE_SERVICE`) and bounds every field of the report.
+  reported as not checked. The helper passes its unit's name (`--service`,
+  `YULIUS_UPDATE_SERVICE`) and bounds every field of the report.
   A setup or check run as root also keeps its report in `host-check.json`, so the card shows the
   latest root check.
 

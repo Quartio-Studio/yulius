@@ -118,7 +118,8 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
 
 ## Evidence
 
-- Regression tests failed before their fix: `host_setup::system::tests::a_failed_write_does_not_repeat_the_path`
+- Regression tests failed before their fix:
+  `host_setup::system::tests::a_failed_write_does_not_repeat_the_path`
   (`/proc/yulius-host-setup-test.conf: No such file or directory`); the three new e2e assertions
   (AC-1, AC-3) before the UI change (3 failed of 8); the card-refresh assertion (AC-5) before
   `docker.refresh()`; `a_file_that_cannot_be_written_is_named_once` with the `DOCKER_SOURCE`
@@ -131,7 +132,8 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
 - Independent review (fresh session, `om-code-review`): round 1 at 88dbe670 requested changes
   (major: the card was not re-read after an in-page update; minors: no failed-verdict test, the
   Docker source's error untested, mock comment; nits), all own code, all fixed in 7aa5eef4; round 2
-  approved 7aa5eef4 with doc nits, fixed after.
+  approved 7aa5eef4 with doc nits; a third look approved the docs-only head and found one wrap
+  left, fixed after.
 - Not tested here: the real server. Nothing in this sandbox can read the host's `/etc` or
   `host-check.json`; the operator's `sudo yulius host setup` (asked for in this task) is what clears
   the three items, and the next update's re-check confirms it. The Leftovers "Permission denied"
