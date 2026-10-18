@@ -99,3 +99,30 @@ Confirmed against `dev` at c3ba79d0.
   across `bwrap`. See ADR-0176 for the alternatives.
 - No separate service-user attempt for these paths: inside the mapped namespace uid 0 is the
   service user, so the helper removes whatever the service user could.
+
+## Evidence
+
+- Regression first (62b6a84b, before the fix): `cargo nextest run -p yulius -E 'binary_id(yulius::main)
+  & test(/^leftovers::(a_removed_sandbox_loses|unused_ci_checkouts)/)'` → 2 failed: "worktrees goes
+  through the mapped removal: [sysroots/old, runtime/sandboxes/old]" and "#675: a stale checkout goes
+  through the mapped removal". After the fix: both pass.
+- `a_failed_removal_names_the_entry_that_stayed` failed before with the unnamed
+  "Operation not permitted (os error 1)"; it passes with `/proc/self/ns/<entry>: …`.
+- Review round 1 (major, own code): `a_tree_deeper_than_the_walk_s_handles_goes` (296 levels) failed
+  before the depth fallback went through the parent's handle; it passes now. Routing pinned by
+  `only_trees_below_sandboxes_skip_the_by_path_removal`; the leftovers suite's fake isolation removes
+  with the real walk (`remove_below`), so `a_link_in_a_sandbox_never_steers_a_deletion_outside_it`
+  exercises it end to end.
+- Vidoc (medium, in the change): the root-less `remove-tree` form. Fixed test-first:
+  `remove_tree_needs_the_directory_it_walks_down_from` failed, then `--below` became required for
+  every caller.
+- `remove_tree_below_never_goes_through_a_link` (helper): a plain tree goes, a link on the way fails
+  and its target is kept, a missing path is fine, a path outside the root is refused.
+- `scripts/dev ci` at e2357880: exit 0, 2240 tests passed, 17 skipped (clippy, docs, macOS
+  compile, contracts included).
+- `scripts/dev security`: exit 0 at d50f5bae (two findings outside the change: manager.rs:904,
+  docker_smoke.rs:308, filed by CI); the final head is rescanned before delivery.
+- Pre-existing finding of the review (a `0o000` directory on the no-isolation path): #680.
+- Not testable here: the real mapped namespace. A probe as the `yulius` user with
+  `unshare --map-auto --map-root-user` was refused (this session itself runs in a sandbox; nested
+  user namespaces get EPERM). On the server after the update, the next round clears the banner.
