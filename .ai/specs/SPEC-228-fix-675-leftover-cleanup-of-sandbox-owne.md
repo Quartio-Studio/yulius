@@ -111,8 +111,10 @@ Confirmed against `dev` at c3ba79d0.
 - Review round 1 (major, own code): `a_tree_deeper_than_the_walk_s_handles_goes` (296 levels) failed
   before the depth fallback went through the parent's handle; it passes now. Routing pinned by
   `only_trees_below_sandboxes_skip_the_by_path_removal`; the leftovers suite's fake isolation removes
-  with the real walk (`remove_below`), so `a_link_in_a_sandbox_never_steers_a_deletion_outside_it`
-  exercises it end to end.
+  with the real walk (`remove_below`), so every mapped removal of the suite runs it (in
+  `a_link_in_a_sandbox_never_steers_a_deletion_outside_it` the guard still refuses the draft before
+  any removal; the walk's own link refusal is proven by `remove_tree_below_never_goes_through_a_link`
+  and `the_removal_never_goes_through_a_link_on_the_way`).
 - Vidoc (medium, in the change): the root-less `remove-tree` form. Fixed test-first:
   `remove_tree_needs_the_directory_it_walks_down_from` failed, then `--below` became required for
   every caller.
