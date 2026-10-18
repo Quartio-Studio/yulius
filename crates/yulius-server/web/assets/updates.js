@@ -118,6 +118,8 @@ export function createUpdateBanner(ctx) {
   let timer = null;
   let destroyed = false;
   let quiet = false; // the instance page shows the same, in full
+  let reads = 0; // reads of the view asked for
+  let shown = 0; // the read whose answer is the view
   const superadmin = () => ctx.isSuperadmin();
 
   function dismissed() {
@@ -199,9 +201,14 @@ export function createUpdateBanner(ctx) {
   }
 
   async function refresh() {
+    // Reads overlap (events, the reconnect, the poll, the instance page's actions): an answer to
+    // an older read than the one shown is dropped (#502).
+    const asked = ++reads;
     try {
       const fresh = await ctx.api.get('/api/update');
       if (destroyed || !fresh) return;
+      if (asked < shown) return;
+      shown = asked;
       view = fresh;
       if (loadedCommit === undefined) loadedCommit = (view.current && view.current.commit) || null;
       render();

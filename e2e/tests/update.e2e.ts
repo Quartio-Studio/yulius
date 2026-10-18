@@ -276,3 +276,35 @@ test('an automatic check that fails keeps the last result and raises no error', 
   await screen.getByRole('button', 'Check now').click();
   await expect(screen.getByText(/Couldn’t check for updates/)).toBeVisible();
 });
+
+// #502 (SPEC-226 UPC-002): reads of the update view overlap (events, the reconnect, the poll); an
+// older read answering after a newer one must not bring its older view back.
+type UpdateMock = {
+  update: { offer: string | null };
+  holdUpdateReads: boolean;
+  updateReads: () => number;
+  updateReadsTaken: number;
+  releaseUpdate: () => void;
+  announceUpdate: () => void;
+};
+const updateMock = <T>(browser: Browser, run: (m: UpdateMock) => T) => browser.evaluate(`(${run.toString()})(window.__yuliusMock)`) as Promise<T>;
+
+test('an older update read answering last does not replace a newer one', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&update=1'));
+  const offer = screen.getByRole('link', /^Update available:/);
+  await expect(offer).toBeVisible();
+  // A read starts while the update is on offer; the offer goes (installed elsewhere) and a second
+  // read starts. Each answers what it saw when it arrived.
+  await updateMock(browser, (m) => { m.holdUpdateReads = true; m.announceUpdate(); });
+  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBe(1);
+  await updateMock(browser, (m) => { m.update.offer = null; m.announceUpdate(); });
+  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBe(2);
+  // The newer answer first: the offer is gone.
+  await updateMock(browser, (m) => m.releaseUpdate());
+  await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(1);
+  await expect(offer).toBeHidden();
+  // The older answer last: once read it is handled at once, and dropped.
+  await updateMock(browser, (m) => m.releaseUpdate());
+  await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(2);
+  await expect(offer).toBeHidden();
+});
