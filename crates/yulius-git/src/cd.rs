@@ -141,7 +141,8 @@ impl Git {
     }
 
     /// Writes the tree of commit `sha` of `mirror` as plain files into the new directory `dest`
-    /// (no `.git`), ignoring replacement refs.
+    /// (no `.git`), ignoring replacement refs and the server's global and system configuration
+    /// and attributes: no filter driver (git-lfs included) runs on what the commit says.
     ///
     /// # Errors
     /// `dest` exists, invalid input, or Git failures.
@@ -164,6 +165,9 @@ impl Git {
         let read = self.run_ok(
             Invocation::new(self, "read-tree", Some(mirror))
                 .env("GIT_NO_REPLACE_OBJECTS", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_ATTR_NOSYSTEM", "1")
                 .env("GIT_INDEX_FILE", index_text.clone())
                 .args(["read-tree", "--end-of-options"])
                 .arg(&tree),
@@ -172,6 +176,9 @@ impl Git {
             self.run_ok(
                 Invocation::new(self, "checkout-index", Some(mirror))
                     .env("GIT_NO_REPLACE_OBJECTS", "1")
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_ATTR_NOSYSTEM", "1")
                     .env("GIT_INDEX_FILE", index_text)
                     .arg("--work-tree")
                     .arg(dest)
