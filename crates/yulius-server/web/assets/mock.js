@@ -2632,6 +2632,8 @@ route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
   if (!m) fail(404, 'not_found', 'not found');
   if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  // Tests see which servers were tested (`__yuliusMock.mcpTests`).
+  (db.mcpTests ||= []).push(m.id);
   return m.name === 'apify' ? { ok: false, tools: [], error: 'APIFY_TOKEN rejected (401)' } : { ok: true, tools: ['search_knowledge', 'get_customer', 'list_feedback', 'get_product_doc'], error: null };
 });
 
