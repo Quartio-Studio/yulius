@@ -25,6 +25,9 @@ use yulius_app::model::{
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
 use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState, GhPull};
+use yulius_app::ports::session::{
+    AttachedRun, Containment, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
+};
 use yulius_app::ports::store::{
     CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
@@ -635,6 +638,15 @@ async fn add_user(
 }
 
 async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
+    fixture_with(profile, false, None).await
+}
+
+/// [`fixture`] with containment on or off, and another process host than the real one.
+async fn fixture_with(
+    profile: &DeliveryProfile,
+    contained: bool,
+    host: Option<Arc<dyn SessionHost>>,
+) -> BoxResult<Fixture> {
     let root = tempfile::tempdir()?;
     let origin = root.path().join("origin.git");
     git(
@@ -660,8 +672,11 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let h = support::harness_with(support::HarnessOptions {
         git: Some(real_git.clone()),
-        session_host: Some(Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
+        session_host: Some(
+            host.unwrap_or_else(|| Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
+        ),
         dir: Some(tempfile::Builder::new().prefix("ydl").tempdir_in("/tmp")?),
+        configure: Some(Box::new(move |config| config.contained = contained)),
         ..support::HarnessOptions::default()
     })?;
     h.github.set_remote(Arc::new(BareRemote {
@@ -4961,5 +4976,162 @@ async fn an_environment_run_never_fetches_in_the_sandbox_clone() -> TestResult {
         stale,
         "the sandbox clone was not fetched"
     );
+    Ok(())
+}
+
+/// #656 (SPEC-219 AC-2): with containment on, an environment command runs in the sandbox's
+/// containment: a file of the host outside the sandbox and the run is not there, and `HOME` is the
+/// run's own.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn contained_environment_runs_see_only_their_sandbox() -> TestResult {
+    let probe = Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED contained_environment_runs_see_only_their_sandbox: bubblewrap cannot run here"
+        );
+        return Ok(());
+    }
+    let f = fixture_with(&DeliveryProfile::product(), true, None).await?;
+    let host_only = f.h.app.config.data_dir.join("host-only.txt");
+    std::fs::write(&host_only, "the host's\n")?;
+    let command = format!(
+        "if [ -e '{}' ]; then echo leaked; exit 7; fi; echo \"contained home=$HOME\"",
+        host_only.display()
+    );
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [
+                    {"name": "dev-vm", "after": "integration", "verify": "command", "command": command}
+                ]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "succeeded", "{run}");
+    let runs = f.h.app.config.data_dir.join("runs").join("env-");
+    assert!(
+        output.contains(&format!("contained home={}", runs.display())),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// Records the plan of the one run it is asked to start and refuses to start it.
+#[derive(Default)]
+struct RecordingHost {
+    plan: std::sync::Mutex<Option<(PathBuf, LaunchPlan)>>,
+}
+
+#[async_trait]
+impl SessionHost for RecordingHost {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        _: &str,
+        _: &str,
+        plan: &LaunchPlan,
+        _: &[u8; 32],
+        _: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        if let Ok(mut slot) = self.plan.lock() {
+            *slot = Some((run_dir.to_path_buf(), plan.clone()));
+        }
+        Err(AppError::Upstream("recorded, not started".into()))
+    }
+    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
+        Err(AppError::Upstream("nothing runs".into()))
+    }
+    fn inspect(&self, _: &Path) -> RunInspection {
+        RunInspection::Missing
+    }
+    fn terminate(&self, _: &Path) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+/// #656 (SPEC-219 ENV-002/003, AC-2 where bubblewrap cannot run): a contained server starts an
+/// environment run in the sandbox's containment, as a CD dev run: its root is the sandbox, only its
+/// own directory is writable, its `HOME` is fresh there, and it runs the commit's files written into
+/// that directory, not the sandbox clone.
+#[tokio::test]
+async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> TestResult {
+    let host = Arc::new(RecordingHost::default());
+    let f = fixture_with(&DeliveryProfile::product(), true, Some(host.clone())).await?;
+    deployable(&f).await?;
+    let run = agent_deploys(&f).await?;
+    assert_eq!(
+        run["state"], "error",
+        "the recording host starts nothing: {run}"
+    );
+    let (run_dir, plan) = host
+        .plan
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .ok_or("no run was started")?;
+    let runs = f.h.app.config.data_dir.join("runs");
+    assert!(
+        run_dir.starts_with(&runs)
+            && run_dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("env-")),
+        "{}",
+        run_dir.display()
+    );
+    let work = run_dir.join("work");
+    assert_eq!(plan.cwd, work.join("src"));
+    assert!(
+        plan.argv.iter().any(|arg| arg.contains("cat feature.txt")),
+        "{:?}",
+        plan.argv
+    );
+    let Containment::Bubblewrap {
+        sandbox_root,
+        home,
+        writable,
+        ..
+    } = &plan.containment
+    else {
+        return Err(format!("not contained: {:?}", plan.containment).into());
+    };
+    assert_eq!(sandbox_root, &f.h.app.config.data_dir.join("sandboxes/s1"));
+    assert_eq!(home, &work.join("home"));
+    assert!(
+        writable.iter().all(|dir| dir.starts_with(&work)),
+        "{writable:?}"
+    );
+    assert!(
+        plan.env
+            .iter()
+            .any(|(k, v)| k == "HOME" && *v == work.join("home").to_string_lossy()),
+        "{:?}",
+        plan.env
+    );
+    assert!(plan.secret_env.is_empty());
+    assert!(!run_dir.exists(), "the run's directory goes with it");
     Ok(())
 }
