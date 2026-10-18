@@ -1236,7 +1236,7 @@ export function mountComposer(ctx, sandbox) {
   let recovery = null;
   const me0 = ctx.store.state.me;
   if (me0 && me0.user && me0.user.is_superadmin) {
-    ctx.api.get('/api/auth/recovery').then((state) => { recovery = state; renderBanner(); }).catch(() => {});
+    ctx.api.get('/api/auth/recovery').then((state) => { recovery = state; if (!destroyed) renderBanner(); }).catch(() => {});
   }
 
   let gateKey = '';
@@ -1306,7 +1306,9 @@ export function mountComposer(ctx, sandbox) {
    * render that asks for it: the router mounts views synchronously, and this one may be mid-mount.
    */
   function openOnboarding(sb, prep) {
-    if (opening) return;
+    // A view already left acts on nothing: its timer would take back the announcement of the page
+    // that did open the task, and the start would then say so a second time (#581).
+    if (opening || destroyed) return;
     opening = true;
     // Said by this page: a start running meanwhile (pressed here or in a composer since left) says
     // nothing of its own.
