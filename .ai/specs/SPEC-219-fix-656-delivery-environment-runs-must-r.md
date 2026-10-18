@@ -71,7 +71,10 @@ inside the sandbox's containment like a CD dev run.
 - [x] Contained test: the environment command cannot read a host-only path
 - [x] The host runner is gone and a lost run's process host is terminated
 - [x] ADR-0175, architecture, product and changes updated
-- [ ] Gates green, independent review answered, delivered
+- [x] Review round 1 answered: run logs read through a held handle, export without global Git config, stale scan ignores removed
+- [x] Gates and security scan green on the answered head
+- [ ] Review round 2 approves the exact head
+- [ ] Merged into dev on green CI with Fixes #656
 
 ## Acceptance criteria
 
@@ -164,3 +167,15 @@ inside the sandbox's containment like a CD dev run.
   than 1 MiB (the stored tail is bounded either way); the restart test's double finish is
   harmless (the second write is refused); the delivery test fake ignores `source` and `token`,
   covered by `git_adapter::an_environment_head_is_fetched_from_github_into_the_mirror`.
+
+### After round 1
+
+- `scripts/dev ci` at 067a6749: exit 0, 2221 tests passed, 18 skipped. (At ac5a179b it had failed
+  to compile `yulius-app`'s tests: `exec.rs`'s test module still used `PathBuf`; fixed.)
+- `scripts/dev security`: at ac5a179b it failed on Vidoc flagging `.config/vidoc.toml`'s own
+  reviewed entries as "suppressed" (the file is in the change) and on a medium at
+  `delivery.rs:4042` claiming the environment command comes from the repository. It comes from the
+  sandbox profile, which only repository administrators set through the API, and it runs
+  contained (this change). Both are recorded as narrow `[[ignore]]` entries, one per wording Vidoc
+  used (two wordings for the `delivery.rs` one), for round 2's reviewer to agree to. Then exit 0
+  at e2afddb8; 10 findings outside the change, filed by Yulius CI.
