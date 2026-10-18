@@ -743,13 +743,18 @@ test('a composition that changed nothing after a paste does not attach its uploa
   await browser.evaluate(() => {
     document.querySelector('.composer-prompt')!.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true }));
   });
+  // Typed at once, well within the 1 s in which typing merges into the step before (TYPING_MS).
   await browser.keyboard.type('x');
   await browser.evaluate(() => (window as unknown as Holding).__release!());
   await expect(browser.locator('.composer-box .upload-status-float')).toHaveText(/Added b\.png/);
   await expect.poll(() => trayNames(browser)).toEqual(['b.png']);
   expect(await promptText(browser)).toBe('One [b.png]x');
+  // "x" is a step of its own: the paste was no typing to merge into.
+  await browser.keyboard.press('ControlOrMeta+z');
+  expect(await promptText(browser)).toBe('One [b.png]');
+  expect(await trayNames(browser)).toEqual(['b.png']);
   // Undo past the paste: the upload leaves the tray with it.
-  for (let i = 0; i < 4 && (await promptText(browser)) !== 'One '; i += 1) await browser.keyboard.press('ControlOrMeta+z');
+  await browser.keyboard.press('ControlOrMeta+z');
   expect(await promptText(browser)).toBe('One ');
   expect(await trayNames(browser)).toEqual([]);
   await prompt.press('ControlOrMeta+Enter');

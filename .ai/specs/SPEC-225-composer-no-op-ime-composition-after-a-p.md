@@ -1,11 +1,11 @@
 ---
 yulius-task: 2d1407f3-5f88-4c24-8e22-8bd09244105f
-status: in-progress
+status: done
 ---
 
 # SPEC-225: A no-op record never turns the paste's undo step into typing
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: task #211
 Scope authorization: task #211, "Fix GitHub issue #513". Fixes #513, a follow-up of the SPEC-150
@@ -60,12 +60,12 @@ Also untested (issue #513): `drafts.js` sets a thumbnail on an upload that is ou
 
 ## Plan
 
-- [ ] Spec SPEC-225 written and validated
-- [ ] Failing e2e: no-op compositionend after a paste keeps the upload out of undone steps
-- [ ] record() fix: no-op record leaves history.kind; replacing keeps step identity
-- [ ] e2e: thumbnail arriving while a paste is undone shows after redo and reload
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review answered
+- [x] Spec SPEC-225 written and validated
+- [x] Failing e2e: no-op compositionend after a paste keeps the upload out of undone steps
+- [x] record() fix: no-op record leaves history.kind; replacing keeps step identity
+- [x] e2e: thumbnail arriving while a paste is undone shows after redo and reload
+- [x] Docs, changes entry and gates green
+- [x] Independent review answered
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
@@ -80,7 +80,8 @@ Also untested (issue #513): `drafts.js` sets a thumbnail on an upload that is ou
 
 - "a composition that changed nothing after a paste does not attach its upload to the steps before
   it" (IME-001/002/003): type "One ", hold the upload, paste, dispatch an empty `compositionend`,
-  type "x", release, undo until the text is "One ": the tray is empty; start: the prompt is "One".
+  type "x", release; one undo gives "One [b.png]" with the file (the "x" was a step of its own),
+  the next gives "One " with an empty tray; start: the prompt is "One".
 - "a thumbnail made while its paste is undone shows after redo and a reload" (IME-004):
   `createImageBitmap` held, paste, upload ends, undo (tray empty), the thumbnail is made, redo
   (tray shows it), the stored draft holds one thumbnail, reload: the tile shows an image.
@@ -90,4 +91,26 @@ Also untested (issue #513): `drafts.js` sets a thumbnail on an upload that is ou
 - Both changes of the issue's acceptance criteria, not one: IME-001 removes the cause (a no-op is
   not typing), IME-002 keeps a step's identity for any other way typing could merge into a step
   someone holds. Each is one line; neither changes what an undo shows.
+- A side effect, accepted: Firefox's `input` event after `compositionend` changes nothing; it
+  used to set the kind to `insertCompositionText`, so each composition was a step of its own. Now
+  compositions less than `TYPING_MS` apart merge into one step, as they already did in Chrome.
+  The same holds for undo then a no-op composition: the restored step is no longer typed over.
 - No ADR: no lasting design choice; the history's contract stays SPEC-124/SPEC-150's.
+
+## Evidence
+
+- Regression test first: "a composition that changed nothing after a paste…" failed on `dev`
+  (a3b9b04a) with `expected ["b.png"] to equal []` (commit b3a69b5b), and passes with the fix.
+- Each half proven: with only the in-place merge (old `else if` chain kept) the test fails at the
+  first undo (`expected "One " to be "One [b.png]"`); with only the early return it passes. Both
+  are kept (Decisions).
+- Thumbnail test: passes; with `drafts.js` changed to skip thumbnails of uploads out of the tray it
+  fails (the stored draft never holds one).
+- `scripts/dev ci`: exit 0 (nextest 2233 passed, 18 skipped).
+- `cd e2e && npx e2e run`: 619 passed, 1 skipped (`agent.e2e.ts`, unrelated), on cd38c53a; the
+  tightened test passes again afterwards.
+- `scripts/dev security`: Vidoc vidoc-1 change scan, no open critical, high or in-change medium
+  finding (exit 0); no low findings reported.
+- Independent review (fresh session, read-only, cd38c53a): APPROVE with three minor findings and a
+  nit, all own code, all answered: exact undo steps in the test (the loop did not prove IME-001),
+  a comment on the 1 s timing assumption, the Firefox side effect above, and the ticked plan.
