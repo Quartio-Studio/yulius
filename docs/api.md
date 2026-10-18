@@ -831,7 +831,7 @@ read-only in the UI.
 | POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
 | GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
 | PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
-| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). |
+| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
 
 ```json
 Workflow = {"id","name","description","steps":["Write the spec","Implement","Test"],
@@ -848,7 +848,9 @@ AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_of
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
 McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
-             "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true}
+             "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true,
+             "origin":"person|mcp_json"}   // mcp_json: imported from .mcp.json until a PUT changes
+                                           // what it runs (stdio command/args + env, or HTTP url)
 McpServerInput = {"name","transport","command?","args?","url?","env?":{"KEY":"value"},
                   "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance"}
 ```
