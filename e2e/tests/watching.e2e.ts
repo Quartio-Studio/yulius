@@ -335,9 +335,13 @@ test('a failed first read retried by a task event reads on by itself', async ({ 
   await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
   await touchTask(browser, 'sb_studio', 12, { status: 'running', activity: 'working' });
   await expect.poll(() => browser.evaluate(() => (document.querySelector('.taskview .watch') as HTMLElement).dataset.reading)).toBe('live');
-  // Reading on by itself: three more reads, more than the mock's own task events (one per 16 s) make.
+  // Reading on by itself: three more reads, each within 10 s of the one before, more often than the
+  // mock's own task events (one per 16 s) come. Each read waits 1.5 s after the last one answered,
+  // so one budget for all three failed on a loaded runner (#581).
   const after = await reads(browser);
-  await expect.poll(() => reads(browser), { timeout: 10_000, message: 'it polls on its own' }).toBeGreaterThan(after + 2);
+  for (const more of [1, 2, 3]) {
+    await expect.poll(() => reads(browser), { timeout: 10_000, message: `it polls on its own (read ${more} of 3)` }).toBeGreaterThan(after + more - 1);
+  }
 });
 
 test('a watcher reads on with the size and session it saw, and from the tail of a new session', async ({ app, browser, screen }) => {
