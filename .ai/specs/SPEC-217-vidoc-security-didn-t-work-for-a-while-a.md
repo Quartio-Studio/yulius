@@ -152,13 +152,14 @@ but make sure it's in the default ci pipeline and will generalise for every othe
     or `vidoc_scan`.
 
   The same rule applies to the CI view (`ci_gate`) and to the verified gate the grant is read from
-  (`ci_verified_gate`). A pull request or a merge train tested with its own jobs (they changed
-  them, or bootstrap) keeps the trusted security job(s): the integration branch's scanning jobs, else, when the key
-  applies, the built-in one. Each replaces the pull request's job of the same key, so a job it
-  named `security`, or one that only mentions the scanner, never stands in for the scan
-  (`keep_security_jobs`). The security job joins even a CI at the 32-job limit, which bounds what
-  a project configures, not the scan Yulius adds. A sandbox without CI, and a playground, get no built-in job. `enabled =
-  false` in `.config/vidoc.toml` keeps turning the scan off (the job ends skipped).
+  (`ci_verified_gate`). A pull request or a merge train tested with its own jobs (they changed them,
+  or bootstrap) keeps the trusted security job(s): the integration branch's scanning jobs, else,
+  when the key applies, the built-in one. Each replaces the pull request's job of the same key, so a
+  job it named `security`, or one that only mentions the scanner, never stands in for the scan
+  (`keep_security_jobs`). The security job joins even a CI at the 32-job limit, which bounds what a
+  project configures, not the scan Yulius adds. A sandbox without CI, and a playground, get no
+  built-in job. `enabled = false` in `.config/vidoc.toml` keeps turning the scan off (the job ends
+  skipped).
 - **VDP-002.** The briefing's "Security scan" section, the onboarding text, the infra-bootstrap
   workflow and skill, and AGENTS.md describe the policy:
   - medium findings in the change block;
