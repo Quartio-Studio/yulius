@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- The sidebar's hover overlap checks in `navigation.e2e.ts` no longer fail on a loaded machine
+  (SPEC-222, task #208, fixes #515). The mock's ambient activity starts task #8 about 12 s in,
+  which regroups the sidebar. A `hover()` whose mouse move landed just after the regroup hovered
+  the row that moved in, so the check read "Checkout API" at rest (18 px over its menu). The mock
+  now takes `ambient=0` (no ambient activity at all), the test uses it, and both checks wait for
+  the hovered row's control to show and poll the overlap.
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
