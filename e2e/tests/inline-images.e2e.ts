@@ -757,6 +757,41 @@ test('a composition that changed nothing after a paste does not attach its uploa
   expect(await lastPrompt(browser)).toBe('One');
 });
 
+// #513 (SPEC-225): the thumbnail of an upload out of the tray (its paste undone) is kept for a redo.
+test('a thumbnail made while its paste is undone shows after redo and a reload', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('One ');
+  // The image's thumbnail is made only when the test lets it; `__thumbed` says it was drawn.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __thumbnail?: () => void; __thumbed?: boolean };
+    const real = window.createImageBitmap.bind(window);
+    window.createImageBitmap = (() => new Promise((resolve) => { w.__thumbnail = () => resolve(real(new ImageData(4, 4))); })) as typeof window.createImageBitmap;
+    const draw = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function (...args) { w.__thumbed = true; return draw.apply(this, args); };
+  });
+  await pasteImage(browser, 'shot.png');
+  await expect.poll(() => trayNames(browser)).toEqual(['shot.png']);
+  await expect.poll(() => browser.evaluate(() => typeof (window as unknown as { __thumbnail?: unknown }).__thumbnail)).toBe('function');
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => trayNames(browser)).toEqual([]);
+  expect(await promptText(browser)).toBe('One ');
+  await browser.evaluate(() => (window as unknown as { __thumbnail: () => void }).__thumbnail());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __thumbed?: boolean }).__thumbed === true)).toBe(true);
+  // Redo brings the file back with its thumbnail, which the stored draft keeps across a reload.
+  await browser.keyboard.press('ControlOrMeta+Shift+z');
+  await expect.poll(() => trayNames(browser)).toEqual(['shot.png']);
+  await expect.poll(() => browser.evaluate(() => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.draft.') && k.endsWith('.sb_studio'));
+    const draft = key ? JSON.parse(localStorage.getItem(key) || '{}') : {};
+    return (draft.attached || []).filter((item: { thumb?: string }) => item.thumb).length;
+  })).toBe(1);
+  await browser.reload();
+  await expect.poll(() => trayNames(browser)).toEqual(['shot.png']);
+  expect(await promptText(browser)).toBe('One [shot.png]');
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(1);
+});
+
 test('a file put in the text after × lands at the caret the person left, which the × shifted', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
