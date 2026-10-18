@@ -80,7 +80,8 @@ left, and the test that shows the duplicate depends on it happening by chance.
 - [x] Onboarding: a left composer's late read says nothing (regression test, fix)
 - [x] Watching: self-poll waits each read on its own budget (probe reproduction, fix)
 - [x] Docs, changes entry, gates and a full e2e run green
-- [x] Independent review answered, PR merged into dev on green
+- [x] Review round 1 answered: pause flake recorded on #354, plan and wording corrected
+- [x] Delivered: the approved head merged into dev on green CI (Fixes #581)
 
 ## Acceptance criteria
 
@@ -114,8 +115,9 @@ left, and the test that shows the duplicate depends on it happening by chance.
   regression test: the document title follows task events only (`app.js` refreshes `currentTask`
   on `task`, not on `tasks`), so the old wait for "Read again" in the title saw the mock's own
   task event 1.2 s after the start, never the start's read of the tasks. `endStart` waits for that
-  event first, then renames the task, releases the held read and waits for the sidebar's list,
-  which follows list reads. That the title keeps a list reload's new title only until the next
+  event first, then renames the task, releases the held read and waits for the sidebar's list.
+  The list follows task events too, but each event carries the task as it was when it went out,
+  so after that event only the held reads bring the new title. That the title keeps a list reload's new title only until the next
   task event is a small pre-existing display lag, outside this change (noted on #581).
 - **A mock hold for the recovery read** (`holdRecovery = promise`), like the mock's other
   per-route holds (`holdApprove`, `holdCreate`), since `hold=` keeps only one path and the test
@@ -148,9 +150,32 @@ load average 17–58 (parallel tasks' suites).
   and watching 24/24 passed. The failure, `pause.e2e.ts` "the Tasks list row menu pauses and
   resumes a task" (the row's action not visible within 29 s), is outside this change (no pause,
   task-list or row-menu code touched); `tests/pause.e2e.ts` alone then passed 3/3 (12/12). No
-  open issue tracks it; it is reported on #581 (this task opens no issues).
+  open issue tracked it; it is recorded on #354 (first-load waits under host load, open), since
+  this task opens no issues. The acceptance criterion's full run is therefore CI's e2e job at the
+  head (below, in the pull request).
 - `scripts/dev ci`: passed (exit 0; nextest 2233 passed, 18 skipped).
 - `yulius security-scan` (vidoc-1, change scan at b825edee): no open critical or high finding. One
   medium, `taskview.js:340` (a `needs_you` link used as `href`), is in code this branch does not
   touch (its changes are at ~1239 and ~1310), so it does not block; Yulius CI files it.
 - Probe files and edits removed; `git status` clean before the evidence commit.
+
+Independent review, round 1 (fresh session, head 8d045109, read-only): no own-code defect. It
+confirmed the cause, the two guards (no TDZ: every synchronous `renderBanner` call comes after
+`let destroyed`), the regression test's order, `endStart`'s premise and the watching waits. Its
+findings and their answers:
+
+1. Blocker (pre-existing): the full local e2e run had the `pause.e2e.ts` flake. Answer: it was
+   recorded on #354, which stays open; the green full run is CI's e2e job at the delivered head.
+2. Minor (own): the Plan ticked review and merge before they happened. Answer: the review now has
+   its own item. The delivery item stays ticked in the head that gets merged, as in SPEC-219,
+   because nothing can be committed after the merge. `delivery_merge` merges only this exact
+   head, approved and green; until then the pull request shows the item is not yet true.
+3. Nit (own): the Decisions said the sidebar follows list reads only. Answer: corrected.
+4. Minor (pre-existing, `taskview.js:1317`, unchanged): a view alive when it calls
+   `openOnboarding` but destroyed before its 0 ms timer still deletes the shared announcement.
+   Answer: left as it is. Only one composer is mounted at a time, and a composer mounted next on
+   a `preparing` sandbox has `offered` false, so it neither adds nor needs the entry; the start's
+   check meanwhile finds it missing only if that same view never showed its toast, and then the
+   start's own "Onboarding started." is the right single toast. Noted on #581.
+5. Nit (own): the regression test pins the two guards together, not each alone. Answer: accepted,
+   as the review did.
