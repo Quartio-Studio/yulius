@@ -858,10 +858,7 @@ fn launch_goal_marker(run_dir: &str) -> PathBuf {
 /// SPEC-146 GWR-002 (#453): the server restarts while a goal task's launch `/goal` is not
 /// recorded (the agent ignores it). The new server watches it again: once the session reads input
 /// and `launch_goal_ms` passed, the task is flagged with the notice, as without a restart.
-/// Quarantined: under host load the flag sometimes never comes within 45 s (#514; run it with
-/// `--run-ignored all`).
 #[test]
-#[ignore = "flaky under host load: the restarted watch's flag sometimes never comes (#514)"]
 fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
@@ -879,8 +876,13 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
         .await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Tidy the parser", TaskMode::Goal).await?;
+        // The run is up, not only recorded: a server stopped while it spawns leaves no run the
+        // next server can reattach, so that server ends it as lost instead of watching it (#514).
         wait_for("the run", Duration::from_secs(30), || async {
-            matches!(app.deps.store.live_attempt(&id).await, Ok(Some(_)))
+            matches!(
+                app.deps.store.live_attempt(&id).await,
+                Ok(Some(attempt)) if attempt.state == AttemptState::Live
+            )
         })
         .await?;
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;

@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- The test of a launch `/goal` watched again after a restart runs in CI again (SPEC-223, task
+  #209, fixes #514). It was quarantined as flaky under load; the cause was its own setup: it
+  stopped the first server once the run was recorded, not once it was spawned, so under load the
+  stop cut the spawn, the next server found no run it could reattach and ended it as lost, and no
+  watch could flag it. The test now waits for the spawned run. No product change.
 - Undoing past a pasted image takes it out of the composer's tray again after an IME composition
   that changed nothing (cancelled with Esc) (SPEC-225, task #211, fixes #513). Such a composition
   marked the history as typing, so the next keystroke replaced the paste's undo step and the
