@@ -33,7 +33,10 @@ command would still run it with an agent's `LD_PRELOAD` or `NODE_OPTIONS`.
 - An update makes the server `person` only when it changes what the server runs: a stdio server's
   command or arguments **together with** a replaced environment (or none stored), or an HTTP
   server's URL (or a new transport). Re-sending the stored fields, as the enable toggle does,
-  changes nothing. A `person` server never becomes `mcp_json` again.
+  changes nothing; the edit page re-sends the arguments exactly, empty ones included. A take-over
+  that does not replace the environment (one through another transport) drops the stored one, so
+  the file's values never reach a later local command. A `person` server never becomes `mcp_json`
+  again.
 - The MCP list badges such a server "From .mcp.json" and disables its stdio Test; the edit page
   explains it and does not run the Test on load.
 
@@ -55,6 +58,8 @@ command would still run it with an agent's `LD_PRELOAD` or `NODE_OPTIONS`.
 
 - A command an agent wrote is never run on the host by the Test. Imported servers still reach agent
   runs as before (inside the run's containment when contained).
-- To test an imported stdio server, a person edits its command line and re-enters its environment
-  (or deletes it and adds it themselves). Servers imported before this change, including ones a
+- To test an imported stdio server, a person checks its whole command line, changes it and
+  re-enters its environment (or deletes it and adds it themselves). Changing one argument is
+  enough for the rule, so the page asks the person to check the whole line; the rule keeps the
+  person's attention on what runs, it does not prove they read it. Servers imported before this change, including ones a
   person already edited, need that once.

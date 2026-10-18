@@ -304,13 +304,13 @@ export function mountMcpEditor(ctx, sandbox, id) {
   function importedNote() {
     return h('p', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' },
       server.transport === 'stdio'
-        ? 'This server came from the repository’s .mcp.json, which agents can write. Its command is not tested on the server until you change its command line and enter its environment again.'
+        ? 'This server came from the repository’s .mcp.json, which agents can write. Its command is not tested on the server until you have checked the whole command line, changed it and entered its environment again.'
         : 'This server came from the repository’s .mcp.json, which agents can write. A private or local address is not tested until you change its URL.'));
   }
   function testSection() {
     const contained = Boolean(ctx.store.state.me && ctx.store.state.me.instance && ctx.store.state.me.instance.contained);
     const allowed = canEdit && !refused() && (server.transport !== 'stdio' || !contained || admin);
-    const why = refused() ? 'From the repository’s .mcp.json: tested once you change its command' : 'With isolation on, local-command servers are tested by instance administrators';
+    const why = refused() ? 'From the repository’s .mcp.json: tested once you have checked and changed its command' : 'With isolation on, local-command servers are tested by instance administrators';
     return section('Test', null, h('div', { class: 'stack-sm' },
       imported() ? importedNote() : null,
       h('div', null, h('button', { type: 'button', class: 'btn mc-test', disabled: !allowed, title: allowed ? 'Connect and list its tools' : why, onClick: runTest }, icon('plug', { size: 14 }), 'Test connection')),
@@ -438,7 +438,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
         if (!server) { saved = snapshot(); setChildren(el, notFound({ title: 'MCP server not found', text: `There is no MCP server “${id}” for ${sandbox.name}. It may have been deleted.`, back: ['MCP', base] })); return; }
         canEdit = write && (server.scope !== 'instance' || admin);
         Object.assign(state, {
-          name: server.name, transport: server.transport, url: server.url || '', line: joinCommand([server.command, ...(server.args || [])].filter(Boolean)),
+          name: server.name, transport: server.transport, url: server.url || '', line: joinCommand([server.command, ...(server.args || [])].filter((x) => x != null)),
           token: '', replaceToken: !(server.header_keys || []).some((k) => k.toLowerCase() === 'authorization'), env: [], replaceEnv: !(server.env_keys || []).length, headers: [], scope: server.scope,
         });
         nameInput.value = server.name;

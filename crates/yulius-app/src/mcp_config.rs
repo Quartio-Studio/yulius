@@ -302,8 +302,8 @@ fn validate(input: &McpServerInput) -> AppResult<Fields> {
 
 /// Why the Test of a stdio server from `.mcp.json` does not run (SPEC-218 MOR-002).
 pub const IMPORTED_STDIO_REFUSAL: &str = "this server came from the repository's .mcp.json, which \
-     agents can write, so the Test does not run its command on the Yulius host; change its command \
-     or arguments and enter its environment again to test it";
+     agents can write, so the Test does not run its command on the Yulius host; check the whole \
+     command line, change it and enter its environment again to test it";
 /// Why the Test of an HTTP server from `.mcp.json` on a private address does not run.
 pub const IMPORTED_PRIVATE_REFUSAL: &str = "this server came from the repository's .mcp.json, \
      which agents can write, so the Test does not connect to its private or loopback address; \
@@ -543,20 +543,23 @@ impl App {
     ) -> AppResult<McpServerView> {
         let current = self.mcp_for_change(ctx, id).await?;
         let fields = validate(input)?;
+        let taken_over =
+            current.origin == McpOrigin::McpJson && takes_over(&current, &fields, input);
         let env = match &input.env {
             Some(map) => self.seal_secrets(map)?,
+            // The file's environment never outlives the take-over, also through another transport.
+            None if taken_over => None,
             None => current.env.clone(),
         };
         let headers = match &input.headers {
             Some(map) => self.seal_secrets(map)?,
             None => current.headers.clone(),
         };
-        let origin =
-            if current.origin == McpOrigin::McpJson && !takes_over(&current, &fields, input) {
-                McpOrigin::McpJson
-            } else {
-                McpOrigin::Person
-            };
+        let origin = if current.origin == McpOrigin::McpJson && !taken_over {
+            McpOrigin::McpJson
+        } else {
+            McpOrigin::Person
+        };
         let record = McpServerRecord {
             origin,
             name: fields.name,

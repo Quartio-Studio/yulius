@@ -59,7 +59,7 @@ export function mountMcpPage(ctx, sandbox, route) {
     return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
       const manage = canManage(server);
-      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : refused(server) ? 'From the repository’s .mcp.json: tested once a person changes its command' : server.scope === 'instance' && !instanceAdmin ? 'Servers for every sandbox are tested by instance administrators' : server.transport === 'stdio' && contained ? 'With isolation on, local-command tests need an instance administrator' : 'Requires write access', onClick: async () => {
+      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : refused(server) ? 'From the repository’s .mcp.json: tested once a person has checked and changed its command' : server.scope === 'instance' && !instanceAdmin ? 'Servers for every sandbox are tested by instance administrators' : server.transport === 'stdio' && contained ? 'With isolation on, local-command tests need an instance administrator' : 'Requires write access', onClick: async () => {
         if (testButton.classList.contains('busy')) return; // one test at a time
         testButton.classList.add('busy');
         try {

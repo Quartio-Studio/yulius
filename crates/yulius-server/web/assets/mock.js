@@ -2624,9 +2624,12 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   if (m.origin === 'mcp_json') {
     const stdio = body.transport === 'stdio';
     const changed = body.transport !== m.transport || (stdio
-      ? (body.command ?? null) !== m.command || JSON.stringify(body.args || []) !== JSON.stringify(m.args)
+      ? (body.command ?? '').trim() !== (m.command ?? '') || JSON.stringify(body.args || []) !== JSON.stringify(m.args)
       : (body.url ?? null) !== m.url);
-    if (changed && (!stdio || body.env || !m.env_keys.length)) m.origin = 'person';
+    if (changed && (!stdio || body.env || !m.env_keys.length)) {
+      m.origin = 'person';
+      if (!body.env) m.env_keys = []; // the file's environment does not outlive the take-over
+    }
   }
   Object.assign(m, { name: body.name, transport: body.transport, command: body.command ?? null, args: body.args || [], url: body.url ?? null });
   if (body.enabled !== undefined) m.enabled = Boolean(body.enabled);
@@ -2643,7 +2646,7 @@ route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
   // Tests see which servers were tested (`__yuliusMock.mcpTests`).
   (db.mcpTests ||= []).push(m.id);
-  if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; change its command or arguments and enter its environment again to test it' };
+  if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; check the whole command line, change it and enter its environment again to test it' };
   return m.name === 'apify' ? { ok: false, tools: [], error: 'APIFY_TOKEN rejected (401)' } : { ok: true, tools: ['search_knowledge', 'get_customer', 'list_feedback', 'get_product_doc'], error: null };
 });
 

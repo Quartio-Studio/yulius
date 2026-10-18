@@ -56,7 +56,9 @@ came from.
 - **MOR-003** An update makes an `mcp_json` server `person` only when it changes what the server
   runs: for stdio, `command` or `args` differ from the stored ones **and** the update replaces
   `env` (or none is stored); for HTTP, `url` differs. An update that re-sends the same fields (the
-  enable toggle) keeps `mcp_json`. A `person` server never goes back to `mcp_json`.
+  enable toggle, or the edit page re-sending the arguments exactly, empty ones included) keeps
+  `mcp_json`. A take-over that does not replace `env` drops the stored one (review round 1). A
+  `person` server never goes back to `mcp_json`.
 - **MOR-004** `McpServerView` carries `origin`. The MCP list shows a "from .mcp.json" badge and
   disables Test of a refused server, saying why; the edit page says the server came from
   `.mcp.json`, what lifts the refusal, and never runs the Test on load (`?test=1`) for a refused
@@ -93,10 +95,13 @@ came from.
   the args but keeping the env keeps it refused; a PUT changing the args and replacing the env
   makes it `person` and the Test runs it (the marker appears). A loopback HTTP server from the file
   is refused.
-- Store (`crates/yulius-store/tests`): origin round-trips; the migration marks rows named by
-  `mcp.imported`.
+- Store: the migration marks rows named by `mcp.imported` (`crates/yulius-store/src/lib.rs`
+  `version_thirty_six_imported_mcp_servers_come_from_mcp_json`); the origin's insert, update and
+  read are proved through the API by the integration test, whose Test reads the server back.
+- Unit (`mcp_config.rs` `only_a_change_of_what_runs_takes_a_server_over`): the take-over rule.
 - e2e (`e2e/tests/mcp.e2e.ts`): the list shows the badge; the edit page with `?test=1` shows the
-  notice and sends no Test request.
+  notice and sends no Test request; a rename of a server with an empty argument keeps it the
+  file's. The integration test also switches an imported stdio server to HTTP: its env is gone.
 
 ## Decisions
 
