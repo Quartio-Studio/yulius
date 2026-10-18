@@ -43,8 +43,8 @@ Confirmed against `dev` at a3b9b04a.
 ## Plan
 
 - [x] Spec and plan for #502
-- [ ] Concurrent manual checks share one compare (fake source gate, regression test, fix)
-- [ ] An older /api/update answer arriving last is dropped (mock per-read hold, e2e test, fix)
+- [x] Concurrent manual checks share one compare (fake source gate, regression test, fix)
+- [x] An older /api/update answer arriving last is dropped (mock per-read hold, e2e test, fix)
 - [ ] Docs, gates, review and delivery
 
 ## Acceptance criteria
@@ -60,8 +60,9 @@ Confirmed against `dev` at a3b9b04a.
 ## Test plan
 
 - Rust: `FakeSource` gets an optional gate: `compare` reports that it entered and waits for a
-  release (`tokio::sync::Notify`). The second check is spawned only after the first entered, so
-  it must queue on the lock; the test releases the gate and joins both, then counts compares.
+  release (`tokio::sync::Notify`). Once the first (spawned) check entered, the second is polled
+  once: nothing before the lock awaits, so it is past its freshness read and queued on the lock.
+  The test then releases the gate, awaits both and counts compares.
 - e2e: the mock gets `holdUpdateReads`: each `GET /api/update` snapshots its view on arrival and
   waits until `releaseUpdate()` (newest first, one per call); `updateReadsTaken` counts held
   answers whose body the page has read, so the test knows the page handled an answer before

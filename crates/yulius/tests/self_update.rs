@@ -233,23 +233,35 @@ async fn concurrent_checks_make_one_compare() -> TestResult {
     let gate = Arc::new(tokio::sync::Notify::new());
     *i.source.gate.lock().map_err(|_| "lock")? = Some(gate.clone());
     let cookie = i.admin.cookie.as_deref().ok_or("cookie")?;
-    let ctx = i.h.app.authenticate_cookie(cookie).await?.ok_or("session")?;
+    let ctx =
+        i.h.app
+            .authenticate_cookie(cookie)
+            .await?
+            .ok_or("session")?;
     let first = tokio::spawn({
         let app = i.h.app.clone();
         let ctx = ctx.clone();
         async move { app.check_updates_now(&ctx).await }
     });
     tokio::time::timeout(Duration::from_secs(10), i.source.entered.notified()).await?;
-    // Everything before the checks' lock runs at once: one poll leaves the second check queued
-    // on the lock, past its own look at the (stale) last check.
+    // Nothing in `check_updates_now` awaits before the checks' lock: one poll leaves the second
+    // check queued on it, past its own look at the (stale) last check. Should a step before the
+    // lock ever await, this poll could stop short and the test would no longer prove the re-check.
     let second = i.h.app.check_updates_now(&ctx);
     tokio::pin!(second);
-    assert!(futures::poll!(&mut second).is_pending(), "waits for the first check");
+    assert!(
+        futures::poll!(&mut second).is_pending(),
+        "waits for the first check"
+    );
     i.source.gate.lock().map_err(|_| "lock")?.take();
     gate.notify_one();
     let first = first.await??;
     let second = second.await?;
-    assert_eq!(i.source.tokens.lock().map_err(|_| "lock")?.len(), 1, "one compare");
+    assert_eq!(
+        i.source.tokens.lock().map_err(|_| "lock")?.len(),
+        1,
+        "one compare"
+    );
     assert_eq!(
         serde_json::to_value(&second)?,
         serde_json::to_value(&first)?
