@@ -566,7 +566,7 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
             .to_string_lossy()
             .starts_with(".building-")
         {
-            let _ = remove_tree(&config.mapper, &config.exe, &entry.path());
+            let _ = remove_tree(&config.mapper, &config.exe, &bases.dir, &entry.path());
         }
     }
     let fingerprint = fingerprint(&config.host_root, &config.sudo_shim);
@@ -636,12 +636,14 @@ pub fn build(config: &BuildConfig, bases: &Bases) -> Result<BaseInfo, String> {
     Ok(info)
 }
 
-/// Removes `path`; entries the service user cannot remove (owned by mapped ids) are removed as
-/// root of a mapped namespace (`yulius sandbox-host remove-tree`).
+/// Removes `path` below `root`; entries the service user cannot remove (owned by mapped ids) are
+/// removed as root of a mapped namespace ([`remove_tree_as_mapped_root`]). For trees no
+/// sandbox's runs can reach (system layers, bases, holder state): the service user's attempt goes
+/// by path.
 ///
 /// # Errors
 /// Both attempts failed.
-pub fn remove_tree(mapper: &Mapper, exe: &Path, path: &Path) -> Result<(), String> {
+pub fn remove_tree(mapper: &Mapper, exe: &Path, root: &Path, path: &Path) -> Result<(), String> {
     if std::fs::symlink_metadata(path).is_err() {
         return Ok(());
     }
@@ -649,41 +651,32 @@ pub fn remove_tree(mapper: &Mapper, exe: &Path, path: &Path) -> Result<(), Strin
     if std::fs::remove_dir_all(path).is_ok() {
         return Ok(());
     }
-    remove_mapped(mapper, exe, None, path)
+    remove_tree_as_mapped_root(mapper, exe, root, path)
 }
 
 /// Removes `path` below `root` as root of a mapped namespace, never following a link on the way
-/// (`yulius sandbox-host remove-tree --below <root>`): for trees a sandbox's runs can reach,
-/// where any folder may have been swapped for a link (ADR-0174, ADR-0176). Inside the namespace
-/// uid 0 is the service user, so whatever the service user could remove goes too.
+/// (`yulius sandbox-host remove-tree --below <root>`): each directory from `root` down is opened
+/// with `O_NOFOLLOW` and the tree is removed handle by handle, so it also serves trees a
+/// sandbox's runs can reach, where any folder may have been swapped for a link (ADR-0174,
+/// ADR-0176). Inside the namespace uid 0 is the service user, so whatever the service user could
+/// remove goes too.
 ///
 /// # Errors
 /// The removal failed, a link lies on the way, or the namespace could not run.
-pub fn remove_tree_below(
+pub fn remove_tree_as_mapped_root(
     mapper: &Mapper,
     exe: &Path,
     root: &Path,
     path: &Path,
 ) -> Result<(), String> {
-    remove_mapped(mapper, exe, Some(root), path)
-}
-
-/// `yulius sandbox-host remove-tree [--below <root>] <path>` as root of a mapped namespace.
-fn remove_mapped(
-    mapper: &Mapper,
-    exe: &Path,
-    below: Option<&Path>,
-    path: &Path,
-) -> Result<(), String> {
-    let mut command: Vec<OsString> = vec![
+    let command: [OsString; 6] = [
         exe.as_os_str().to_owned(),
         "sandbox-host".into(),
         "remove-tree".into(),
+        "--below".into(),
+        root.as_os_str().to_owned(),
+        path.as_os_str().to_owned(),
     ];
-    if let Some(root) = below {
-        command.extend(["--below".into(), root.as_os_str().to_owned()]);
-    }
-    command.push(path.as_os_str().to_owned());
     let args: Vec<OsString> = [
         "--dev-bind",
         "/",
@@ -761,7 +754,7 @@ pub fn collect(bases: &Bases, in_use: &[String], mapper: &Mapper, exe: &Path) {
     for path in unused(bases, in_use) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
         let name = name.unwrap_or_default();
-        match remove_tree(mapper, exe, &path) {
+        match remove_tree(mapper, exe, &bases.dir, &path) {
             Ok(()) => tracing::info!(base = %name, "removed an unused sandbox base"),
             Err(error) => tracing::warn!(base = %name, %error, "cannot remove an unused base"),
         }

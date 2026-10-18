@@ -53,9 +53,10 @@ pub enum HostAction {
     },
     /// Remove a tree as root of a mapped namespace (files owned by mapped ids).
     RemoveTree {
-        /// Walk down to the tree from this directory without following a link (ADR-0176).
+        /// The directory the tree lies below: the walk goes down from it without following a
+        /// link (ADR-0176).
         #[arg(long)]
-        below: Option<PathBuf>,
+        below: PathBuf,
         /// The tree.
         path: PathBuf,
     },
@@ -151,18 +152,9 @@ pub fn host(action: HostAction) -> ExitCode {
                 Err(error) => fail(&error),
             }
         }
-        HostAction::RemoveTree {
-            below: Some(root),
-            path,
-        } => match yulius_app::leftovers::remove_below(&root, &path) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => fail(&format!("remove {}: {error}", path.display())),
-        },
-        HostAction::RemoveTree { below: None, path } => {
-            yulius_sandbox::base::make_writable(&path);
-            match std::fs::remove_dir_all(&path) {
+        HostAction::RemoveTree { below, path } => {
+            match yulius_app::leftovers::remove_below(&below, &path) {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => ExitCode::SUCCESS,
                 Err(error) => fail(&format!("remove {}: {error}", path.display())),
             }
         }
@@ -313,7 +305,7 @@ mod tests {
         let d = data.path();
         let remove = |path: &Path| {
             host(HostAction::RemoveTree {
-                below: Some(d.to_path_buf()),
+                below: d.to_path_buf(),
                 path: path.to_path_buf(),
             })
         };
@@ -346,5 +338,19 @@ mod tests {
             "not below the root"
         );
         Ok(())
+    }
+
+    /// Vidoc (medium): `remove-tree` never removes a path without the directory it must lie
+    /// below.
+    #[test]
+    fn remove_tree_needs_the_directory_it_walks_down_from() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            action: HostAction,
+        }
+        assert!(Cli::try_parse_from(["host", "remove-tree", "/etc"]).is_err());
+        assert!(Cli::try_parse_from(["host", "remove-tree", "--below", "/d", "/d/x"]).is_ok());
     }
 }

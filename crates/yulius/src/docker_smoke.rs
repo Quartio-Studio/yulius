@@ -341,7 +341,7 @@ async fn remove_sandbox(config: &yulius_sandbox::manager::IsolationConfig, exe: 
         data_dir.join("sysroots").join(id),
         data_dir.join("runtime").join("sandboxes").join(id),
     ] {
-        if let Err(error) = yulius_sandbox::base::remove_tree(&mapper, exe, &tree) {
+        if let Err(error) = yulius_sandbox::base::remove_tree(&mapper, exe, data_dir, &tree) {
             eprintln!("yulius: {error}");
         }
     }

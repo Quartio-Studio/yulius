@@ -29,7 +29,9 @@ task #214, fixes #675. Amends [0170](0170-leftovers-are-deleted-by-kind-rules-ch
   helper's body is `yulius_app::leftovers::remove_below`, the same walk the service user's removal
   uses (each directory from the data directory down opened with `O_NOFOLLOW`, then removed handle
   by handle with `unlinkat`). The system trees (`sysroots/`, `runtime/sandboxes/`, `system/`) keep
-  `base::remove_tree`.
+  `base::remove_tree` (the service user by path, then the same helper).
+- **The helper always has a root.** `remove-tree` requires `--below`; no caller can hand it a
+  bare path (the Vidoc scan of this change flagged the root-less form).
 - **Errors name the entry.** The handle-by-handle removal reports the entry that could not be
   removed (`<path>: <error>`), so the Leftovers banner says which file stayed.
 

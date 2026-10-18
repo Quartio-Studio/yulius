@@ -1066,9 +1066,9 @@ impl Manager {
         let reachable = path.starts_with(data.join("sandboxes"));
         tokio::task::spawn_blocking(move || {
             if reachable {
-                crate::base::remove_tree_below(&mapper, &exe, &root, &path)
+                crate::base::remove_tree_as_mapped_root(&mapper, &exe, &root, &path)
             } else {
-                crate::base::remove_tree(&mapper, &exe, &path)
+                crate::base::remove_tree(&mapper, &exe, &root, &path)
             }
         })
         .await

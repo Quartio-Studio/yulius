@@ -55,7 +55,7 @@ Confirmed against `dev` at c3ba79d0.
   walk: as root of the mapped namespace it opens every directory from the data directory down with
   `O_NOFOLLOW` and removes through the opened directory (`sandbox-host remove-tree --below <data>`);
   a link on the way fails the removal and nothing outside is touched. The system trees keep
-  `base::remove_tree`.
+  `base::remove_tree` (service user by path first). `remove-tree` always takes `--below`.
 - **LSM-003** A removal that fails names the entry that could not be deleted (`<path of the
   entry>: <error>`), not only the item.
 
