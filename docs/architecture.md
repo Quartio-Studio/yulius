@@ -425,6 +425,31 @@ flowchart TD
     C -- no --> R
 ```
 
+## Host access to agent-owned folders
+
+The server runs outside containment as the service user, and a sandbox's whole directory is
+mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
+at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
+attachments, imported transcripts, skill copies), it opens the folder once and does everything
+else through that handle
+([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
+[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). The
+helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
+checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
+with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
+random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
+do the same and remove trees with `unlinkat`. Races are tested at pause points
+(`yulius_app::race`, only with the `test-support` feature).
+
+```mermaid
+flowchart LR
+    A["anchor: sandbox dir or canonical root"] -->|"openat O_DIRECTORY|O_NOFOLLOW per folder"| F["folder handle"]
+    F -->|"real path inside the root?"| C{check}
+    C -- no --> R["refused"]
+    C -- yes --> W["openat O_EXCL|O_NOFOLLOW, linkat, renameat, fstatat, unlinkat"]
+    S["agent swaps a folder for a link"] -. "after the open: not followed" .-> F
+```
+
 ## Task start
 
 A task's agent is a native Claude Code session, and its first message is in before a person can

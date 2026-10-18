@@ -14,6 +14,10 @@ workspace = true
 [package.metadata.yulius]
 layer = "application"
 
+[features]
+# Pause points for race tests (`race::on`); only the test build of `yulius` enables it.
+test-support = []
+
 [dependencies]
 yulius-domain = { workspace = true }
 yulius-contracts = { workspace = true }

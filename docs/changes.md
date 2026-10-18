@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
+  (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
+  imported transcripts and skill copies open their folder once, without following links, and do
+  everything else through that handle; files get random temporary names created exclusively.
+  Before, a link swapped in between a check and the use, or planted at a fixed name, could show a
+  host file in the editor, place an upload outside the sandbox, or overwrite a host file such as
+  the database. The same class remains, tracked, in editor deletes and listings (#660), the
+  transcript step-back (#661) and the config dir's preparation (#634).
 - Delivery environment runs run contained, from a mirror only Yulius writes (SPEC-219, ADR-0175,
   task #205, fixes #656). An environment's command no longer runs on the server in the sandbox's
   clone, where a Git filter an agent planted in the clone's configuration ran during the checkout
