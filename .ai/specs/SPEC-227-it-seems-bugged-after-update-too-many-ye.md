@@ -1,11 +1,11 @@
 ---
 yulius-task: fdb5eeed-6307-4664-a643-c9df761aa8dc
-status: in-progress
+status: done
 ---
 
 # SPEC-227: A host check that keeps Docker says so, once
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: task #213
 Scope authorization: task #213: "it seems bugged after update, too many yellow warnings" (a
@@ -70,12 +70,12 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
 
 ## Plan
 
-- [ ] Spec and issue for the post-update host-check warnings
-- [ ] Host write errors name the file once
-- [ ] Host-check banner headline follows the sandbox Docker verdict
-- [ ] Update outcome points to Sandbox Docker instead of repeating the list
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review answered and delivered
+- [x] Spec and issue for the post-update host-check warnings
+- [x] Host write errors name the file once
+- [x] Host-check banner headline follows the sandbox Docker verdict
+- [x] Update outcome points to Sandbox Docker instead of repeating the list
+- [x] Docs, changes entry and gates green
+- [x] Independent review answered and delivered
 
 ## Acceptance criteria
 
@@ -115,3 +115,24 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
   that would bypass the operator's `ProtectSystem=strict`; `sudo yulius host setup` once is the
   documented fix (HST-009).
 - No ADR: this refines how SPEC-203's report is shown, no new lasting design choice.
+
+## Evidence
+
+- Regression tests failed before their fix: `host_setup::system::tests::a_failed_write_does_not_repeat_the_path`
+  (`/proc/yulius-host-setup-test.conf: No such file or directory`); the three new e2e assertions
+  (AC-1, AC-3) before the UI change (3 failed of 8); the card-refresh assertion (AC-5) before
+  `docker.refresh()`; `a_file_that_cannot_be_written_is_named_once` with the `DOCKER_SOURCE`
+  `map_err` removed (left: "Read-only file system (os error 30)"). The first Rust test and its fix
+  went in one commit (ad456333); its failure is shown here.
+- `scripts/dev ci` at 7aa5eef4: exit 0, 2237 tests passed, 17 skipped (later commits are docs only).
+- e2e, full suite (`npx e2e run`): 60 files passed, 1 skipped; 623 tests passed, 1 skipped.
+- `scripts/dev security`: exit 0, "no open critical or high finding, and no open medium one in the
+  change" (12 files changed, 6 sent to vidoc-1); no low finding listed.
+- Independent review (fresh session, `om-code-review`): round 1 at 88dbe670 requested changes
+  (major: the card was not re-read after an in-page update; minors: no failed-verdict test, the
+  Docker source's error untested, mock comment; nits), all own code, all fixed in 7aa5eef4; round 2
+  approved 7aa5eef4 with doc nits, fixed after.
+- Not tested here: the real server. Nothing in this sandbox can read the host's `/etc` or
+  `host-check.json`; the operator's `sudo yulius host setup` (asked for in this task) is what clears
+  the three items, and the next update's re-check confirms it. The Leftovers "Permission denied"
+  banner is #675 (task #214).
