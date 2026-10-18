@@ -791,3 +791,46 @@ async fn next_text(
         }
     }
 }
+
+/// Swaps `folder` for a link to `outside` (a contained shell is root in its sandbox and can do it
+/// at any moment); the real folder moves aside.
+fn swap_for_link(folder: &std::path::Path, outside: &std::path::Path) -> std::io::Result<()> {
+    let aside = folder.with_extension("aside");
+    std::fs::rename(folder, aside)?;
+    std::os::unix::fs::symlink(outside, folder)
+}
+
+#[tokio::test]
+async fn a_read_refuses_a_folder_swapped_for_a_link_after_the_check() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join("docs"))?;
+    std::fs::write(repo.join("docs/notes.txt"), "inside\n")?;
+    let outside = data.join("host");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("notes.txt"), "host secret\n")?;
+    // Between the check of the resolved path and the read (#657).
+    let (folder, target) = (repo.join("docs"), outside.clone());
+    yulius_app::race::on(yulius_app::race::Point::FileRead, &repo, move || {
+        swap_for_link(&folder, &target).ok();
+    });
+    let read = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/content?path=docs/notes.txt",
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(
+        !read.body.to_string().contains("host secret"),
+        "a host file was shown: {:?}",
+        read.body
+    );
+    assert_eq!(read.status, StatusCode::FORBIDDEN, "{:?}", read.body);
+    Ok(())
+}

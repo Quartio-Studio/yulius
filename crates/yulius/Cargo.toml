@@ -57,6 +57,7 @@ base64 = { workspace = true }
 nix = { workspace = true }
 
 [dev-dependencies]
+yulius-app = { workspace = true, features = ["test-support"] }
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
 yulius-store = { workspace = true, features = ["test-support"] }
 yulius-browser = { workspace = true, features = ["fake"] }

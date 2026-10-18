@@ -276,6 +276,7 @@ impl App {
             return Err(AppError::Invalid("known is 64 lowercase hex digits".into()));
         }
         let file = Self::existing(&target)?;
+        crate::race::reached(crate::race::Point::FileRead, &file);
         let meta = std::fs::metadata(&file).map_err(|e| io_error(&e))?;
         if meta.is_dir() {
             return Err(AppError::Invalid("that path is a directory".into()));
