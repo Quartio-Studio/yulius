@@ -387,6 +387,13 @@ path = "crates/yulius-app/src/ci/exec.rs"
 title = "from pull request-defined CI jobs"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
 
+# The same finding where the gate picks the pull request's own jobs (`own_jobs_apply`), reported
+# when task #205 declared a module in this file.
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "Untrusted pull request CI configuration executes arbitrary shell commands"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
 # A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
 # (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
 # when a repository admin or maintainer imports the repository (`import_profile`). Since SPEC-219
