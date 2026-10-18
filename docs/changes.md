@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- Two update checks sent together compare `main` once, and the update view never goes back to an
+  older read (SPEC-226, task #212, fixes #502). A "Check now" that waited for a check in progress
+  (two tabs opening the instance page, or the hourly check) reuses its result when it is younger
+  than 30 s; in the browser, an answer to an older `GET /api/update` arriving after a newer one is
+  dropped instead of showing the older state until the next change.
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
