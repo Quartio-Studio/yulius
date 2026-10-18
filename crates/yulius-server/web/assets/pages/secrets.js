@@ -5,7 +5,7 @@
 // minutes), and every reveal is audited.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid, toggle } from '../dom.js';
 import { replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
@@ -205,10 +205,32 @@ function showRevealed(title, revealed) {
   openModal({ title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }] });
 }
 
+// ---------------------------------------------------------------- scopes
+
+/**
+ * Where a new secret applies (SPEC-216): this sandbox by default, or team-wide. Under More options,
+ * closed: most secrets belong to one sandbox.
+ */
+function scopeChoice() {
+  const select = h('select', { class: 'select' },
+    h('option', { value: 'sandbox' }, 'This sandbox'),
+    h('option', { value: 'instance' }, 'Team-wide (every sandbox)'));
+  const part = h('details', null, h('summary', { class: 'muted small' }, 'More options'),
+    h('div', { class: 'stack space-top' }, field('Scope', select, 'Team-wide secrets show in every sandbox, for everyone on this instance.')));
+  return { select, part };
+}
+
+function scopeBadge(secret) {
+  return secret.scope === 'instance' ? iconBadge('globe', 'Team-wide', 'violet', 'Every sandbox') : iconBadge('folder', 'This sandbox', '', 'Only this sandbox');
+}
+
 // ---------------------------------------------------------------- team secrets
 
-/** `loadNotes` reveals the stored notes (after a two-factor code) so they can be edited. */
-function teamForm(secret, loadNotes) {
+/**
+ * `loadNotes` reveals the stored notes (after a two-factor code) so they can be edited. A new one
+ * in a sandbox picks its scope.
+ */
+function teamForm(secret, loadNotes, sandbox) {
   const title = h('input', { class: 'input', value: secret ? secret.title : '', maxlength: 200, autofocus: true, placeholder: 'Shared Gmail' });
   const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
   const stored = Boolean(secret && secret.has_notes);
@@ -229,21 +251,29 @@ function teamForm(secret, loadNotes) {
       } catch (error) { errorToast(error, 'Couldn’t reveal'); }
     })) : null,
   );
+  const scope = !secret && sandbox ? scopeChoice() : null;
+  if (scope) body.append(scope.part);
   const values = () => {
     const out = { title: title.value.trim() };
     if (!secret || value.value) out.value = value.value;
     if (!secret || notes.value) out.notes = notes.value;
+    if (scope) out.scope = scope.select.value;
     return out;
   };
   return { body, values, title };
 }
 
-function mountTeam(ctx, host, actions) {
+function mountTeam(ctx, sandbox, host, actions) {
   const list = h('div');
   const activity = h('div');
-  setChildren(actions, createButton('Add team secret', () => edit(null)));
+  // A sandbox's team secrets are changed by the people who write to it (SPEC-216); others read them.
+  const write = !sandbox || allows(sandbox.access, 'write');
+  const changeable = (secret) => secret.scope === 'instance' || write;
+  setChildren(actions, createButton('Add team secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' }));
   setChildren(host,
-    h('p', { class: 'muted small' }, 'Shared by everyone on this instance. Values and notes show after your two-factor code; every reveal is recorded.'),
+    h('p', { class: 'muted small' }, sandbox
+      ? `Shared by the people of ${sandbox.name} (this sandbox) or by everyone (team-wide). Values and notes show after your two-factor code; every reveal is recorded.`
+      : 'Team-wide: shared by everyone on this instance. Open a sandbox for its own. Values and notes show after your two-factor code; every reveal is recorded.'),
     list,
     h('h2', { class: 'section-title' }, 'Activity'),
     activity);
@@ -254,11 +284,12 @@ function mountTeam(ctx, host, actions) {
   }
 
   function render(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, recovery codes.', action: createButton('Add team secret', () => edit(null)) });
+    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, recovery codes.', action: write ? createButton('Add team secret', () => edit(null)) : null });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: secret.title,
       badges: [
+        scopeBadge(secret),
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
       ].filter(Boolean),
       description: h('span', null, [secret.has_value && 'Value', secret.has_notes && 'notes'].filter(Boolean).join(' and ') || 'Empty'),
@@ -278,13 +309,14 @@ function mountTeam(ctx, host, actions) {
           } catch (error) { errorToast(error, 'Couldn’t reveal'); }
           reloadActivity();
         }),
-        smallButton('Edit', `Edit ${secret.title}`, () => edit(secret)),
-        iconButton('trash', `Delete ${secret.title}`, () => remove(secret), { class: 'btn-quiet-danger' }),
+        smallButton('Edit', `Edit ${secret.title}`, () => edit(secret), { disabled: !changeable(secret), title: changeable(secret) ? `Edit ${secret.title}` : 'Requires write access' }),
+        iconButton('trash', `Delete ${secret.title}`, () => remove(secret), { class: 'btn-quiet-danger', disabled: !changeable(secret) }),
       ].filter(Boolean),
     })));
   }
 
-  const reload = loader(list, 'the team secrets', () => ctx.api.get('/api/team-secrets'), render, { shape: 'items' });
+  const listPath = sandbox ? `/api/sandboxes/${enc(sandbox.id)}/team-secrets` : '/api/team-secrets';
+  const reload = loader(list, 'the team secrets', () => ctx.api.get(listPath), render, { shape: 'items' });
   const reloadActivity = loader(activity, 'the secrets activity', () => ctx.api.get('/api/secrets/activity?limit=50'), (entries) => {
     if (!entries.length) return h('p', { class: 'muted small' }, 'Nothing yet.');
     return h('ul', { class: 'plain-list activity-list' }, entries.map((e) => h('li', { class: 'small' },
@@ -292,14 +324,14 @@ function mountTeam(ctx, host, actions) {
   });
 
   function edit(secret) {
-    const form = teamForm(secret, () => reveal(secret, 'show', ['notes']));
+    const form = teamForm(secret, () => reveal(secret, 'show', ['notes']), sandbox);
     openModal({ title: secret ? `Edit ${secret.title}` : 'Add team secret', body: form.body, actions: [
       { label: 'Cancel', value: false },
       { label: secret ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
         const values = form.values();
         if (!values.title) return invalid(form.title, 'A title is required.');
         if (secret) await ctx.api.patch(`/api/team-secrets/${enc(secret.id)}`, values);
-        else await ctx.api.post('/api/team-secrets', values);
+        else await ctx.api.post(listPath, values);
         toast(secret ? 'Saved.' : 'Team secret added.', { kind: 'ok' });
         reload();
         reloadActivity();
@@ -345,6 +377,10 @@ const ACTIONS = {
   'vault.agent.request': 'asked for hosts of',
   'vault.agent.allow': 'allowed hosts of',
   'vault.agent.dismiss': 'dismissed hosts of',
+  'vault.agent.auto_allow': 'bound hosts of',
+  'vault.agent.auto_allow_on': 'let agents set up',
+  'vault.agent.auto_allow_off': 'stopped agents setting up',
+  'vault.team.assign': 'gave a sandbox its copy of',
 };
 
 // ---------------------------------------------------------------- agent secrets
@@ -385,7 +421,8 @@ function pasteKeysEscaped(input) {
 
 /**
  * The add dialog asks for a name, a value and a description (SPEC-121): agents find the hosts and
- * how to send it, and a person allows the hosts they ask for. An instance administrator picks the
+ * how to send it. By default agents set it up themselves (SPEC-216): they bind its hosts and
+ * production deploys get it; turned off, a person allows each. An instance administrator picks the
  * scope under More options. Editing keeps the hosts, and the request style of an older secret
  * that has one.
  */
@@ -401,12 +438,17 @@ function agentForm(ctx, secret) {
     field('Description', notes, 'Which service it is for (a login’s user name goes here, never the value). Agents find the service’s address from it and ask you to allow it.'),
   ];
   const form = { name, value };
+  // A production-only secret is never set up by agents: Revoke production first.
+  if (!secret || !secret.cd_prod) {
+    form.auto = toggle({ checked: secret ? secret.auto_allow : true, label: 'Let agents set it up', onChange: () => {} }).querySelector('input');
+    parts.push(h('label', { class: 'row-wrap' }, form.auto.parentElement,
+      h('span', { class: 'stack-tight' }, h('span', null, 'Let agents set it up'),
+        h('span', { class: 'muted small' }, 'Agents bind the hosts they work out and production deploys get it, without asking you. Turn off to allow each yourself.'))));
+  }
   if (!secret && ctx.isInstanceAdmin()) {
-    form.scope = h('select', { class: 'select' },
-      h('option', { value: 'sandbox' }, 'This sandbox'),
-      h('option', { value: 'instance' }, 'Every sandbox'));
-    parts.push(h('details', null, h('summary', { class: 'muted small' }, 'More options'),
-      h('div', { class: 'stack space-top' }, field('Scope', form.scope))));
+    const scope = scopeChoice();
+    form.scope = scope.select;
+    parts.push(scope.part);
   }
   if (secret) {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
@@ -435,7 +477,16 @@ function agentForm(ctx, secret) {
   form.values = () => {
     const out = { name: name.value.trim(), description: notes.value.trim() };
     if (form.scope) out.scope = form.scope.value;
-    if (form.hosts) out.hosts = form.hosts.value.split(/[\s,]+/).filter(Boolean);
+    if (form.auto && (!secret || form.auto.checked !== secret.auto_allow)) out.auto_allow = form.auto.checked;
+    if (form.hosts) {
+      // Hosts go only when changed, with those the dialog showed: an agent may have bound one
+      // since it opened, and the server refuses to drop it unseen (SPEC-216).
+      const hosts = form.hosts.value.split(/[\s,]+/).filter(Boolean);
+      if (hosts.join(',') !== secret.hosts.join(',')) {
+        out.hosts = hosts;
+        out.expect_hosts = secret.hosts;
+      }
+    }
     if (form.injection) {
       out.injection = form.injection.value;
       out.header_name = out.injection === 'header' ? form.header.value.trim() : null;
@@ -478,7 +529,7 @@ const ALLOW_SETTLE_MS = 1000;
 function agentHosts(ctx, secret, act, changed) {
   const parts = [];
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
-  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
+  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
   if (secret.requested_hosts.length) {
     // The answer names the hosts shown here: the server refuses it if an agent asked for more
     // meanwhile, so nothing is allowed unseen (SPEC-121).
@@ -548,6 +599,12 @@ function agentEnvFiles(ctx, secret, act) {
  * copies (which any agent of the project could then use). Only people who manage it change it.
  */
 function agentCdProd(ctx, secret, act) {
+  // Agents set it up: production gets it, nothing to allow here (SPEC-216 SSA-006).
+  if (secret.auto_allow) {
+    return [h('div', { class: 'row-wrap' },
+      iconBadge('upload', 'Production', '', 'Production deploys get it'),
+      h('span', { class: 'small' }, `Production deploys (CD) get it: agents set it up.${secret.can_manage ? ' To allow production yourself, turn that off in Edit.' : ''}`))];
+  }
   if (!secret.cd_prod && !secret.can_manage) return [];
   // Most secrets agents use are not for production: a note, not a warning (SPEC-204).
   if (!secret.cd_prod && agentsUse(secret)) {
@@ -577,16 +634,16 @@ function agentCdProd(ctx, secret, act) {
 function mountAgents(ctx, sandbox, host, actions) {
   if (!sandbox) {
     setChildren(actions);
-    setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a sandbox (or to every sandbox). Open one to see and add them.' }));
+    setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a sandbox (or are team-wide). Open one to see and add them.' }));
     return () => {};
   }
   const write = allows(sandbox.access, 'write');
   const list = h('div');
   setChildren(actions, createButton('Add agent secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' }));
   setChildren(host,
-    h('p', { class: 'muted small' }, `Agents in ${sandbox.name} use this sandbox’s secrets and those for every sandbox.`),
+    h('p', { class: 'muted small' }, `Agents in ${sandbox.name} use this sandbox’s secrets and the team-wide ones.`),
     h('div', { class: 'banner banner-info' }, icon('shield'), h('div', { class: 'banner-text small' },
-      `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Agents find the hosts and ask; you allow them here. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
+      `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Agents find the hosts and bind them for a secret they set up, or ask you to allow them here. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
       h('code', null, '[secret:NAME]'), ' instead.')),
     list);
 
@@ -612,7 +669,8 @@ function mountAgents(ctx, sandbox, host, actions) {
       iconName: 'key',
       title: h('span', { class: 'mono' }, secret.name),
       badges: [
-        secret.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet') : iconBadge('folder', 'This sandbox', ''),
+        scopeBadge(secret),
+        secret.auto_allow ? iconBadge('zap', 'Agents set it up', '', 'Agents bind its hosts and production deploys get it') : null,
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
         secret.flattened ? badge('Paste again', 'warn', 'Its line breaks were lost') : null,
       ].filter(Boolean),
@@ -725,7 +783,7 @@ export function mountSecretsPage(ctx, sandbox, route) {
     unmount();
     unmount = () => {};
     if (current === 'agents') unmount = mountAgents(ctx, sandbox, host, frame.actions);
-    else mountTeam(ctx, host, frame.actions);
+    else mountTeam(ctx, sandbox, host, frame.actions);
   }
   show();
   return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}`, destroy: () => unmount() };

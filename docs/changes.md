@@ -4,8 +4,90 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-18
+
+- One Start onboarding shows one toast again (SPEC-224, task #210, fixes #581). A sandbox page the
+  person had already left (it had opened the onboarding task) still rendered once the
+  superadmin's recovery state answered, and took back the opened task's "Onboarding started:
+  opened #1."; the start then said "Onboarding started." as well. A page that is gone now acts on
+  no late answer. The two end-to-end tests of #581 wait on what they mean under load: the watcher
+  test gives each of its three self-paced reads its own 10 s, and the onboarding tests wait for
+  the start's own read of the tasks in the sidebar (the document title follows task events only).
+- The sidebar's hover overlap checks in `navigation.e2e.ts` no longer fail on a loaded machine
+  (SPEC-222, task #208, fixes #515). The mock's ambient activity starts task #8 about 12 s in,
+  which regroups the sidebar. A `hover()` whose mouse move landed just after the regroup hovered
+  the row that moved in, so the check read "Checkout API" at rest (18 px over its menu). The mock
+  now takes `ambient=0` (no ambient activity at all), the test uses it, and both checks wait for
+  the hovered row's control to show and poll the overlap.
+- Two update checks sent together compare `main` once, and the update view never goes back to an
+  older read (SPEC-226, task #212, fixes #502). A "Check now" that waited for a check in progress
+  (two tabs opening the instance page, or the hourly check) reuses its result when it is younger
+  than 30 s; in the browser, an answer to an older `GET /api/update` arriving after a newer one is
+  dropped instead of showing the older state until the next change.
+- The test of a launch `/goal` watched again after a restart runs in CI again (SPEC-223, task
+  #209, fixes #514). It was quarantined as flaky under load; the cause was its own setup: it
+  stopped the first server once the run was recorded, not once it was spawned, so under load the
+  stop cut the spawn, the next server found no run it could reattach and ended it as lost, and no
+  watch could flag it. The test now waits for the spawned run. No product change.
+- Undoing past a pasted image takes it out of the composer's tray again after an IME composition
+  that changed nothing (cancelled with Esc) (SPEC-225, task #211, fixes #513). Such a composition
+  marked the history as typing, so the next keystroke replaced the paste's undo step and the
+  upload, ending later, was attached to every step and sent after the text. A record that changes
+  nothing now leaves the history alone, and typing updates its step in place.
+- Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
+  (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
+  imported transcripts and skill copies open their folder once, without following links, and do
+  everything else through that handle; files get random temporary names created exclusively.
+  Before, a link swapped in between a check and the use, or planted at a fixed name, could show a
+  host file in the editor, place an upload outside the sandbox, or overwrite a host file such as
+  the database. The same class remains, tracked, in editor deletes and listings (#660), the
+  transcript step-back (#661) and the config dir's preparation (#634).
+- Delivery environment runs run contained, from a mirror only Yulius writes (SPEC-219, ADR-0175,
+  task #205, fixes #656). An environment's command no longer runs on the server in the sandbox's
+  clone, where a Git filter an agent planted in the clone's configuration ran during the checkout
+  and the command itself ran uncontained: an agent's `delivery_deploy` could run code on the host.
+  A run now fetches its branch's head from GitHub into `<data>/cd/<sandbox>/environments.git` (the
+  token never passes through the clone's configuration), writes its files into the run's own
+  directory with a fresh `HOME`, and runs the command through the process host in the sandbox's
+  containment, as CD dev runs do (production environments as CD production runs). It times out
+  with the CI job timeout, and a restart stops a running command. A deploy command that relied on
+  the sandbox's home, or (for production environments) on host paths, must change: its `HOME` is
+  empty at every run. CI, CD and environment runs also no longer let a job point the log Yulius
+  reads at another file, and a run's files are written without the server's own Git filters.
+- The MCP Test no longer runs commands from the repository's `.mcp.json` on the server (SPEC-218,
+  ADR-0173, #654, task #204). Agents can write that file, and Yulius imports its servers; an
+  instance administrator pressing Test, or just opening a server's page from a link ending in
+  `?test=1`, ran an imported server's command on the host, outside the containment. Imported
+  servers now say "From .mcp.json" on the MCP page, and their Test is off (also for an imported
+  HTTP server's private or local address) until a person changes the command line and enters its
+  environment again, or changes the URL. Turning a server on or off does not count. Servers
+  imported before the update are marked too, so a person changes such a server once to test it.
+
 ## 2026-10-17
 
+- The Vidoc scan blocks medium findings in a change, and every project scans in CI (SPEC-217,
+  ADR-0172, task #160). Critical and high findings still fail the scan anywhere in a scanned
+  file; medium ones now fail it on the lines the branch changed (3 lines of slack, all of a new
+  file). Low ones there are listed for the agent to decide (fix, or say why not in the spec's
+  Evidence). Medium and low findings in code a pull request did not touch no longer just scroll
+  by in the log: Yulius files each as a GitHub issue once (`area: security`, `source: vidoc`),
+  reopens it while Vidoc still reports it, and closes it once its line is gone from the
+  integration branch. Every project whose sandbox has a Vidoc key (its own or the instance's)
+  gets a built-in `security` CI job unless its CI already scans; onboarding no longer adds one.
+  The first full Vidoc audit of the repository (269 chunks) fixed a GitHub sign-in takeover by a
+  reused login (#653) and an editor save that wrote through an agent-planted link (#655). It filed
+  three host-escape issues with fix tasks queued (#654 MCP stdio Test, #656 environment runs, #657
+  link-following writes), and recorded 39 false positives with their guards in `.config/vidoc.toml`.
+- Agents set up a new agent secret themselves, and every secret belongs to a sandbox unless
+  team-wide (SPEC-216, ADR-0171, task #203). Adding an agent secret, "Let agents set it up" is on:
+  the hosts an agent works out are bound at once and production deploys get it, with no person
+  confirming; turned off (when adding it or in Edit), a person allows each as before. Secrets
+  added earlier keep their confirmations. Team secrets now have a scope like agent secrets: the
+  open sandbox's (the default, seen only by people who can view it) or team-wide. At the first
+  start after the update, every team secret becomes one copy per sandbox (their earlier activity
+  is then shown to instance administrators only); agent secrets an administrator made team-wide
+  stay team-wide.
+  `yulius secrets import --to team` imports into the checkout's sandbox, `--instance` team-wide.
 - Leftovers are found and cleaned (SPEC-215, ADR-0170, task #202, fixes #625 and #582). A removed
   sandbox's worktrees and CI checkouts were never purged (the purge read only live sandboxes), and
   nothing ever deleted its system layer with its Docker images, its holder state, CD files or

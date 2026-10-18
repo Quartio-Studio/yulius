@@ -267,6 +267,22 @@ impl Fixture {
         git(&self.work, &["rev-parse", "HEAD"])
     }
 
+    /// Commits `file` (`None` deletes it) on dev and pushes it; the work tree stays on feat/one.
+    fn push_dev(&self, file: &str, contents: Option<&str>) -> BoxResult<String> {
+        git(&self.work, &["checkout", "-q", "dev"])?;
+        git(&self.work, &["pull", "-q", "origin", "dev"])?;
+        match contents {
+            Some(text) => std::fs::write(self.work.join(file), text)?,
+            None => std::fs::remove_file(self.work.join(file))?,
+        }
+        git(&self.work, &["add", "-A"])?;
+        git(&self.work, &["commit", "-q", "-m", "dev change"])?;
+        git(&self.work, &["push", "-q", "origin", "dev"])?;
+        let sha = git(&self.work, &["rev-parse", "HEAD"])?;
+        git(&self.work, &["checkout", "-q", "feat/one"])?;
+        Ok(sha)
+    }
+
     fn last_status(&self, sha: &str) -> Option<(String, String, String)> {
         self.h
             .github
@@ -1619,6 +1635,7 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
                     "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
                     "injection": "bearer",
                     "value": format!("{name}-value-0123456789"),
+                    "auto_allow": false,
                 })),
             )
             .await?;
@@ -1762,6 +1779,363 @@ async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
     Ok(())
 }
 
+/// One `::yulius-finding` line, as the security scan prints it (SPEC-217 VSP-004).
+fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
+    format!(
+        "::yulius-finding {}\n",
+        serde_json::json!({"severity": severity, "file": file, "line": 4,
+            "title": "Weak check", "detail": "Fix it.", "fingerprint": fingerprint,
+            "anchored": true})
+    )
+}
+
+/// SPEC-217 VSI-004 (review round 1, M2): a filed finding's issue follows the integration branch.
+/// Closed while Vidoc still reports the finding and its code is on dev, it is reopened; once its
+/// line is gone from dev, it is closed, also when a branch behind dev still reports it, and that
+/// stale report reopens nothing; a finding already gone from dev is never filed.
+#[tokio::test]
+async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_gone() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    // README.md's `# app` and lib.rs's `fn danger() {}` are on dev; src/never.rs is not.
+    let (readme, lib, never) = ("8464a81d5a585dd2", "c6b08d3eced1a57c", "0000000000000001");
+    let all = finding_line("medium", "README.md", readme)
+        + &finding_line("low", "lib.rs", lib)
+        + &finding_line("low", "src/never.rs", never);
+    let first = f.push_feature("findings.txt", Some(&all))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let titles = |f: &Fixture| -> BoxResult<Vec<String>> {
+        Ok(f.h
+            .github
+            .issues
+            .lock()
+            .map_err(|_| "issues")?
+            .iter()
+            .map(|(_, issue)| issue.title.clone())
+            .collect())
+    };
+    assert_eq!(
+        titles(&f)?,
+        [
+            "security: Weak check in README.md",
+            "security: Weak check in lib.rs"
+        ],
+        "src/never.rs is not on dev: not filed"
+    );
+    let outputs = job_outputs(&f, &first).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("1 finding(s) outside the change not followed"),
+        "{security}"
+    );
+    // A person closes #101 without fixing it; dev drops lib.rs; the branch, behind dev, still
+    // reports both.
+    f.h.github
+        .closed_issues
+        .lock()
+        .map_err(|_| "closed")?
+        .insert(101, vec!["won't fix".into()]);
+    f.push_dev("lib.rs", None)?;
+    let second = f.push_feature("findings.txt", Some(&(all.clone() + "\n")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &second).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("reopened issue #101: finding 8464a81d5a585dd2 is reported again"),
+        "{security}"
+    );
+    let closed: Vec<u64> =
+        f.h.github
+            .closed_issues
+            .lock()
+            .map_err(|_| "closed")?
+            .keys()
+            .copied()
+            .collect();
+    assert_eq!(
+        closed,
+        [102],
+        "#101 reopened, #102 closed (by this run or dev's)"
+    );
+    // A head that reports nothing: README.md's line is still on dev, so #101 stays open.
+    f.push_feature("findings.txt", Some("nothing\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert!(
+        !f.h.github
+            .closed_issues
+            .lock()
+            .map_err(|_| "closed")?
+            .contains_key(&101)
+    );
+    assert_eq!(titles(&f)?.len(), 2, "nothing refiled");
+    assert_eq!(
+        f.h.github
+            .issue_comments
+            .lock()
+            .map_err(|_| "comments")?
+            .len(),
+        2,
+        "one reopening, one closing"
+    );
+    Ok(())
+}
+
+/// SPEC-217 VSI-001 (review round 2): failed filings count against the 5 a job may try, and the
+/// rest wait for a later run.
+#[tokio::test]
+async fn a_job_tries_at_most_five_filings_failed_ones_included() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("many.rs", Some("let v1 = 1;\nlet v2 = 2;\nlet v3 = 3;\nlet v4 = 4;\nlet v5 = 5;\nlet v6 = 6;\nlet v7 = 7;\n"))?;
+    f.h.github
+        .fail_issues
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = String::new()
+        + &finding_line("low", "many.rs", "4e318af8a518ee12")
+        + &finding_line("low", "many.rs", "d746048c1cbdf9f8")
+        + &finding_line("low", "many.rs", "6bd523ab16569c0e")
+        + &finding_line("low", "many.rs", "73ba8fc484973a5d")
+        + &finding_line("low", "many.rs", "5cb9e593d94b466c")
+        + &finding_line("low", "many.rs", "1e75da6953b58fd8")
+        + &finding_line("low", "many.rs", "7930599a9fbbd0c5");
+    let sha = f.push_feature("findings.txt", Some(&lines))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert_eq!(security.matches("not filed: ").count(), 5, "{security}");
+    assert!(
+        security.contains("2 more finding(s) outside the change wait for a later run"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// SPEC-217 VSI-004 (review round 2): an issue GitHub no longer has (404) resolves its finding,
+/// so later jobs make no call for it.
+#[tokio::test]
+async fn a_finding_whose_issue_is_gone_from_github_is_resolved() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    let lib = finding_line("low", "lib.rs", "c6b08d3eced1a57c");
+    f.push_feature("findings.txt", Some(&lib))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 1);
+    f.h.github
+        .missing_issues
+        .lock()
+        .map_err(|_| "missing")?
+        .push(101);
+    f.push_dev("lib.rs", None)?;
+    let sha = f.push_feature("findings.txt", Some("nothing\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(!security.contains("not closed"), "{security}");
+    let calls = || {
+        f.h.github
+            .issue_state_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    };
+    let before = calls();
+    assert!(before >= 1, "the close was tried");
+    f.push_feature("findings.txt", Some("still nothing\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(calls(), before, "a resolved finding is not looked at again");
+    Ok(())
+}
+
+/// SPEC-217 VSI-004 (review round 3): a finding filed before is looked at for reopening even once
+/// the job's filings are used up.
+#[tokio::test]
+async fn a_closed_finding_is_reopened_past_the_filing_cap() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    f.push_dev(
+        "many.rs",
+        Some("let v1 = 1;\nlet v2 = 2;\nlet v3 = 3;\nlet v4 = 4;\nlet v5 = 5;\n"),
+    )?;
+    let lib = finding_line("low", "lib.rs", "c6b08d3eced1a57c");
+    f.push_feature("findings.txt", Some(&lib))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.h.github
+        .closed_issues
+        .lock()
+        .map_err(|_| "closed")?
+        .insert(101, vec!["won't fix".into()]);
+    f.h.github
+        .fail_issues
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = String::new()
+        + &finding_line("low", "many.rs", "4e318af8a518ee12")
+        + &finding_line("low", "many.rs", "d746048c1cbdf9f8")
+        + &finding_line("low", "many.rs", "6bd523ab16569c0e")
+        + &finding_line("low", "many.rs", "73ba8fc484973a5d")
+        + &finding_line("low", "many.rs", "5cb9e593d94b466c")
+        + &lib;
+    let sha = f.push_feature("findings.txt", Some(&lines))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert_eq!(security.matches("not filed: ").count(), 5, "{security}");
+    assert!(
+        security.contains("reopened issue #101: finding c6b08d3eced1a57c is reported again"),
+        "{security}"
+    );
+    assert!(!security.contains("wait for a later run"), "{security}");
+    Ok(())
+}
+
+/// SPEC-217 VSI-004 (review round 3): a finding whose issue is gone from GitHub (deleted) and that
+/// is reported again is filed anew.
+#[tokio::test]
+async fn a_reported_finding_whose_issue_was_deleted_is_filed_again() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.push_dev("lib.rs", Some("fn danger() {}\n"))?;
+    let lib = finding_line("low", "lib.rs", "c6b08d3eced1a57c");
+    f.push_feature("findings.txt", Some(&lib))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.h.github
+        .missing_issues
+        .lock()
+        .map_err(|_| "missing")?
+        .push(101);
+    let sha = f.push_feature("findings.txt", Some(&(lib.clone() + "\n")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("filed issue #102 for the low finding c6b08d3eced1a57c"),
+        "{security}"
+    );
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 2);
+    Ok(())
+}
+
+/// SPEC-217 VSI-002 (review round 1, m8): when GitHub refuses an issue, the claim is released and
+/// a later run files it.
+#[tokio::test]
+async fn a_finding_github_did_not_take_is_filed_by_a_later_run() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n".to_owned()
+    })
+    .await?;
+    f.h.github
+        .fail_issues
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = finding_line("medium", "README.md", "8464a81d5a585dd2");
+    let sha = f.push_feature("findings.txt", Some(&lines))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("finding 8464a81d5a585dd2 not filed"),
+        "{security}"
+    );
+    f.h.github
+        .fail_issues
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    f.push_feature("findings.txt", Some(&(lines.clone() + "\n")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(f.h.github.issues.lock().map_err(|_| "issues")?.len(), 1);
+    Ok(())
+}
+
+/// SPEC-217 VSI-001..003: the `security` job's findings outside the change become one issue per
+/// fingerprint, with the Definition-of-Ready labels; a later run files nothing again, and
+/// another job's lines file nothing.
+#[tokio::test]
+async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n\n\
+         [[ci.jobs]]\nname = \"other\"\ncommand = \"cat other.txt\"\n"
+            .to_owned()
+    })
+    .await?;
+    let lines = finding_line("medium", "README.md", "8464a81d5a585dd2")
+        + &finding_line("low", "yulius.toml", "f4778e0b243b2c7b")
+        + &finding_line("high", "src/c.rs", "1111111111111111");
+    f.push_feature("findings.txt", Some(&lines))?;
+    let sha = f.push_feature(
+        "other.txt",
+        Some(&finding_line("low", "src/d.rs", "2222222222222222")),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let filed = |f: &Fixture| -> BoxResult<Vec<(String, Vec<String>)>> {
+        Ok(f.h
+            .github
+            .issues
+            .lock()
+            .map_err(|_| "issues")?
+            .iter()
+            .map(|(_, issue)| (issue.title.clone(), issue.labels.clone()))
+            .collect())
+    };
+    let outputs = job_outputs(&f, &sha).await?;
+    let security = output_of(&outputs, "security")?;
+    let issues = filed(&f)?;
+    assert_eq!(
+        issues.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+        [
+            "security: Weak check in README.md",
+            "security: Weak check in yulius.toml"
+        ],
+        "one issue per valid finding of the security job only: {security}"
+    );
+    assert_eq!(
+        issues[0].1,
+        [
+            "type: bug",
+            "priority: medium",
+            "area: security",
+            "source: vidoc"
+        ]
+    );
+    assert!(
+        security.contains("[yulius] filed issue #101 for the medium finding 8464a81d5a585dd2"),
+        "{security}"
+    );
+    // The next head reports the same findings: nothing is filed again.
+    let next = f.push_feature("more.txt", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(filed(&f)?.len(), 2, "filed once");
+    let outputs = job_outputs(&f, &next).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("2 finding(s) outside the change were filed before"),
+        "{security}"
+    );
+    Ok(())
+}
+
 /// SPEC-195 VSC-001 (review round 1): inside the containment too, a job finds `yulius` (bound
 /// read-only) and runs the embedded scan.
 #[tokio::test]
@@ -1854,6 +2228,94 @@ async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() ->
     Ok(())
 }
 
+/// SPEC-217 VDP-001: with the instance's Vidoc key, a project whose CI does not scan gets the
+/// built-in `security` job, granted the key; without a key it gets none.
+#[tokio::test]
+async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &pr_sha).await?;
+    assert_eq!(
+        outputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["plain"],
+        "no key, no scan"
+    );
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let next = f.push_feature("notes.txt", Some("two\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &next).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] agent secrets: VIDOC_API_KEY (the instance's Vidoc key)"),
+        "{security}"
+    );
+    // The change holds only prose: the scanner checks nothing and the job ends skipped.
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// SPEC-217 VDP-001 (the branch's own CI scan, medium): a pull request tested with its own jobs
+/// keeps the built-in security job; its own job named `security` does not stand in for it.
+#[tokio::test]
+async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    // Nothing for the scanner to send: the change is the configuration only.
+    std::fs::create_dir_all(f.work.join(".config"))?;
+    f.push_feature(
+        ".config/vidoc.toml",
+        Some("exclude = [\"yulius.toml\", \".config/*\"]\n"),
+    )?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some(
+            "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo changed\"\n\n\
+             [[ci.jobs]]\nname = \"security\"\ncommand = \"echo fake pass\"\n",
+        ),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    assert!(
+        output_of(&outputs, "plain")?.contains("changed"),
+        "the pull request's own jobs run: {outputs:?}"
+    );
+    let security = output_of(&outputs, "security")?;
+    assert!(!security.contains("fake pass"), "{security}");
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "the built-in scanner ran: {security}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]
@@ -1930,6 +2392,7 @@ async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
                     "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
                     "injection": "bearer",
                     "value": format!("{name}-value-0123456789"),
+                    "auto_allow": false,
                 })),
             )
             .await?;

@@ -582,18 +582,24 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   Environments must follow the profile order for tasks in their stage (`conflict` otherwise);
   when no task is in that stage the run is standalone. A successful command with `verify:
   command`, or a confirmation, advances every task for which the environment is due.
-- **Environment command trust contract.** `command` is shell text configured only by repository
-  administrators through the sandbox profile. Each run is audited (actor, environment, command)
-  and executed as `/bin/sh -c <command>` in the sandbox's primary clone, checked out (detached)
-  at the head of `origin/<integration>` (`after: integration`) or `origin/<production>` (`after:
-  production`), with only `PATH`, `HOME` (the sandbox home), `LANG`, `YULIUS_ENVIRONMENT`,
-  `YULIUS_BRANCH` and `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept,
-  and a 30-minute limit after which the whole process group is killed and the shell reaped
-  (`state: "failed"`). It runs with the server's privileges, without sandbox containment; the
-  clone's `.git` and the sandbox home are writable by the sandbox's agents, so the checkout
-  ignores global/system Git config and disables hooks and fsmonitor (repository-local config
-  such as filter drivers is still read). Commands are visible to every reader of the sandbox:
-  keep secrets out of them. Runs left `running` by a server restart become `error`.
+- **Environment command trust contract.** `command` is shell text of the sandbox profile, set by
+  repository administrators or seeded once from the default branch's `yulius.toml`
+  `[delivery]` when a repository admin or maintainer imports the repository; a run never reads
+  it from the repository. Each run is audited (actor, environment, command)
+  and executed as `/bin/sh -c <command>` like a CD run of its stage (SPEC-219, ADR-0175): the head
+  of `<integration>` (`after: integration`) or `<production>` (`after: production`) is fetched from
+  origin into a mirror only Yulius writes, its files are written into the run's own directory, and
+  the command runs there through the process host in the sandbox's containment (a production
+  environment as a CD production run), with `PATH`, `HOME` (fresh, the run's own), `LANG`,
+  `TERM`, `NO_COLOR`, `GIT_TERMINAL_PROMPT`, `YULIUS_ENVIRONMENT`, `YULIUS_BRANCH` and
+  `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept, and the CI job
+  timeout (30 minutes by default) after which the whole process group is killed (`state:
+  "failed"`). Yulius's own Git never reads the sandbox clone for a run, whose configuration the
+  sandbox's agents write; the command itself, in the sandbox's containment, sees the sandbox as
+  its agents do. A server with containment off (`contained = false`, development only) runs the
+  command on the host. Commands are visible to every reader of the sandbox:
+  keep secrets out of them. Runs left `running` by a server restart have their process host
+  terminated and become `error`.
 
 ## CI (Yulius-run) and repository hygiene
 
@@ -708,7 +714,7 @@ restart is recorded as `error` and never run again by itself.
 | `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
-| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it |
+| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216) |
 
 ```text
 CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": [CdRun] (newest 20),
@@ -827,7 +833,7 @@ read-only in the UI.
 | POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
 | GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
 | PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
-| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). |
+| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
 
 ```json
 Workflow = {"id","name","description","steps":["Write the spec","Implement","Test"],
@@ -844,7 +850,9 @@ AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_of
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
 McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
-             "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true}
+             "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true,
+             "origin":"person|mcp_json"}   // mcp_json: imported from .mcp.json until a PUT changes
+                                           // what it runs (stdio command/args + env, or HTTP url)
 McpServerInput = {"name","transport","command?","args?","url?","env?":{"KEY":"value"},
                   "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance"}
 ```
@@ -1162,7 +1170,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
 | GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
-| POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused) → `UpdateView` |
+| POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused, also one that ended while this one waited for it) → `UpdateView` |
 | POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
 | POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
@@ -1349,11 +1357,13 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that 
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, has_value, has_notes, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a value or notes) |
-| POST | `/api/team-secrets` | `{title, value?, notes?}` → 201 `TeamSecret` (any other field: 422) |
-| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret` |
-| DELETE | `/api/team-secrets/{id}` | → 204 |
-| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["value","notes"]}` → `{value, notes}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
+| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, scope ("sandbox"\|"instance"), has_value, has_notes, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a value or notes) — the team-wide ones only (SPEC-216) |
+| POST | `/api/team-secrets` | `{scope?: "instance", title, value?, notes?}` → 201 a team-wide `TeamSecret` (any other field: 422) |
+| GET | `/api/sandboxes/{sid}/team-secrets` | (read) → `[TeamSecret]`: the sandbox's and the team-wide ones (SPEC-216) |
+| POST | `/api/sandboxes/{sid}/team-secrets` | `{scope?: "sandbox" (default)\|"instance", title, value?, notes?}` → 201 `TeamSecret`; a sandbox's needs write access (403 for readers, 404 without access) |
+| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret`. A sandbox's: write access (403 for readers, 404 without access) |
+| DELETE | `/api/team-secrets/{id}` | → 204. A sandbox's: write access |
+| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["value","notes"]}` → `{value, notes}` (only the asked, stored fields; a sandbox's: read access, 404 without). Audited (`vault.team.reveal` / `vault.team.copy`) |
 
 **Two-factor** — the vault's lock (SPEC-040, ADR-0042), per person.
 
@@ -1377,9 +1387,9 @@ after an unlock.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
-| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
-| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value` → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`) |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
+| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts or `auto_allow` changed since it was read (reload). Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
 | POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of the sandbox; of every sandbox for an instance-wide secret) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
@@ -1466,7 +1476,9 @@ task; other hooks answer as usual.
   once per run, secret and channel (`vault.agent.redacted`).
 - MCP: `secrets_list`, `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
   selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
-  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing),
+  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing,
+  unless the secret has `auto_allow`: then the hosts are bound at once, answered as `bound`,
+  audited `vault.agent.auto_allow`, SPEC-216),
   and `secret_copy_to_env {secrets, path?: ".env", reason?}` (SPEC-129: writes the values of
   secrets a person allowed into an ignored, untracked dotenv file of the task's worktree and
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked

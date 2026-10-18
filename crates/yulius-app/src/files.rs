@@ -17,6 +17,11 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, openat, renameat};
+use nix::sys::stat::Mode;
+use nix::unistd::{UnlinkatFlags, unlinkat};
+
 use yulius_contracts::api::files::{
     CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileWritten, WriteFile,
 };
@@ -70,6 +75,11 @@ pub(crate) fn relative_components(path: &str) -> AppResult<Vec<String>> {
     Ok(parts)
 }
 
+/// An OS error of a `*at` call, as [`io_error`] reports it.
+pub(crate) fn errno_error(err: Errno) -> AppError {
+    io_error(&std::io::Error::from(err))
+}
+
 pub(crate) fn io_error(err: &std::io::Error) -> AppError {
     match err.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound,
@@ -83,6 +93,115 @@ pub(crate) fn io_error(err: &std::io::Error) -> AppError {
 pub(crate) fn inside(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root)
         .is_ok_and(|rest| !rest.components().any(|part| part.as_os_str() == ".git"))
+}
+
+/// Where an open file or folder really is (`/proc/self/fd` on Linux, `F_GETPATH` on macOS).
+pub(crate) fn real_path(fd: &impl std::os::fd::AsFd) -> AppResult<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd()))
+            .map_err(|e| io_error(&e))
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let mut path = PathBuf::new();
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path)).map_err(errno_error)?;
+        Ok(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+    {
+        let _ = fd;
+        Err(AppError::Forbidden(
+            "reaching sandbox files needs Linux or macOS".into(),
+        ))
+    }
+}
+
+/// Opens the resolved `path` with `flags`, without following a link at its end and without
+/// blocking, and checks that what was opened is still inside `root` and out of `.git`. A folder
+/// on the way swapped for a link after `path` was resolved is refused: the handle, not the path,
+/// is what gets read or written (#657, ADR-0174).
+pub(crate) fn open_inside(
+    root: &Path,
+    path: &Path,
+    flags: OFlag,
+) -> AppResult<std::os::fd::OwnedFd> {
+    let outside = || AppError::Forbidden("the path leads outside the folder".into());
+    let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let fd = match nix::fcntl::open(path, flags, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(Errno::ELOOP | Errno::ENOTDIR) => return Err(outside()),
+        Err(err) => return Err(errno_error(err)),
+    };
+    if !inside(root, &real_path(&fd)?) {
+        return Err(outside());
+    }
+    Ok(fd)
+}
+
+/// Opens `parts` below `anchor` one folder at a time with `O_DIRECTORY | O_NOFOLLOW`, creating
+/// the missing ones when `create`: a link or a file the agent put on the way fails the walk
+/// (`ELOOP`, `ENOTDIR`) instead of steering what follows (#657, ADR-0174). `anchor` itself is
+/// opened by path: the caller passes one the agent cannot replace (its sandbox directory).
+pub(crate) fn open_dirs_below(
+    anchor: &Path,
+    parts: &[&std::ffi::OsStr],
+    create: bool,
+) -> Result<std::os::fd::OwnedFd, Errno> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    let mut dir = nix::fcntl::open(anchor, flags, Mode::empty())?;
+    for part in parts {
+        dir = open_dir_at(&dir, part, create)?;
+    }
+    Ok(dir)
+}
+
+/// Opens the folder `name` in the folder `dir` with `O_DIRECTORY | O_NOFOLLOW`, creating it
+/// first when it is missing and `create` (see [`open_dirs_below`]).
+pub(crate) fn open_dir_at(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    create: bool,
+) -> Result<std::os::fd::OwnedFd, Errno> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    match openat(dir, name, flags, Mode::empty()) {
+        Err(Errno::ENOENT) if create => {
+            match nix::sys::stat::mkdirat(dir, name, Mode::from_bits_truncate(0o777)) {
+                Ok(()) | Err(Errno::EEXIST) => {}
+                Err(err) => return Err(err),
+            }
+            openat(dir, name, flags, Mode::empty())
+        }
+        other => other,
+    }
+}
+
+/// Writes `name` in the folder `dir` whole: `write` fills a new file created through the handle
+/// as `temporary` (`O_EXCL | O_NOFOLLOW`, so an entry planted there is never opened), which is
+/// synced and renamed over `name` within the same handle; it is removed when anything fails.
+pub(crate) fn replace_in(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    temporary: &str,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> AppResult<()> {
+    let fd = openat(
+        dir,
+        temporary,
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(0o666),
+    )
+    .map_err(errno_error)?;
+    let mut file = std::fs::File::from(fd);
+    let written = write(&mut file)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_error(&e))
+        .and_then(|()| renameat(dir, temporary, dir, name).map_err(errno_error));
+    if written.is_err() {
+        let _ = unlinkat(dir, temporary, UnlinkatFlags::NoRemoveDir);
+    }
+    written
 }
 
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
@@ -276,9 +395,14 @@ impl App {
             return Err(AppError::Invalid("known is 64 lowercase hex digits".into()));
         }
         let file = Self::existing(&target)?;
-        let meta = std::fs::metadata(&file).map_err(|e| io_error(&e))?;
+        crate::race::reached(crate::race::Point::FileRead, &file);
+        let file = std::fs::File::from(open_inside(&target.root, &file, OFlag::O_RDONLY)?);
+        let meta = file.metadata().map_err(|e| io_error(&e))?;
         if meta.is_dir() {
             return Err(AppError::Invalid("that path is a directory".into()));
+        }
+        if !meta.is_file() {
+            return Err(AppError::Invalid("that path is not a regular file".into()));
         }
         if meta.len() > MAX_FILE_BYTES {
             return Ok(Some(FileContent {
@@ -291,7 +415,14 @@ impl App {
             }));
         }
         // Read every 2 s while someone has the file in front: off the runtime's threads.
-        let bytes = tokio::fs::read(&file).await.map_err(|e| io_error(&e))?;
+        let bytes = tokio::task::spawn_blocking(move || {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(file, MAX_FILE_BYTES), &mut bytes)
+                .map(|_| bytes)
+        })
+        .await
+        .map_err(AppError::internal)?
+        .map_err(|e| io_error(&e))?;
         let sha256 = self.deps.crypto.sha256_hex(&bytes);
         if known == Some(sha256.as_str()) {
             return Ok(None);
@@ -353,15 +484,50 @@ impl App {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => return Err(io_error(&err)),
         };
-        let mode = match (&existing, &req.base_sha256) {
-            (Some(path), Some(base)) => {
-                let current = std::fs::read(path).map_err(|e| io_error(&e))?;
-                if &self.deps.crypto.sha256_hex(&current) != base {
+        let destination = existing.unwrap_or(file);
+        crate::race::reached(crate::race::Point::FileWrite, &destination);
+        // From here on everything goes through the destination folder's handle, checked to be
+        // inside the root: a folder on the way swapped for a link is never written into (#657).
+        let (Some(folder), Some(name)) = (destination.parent(), destination.file_name()) else {
+            return Err(AppError::Invalid("invalid path".into()));
+        };
+        let dir = open_inside(&target.root, folder, OFlag::O_RDONLY | OFlag::O_DIRECTORY)?;
+        let current = match openat(
+            &dir,
+            name,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => {
+                let handle = std::fs::File::from(fd);
+                let meta = handle.metadata().map_err(|e| io_error(&e))?;
+                if !meta.is_file() {
+                    return Err(AppError::Conflict("that path is not a regular file".into()));
+                }
+                Some((handle, meta.permissions()))
+            }
+            Err(Errno::ENOENT) => None,
+            Err(Errno::ELOOP) => {
+                return Err(AppError::Forbidden(
+                    "the path leads outside the folder".into(),
+                ));
+            }
+            Err(err) => return Err(errno_error(err)),
+        };
+        let mode = match (current, &req.base_sha256) {
+            (Some((handle, permissions)), Some(base)) => {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(handle, MAX_FILE_BYTES + 1),
+                    &mut bytes,
+                )
+                .map_err(|e| io_error(&e))?;
+                if &self.deps.crypto.sha256_hex(&bytes) != base {
                     return Err(AppError::Conflict(
                         "the file changed on disk since you opened it; reload it first".into(),
                     ));
                 }
-                std::fs::metadata(path).ok().map(|m| m.permissions())
+                Some(permissions)
             }
             (Some(_), None) => {
                 return Err(AppError::Conflict("a file with that name exists".into()));
@@ -373,22 +539,21 @@ impl App {
             }
             (None, None) => None,
         };
-        let destination = existing.unwrap_or(file);
-        let temporary = destination.with_file_name(format!(
-            ".{}.yulius-edit",
-            destination
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-        ));
-        std::fs::write(&temporary, req.content.as_bytes()).map_err(|e| io_error(&e))?;
-        if let Some(permissions) = mode {
-            let _ = std::fs::set_permissions(&temporary, permissions);
-        }
-        if let Err(err) = std::fs::rename(&temporary, &destination) {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(io_error(&err));
-        }
+        // A new file at an unpredictable name: an entry an agent planted there (a link out of
+        // the folder) is never opened, so the save cannot write through it (#655).
+        let suffix: String = self.deps.crypto.random_bytes()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let temporary = format!(".{}.yulius-edit-{suffix}", name.to_string_lossy());
+        replace_in(&dir, name, &temporary, |handle| {
+            // On the handle, never by path: the agent can see the new entry and swap it for a
+            // link before a path-based chmod (review round 2).
+            if let Some(permissions) = mode {
+                handle.set_permissions(permissions)?;
+            }
+            std::io::Write::write_all(handle, req.content.as_bytes())
+        })?;
         Ok(FileWritten {
             path: target.relative,
             sha256: self.deps.crypto.sha256_hex(req.content.as_bytes()),

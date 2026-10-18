@@ -704,6 +704,18 @@ impl GitPort for GitAdapter {
         blocking(move || git.cd_mirror_fetch(&mirror, &from, &branch, &sha)).await
     }
 
+    async fn mirror_fetch_head(
+        &self,
+        mirror: &Path,
+        source: &str,
+        branch: &str,
+        token: Option<&Secret>,
+    ) -> AppResult<String> {
+        let git = token.map_or_else(|| self.git(), |token| self.git_with_token(token));
+        let (mirror, source, branch) = (mirror.to_path_buf(), source.to_owned(), branch.to_owned());
+        blocking(move || git.mirror_fetch_head(&mirror, &source, &branch)).await
+    }
+
     async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
         let (git, mirror, sha, dest) = (
             self.git(),

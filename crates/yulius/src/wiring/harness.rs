@@ -313,7 +313,12 @@ impl HarnessPort for HarnessAdapter {
         Box::new(Masker(login::TokenMasker::new()))
     }
 
-    fn install_skills(&self, skill_dirs: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()> {
+    fn install_skills(
+        &self,
+        skill_dirs: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<()> {
         let dirs: Vec<skills::SkillDir> = skill_dirs
             .iter()
             .map(|(name, path)| skills::SkillDir {
@@ -321,7 +326,7 @@ impl HarnessPort for HarnessAdapter {
                 path: path.clone(),
             })
             .collect();
-        skills::install_skills(&dirs, claude_dir)
+        skills::install_skills(&dirs, root, skills_dir)
             .map(|_| ())
             .map_err(AppError::internal)
     }

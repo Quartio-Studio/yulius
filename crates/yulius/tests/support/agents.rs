@@ -327,8 +327,13 @@ impl HarnessPort for FakeAgentHarness {
     fn masker(&self) -> Box<dyn OutputMasker> {
         self.inner.masker()
     }
-    fn install_skills(&self, skills: &[(String, PathBuf)], claude: &Path) -> AppResult<()> {
-        self.inner.install_skills(skills, claude)
+    fn install_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<()> {
+        self.inner.install_skills(skills, root, skills_dir)
     }
 }
 

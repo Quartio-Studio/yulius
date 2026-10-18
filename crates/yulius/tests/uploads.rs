@@ -968,3 +968,109 @@ async fn a_contained_agent_reads_a_dropped_file_by_its_path() -> TestResult {
     }
     agent_reads_an_attachment(true).await
 }
+
+/// Swaps `folder` for a link to `outside`, the real folder moved aside, or (`back`) undoes it.
+fn swap(folder: &Path, outside: &Path, back: bool) -> std::io::Result<()> {
+    let aside = folder.with_extension("aside");
+    if back {
+        std::fs::remove_file(folder)?;
+        std::fs::rename(aside, folder)
+    } else {
+        std::fs::rename(folder, aside)?;
+        std::os::unix::fs::symlink(outside, folder)
+    }
+}
+
+/// A contained shell is root in its sandbox: a `RENAME_EXCHANGE` loop shows the server a link at
+/// each use of `folder` and the real folder at each check of it. Modeled exactly with the pause
+/// points: a link while the temporary file is created and when it takes its name, the folder
+/// while the server checks again (#657).
+fn exchange_loop(below: &Path, folder: &Path, outside: &Path) {
+    use yulius_app::race::{Point, on};
+    for (point, back) in [
+        (Point::UploadFolder, false),
+        (Point::UploadReceived, true),
+        (Point::UploadPlace, false),
+    ] {
+        let (folder, outside) = (folder.to_path_buf(), outside.to_path_buf());
+        on(point, below, move || {
+            swap(&folder, &outside, back).ok();
+        });
+    }
+}
+
+/// The names in `dir`.
+fn names(dir: &Path) -> std::io::Result<Vec<String>> {
+    let mut names = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    Ok(names)
+}
+
+#[tokio::test]
+async fn an_attachment_folder_swapped_for_a_link_leaves_the_outside_empty() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let outside = data.join("host");
+    std::fs::create_dir_all(&outside)?;
+    let folder = data.join("sandboxes/s1/attachments/tasks/t1");
+    exchange_loop(&data.join("sandboxes/s1"), &folder, &outside);
+    let sent = upload(
+        &h,
+        Method::POST,
+        "/api/tasks/t1/attachments?name=x.txt",
+        b"x",
+        &alice,
+    )
+    .await?;
+    assert_eq!(names(&outside)?, Vec::<String>::new(), "{:?}", sent.body);
+    // The upload still succeeds, in the real folder (moved aside by the swap).
+    assert!(sent.status.is_success(), "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read(folder.with_extension("aside").join("x.txt"))?,
+        b"x"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_editor_upload_never_replaces_a_file_through_a_swapped_folder() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join("docs"))?;
+    std::fs::write(repo.join("docs/a.txt"), "old\n")?;
+    let outside = data.join("host");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("a.txt"), "precious\n")?;
+    exchange_loop(&repo, &repo.join("docs"), &outside);
+    let sent = upload(
+        &h,
+        Method::PUT,
+        "/api/sandboxes/s1/files/upload?path=docs/a.txt&overwrite=true",
+        b"new\n",
+        &alice,
+    )
+    .await?;
+    assert_eq!(names(&outside)?, ["a.txt"], "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read_to_string(outside.join("a.txt"))?,
+        "precious\n"
+    );
+    assert!(sent.status.is_success(), "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("docs.aside/a.txt"))?,
+        "new\n",
+        "the file was replaced in the real folder"
+    );
+    Ok(())
+}

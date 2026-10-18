@@ -158,10 +158,13 @@ pub struct SecretsImportArgs {
     pub to: VaultChoice,
     /// A dotenv file, `-` for stdin, `None` to type each secret.
     pub file: Option<PathBuf>,
-    /// The sandbox of agent secrets (id, slug or `owner/name`).
+    /// The sandbox of the secrets (id, slug or `owner/name`).
     pub sandbox: Option<String>,
-    /// Agent secrets for every sandbox.
+    /// Team-wide secrets, for every sandbox (SPEC-216).
     pub instance: bool,
+    /// Agent secrets a person allows each host and production deploys of, instead of agents
+    /// setting them up (SPEC-216).
+    pub confirm_hosts: bool,
     /// Server URL (`None`: the only signed-in server).
     pub server: Option<String>,
     /// No colours.
@@ -241,16 +244,17 @@ fn read_source(file: &std::path::Path) -> Result<Secret, String> {
 }
 
 /// `yulius secrets import --to team|agent [FILE|-] [--sandbox <owner/name>] [--instance]
+/// [--confirm-hosts]
 /// [--server <url>] [--no-color]`: exit 0 when every secret was imported or already there.
 pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
     install_tls();
     set_colors(args.no_color);
     let result = (|| -> Result<bool, String> {
-        if args.instance && args.to != VaultChoice::Agent {
-            return Err("--instance applies to --to agent".into());
+        if args.instance && args.to == VaultChoice::Team && args.sandbox.is_some() {
+            return Err("team-wide team secrets (--instance) belong to no --sandbox".into());
         }
-        if args.sandbox.is_some() && args.to != VaultChoice::Agent {
-            return Err("--sandbox applies to --to agent".into());
+        if args.confirm_hosts && args.to != VaultChoice::Agent {
+            return Err("--confirm-hosts applies to --to agent".into());
         }
         let parsed = match &args.file {
             Some(file) => {
@@ -272,10 +276,14 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
         let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
         let options = SecretsImportOptions {
             target: match args.to {
-                VaultChoice::Team => SecretsTarget::Team,
+                VaultChoice::Team => SecretsTarget::Team {
+                    sandbox: args.sandbox.clone(),
+                    instance: args.instance,
+                },
                 VaultChoice::Agent => SecretsTarget::Agent {
                     sandbox: args.sandbox.clone(),
                     instance: args.instance,
+                    confirm_hosts: args.confirm_hosts,
                 },
             },
             checkout: std::env::current_dir().map_err(|e| e.to_string())?,

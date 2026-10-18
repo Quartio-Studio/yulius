@@ -55,6 +55,7 @@ pub mod preview;
 pub mod production_protect;
 pub mod projects;
 pub mod queued_messages;
+pub mod race;
 pub mod record_numbers;
 pub mod recovery;
 pub mod resources;

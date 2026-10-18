@@ -29,6 +29,10 @@ pub fn public() -> Router<AppState> {
             patch(team_update).delete(team_delete),
         )
         .route("/api/team-secrets/{id}/reveal", post(team_reveal))
+        .route(
+            "/api/sandboxes/{sid}/team-secrets",
+            get(sandbox_team_list).post(sandbox_team_create),
+        )
         .route("/api/auth/reauth", get(reauth_status).post(reauth))
         .route("/api/auth/two-factor", post(two_factor_setup))
         .route("/api/auth/unlock", post(unlock))
@@ -114,7 +118,27 @@ async fn team_create(
 ) -> ApiResult<(StatusCode, Json<TeamSecretView>)> {
     Ok((
         StatusCode::CREATED,
-        Json(app.create_team_secret(&ctx, &input).await?),
+        Json(app.create_team_secret(&ctx, None, &input).await?),
+    ))
+}
+
+async fn sandbox_team_list(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<Vec<TeamSecretView>>> {
+    Ok(Json(app.sandbox_team_secrets(&ctx, &sid).await?))
+}
+
+async fn sandbox_team_create(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(input): Json<TeamSecretInput>,
+) -> ApiResult<(StatusCode, Json<TeamSecretView>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(app.create_team_secret(&ctx, Some(&sid), &input).await?),
     ))
 }
 

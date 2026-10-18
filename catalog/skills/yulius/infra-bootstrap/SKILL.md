@@ -48,11 +48,14 @@ example when it starts deploying for real), and record every change as a decisio
    - in a monorepo, a CI job for every project (each app, client, package or service with its own
      build) running its own checks, so no project is left without CI;
    - **the security scan, only when the instance has a Vidoc key** (the briefing then has a
-     `## Security scan` section): a `[[ci.jobs]]` entry with `name = "security"`,
-     `secrets = "VIDOC_API_KEY"` and `command = "yulius security-scan --ci"` (Vidoc's vidoc-1
-     scans each pull request's changed files; open critical or high findings fail it, a scan that
-     cannot run ends skipped, never passed), and the AGENTS.md rule that every change runs
-     `yulius security-scan` before delivery. Exit 2 is not run, never passed; a false positive
+     `## Security scan` section): Yulius CI already runs it on every pull request as a built-in
+     `security` job (`yulius security-scan --ci`, granted `VIDOC_API_KEY`), so add no job of your
+     own. Vidoc's vidoc-1 scans each pull request's changed files: critical or high findings fail
+     it, medium findings fail it in the changed lines, findings in untouched code become GitHub
+     issues, and a scan that cannot run ends skipped, never passed. Add the AGENTS.md rule that
+     every change runs `yulius security-scan` before delivery, fixes each failing finding
+     test-first and decides on each low finding in the change (fix it, or say why not in the
+     spec's Evidence). Exit 2 is not run, never passed; a false positive
      goes into `.config/vidoc.toml` as an `[[ignore]]` with its reason once the reviewer agrees;
      AGENTS.md says the scan sends the changed code to Vidoc. `yulius security-scan --all` scans
      the whole repository, an audit for a task of its own. Without that section add neither, and

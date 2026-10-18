@@ -17,17 +17,17 @@
 //! - reads degrade: GitHub or Git failures become `notes` instead of failing the page.
 //!
 //! Environment command trust contract (DLV-003, SPEC-002 §8): an environment `command` is
-//! shell text configured by a repository administrator in the sandbox profile (never read from
-//! the repository). Each run needs an explicit confirmation, is audited with actor,
-//! environment and command, and runs as `/bin/sh -c <command>` in the sandbox's primary clone
-//! checked out at the head of the stage's branch, with a minimal environment (`PATH`,
-//! `HOME` = sandbox home, `LANG`), the output bounded to the last
-//! [`ENVIRONMENT_OUTPUT_BYTES`], and a [`ENVIRONMENT_TIMEOUT`] after which the process group is
-//! killed and reaped ([`runner`]). It runs with the server's privileges (no containment), in a
-//! directory whose `.git` and `HOME` the sandbox's agents can write: the checkout ignores
-//! global/system Git config and disables hooks and fsmonitor, but repository-local config (for
-//! example filter drivers) and tools reading `HOME` remain agent-influenced. Commands are
-//! visible to everyone with read access, so they must not contain secrets.
+//! shell text of the sandbox profile, set by a repository administrator or seeded once from the
+//! default branch's `yulius.toml` when the repository is imported; a run never reads it from the
+//! repository. Each run needs an explicit confirmation, is audited with actor,
+//! environment and command, and runs as `/bin/sh -c <command>` like a CD run of its stage
+//! (SPEC-219, #656): the head of the stage's branch is fetched from origin into a mirror only
+//! Yulius writes, its tree is written into the run's own directory with a fresh `HOME`, and the
+//! command runs there through the process host in CD's containment (`crate::ci`'s
+//! `environment` module), with a minimal environment, the output bounded to the last
+//! [`ENVIRONMENT_OUTPUT_BYTES`] and the CI job timeout. Nothing of a run is read from the sandbox
+//! clone or the sandbox's home, which its agents write. Commands are visible to everyone with
+//! read access, so they must not contain secrets.
 
 pub(crate) mod playground;
 pub mod runner;
@@ -65,12 +65,11 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, StepRecord, TaskRecord, UserRecord};
 use crate::ports::github::{self as gh, GhPull, NewPull};
 use crate::ports::store::TaskFieldUpdate;
-use runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
+use runner::{CommandEnd, OutputRing};
 
-/// Wall-clock limit of one environment command.
-pub const ENVIRONMENT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// Limit of the checkout before an environment command.
-pub const CHECKOUT_TIMEOUT: Duration = Duration::from_secs(120);
+/// What preparing a run may take before its command starts: the fetch (Git's 30-minute network
+/// limit), the token, the files and the containment.
+const PREPARE_ALLOWANCE: Duration = Duration::from_secs(35 * 60);
 /// Output kept per environment run (the tail).
 pub const ENVIRONMENT_OUTPUT_BYTES: usize = 1 << 20;
 /// Largest spec file read.
@@ -3925,7 +3924,7 @@ impl App {
                     CommandEnd::Signaled(signal) => format!("\n[yulius] terminated by signal {signal}\n"),
                     CommandEnd::TimedOut => format!(
                         "\n[yulius] the command exceeded {} minutes; its process group was killed\n",
-                        ENVIRONMENT_TIMEOUT.as_secs() / 60
+                        self.config.ci.job_timeout.as_secs() / 60
                     ),
                     CommandEnd::SpawnFailed(message) => format!("\n[yulius] could not start: {message}\n"),
                 });
@@ -4008,96 +4007,41 @@ impl App {
             .command
             .clone()
             .ok_or_else(|| format!("environment '{}' has no command", env.name))?;
-        let repo = self.sandbox_repo(&sandbox.id);
         let branch = match env.after {
             Stage::Integration => &profile.integration_branch,
             Stage::Production => &profile.production_branch,
         };
+        // Nothing of the run is read from the sandbox clone, whose configuration its agents
+        // write (#656): the head comes from origin into Yulius's own mirror.
         ring.push_str(&format!(
-            "[yulius] fetching {}/{}\n",
+            "[yulius] fetching {branch} of {}/{}\n",
             sandbox.repo_owner, sandbox.repo_name
         ));
         let _ = tx.send(ring.text());
-        self.dlv_refresh_clone(sandbox)
-            .await
-            .map_err(|err| format!("fetching the repository failed: {}", err.public_message()))?;
         let head = self
-            .deps
-            .git
-            .log(&repo, &format!("origin/{branch}"), 1)
+            .environment_head(sandbox, branch)
             .await
-            .map_err(|err| format!("reading {branch} failed: {}", err.public_message()))?
-            .into_iter()
-            .next()
-            .map(|commit| commit.sha)
-            .filter(|sha| is_hex_sha(sha))
-            .ok_or_else(|| format!("branch {branch} has no readable head commit"))?;
-        let home = self.sandbox_dir(&sandbox.id).join("home");
-        tokio::fs::create_dir_all(&home)
-            .await
-            .map_err(|_| "the sandbox home directory cannot be created".to_owned())?;
-        let mut env_vars = vec![
-            (
-                "PATH".to_owned(),
-                std::env::var("PATH")
-                    .ok()
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
-            ),
-            ("HOME".to_owned(), home.to_string_lossy().into_owned()),
-            ("LANG".to_owned(), "C.UTF-8".to_owned()),
-        ];
-        ring.push_str(&format!("[yulius] checking out {branch} at {head}\n"));
-        // The clone's `.git` and the sandbox home are writable by the sandbox's agents: ignore
-        // global/system config and disable hooks and fsmonitor for this server-side checkout.
-        let mut checkout_env = env_vars.clone();
-        checkout_env.extend(
-            [
-                ("GIT_TERMINAL_PROMPT", "0"),
-                ("GIT_CONFIG_GLOBAL", "/dev/null"),
-                ("GIT_CONFIG_NOSYSTEM", "1"),
-            ]
-            .map(|(k, v)| (k.to_owned(), v.to_owned())),
-        );
-        let checkout = CommandSpec {
-            argv: [
-                "git",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-                "checkout",
-                "--quiet",
-                "--force",
-                "--detach",
-                head.as_str(),
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-            cwd: repo.clone(),
-            env: checkout_env,
-            timeout: CHECKOUT_TIMEOUT,
-        };
-        let end = run_bounded(&checkout, ring, Some(tx)).await;
-        if !end.succeeded() {
-            return Err(format!("checking out {head} failed ({end:?})"));
+            .map_err(|err| format!("fetching {branch} failed: {}", err.public_message()))?;
+        if !is_hex_sha(&head) {
+            return Err(format!("branch {branch} has no readable head commit"));
         }
+        ring.push_str(&format!(
+            "[yulius] running at {head} of {branch}, in the run's own directory\n"
+        ));
         let _ = self
             .deps
             .store
             .update_environment_run(run_id, &ring.text(), Some(&head))
             .await;
-        env_vars.push(("YULIUS_ENVIRONMENT".into(), env.name.clone()));
-        env_vars.push(("YULIUS_BRANCH".into(), branch.clone()));
-        env_vars.push(("YULIUS_COMMIT".into(), head.clone()));
+        let vars = vec![
+            ("YULIUS_ENVIRONMENT".into(), env.name.clone()),
+            ("YULIUS_BRANCH".into(), branch.clone()),
+            ("YULIUS_COMMIT".into(), head.clone()),
+        ];
         ring.push_str(&format!("[yulius] $ {command}\n"));
-        let spec = CommandSpec {
-            argv: vec!["/bin/sh".into(), "-c".into(), command],
-            cwd: repo,
-            env: env_vars,
-            timeout: ENVIRONMENT_TIMEOUT,
-        };
-        Ok(run_bounded(&spec, ring, Some(tx)).await)
+        let _ = tx.send(ring.text());
+        self.environment_command(sandbox, env.after, (run_id, &head), &command, vars, ring)
+            .await
     }
 
     async fn dlv_run_view(
@@ -4129,7 +4073,7 @@ impl App {
         &self,
         run: EnvironmentRunRecord,
     ) -> AppResult<EnvironmentRunRecord> {
-        let limit = i64::try_from((ENVIRONMENT_TIMEOUT + CHECKOUT_TIMEOUT).as_millis())
+        let limit = i64::try_from((self.config.ci.job_timeout + PREPARE_ALLOWANCE).as_millis())
             .unwrap_or(i64::MAX)
             .saturating_add(LOST_RUN_GRACE_MS);
         if run.state != EnvironmentRunState::Running
@@ -4137,6 +4081,7 @@ impl App {
         {
             return Ok(run);
         }
+        self.environment_end_lost(&run.id);
         let output = format!(
             "{}\n[yulius] no runner is attached to this run any more (server restart?); its outcome is unknown\n",
             run.output
@@ -4203,14 +4148,15 @@ impl App {
         Ok(out)
     }
 
-    /// Startup reconciliation: runs recorded as `running` have no runner after a restart and
-    /// are recorded as `error`. Returns how many were closed. Call once before serving.
+    /// Startup reconciliation: runs recorded as `running` have no runner after a restart: their
+    /// process hosts are terminated and they are recorded as `error`. Returns how many were closed. Call once before serving.
     ///
     /// # Errors
     /// Store failures.
     pub async fn reconcile_environment_runs(&self) -> AppResult<u32> {
         let mut closed = 0;
         for run in self.deps.store.running_environment_runs().await? {
+            self.environment_end_lost(&run.id);
             let output = format!(
                 "{}\n[yulius] interrupted by a server restart; the command may have been killed or may have finished unobserved\n",
                 run.output

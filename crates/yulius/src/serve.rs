@@ -516,6 +516,13 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         ),
         Err(err) => tracing::error!(error = %err, "CD run reconciliation failed"),
     }
+    // Secrets that applied to every sandbox before SPEC-216 become one per sandbox, once; before
+    // serving, so no team-wide secret is added meanwhile.
+    match app.assign_vault_scopes().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(secrets = n, "secrets were assigned to their sandboxes"),
+        Err(err) => tracing::error!(error = %err, "secret assignment to sandboxes failed"),
+    }
     // Onboarding left stuck without its task (or with it archived) before SPEC-106 heals.
     match app.heal_onboarding().await {
         Ok(0) => {}

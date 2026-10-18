@@ -425,6 +425,31 @@ flowchart TD
     C -- no --> R
 ```
 
+## Host access to agent-owned folders
+
+The server runs outside containment as the service user, and a sandbox's whole directory is
+mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
+at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
+attachments, imported transcripts, skill copies), it opens the folder once and does everything
+else through that handle
+([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
+[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). The
+helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
+checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
+with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
+random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
+do the same and remove trees with `unlinkat`. Races are tested at pause points
+(`yulius_app::race`, only with the `test-support` feature).
+
+```mermaid
+flowchart LR
+    A["anchor: sandbox dir or canonical root"] -->|"openat O_DIRECTORY|O_NOFOLLOW per folder"| F["folder handle"]
+    F -->|"real path inside the root?"| C{check}
+    C -- no --> R["refused"]
+    C -- yes --> W["openat O_EXCL|O_NOFOLLOW, linkat, renameat, fstatat, unlinkat"]
+    S["agent swaps a folder for a link"] -. "after the open: not followed" .-> F
+```
+
 ## Task start
 
 A task's agent is a native Claude Code session, and its first message is in before a person can
@@ -675,7 +700,10 @@ the file's servers that the sandbox lacks to its MCP servers, so task runs get t
 other server. The Superagent starts with `--settings` naming every one of them in
 `disabledMcpjsonServers`, so it never asks
 ([SPEC-095](../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
-[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). An MCP server's
+[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). Agents write the
+file, so imported servers have the origin `mcp_json`: the MCP Test, which runs on the host, never
+starts their command nor connects to their private address until a person changes what they run
+([decision 0173](decisions/0173-the-mcp-test-refuses-servers-imported-from-mcp-json.md)). An MCP server's
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
@@ -765,7 +793,7 @@ flowchart LR
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
   MS -->|"mcp_attachments: values in the secret environment"| HP
   SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
-  APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
+  APP -->|"import_project_mcp (also before task runs): origin mcp_json, never host-tested"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
@@ -782,12 +810,39 @@ flowchart LR
 
 An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Since SPEC-121
 (ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
-nothing. The agent works out the service's host and proposes it; the request waits on the secret
-(`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
-so an agent misled by injected content cannot send a secret to another server. Storing a host or
-`.env` request publishes `secrets.updated` to the secret's sandbox (to every sandbox for an
-instance-wide secret), so an open Secrets page reads its list again and shows Allow without a
-reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
+nothing. The agent works out the service's host and proposes it with `secret_request_hosts`.
+
+Since SPEC-216 (ADR-0171) a new secret has `auto_allow` ("Let agents set it up") unless the person
+turns it off when adding it or in Edit. Then the proposed hosts are bound at once (audited
+`vault.agent.auto_allow` with the asking task) and production CD runs get the value
+(`allowed_for`), with no person in between. Secrets added before keep it off. Without it the
+request waits on the secret (`requested_hosts`) until a person who manages it allows it, so an
+agent misled by injected content cannot send that secret to another server; and production gets
+it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`.
+
+Every team and agent secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
+(`NULL`). A sandbox's team secret is read by the people who can view that sandbox
+(`/api/sandboxes/{sid}/team-secrets`, 404 elsewhere, its activity hidden) and changed by those
+who write to it; team-wide ones are everyone's (`/api/team-secrets`). Schema version 35 listed
+the team secrets (none had a sandbox) in `vault_scope_pending`; at the next start, before
+serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
+replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
+secrets an administrator made team-wide stay team-wide.
+
+Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
+secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its
+list again without a reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
+
+```mermaid
+flowchart LR
+  A["Agent: secret_request_hosts(NAME, host)"] --> Q{"auto_allow?"}
+  Q -->|"yes (default for new secrets)"| B["bound now (vault.agent.auto_allow)"]
+  Q -->|"no"| W["requested_hosts: waits for a person"]
+  W -->|"Allow on the Secrets page"| B
+  B --> X["Egress proxy adds it toward the bound hosts"]
+  P{"production CD run names it"} -->|"auto_allow or cd_prod"| R["gets the value"]
+  P -->|"neither"| N["nothing ran: a person allows it"]
+```
 
 ```mermaid
 sequenceDiagram
@@ -851,7 +906,17 @@ Vidoc is an optional instance service, like Jev
   never resolve it.
 - **The scan.** It runs where the code is. `scripts/vidoc_scan.py`, embedded in the binary as
   `yulius security-scan`, reads `HEAD`'s tree and sends line-numbered chunks to `/v1/messages`.
-  It reads the JSON findings back, and fails on open critical or high ones.
+  It reads the JSON findings back. It fails on open critical or high ones, and on open medium ones
+  in the lines the branch changed (`git diff -U0`, 3 lines of slack; SPEC-217, ADR-0172). It prints
+  low ones in the change for the agent to decide, and fingerprints the rest as outside the change.
+- **The default pipeline.** `App::ci_gate` and `ci_verified_gate` add the built-in `security` job
+  (`yulius-domain` `ci::with_security_job`: `yulius security-scan --ci`, granted `VIDOC_API_KEY`)
+  when the sandbox's applied agent secrets have that key and its CI does not scan already.
+- **Issues.** When a `security` job ends, `ci/findings.rs` reads its `::yulius-finding` lines. On a
+  pull request head, it files each new fingerprint (table `security_findings`, migration 0036) and
+  reopens the issue of one reported again. On a pull request or on the integration branch, it
+  closes the issues whose fingerprint no line of the file on `origin/<integration>` has any more
+  (`GitHubPort::create_issue`, `set_issue_state`).
 - **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
   has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
 
@@ -861,10 +926,12 @@ flowchart LR
   FILE["YULIUS_VIDOC_API_KEY_FILE"] -.->|"while nothing is saved"| APP
   APP -->|"virtual agent secret VIDOC_API_KEY, unless the project has its own"| PX["Egress proxy"]
   AG["Agent: yulius security-scan, scripts/dev security"] -->|"x-api-key: yulius-secret-VIDOC_API_KEY"| PX
-  CI["CI job security, granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
+  CI["CI job security (built in when the key applies), granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
   PX -->|"the key toward model.vidocsecurity.com only"| V["Vidoc /v1/messages, vidoc-1"]
   V -->|"JSON findings: exit 0, 1, or 2 when not run"| AG
-  APP -->|"key set: briefing and onboarding add the scan"| BOOT["infra bootstrap"]
+  CI -->|"::yulius-finding lines: outside the change"| ISS["ci/findings.rs: file, reopen, close"]
+  ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
+  APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
 ```
 
 ## CD (deployment)
@@ -914,6 +981,25 @@ flowchart LR
   DEV["dev: [cd.dev] at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
   P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod: [cd.prod] at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
+```
+
+A delivery profile's environment run (DLV-003; an agent's `delivery_deploy`) is a CD run of its
+stage ([SPEC-219](../.ai/specs/SPEC-219-fix-656-delivery-environment-runs-must-r.md), ADR-0175):
+`App::environment_head` (`crates/yulius-app/src/ci/environment.rs`) fetches the stage branch's head
+from origin, the token only in that command's environment, into its own mirror
+`<data>/cd/<sandbox>/environments.git` (`mirror_fetch_head`, one commit, objects checked), and
+`App::environment_command` writes its tree into `<data>/runs/env-<run>` with a fresh `HOME` and runs
+the command there through `ci_watch` in `cd_containment` (integration as dev, production as
+production). Nothing of it reads the sandbox clone, whose configuration agents write.
+
+```mermaid
+flowchart LR
+  AG["agent: delivery_deploy / person: Run"] --> RUN["environment run (audited)"]
+  GH["origin (GitHub)"] -->|"head of the stage branch, token in the command's env"| EMIR["environments.git (Yulius only)"]
+  CLONE["sandbox clone (agents write .git)"] -.->|"never read"| RUN
+  EMIR -->|"export_tree"| DIR["runs/env-run: src, fresh HOME"]
+  RUN --> DIR
+  DIR -->|"process host, CD containment"| CMD["/bin/sh -c command"]
 ```
 
 Outside Yulius, GitHub keeps the production branch a person's

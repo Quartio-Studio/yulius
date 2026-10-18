@@ -13,7 +13,7 @@
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat, renameat};
@@ -31,7 +31,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::files::{inside, relative_components};
+use crate::files::{inside, real_path, relative_components};
 use crate::ports::vault::{EnvFiles, VaultSecretRecord};
 
 /// Most secrets copied in one call.
@@ -79,29 +79,6 @@ impl Folder {
 
 pub(super) fn os_error(err: Errno) -> AppError {
     crate::files::io_error(&std::io::Error::from(err))
-}
-
-/// Where an open folder really is.
-fn real_path(fd: &OwnedFd) -> AppResult<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd as _;
-        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-            .map_err(|e| crate::files::io_error(&e))
-    }
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        let mut path = PathBuf::new();
-        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path)).map_err(os_error)?;
-        Ok(path)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
-    {
-        let _ = fd;
-        Err(AppError::Forbidden(
-            "copying into .env files needs Linux or macOS".into(),
-        ))
-    }
 }
 
 /// How [`open_folder`]'s messages name its folders: the root it walks from as `within` ("the
@@ -365,6 +342,10 @@ impl App {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
             .await?;
+        // Agents set it up: production already gets it (SPEC-216 SSA-004).
+        if allow && record.auto_allow {
+            return Err(AppError::Conflict(AUTO_PRODUCTION.into()));
+        }
         // A secret agents can use (its `.env` copies, its hosts) is no production secret
         // (round 2, M-B).
         if allow && (record.env_files == EnvFiles::Allowed || !record.hosts.is_empty()) {
@@ -382,7 +363,9 @@ impl App {
                 .await?
             {
                 return Err(AppError::Conflict(
-                    "the secret changed since you looked: reload and answer again".into(),
+                    "the secret changed since you looked (or agents set it up meanwhile): reload \
+                     and answer again"
+                        .into(),
                 ));
             }
             record.cd_prod = allow;
@@ -657,6 +640,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -754,14 +738,19 @@ impl CdSecretState {
     }
 }
 
+/// Why a secret agents set up takes no production-only allowance (SPEC-216 SSA-004).
+const AUTO_PRODUCTION: &str = "agents set this secret up, so production deploys already get it: \
+turn that off in Edit first to keep it for production deploys only";
+
 /// Whether a run of `env` may get `record`'s value (SPEC-134, ADR-0109): dev runs the secrets a
 /// person allowed outside the proxy (`env_files`, ADR-0105: dev is the agents' own ground, as
 /// `.env` is), production only those a person allowed for production deploys (`cd_prod`), which
-/// no agent can use otherwise.
+/// no agent can use otherwise, and those whose creator let agents set them up (`auto_allow`,
+/// SPEC-216 SSA-003).
 fn allowed_for(record: &VaultSecretRecord, env: yulius_domain::cd::CdEnv) -> bool {
     match env {
         yulius_domain::cd::CdEnv::Dev => record.env_files == EnvFiles::Allowed,
-        yulius_domain::cd::CdEnv::Prod => record.cd_prod,
+        yulius_domain::cd::CdEnv::Prod => record.cd_prod || record.auto_allow,
     }
 }
 

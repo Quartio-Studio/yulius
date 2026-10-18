@@ -63,3 +63,351 @@ reason = "trust entries land in the agent's own config dir, which it can edit an
 path = "crates/yulius-app/src/hooks.rs"
 title = "Symlink file read escapes the repository root"
 reason = "symlink_metadata().is_file() refuses every link before any read; proven by hooks::tests::linked_documents_are_not_read (#70)"
+
+# The broad audit of dev at 7b7ca3f3 (task #160, SPEC-217): the high and medium findings that its
+# triage showed to be false positives, each with the guard that stops it, and real ones tracked in
+# an issue (remove those with their fix). Titles are Vidoc's and vary between runs: an entry that
+# no longer matches is reported again and triaged again. The triage is in SPEC-217's Evidence.
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "SSRF via HTTP MCP server test"
+reason = "the person-triggered test resolves and classifies every address, refuses link-local/metadata for everyone and private ones to non-admins, pins the addresses and follows no redirects (probe.rs; skills_mcp tests)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "Missing authorization for arbitrary command execution"
+reason = "the stdio test needs Configure, the same level as Work (shell, tasks) on an uncontained instance, and an instance admin on a contained one (skills_mcp::contained_instances_restrict_stdio_tests_to_admins); a command imported from .mcp.json is never run by the Test (#654, ADR-0173)"
+
+# The same finding in words that change from scan to scan, first on task #204's change scans
+# (SPEC-218): "Arbitrary host command execution via stdio MCP Test on non-contained instances"
+# (medium), then "Stdio MCP test executes arbitrary commands on the host without containment"
+# (high). Uncontained, every task and shell of a Configure (write) user already runs on the host
+# without containment, so the Test adds no capability; contained, it needs an instance admin and
+# never runs an agent's `.mcp.json` command
+# (cockpit::the_mcp_test_never_runs_a_command_from_the_repository_mcp_json).
+# One narrow entry per wording, so a finding of another kind about the stdio Test (a #654
+# regression included) is still reported.
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "via stdio MCP Test on non-contained instances"
+reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "Stdio MCP test executes arbitrary commands on the host without containment"
+reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "Insufficient URL validation for HTTP MCP"
+reason = "the URL is fetched only by the person-triggered MCP test, which checks and pins the addresses and follows no redirects; agent runs connect through the egress proxy"
+
+# First on task #204's change scan (SPEC-218): imported http servers reach agent runs by design
+# (ADR-0078), and the agent can reach the URL itself through its egress proxy. Their Test connects
+# from the host only to a public address (a private or loopback one is refused for .mcp.json
+# servers), sending fixed JSON-RPC and the file's headers, which hold placeholders, never a secret
+# value (`file_value`); the tool names it lists are shown as text.
+[[ignore]]
+path = "crates/yulius-server/web/assets/pages/mcp.js"
+title = "Only stdio imports from .mcp.json are gated"
+reason = "imported http servers are attached by design (ADR-0078); their Test reaches public addresses only, with placeholder headers (ADR-0173)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config/project.rs"
+title = "imports arbitrary stdio commands"
+reason = "fixed by #654 (ADR-0173): imported servers run only in agent runs, inside their containment when contained; the host-side Test refuses them (origin mcp_json)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config/project.rs"
+title = "SSRF via imported http server URL"
+reason = "import makes no connection; the only server-side fetch is the address-checked person-triggered test, and imported headers hold placeholders, not secret values (file_value)"
+
+[[ignore]]
+path = "crates/yulius-app/src/playground/onboard.rs"
+title = "Path traversal via bundle.name"
+reason = "names come from the manifest ImportManifest::validate checked in create_import (is_safe_file_name; import::tests::safe_file_names)"
+
+[[ignore]]
+path = "crates/yulius-app/src/playground/onboard.rs"
+title = "Path traversal via snapshot file.name"
+reason = "names come from the manifest ImportManifest::validate checked in create_import (is_safe_file_name; import::tests::safe_file_names)"
+
+[[ignore]]
+path = "crates/yulius-app/src/session_docs.rs"
+title = "Path traversal via session_id"
+reason = "imported session ids pass is_safe_session_id in ImportManifest::validate before the job exists (import.rs tests: InvalidSessionId)"
+
+[[ignore]]
+path = "crates/yulius-app/src/session_docs.rs"
+title = "Path traversal via user-supplied session file names"
+reason = "ImportManifest::validate rejects unsafe file names and session ids (is_safe_file_name, is_safe_session_id)"
+
+[[ignore]]
+path = "crates/yulius-git/src/credential.rs"
+title = "CRLF injection"
+reason = "agent_post is only called with the constant /internal/agent/wait (wait_cli.rs); it is the agent's own client, so no boundary is crossed"
+
+[[ignore]]
+path = "deploy/systemd/yulius-update.service"
+title = "file-triggered root service"
+reason = "the root helper builds only a main commit of the fixed repository (ancestor check, no downgrade) from an owner-only, no-link, schema-checked request (SPEC-002 ADR-18; update_helper tests)"
+
+[[ignore]]
+path = "crates/yulius-app/src/accounts.rs"
+title = "Login CLI spawned with inherited PATH"
+reason = "PATH is the service unit's operator-set environment; HOME and the config dir are fresh server-private directories no agent can write"
+
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "Device-start rate limit"
+reason = "client_key is the server-derived peer address or IPv6 /64 (client.rs limit_key), and grants are capped globally (ADR-0047)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "CD run commands from unverified configuration"
+reason = "CD reads [cd.*] from the GitHub-verified protected-branch head in a Yulius-only mirror; dev runs contained, production only on an admin's confirmation (SPEC-134)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "authorization check in tool_cd_status"
+reason = "a task's agent sees only its own sandbox's runs (sandbox filter), at Write level by design, with secret-redacted output"
+
+[[ignore]]
+path = "crates/yulius-app/src/disk.rs"
+title = "path traversal via untrusted yulius.toml cache"
+reason = "check_repo_path rejects absolute and .. segments and real_dir_below refuses links (config.rs and tests/disk.rs)"
+
+[[ignore]]
+path = "crates/yulius-domain/src/disk.rs"
+title = "Unvalidated cache paths"
+reason = "parse_yulius_toml_caches rejects absolute and .. paths (check_repo_path) and real_dir_below never follows links"
+
+[[ignore]]
+path = "crates/yulius-harness/src/skills.rs"
+title = "symlink-containment check in copy_tree"
+reason = "the sources are instance-owned (data dir and bundled catalog), which agents cannot write; the destination side goes through folder handles (#657, ADR-0174)"
+
+[[ignore]]
+path = "crates/yulius-app/src/manage.rs"
+title = "lacking CSRF token"
+reason = "None marks a bearer caller; CSRF is enforced in yulius-server for cookie sessions, browser-only actions fail closed, and manage_authority requires Work"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Secret value verification oracle"
+reason = "Cockpit-only by design (ADR-0144): refuses production secrets, audits each candidate and answers only match and variant"
+
+[[ignore]]
+path = "crates/yulius-app/src/playground/purge.rs"
+title = "TOCTOU symlink race in delete_tree"
+reason = "runs only once nothing of the sandbox runs (still_running, namespace processes included); remove_dir_all is race-safe and the fallback never follows a link"
+
+[[ignore]]
+path = "crates/yulius-app/src/preview.rs"
+title = "Preview grants honor access"
+reason = "the documented 30 s re-check window (docs/api.md previews), shorter than the 5-minute permission cache; WebSockets re-check"
+
+[[ignore]]
+path = "crates/yulius-app/src/terminal.rs"
+title = "authorization check in terminal_state"
+reason = "only called with the task of a TerminalAttach that terminal_open authorized with Action::View"
+
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "substituted into proxied request headers"
+reason = "agent secret values with control characters are refused at every write (check_agent_value), and the proxy drops headers failing HeaderValue::from_bytes"
+
+[[ignore]]
+path = "crates/yulius-browser/src/lib.rs"
+title = "Unauthenticated CDP"
+reason = "pre-existing, documented trust model of the browser adapter; tracked in #626"
+
+[[ignore]]
+path = "crates/yulius-domain/src/vault/mod.rs"
+title = "Basic injection renders username"
+reason = "username:value is base64-encoded, and usernames with control characters are refused"
+
+[[ignore]]
+path = "crates/yulius-domain/src/vault/mod.rs"
+title = "Egress filter allows private"
+reason = "parity with the sandbox's direct slirp4netns egress; loopback and link-local refused; secrets go only to person-bound hosts"
+
+[[ignore]]
+path = "crates/yulius-egress/src/proxy.rs"
+title = "DNS rebinding"
+reason = "the upstream client resolves through PolicyResolver (the same filter), and bound hosts are reached over HTTPS with certificate validation"
+
+[[ignore]]
+path = "crates/yulius-harness/src/claude_config.rs"
+title = "trust arbitrary directories"
+reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); the host-side commondir canonicalize is tracked in #634"
+
+[[ignore]]
+path = "crates/yulius-harness/src/hook_client.rs"
+title = "unescaped header values"
+reason = "token and path must be ASCII graphic, the authority a validated loopback IP and port, names alphanumeric (tests/hook_client.rs)"
+
+[[ignore]]
+path = "crates/yulius-import/src/upload.rs"
+title = "Unencoded URL path"
+reason = "endpoint() appends segments with url's PathSegmentsMut::extend, which percent-encodes / ? # and drops . and .. (http.rs tests)"
+
+[[ignore]]
+path = "crates/yulius-server/web/assets/taskview.js"
+title = "agent-supplied link rendered as href"
+reason = "needs_you accepts only links under the instance public_url (needs_you.rs; tests/cd.rs)"
+
+[[ignore]]
+path = "crates/yulius-store/src/sessions.rs"
+title = "Device grant token stored as plaintext"
+reason = "token_plain holds secret-box ciphertext (auth.rs approve), nulled on consume and purged"
+
+[[ignore]]
+path = "crates/yulius/src/leftovers_cli.rs"
+title = "Server authentication key sent to an attacker-chosen URL"
+reason = "the CLI key is a 0600 service-user file: whoever can run the CLI with it can read it directly; contained agents cannot see the data dir"
+
+[[ignore]]
+path = "crates/yulius/src/update_helper.rs"
+title = "HTTP request injection via unvalidated URL path"
+reason = "health_url comes only from the root-owned unit's argv or environment, never from the request file"
+
+[[ignore]]
+path = "crates/yulius/src/wiring/git.rs"
+title = "Ref/rev injection"
+reason = "branch_exists validates the name with check-ref-format rules before rev_parse runs, and rev_parse uses --end-of-options"
+
+[[ignore]]
+path = "crates/yulius/src/wiring/git.rs"
+title = "Refspec injection"
+reason = "validate_push_refspec requires unforced refs/heads/ names on both sides, checked by check-ref-format rules, after --"
+
+[[ignore]]
+path = "crates/yulius/src/wiring/harness.rs"
+title = "MCP environment variable names"
+reason = "server names and env keys are whitelisted by validate() for people's and .mcp.json servers; collisions get numbered suffixes"
+
+[[ignore]]
+path = "crates/yulius/src/wiring/harness.rs"
+title = "Resume session id used to build transcript path"
+reason = "plan_cockpit rejects an invalid resume id (valid_session_id) before step_back runs"
+
+# Task #160's change scan of its own branch (SPEC-217) on files it touched: by design, false
+# positives, test fixtures, or tracked.
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "No process isolation when containment is disabled"
+reason = "an uncontained instance is the operator's documented choice (runs marked not contained; --contained recommended in production, docs/operations.md); with containment every CD run is contained (cd_containment)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Shell execution of unvalidated config commands"
+reason = "CD runs the [cd.*] scripts of the GitHub-verified protected-branch head from a Yulius-only mirror by design; dev runs contained, production only on an admin's confirmation (SPEC-134)"
+
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "Revoked API tokens still authenticate"
+reason = "the store's api_token lookup selects only rows with revoked_at IS NULL (yulius-store sessions.rs), so a revoked token resolves to no record"
+
+[[ignore]]
+path = "crates/yulius-store/src/lib.rs"
+title = "backup_to writes to caller-supplied"
+reason = "only the operator's yulius backup CLI calls it, with the destination the operator typed; no HTTP route reaches it"
+
+[[ignore]]
+path = "crates/yulius-app/src/ports/github.rs"
+title = "OAuth state interpolated into URL"
+reason = "the state is Yulius's own random hex token, never caller input"
+
+[[ignore]]
+path = "crates/yulius-store/src/ci.rs"
+title = "SQL filter composed via format!"
+reason = "select_runs is private and every caller passes a constant filter; values are bound parameters"
+
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+title = "Hardcoded crypto master key in test code"
+reason = "a test fixture: in-memory stores in temporary directories"
+
+[[ignore]]
+path = "scripts/test_vidoc_scan.py"
+title = "Hardcoded fake API key constant"
+reason = "the placeholder name the egress proxy replaces, used against a loopback fake Vidoc; not a credential"
+
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Prompt injection through user-supplied repository name"
+reason = "owner/name are GitHub's own names (letters, digits, '.', '-', '_'), checked by the GitHub port's validate::owner and repo_name; they cannot carry instructions"
+
+[[ignore]]
+path = "crates/yulius-github/src/fake/mod.rs"
+title = "credentials"
+reason = "the in-process fake GitHub for tests (feature fake); its constants are synthetic"
+
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Vidoc API key granted to CI jobs"
+reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, which the egress proxy replaces toward model.vidocsecurity.com alone (ADR-0116, VDK-005): a job can spend the key's quota at Vidoc but never read or send the key elsewhere"
+
+# CI exists to run a pull request's code: its tests and build scripts execute whatever the branch
+# says, so a job command from the branch's own `yulius.toml` (SPEC-142, F 2026-10-12) adds no
+# power. The job runs inside the sandbox's containment, with no agent secret unless the
+# integration branch grants it by name (ADR-0116), the way an agent of that sandbox already runs.
+# Reported on task #205's change scan (SPEC-219), which edited `ci_watch` in this file; the job
+# launch predates it.
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "from pull request-defined CI jobs"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "CI executes commands from untrusted pull request configuration"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+# The same finding where the gate picks the pull request's own jobs (`own_jobs_apply`), reported
+# when task #205 declared a module in this file.
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "Untrusted pull request CI configuration executes arbitrary shell commands"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+# A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
+# (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
+# when a repository admin or maintainer imports the repository (`import_profile`). Since SPEC-219
+# (#656) it runs like a CD run of its stage: the commit's files from a mirror only Yulius writes,
+# in the sandbox's containment with a fresh HOME and no secrets, so it gets no more than the
+# sandbox's agents have. Reported on task #205's change scan, which made it so; one entry per
+# wording Vidoc used.
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "command executed by environment runs"
+reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "deployment command taken from project configuration"
+reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "Environment command seeded from attacker-controlled repository content"
+reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+# `contained = false` is the development mode (SPEC-002 NFR-007): every agent run and shell then
+# runs on the host as the service user, which can read the data directory and its keys, so an
+# uncontained CD or environment run gets no capability the agents lack. Reported (high) on task
+# #205's change scan, which touched `cd.rs` for an unrelated visibility; the fallback predates it.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Production CD runs execute without isolation when containment is disabled"
+reason = "uncontained is the development mode: agents and shells already run on the host as the service user"
+
+# Vidoc reports the reviewed entry for #626 above as a suppression when a change edits this
+# file. Only that entry, in the wording it used; any other "suppressed" finding still counts.
+[[ignore]]
+path = ".config/vidoc.toml"
+title = "Unauthenticated browser adapter endpoint suppressed"
+reason = "the reviewed entry for the browser adapter's trust model, tracked in open issue #626"

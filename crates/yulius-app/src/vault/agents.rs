@@ -9,7 +9,7 @@ use yulius_contracts::api::secrets::{
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::vault::dotenv::flattened_key;
-use yulius_domain::vault::hosts::parse_hosts;
+use yulius_domain::vault::hosts::{HostPattern, parse_hosts};
 use yulius_domain::vault::{
     Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
 };
@@ -88,6 +88,8 @@ pub(super) struct NewAgentSecret<'a> {
     pub(super) actor: &'a str,
     /// How it came in, appended to the audit detail.
     pub(super) origin: Option<&'a str>,
+    /// Agents set it up themselves (SPEC-216): a person's choice, never an agent's.
+    pub(super) auto_allow: bool,
 }
 
 fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) -> AppResult<Meta> {
@@ -153,6 +155,7 @@ impl App {
             env_files: record.env_files.as_str().into(),
             env_requested_by: record.env_requested_by.clone(),
             cd_prod: record.cd_prod,
+            auto_allow: record.auto_allow,
             injection: injection.kind().into(),
             header_name: record.header_name.clone(),
             injection_text: injection.describe(),
@@ -239,6 +242,7 @@ impl App {
                 by: ctx.user.id.as_str(),
                 actor: &Self::vault_actor(ctx),
                 origin: None,
+                auto_allow: input.auto_allow.unwrap_or(true),
             })
             .await?;
         self.agent_view(&record, true).await
@@ -263,6 +267,7 @@ impl App {
             by,
             actor,
             origin,
+            auto_allow,
         } = new;
         if self.deps.store.vault_agent(Some(sandbox)).await?.len() >= MAX_AGENT_SECRETS {
             return Err(AppError::Capacity(format!(
@@ -296,6 +301,7 @@ impl App {
             env_files: crate::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault.bump();
@@ -304,7 +310,7 @@ impl App {
             "vault.agent.create",
             Some(&id),
             &format!(
-                "{} ({}) → {}{}",
+                "{} ({}) → {}{}{}",
                 record.name,
                 if scope.is_some() {
                     "this sandbox"
@@ -315,6 +321,11 @@ impl App {
                     "no hosts yet".to_owned()
                 } else {
                     record.hosts.join(", ")
+                },
+                if record.auto_allow {
+                    ", agents set it up"
+                } else {
+                    ""
                 },
                 origin.map(|o| format!(", {o}")).unwrap_or_default()
             ),
@@ -358,6 +369,41 @@ impl App {
         if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
         }
+        // SPEC-216 SSA-005 (review round 2): hosts edited from what the person saw, which an
+        // agent may have changed since the dialog opened.
+        // Agents bind hosts of a secret they set up at any time: its hosts change only against
+        // those the editor saw (review round 4).
+        if patch.hosts.is_some() && patch.expect_hosts.is_none() && record.auto_allow {
+            return Err(AppError::Conflict(
+                "agents bind this secret's hosts themselves: send expect_hosts, the hosts you saw, \
+                 with the new hosts"
+                    .into(),
+            ));
+        }
+        if let Some(seen) = &patch.expect_hosts {
+            let seen = parse_hosts(seen).map_err(invalid)?;
+            let bound: Vec<HostPattern> = record
+                .hosts
+                .iter()
+                .filter_map(|h| HostPattern::parse(h).ok())
+                .collect();
+            if seen.len() != bound.len() || !seen.iter().all(|h| bound.contains(h)) {
+                return Err(AppError::Conflict(format!(
+                    "its hosts changed since you opened it (now {}): reload and edit again",
+                    if record.hosts.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        record.hosts.join(", ")
+                    }
+                )));
+            }
+        }
+        // SPEC-216 SSA-004: a production-only secret is never set up by agents.
+        if record.cd_prod && patch.auto_allow == Some(true) {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
+        let toggled = patch.auto_allow.filter(|on| *on != record.auto_allow);
+        let seen = record.clone();
         let mut payload: AgentPayload = self.open_payload(&record)?;
         let meta = meta(
             patch.name.as_deref().unwrap_or(&record.name),
@@ -409,8 +455,28 @@ impl App {
         record.envelope = self.seal_payload(&record.id, VaultSection::Agent, &payload)?;
         record.updated_by = ctx.user.id.as_str().to_owned();
         record.updated_at = now;
-        if !self.deps.store.vault_update(&record).await? {
-            return Err(AppError::NotFound);
+        if let Some(on) = toggled {
+            record.auto_allow = on;
+            changed.push(if on {
+                "agents set it up"
+            } else {
+                "agents no longer set it up"
+            });
+        }
+        if !self.deps.store.vault_update(&record, &seen).await? {
+            // Gone; or its hosts or switch changed meanwhile (an agent bound a host, a person
+            // switched it), or it was allowed for production: nothing is undone unseen.
+            return Err(match self.deps.store.vault_get(id).await? {
+                Some(now) if now.cd_prod && record.auto_allow => {
+                    AppError::Conflict(super::PRODUCTION_SECRET.into())
+                }
+                Some(_) => AppError::Conflict(
+                    "the secret changed meanwhile (an agent bound a host, or someone changed it): \
+                     reload and save again"
+                        .into(),
+                ),
+                None => AppError::NotFound,
+            });
         }
         self.vault.bump();
         self.vault_audit(
@@ -420,6 +486,19 @@ impl App {
             &format!("{} ({})", record.name, changed.join(", ")),
         )
         .await?;
+        if let Some(on) = toggled {
+            self.vault_audit(
+                &Self::vault_actor(ctx),
+                if on {
+                    "vault.agent.auto_allow_on"
+                } else {
+                    "vault.agent.auto_allow_off"
+                },
+                Some(id),
+                &record.name,
+            )
+            .await?;
+        }
         self.agent_view(&record, true).await
     }
 

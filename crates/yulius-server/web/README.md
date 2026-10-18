@@ -270,7 +270,9 @@ archive it got in `__yuliusMock.playgroundUploads`; `POST /api/sandboxes/{sid}/p
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `vidoc=config` (a Vidoc key file is configured), `browserask=0` (no
-sign-in request from studio's browser 5 s after the start, nor its toast), `fail=<path>` (GET
+sign-in request from studio's browser 5 s after the start, nor its toast), `ambient=0` (no ambient
+activity at all: neither that request, which also moves #10 into "Needs you", nor studio's tasks
+changing by themselves, #8 starting after about 12 s; a test that hovers a sidebar row needs it), `fail=<path>` (GET
 requests of that exact API path answer 500, to see a view say what failed to load), `hold=<path>` (GET
 requests of that path wait until `__yuliusMock.release()`, to see a view while it loads; `hold=frames` holds
 the browser panel's picture) or `failpost=<path>`

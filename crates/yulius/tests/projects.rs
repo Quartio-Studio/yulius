@@ -1294,8 +1294,8 @@ async fn onboarding_adds_the_security_scan_when_the_instance_has_a_vidoc_key() -
             .ok_or("task")?;
     for wording in [
         "this instance has a Vidoc key",
-        "name = \"security\"",
-        "secrets = \"VIDOC_API_KEY\"",
+        "built-in `security` job",
+        "add no job of your own",
         "yulius security-scan --ci",
         "runs `yulius security-scan` before delivery",
         "sends the changed code to Vidoc",

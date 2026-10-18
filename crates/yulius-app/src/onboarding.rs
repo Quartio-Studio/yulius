@@ -127,27 +127,29 @@ never the repository), and an environment with nothing to deploy yet is an empty
 `promote = true`. Yulius reads them from the protected branches and only a person deploys \
 production. A credential or machine only a person can give: ask with needs_you and go on.";
 
-/// The security scan at onboarding (SPEC-195 VIB-002), skill infra-bootstrap: with an instance
-/// Vidoc key, the `security` CI job and the rule to scan before delivery; without one, nothing,
-/// said in the summary.
+/// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
+/// with an instance Vidoc key, the rule to scan before delivery (Yulius CI runs the built-in
+/// `security` job by itself); without one, nothing, said in the summary.
 #[must_use]
 pub fn security_setup(vidoc: bool) -> &'static str {
     if vidoc {
-        "Security scan, skill infra-bootstrap: this instance has a Vidoc key, so add the \
-         `security` CI job to yulius.toml: `[[ci.jobs]]` with `name = \"security\"`, \
-         `secrets = \"VIDOC_API_KEY\"` and `command = \"yulius security-scan --ci\"` (it scans pull \
-         request heads with Vidoc's vidoc-1; open critical or high findings fail it, a scan that \
-         cannot run ends skipped). Add the AGENTS.md rule that every change runs `yulius \
-         security-scan` before delivery and fixes its critical and high findings test-first: exit \
-         2 is not run, never passed, and a false positive goes into `.config/vidoc.toml` as an \
+        "Security scan, skill infra-bootstrap: this instance has a Vidoc key, so Yulius CI runs \
+         Vidoc's vidoc-1 scan on every pull request as a built-in `security` job (`yulius \
+         security-scan --ci`, granted `VIDOC_API_KEY`); add no job of your own. It fails on \
+         critical or high findings in the files a pull request changed and on medium findings in \
+         its changed lines; findings in code it did not touch become GitHub issues, and a scan \
+         that cannot run ends skipped. Add the AGENTS.md rule that every change runs `yulius \
+         security-scan` before delivery, fixes each failing finding test-first and decides on \
+         each low finding in the change (fix it, or say why not in the spec's Evidence): exit 2 \
+         is not run, never passed, and a false positive goes into `.config/vidoc.toml` as an \
          `[[ignore]]` with its reason once the reviewer agrees. Say in AGENTS.md that the scan \
          sends the changed code to Vidoc. Do not scan the existing code here: `yulius \
          security-scan --all` is a broad audit for its own task."
     } else {
-        "Security scan: there is no Vidoc key on this instance, so add no security CI job, and say \
-         in your summary that the Vidoc scan was skipped (no Vidoc key on this instance): once a \
-         superadmin adds one in Settings, Instance, a task following skill infra-bootstrap adds \
-         it."
+        "Security scan: there is no Vidoc key on this instance, so Yulius CI runs no security \
+         scan; add none, and say in your summary that the Vidoc scan was skipped (no Vidoc key on \
+         this instance): once a superadmin adds one in Settings, Instance, Yulius CI runs it by \
+         itself and a task following skill infra-bootstrap adds the AGENTS.md rule."
     }
 }
 
@@ -1700,9 +1702,12 @@ mod tests {
         let with = security_setup(true);
         for wording in [
             "this instance has a Vidoc key",
-            "`command = \"yulius security-scan --ci\"`",
-            "`secrets = \"VIDOC_API_KEY\"`",
+            "built-in `security` job (`yulius security-scan --ci`",
+            "add no job of your own",
+            "medium findings in its changed lines",
+            "become GitHub issues",
             "runs `yulius security-scan` before delivery",
+            "decides on each low finding in the change",
             "[[ignore]]",
         ] {
             assert!(with.contains(wording), "{wording}");

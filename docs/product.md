@@ -74,7 +74,8 @@ watching, steering and unblocking.
   secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
-  Superagent never asks about them.
+  Superagent never asks about them. They show "From .mcp.json", and since agents can write that
+  file, Test does not run their command on the server until a person changes it (SPEC-218).
 - **Sandbox tabs**: the top row starts with All sandboxes, then a tab per sandbox in the order
   the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
   says it can be clicked or dragged; its menu moves it too.
@@ -136,10 +137,14 @@ watching, steering and unblocking.
 - **Vidoc security scan** (SPEC-195, ADR-0157): an optional instance key, which the superadmin sets,
   tests and removes like the Jev key, and which setup offers as a skippable step. With it, every
   project's agents and granted CI jobs run `yulius security-scan`: Vidoc's vidoc-1 reviews the
-  branch's changed files (or, with `--all`, the whole repository), and open critical or high
-  findings fail the scan. The code goes to Vidoc, but the key never reaches agents: the egress proxy
-  adds it toward `model.vidocsecurity.com` only. Infra bootstrap adds the `security` job only when
-  the instance has a key. Without one, the scan reports "not run".
+  branch's changed files (or, with `--all`, the whole repository). Open critical or high findings
+  fail the scan, and so do open medium findings in the lines the branch changed; the agent decides
+  on low ones there (SPEC-217, ADR-0172). Findings in code a pull request did not touch become
+  GitHub issues, filed once, reopened while reported and closed once the code is gone. Every project
+  whose sandbox has a Vidoc key runs the scan in CI as a built-in `security` job. The code goes to
+  Vidoc, but the key never reaches agents: the egress proxy adds it toward
+  `model.vidocsecurity.com` only. Infra bootstrap adds the `security` job only when
+  the instance has a key (CI adds the job by itself). Without one, the scan reports "not run".
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
@@ -208,14 +213,18 @@ watching, steering and unblocking.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
   button is pressed; it copies without being shown, from a copy icon always in its box, as the
   notes do (SPEC-207). An agent secret is added with a name, a value
-  and a description: agents find the service's host and ask for it, and a person allows it with
-  one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
-  `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
+  and a description: agents find the service's host and bind it themselves, and production deploys
+  get the secret, unless the person turns "Let agents set it up" off when adding it; then a person
+  allows each host with one click and production separately (SPEC-121, SPEC-216). Every secret
+  belongs to the sandbox it was added in, or is team-wide when the person picks that; team secrets
+  from before were copied into each sandbox (SPEC-216). A project's keys live in a git-ignored
+  `.env` beside a tracked `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
   there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
   pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands
   in the `.env` as its file, byte for byte (SPEC-186, SPEC-193). A key saved before that, its line
   breaks lost, is marked "Paste again" for the people who manage it. From a computer, `yulius
-  secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once:
+  secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once,
+  into the checkout's sandbox or team-wide with `--instance`:
   every name is listed first, nothing that exists is overwritten, nothing is sent before the
   person types `yes`, and no value is ever shown, passed as an argument or written down
   (SPEC-205). Agents add one themselves from a file they can reach (a key they generated, a key in

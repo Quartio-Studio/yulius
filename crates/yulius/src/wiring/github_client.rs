@@ -423,6 +423,21 @@ impl GitHubPort for GitHubAdapter {
         })
     }
 
+    async fn set_issue_state(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        number: u64,
+        open: bool,
+        comment: &str,
+    ) -> AppResult<bool> {
+        self.plain
+            .set_issue_state(&gh(token), owner, repo_name, number, open, comment)
+            .await
+            .map_err(map_err)
+    }
+
     async fn create_pull(
         &self,
         token: &Secret,

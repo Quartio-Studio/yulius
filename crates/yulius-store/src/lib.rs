@@ -85,6 +85,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0033_task_person_pause.sql"),
     // Schema version 34 (SPEC-195).
     include_str!("migrations/0034_instance_vidoc_key.sql"),
+    // Schema version 35 (SPEC-216).
+    include_str!("migrations/0035_vault_scopes_and_auto_allow.sql"),
+    // Schema version 36 (SPEC-217).
+    include_str!("migrations/0036_security_findings.sql"),
+    // Schema version 37 (SPEC-218).
+    include_str!("migrations/0037_mcp_server_origin.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -958,6 +964,41 @@ mod tests {
         let backup = dir.path().join("backup.db");
         store.backup_to(&backup).await?;
         assert!(backup.exists());
+        Ok(())
+    }
+
+    /// A version-36 database's MCP servers get their origin (SPEC-218 MOR-001): those an
+    /// `mcp.imported` audit entry names came from `.mcp.json`, every other one from a person.
+    #[tokio::test]
+    async fn version_thirty_six_imported_mcp_servers_come_from_mcp_json()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::mcp_config::McpOrigin;
+        use yulius_app::ports::store_ext::McpStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v36.db");
+        {
+            let conn = Connection::open(&path)?;
+            for sql in &MIGRATIONS[..36] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 36)?;
+            conn.execute_batch(
+                "INSERT INTO mcp_servers (id, sandbox_id, name, transport, command, args, enabled, created_at) VALUES
+                   ('added', 's1', 'apify', 'stdio', 'npx', '[]', 1, 1),
+                   ('imported', 's1', 'helper', 'stdio', 'sh', '[]', 1, 1);
+                 INSERT INTO audit_log (at, actor, action, target, detail) VALUES
+                   (1, 'alice', 'mcp.created', 'added', NULL),
+                   (2, 'yulius', 'mcp.imported', 'imported', NULL),
+                   (3, 'yulius', 'mcp.imported', NULL, NULL);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let origin = |id: &'static str| {
+            let store = &store;
+            async move { Ok::<_, AppError>(store.mcp_server(id).await?.map(|s| s.origin)) }
+        };
+        assert_eq!(origin("added").await?, Some(McpOrigin::Person));
+        assert_eq!(origin("imported").await?, Some(McpOrigin::McpJson));
         Ok(())
     }
 

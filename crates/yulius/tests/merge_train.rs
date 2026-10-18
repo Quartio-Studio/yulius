@@ -696,6 +696,64 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     Ok(())
 }
 
+/// A Vidoc connector whose tests always pass (only the key's presence matters here).
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// SPEC-217 VDP-001 (review round 6): a train whose members changed the CI runs their jobs with
+/// the trusted security job; a member's own job named `security` does not stand in for it.
+#[tokio::test]
+async fn a_train_with_its_own_jobs_keeps_the_security_job() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    app.load_vidoc_key().await;
+    let own =
+        format!("{YULIUS_TOML}\n[[ci.jobs]]\nname = \"security\"\ncommand = \"echo fake pass\"\n");
+    let worktrees = [
+        f.task(1, &[("yulius.toml", own.as_str())]).await?,
+        f.task(2, &[("b.txt", "x\n")]).await?,
+    ];
+    app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
+        .await?;
+    for (n, worktree) in (1..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+    }
+    app.merge_armed(&f.sandbox).await;
+    let trains = f.train_runs(&app).await?;
+    assert_eq!(trains.len(), 1, "{trains:?}");
+    let jobs = app.deps.store.ci_jobs(&trains[0].id, false).await?;
+    let commands: Vec<(&str, &str)> = jobs
+        .iter()
+        .map(|job| (job.key.as_str(), job.command.as_str()))
+        .collect();
+    assert!(
+        commands.contains(&("security", "yulius security-scan --ci")),
+        "{commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|(_, command)| command.contains("fake pass")),
+        "{commands:?}"
+    );
+    Ok(())
+}
+
 /// TRN-006: a train whose combined result fails changes nothing: every member merges one by
 /// one as before (each tested on its own, behind ones brought up to date), and no new train
 /// forms from them until their agents arm again.

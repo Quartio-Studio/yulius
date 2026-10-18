@@ -11,6 +11,9 @@ pub struct TeamSecretView {
     pub id: String,
     /// Title, e.g. "Shared Gmail".
     pub title: String,
+    /// `sandbox` (one sandbox's people) or `instance` (team-wide) (SPEC-216).
+    #[serde(default)]
+    pub scope: String,
     /// Whether a value is stored.
     pub has_value: bool,
     /// Whether notes are stored.
@@ -31,6 +34,10 @@ pub struct TeamSecretView {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamSecretInput {
+    /// `sandbox` (the default under a sandbox) or `instance` (team-wide, the only one without a
+    /// sandbox) (SPEC-216 SCO-001). Not sent when absent, so older servers take the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// Title.
     pub title: String,
     /// The secret value (a password, a key, a recovery code…).
@@ -159,6 +166,10 @@ pub struct AgentSecretView {
     /// Production CD runs get its value (SPEC-134): a person's allowance of its own.
     #[serde(default)]
     pub cd_prod: bool,
+    /// Agents set it up themselves (SPEC-216): the hosts they ask for are bound at once and
+    /// production CD runs get its value, with no person's allowance.
+    #[serde(default)]
+    pub auto_allow: bool,
     /// `none`, `bearer`, `basic` or `header`.
     pub injection: String,
     /// Header of the `header` injection.
@@ -215,6 +226,10 @@ pub struct AgentSecretInput {
     pub username: Option<String>,
     /// The value (at least 8 characters).
     pub value: String,
+    /// Agents set it up themselves (SPEC-216 SSA-001); `true` when absent. Not sent when
+    /// absent, so older servers take the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_allow: Option<bool>,
 }
 
 /// Update body: an absent field stays; an empty `username` clears it; `value` replaces the
@@ -243,6 +258,13 @@ pub struct AgentSecretPatch {
     /// New value.
     #[serde(default)]
     pub value: Option<String>,
+    /// Agents set it up themselves (SPEC-216 SSA-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_allow: Option<bool>,
+    /// The bound hosts the person saw when they changed `hosts`: 409 unless they still are the
+    /// bound ones (an agent may bind one meanwhile, SPEC-216), so none is dropped unseen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_hosts: Option<Vec<String>>,
 }
 
 /// `POST /api/agent-secrets/{id}/request` body: answers the hosts an agent asked for (SPEC-121).

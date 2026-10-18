@@ -287,6 +287,9 @@ impl App {
                 by: person.id.as_str(),
                 actor: &user.actor(),
                 origin: Some(&origin),
+                // An agent's secret waits for a person (SPEC-211), never set up by agents
+                // (SPEC-216).
+                auto_allow: false,
             })
             .await?;
         drop(payload);

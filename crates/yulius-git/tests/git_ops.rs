@@ -1420,6 +1420,82 @@ fn the_cd_mirror_takes_only_the_expected_commit_and_ignores_replacements() -> Te
     Ok(())
 }
 
+/// SPEC-219 ENV-001 (#656): an environment run takes its branch's head from origin itself into a
+/// shallow mirror only Yulius writes, never through the sandbox clone; a later head arrives on the
+/// next fetch, and a missing branch or an option-like source is refused.
+#[test]
+fn a_branch_head_is_taken_from_origin_into_a_shallow_mirror() -> TestResult {
+    let fx = Fixture::new()?;
+    let (origin, repo) = fx.repo_with_remote()?;
+    fs::write(repo.join("a.txt"), "second\n")?;
+    fx.git.commit_all(&repo, "second", &author())?;
+    fx.git.push(&repo, "origin", "refs/heads/main")?;
+    let mirror = fx.path("cd/environments.git");
+    let source = path_str(&origin)?;
+
+    let head = fx.git.mirror_fetch_head(&mirror, source, "main")?;
+    assert_eq!(head, fx.git.rev_parse(&origin, "refs/heads/main")?);
+    assert_eq!(
+        fx.raw(&mirror, &["rev-parse", "--is-shallow-repository"])?,
+        "true",
+        "one commit's tree is all a run needs"
+    );
+    let dest = fx.path("run/src");
+    fx.git.export_tree(&mirror, &head, &dest)?;
+    assert_eq!(fs::read_to_string(dest.join("a.txt"))?, "second\n");
+
+    fs::write(repo.join("a.txt"), "third\n")?;
+    fx.git.commit_all(&repo, "third", &author())?;
+    fx.git.push(&repo, "origin", "refs/heads/main")?;
+    let next = fx.git.mirror_fetch_head(&mirror, source, "main")?;
+    assert_eq!(next, fx.git.rev_parse(&origin, "refs/heads/main")?);
+    assert_ne!(next, head);
+
+    assert!(fx.git.mirror_fetch_head(&mirror, source, "absent").is_err());
+    assert!(fx.git.mirror_fetch_head(&mirror, "-x", "main").is_err());
+    assert!(
+        fx.git
+            .mirror_fetch_head(&mirror, "relative/path", "main")
+            .is_err()
+    );
+    Ok(())
+}
+
+/// SPEC-219 (review of 5d72af32): writing a commit's files for a run applies no filter driver of
+/// the server's own (global or system) Git configuration, such as git-lfs, to the commit's
+/// `.gitattributes`: a filter would run a command on the host with what the commit says.
+#[test]
+fn an_exported_tree_runs_no_filter_of_the_servers_configuration() -> TestResult {
+    let fx = Fixture::new()?;
+    let (origin, repo) = fx.repo_with_remote()?;
+    fs::write(repo.join(".gitattributes"), "* filter=x\n")?;
+    fx.git.commit_all(&repo, "attributes", &author())?;
+    fx.git.push(&repo, "origin", "refs/heads/main")?;
+    let marker = fx.path("filter-ran");
+    let home = fx.path("server-home");
+    fs::create_dir_all(&home)?;
+    fs::write(
+        home.join(".gitconfig"),
+        format!(
+            "[filter \"x\"]\n\tsmudge = touch '{}'; cat\n\trequired = false\n",
+            marker.display()
+        ),
+    )?;
+    let server = Git::new("git").with_env("HOME", home.to_string_lossy());
+    let mirror = fx.path("cd/environments.git");
+    let head = server.mirror_fetch_head(&mirror, path_str(&origin)?, "main")?;
+    server.export_tree(&mirror, &head, &fx.path("run/src"))?;
+    assert_eq!(
+        fs::read_to_string(fx.path("run/src/a.txt"))?,
+        "one\ntwo\nthree\n"
+    );
+    assert!(
+        !marker.exists(),
+        "the server's filter ran on the commit's files"
+    );
+    Ok(())
+}
+
 /// SPEC-176 MPG-002/003: every branch and tag of a repository reaches an empty remote in one
 /// push, the remote's refs are read back, and a remote is repointed.
 #[test]

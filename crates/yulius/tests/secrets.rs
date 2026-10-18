@@ -904,6 +904,7 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         })
         .await?;
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
@@ -1088,6 +1089,14 @@ async fn add_agent_secret(
     .await
 }
 
+async fn get_as(
+    w: &World,
+    path: &str,
+    creds: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(&w.h.router, Method::GET, path, None, creds).await
+}
+
 /// A browser session for a seeded user (signed in now).
 async fn browser_session(
     h: &support::Harness,
@@ -1112,6 +1121,135 @@ async fn browser_session(
         csrf: Some(format!("csrf-of-{user}")),
         bearer: None,
     })
+}
+
+/// SPEC-216 SCO-001/002, AC-5: a team secret belongs to a sandbox (the default) or is team-wide;
+/// a sandbox's one is seen and changed only by people who can view that sandbox.
+#[tokio::test]
+async fn team_secrets_belong_to_a_sandbox_unless_team_wide() -> TestResult {
+    let w = world().await?;
+    let titles = |body: &Value| -> Vec<String> {
+        body.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s["title"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mine = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "App Gmail", "value": MAIL_PASSWORD})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(mine.status, StatusCode::CREATED, "{}", mine.body);
+    assert_eq!(mine.body["scope"], "sandbox");
+    let id = mine.body["id"].as_str().ok_or("id")?.to_owned();
+    let wide = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "Office wifi", "value": "wifi-pass-1234", "scope": "instance"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(wide.status, StatusCode::CREATED, "{}", wide.body);
+    assert_eq!(wide.body["scope"], "instance");
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "Bad", "scope": "galaxy"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let s1 = get_as(&w, "/api/sandboxes/s1/team-secrets", &w.reader).await?;
+    assert_eq!(
+        titles(&s1.body),
+        vec!["App Gmail", "Office wifi"],
+        "{}",
+        s1.body
+    );
+    let s2 = get_as(&w, "/api/sandboxes/s2/team-secrets", &w.writer).await?;
+    assert_eq!(titles(&s2.body), vec!["Office wifi"], "{}", s2.body);
+    let all = get_as(&w, "/api/team-secrets", &w.outsider).await?;
+    assert_eq!(titles(&all.body), vec!["Office wifi"], "{}", all.body);
+    let hidden = get_as(&w, "/api/sandboxes/s1/team-secrets", &w.outsider).await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+
+    // Someone who cannot view s1 finds nothing to change, delete or reveal.
+    let path = format!("/api/team-secrets/{id}");
+    let rename = Some(json!({"title": "Renamed"}));
+    let edit = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        rename.clone(),
+        &w.outsider,
+    )
+    .await?;
+    assert_eq!(edit.status, StatusCode::NOT_FOUND);
+    let reveal = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{id}/reveal"),
+        Some(json!({})),
+        &w.outsider,
+    )
+    .await?;
+    assert_eq!(reveal.status, StatusCode::NOT_FOUND, "{}", reveal.body);
+    let gone = call(&w.h.router, Method::DELETE, &path, None, &w.outsider).await?;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    // People who only read the sandbox see it but do not change, add or delete its secrets; those
+    // who write to it do.
+    let read_only = call(&w.h.router, Method::PATCH, &path, rename.clone(), &w.reader).await?;
+    assert_eq!(
+        read_only.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        read_only.body
+    );
+    let reader_add = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/team-secrets",
+        Some(json!({"title": "Reader's", "value": "reader-value-1"})),
+        &w.reader,
+    )
+    .await?;
+    assert_eq!(
+        reader_add.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        reader_add.body
+    );
+    let reader_delete = call(&w.h.router, Method::DELETE, &path, None, &w.reader).await?;
+    assert_eq!(reader_delete.status, StatusCode::FORBIDDEN);
+    let renamed = call(&w.h.router, Method::PATCH, &path, rename, &w.writer).await?;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["scope"], "sandbox");
+
+    // Its activity is theirs only; team-wide activity stays everyone's.
+    let targets = |body: &Value| -> Vec<String> {
+        body.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e["secret_id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let wide_id = wide.body["id"].as_str().ok_or("id")?.to_owned();
+    let outsider = targets(&get_as(&w, "/api/secrets/activity", &w.outsider).await?.body);
+    assert!(!outsider.contains(&id), "{outsider:?}");
+    assert!(outsider.contains(&wide_id), "{outsider:?}");
+    assert!(targets(&get_as(&w, "/api/secrets/activity", &w.reader).await?.body).contains(&id));
+    Ok(())
 }
 
 /// SPEC-040 R3/R7 (second review): an older agent secret's stored user name and TOTP seed stay
@@ -1152,6 +1290,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         })
         .await?;
     let alice = browser_session(&w.h, "u-alice").await?;
@@ -1263,6 +1402,7 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
             env_files: yulius_app::ports::vault::EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         })
         .await?;
     let flags = |body: &Value| -> Vec<(String, String)> {
@@ -1775,7 +1915,7 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
     for body in [
         json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
         json!({"name": "HDR_KEY", "hosts": ["*.hdr.test", "api.stripe.test"], "injection": "header", "header_name": "X-Api-Key", "value": "hdr-value-12345"}),
-        json!({"name": "PROD_KEY", "hosts": ["prod.test"], "injection": "bearer", "value": "prod-value-12345"}),
+        json!({"name": "PROD_KEY", "hosts": ["prod.test"], "injection": "bearer", "value": "prod-value-12345", "auto_allow": false}),
     ] {
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -2074,6 +2214,126 @@ async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
     Ok(())
 }
 
+/// SPEC-216 SCO-004, AC-6: the team secrets (all of every sandbox) when the upgrade ran become one
+/// secret per sandbox, each with the original value and notes, once; team-wide ones added
+/// afterwards, and agent secrets an administrator made team-wide, stay team-wide.
+#[tokio::test]
+async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().canonicalize()?.join("yulius.db");
+    let h = support::harness_with(support::HarnessOptions {
+        store: Some(yulius_store::SqliteStore::open(&path)?),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "app", "u-alice").await?;
+    seed_sandbox(&h, "s2", "other", "u-alice").await?;
+    seed_sandbox(&h, "s3", "gone", "u-alice").await?;
+    create_team_secret(&h, &admin).await?;
+    let global = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "instance", "name": "GLOBAL_KEY", "hosts": ["api.global.test"],
+            "value": STRIPE, "auto_allow": false}),
+        ),
+        &admin,
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    // As the upgrade found them; s3 was removed (its copy would outlive it).
+    rusqlite::Connection::open(&path)?.execute_batch(
+        "INSERT INTO vault_scope_pending (id) SELECT id FROM vault_secrets WHERE section = 'team' AND sandbox_id IS NULL;
+         UPDATE sandboxes SET removed_at = 1 WHERE id = 's3';",
+    )?;
+    let later = call(
+        &h.router,
+        Method::POST,
+        "/api/team-secrets",
+        Some(json!({"title": "Office wifi", "value": "wifi-pass-1234"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(later.status, StatusCode::CREATED, "{}", later.body);
+
+    assert_eq!(h.app.assign_vault_scopes().await?, 1);
+    assert_eq!(h.app.assign_vault_scopes().await?, 0, "only once");
+    let in_removed: i64 = rusqlite::Connection::open(&path)?.query_row(
+        "SELECT COUNT(*) FROM vault_secrets WHERE sandbox_id = 's3'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(in_removed, 0, "a removed sandbox gets no copy");
+
+    let wide = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
+    assert_eq!(wide.body.as_array().map(Vec::len), Some(1), "{}", wide.body);
+    assert_eq!(wide.body[0]["title"], "Office wifi");
+    enroll(&h, &admin).await?;
+    for sandbox in ["s1", "s2"] {
+        let team = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/sandboxes/{sandbox}/team-secrets"),
+            None,
+            &admin,
+        )
+        .await?;
+        let gmail = team
+            .body
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["title"] == "Shared Gmail"))
+            .ok_or("Shared Gmail")?;
+        assert_eq!(gmail["scope"], "sandbox", "{}", team.body);
+        let shown = call(
+            &h.router,
+            Method::POST,
+            &format!(
+                "/api/team-secrets/{}/reveal",
+                gmail["id"].as_str().ok_or("id")?
+            ),
+            None,
+            &admin,
+        )
+        .await?;
+        assert_eq!(shown.body["value"], MAIL_PASSWORD, "{}", shown.body);
+        assert_eq!(shown.body["notes"], "recovery: 1111-2222");
+
+        let agents = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/sandboxes/{sandbox}/agent-secrets"),
+            None,
+            &admin,
+        )
+        .await?;
+        let key = agents
+            .body
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["name"] == "GLOBAL_KEY"))
+            .ok_or("GLOBAL_KEY")?;
+        // An administrator's team-wide agent secret stays theirs (review round 3).
+        assert_eq!(key["scope"], "instance", "{}", agents.body);
+        assert_eq!(key["id"], global.body["id"]);
+    }
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
+    let assigned = activity.body.as_array().map_or(0, |a| {
+        a.iter()
+            .filter(|e| e["actor"] == "yulius" && e["action"] == "vault.team.assign")
+            .count()
+    });
+    assert_eq!(assigned, 2, "{}", activity.body);
+    Ok(())
+}
+
 /// AC-VLT-7: no value, user name or seed in the database file, its WAL or a backup; the API
 /// still reads them back.
 #[tokio::test]
@@ -2251,13 +2511,13 @@ async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
         Some("Bearer yulius-secret-VIDOC_API_KEY"),
         "the placeholder stays: the host is not bound"
     );
-    // People may still bind (and unbind) hosts directly.
+    // People may still bind (and unbind) hosts directly, against the hosts they saw (SPEC-216).
     let id = created.body["id"].as_str().ok_or("id")?;
     let bound = call(
         &w.h.router,
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
-        Some(json!({"hosts": ["api.vidoc.test"]})),
+        Some(json!({"hosts": ["api.vidoc.test"], "expect_hosts": []})),
         &w.writer,
     )
     .await?;
@@ -2267,7 +2527,7 @@ async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
         &w.h.router,
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
-        Some(json!({"hosts": []})),
+        Some(json!({"hosts": [], "expect_hosts": ["api.vidoc.test"]})),
         &w.writer,
     )
     .await?;
@@ -2320,7 +2580,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
         &w,
         &w.writer,
         "s1",
-        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456", "auto_allow": false}),
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -2478,6 +2738,232 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     Ok(())
 }
 
+/// SPEC-216 SSA-001/002/005, AC-1/AC-2: a new agent secret lets agents set it up (its hosts bind
+/// at once, no person needed) unless its creator turned that off; its managers change it in Edit.
+#[tokio::test]
+async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["auto_allow"], true, "on by default");
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut announced = support::SecretAnnouncements::new(&w.h.app);
+
+    let asked = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["API.vidoc.test"], "reason": "scan"}),
+        )
+        .await?,
+    );
+    assert_eq!(asked["bound"], json!(["api.vidoc.test"]), "{asked}");
+    assert_eq!(asked["waiting"], json!([]), "{asked}");
+    // Open Secrets pages show the bound host without a reload (SPEC-209).
+    assert_eq!(announced.take(), vec![Some("s1".to_owned())]);
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!(["api.vidoc.test"]));
+    assert_eq!(secret["requested_hosts"], json!([]));
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_ne!(
+        task.activity,
+        Some(yulius_domain::task::Activity::NeedsAttention),
+        "no person is needed"
+    );
+    let listed = tool_text(&mcp_tool(&w.h, TOKEN_S1, "secrets_list", json!({})).await?);
+    assert_eq!(listed["secrets"][0]["auto_allow"], true, "{listed}");
+
+    // Review round 2: an Edit dialog opened before the binding names the hosts it showed; saving
+    // it never drops the bound host unseen. An edit that leaves the hosts alone keeps it.
+    let path = format!("/api/agent-secrets/{id}");
+    let stale = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"description": "Vidoc", "hosts": [], "expect_hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    // Review round 4: hosts of a secret agents set up change only against those seen.
+    let unseen = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(unseen.status, StatusCode::CONFLICT, "{}", unseen.body);
+    assert!(
+        unseen.body.to_string().contains("expect_hosts"),
+        "{}",
+        unseen.body
+    );
+    let kept = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"description": "Vidoc"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.body);
+    assert_eq!(kept.body["hosts"], json!(["api.vidoc.test"]));
+
+    // Only its managers turn it off; then a host waits for a person again.
+    let reader = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"auto_allow": false})),
+        &w.reader,
+    )
+    .await?;
+    assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
+    let off = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"auto_allow": false})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    assert_eq!(off.body["auto_allow"], false);
+    assert_eq!(
+        off.body["hosts"],
+        json!(["api.vidoc.test"]),
+        "bound hosts stay"
+    );
+    let waits = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["eu.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(waits["requested"], json!(["eu.vidoc.test"]), "{waits}");
+    assert!(!app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
+    mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_request_hosts",
+        json!({"secret": "VIDOC_API_KEY", "hosts": ["us.vidoc.test"]}),
+    )
+    .await?;
+
+    // On again: a host that waited is bound when an agent asks for it; the others keep waiting.
+    let on = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"auto_allow": true})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let bound = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["eu.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(bound["bound"], json!(["eu.vidoc.test"]), "{bound}");
+    assert_eq!(bound["waiting"], json!(["us.vidoc.test"]), "{bound}");
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!(["api.vidoc.test", "eu.vidoc.test"]));
+    assert_eq!(secret["requested_hosts"], json!(["us.vidoc.test"]));
+    assert!(app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
+    // Once nothing the task asked for waits, it no longer needs a person (SPEC-213).
+    let all = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["us.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(all["waiting"], json!([]), "{all}");
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_ne!(
+        task.activity,
+        Some(yulius_domain::task::Activity::NeedsAttention),
+        "settled"
+    );
+
+    // Turned off at creation: today's flow.
+    let confirmed = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "STRIPE_KEY", "value": STRIPE, "auto_allow": false}),
+    )
+    .await?;
+    assert_eq!(confirmed.status, StatusCode::CREATED, "{}", confirmed.body);
+    assert_eq!(confirmed.body["auto_allow"], false);
+    let held = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "STRIPE_KEY", "hosts": ["api.stripe.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(held["requested"], json!(["api.stripe.test"]), "{held}");
+    assert!(!app.egress_intercepts(&s1, "api.stripe.test", 443).await);
+
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    for action in [
+        "vault.agent.auto_allow",
+        "vault.agent.auto_allow_off",
+        "vault.agent.auto_allow_on",
+    ] {
+        assert!(
+            activity
+                .body
+                .as_array()
+                .is_some_and(|a| a.iter().any(|e| e["action"] == action)),
+            "{action}: {}",
+            activity.body
+        );
+    }
+    Ok(())
+}
+
 /// SPEC-209 SRE-001/002/004 (#631): an agent's host request is announced to the open Secrets
 /// pages of the secret's sandbox, or of every sandbox for an instance-wide secret, so its Allow
 /// shows without a reload; a request that changes nothing is not announced.
@@ -2488,7 +2974,7 @@ async fn an_agents_host_request_is_announced_to_open_secrets_pages() -> TestResu
         &w,
         &w.writer,
         "s1",
-        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456", "auto_allow": false}),
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -2496,7 +2982,7 @@ async fn an_agents_host_request_is_announced_to_open_secrets_pages() -> TestResu
         &w,
         &w.admin,
         "s1",
-        json!({"scope": "instance", "name": "GLOBAL_KEY", "description": "Shared", "value": "global-value-123"}),
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "description": "Shared", "value": "global-value-123", "auto_allow": false}),
     )
     .await?;
     assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
@@ -2541,7 +3027,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         &w,
         &w.writer,
         "s1",
-        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456", "auto_allow": false}),
     )
     .await?;
     let id = created.body["id"].as_str().ok_or("id")?.to_owned();
@@ -2616,7 +3102,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         &w,
         &w.admin,
         "s1",
-        json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123"}),
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123", "auto_allow": false}),
     )
     .await?;
     assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);

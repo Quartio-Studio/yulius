@@ -129,3 +129,31 @@ async fn bundles_import_under_the_prefix() -> TestResult {
     assert_eq!(branches, ["import/alice/feature/x", "import/alice/main"]);
     Ok(())
 }
+
+/// SPEC-219 ENV-001: an environment run's head comes from the repository's GitHub URL, with the
+/// token, straight into Yulius's own mirror (the test seam stands a local bare repository in for
+/// `https://github.com/`).
+#[tokio::test]
+async fn an_environment_head_is_fetched_from_github_into_the_mirror() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let origin = root.join("github/acme/app.git");
+    std::fs::create_dir_all(&origin)?;
+    git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
+    let work = root.join("work");
+    git(&root, &["clone", "-q", &origin.to_string_lossy(), "work"])?;
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "init"])?;
+    git(&work, &["push", "-q", "origin", "HEAD:refs/heads/dev"])?;
+    let adapter = GitAdapter::new("git").with_github_base(&root.join("github"));
+    let mirror = root.join("cd/environments.git");
+    let head = adapter
+        .mirror_fetch_head(
+            &mirror,
+            "https://github.com/acme/app.git",
+            "dev",
+            Some(&token()),
+        )
+        .await?;
+    assert_eq!(head, git(&origin, &["rev-parse", "refs/heads/dev"])?);
+    Ok(())
+}

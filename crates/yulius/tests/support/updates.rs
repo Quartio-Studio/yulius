@@ -32,6 +32,10 @@ pub const NEW: &str = "3333333333333333333333333333333333333333";
 pub struct FakeSource {
     pub result: Mutex<Result<ReleaseState, SourceError>>,
     pub tokens: Mutex<Vec<Option<String>>>,
+    /// Told each time a compare starts.
+    pub entered: tokio::sync::Notify,
+    /// While set, a compare waits (at most 30 s) until it is notified.
+    pub gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 impl FakeSource {
@@ -57,6 +61,8 @@ impl FakeSource {
                 ],
             })),
             tokens: Mutex::new(Vec::new()),
+            entered: tokio::sync::Notify::new(),
+            gate: Mutex::new(None),
         })
     }
 }
@@ -70,6 +76,11 @@ impl ReleaseSource for FakeSource {
     ) -> Result<ReleaseState, SourceError> {
         if let Ok(mut tokens) = self.tokens.lock() {
             tokens.push(token.map(|t| t.expose().to_owned()));
+        }
+        self.entered.notify_one();
+        let gate = self.gate.lock().ok().and_then(|g| g.clone());
+        if let Some(gate) = gate {
+            let _ = tokio::time::timeout(Duration::from_secs(30), gate.notified()).await;
         }
         self.result
             .lock()

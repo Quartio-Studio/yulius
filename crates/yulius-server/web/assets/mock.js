@@ -288,8 +288,8 @@ function seed(params) {
     { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
-    { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
-    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true },
+    { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
+    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
   ];
   // AdminUser (the superadmin is not listed).
   db.users = [
@@ -734,8 +734,16 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 route('GET', '/api/me', ({ db }) => db.me);
-// Superadmin recovery (ACC-011): a code is set, three attempts left.
-route('GET', '/api/auth/recovery', ({ db }) => clone(db.recovery));
+// Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
+// (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
+// page that asked can be left before it answers (#581).
+route('GET', '/api/auth/recovery', async ({ db }) => {
+  if (db.holdRecovery) {
+    db.recoveryWaiting = (db.recoveryWaiting || 0) + 1;
+    try { await db.holdRecovery; } finally { db.recoveryWaiting -= 1; }
+  }
+  return clone(db.recovery);
+});
 route('POST', '/api/auth/recover', ({ db, body }) => {
   if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
   if (!body || body.code !== '123456') {
@@ -2387,12 +2395,12 @@ const PRODUCTION_SECRET = 'this is a production secret: production deploys get i
 const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (agents send the placeholder)' };
 
 function teamView(s) {
-  return { id: s.id, title: s.title, has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
+  return { id: s.id, title: s.title, scope: s.sandbox ? 'sandbox' : 'instance', has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
 }
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2420,8 +2428,26 @@ function audit(db, action, id, detail) {
   vaultOf(db).activity.unshift({ at: new Date().toISOString(), actor: db.me.user.login, action, secret_id: id, detail });
 }
 
-function teamSecret(db, id) {
-  return vaultOf(db).team.find((s) => s.id === id) || fail(404, 'not_found', 'not found');
+/** A team secret the person may see: a sandbox's one only through that sandbox (SPEC-216). */
+function teamSecret(db, id, change = false) {
+  const secret = vaultOf(db).team.find((s) => s.id === id) || fail(404, 'not_found', 'not found');
+  if (secret.sandbox) {
+    const sandbox = sandboxOf(db, secret.sandbox);
+    need(sandbox, change ? 'write' : 'read');
+  }
+  return secret;
+}
+
+function createTeam(db, body, sandbox) {
+  if (!String(body.title || '').trim()) fail(422, 'invalid', 'a title is required');
+  for (const key of Object.keys(body)) if (!['title', 'value', 'notes', 'scope'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  const scope = body.scope || (sandbox ? 'sandbox' : 'instance');
+  if (!['sandbox', 'instance'].includes(scope) || (scope === 'sandbox' && !sandbox)) fail(422, 'invalid', 'scope must be sandbox or instance');
+  if (scope === 'sandbox') need(sandbox, 'write');
+  const secret = { id: `ts_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, title: body.title.trim(), value: body.value || null, notes: body.notes || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
+  vaultOf(db).team.push(secret);
+  audit(db, 'vault.team.create', secret.id, `${secret.title} (${secret.sandbox ? 'this sandbox' : 'team-wide'})`);
+  return json(201, teamView(secret));
 }
 
 const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -2438,24 +2464,22 @@ function validateAgent(body, creating) {
   if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
 }
 
-route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));
-route('POST', '/api/team-secrets', ({ db, body }) => {
-  if (!String(body.title || '').trim()) fail(422, 'invalid', 'a title is required');
-  for (const key of Object.keys(body)) if (!['title', 'value', 'notes'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
-  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), value: body.value || null, notes: body.notes || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
-  vaultOf(db).team.push(secret);
-  audit(db, 'vault.team.create', secret.id, secret.title);
-  return json(201, teamView(secret));
+route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.filter((s) => !s.sandbox).map(teamView));
+route('POST', '/api/team-secrets', ({ db, body }) => createTeam(db, body, null));
+route('GET', `/api/sandboxes/${ID}/team-secrets`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  return vaultOf(db).team.filter((s) => !s.sandbox || s.sandbox === sandbox.id).map(teamView);
 });
+route('POST', `/api/sandboxes/${ID}/team-secrets`, ({ db, p, body }) => createTeam(db, body, sandboxOf(db, p[0])));
 route('PATCH', `/api/team-secrets/${ID}`, ({ db, p, body }) => {
-  const secret = teamSecret(db, p[0]);
+  const secret = teamSecret(db, p[0], true);
   for (const key of ['title', 'value', 'notes']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.team.update', secret.id, secret.title);
   return teamView(secret);
 });
 route('DELETE', `/api/team-secrets/${ID}`, ({ db, p }) => {
-  const secret = teamSecret(db, p[0]);
+  const secret = teamSecret(db, p[0], true);
   vaultOf(db).team = vaultOf(db).team.filter((s) => s !== secret);
   audit(db, 'vault.team.delete', secret.id, secret.title);
   return json(204);
@@ -2505,7 +2529,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   if (scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, true);
   if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null };
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
@@ -2516,7 +2540,12 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   if (secret.scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, false);
   if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
-  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value']) if (body[key] !== undefined) secret[key] = body[key];
+  // A production secret is never set up by agents (SPEC-216 SSA-004).
+  if (body.auto_allow === true && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
+  const sameHosts = (a, b) => a.length === b.length && a.every((x) => b.includes(String(x).toLowerCase()));
+  if (body.expect_hosts && !sameHosts(body.expect_hosts, secret.hosts)) fail(409, 'conflict', `its hosts changed since you opened it (now ${secret.hosts.join(', ') || 'none'}): reload and edit again`);
+  delete body.expect_hosts;
+  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
   return agentView(db, secret, sandbox);
@@ -2566,6 +2595,7 @@ route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
   const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret allow it for production deploys');
+  if (body.allow && secret.auto_allow) fail(409, 'conflict', 'agents set this secret up, so production deploys already get it: turn that off in Edit first to keep it for production deploys only');
   // A production secret is exclusive (ADR-0109): not while agents can use it.
   if (body.allow && ((secret.env_files || 'no') === 'allowed' || secret.hosts.length)) fail(409, 'conflict', 'agents can use this secret (copies into .env files or hosts the proxy sends it to): revoke those, or add a separate secret for production deploys');
   if (Boolean(secret.cd_prod) !== Boolean(body.allow)) {
@@ -2588,7 +2618,7 @@ route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(body.name || '') || body.name.toLowerCase() === 'yulius') fail(422, 'invalid', 'invalid or reserved server name');
   if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
   db.nextId += 1;
-  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false };
+  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false, origin: 'person' };
   db.mcp.push(m);
   const { sandbox: _s, ...out } = m;
   return json(201, out);
@@ -2597,6 +2627,18 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
   if (!m) fail(404, 'not_found', 'not found');
   if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  // A .mcp.json server becomes a person's when what it runs changes (SPEC-218 MOR-003): a stdio
+  // command or arguments with its environment replaced, or an HTTP URL.
+  if (m.origin === 'mcp_json') {
+    const stdio = body.transport === 'stdio';
+    const changed = body.transport !== m.transport || (stdio
+      ? (body.command ?? '').trim() !== (m.command ?? '') || JSON.stringify(body.args || []) !== JSON.stringify(m.args)
+      : (body.url ?? null) !== m.url);
+    if (changed && (!stdio || body.env || !m.env_keys.length)) {
+      m.origin = 'person';
+      if (!body.env) m.env_keys = []; // the file's environment does not outlive the take-over
+    }
+  }
   Object.assign(m, { name: body.name, transport: body.transport, command: body.command ?? null, args: body.args || [], url: body.url ?? null });
   if (body.enabled !== undefined) m.enabled = Boolean(body.enabled);
   // Secrets are write-only: an omitted map keeps the stored values, a given map replaces them.
@@ -2610,6 +2652,9 @@ route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
   if (!m) fail(404, 'not_found', 'not found');
   if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  // Tests see which servers were tested (`__yuliusMock.mcpTests`).
+  (db.mcpTests ||= []).push(m.id);
+  if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; check the whole command line, change it and enter its environment again to test it' };
   return m.name === 'apify' ? { ok: false, tools: [], error: 'APIFY_TOKEN rejected (401)' } : { ok: true, tools: ['search_knowledge', 'get_customer', 'list_feedback', 'get_product_doc'], error: null };
 });
 
@@ -3289,7 +3334,18 @@ function runUpdate(db, id) {
   }, UPDATE_STEP_MS * 4);
 }
 
-route('GET', '/api/update', ({ db }) => updateView(db));
+// `__yuliusMock.holdUpdateReads = true`: each read answers what it saw when it arrived, once
+// `releaseUpdate()` lets it go (the newest first); `updateReadsTaken` counts the held answers the
+// page has read, after which it handles them at once (#502).
+route('GET', '/api/update', async ({ db }) => {
+  const view = updateView(db);
+  if (!db.holdUpdateReads) return view;
+  await new Promise((resolve) => db.updateHolds.push(resolve));
+  const response = json(200, view);
+  const text = response.text.bind(response);
+  response.text = async () => { const body = await text(); db.updateReadsTaken += 1; return body; };
+  return response;
+});
 route('POST', '/api/admin/update/check', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   db.update.checkedAt = new Date().toISOString();
@@ -4826,10 +4882,12 @@ function openSocket(db, path) {
  * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
  * late"): keep its delay well under 15 s and its reason, or change that test with it.
  * `browserask=0` leaves it out: its toast stays while pointed at and can cover the tool panel's
- * top, which tests that point there would hit on a slow machine (#349).
+ * top, which tests that point there would hit on a slow machine (#349). `ambient=0` leaves all of
+ * it out: the request (#10 into "Needs you") and the task changes regroup the sidebar's rows under
+ * a resting pointer, which a test that hovers a row would race on a slow machine (#515).
  */
 function startAmbient(db) {
-  if (db.ambient) return;
+  if (db.ambient || db.noAmbient) return;
   db.ambient = true;
   let tick = 0;
   setTimeout(() => {
@@ -4922,6 +4980,13 @@ export function createMockTransport(params) {
     if (announce) db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
+  db.updateHolds = [];
+  db.updateReads = () => db.updateHolds.length;
+  db.updateReadsTaken = 0;
+  // Releases the newest held update read.
+  db.releaseUpdate = () => { const resolve = db.updateHolds.pop(); if (resolve) resolve(); };
+  // The server says the update view changed (`update.updated`), as after a check.
+  db.announceUpdate = () => emit(db, { type: 'update.updated', phase: null });
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for
@@ -4984,6 +5049,8 @@ export function createMockTransport(params) {
   db.failNoteLoads = params.get('noteloads') === 'fail';
   // `browserask=0`: no sign-in request from the sandbox browser 5 s after the start (startAmbient).
   db.noBrowserAsk = params.get('browserask') === '0';
+  // `ambient=0`: no ambient activity at all (startAmbient): no task changes by themselves.
+  db.noAmbient = params.get('ambient') === '0';
   notesOf(db);
   return {
     kind: 'mock',

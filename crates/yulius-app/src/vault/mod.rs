@@ -1,7 +1,8 @@
 //! Secrets vault (SPEC-001 VLT-001..009, SPEC-002 ADR-20).
 //!
-//! Two sections: **team secrets** (every member lists and edits them; revealing a value or notes
-//! needs the person's two-factor unlock within 10 minutes, and is audited) and
+//! Two sections, each secret of one sandbox or team-wide (SPEC-216): **team secrets** (the
+//! people who can view its sandbox, or every member, list and edit them; revealing a value or
+//! notes needs the person's two-factor unlock within 10 minutes, and is audited) and
 //! **agent secrets** (agents use them without seeing them: the egress proxy adds them to
 //! requests for their bound hosts, `browser_fill_secret` types them into pages of those hosts,
 //! and every channel through which an agent reads is redacted of their values and encodings).
@@ -14,6 +15,7 @@ mod create;
 mod env_files;
 mod requests;
 mod runtime;
+mod scopes;
 mod team;
 mod terminal;
 mod two_factor;
@@ -450,5 +452,6 @@ fn instance_vidoc_record() -> VaultSecretRecord {
         env_files: crate::ports::vault::EnvFiles::No,
         env_requested_by: None,
         cd_prod: false,
+        auto_allow: false,
     }
 }

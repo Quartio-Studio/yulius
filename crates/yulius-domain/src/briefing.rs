@@ -846,17 +846,18 @@ fn containers(input: &BriefingInput<'_>) -> String {
         .to_owned()
 }
 
-/// The security scan, when the instance has a Vidoc key (SPEC-195 VIB-001): what it does, how to
-/// run it, and that infra bootstrap adds it; nothing without a key.
+/// The security scan, when the instance has a Vidoc key (SPEC-195 VIB-001, SPEC-217 VDP-002):
+/// what it does and fails on, the agent's call on low findings, and that CI runs it built in;
+/// nothing without a key.
 fn security_scan(input: &BriefingInput<'_>) -> String {
     if !input.vidoc {
         return String::new();
     }
     "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
-     branch changed (`--all`: the whole repository) to Vidoc's vidoc-1 and exits 1 on open \
-     critical or high findings, 2 when it could not run (never a pass). Run it before delivery \
-     when the project's rules or CI ask; infra bootstrap adds it as the `security` CI job \
-     (`yulius security-scan --ci`, `secrets = \"VIDOC_API_KEY\"`).\n\n"
+     branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
+     or high findings, or medium ones in your changed lines; decide on low ones there (fix, or \
+     say why not in Evidence); 2 is not run, never a pass. A project's CI runs it built in (`yulius \
+     security-scan --ci`) and files findings outside your change as issues.\n\n"
         .to_owned()
 }
 
@@ -2104,9 +2105,10 @@ mod tests {
             "## Security scan",
             "`yulius security-scan`",
             "`--all`: the whole repository",
-            "exits 1 on open critical or high findings",
+            "exits 1 on critical or high findings, or medium ones in your changed lines",
+            "decide on low ones there",
             "`yulius security-scan --ci`",
-            "secrets = \"VIDOC_API_KEY\"",
+            "files findings outside your change as issues",
         ] {
             assert!(with.contains(present), "{present} not in {with}");
         }

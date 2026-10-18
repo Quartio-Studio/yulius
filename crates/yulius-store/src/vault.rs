@@ -15,7 +15,8 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
-     value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by";
+     value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by, \
+     auto_allow";
 
 fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
     let text: String = row.get(column)?;
@@ -57,6 +58,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         },
         env_requested_by: row.get("env_requested_by")?,
         cd_prod: row.get::<_, i64>("cd_prod")? != 0,
+        auto_allow: row.get::<_, i64>("auto_allow")? != 0,
     })
 }
 
@@ -98,52 +100,65 @@ fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppR
     }
 }
 
+/// Inserts a row, keeping agent names unique where they apply.
+fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
+    ensure_agent_unique(tx, r)?;
+    tx.execute(
+        &format!(
+            "INSERT INTO vault_secrets ({COLS}, cd_prod) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)"
+        ),
+        params![
+            r.id,
+            r.section.as_str(),
+            r.sandbox_id.as_ref().map(SandboxId::as_str),
+            r.name,
+            r.description,
+            to_json(&r.hosts),
+            r.injection,
+            r.header_name,
+            to_json(&r.fields),
+            i64::from(r.envelope.kek_id),
+            r.envelope.wrapped_key,
+            r.envelope.ciphertext,
+            r.created_by,
+            r.created_at.0,
+            r.updated_by,
+            r.updated_at.0,
+            r.value_updated_at.0,
+            r.last_used_at.map(|t| t.0),
+            to_json(&r.requested_hosts),
+            r.requested_by,
+            r.env_files.as_str(),
+            r.env_requested_by,
+            i64::from(r.auto_allow),
+            i64::from(r.cd_prod),
+        ],
+    )
+    .map_err(db)?;
+    Ok(())
+}
+
 #[async_trait]
 impl VaultStore for SqliteStore {
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()> {
         let r = record.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            ensure_agent_unique(&tx, &r)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO vault_secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"
-                ),
-                params![
-                    r.id,
-                    r.section.as_str(),
-                    r.sandbox_id.as_ref().map(SandboxId::as_str),
-                    r.name,
-                    r.description,
-                    to_json(&r.hosts),
-                    r.injection,
-                    r.header_name,
-                    to_json(&r.fields),
-                    i64::from(r.envelope.kek_id),
-                    r.envelope.wrapped_key,
-                    r.envelope.ciphertext,
-                    r.created_by,
-                    r.created_at.0,
-                    r.updated_by,
-                    r.updated_at.0,
-                    r.value_updated_at.0,
-                    r.last_used_at.map(|t| t.0),
-                    to_json(&r.requested_hosts),
-                    r.requested_by,
-                    r.env_files.as_str(),
-                    r.env_requested_by,
-                ],
-            )
-            .map_err(db)?;
+            insert_row(&tx, &r)?;
             tx.commit().map_err(db)?;
             Ok(())
         })
         .await
     }
 
-    async fn vault_update(&self, record: &VaultSecretRecord) -> AppResult<bool> {
+    async fn vault_update(
+        &self,
+        record: &VaultSecretRecord,
+        seen: &VaultSecretRecord,
+    ) -> AppResult<bool> {
         let r = record.clone();
+        let (seen_hosts, seen_auto) = (to_json(&seen.hosts), i64::from(seen.auto_allow));
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             ensure_agent_unique(&tx, &r)?;
@@ -151,7 +166,9 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET name = ?2, description = ?3, hosts = ?4, injection = ?5, \
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
-                     updated_by = ?11, updated_at = ?12, value_updated_at = ?13 WHERE id = ?1",
+                     updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
+                     WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1) AND hosts = ?15 \
+                     AND auto_allow = ?16",
                     params![
                         r.id,
                         r.name,
@@ -166,6 +183,9 @@ impl VaultStore for SqliteStore {
                         r.updated_by,
                         r.updated_at.0,
                         r.value_updated_at.0,
+                        i64::from(r.auto_allow),
+                        seen_hosts,
+                        seen_auto,
                     ],
                 )
                 .map_err(db)?;
@@ -200,14 +220,17 @@ impl VaultStore for SqliteStore {
         .await
     }
 
-    async fn vault_team(&self) -> AppResult<Vec<VaultSecretRecord>> {
-        self.call(|c| {
+    async fn vault_team(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>> {
+        let sandbox = sandbox.map(|s| s.as_str().to_owned());
+        self.call(move |c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' ORDER BY name COLLATE NOCASE, created_at"
+                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' \
+                     AND (?1 IS NULL OR sandbox_id IS NULL OR sandbox_id = ?1) \
+                     ORDER BY name COLLATE NOCASE, created_at"
                 ))
                 .map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
+            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
@@ -288,6 +311,34 @@ impl VaultStore for SqliteStore {
         .await
     }
 
+    async fn vault_auto_bind(
+        &self,
+        id: &str,
+        (bound, hosts): (&[String], &[String]),
+        (waiting, requested): (&[String], &[String]),
+    ) -> AppResult<bool> {
+        let (id, bound, hosts, waiting, requested) = (
+            id.to_owned(),
+            to_json(bound),
+            to_json(hosts),
+            to_json(waiting),
+            to_json(requested),
+        );
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE vault_secrets SET hosts = ?3, requested_hosts = ?5, \
+                     requested_by = CASE WHEN ?5 = '[]' THEN NULL ELSE requested_by END \
+                     WHERE id = ?1 AND section = 'agent' AND auto_allow = 1 AND hosts = ?2 \
+                     AND requested_hosts = ?4",
+                    params![id, bound, hosts, waiting, requested],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn vault_set_env_files(
         &self,
         id: &str,
@@ -321,11 +372,56 @@ impl VaultStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE vault_secrets SET cd_prod = ?3 \
-                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2",
+                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2 AND NOT (?3 = 1 AND auto_allow = 1)",
                     params![id, i64::from(from), i64::from(to)],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn vault_scope_pending(&self) -> AppResult<Vec<String>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare("SELECT id FROM vault_scope_pending ORDER BY id")
+                .map_err(db)?;
+            let rows = stmt.query_map([], |r| r.get(0)).map_err(db)?;
+            rows.collect::<Result<Vec<String>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_assign(&self, id: &str, copies: &[VaultSecretRecord]) -> AppResult<bool> {
+        let (id, copies) = (id.to_owned(), copies.to_vec());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let pending = tx
+                .execute("DELETE FROM vault_scope_pending WHERE id = ?1", [&id])
+                .map_err(db)?
+                == 1;
+            let everywhere = tx
+                .query_row(
+                    "SELECT 1 FROM vault_secrets WHERE id = ?1 AND sandbox_id IS NULL",
+                    [&id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(db)?
+                .is_some();
+            if !(pending && everywhere) {
+                tx.commit().map_err(db)?;
+                return Ok(false);
+            }
+            if !copies.is_empty() {
+                tx.execute("DELETE FROM vault_secrets WHERE id = ?1", [&id])
+                    .map_err(db)?;
+                for copy in &copies {
+                    insert_row(&tx, copy)?;
+                }
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -639,6 +735,7 @@ mod tests {
             env_files: EnvFiles::No,
             env_requested_by: None,
             cd_prod: false,
+            auto_allow: false,
         }
     }
 
@@ -655,6 +752,90 @@ mod tests {
             })
             .await?;
         Ok(store)
+    }
+
+    /// SPEC-216 SCO-004: the upgrade to version 35 lists the team secrets (all of every sandbox
+    /// then), and turns agents setting a secret up off for every existing one.
+    #[tokio::test]
+    async fn the_upgrade_lists_the_team_secrets() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v34.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &crate::MIGRATIONS[..34] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 34)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO vault_secrets (id, section, sandbox_id, name, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, value_updated_at) VALUES
+                   ('team', 'team', NULL, 'Gmail', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1),
+                   ('wide', 'agent', NULL, 'WIDE', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1),
+                   ('own', 'agent', 's1', 'OWN', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        // Review round 3: an administrator's team-wide agent secret stays team-wide; copies would
+        // let every sandbox's writers reveal and rebind it.
+        assert_eq!(store.vault_scope_pending().await?, ["team"]);
+        assert!(!store.vault_get("own").await?.ok_or("own")?.auto_allow);
+        Ok(())
+    }
+
+    /// SPEC-216 SCO-004: a pending secret is replaced by its copies in one step, once; with no
+    /// copies it stays team-wide and only leaves the list; one that no longer applies to every
+    /// sandbox is left alone.
+    #[tokio::test]
+    async fn a_pending_secret_is_replaced_by_its_copies_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        for r in [
+            record("g", VaultSection::Agent, None, "GLOBAL"),
+            record("t", VaultSection::Team, None, "Gmail"),
+            record("k", VaultSection::Team, None, "Kept"),
+            record("m", VaultSection::Team, Some("s1"), "Moved"),
+        ] {
+            store.vault_insert(&r).await?;
+        }
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO vault_scope_pending (id) VALUES ('g'), ('t'), ('k'), ('m'), ('gone')",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let mut pending = store.vault_scope_pending().await?;
+        pending.sort();
+        assert_eq!(pending, ["g", "gone", "k", "m", "t"]);
+
+        let copies = [
+            record("g1", VaultSection::Agent, Some("s1"), "GLOBAL"),
+            record("g2", VaultSection::Agent, Some("s2"), "GLOBAL"),
+        ];
+        assert!(store.vault_assign("g", &copies).await?);
+        assert!(store.vault_get("g").await?.is_none());
+        assert_eq!(
+            store.vault_agent(Some(&SandboxId::parse("s2")?)).await?[0].id,
+            "g2"
+        );
+        assert!(!store.vault_assign("g", &copies).await?, "only once");
+        assert!(store.vault_assign("k", &[]).await?);
+        assert!(store.vault_get("k").await?.is_some(), "kept team-wide");
+        assert!(
+            !store
+                .vault_assign(
+                    "m",
+                    &[record("m2", VaultSection::Team, Some("s2"), "Moved")]
+                )
+                .await?,
+            "no longer applies to every sandbox"
+        );
+        assert!(store.vault_get("m2").await?.is_none());
+        assert!(!store.vault_assign("gone", &[]).await?);
+        assert_eq!(store.vault_scope_pending().await?, ["t"]);
+        Ok(())
     }
 
     #[tokio::test]
@@ -696,7 +877,7 @@ mod tests {
         assert_eq!(got.updated_at, Timestamp(1), "nothing else changes");
         let mut edited = got.clone();
         edited.description = "edited".into();
-        assert!(store.vault_update(&edited).await?);
+        assert!(store.vault_update(&edited, &got).await?);
         assert_eq!(
             store.vault_get("a").await?.ok_or("row")?.env_files,
             EnvFiles::Allowed,
@@ -805,7 +986,78 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["e".to_owned(), "a".to_owned()]);
         assert_eq!(store.vault_agent(None).await?.len(), 3);
-        assert_eq!(store.vault_team().await?.len(), 2);
+        assert_eq!(store.vault_team(None).await?.len(), 2);
+        Ok(())
+    }
+
+    /// SPEC-216 SSA-004, review M2/m1: agents setting a secret up and the production-only
+    /// allowance exclude each other in the store; an edit and an automatic binding each change
+    /// only what they saw.
+    #[tokio::test]
+    async fn agents_setting_up_and_production_stay_apart_and_edits_see_what_they_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let mut auto = record("a", VaultSection::Agent, Some("s1"), "AUTO");
+        auto.auto_allow = true;
+        auto.hosts = Vec::new();
+        store.vault_insert(&auto).await?;
+        assert!(
+            !store.vault_set_cd_prod("a", false, true).await?,
+            "no production-only allowance while agents set it up"
+        );
+
+        // An edit read while it was on does not turn it back on once a person turned it off.
+        let seen = store.vault_get("a").await?.ok_or("row")?;
+        let mut off = seen.clone();
+        off.auto_allow = false;
+        assert!(store.vault_update(&off, &seen).await?);
+        let mut stale = seen.clone();
+        stale.description = "edited".into();
+        assert!(!store.vault_update(&stale, &seen).await?, "stale switch");
+        assert!(!store.vault_get("a").await?.ok_or("row")?.auto_allow);
+
+        // Turned off, nothing binds by itself; an edit that read the hosts before a binding does
+        // not drop it.
+        let none: [String; 0] = [];
+        let one = ["api.example.com".to_owned()];
+        assert!(
+            !store
+                .vault_auto_bind("a", (&none, &one), (&none, &none))
+                .await?
+        );
+        let now = store.vault_get("a").await?.ok_or("row")?;
+        let mut on = now.clone();
+        on.auto_allow = true;
+        assert!(store.vault_update(&on, &now).await?);
+        let before_binding = store.vault_get("a").await?.ok_or("row")?;
+        assert!(
+            store
+                .vault_auto_bind("a", (&none, &one), (&none, &none))
+                .await?
+        );
+        assert!(
+            !store
+                .vault_auto_bind("a", (&none, &one), (&none, &none))
+                .await?,
+            "stale bindings"
+        );
+        let mut late = before_binding.clone();
+        late.description = "late edit".into();
+        assert!(
+            !store.vault_update(&late, &before_binding).await?,
+            "stale hosts"
+        );
+        assert_eq!(store.vault_get("a").await?.ok_or("row")?.hosts, one);
+
+        // A production secret is never turned into one agents set up.
+        let mut prod = record("p", VaultSection::Agent, Some("s1"), "PROD");
+        prod.hosts = Vec::new();
+        store.vault_insert(&prod).await?;
+        assert!(store.vault_set_cd_prod("p", false, true).await?);
+        let seen = store.vault_get("p").await?.ok_or("row")?;
+        let mut turned = seen.clone();
+        turned.auto_allow = true;
+        assert!(!store.vault_update(&turned, &seen).await?);
         Ok(())
     }
 
@@ -814,10 +1066,11 @@ mod tests {
         let store = store_with_sandboxes().await?;
         let mut r = record("a", VaultSection::Agent, Some("s1"), "KEY");
         store.vault_insert(&r).await?;
+        let seen = r.clone();
         r.name = "RENAMED".into();
         r.envelope.ciphertext = vec![9];
         r.value_updated_at = Timestamp(5);
-        assert!(store.vault_update(&r).await?);
+        assert!(store.vault_update(&r, &seen).await?);
         store.vault_touch_used("a", Timestamp(7)).await?;
         let got = store.vault_get("a").await?.ok_or("missing")?;
         assert_eq!(got.name, "RENAMED");

@@ -1067,12 +1067,15 @@ impl App {
             _ => None,
         };
         let at_base = self.ci_jobs_at(&repo, &built.base).await.ok();
+        // It keeps the trusted security job, as a pull request does (SPEC-217 VDP-001).
         let gate = match own {
             Some(jobs) if crate::ci::own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => {
-                Gate {
+                let own = Gate {
                     jobs,
                     source: GateSource::PullRequest,
-                }
+                };
+                let scans = self.ci_scans(sandbox).await;
+                yulius_domain::ci::keep_security_jobs(own, Some(&gate), scans)
             }
             _ => gate,
         };
