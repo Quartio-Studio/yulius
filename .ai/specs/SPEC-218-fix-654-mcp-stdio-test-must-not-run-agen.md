@@ -1,0 +1,110 @@
+---
+yulius-task: 7ee59f6b-6d3a-4226-a2bc-b25e73e965b8
+status: in-progress
+---
+
+# SPEC-218: The MCP Test never runs a command an agent wrote
+
+Status: in-progress
+Date: 2026-10-18
+Owner: Yulius task #204
+Scope authorization: task #204, "Fix GitHub issue #654 … the minimal fix (an `origin` column
+person|mcp_json, refusing the stdio test of imported servers until a person changes their command,
+showing the origin in the UI …)". Found by task #160's Vidoc audit (SPEC-217).
+
+## Goal
+
+A command an agent wrote never runs outside containment through the MCP Test. Servers Yulius
+imported from the repository's `.mcp.json` (SPEC-095) are marked as such, the Test refuses to run
+them on the host until a person has changed what they run, and the MCP pages say where a server
+came from.
+
+## Context
+
+- **Symptom (#654).** An agent writes `.mcp.json` into the sandbox repository with a stdio server
+  whose command is its own (`/bin/sh -c …`). Before the next run, `import_project_mcp`
+  (`mcp_config/project.rs`) stores it as an enabled sandbox server, indistinguishable from one a
+  person added. On a contained instance an instance administrator presses Test, or only opens
+  `…/mcp/<id>?test=1` (the edit page tests on load), and `probe_stdio` (`mcp_config/probe.rs`)
+  spawns the command on the host as the service user: `master.key`, the database, every sandbox.
+- **Root cause.** `test_mcp_server` (`mcp_config.rs`) gates the stdio Test only on who presses it
+  (an instance administrator when contained). That gate assumes a person chose the command, but
+  `McpServerRecord` carries no provenance, so an imported server passes it. Existing tests covered
+  the import (cockpit.rs `a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking`)
+  and the probe separately, never the Test of an imported server.
+- **Lesser variant.** An imported HTTP server makes the Test POST fixed JSON-RPC to a loopback or
+  private URL the agent chose (blind apart from tool names); the private-address Test is also
+  gated only on the presser.
+- **Env.** The edit page keeps stored environment values when they are not replaced (they are
+  write-only and never shown). An imported server's env values come from the file too, so an agent
+  could set `LD_PRELOAD` or `NODE_OPTIONS` there: a person changing only the command would still
+  run agent-chosen code.
+- What else the cause could break: any other host-side use of an imported server's fields. Agent
+  runs attach servers inside the run's own containment (or on the host when uncontained, where the
+  agent already runs); the Test is the only host-side spawn.
+
+## Requirements
+
+- **MOR-001** Every MCP server has an `origin`: `person` (created or taken over by a person) or
+  `mcp_json` (imported from the repository's `.mcp.json`). The import stores `mcp_json`; the API
+  create stores `person`. A migration adds the column, `person` by default, and marks every server
+  whose id an `mcp.imported` audit entry names as `mcp_json` (conservative: a person re-confirms).
+- **MOR-002** The Test of a stdio server whose origin is `mcp_json` is refused, whoever asks and
+  whether or not the instance is contained, without starting a process; the result says why and
+  how to lift it. The Test of an `mcp_json` HTTP server whose URL resolves to a private or loopback
+  address is refused the same way; public addresses are tested as before.
+- **MOR-003** An update makes an `mcp_json` server `person` only when it changes what the server
+  runs: for stdio, `command` or `args` differ from the stored ones **and** the update replaces
+  `env` (or none is stored); for HTTP, `url` differs. An update that re-sends the same fields (the
+  enable toggle) keeps `mcp_json`. A `person` server never goes back to `mcp_json`.
+- **MOR-004** `McpServerView` carries `origin`. The MCP list shows a "from .mcp.json" badge and
+  disables Test of a refused server, saying why; the edit page says the server came from
+  `.mcp.json`, what lifts the refusal, and never runs the Test on load (`?test=1`) for a refused
+  server.
+
+## Plan
+
+- [x] Spec and root cause of the host-run MCP Test written
+- [ ] Regression test: an imported stdio server's Test is refused in a contained harness (fails first)
+- [ ] Servers carry their origin (person or .mcp.json) and the Test refuses imported ones
+- [ ] A person's command change makes the server theirs; an enable toggle does not
+- [ ] The MCP pages show a server came from .mcp.json and never auto-test it
+- [ ] Docs, ADR, gates and independent review done
+
+## Acceptance criteria
+
+- [ ] Regression test (contained harness, next to cockpit.rs
+  `a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking`): an imported
+  `.mcp.json` stdio server whose command touches a marker file, tested by an instance
+  administrator, is refused and the marker does not exist.
+- [ ] After a person changes its command (and replaces its env), the Test runs; a PUT that only
+  toggles `enabled` keeps it refused; a command change that keeps the file's env keeps it refused.
+- [ ] `?test=1` never runs an imported server's command (server-side refusal; the page does not
+  call the Test).
+- [ ] The MCP page shows that a server came from `.mcp.json`.
+- [ ] An imported HTTP server on a loopback URL is refused; the migration marks imported rows.
+
+## Test plan
+
+- Integration (`crates/yulius/tests/cockpit.rs`, contained `RecordingHarness`): `.mcp.json` with a
+  stdio server `sh -c 'touch <marker>'`; opening the Cockpit imports it; the view says
+  `origin: mcp_json`; an instance administrator's `POST /api/mcp/{id}/test` answers `ok: false`
+  with the reason and the marker is absent; the enable toggle PUT keeps it refused; a PUT changing
+  the args but keeping the env keeps it refused; a PUT changing the args and replacing the env
+  makes it `person` and the Test runs it (the marker appears). A loopback HTTP server from the file
+  is refused.
+- Store (`crates/yulius-store/tests`): origin round-trips; the migration marks rows named by
+  `mcp.imported`.
+- e2e (`e2e/tests/mcp.e2e.ts`): the list shows the badge; the edit page with `?test=1` shows the
+  notice and sends no Test request.
+
+## Decisions
+
+- Refuse instead of running the probe inside the sandbox containment: the minimal fix the issue
+  names; a contained probe needs the bwrap launch of a terminal for a one-shot JSON-RPC exchange
+  and is a larger change. Recorded in ADR-0173.
+- Provenance is a column, not a lookup of the audit log at Test time: the audit log is append-only
+  history, not state, and a person's change must lift the refusal.
+- Refuse everywhere, not only on contained instances: one rule; uncontained instances lose nothing
+  an agent run does not already do.
+- The env must be replaced with the command: the file's env values are agent-chosen and hidden.
