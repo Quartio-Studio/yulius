@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- One Start onboarding shows one toast again (SPEC-224, task #210, fixes #581). A sandbox page the
+  person had already left (it had opened the onboarding task) still rendered once the
+  superadmin's recovery state answered, and took back the opened task's "Onboarding started:
+  opened #1."; the start then said "Onboarding started." as well. A page that is gone now acts on
+  no late answer. The two end-to-end tests of #581 wait on what they mean under load: the watcher
+  test gives each of its three self-paced reads its own 10 s, and the onboarding tests wait for
+  the start's own read of the tasks in the sidebar (the document title follows task events only).
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
