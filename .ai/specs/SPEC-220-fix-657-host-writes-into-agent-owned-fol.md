@@ -1,11 +1,11 @@
 ---
 yulius-task: a51924d3-bee6-4035-8817-fe125fea03f1
-status: in-progress
+status: done
 ---
 
 # SPEC-220: Host writes into agent-owned folders do not follow links
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: task #206
 Scope authorization: task #206: "Fix GitHub issue #657 … four places where the server, as the
@@ -88,13 +88,14 @@ through `openat`/`renameat`), `hooks.rs` `read_repo_doc` (the opened file's real
 
 ## Plan
 
-- [ ] Write the spec, the ADR and the plan
-- [ ] Editor reads use the opened file's real path
-- [ ] Editor saves go through the parent folder's handle
-- [ ] Imported transcripts are written through handles from the sandbox directory
-- [ ] Uploads hold their folder's handle from the check to the placement
-- [ ] Skill copies go through handles from the sandbox directory
-- [ ] Docs, Vidoc ignores and gates
+- [x] Write the spec, the ADR and the plan
+- [x] Editor reads use the opened file's real path
+- [x] Editor saves go through the parent folder's handle
+- [x] Imported transcripts are written through handles from the sandbox directory
+- [x] Uploads hold their folder's handle from the check to the placement
+- [x] Skill copies go through handles from the sandbox directory
+- [x] Docs, Vidoc ignores and gates
+- [x] Review fixes: bounds, blocking calls, attachment count, test and wording
 
 ## Acceptance criteria
 
@@ -143,3 +144,27 @@ The race tests use pause points compiled only with `yulius-app`'s `test-support`
 - `files_list`, `file_create` (folders) and `file_delete` resolve by path too; they are outside
   #657's scope and are tracked in #660 (reproduced for `file_delete`), with the attachment
   removals (`remove_attachments`, `prune_old_drafts`).
+
+## Evidence
+
+- Each regression test was committed before its fix and run failing on the unfixed code:
+  - the editor read returned `host secret`;
+  - the save replaced the outside `a.txt` with `new`;
+  - the import overwrote `victim.db` with the transcript;
+  - the attachment landed in the outside folder, and the overwrite replaced the outside file;
+  - the skills install wrote into and pruned the linked host folder;
+  - the planted staging link overwrote `yulius.db`;
+  - the review-round tests failed too: aux depth and the listing cap.
+- `scripts/dev ci` at 886ceaa8: exit 0.
+  - Repository contracts, fmt, Clippy and the macOS Clippy (`scripts/dev macos`) passed.
+  - nextest: 2223 tests passed, 18 skipped. Doctests and `cargo doc` passed.
+  - Two earlier runs failed and were fixed: `mode_t` is `u16` on macOS, and a private doc link.
+- `scripts/dev security` at 886ceaa8: exit 0, "no open critical or high finding, and no open medium one in the change" (vidoc-1, 22 files in 15 chunks).
+  - Outside the change it reported `file_create`/`file_delete` (tracked in #660), `aux_relative` and `move_tree` in `imports.rs`, and `opening_pastes` in `supervisor.rs`; Yulius CI files these.
+  - No low findings in the change.
+- Vidoc ignores removed with their fixes: the five "real: tracked in #657" entries (`files.rs` ×3, `imports.rs`, `uploads.rs`). The `skills.rs` source-side entry stays; it is a false positive about instance-owned sources, and its reason was updated.
+- A throwaway pause point (not committed) reproduced `file_delete` deleting a host file through a swapped folder; filed as #660.
+- Independent review, round 1 (fresh session): no blockers.
+  - Fixed here, test-first where behavioral: aux copy depth and handles, bounded skills listings, upload placement in `spawn_blocking`, the attachment count through the handle, the race tests requiring success in the real folder, and narrower wording.
+  - Pre-existing findings: commented on #634 (config dir) and filed #661 (step-back, home creation).
+- Not tested: macOS at run time (only compiled; `real_path` uses `F_GETPATH` there), and a live agent racing a real `RENAME_EXCHANGE` loop. The pause points model it deterministically.
