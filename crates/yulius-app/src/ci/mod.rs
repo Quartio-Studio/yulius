@@ -33,6 +33,7 @@
 
 pub mod cd;
 mod disk_wait;
+mod environment;
 mod exec;
 mod findings;
 pub mod hygiene;

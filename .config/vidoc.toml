@@ -174,21 +174,6 @@ title = "authorization check in tool_cd_status"
 reason = "a task's agent sees only its own sandbox's runs (sandbox filter), at Write level by design, with secret-redacted output"
 
 [[ignore]]
-path = "crates/yulius-app/src/delivery.rs"
-title = "Environment commands run with server privileges"
-reason = "real: environment runs are uncontained, tracked in #656 (task #205); remove this entry with its fix"
-
-[[ignore]]
-path = "crates/yulius-app/src/delivery.rs"
-title = "Server-side shell execution of profile-defined"
-reason = "real: environment runs are uncontained, tracked in #656 (task #205); remove this entry with its fix"
-
-[[ignore]]
-path = "crates/yulius-app/src/delivery/runner.rs"
-title = "Subprocess execution from potentially untrusted configuration"
-reason = "a generic argv runner without a shell; trust is decided by its callers; the environment-run gap is #656"
-
-[[ignore]]
 path = "crates/yulius-app/src/disk.rs"
 title = "path traversal via untrusted yulius.toml cache"
 reason = "check_repo_path rejects absolute and .. segments and real_dir_below refuses links (config.rs and tests/disk.rs)"
@@ -365,3 +350,64 @@ reason = "the in-process fake GitHub for tests (feature fake); its constants are
 path = "crates/yulius-app/src/onboarding.rs"
 title = "Vidoc API key granted to CI jobs"
 reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, which the egress proxy replaces toward model.vidocsecurity.com alone (ADR-0116, VDK-005): a job can spend the key's quota at Vidoc but never read or send the key elsewhere"
+
+# CI exists to run a pull request's code: its tests and build scripts execute whatever the branch
+# says, so a job command from the branch's own `yulius.toml` (SPEC-142, F 2026-10-12) adds no
+# power. The job runs inside the sandbox's containment, with no agent secret unless the
+# integration branch grants it by name (ADR-0116), the way an agent of that sandbox already runs.
+# Reported on task #205's change scan (SPEC-219), which edited `ci_watch` in this file; the job
+# launch predates it.
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "from pull request-defined CI jobs"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "CI executes commands from untrusted pull request configuration"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+# The same finding where the gate picks the pull request's own jobs (`own_jobs_apply`), reported
+# when task #205 declared a module in this file.
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "Untrusted pull request CI configuration executes arbitrary shell commands"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+# A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
+# (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
+# when a repository admin or maintainer imports the repository (`import_profile`). Since SPEC-219
+# (#656) it runs like a CD run of its stage: the commit's files from a mirror only Yulius writes,
+# in the sandbox's containment with a fresh HOME and no secrets, so it gets no more than the
+# sandbox's agents have. Reported on task #205's change scan, which made it so; one entry per
+# wording Vidoc used.
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "command executed by environment runs"
+reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "deployment command taken from project configuration"
+reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "Environment command seeded from attacker-controlled repository content"
+reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+# `contained = false` is the development mode (SPEC-002 NFR-007): every agent run and shell then
+# runs on the host as the service user, which can read the data directory and its keys, so an
+# uncontained CD or environment run gets no capability the agents lack. Reported (high) on task
+# #205's change scan, which touched `cd.rs` for an unrelated visibility; the fallback predates it.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Production CD runs execute without isolation when containment is disabled"
+reason = "uncontained is the development mode: agents and shells already run on the host as the service user"
+
+# Vidoc reports the reviewed entry for #626 above as a suppression when a change edits this
+# file. Only that entry, in the wording it used; any other "suppressed" finding still counts.
+[[ignore]]
+path = ".config/vidoc.toml"
+title = "Unauthenticated browser adapter endpoint suppressed"
+reason = "the reviewed entry for the browser adapter's trust model, tracked in open issue #626"

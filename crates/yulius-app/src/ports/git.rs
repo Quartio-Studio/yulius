@@ -287,6 +287,19 @@ pub trait GitPort: Send + Sync {
         let _ = (mirror, from, branch, sha);
         unsupported("CD mirrors")
     }
+    /// Fetches `branch`'s head from `source` (the repository's URL, with `token` when given, or a
+    /// playground origin's path) into the bare `mirror` only Yulius writes, one commit deep, and
+    /// returns it; no sandbox clone is read (SPEC-219).
+    async fn mirror_fetch_head(
+        &self,
+        mirror: &Path,
+        source: &str,
+        branch: &str,
+        token: Option<&Secret>,
+    ) -> AppResult<String> {
+        let _ = (mirror, source, branch, token);
+        unsupported("environment mirrors")
+    }
     /// Writes commit `sha`'s tree of `mirror` as plain files into the new directory `dest`.
     async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
         let _ = (mirror, sha, dest);

@@ -13,7 +13,7 @@
 //! tolerate a concurrent run), and each job keeps a persistent checkout per lane
 //! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -119,6 +119,8 @@ pub(super) enum Sink<'a> {
     CiJob(&'a str),
     /// A CD run of a sandbox.
     CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
+    /// A delivery environment run (SPEC-219).
+    EnvironmentRun(&'a str),
 }
 
 /// What a watched process used, when its host measured it (SPEC-154). Unknown for a job Yulius
@@ -933,7 +935,7 @@ impl App {
                 &plan,
                 &token,
                 &log,
-                (ring, stages, Some(failures)),
+                (ring, Some(stages), Some(failures)),
                 cancel,
             )
             .await;
@@ -945,8 +947,9 @@ impl App {
     }
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
-    /// it to its end: its log into `ring`, `sink` and `failures` (a CI job's), cancellation, the
-    /// CI job timeout and the output limit. Returns how it ended and what it used.
+    /// it to its end: its log into `ring`, `sink`, `stages` (when its spans are recorded) and
+    /// `failures` (a CI job's), cancellation, the CI job timeout and the output limit. Returns how
+    /// it ended and what it used.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
     pub(super) async fn ci_watch(
         &self,
@@ -956,14 +959,18 @@ impl App {
         plan: &LaunchPlan,
         token: &[u8; 32],
         log: &Path,
-        (ring, stages, mut failures): (
+        (ring, mut stages, mut failures): (
             &mut OutputRing,
-            &mut OutputStages,
+            Option<&mut OutputStages>,
             Option<&mut FailureScanner>,
         ),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<(Ended, Used), String> {
-        let (sandbox, subject) = stages.subject();
+        // Opened before the process starts, and read only through this handle: the run can
+        // replace the file at `log` (a link to a host file, a FIFO), never what Yulius reads.
+        let mut tail = LogTail::open(log)
+            .await
+            .map_err(|e| format!("opening the job log failed: {e}"))?;
         let host = &self.deps.session_host;
         host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
@@ -979,7 +986,6 @@ impl App {
             }
         };
         let (mut reader, mut writer) = (attached.reader, attached.writer);
-        let mut tail = LogTail::new(log.to_path_buf());
         let deadline = tokio::time::Instant::now() + self.config.ci.job_timeout;
         let mut tick = tokio::time::interval(READ_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1030,8 +1036,7 @@ impl App {
                     if let Some(failures) = failures.as_deref_mut() {
                         failures.push(&fresh);
                     }
-                    let ops = stages.feed(&fresh, self.now());
-                    self.record_spans(&sandbox, (subject.0, &subject.1), ops).await;
+                    self.feed_stages(stages.as_deref_mut(), &fresh).await;
                     ticks += 1;
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
                         match sink {
@@ -1041,6 +1046,13 @@ impl App {
                             Sink::CdRun(id, sandbox) => {
                                 let shown = self.redact_for_sandbox(sandbox, &ring.text()).await;
                                 let _ = self.deps.store.set_cd_run_output(id, &shown).await;
+                            }
+                            Sink::EnvironmentRun(id) => {
+                                let _ = self
+                                    .deps
+                                    .store
+                                    .update_environment_run(id, &ring.text(), None)
+                                    .await;
                             }
                         }
                     }
@@ -1054,19 +1066,30 @@ impl App {
             if let Some(failures) = failures.as_deref_mut() {
                 failures.push(&fresh);
             }
-            let ops = stages.feed(&fresh, self.now());
-            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
-                .await;
+            self.feed_stages(stages.as_deref_mut(), &fresh).await;
             match read {
                 Ok(_) if tail.caught_up() => break,
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        let ops = stages.finish(self.now());
-        self.record_spans(&sandbox, (subject.0, &subject.1), ops)
-            .await;
+        if let Some(stages) = stages {
+            let ops = stages.finish(self.now());
+            let (sandbox, subject) = stages.subject();
+            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+                .await;
+        }
         Ok((ended, usage))
+    }
+
+    /// Records the spans the output `fresh` asks for, when the run's stages are recorded.
+    async fn feed_stages(&self, stages: Option<&mut OutputStages>, fresh: &[u8]) {
+        if let Some(stages) = stages {
+            let ops = stages.feed(fresh, self.now());
+            let (sandbox, subject) = stages.subject();
+            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+                .await;
+        }
     }
 }
 
@@ -1093,9 +1116,9 @@ async fn wait_cancel(cancel: &mut watch::Receiver<Option<String>>) -> String {
     }
 }
 
-/// Follows a job's log file.
+/// Follows a job's log file through the handle opened before the job started.
 struct LogTail {
-    path: PathBuf,
+    file: tokio::fs::File,
     offset: u64,
     size: u64,
     strip: AnsiStripper,
@@ -1105,14 +1128,25 @@ struct LogTail {
 }
 
 impl LogTail {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
+    /// Opens the log at `path`, which must be a regular file and not a link (it is never
+    /// followed, and a FIFO is never waited on).
+    async fn open(path: &Path) -> std::io::Result<Self> {
+        let flags = nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK;
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(flags.bits())
+            .open(path)
+            .await?;
+        if !file.metadata().await?.is_file() {
+            return Err(std::io::Error::other("the log is not a regular file"));
+        }
+        Ok(Self {
+            file,
             offset: 0,
             size: 0,
             strip: AnsiStripper::default(),
             fresh: Vec::new(),
-        }
+        })
     }
 
     /// The output read since the last call.
@@ -1126,7 +1160,7 @@ impl LogTail {
 
     /// Reads at most [`READ_CHUNK`] new bytes into `ring`; returns the file size.
     async fn read(&mut self, ring: &mut OutputRing) -> std::io::Result<u64> {
-        let mut file = tokio::fs::File::open(&self.path).await?;
+        let file = &mut self.file;
         self.size = file.metadata().await?.len();
         if self.size <= self.offset {
             return Ok(self.size);
@@ -1163,6 +1197,8 @@ impl LogTail {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     /// SPEC-195 VSC-001: a CI job finds `yulius` (for `yulius security-scan`) on its PATH.

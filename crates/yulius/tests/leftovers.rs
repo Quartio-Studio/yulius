@@ -500,6 +500,48 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
     Ok(())
 }
 
+/// SPEC-219 (review of 5d72af32): a delivery environment run's directory (`runs/env-<run>`) is
+/// its own while the run is `running`, however old; once it ended, it is an ended run.
+#[tokio::test]
+async fn a_running_environment_run_keeps_its_directory() -> BoxResult<()> {
+    use yulius_app::delivery::{EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState};
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    let w = world().await?;
+    w.sandbox("live").await?;
+    let run = EnvironmentRunRecord {
+        id: "r-live".into(),
+        sandbox_id: SandboxId::parse("live")?,
+        environment: "dev-vm".into(),
+        kind: EnvironmentRunKind::Command,
+        requested_by: yulius_domain::ids::UserId::parse("u-alice")?,
+        command: Some("./deploy.sh".into()),
+        commit: None,
+        state: EnvironmentRunState::Running,
+        output: String::new(),
+        exit_code: None,
+        started_at: Timestamp(1),
+        ended_at: None,
+    };
+    w.h.store.insert_environment_run(&run).await?;
+    write(&w.at("runs/env-r-live/work/log"), "deploying")?;
+    write(&w.at("runs/env-r-gone/work/log"), "deployed")?;
+    w.h.clock
+        .0
+        .store(real_now_ms()? + 8 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+
+    let found = kinds(&w.scan().await?);
+    let path = |name: &str| w.at(&format!("runs/{name}")).to_string_lossy().into_owned();
+    assert!(
+        !found.iter().any(|(_, p)| *p == path("env-r-live")),
+        "a running run's directory: {found:?}"
+    );
+    assert!(
+        found.contains(&(Kind::EndedRun, path("env-r-gone"))),
+        "{found:?}"
+    );
+    Ok(())
+}
+
 async fn view(h: &support::Harness, creds: &Creds) -> BoxResult<Value> {
     let r = call(&h.router, Method::GET, "/api/admin/leftovers", None, creds).await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);

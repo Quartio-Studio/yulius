@@ -1385,8 +1385,8 @@ up. Queued tasks start when capacity allows.
   token restricted to their sandbox repository; provider credentials reach the agent process
   only through its environment (SPEC-002 §8, R-08).
 - Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
-  unauthenticated on loopback, which isolated sandboxes cannot reach; R-09: environment commands
-  run outside containment).
+  unauthenticated on loopback, which isolated sandboxes cannot reach; R-09, environment commands
+  outside containment, is closed by ADR-0175).
 - Isolated sandboxes cannot reach the host's loopback services (Yulius's public listener, Caddy's
   admin API, DevTools ports, databases bound to 127.0.0.1). Services bound to the host's public
   addresses remain reachable like any internet host.
