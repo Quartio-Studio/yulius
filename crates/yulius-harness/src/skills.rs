@@ -303,7 +303,7 @@ fn remove_tree(dir: &OwnedFd, name: &OsStr, depth: usize) -> io::Result<()> {
 }
 
 /// Creates `name` in `dir` (never through an entry already there) with `bytes` and `mode`.
-fn write_new(dir: &OwnedFd, name: &OsStr, bytes: &[u8], mode: u32) -> io::Result<()> {
+fn write_new(dir: &OwnedFd, name: &OsStr, bytes: &[u8], mode: nix::libc::mode_t) -> io::Result<()> {
     let mut file = create_new(dir, name)?;
     io::Write::write_all(&mut file, bytes)?;
     fchmod(&file, Mode::from_bits_truncate(mode & 0o7777))?;
@@ -378,7 +378,6 @@ fn copy_file(
     budget: &mut Budget,
     name: &str,
 ) -> Result<(), SkillsError> {
-    use std::os::unix::fs::PermissionsExt as _;
     let meta = fs::metadata(source).map_err(io_error(name))?;
     budget.bytes = budget.bytes.saturating_add(meta.len());
     if budget.bytes > MAX_SKILL_BYTES {
@@ -388,10 +387,8 @@ fn copy_file(
         let mut input = fs::File::open(source)?;
         let mut output = create_new(to, dest)?;
         io::copy(&mut input, &mut output)?;
-        fchmod(
-            &output,
-            Mode::from_bits_truncate(meta.permissions().mode() & 0o7777),
-        )?;
+        // On the new file's handle (fchmod), never by path.
+        output.set_permissions(meta.permissions())?;
         Ok(())
     })();
     copied.map_err(io_error(name))
