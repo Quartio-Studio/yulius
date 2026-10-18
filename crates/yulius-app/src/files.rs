@@ -140,6 +140,70 @@ pub(crate) fn open_inside(
     Ok(fd)
 }
 
+/// Opens `parts` below `anchor` one folder at a time with `O_DIRECTORY | O_NOFOLLOW`, creating
+/// the missing ones when `create`: a link or a file the agent put on the way fails the walk
+/// (`ELOOP`, `ENOTDIR`) instead of steering what follows (#657, ADR-0174). `anchor` itself is
+/// opened by path: the caller passes one the agent cannot replace (its sandbox directory).
+pub(crate) fn open_dirs_below(
+    anchor: &Path,
+    parts: &[&std::ffi::OsStr],
+    create: bool,
+) -> Result<std::os::fd::OwnedFd, Errno> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    let mut dir = nix::fcntl::open(anchor, flags, Mode::empty())?;
+    for part in parts {
+        dir = open_dir_at(&dir, part, create)?;
+    }
+    Ok(dir)
+}
+
+/// Opens the folder `name` in the folder `dir` with `O_DIRECTORY | O_NOFOLLOW`, creating it
+/// first when it is missing and `create` (see [`open_dirs_below`]).
+pub(crate) fn open_dir_at(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    create: bool,
+) -> Result<std::os::fd::OwnedFd, Errno> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    match openat(dir, name, flags, Mode::empty()) {
+        Err(Errno::ENOENT) if create => {
+            match nix::sys::stat::mkdirat(dir, name, Mode::from_bits_truncate(0o777)) {
+                Ok(()) | Err(Errno::EEXIST) => {}
+                Err(err) => return Err(err),
+            }
+            openat(dir, name, flags, Mode::empty())
+        }
+        other => other,
+    }
+}
+
+/// Writes `name` in the folder `dir` whole: `write` fills a new file created through the handle
+/// as `temporary` (`O_EXCL | O_NOFOLLOW`, so an entry planted there is never opened), which is
+/// synced and renamed over `name` within the same handle; it is removed when anything fails.
+pub(crate) fn replace_in(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    temporary: &str,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> AppResult<()> {
+    let fd = openat(
+        dir,
+        temporary,
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(0o666),
+    )
+    .map_err(errno_error)?;
+    let mut file = std::fs::File::from(fd);
+    let written = write(&mut file)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_error(&e))
+        .and_then(|()| renameat(dir, temporary, dir, name).map_err(errno_error));
+    if written.is_err() {
+        let _ = unlinkat(dir, temporary, UnlinkatFlags::NoRemoveDir);
+    }
+    written
+}
+
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
 fn is_sha256_hex(sha: &str) -> bool {
     sha.len() == 64
@@ -482,26 +546,14 @@ impl App {
             .map(|b| format!("{b:02x}"))
             .collect();
         let temporary = format!(".{}.yulius-edit-{suffix}", name.to_string_lossy());
-        let fd = openat(
-            &dir,
-            temporary.as_str(),
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::from_bits_truncate(0o666),
-        )
-        .map_err(errno_error)?;
-        let mut handle = std::fs::File::from(fd);
-        // On the handle, never by path: the agent can see the new entry and swap it for a link
-        // before a path-based chmod (review round 2).
-        let written = mode
-            .map_or(Ok(()), |permissions| handle.set_permissions(permissions))
-            .and_then(|()| std::io::Write::write_all(&mut handle, req.content.as_bytes()))
-            .and_then(|()| handle.sync_all())
-            .map_err(|e| io_error(&e))
-            .and_then(|()| renameat(&dir, temporary.as_str(), &dir, name).map_err(errno_error));
-        if let Err(err) = written {
-            let _ = unlinkat(&dir, temporary.as_str(), UnlinkatFlags::NoRemoveDir);
-            return Err(err);
-        }
+        replace_in(&dir, name, &temporary, |handle| {
+            // On the handle, never by path: the agent can see the new entry and swap it for a
+            // link before a path-based chmod (review round 2).
+            if let Some(permissions) = mode {
+                handle.set_permissions(permissions)?;
+            }
+            std::io::Write::write_all(handle, req.content.as_bytes())
+        })?;
         Ok(FileWritten {
             path: target.relative,
             sha256: self.deps.crypto.sha256_hex(req.content.as_bytes()),

@@ -1301,19 +1301,16 @@ impl App {
         let cwd = worktree.to_string_lossy().into_owned();
         match entry.harness {
             Harness::ClaudeCode => {
-                let home = self.sandbox_dir(&sandbox.id).join("home");
-                let dest = self
-                    .deps
-                    .harness
-                    .claude_transcript(&home, &worktree, &entry.session_id);
-                let aux_src = stored.with_extension("");
-                let aux_dest = dest.with_extension("");
+                let sandbox_dir = self.sandbox_dir(&sandbox.id);
+                let dest = self.deps.harness.claude_transcript(
+                    &sandbox_dir.join("home"),
+                    &worktree,
+                    &entry.session_id,
+                );
+                let random = self.deps.crypto.random_bytes();
+                let suffix = hex_token(random.get(..8).unwrap_or(&random));
                 blocking(move || {
-                    if dest.exists() {
-                        return Ok(());
-                    }
-                    rewrite_transcript(&stored, &dest, |record| rewrite_claude(record, &cwd))?;
-                    copy_claude_aux(&aux_src, &aux_dest, &cwd)
+                    place_claude_transcript(&sandbox_dir, &dest, &stored, &cwd, &suffix)
                 })
                 .await?;
             }
@@ -1794,38 +1791,95 @@ fn read_line_bounded(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
     Ok(n > 0)
 }
 
-/// Copies a JSONL transcript, applying `rewrite` to every parseable record; unparseable and
-/// over-long lines are copied verbatim. Writes through a temporary file and renames.
+/// Copies the imported Claude transcript `stored` (and its auxiliary files) to `dest`, below the
+/// sandbox directory, unless an entry is there already (a native continuation is never
+/// overwritten). The agent owns its home: every folder is opened from the sandbox directory
+/// without following links and every file is written through its folder's handle, so a link it
+/// planted never steers the copy (#657, ADR-0174).
+fn place_claude_transcript(
+    sandbox_dir: &Path,
+    dest: &Path,
+    stored: &Path,
+    cwd: &str,
+    suffix: &str,
+) -> AppResult<()> {
+    let outside = || AppError::Internal("the transcript path is outside the sandbox".into());
+    let parts = dest
+        .strip_prefix(sandbox_dir)
+        .map_err(|_| outside())?
+        .components()
+        .map(|c| match c {
+            Component::Normal(part) => Ok(part),
+            _ => Err(outside()),
+        })
+        .collect::<AppResult<Vec<&OsStr>>>()?;
+    let (name, folders) = parts.split_last().ok_or_else(outside)?;
+    let dir = crate::files::open_dirs_below(sandbox_dir, folders, true).map_err(link_refused)?;
+    match nix::sys::stat::fstatat(&dir, *name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(_) => return Ok(()),
+        Err(nix::errno::Errno::ENOENT) => {}
+        Err(err) => return Err(crate::files::errno_error(err)),
+    }
+    rewrite_transcript(stored, &dir, name, suffix, |record| {
+        rewrite_claude(record, cwd)
+    })?;
+    let aux = Path::new(name).with_extension("");
+    copy_claude_aux(
+        &stored.with_extension(""),
+        &dir,
+        aux.as_os_str(),
+        cwd,
+        suffix,
+    )
+}
+
+/// A link or a file on the way to a folder Yulius writes into.
+fn link_refused(err: nix::errno::Errno) -> AppError {
+    match err {
+        nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => AppError::Forbidden(
+            "a folder on the way to the transcript is a link or not a folder: Yulius follows no \
+             links"
+                .into(),
+        ),
+        other => crate::files::errno_error(other),
+    }
+}
+
+/// Copies a JSONL transcript to `name` in the folder `dir`, applying `rewrite` to every
+/// parseable record; unparseable and over-long lines are copied verbatim. Writes through a
+/// temporary file and renames, within the folder's handle ([`crate::files::replace_in`]).
 fn rewrite_transcript(
     src: &Path,
-    dest: &Path,
+    dir: &std::os::fd::OwnedFd,
+    name: &OsStr,
+    suffix: &str,
     rewrite: impl Fn(&mut serde_json::Value) -> bool,
 ) -> AppResult<()> {
-    let parent = dest
-        .parent()
-        .ok_or_else(|| AppError::Internal("transcript path without parent".into()))?;
-    fs::create_dir_all(parent).map_err(AppError::internal)?;
-    let mut tmp_name = dest.as_os_str().to_owned();
-    tmp_name.push(".tmp");
-    let tmp = PathBuf::from(tmp_name);
     let mut reader = BufReader::new(File::open(src).map_err(AppError::internal)?);
-    let mut writer = BufWriter::new(File::create(&tmp).map_err(AppError::internal)?);
+    let temporary = format!(".{}.yulius-import-{suffix}", name.to_string_lossy());
+    crate::files::replace_in(dir, name, &temporary, |file| {
+        let mut writer = BufWriter::new(file);
+        copy_rewritten(&mut reader, &mut writer, &rewrite)?;
+        writer.flush()
+    })
+}
+
+/// The lines of `reader` to `writer`, each parseable record through `rewrite`.
+fn copy_rewritten(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    rewrite: &impl Fn(&mut serde_json::Value) -> bool,
+) -> io::Result<()> {
     let mut line = Vec::new();
-    while read_line_bounded(&mut reader, &mut line, MAX_TRANSCRIPT_LINE_BYTES)
-        .map_err(AppError::internal)?
-    {
+    while read_line_bounded(reader, &mut line, MAX_TRANSCRIPT_LINE_BYTES)? {
         let complete = line.ends_with(b"\n");
         if !complete && line.len() > MAX_TRANSCRIPT_LINE_BYTES {
             // Over-long line: copy it verbatim up to and including its newline.
-            writer.write_all(&line).map_err(AppError::internal)?;
+            writer.write_all(&line)?;
             loop {
                 line.clear();
-                let n = reader
-                    .by_ref()
-                    .take(1 << 20)
-                    .read_until(b'\n', &mut line)
-                    .map_err(AppError::internal)?;
-                writer.write_all(&line).map_err(AppError::internal)?;
+                let n = reader.by_ref().take(1 << 20).read_until(b'\n', &mut line)?;
+                writer.write_all(&line)?;
                 if n == 0 || line.ends_with(b"\n") {
                     break;
                 }
@@ -1840,44 +1894,49 @@ fn rewrite_transcript(
             .and_then(Result::ok);
         match rewritten {
             Some(bytes) => {
-                writer.write_all(&bytes).map_err(AppError::internal)?;
-                writer.write_all(b"\n").map_err(AppError::internal)?;
+                writer.write_all(&bytes)?;
+                writer.write_all(b"\n")?;
             }
             None => {
-                writer.write_all(&line).map_err(AppError::internal)?;
+                writer.write_all(&line)?;
                 if !complete {
-                    writer.write_all(b"\n").map_err(AppError::internal)?;
+                    writer.write_all(b"\n")?;
                 }
             }
         }
     }
-    let file = writer
-        .into_inner()
-        .map_err(|err| AppError::internal(err.into_error()))?;
-    file.sync_all().map_err(AppError::internal)?;
-    fs::rename(&tmp, dest).map_err(AppError::internal)
+    Ok(())
 }
 
-/// Copies Claude auxiliary files (subagent transcripts) with `cwd` rewritten, bounded.
-fn copy_claude_aux(src: &Path, dest: &Path, cwd: &str) -> AppResult<()> {
+/// Copies Claude auxiliary files (subagent transcripts) from `src` to the folder `name` in
+/// `parent`, with `cwd` rewritten, bounded; every folder is opened through its parent's handle.
+fn copy_claude_aux(
+    src: &Path,
+    parent: &std::os::fd::OwnedFd,
+    name: &OsStr,
+    cwd: &str,
+    suffix: &str,
+) -> AppResult<()> {
     if !fs::symlink_metadata(src).is_ok_and(|meta| meta.is_dir()) {
         return Ok(());
     }
-    let mut pending = vec![PathBuf::new()];
+    let top = crate::files::open_dir_at(parent, name, true).map_err(link_refused)?;
+    let mut pending = vec![(src.to_path_buf(), top)];
     let mut copied = 0_usize;
-    while let Some(rel) = pending.pop() {
-        for entry in fs::read_dir(src.join(&rel)).map_err(AppError::internal)? {
+    while let Some((from, dir)) = pending.pop() {
+        for entry in fs::read_dir(&from).map_err(AppError::internal)? {
             let entry = entry.map_err(AppError::internal)?;
             let kind = entry.file_type().map_err(AppError::internal)?;
-            let child = rel.join(entry.file_name());
+            let child = entry.file_name();
             if kind.is_dir() {
-                pending.push(child);
+                let opened = crate::files::open_dir_at(&dir, &child, true).map_err(link_refused)?;
+                pending.push((entry.path(), opened));
             } else if kind.is_file() {
                 copied += 1;
                 if copied > MAX_AUX_FILES {
                     return Ok(());
                 }
-                rewrite_transcript(&entry.path(), &dest.join(&child), |record| {
+                rewrite_transcript(&entry.path(), &dir, &child, suffix, |record| {
                     rewrite_claude(record, cwd)
                 })?;
             }
@@ -2044,7 +2103,10 @@ mod tests {
             ),
         )?;
         let claude = dir.path().join("out/claude.jsonl");
-        rewrite_transcript(&src, &claude, |r| rewrite_claude(r, "/wt"))?;
+        let out = crate::files::open_dirs_below(dir.path(), &[OsStr::new("out")], true)?;
+        rewrite_transcript(&src, &out, OsStr::new("claude.jsonl"), "t", |r| {
+            rewrite_claude(r, "/wt")
+        })?;
         let text = fs::read_to_string(&claude)?;
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 4);
@@ -2058,6 +2120,25 @@ mod tests {
             other["payload"]["cwd"], "/old",
             "records without a top-level cwd are untouched"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_linked_project_folder_is_never_written_through() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let sandbox = dir.path().join("sandbox");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(sandbox.join("home/.claude"))?;
+        fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, sandbox.join("home/.claude/projects"))?;
+        let stored = dir.path().join("stored.jsonl");
+        fs::write(&stored, "{\"cwd\":\"/old\"}\n")?;
+        let dest = sandbox.join("home/.claude/projects/-wt/s.jsonl");
+        assert!(matches!(
+            place_claude_transcript(&sandbox, &dest, &stored, "/wt", "t"),
+            Err(AppError::Forbidden(_))
+        ));
+        assert_eq!(fs::read_dir(&outside)?.count(), 0, "nothing written outside");
         Ok(())
     }
 
