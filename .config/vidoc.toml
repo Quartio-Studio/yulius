@@ -404,6 +404,20 @@ path = "crates/yulius-app/src/delivery.rs"
 title = "deployment command taken from project configuration"
 reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
 
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "Environment command seeded from attacker-controlled repository content"
+reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+# `contained = false` is the development mode (SPEC-002 NFR-007): every agent run and shell then
+# runs on the host as the service user, which can read the data directory and its keys, so an
+# uncontained CD or environment run gets no capability the agents lack. Reported (high) on task
+# #205's change scan, which touched `cd.rs` for an unrelated visibility; the fallback predates it.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Production CD runs execute without isolation when containment is disabled"
+reason = "uncontained is the development mode: agents and shells already run on the host as the service user"
+
 # Vidoc reports the reviewed entry for #626 above as a suppression when a change edits this
 # file. Only that entry, in the wording it used; any other "suppressed" finding still counts.
 [[ignore]]
