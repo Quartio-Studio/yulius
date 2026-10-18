@@ -65,12 +65,12 @@ inside the sandbox's containment like a CD dev run.
 ## Plan
 
 - [x] Spec SPEC-219 and its plan
-- [ ] Regression test: a planted smudge filter and `delivery_deploy` leave no host marker
-- [ ] Git takes a branch head from origin into a Yulius-only mirror with the token in the command's environment only
-- [ ] Environment runs export the mirror's commit into a run directory and run through the process host under containment
-- [ ] Contained test: the environment command cannot read a host-only path
-- [ ] The host runner is gone and a lost run's process host is terminated
-- [ ] ADR-0175, architecture, product and changes updated
+- [x] Regression test: a planted smudge filter and `delivery_deploy` leave no host marker
+- [x] Git takes a branch head from origin into a Yulius-only mirror with the token in the command's environment only
+- [x] Environment runs export the mirror's commit into a run directory and run through the process host under containment
+- [x] Contained test: the environment command cannot read a host-only path
+- [x] The host runner is gone and a lost run's process host is terminated
+- [x] ADR-0175, architecture, product and changes updated
 - [ ] Gates green, independent review answered, delivered
 
 ## Acceptance criteria
@@ -92,6 +92,11 @@ inside the sandbox's containment like a CD dev run.
   run passes at origin's head, prints the file's content, and the marker does not exist.
 - `delivery::contained_environment_runs_see_only_their_sandbox` (AC-2, Linux, skipped when bubblewrap
   cannot run): a host-only file outside the sandbox is not there; `HOME` is under the run directory.
+- `delivery::a_contained_environment_run_starts_in_the_sandbox_containment` (AC-2 everywhere): a
+  recording process host sees a bubblewrap containment rooted at the sandbox, only the run's
+  directory writable, a fresh `HOME` there, the exported tree as `cwd`, no secrets.
+- `delivery::an_environment_command_past_its_timeout_is_killed` and
+  `delivery::a_restart_ends_a_running_environment_command` (ENV-004) through the real process host.
 - `yulius-git` unit tests of the mirror fetch: depth 1, replacement refs ignored, a missing branch
   refused.
 - Existing: `product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out`,
@@ -111,3 +116,23 @@ inside the sandbox's containment like a CD dev run.
   takes them optionally.
 - **Scope:** the other token fetches in the sandbox clone (`dlv_refresh_clone` for CI, merges,
   hygiene, CD) stay #54 part B; this change does not widen to them (one concern per pull request).
+
+## Evidence
+
+- Red first (commit 81fd4904, on `dev` 34944a6d's code): `an_agent_planted_git_filter_never_runs_on_the_host`
+  failed with "the planted smudge filter ran on the host"; `an_environment_run_never_fetches_in_the_sandbox_clone`
+  failed with state `error` ("reading quartio failed": the planted `url.insteadOf` redirected the
+  clone's fetch). Both pass after the fix.
+- `a_restart_ends_a_running_environment_command` fails without `environment_end_lost` in the
+  startup reconciliation ("the run's directory is removed") and passes with it.
+- `contained_environment_runs_see_only_their_sandbox` printed "SKIPPED … bubblewrap cannot run
+  here" in this task's sandbox; the recording-host test covers the containment plan there.
+- `scripts/dev ci` at e990fbb1: exit 0, 2217 tests passed, 18 skipped (lint, macOS clippy, docs,
+  deps included).
+- `scripts/dev security` at e990fbb1: exit 1 on one high finding at
+  `crates/yulius-app/src/ci/exec.rs:914`, "OS command execution from pull request-defined CI jobs":
+  pre-existing (the job launch, not this change's `ci_watch` edit), and by design (CI runs the pull
+  request's code in the sandbox's containment without secrets, SPEC-142, ADR-0116). Recorded as an
+  `[[ignore]]` in `.config/vidoc.toml`, subject to the independent reviewer's agreement. Four medium
+  or low findings outside the change (cd.rs:1394, ci/mod.rs:723, wiring/git.rs:79, cd.rs:1071) do not
+  fail it; Yulius CI files them. No low finding was reported in the change.

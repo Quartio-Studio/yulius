@@ -361,3 +361,14 @@ reason = "real and pre-existing: the write side of the editor's path checks (a p
 path = "crates/yulius-app/src/onboarding.rs"
 title = "Vidoc API key granted to CI jobs"
 reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, which the egress proxy replaces toward model.vidocsecurity.com alone (ADR-0116, VDK-005): a job can spend the key's quota at Vidoc but never read or send the key elsewhere"
+
+# CI exists to run a pull request's code: its tests and build scripts execute whatever the branch
+# says, so a job command from the branch's own `yulius.toml` (SPEC-142, F 2026-10-12) adds no
+# power. The job runs inside the sandbox's containment, with no agent secret unless the
+# integration branch grants it by name (ADR-0116), the way an agent of that sandbox already runs.
+# Reported on task #205's change scan (SPEC-219), which edited `ci_watch` in this file; the job
+# launch predates it.
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "command execution"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
