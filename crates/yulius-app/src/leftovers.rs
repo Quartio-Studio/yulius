@@ -276,7 +276,7 @@ fn no_link_between(root: &Path, path: &Path) -> bool {
 /// way: each directory from `root` down is opened with `O_NOFOLLOW`, so a directory a sandbox
 /// swapped for a link (also after the last check) fails the open instead of steering the removal
 /// elsewhere. The removal then goes through the opened directory, handle by handle
-/// ([`remove_tree_at`]), never following a link below it, and an error names the entry that
+/// (`remove_tree_at`), never following a link below it, and an error names the entry that
 /// stayed (#675). A missing path is fine. It is also the body
 /// of `yulius sandbox-host remove-tree --below`, run as root of a sandbox's mapped namespace for
 /// files of its mapped ids (ADR-0176).
