@@ -4882,10 +4882,12 @@ function openSocket(db, path) {
  * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
  * late"): keep its delay well under 15 s and its reason, or change that test with it.
  * `browserask=0` leaves it out: its toast stays while pointed at and can cover the tool panel's
- * top, which tests that point there would hit on a slow machine (#349).
+ * top, which tests that point there would hit on a slow machine (#349). `ambient=0` leaves all of
+ * it out: the request (#10 into "Needs you") and the task changes regroup the sidebar's rows under
+ * a resting pointer, which a test that hovers a row would race on a slow machine (#515).
  */
 function startAmbient(db) {
-  if (db.ambient) return;
+  if (db.ambient || db.noAmbient) return;
   db.ambient = true;
   let tick = 0;
   setTimeout(() => {
@@ -5047,6 +5049,8 @@ export function createMockTransport(params) {
   db.failNoteLoads = params.get('noteloads') === 'fail';
   // `browserask=0`: no sign-in request from the sandbox browser 5 s after the start (startAmbient).
   db.noBrowserAsk = params.get('browserask') === '0';
+  // `ambient=0`: no ambient activity at all (startAmbient): no task changes by themselves.
+  db.noAmbient = params.get('ambient') === '0';
   notesOf(db);
   return {
     kind: 'mock',

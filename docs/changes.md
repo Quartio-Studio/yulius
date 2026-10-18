@@ -13,6 +13,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   no late answer. The two end-to-end tests of #581 wait on what they mean under load: the watcher
   test gives each of its three self-paced reads its own 10 s, and the onboarding tests wait for
   the start's own read of the tasks in the sidebar (the document title follows task events only).
+- The sidebar's hover overlap checks in `navigation.e2e.ts` no longer fail on a loaded machine
+  (SPEC-222, task #208, fixes #515). The mock's ambient activity starts task #8 about 12 s in,
+  which regroups the sidebar. A `hover()` whose mouse move landed just after the regroup hovered
+  the row that moved in, so the check read "Checkout API" at rest (18 px over its menu). The mock
+  now takes `ambient=0` (no ambient activity at all), the test uses it, and both checks wait for
+  the hovered row's control to show and poll the overlap.
 - Two update checks sent together compare `main` once, and the update view never goes back to an
   older read (SPEC-226, task #212, fixes #502). A "Check now" that waited for a check in progress
   (two tabs opening the instance page, or the hourly check) reuses its result when it is younger
