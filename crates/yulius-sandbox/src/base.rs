@@ -649,6 +649,41 @@ pub fn remove_tree(mapper: &Mapper, exe: &Path, path: &Path) -> Result<(), Strin
     if std::fs::remove_dir_all(path).is_ok() {
         return Ok(());
     }
+    remove_mapped(mapper, exe, None, path)
+}
+
+/// Removes `path` below `root` as root of a mapped namespace, never following a link on the way
+/// (`yulius sandbox-host remove-tree --below <root>`): for trees a sandbox's runs can reach,
+/// where any folder may have been swapped for a link (ADR-0174, ADR-0176). Inside the namespace
+/// uid 0 is the service user, so whatever the service user could remove goes too.
+///
+/// # Errors
+/// The removal failed, a link lies on the way, or the namespace could not run.
+pub fn remove_tree_below(
+    mapper: &Mapper,
+    exe: &Path,
+    root: &Path,
+    path: &Path,
+) -> Result<(), String> {
+    remove_mapped(mapper, exe, Some(root), path)
+}
+
+/// `yulius sandbox-host remove-tree [--below <root>] <path>` as root of a mapped namespace.
+fn remove_mapped(
+    mapper: &Mapper,
+    exe: &Path,
+    below: Option<&Path>,
+    path: &Path,
+) -> Result<(), String> {
+    let mut command: Vec<OsString> = vec![
+        exe.as_os_str().to_owned(),
+        "sandbox-host".into(),
+        "remove-tree".into(),
+    ];
+    if let Some(root) = below {
+        command.extend(["--below".into(), root.as_os_str().to_owned()]);
+    }
+    command.push(path.as_os_str().to_owned());
     let args: Vec<OsString> = [
         "--dev-bind",
         "/",
@@ -661,12 +696,7 @@ pub fn remove_tree(mapper: &Mapper, exe: &Path, path: &Path) -> Result<(), Strin
     ]
     .into_iter()
     .map(OsString::from)
-    .chain([
-        exe.as_os_str().to_owned(),
-        "sandbox-host".into(),
-        "remove-tree".into(),
-        path.as_os_str().to_owned(),
-    ])
+    .chain(command)
     .collect();
     mapper
         .run(&args, CHOWN_LIMIT)

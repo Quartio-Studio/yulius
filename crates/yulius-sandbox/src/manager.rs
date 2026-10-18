@@ -1031,7 +1031,9 @@ impl Manager {
 
     /// Removes `path`, under `sysroots/`, `runtime/sandboxes/`, `system/` or `sandboxes/` of the
     /// data directory, as root of a mapped namespace where the service user cannot (its files belong
-    /// to a sandbox's mapped ids; SPEC-215).
+    /// to a sandbox's mapped ids; SPEC-215). Below `sandboxes/`, which a sandbox's runs can
+    /// rearrange, the removal walks down from the data directory without following a link
+    /// (ADR-0176).
     ///
     /// # Errors
     /// `path` lies elsewhere, or the removal failed.
@@ -1060,9 +1062,17 @@ impl Manager {
         };
         let exe = self.config.exe.clone();
         let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || crate::base::remove_tree(&mapper, &exe, &path))
-            .await
-            .map_err(|e| e.to_string())?
+        let root = data.clone();
+        let reachable = path.starts_with(data.join("sandboxes"));
+        tokio::task::spawn_blocking(move || {
+            if reachable {
+                crate::base::remove_tree_below(&mapper, &exe, &root, &path)
+            } else {
+                crate::base::remove_tree(&mapper, &exe, &path)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     /// Bases that are not current and that no holder of this manager or recorded alive mounts

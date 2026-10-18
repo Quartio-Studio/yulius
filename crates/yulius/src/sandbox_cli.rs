@@ -53,6 +53,9 @@ pub enum HostAction {
     },
     /// Remove a tree as root of a mapped namespace (files owned by mapped ids).
     RemoveTree {
+        /// Walk down to the tree from this directory without following a link (ADR-0176).
+        #[arg(long)]
+        below: Option<PathBuf>,
         /// The tree.
         path: PathBuf,
     },
@@ -148,7 +151,14 @@ pub fn host(action: HostAction) -> ExitCode {
                 Err(error) => fail(&error),
             }
         }
-        HostAction::RemoveTree { path } => {
+        HostAction::RemoveTree {
+            below: Some(root),
+            path,
+        } => match yulius_app::leftovers::remove_below(&root, &path) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(&format!("remove {}: {error}", path.display())),
+        },
+        HostAction::RemoveTree { below: None, path } => {
             yulius_sandbox::base::make_writable(&path);
             match std::fs::remove_dir_all(&path) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -286,5 +296,55 @@ pub fn base(action: BaseAction) -> ExitCode {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// ADR-0176: the mapped removal below a sandbox walks down from the data directory without
+    /// following a link; a tree reached through one stays, and so does the link's target.
+    #[test]
+    fn remove_tree_below_never_goes_through_a_link() -> TestResult {
+        let data = tempfile::tempdir()?;
+        let d = data.path();
+        let remove = |path: &Path| {
+            host(HostAction::RemoveTree {
+                below: Some(d.to_path_buf()),
+                path: path.to_path_buf(),
+            })
+        };
+        std::fs::create_dir_all(d.join("sandboxes/s1/ci/jobs/old/target"))?;
+        std::fs::write(d.join("sandboxes/s1/ci/jobs/old/target/f"), "x")?;
+        assert_eq!(
+            remove(&d.join("sandboxes/s1/ci/jobs/old")),
+            ExitCode::SUCCESS
+        );
+        assert!(!d.join("sandboxes/s1/ci/jobs/old").exists());
+        assert!(d.join("sandboxes/s1/ci/jobs").exists());
+
+        std::fs::create_dir_all(d.join("sandboxes/victim/repo"))?;
+        std::fs::write(d.join("sandboxes/victim/repo/README.md"), "kept")?;
+        std::fs::remove_dir_all(d.join("sandboxes/s1/ci/jobs"))?;
+        std::os::unix::fs::symlink(d.join("sandboxes/victim"), d.join("sandboxes/s1/ci/jobs"))?;
+        assert_eq!(
+            remove(&d.join("sandboxes/s1/ci/jobs/repo")),
+            ExitCode::FAILURE
+        );
+        assert!(d.join("sandboxes/victim/repo/README.md").exists());
+        assert_eq!(
+            remove(&d.join("elsewhere")),
+            ExitCode::SUCCESS,
+            "missing is fine"
+        );
+        assert_eq!(
+            remove(Path::new("/tmp")),
+            ExitCode::FAILURE,
+            "not below the root"
+        );
+        Ok(())
     }
 }

@@ -277,11 +277,13 @@ fn no_link_between(root: &Path, path: &Path) -> bool {
 /// swapped for a link (also after the last check) fails the open instead of steering the removal
 /// elsewhere. The removal then goes through the opened directory (`/proc/self/fd/<fd>/<name>`
 /// resolves to that very directory, whatever its path points at by then), and std's
-/// `remove_dir_all` never follows a link below it. A missing path is fine.
+/// `remove_dir_all` never follows a link below it. A missing path is fine. It is also the body
+/// of `yulius sandbox-host remove-tree --below`, run as root of a sandbox's mapped namespace for
+/// files of its mapped ids (ADR-0176).
 ///
 /// # Errors
 /// `path` is not below `root`, a link lies on the way, or the removal failed.
-fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
+pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
     use nix::fcntl::{OFlag, open, openat};
     use nix::sys::stat::Mode;
     use std::os::fd::AsRawFd as _;
@@ -1117,18 +1119,19 @@ impl App {
     }
 
     /// Removes one path of an item: a missing one is fine; a tree whose files may belong to a
-    /// sandbox's mapped ids goes through the isolation.
-    async fn remove_leftover_path(&self, kind: Kind, path: &Path) -> Result<(), String> {
+    /// sandbox's mapped ids goes through the isolation. That is every path below `sandboxes/`:
+    /// a sandbox's CI jobs and agents write there as its mapped ids, which the service user
+    /// cannot delete (#675); the isolation removes it there without following a link
+    /// (ADR-0176).
+    async fn remove_leftover_path(&self, path: &Path) -> Result<(), String> {
         if !exists(path) {
             return Ok(());
         }
-        let system = ["sysroots", "system"]
+        let mapped = ["sysroots", "system", "sandboxes"]
             .iter()
             .map(|d| self.data_path(&[d]))
             .chain([self.data_path(&["runtime", "sandboxes"])])
             .any(|root| path.starts_with(root));
-        // A smoke test's or an unowned sandbox's home holds files of mapped ids too.
-        let mapped = system || (kind.mapped() && path.starts_with(self.data_path(&["sandboxes"])));
         if mapped && let Some(isolation) = self.isolation.get() {
             return isolation.remove_owned_tree(path).await;
         }
@@ -1169,7 +1172,7 @@ impl App {
         .unwrap_or(0);
         let mut result = Ok(());
         for path in &paths {
-            if let Err(err) = self.remove_leftover_path(item.kind, path).await {
+            if let Err(err) = self.remove_leftover_path(path).await {
                 result = Err(err);
                 break;
             }
