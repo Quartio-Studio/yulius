@@ -1030,6 +1030,12 @@ async fn an_attachment_folder_swapped_for_a_link_leaves_the_outside_empty() -> T
     )
     .await?;
     assert_eq!(names(&outside)?, Vec::<String>::new(), "{:?}", sent.body);
+    // The upload still succeeds, in the real folder (moved aside by the swap).
+    assert!(sent.status.is_success(), "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read(folder.with_extension("aside").join("x.txt"))?,
+        b"x"
+    );
     Ok(())
 }
 
