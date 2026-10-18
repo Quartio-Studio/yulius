@@ -13,8 +13,9 @@
 //!   a new name (an existing name is a `Conflict` and is never replaced), renamed over an existing
 //!   regular file when the caller confirmed the overwrite (its permissions kept; a folder or a
 //!   link is never replaced), or, for attachments, linked under the first free name (`name`,
-//!   `name-2.ext`, …). The folder is resolved again before that step: a folder replaced by a link
-//!   meanwhile is a `Conflict`;
+//!   `name-2.ext`, …). The folder is opened once, when the upload begins, and the temporary file
+//!   is created, linked and renamed only through that handle (`openat`, `linkat`, `renameat`;
+//!   ADR-0174): a folder swapped for a link afterwards is never followed (#657);
 //! - an upload that does not finish (an error, a cancelled request, a client that went away)
 //!   removes its temporary file ([`Upload`]'s `Drop`);
 //! - editor uploads need write access and follow the files API (crate::files): `root` is the
@@ -29,10 +30,9 @@
 //!   every worktree, so they never appear in `git status`, the delivery gates or a pull request.
 //!   Like every file of the sandbox they are writable from inside it: a read-only mount of a
 //!   folder the sandbox can rename would let a sandbox process swap in a link and have bubblewrap
-//!   mount whatever it points at. Every folder on the way is checked to be a real directory, never
-//!   a link (a contained shell, root in its sandbox, could plant one); as with the files API, the
-//!   checks are by path, so a swap racing the few milliseconds between check and use is not
-//!   excluded (an `openat`-based resolution would close it). Names
+//!   mount whatever it points at. Every folder on the way is opened from the sandbox directory
+//!   with `O_NOFOLLOW`, never through a link (a contained shell, root in its sandbox, could plant
+//!   one), and the upload keeps the last one's handle. Names
 //!   keep letters, digits, `.`, `-`, `_` and `+` (anything else becomes `-`; no leading dot or
 //!   dash), so a path needs no quoting in a terminal; at most [`MAX_ATTACHMENTS_PER_FOLDER`] per
 //!   folder. Files dropped on the new-task composer wait in `…/attachments/drafts/<user>/` and are
@@ -40,8 +40,15 @@
 //!   at start-up for shells that are gone;
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
+use std::ffi::OsStr;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use nix::errno::Errno;
+use nix::fcntl::{AtFlags, OFlag, openat, renameat};
+use nix::sys::stat::{Mode, SFlag, fchmod, fstatat};
+use nix::unistd::{UnlinkatFlags, linkat, unlinkat};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -53,7 +60,10 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::files::{inside, io_error, relative_components};
+use crate::files::{
+    errno_error, inside, io_error, open_dir_at, open_dirs_below, open_inside, real_path,
+    relative_components,
+};
 
 /// Default largest upload (25 MiB; `YULIUS_UPLOAD_MAX_MB`).
 pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 25 * 1024 * 1024;
@@ -106,13 +116,16 @@ enum Placement {
 pub struct Upload {
     /// The destination folder, resolved (canonical) when the upload began.
     dir: PathBuf,
+    /// The destination folder's handle: every file operation goes through it.
+    folder: OwnedFd,
     /// The requested file name.
     name: String,
     /// The folder as reported to the caller: relative to the root (editor) or absolute as the
     /// agent sees it (attachments).
     shown_dir: String,
     attachment: bool,
-    temp: PathBuf,
+    /// The temporary file's name in `folder`.
+    temp: String,
     file: Option<tokio::fs::File>,
     placement: Placement,
     received: u64,
@@ -164,7 +177,7 @@ impl Upload {
 impl Drop for Upload {
     fn drop(&mut self) {
         // Linked or renamed files no longer need it; an unfinished upload leaves nothing behind.
-        let _ = std::fs::remove_file(&self.temp);
+        let _ = unlinkat(&self.folder, self.temp.as_str(), UnlinkatFlags::NoRemoveDir);
     }
 }
 
@@ -278,37 +291,21 @@ fn candidate(name: &str, n: u32) -> String {
     format!("{stem}-{n}{ext}")
 }
 
-/// Creates (or checks) `parts` below `base` as real directories: a link or a file on the way is
-/// refused, so nothing is ever written through a link a sandbox process planted.
-fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<PathBuf> {
-    let mut current = base.to_path_buf();
-    for part in parts {
-        current.push(part);
-        match std::fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_dir() => {}
-            Ok(_) => {
-                return Err(AppError::Forbidden(
-                    "the attachments folder is not a plain folder".into(),
-                ));
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                match std::fs::create_dir(&current) {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                        let meta = std::fs::symlink_metadata(&current).map_err(|e| io_error(&e))?;
-                        if !meta.file_type().is_dir() {
-                            return Err(AppError::Forbidden(
-                                "the attachments folder is not a plain folder".into(),
-                            ));
-                        }
-                    }
-                    Err(err) => return Err(io_error(&err)),
-                }
-            }
-            Err(err) => return Err(io_error(&err)),
+/// Opens `parts` below `base` as real directories, creating the missing ones: a link or a file
+/// on the way is refused, so nothing is ever written through a link a sandbox process planted.
+/// Returns the folder's path and its handle.
+fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
+    let names: Vec<&OsStr> = parts.iter().map(OsStr::new).collect();
+    let fd = open_dirs_below(base, &names, true).map_err(|err| match err {
+        Errno::ELOOP | Errno::ENOTDIR => {
+            AppError::Forbidden("the attachments folder is not a plain folder".into())
         }
-    }
-    Ok(current)
+        other => errno_error(other),
+    })?;
+    let path = parts
+        .iter()
+        .fold(base.to_path_buf(), |path, part| path.join(part));
+    Ok((path, fd))
 }
 
 /// Whether `parts` below `base` are all real directories (removal never follows a link).
@@ -320,13 +317,18 @@ pub(crate) fn plain_dirs_exist(base: &Path, parts: &[&str]) -> bool {
     })
 }
 
-/// Creates the missing folders of an editor upload below the (canonical) `root`; existing ones
-/// are resolved and must stay inside the root, out of `.git`, and be folders.
-fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<PathBuf> {
+/// Opens the folder of an editor upload below the (canonical) `root`, creating the missing ones
+/// through their parent's handle; existing ones are resolved (a link inside the root is followed)
+/// and must stay inside the root, out of `.git`, and be folders. Every handle's real path is
+/// checked, so a folder swapped for a link meanwhile is never used. Returns the folder's real
+/// path and its handle.
+fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
+    let folder = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
+    let mut fd = open_inside(root, root, folder)?;
     let mut current = root.to_path_buf();
     for part in dirs {
         let next = current.join(part);
-        match std::fs::symlink_metadata(&next) {
+        fd = match std::fs::symlink_metadata(&next) {
             Ok(_) => {
                 let resolved = std::fs::canonicalize(&next).map_err(|e| io_error(&e))?;
                 if !inside(root, &resolved) {
@@ -339,52 +341,62 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<PathBuf> {
                         "{part} is a file, not a folder"
                     )));
                 }
-                current = resolved;
+                open_inside(root, &resolved, folder)?
             }
+            // Created through the parent's handle; one created meanwhile (another upload of the
+            // same folder) is opened the same way, never through a link.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                match std::fs::create_dir(&next) {
-                    Ok(()) => current = next,
-                    // Created meanwhile (another upload of the same folder): check it as above.
-                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                        let resolved = std::fs::canonicalize(&next).map_err(|e| io_error(&e))?;
-                        if !inside(root, &resolved) || !resolved.is_dir() {
-                            return Err(AppError::Conflict(format!(
-                                "{part} changed during the upload"
-                            )));
-                        }
-                        current = resolved;
+                open_dir_at(&fd, OsStr::new(part), true).map_err(|err| match err {
+                    Errno::ELOOP | Errno::ENOTDIR => {
+                        AppError::Conflict(format!("{part} changed during the upload"))
                     }
-                    Err(err) => return Err(io_error(&err)),
-                }
+                    other => errno_error(other),
+                })?
             }
             Err(err) => return Err(io_error(&err)),
+        };
+        current = real_path(&fd)?;
+        if !inside(root, &current) {
+            return Err(AppError::Forbidden(
+                "the path leads outside the folder".into(),
+            ));
         }
     }
-    Ok(current)
+    Ok((current, fd))
 }
 
-/// Links `temp` as `dest` unless `dest` exists. Returns whether it was placed. Where the file
-/// system has no hard links, it checks and renames instead (not atomic against a racing writer).
-async fn link_new(temp: &Path, dest: &Path) -> std::io::Result<bool> {
-    match tokio::fs::hard_link(temp, dest).await {
+/// Links `temp` as `name` in `folder` unless `name` exists. Returns whether it was placed. Where
+/// the file system has no hard links, it checks and renames instead (not atomic against a racing
+/// writer).
+fn link_new(folder: &OwnedFd, temp: &str, name: &str) -> std::io::Result<bool> {
+    match linkat(folder, temp, folder, name, AtFlags::empty()) {
         Ok(()) => Ok(true),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(_) => match tokio::fs::symlink_metadata(dest).await {
+        Err(Errno::EEXIST) => Ok(false),
+        Err(_) => match fstatat(folder, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
             Ok(_) => Ok(false),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tokio::fs::rename(temp, dest).await?;
+            Err(Errno::ENOENT) => {
+                renameat(folder, temp, folder, name)?;
                 Ok(true)
             }
-            Err(err) => Err(err),
+            Err(err) => Err(err.into()),
         },
     }
 }
 
-/// Makes a rename or link durable (best effort: not every file system syncs directories).
-async fn sync_dir(dir: &Path) {
-    if let Ok(handle) = tokio::fs::File::open(dir).await {
-        let _ = handle.sync_all().await;
+/// The type of the entry `name` in `folder` (a link is not followed), `None` when there is none.
+fn kind_in(folder: &OwnedFd, name: &str) -> AppResult<Option<SFlag>> {
+    match fstatat(folder, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) => Ok(Some(
+            SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT,
+        )),
+        Err(Errno::ENOENT) => Ok(None),
+        Err(err) => Err(errno_error(err)),
     }
+}
+
+/// Makes a rename or link durable (best effort: not every file system syncs directories).
+fn sync_dir(folder: &OwnedFd) {
+    let _ = nix::unistd::fsync(folder);
 }
 
 /// Who an attachment belongs to.
@@ -448,26 +460,28 @@ impl App {
     async fn new_upload(
         &self,
         slot: OwnedSemaphorePermit,
-        dir: PathBuf,
+        (dir, folder): (PathBuf, OwnedFd),
         (name, shown_dir): (String, String),
         placement: Placement,
         (actor, audit_target): (String, String),
     ) -> AppResult<Upload> {
         crate::race::reached(crate::race::Point::UploadFolder, &dir);
         let random = self.deps.crypto.random_bytes();
-        let temp = dir.join(format!(
+        let temp = format!(
             ".yulius-upload-{}",
             hex_token(random.get(..8).unwrap_or(&random))
-        ));
-        let file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o644)
-            .open(&temp)
-            .await
-            .map_err(|err| upload_io_error(&err))?;
+        );
+        let fd = openat(
+            &folder,
+            temp.as_str(),
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o644),
+        )
+        .map_err(|err| upload_io_error(&err.into()))?;
+        let file = tokio::fs::File::from_std(std::fs::File::from(fd));
         Ok(Upload {
             dir,
+            folder,
             name,
             shown_dir,
             attachment: placement == Placement::FreeName,
@@ -515,13 +529,13 @@ impl App {
         let slot = self.upload_slot()?;
         let dir = ensure_dirs(&target.root, dirs)?;
         // Refuse an existing name before the body is sent; the final step checks again.
-        if let Ok(meta) = std::fs::symlink_metadata(dir.join(name)) {
-            if meta.file_type().is_symlink() {
+        if let Some(kind) = kind_in(&dir.1, name)? {
+            if kind == SFlag::S_IFLNK {
                 return Err(AppError::Conflict(format!(
                     "{name} is a link; it is not replaced"
                 )));
             }
-            if meta.is_dir() {
+            if kind == SFlag::S_IFDIR {
                 return Err(AppError::Conflict(format!("a folder named {name} exists")));
             }
             if !overwrite {
@@ -667,7 +681,7 @@ impl App {
         let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
             .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
         let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
-        let count = std::fs::read_dir(&dir)
+        let count = std::fs::read_dir(&dir.0)
             .map_err(|e| io_error(&e))?
             .take(MAX_ATTACHMENTS_PER_FOLDER + 1)
             .count();
@@ -707,61 +721,51 @@ impl App {
             .ok_or_else(|| AppError::internal("the upload was already finished"))?;
         file.flush().await.map_err(|e| upload_io_error(&e))?;
         file.sync_all().await.map_err(|e| upload_io_error(&e))?;
-        drop(file);
+        let file = file.into_std().await;
         crate::race::reached(crate::race::Point::UploadReceived, &upload.dir);
-        let still = tokio::fs::canonicalize(&upload.dir).await.ok();
-        if still.as_deref() != Some(upload.dir.as_path()) {
-            return Err(AppError::Conflict(
-                "the folder changed during the upload; try again".into(),
-            ));
-        }
+        // No check of the folder's path again: everything goes through its handle (#657).
         crate::race::reached(crate::race::Point::UploadPlace, &upload.dir);
+        let (folder, temp) = (&upload.folder, upload.temp.as_str());
         let (name, replaced) = match upload.placement {
             Placement::Create => {
-                let dest = upload.dir.join(&upload.name);
-                if !link_new(&upload.temp, &dest)
-                    .await
-                    .map_err(|e| upload_io_error(&e))?
-                {
+                if !link_new(folder, temp, &upload.name).map_err(|e| upload_io_error(&e))? {
                     return Err(AppError::Conflict(format!("{} exists", upload.name)));
                 }
                 (upload.name.clone(), false)
             }
             Placement::Overwrite => {
-                let dest = upload.dir.join(&upload.name);
-                let replaced = match tokio::fs::symlink_metadata(&dest).await {
-                    Ok(meta) if meta.file_type().is_symlink() => {
-                        return Err(AppError::Conflict(format!(
-                            "{} is a link; it is not replaced",
-                            upload.name
-                        )));
-                    }
-                    Ok(meta) if meta.is_dir() => {
-                        return Err(AppError::Conflict(format!(
-                            "a folder named {} exists",
-                            upload.name
-                        )));
-                    }
-                    Ok(meta) => {
-                        let _ = tokio::fs::set_permissions(&upload.temp, meta.permissions()).await;
-                        true
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-                    Err(err) => return Err(io_error(&err)),
-                };
-                tokio::fs::rename(&upload.temp, &dest)
-                    .await
-                    .map_err(|e| upload_io_error(&e))?;
+                let replaced =
+                    match fstatat(folder, upload.name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+                        Ok(stat) => {
+                            let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+                            if kind == SFlag::S_IFLNK {
+                                return Err(AppError::Conflict(format!(
+                                    "{} is a link; it is not replaced",
+                                    upload.name
+                                )));
+                            }
+                            if kind == SFlag::S_IFDIR {
+                                return Err(AppError::Conflict(format!(
+                                    "a folder named {} exists",
+                                    upload.name
+                                )));
+                            }
+                            // On the temporary file's own handle, never by path.
+                            let _ = fchmod(&file, Mode::from_bits_truncate(stat.st_mode & 0o7777));
+                            true
+                        }
+                        Err(Errno::ENOENT) => false,
+                        Err(err) => return Err(errno_error(err)),
+                    };
+                renameat(folder, temp, folder, upload.name.as_str())
+                    .map_err(|e| upload_io_error(&e.into()))?;
                 (upload.name.clone(), replaced)
             }
             Placement::FreeName => {
                 let mut placed = None;
                 for n in 1..=MAX_FREE_NAME_ATTEMPTS {
                     let name = candidate(&upload.name, n);
-                    if link_new(&upload.temp, &upload.dir.join(&name))
-                        .await
-                        .map_err(|e| upload_io_error(&e))?
-                    {
+                    if link_new(folder, temp, &name).map_err(|e| upload_io_error(&e))? {
                         placed = Some(name);
                         break;
                     }
@@ -772,8 +776,9 @@ impl App {
                 (name, false)
             }
         };
-        let _ = tokio::fs::remove_file(&upload.temp).await;
-        sync_dir(&upload.dir).await;
+        drop(file);
+        let _ = unlinkat(folder, temp, UnlinkatFlags::NoRemoveDir);
+        sync_dir(folder);
         let sha256 = hex_token(upload.hasher.clone().finalize().as_slice());
         let path = if upload.shown_dir.is_empty() {
             name.clone()
@@ -930,7 +935,7 @@ mod tests {
     fn plain_dirs_refuse_links() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let base = dir.path().canonicalize()?;
-        let made = ensure_plain_dirs(&base, &["attachments", "tasks", "t1"])?;
+        let (made, _) = ensure_plain_dirs(&base, &["attachments", "tasks", "t1"])?;
         assert!(made.is_dir() && plain_dirs_exist(&base, &["attachments", "tasks", "t1"]));
         let outside = base.join("elsewhere");
         std::fs::create_dir(&outside)?;

@@ -2138,7 +2138,11 @@ mod tests {
             place_claude_transcript(&sandbox, &dest, &stored, "/wt", "t"),
             Err(AppError::Forbidden(_))
         ));
-        assert_eq!(fs::read_dir(&outside)?.count(), 0, "nothing written outside");
+        assert_eq!(
+            fs::read_dir(&outside)?.count(),
+            0,
+            "nothing written outside"
+        );
         Ok(())
     }
 
