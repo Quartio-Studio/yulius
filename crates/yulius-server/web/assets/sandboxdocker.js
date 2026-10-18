@@ -36,6 +36,25 @@ function rebuildBanner(rebuild) {
     icon(rebuild.error ? 'warn' : 'clock', { size: 16 }), h('span', { class: 'banner-text' }, parts.join(' ')));
 }
 
+/** A host check report's failed items, its error first, each as "name: detail". */
+export function hostCheckProblems(report) {
+  const items = (report.lines || []).filter((l) => l.outcome === 'failed').map((l) => `${l.name}: ${l.detail}`);
+  return report.error ? [report.error, ...items] : items;
+}
+
+/** Whether a failed host check still found that sandboxes get Docker: its own "sandbox Docker"
+ * verdict (SPEC-203 HST-013) holds and nothing kept it from checking (#674). */
+export function hostCheckKeptDocker(report) {
+  return !report.error && (report.lines || []).some((l) => l.name === 'sandbox Docker' && l.outcome === 'ok');
+}
+
+function items(count) {
+  return count === 1 ? '1 item' : `${count} items`;
+}
+
+/** "N items": what a failed host check left to fix. */
+export const hostCheckItems = (report) => items(hostCheckProblems(report).length);
+
 /** The last root check of the host: an update's re-check, or `yulius host setup`/`check` since. */
 function hostCheck(report) {
   if (!report) return null;
@@ -44,15 +63,13 @@ function hostCheck(report) {
   if (report.ok) {
     return h('p', { class: 'muted small sandbox-docker-recheck' }, icon('check', { size: 14 }), ` ${head}: the host gives sandboxes Docker.`);
   }
-  const problems = [];
-  if (report.error) problems.push(report.error);
-  for (const line of report.lines || []) {
-    if (line.outcome === 'failed') problems.push(`${line.name}: ${line.detail}`);
-  }
+  const title = hostCheckKeptDocker(report)
+    ? `${head} left ${hostCheckItems(report)} to fix. Sandboxes get Docker; run \`sudo yulius host setup\` on the server to fix them.`
+    : `${head} found that sandboxes may have lost Docker.`;
   return h('div', { class: 'banner banner-warn sandbox-docker-recheck', role: 'status' }, icon('warn', { size: 16 }),
     h('div', { class: 'banner-text' },
-      h('strong', null, `${head} found that sandboxes may have lost Docker.`),
-      h('ul', null, problems.map((p) => h('li', null, p)))));
+      h('strong', null, title),
+      h('ul', null, hostCheckProblems(report).map((p) => h('li', null, p)))));
 }
 
 /** Sandboxes on Docker installed in them. */
