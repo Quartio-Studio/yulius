@@ -12,6 +12,12 @@ pub enum Point {
     FileRead,
     /// `file_write`: the parent folder was resolved and checked, nothing is written yet.
     FileWrite,
+    /// An upload's folder was resolved and checked; its temporary file is not created yet.
+    UploadFolder,
+    /// `finish_upload`: the body is in the temporary file; the folder is not checked again yet.
+    UploadReceived,
+    /// `finish_upload`: the folder was checked again; the file has no name yet.
+    UploadPlace,
 }
 
 #[cfg(feature = "test-support")]

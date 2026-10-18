@@ -453,6 +453,7 @@ impl App {
         placement: Placement,
         (actor, audit_target): (String, String),
     ) -> AppResult<Upload> {
+        crate::race::reached(crate::race::Point::UploadFolder, &dir);
         let random = self.deps.crypto.random_bytes();
         let temp = dir.join(format!(
             ".yulius-upload-{}",
@@ -707,12 +708,14 @@ impl App {
         file.flush().await.map_err(|e| upload_io_error(&e))?;
         file.sync_all().await.map_err(|e| upload_io_error(&e))?;
         drop(file);
+        crate::race::reached(crate::race::Point::UploadReceived, &upload.dir);
         let still = tokio::fs::canonicalize(&upload.dir).await.ok();
         if still.as_deref() != Some(upload.dir.as_path()) {
             return Err(AppError::Conflict(
                 "the folder changed during the upload; try again".into(),
             ));
         }
+        crate::race::reached(crate::race::Point::UploadPlace, &upload.dir);
         let (name, replaced) = match upload.placement {
             Placement::Create => {
                 let dest = upload.dir.join(&upload.name);
