@@ -55,4 +55,4 @@ task #206, fixes #657. It generalizes the rule `secret_copy_to_env` already foll
 - New code that writes into a sandbox must take a handle first; reviews and the Vidoc scan look
   for path-based writes there.
 - `files_list`, folder creation and deletion in the editor still resolve by path; they are tracked
-  separately (SPEC-220 Decisions).
+  in #660.

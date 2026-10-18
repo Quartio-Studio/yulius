@@ -133,4 +133,5 @@ The race tests use a pause hook compiled only with `yulius-app`'s `test-support`
 - One pull request for the five places: one defect class, one fix pattern and one issue; split
   only if it grows past about 400 changed lines outside tests.
 - `files_list`, `file_create` (folders) and `file_delete` resolve by path too; they are outside
-  #657's scope and are reported as their own issue rather than widened into this change.
+  #657's scope and are tracked in #660 (reproduced for `file_delete`), with the attachment
+  removals (`remove_attachments`, `prune_old_drafts`).
