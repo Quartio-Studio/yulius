@@ -90,7 +90,7 @@ Also untested (issue #513): `drafts.js` sets a thumbnail on an upload that is ou
 
 - Both changes of the issue's acceptance criteria, not one: IME-001 removes the cause (a no-op is
   not typing), IME-002 keeps a step's identity for any other way typing could merge into a step
-  someone holds. Each is one line; neither changes what an undo shows.
+  someone holds. Each is one line; neither changes what an undo shows, but for the side effect below.
 - A side effect, accepted: Firefox's `input` event after `compositionend` changes nothing; it
   used to set the kind to `insertCompositionText`, so each composition was a step of its own. Now
   compositions less than `TYPING_MS` apart merge into one step, as they already did in Chrome.
