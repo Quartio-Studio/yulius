@@ -210,9 +210,13 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     const now = Date.now();
     const sameFiles = current && sameList(current.files, files);
     if (current && current.plain === plain && sameAtoms(current.atoms, atoms) && sameFiles) {
+      // Nothing changed (a composition cancelled with Esc): no step, so not typing either (#513).
       Object.assign(current, { start, end });
-    } else if (current && sameFiles && kind === 'type' && history.kind === 'type' && now - history.at < TYPING_MS && !/\s$/.test(current.plain.slice(0, current.end))) {
-      history.states[history.index] = state;
+      return;
+    }
+    if (current && sameFiles && kind === 'type' && history.kind === 'type' && now - history.at < TYPING_MS && !/\s$/.test(current.plain.slice(0, current.end))) {
+      // In place: whoever holds the step (an upload's paste step) still finds it in the history.
+      Object.assign(current, state);
     } else {
       for (const gone of history.states.splice(history.index + 1)) discarded.add(gone);
       history.states.push(state);

@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the row that moved in, so the check read "Checkout API" at rest (18 px over its menu). The mock
   now takes `ambient=0` (no ambient activity at all), the test uses it, and both checks wait for
   the hovered row's control to show and poll the overlap.
+- Undoing past a pasted image takes it out of the composer's tray again after an IME composition
+  that changed nothing (cancelled with Esc) (SPEC-225, task #211, fixes #513). Such a composition
+  marked the history as typing, so the next keystroke replaced the paste's undo step and the
+  upload, ending later, was attached to every step and sent after the text. A record that changes
+  nothing now leaves the history alone, and typing updates its step in place.
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
