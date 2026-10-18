@@ -1,11 +1,11 @@
 ---
 yulius-task: 3d99033d-cd02-4f1b-962d-7da97ec115a0
-status: in-progress
+status: done
 ---
 
 # SPEC-226: Concurrent update checks compare once; an older update read never lands last
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: task #212
 Scope authorization: task #212: "Fix GitHub issue #502". Fixes #502, found in the review of
@@ -45,7 +45,7 @@ Confirmed against `dev` at a3b9b04a.
 - [x] Spec and plan for #502
 - [x] Concurrent manual checks share one compare (fake source gate, regression test, fix)
 - [x] An older /api/update answer arriving last is dropped (mock per-read hold, e2e test, fix)
-- [ ] Docs, gates, review and delivery
+- [x] Docs, gates, review and delivery
 
 ## Acceptance criteria
 
@@ -82,3 +82,22 @@ Confirmed against `dev` at a3b9b04a.
   also carries the run and the phase, which have no common timestamp.
 - The mock snapshots a held read's view when it arrives (as `holdGitReads` does), since the shared
   `hold=` builds the answer on release and could never show an older state landing last.
+
+## Evidence
+
+- Regression tests first (commits 1e0076b2, c61789fa), each failing on `dev` code:
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^self_update::/)'` →
+  `concurrent_checks_make_one_compare` FAILED (`one compare`: 2 compares); with the fix
+  (b282d659) 19/19 pass. `npx e2e run tests/update.e2e.ts` → `an older update read answering
+  last does not replace a newer one` FAILED (`toBeHidden`: the offer came back); with the fix
+  (0dd06c4c) 18/18 pass.
+- `scripts/dev ci` at a30f4987: passed (fmt, clippy, macOS, deps, nextest 2234 passed / 18
+  skipped, doctests). The first run had failed on `cargo fmt --check` of the new test; formatted.
+- `scripts/dev security` at a30f4987: no open critical or high finding, no open medium one in the
+  change (10 files, 5 sent); no low findings listed.
+- Full e2e suite (`npx e2e run`): 617 passed, 1 skipped, 1 failed: `pause.e2e.ts` "the Tasks list
+  row menu pauses and resumes a task" (hover then click timed out at load average ~20); it passes
+  rerun alone (4/4) and touches no update code: the load class of #354 and #581, outside this change.
+- Independent review (fresh session) of a3b9b04a..b8ec2922: APPROVE, two own-code nits (the
+  one-poll assumption unstated in the test, the spec's Test plan wording), both fixed in a30f4987
+  and approved in a second review.
