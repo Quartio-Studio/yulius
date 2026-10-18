@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use support::{Creds, FakeRemote, Resp, TestResult, call};
 use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
-use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, StepRecord,
@@ -638,13 +637,13 @@ async fn add_user(
 }
 
 async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
-    fixture_with(profile, false, None).await
+    fixture_with(profile, Box::new(|_| {}), None).await
 }
 
-/// [`fixture`] with containment on or off, and another process host than the real one.
+/// [`fixture`] with the configuration adjusted, and another process host than the real one.
 async fn fixture_with(
     profile: &DeliveryProfile,
-    contained: bool,
+    configure: support::ConfigureFn,
     host: Option<Arc<dyn SessionHost>>,
 ) -> BoxResult<Fixture> {
     let root = tempfile::tempdir()?;
@@ -676,7 +675,7 @@ async fn fixture_with(
             host.unwrap_or_else(|| Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
         ),
         dir: Some(tempfile::Builder::new().prefix("ydl").tempdir_in("/tmp")?),
-        configure: Some(Box::new(move |config| config.contained = contained)),
+        configure: Some(configure),
         ..support::HarnessOptions::default()
     })?;
     h.github.set_remote(Arc::new(BareRemote {
@@ -1688,59 +1687,6 @@ async fn stale_heads_are_refused() -> TestResult {
         .await?;
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello again");
-    Ok(())
-}
-
-/// DLV-003 bound: an environment command that outlives its timeout is killed together with the
-/// processes it started (the whole process group), and the shell is reaped.
-#[tokio::test]
-async fn environment_timeout_kills_the_process_tree() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let spec = CommandSpec {
-        argv: vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "sleep 60 & echo $! > child.pid; echo started; wait".into(),
-        ],
-        cwd: dir.path().to_path_buf(),
-        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
-        timeout: Duration::from_millis(800),
-    };
-    let mut ring = OutputRing::new(4096);
-    let started = std::time::Instant::now();
-    let end = run_bounded(&spec, &mut ring, None).await;
-    assert_eq!(end, CommandEnd::TimedOut);
-    assert!(
-        started.elapsed() < Duration::from_secs(15),
-        "returned promptly"
-    );
-    assert!(ring.text().contains("started") && ring.text().contains("timed out"));
-    let pid = std::fs::read_to_string(dir.path().join("child.pid"))?
-        .trim()
-        .to_owned();
-    assert!(!pid.is_empty());
-    let alive = |pid: &str| {
-        Command::new("ps")
-            .args(["-o", "stat=", "-p", pid])
-            .output()
-            .map(|o| {
-                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-                o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
-            })
-            .unwrap_or(false)
-    };
-    let mut gone = false;
-    for _ in 0..100 {
-        if !alive(&pid) {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        gone,
-        "the background child {pid} of the timed-out command was killed"
-    );
     Ok(())
 }
 
@@ -5004,7 +4950,7 @@ async fn contained_environment_runs_see_only_their_sandbox() -> TestResult {
         );
         return Ok(());
     }
-    let f = fixture_with(&DeliveryProfile::product(), true, None).await?;
+    let f = fixture_with(&DeliveryProfile::product(), contained(), None).await?;
     let host_only = f.h.app.config.data_dir.join("host-only.txt");
     std::fs::write(&host_only, "the host's\n")?;
     let command = format!(
@@ -5038,6 +4984,136 @@ async fn contained_environment_runs_see_only_their_sandbox() -> TestResult {
         "{output}"
     );
     Ok(())
+}
+
+/// Containment on.
+fn contained() -> support::ConfigureFn {
+    Box::new(|config| config.contained = true)
+}
+
+/// SPEC-219 ENV-004: an environment command past the CI job timeout (as CD runs) is killed with
+/// the processes it started, and the run fails saying so.
+#[tokio::test]
+async fn an_environment_command_past_its_timeout_is_killed() -> TestResult {
+    let f = fixture_with(
+        &DeliveryProfile::product(),
+        Box::new(|config| config.ci.job_timeout = Duration::from_secs(2)),
+        None,
+    )
+    .await?;
+    let pid_file = f.root.path().join("child.pid");
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": format!("sleep 60 & echo $! > '{}'; echo started; wait", pid_file.display())}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "failed", "{run}");
+    assert!(
+        output.contains("started") && output.contains("the command exceeded"),
+        "{output}"
+    );
+    let pid = std::fs::read_to_string(&pid_file)?.trim().to_owned();
+    let alive = || {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
+            })
+    };
+    for _ in 0..100 {
+        if !alive() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!("the background child {pid} of the timed-out command was not killed").into())
+}
+
+/// SPEC-219 ENV-004: the process host of a run that a restart left `running` keeps no command
+/// going: the startup reconciliation terminates it, removes the run's directory and records the
+/// run as `error`.
+#[tokio::test]
+async fn a_restart_ends_a_running_environment_command() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let pid_file = f.root.path().join("sleeper.pid");
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": format!("echo $$ > '{}'; exec sleep 60", pid_file.display())}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let agent = live_agent(&f, "t1", "tok-deployer").await?;
+    let started = answer(
+        &agent_tool(
+            &f,
+            &agent,
+            "delivery_deploy",
+            json!({"environment": "dev-vm"}),
+        )
+        .await?,
+    )?;
+    let run_id = started["run"]["run_id"].as_str().ok_or("run id")?;
+    let mut pid = String::new();
+    for _ in 0..400 {
+        if let Ok(text) = std::fs::read_to_string(&pid_file)
+            && !text.trim().is_empty()
+        {
+            pid = text.trim().to_owned();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!pid.is_empty(), "the command started");
+
+    assert_eq!(f.h.app.reconcile_environment_runs().await?, 1);
+    let run = f.wait_run(run_id).await?;
+    assert_eq!(run["state"], "error", "{run}");
+    let runs = f.h.app.config.data_dir.join("runs");
+    assert!(
+        !runs.join(format!("env-{run_id}")).exists(),
+        "the run's directory is removed"
+    );
+    let alive = || {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
+            })
+    };
+    for _ in 0..100 {
+        if !alive() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!("the command {pid} still runs").into())
 }
 
 /// Records the plan of the one run it is asked to start and refuses to start it.
@@ -5080,7 +5156,7 @@ impl SessionHost for RecordingHost {
 #[tokio::test]
 async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> TestResult {
     let host = Arc::new(RecordingHost::default());
-    let f = fixture_with(&DeliveryProfile::product(), true, Some(host.clone())).await?;
+    let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
     deployable(&f).await?;
     let run = agent_deploys(&f).await?;
     assert_eq!(
