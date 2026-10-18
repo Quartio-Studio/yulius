@@ -86,9 +86,16 @@ reason = "the stdio test needs Configure, the same level as Work (shell, tasks) 
 # without containment, so the Test adds no capability; contained, it needs an instance admin and
 # never runs an agent's `.mcp.json` command
 # (cockpit::the_mcp_test_never_runs_a_command_from_the_repository_mcp_json).
+# One narrow entry per wording, so a finding of another kind about the stdio Test (a #654
+# regression included) is still reported.
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config.rs"
-title = "stdio MCP test"
+title = "via stdio MCP Test on non-contained instances"
+reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "Stdio MCP test executes arbitrary commands on the host without containment"
 reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
 
 [[ignore]]
