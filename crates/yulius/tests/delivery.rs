@@ -561,7 +561,7 @@ fn valid_spec(task: &str) -> String {
 struct Fixture {
     h: support::Harness,
     git: Arc<RealGit>,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     origin: PathBuf,
     repo: PathBuf,
     /// Admin on the repository.
@@ -726,7 +726,7 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
     Ok(Fixture {
         h,
         git: real_git,
-        _root: root,
+        root,
         origin,
         repo,
         alice,
@@ -4804,6 +4804,136 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
             .all(|p| p["number"] != 1),
         "not among the open pull requests: {}",
         page.body
+    );
+    Ok(())
+}
+
+/// A product profile with `dev-vm` deployed, and task t1's `feature.txt` ("hello") on the
+/// integration branch of origin, pushed past the sandbox clone (which stays stale).
+async fn deployable(f: &Fixture) -> BoxResult<()> {
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(product_with_deploy()),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    let origin = f.origin.to_string_lossy().into_owned();
+    git(
+        &wt,
+        &["push", "--quiet", &origin, "HEAD:refs/heads/quartio"],
+    )?;
+    Ok(())
+}
+
+/// `delivery_deploy` of `dev-vm` by t1's agent, to its end.
+async fn agent_deploys(f: &Fixture) -> BoxResult<Value> {
+    let agent = live_agent(f, "t1", "tok-deployer").await?;
+    let started = answer(
+        &agent_tool(
+            f,
+            &agent,
+            "delivery_deploy",
+            json!({"environment": "dev-vm"}),
+        )
+        .await?,
+    )?;
+    let run_id = started["run"]["run_id"].as_str().ok_or("run id")?;
+    f.wait_run(run_id).await
+}
+
+/// #656 (SPEC-219 AC-1): a filter driver an agent plants in the sandbox clone's own configuration
+/// never runs on the host when its agent deploys an environment: the run takes origin's commit
+/// into Yulius's own mirror and writes its files from there.
+#[tokio::test]
+async fn an_agent_planted_git_filter_never_runs_on_the_host() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    deployable(&f).await?;
+    let marker = f.root.path().join("smudge-ran");
+    git(
+        &f.repo,
+        &[
+            "config",
+            "--local",
+            "filter.x.smudge",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    )?;
+    std::fs::create_dir_all(f.repo.join(".git/info"))?;
+    std::fs::write(f.repo.join(".git/info/attributes"), "* filter=x\n")?;
+    // The filter is live: a checkout in the clone runs it.
+    git(&f.repo, &["fetch", "--quiet", "origin"])?;
+    let probe = f.root.path().join("probe");
+    git(
+        &f.repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            &probe.to_string_lossy(),
+            "origin/quartio",
+        ],
+    )?;
+    assert!(marker.exists(), "the planted filter runs in a checkout");
+    std::fs::remove_file(&marker)?;
+
+    let run = agent_deploys(&f).await?;
+    assert_eq!(run["state"], "succeeded", "{run}");
+    assert!(
+        run["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deployed hello on dev-vm"),
+        "{run}"
+    );
+    assert_eq!(run["commit"], f.origin_sha("quartio")?.as_str());
+    assert!(
+        !marker.exists(),
+        "the planted smudge filter ran on the host"
+    );
+    Ok(())
+}
+
+/// #656 (SPEC-219 AC-3): an environment run never fetches with the token in the sandbox clone,
+/// whose configuration its agents write: a planted `url.insteadOf` and `http.proxy` change
+/// nothing, and the run deploys origin's head although the clone never saw it.
+#[tokio::test]
+async fn an_environment_run_never_fetches_in_the_sandbox_clone() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    deployable(&f).await?;
+    let evil = f.root.path().join("evil.git");
+    git(
+        f.root.path(),
+        &["init", "--quiet", "--bare", &evil.to_string_lossy()],
+    )?;
+    let origin = f.origin.to_string_lossy().into_owned();
+    for (key, value) in [
+        (format!("url.{}.insteadOf", evil.display()), origin.clone()),
+        (
+            "url.https://evil.invalid/.insteadOf".to_owned(),
+            "https://github.com/".to_owned(),
+        ),
+        ("http.proxy".to_owned(), "http://127.0.0.1:9".to_owned()),
+    ] {
+        git(&f.repo, &["config", "--local", &key, &value])?;
+    }
+    let stale = git(&f.repo, &["rev-parse", "refs/remotes/origin/quartio"])?;
+    assert_ne!(stale, f.origin_sha("quartio")?);
+
+    let run = agent_deploys(&f).await?;
+    assert_eq!(run["state"], "succeeded", "{run}");
+    assert_eq!(run["commit"], f.origin_sha("quartio")?.as_str());
+    assert_eq!(
+        git(&f.repo, &["rev-parse", "refs/remotes/origin/quartio"])?,
+        stale,
+        "the sandbox clone was not fetched"
     );
     Ok(())
 }
