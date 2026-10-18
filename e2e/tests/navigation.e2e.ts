@@ -218,7 +218,8 @@ test('the sandbox tabs show a grip and say they can be clicked or dragged', asyn
 // only pull request numbers.
 test('sidebar rows show the task number apart from the pull request number', async ({ app, browser, screen }) => {
   // The chips come from the Git overview, read after the tasks: held, the rows show no chip yet.
-  await app.open(mock('/s/studio/tasks', '&hold=/api/sandboxes/sb_studio/git'));
+  // `ambient=0`: no task changes by itself, so no row moves under the pointer of a hover (#515).
+  await app.open(mock('/s/studio/tasks', '&ambient=0&hold=/api/sandboxes/sb_studio/git'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
   const inRow = (title: string, selector: string) => browser.locator(`.task-list .task-row:has-text("${title}") ${selector}`);
 
@@ -291,24 +292,21 @@ test('sidebar rows show the task number apart from the pull request number', asy
   await splitter.press('ArrowRight');
   await splitter.press('ArrowRight');
   await expect(splitter).toHaveAttribute('aria-valuenow', '296');
-  await browser.locator('.task-row:has-text("Improve the code")').hover();
-  const overlap = await browser.evaluate(() => {
-    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Improve the code'))!;
+  // The row is read once its hover state shows (the control is visible), and until it is laid out.
+  const overlap = (title: string, control: string) => browser.evaluate(([t, c]) => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes(t))!;
     const link = row.querySelector('.task-link')!;
     const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
-    return right - row.querySelector('.task-quick-archive')!.getBoundingClientRect().left;
-  });
-  expect(overlap).toBeLessThanOrEqual(0);
+    return right - row.querySelector(c)!.getBoundingClientRect().left;
+  }, [title, control]);
+  await browser.locator('.task-row:has-text("Improve the code")').hover();
+  await expect(inRow('Improve the code', '.task-quick-archive')).toBeVisible();
+  await expect.poll(() => overlap('Improve the code', '.task-quick-archive')).toBeLessThanOrEqual(0);
   // Review round 2: a row that cannot be archived shows only the menu, and its title ends before it.
   await at(264);
   await browser.locator('.task-row:has-text("Checkout API")').hover();
-  const covered = await browser.evaluate(() => {
-    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Checkout API'))!;
-    const link = row.querySelector('.task-link')!;
-    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
-    return right - row.querySelector('.task-kebab')!.getBoundingClientRect().left;
-  });
-  expect(covered).toBeLessThanOrEqual(0);
+  await expect(inRow('Checkout API', '.task-kebab')).toBeVisible();
+  await expect.poll(() => overlap('Checkout API', '.task-kebab')).toBeLessThanOrEqual(0);
 
   // A finished task whose shells still run reads "Working" without its pull request: the tooltip
   // names it (and the narrowest sidebar shows no chip).
