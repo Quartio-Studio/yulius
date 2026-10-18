@@ -60,9 +60,9 @@ pub const MAX_DELETED_LIST_BYTES: u64 = 16 * 1024 * 1024;
 /// Longest transcript line parsed when rewriting working directories (longer lines are copied
 /// verbatim, SPEC-002 §9).
 pub const MAX_TRANSCRIPT_LINE_BYTES: usize = 4 * 1024 * 1024;
-/// Most auxiliary transcript files copied for one Claude session.
 /// Deepest folder level of auxiliary files copied (each level holds one open handle).
 const MAX_AUX_DEPTH: usize = 16;
+/// Most auxiliary transcript files copied for one Claude session.
 const MAX_AUX_FILES: usize = 1_000;
 /// Snapshot branch name candidates tried per day.
 const MAX_SNAPSHOT_BRANCHES: u32 = 50;
@@ -1924,10 +1924,11 @@ fn copy_claude_aux(
         return Ok(());
     }
     let top = crate::files::open_dir_at(parent, name, true).map_err(link_refused)?;
-    copy_aux_level(src, &top, cwd, suffix, 0, &mut 0)
+    copy_aux_level(src, &top, cwd, suffix, 0, &mut 0).map(|_| ())
 }
 
-/// One folder level of [`copy_claude_aux`]; `copied` counts the files copied so far.
+/// One folder level of [`copy_claude_aux`]; `copied` counts the files copied so far. Returns
+/// `false` once [`MAX_AUX_FILES`] is passed, which stops the whole copy.
 fn copy_aux_level(
     from: &Path,
     dir: &std::os::fd::OwnedFd,
@@ -1935,25 +1936,27 @@ fn copy_aux_level(
     suffix: &str,
     depth: usize,
     copied: &mut usize,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     for entry in fs::read_dir(from).map_err(AppError::internal)? {
         let entry = entry.map_err(AppError::internal)?;
         let kind = entry.file_type().map_err(AppError::internal)?;
         let child = entry.file_name();
         if kind.is_dir() && depth < MAX_AUX_DEPTH {
             let opened = crate::files::open_dir_at(dir, &child, true).map_err(link_refused)?;
-            copy_aux_level(&entry.path(), &opened, cwd, suffix, depth + 1, copied)?;
+            if !copy_aux_level(&entry.path(), &opened, cwd, suffix, depth + 1, copied)? {
+                return Ok(false);
+            }
         } else if kind.is_file() {
             *copied += 1;
             if *copied > MAX_AUX_FILES {
-                return Ok(());
+                return Ok(false);
             }
             rewrite_transcript(&entry.path(), dir, &child, suffix, |record| {
                 rewrite_claude(record, cwd)
             })?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
