@@ -54,9 +54,11 @@ fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// Holders the test starts and stops; mapped removals are recorded (and done plainly).
+/// Holders the test starts and stops; mapped removals are recorded and done by the walk the
+/// mapped root runs (`sandbox-host remove-tree --below <data>`, ADR-0176).
 #[derive(Default)]
 struct Holders {
+    data: PathBuf,
     live: Mutex<HashSet<String>>,
     mapped: Mutex<Vec<PathBuf>>,
 }
@@ -90,11 +92,7 @@ impl SandboxIsolation for Holders {
         if let Ok(mut mapped) = self.mapped.lock() {
             mapped.push(path.to_path_buf());
         }
-        if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
-            std::fs::remove_dir_all(path).map_err(|e| e.to_string())
-        } else {
-            std::fs::remove_file(path).map_err(|e| e.to_string())
-        }
+        yulius_app::leftovers::remove_below(&self.data, path).map_err(|e| e.to_string())
     }
 }
 
@@ -117,10 +115,13 @@ async fn world() -> BoxResult<World> {
         git: Some(Arc::new(GitAdapter::new("git"))),
         ..HarnessOptions::default()
     })?;
-    let holders = Arc::new(Holders::default());
+    let data = h.app.config.data_dir.clone();
+    let holders = Arc::new(Holders {
+        data: data.clone(),
+        ..Holders::default()
+    });
     assert!(h.app.set_isolation(holders.clone()));
     seed_github_user(&h, "u-alice", "alice").await?;
-    let data = h.app.config.data_dir.clone();
     Ok(World { h, holders, data })
 }
 
