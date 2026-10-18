@@ -275,9 +275,9 @@ fn no_link_between(root: &Path, path: &Path) -> bool {
 /// Removes `path` (a file, a link or a tree) below `root` without ever following a link on the
 /// way: each directory from `root` down is opened with `O_NOFOLLOW`, so a directory a sandbox
 /// swapped for a link (also after the last check) fails the open instead of steering the removal
-/// elsewhere. The removal then goes through the opened directory (`/proc/self/fd/<fd>/<name>`
-/// resolves to that very directory, whatever its path points at by then), and std's
-/// `remove_dir_all` never follows a link below it. A missing path is fine. It is also the body
+/// elsewhere. The removal then goes through the opened directory, handle by handle
+/// ([`remove_tree_at`]), never following a link below it, and an error names the entry that
+/// stayed (#675). A missing path is fine. It is also the body
 /// of `yulius sandbox-host remove-tree --below`, run as root of a sandbox's mapped namespace for
 /// files of its mapped ids (ADR-0176).
 ///
@@ -328,11 +328,11 @@ pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
         // A tree a tool made read-only is made writable through directory handles (never by
         // path: a sandbox could swap a directory for a link between a check and a chmod), then
         // removed again.
-        std::fs::remove_dir_all(&through).or_else(|_| {
+        remove_tree_at(&dir, last, path, 0).or_else(|_| {
             if let Ok(tree) = openat(&dir, *last, flags, Mode::empty()) {
                 make_writable_at(&tree, 0, &mut { MAX_DIRS_MADE_WRITABLE });
             }
-            std::fs::remove_dir_all(&through)
+            remove_tree_at(&dir, last, path, 0)
         })
     } else {
         std::fs::remove_file(&through)
@@ -341,6 +341,60 @@ pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
     match removed {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
+    }
+}
+
+/// Removes the directory `name` of `parent` and everything below it, each directory opened
+/// through its parent's handle with `O_NOFOLLOW` and each entry removed with `unlinkat`, so a link
+/// is removed itself, never followed. `shown` is the directory's path for errors, which name the
+/// entry that could not be removed. Past [`MAX_WRITABLE_DEPTH`] levels (each holds a handle) std's
+/// `remove_dir_all`, which never follows a link either, removes the rest.
+fn remove_tree_at(
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    shown: &Path,
+    depth: usize,
+) -> std::io::Result<()> {
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::Mode;
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+    use std::os::fd::AsRawFd as _;
+    let named = |shown: &Path, err: std::io::Error| {
+        std::io::Error::new(err.kind(), format!("{}: {err}", shown.display()))
+    };
+    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let dir = match openat(parent, name, flags, Mode::empty()) {
+        Ok(dir) => dir,
+        Err(Errno::ENOENT) => return Ok(()),
+        // Swapped for a link or a file since it was listed: removed itself.
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            return unlinkat(parent, name, UnlinkatFlags::NoRemoveDir)
+                .map_err(|e| named(shown, e.into()));
+        }
+        Err(err) => return Err(named(shown, err.into())),
+    };
+    let through = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    if depth >= MAX_WRITABLE_DEPTH {
+        return std::fs::remove_dir_all(&through).map_err(|e| named(shown, e));
+    }
+    for child in std::fs::read_dir(&through).map_err(|e| named(shown, e))? {
+        let child = child.map_err(|e| named(shown, e))?;
+        let child_name = child.file_name();
+        let child_shown = shown.join(&child_name);
+        if child.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_tree_at(&dir, &child_name, &child_shown, depth + 1)?;
+        } else {
+            match unlinkat(&dir, child_name.as_os_str(), UnlinkatFlags::NoRemoveDir) {
+                Ok(()) | Err(Errno::ENOENT) => {}
+                Err(err) => return Err(named(&child_shown, err.into())),
+            }
+        }
+    }
+    drop(dir);
+    match unlinkat(parent, name, UnlinkatFlags::RemoveDir) {
+        Ok(()) | Err(Errno::ENOENT) => Ok(()),
+        Err(err) => Err(named(shown, err.into())),
     }
 }
 
@@ -1637,6 +1691,20 @@ mod tests {
 
     /// Review round 3: the fallback that makes a read-only tree removable changes directories
     /// through their own handles to a fixed 0o700, never through a link to what lies outside.
+    /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root
+    /// included, can unlink an entry of `/proc`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_removal_names_the_entry_that_stayed() {
+        let item = Path::new("/proc/self/ns");
+        let err = remove_below(Path::new("/proc/self"), item).err();
+        let message = err.map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            message.starts_with("/proc/self/ns/") && message.contains("(os error"),
+            "{message:?}"
+        );
+    }
+
     #[test]
     fn making_a_tree_writable_never_follows_a_link() -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;
