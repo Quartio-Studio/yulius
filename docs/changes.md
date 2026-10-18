@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- The automatic leftovers round deletes a removed sandbox's `ci`, worktrees and browser profile,
+  and a live sandbox's stale CI checkout, even when CI jobs wrote files there as the sandbox's
+  sub-uids (SPEC-228, ADR-0176, task #214, fixes #675). Settings → Instance → Leftovers showed
+  "Failed: …/ci: Permission denied" after every round. Every leftover below `sandboxes/` is now
+  removed as root of the sandbox's mapped namespace, walking down from the data directory without
+  following a link, and a removal that fails names the file that stayed.
 - Settings → Instance no longer says "sandboxes may have lost Docker" twice when they have not
   (SPEC-227, task #213, fixes #674). An update helper unit from before SPEC-203 keeps `/etc`
   read-only, so the re-check failed its needrestart rule, modules list and drop-in items while

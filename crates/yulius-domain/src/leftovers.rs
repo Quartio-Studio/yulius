@@ -134,19 +134,6 @@ impl Kind {
     pub const fn deletable(self) -> bool {
         !matches!(self, Self::HostDocker)
     }
-
-    /// Its files may belong to a sandbox's mapped ids: the isolation removes them.
-    #[must_use]
-    pub const fn mapped(self) -> bool {
-        matches!(
-            self,
-            Self::RemovedSystem
-                | Self::RemovedRuntime
-                | Self::StaleSmoke
-                | Self::Unowned
-                | Self::UnusedBase
-        )
-    }
 }
 
 /// A stable identifier of the leftover at `path` (relative to the data directory, or absolute
@@ -205,7 +192,6 @@ mod tests {
             ]
         );
         assert!(!Kind::HostDocker.deletable());
-        assert!(Kind::RemovedSystem.mapped() && !Kind::RemovedWorktrees.mapped());
     }
 
     #[test]

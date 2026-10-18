@@ -275,20 +275,22 @@ fn no_link_between(root: &Path, path: &Path) -> bool {
 /// Removes `path` (a file, a link or a tree) below `root` without ever following a link on the
 /// way: each directory from `root` down is opened with `O_NOFOLLOW`, so a directory a sandbox
 /// swapped for a link (also after the last check) fails the open instead of steering the removal
-/// elsewhere. The removal then goes through the opened directory (`/proc/self/fd/<fd>/<name>`
-/// resolves to that very directory, whatever its path points at by then), and std's
-/// `remove_dir_all` never follows a link below it. A missing path is fine.
+/// elsewhere. The removal then goes through the opened directory, handle by handle
+/// (`remove_tree_at`), never following a link below it, and an error names the entry that
+/// stayed (#675). A missing path is fine. It is also the body
+/// of `yulius sandbox-host remove-tree --below`, run as root of a sandbox's mapped namespace for
+/// files of its mapped ids (ADR-0176).
 ///
 /// # Errors
 /// `path` is not below `root`, a link lies on the way, or the removal failed.
-fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
+pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
     use nix::fcntl::{OFlag, open, openat};
     use nix::sys::stat::Mode;
     use std::os::fd::AsRawFd as _;
     let refused = || {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "not below the data directory",
+            format!("not below {}", root.display()),
         )
     };
     let relative = path.strip_prefix(root).map_err(|_| refused())?;
@@ -326,19 +328,81 @@ fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
         // A tree a tool made read-only is made writable through directory handles (never by
         // path: a sandbox could swap a directory for a link between a check and a chmod), then
         // removed again.
-        std::fs::remove_dir_all(&through).or_else(|_| {
+        remove_tree_at(&dir, last, path, 0).or_else(|_| {
             if let Ok(tree) = openat(&dir, *last, flags, Mode::empty()) {
                 make_writable_at(&tree, 0, &mut { MAX_DIRS_MADE_WRITABLE });
             }
-            std::fs::remove_dir_all(&through)
+            remove_tree_at(&dir, last, path, 0)
         })
     } else {
-        std::fs::remove_file(&through)
+        // Only the item itself may have gone meanwhile; the tree's walk reports what stayed.
+        match std::fs::remove_file(&through) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
     };
     drop(dir);
-    match removed {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        other => other,
+    removed
+}
+
+/// Removes the directory `name` of `parent` and everything below it, each directory opened
+/// through its parent's handle with `O_NOFOLLOW` and each entry removed with `unlinkat`, so a link
+/// is removed itself, never followed. `shown` is the directory's path for errors, which name the
+/// entry that could not be removed. Past [`MAX_WRITABLE_DEPTH`] levels (each holds a handle) std's
+/// `remove_dir_all`, which never follows a link either, removes the rest through the parent's
+/// handle. Entries gone meanwhile are fine.
+fn remove_tree_at(
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    shown: &Path,
+    depth: usize,
+) -> std::io::Result<()> {
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::Mode;
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+    use std::os::fd::AsRawFd as _;
+    let named = |shown: &Path, err: std::io::Error| {
+        std::io::Error::new(err.kind(), format!("{}: {err}", shown.display()))
+    };
+    if depth >= MAX_WRITABLE_DEPTH {
+        let through = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(name);
+        return match std::fs::remove_dir_all(&through) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(named(shown, err)),
+            _ => Ok(()),
+        };
+    }
+    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let dir = match openat(parent, name, flags, Mode::empty()) {
+        Ok(dir) => dir,
+        Err(Errno::ENOENT) => return Ok(()),
+        // Swapped for a link or a file since it was listed: removed itself.
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            return match unlinkat(parent, name, UnlinkatFlags::NoRemoveDir) {
+                Ok(()) | Err(Errno::ENOENT) => Ok(()),
+                Err(err) => Err(named(shown, err.into())),
+            };
+        }
+        Err(err) => return Err(named(shown, err.into())),
+    };
+    let through = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    for child in std::fs::read_dir(&through).map_err(|e| named(shown, e))? {
+        let child = child.map_err(|e| named(shown, e))?;
+        let child_name = child.file_name();
+        let child_shown = shown.join(&child_name);
+        if child.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_tree_at(&dir, &child_name, &child_shown, depth + 1)?;
+        } else {
+            match unlinkat(&dir, child_name.as_os_str(), UnlinkatFlags::NoRemoveDir) {
+                Ok(()) | Err(Errno::ENOENT) => {}
+                Err(err) => return Err(named(&child_shown, err.into())),
+            }
+        }
+    }
+    drop(dir);
+    match unlinkat(parent, name, UnlinkatFlags::RemoveDir) {
+        Ok(()) | Err(Errno::ENOENT) => Ok(()),
+        Err(err) => Err(named(shown, err.into())),
     }
 }
 
@@ -1117,18 +1181,19 @@ impl App {
     }
 
     /// Removes one path of an item: a missing one is fine; a tree whose files may belong to a
-    /// sandbox's mapped ids goes through the isolation.
-    async fn remove_leftover_path(&self, kind: Kind, path: &Path) -> Result<(), String> {
+    /// sandbox's mapped ids goes through the isolation. That is every path below `sandboxes/`:
+    /// a sandbox's CI jobs and agents write there as its mapped ids, which the service user
+    /// cannot delete (#675); the isolation removes it there without following a link
+    /// (ADR-0176).
+    async fn remove_leftover_path(&self, path: &Path) -> Result<(), String> {
         if !exists(path) {
             return Ok(());
         }
-        let system = ["sysroots", "system"]
+        let mapped = ["sysroots", "system", "sandboxes"]
             .iter()
             .map(|d| self.data_path(&[d]))
             .chain([self.data_path(&["runtime", "sandboxes"])])
             .any(|root| path.starts_with(root));
-        // A smoke test's or an unowned sandbox's home holds files of mapped ids too.
-        let mapped = system || (kind.mapped() && path.starts_with(self.data_path(&["sandboxes"])));
         if mapped && let Some(isolation) = self.isolation.get() {
             return isolation.remove_owned_tree(path).await;
         }
@@ -1169,7 +1234,7 @@ impl App {
         .unwrap_or(0);
         let mut result = Ok(());
         for path in &paths {
-            if let Err(err) = self.remove_leftover_path(item.kind, path).await {
+            if let Err(err) = self.remove_leftover_path(path).await {
                 result = Err(err);
                 break;
             }
@@ -1629,6 +1694,37 @@ mod tests {
         );
         remove_below(&data, &data.join("sandboxes/s1/worktrees/t1"))?;
         assert!(remove_below(&data, &tmp.path().join("elsewhere")).is_err());
+        Ok(())
+    }
+
+    /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root
+    /// included, can unlink an entry of `/proc`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_removal_names_the_entry_that_stayed() {
+        let item = Path::new("/proc/self/ns");
+        let err = remove_below(Path::new("/proc/self"), item).err();
+        let message = err.map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            message.starts_with("/proc/self/ns/") && message.contains("(os error"),
+            "{message:?}"
+        );
+    }
+
+    /// Review of SPEC-228 (major): a tree deeper than the handles the walk holds goes too.
+    #[test]
+    fn a_tree_deeper_than_the_walk_s_handles_goes() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let data = tmp.path().join("data");
+        let item = data.join("sandboxes/s1/ci/jobs/deep");
+        let mut deepest = item.clone();
+        for _ in 0..MAX_WRITABLE_DEPTH + 40 {
+            deepest.push("d");
+        }
+        std::fs::create_dir_all(&deepest)?;
+        std::fs::write(deepest.join("f"), "x")?;
+        remove_below(&data, &item)?;
+        assert!(!item.exists() && data.join("sandboxes/s1/ci/jobs").exists());
         Ok(())
     }
 

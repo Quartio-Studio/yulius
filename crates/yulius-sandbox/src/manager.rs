@@ -399,6 +399,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Whether `path` lies below `sandboxes/` of `data`, which a sandbox's runs can rearrange (any
+/// folder may become a link): removed only by the walk from the data directory (ADR-0176).
+fn reachable_by_runs(data: &Path, path: &Path) -> bool {
+    path.starts_with(data.join("sandboxes"))
+}
+
 /// Whether `name` is a sandbox name as the server makes them (its ids' alphabet: ASCII letters,
 /// digits, `-` and `_`, at most 64): one path component that cannot leave its directory.
 fn valid_name(name: &str) -> bool {
@@ -1031,7 +1037,9 @@ impl Manager {
 
     /// Removes `path`, under `sysroots/`, `runtime/sandboxes/`, `system/` or `sandboxes/` of the
     /// data directory, as root of a mapped namespace where the service user cannot (its files belong
-    /// to a sandbox's mapped ids; SPEC-215).
+    /// to a sandbox's mapped ids; SPEC-215). Below `sandboxes/`, which a sandbox's runs can
+    /// rearrange, the removal walks down from the data directory without following a link
+    /// (ADR-0176).
     ///
     /// # Errors
     /// `path` lies elsewhere, or the removal failed.
@@ -1060,9 +1068,17 @@ impl Manager {
         };
         let exe = self.config.exe.clone();
         let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || crate::base::remove_tree(&mapper, &exe, &path))
-            .await
-            .map_err(|e| e.to_string())?
+        let root = data.clone();
+        let reachable = reachable_by_runs(data, &path);
+        tokio::task::spawn_blocking(move || {
+            if reachable {
+                crate::base::remove_tree_as_mapped_root(&mapper, &exe, &root, &path)
+            } else {
+                crate::base::remove_tree(&mapper, &exe, &root, &path)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     /// Bases that are not current and that no holder of this manager or recorded alive mounts
@@ -2909,6 +2925,23 @@ while True:
         assert!(d.join("sandboxes/s1").exists());
         manager.remove_owned_tree(&d.join("sysroots/s1")).await?;
         Ok(())
+    }
+
+    /// ADR-0176 (review of SPEC-228): a tree below `sandboxes/` is removed only by the walk
+    /// from the data directory, never by path; the system trees keep the by-path attempt.
+    #[test]
+    fn only_trees_below_sandboxes_skip_the_by_path_removal() {
+        let d = Path::new("/data");
+        for walked in [
+            "sandboxes/s1/ci",
+            "sandboxes/s1/ci/jobs/old",
+            "sandboxes/docker-smoke-1",
+        ] {
+            assert!(reachable_by_runs(d, &d.join(walked)), "{walked}");
+        }
+        for by_path in ["sysroots/s1", "runtime/sandboxes/s1", "system/base-0"] {
+            assert!(!reachable_by_runs(d, &d.join(by_path)), "{by_path}");
+        }
     }
 
     /// SPEC-215 / ADR-0161: a base that is neither current nor mounted by a live holder is
