@@ -61,5 +61,5 @@ command would still run it with an agent's `LD_PRELOAD` or `NODE_OPTIONS`.
 - To test an imported stdio server, a person checks its whole command line, changes it and
   re-enters its environment (or deletes it and adds it themselves). Changing one argument is
   enough for the rule, so the page asks the person to check the whole line; the rule keeps the
-  person's attention on what runs, it does not prove they read it. Servers imported before this change, including ones a
-  person already edited, need that once.
+  person's attention on what runs, it does not prove they read it. Servers imported before this
+  change, including ones a person already edited, need that once.
