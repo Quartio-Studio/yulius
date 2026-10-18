@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- One Start onboarding shows one toast again (SPEC-224, task #210, fixes #581). A sandbox page the
+  person had already left (it had opened the onboarding task) still rendered once the
+  superadmin's recovery state answered, and took back the opened task's "Onboarding started:
+  opened #1."; the start then said "Onboarding started." as well. A page that is gone now acts on
+  no late answer. The two end-to-end tests of #581 wait on what they mean under load: the watcher
+  test gives each of its three self-paced reads its own 10 s, and the onboarding tests wait for
+  the start's own read of the tasks in the sidebar (the document title follows task events only).
 - The sidebar's hover overlap checks in `navigation.e2e.ts` no longer fail on a loaded machine
   (SPEC-222, task #208, fixes #515). The mock's ambient activity starts task #8 about 12 s in,
   which regroups the sidebar. A `hover()` whose mouse move landed just after the regroup hovered
