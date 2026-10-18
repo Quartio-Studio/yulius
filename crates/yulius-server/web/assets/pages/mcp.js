@@ -45,7 +45,11 @@ export function mountMcpPage(ctx, sandbox, route) {
   // Tests follow the write rule; stdio tests run outside the containment, so a contained
   // instance lets only instance administrators run them.
   const contained = Boolean(ctx.store.state.me && ctx.store.state.me.instance && ctx.store.state.me.instance.contained);
-  const canTest = (server) => canManage(server) && (server.transport !== 'stdio' || !contained || instanceAdmin);
+  // A local command from the repository's .mcp.json, which agents can write, is never tested on
+  // the host until a person changes it (SPEC-218, #654).
+  const imported = (server) => server.origin === 'mcp_json';
+  const refused = (server) => imported(server) && server.transport === 'stdio';
+  const canTest = (server) => canManage(server) && !refused(server) && (server.transport !== 'stdio' || !contained || instanceAdmin);
 
   function render() {
     const shown = servers.filter((s) => !scopeFilter.value || s.scope === scopeFilter.value);
@@ -55,7 +59,7 @@ export function mountMcpPage(ctx, sandbox, route) {
     return h('div', { class: 'item-list' }, shown.map((server) => {
       const testResult = h('div', { class: 'small' });
       const manage = canManage(server);
-      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : server.scope === 'instance' && !instanceAdmin ? 'Servers for every sandbox are tested by instance administrators' : server.transport === 'stdio' && contained ? 'With isolation on, local-command tests need an instance administrator' : 'Requires write access', onClick: async () => {
+      const testButton = h('button', { type: 'button', class: 'btn btn-sm', disabled: !canTest(server), title: canTest(server) ? 'Connect and list tools (HTTP ≤ 5 s, stdio ≤ 10 s)' : refused(server) ? 'From the repository’s .mcp.json: tested once a person changes its command' : server.scope === 'instance' && !instanceAdmin ? 'Servers for every sandbox are tested by instance administrators' : server.transport === 'stdio' && contained ? 'With isolation on, local-command tests need an instance administrator' : 'Requires write access', onClick: async () => {
         if (testButton.classList.contains('busy')) return; // one test at a time
         testButton.classList.add('busy');
         try {
@@ -76,7 +80,8 @@ export function mountMcpPage(ctx, sandbox, route) {
         badges: [
           server.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet', 'Attached in every sandbox of this instance') : iconBadge('folder', 'This sandbox', '', 'Attached to this sandbox only'),
           iconBadge(server.transport === 'http' ? 'globe' : 'terminal', server.transport === 'http' ? 'HTTP' : 'Local command', '', server.transport === 'http' ? 'Remote server over HTTP' : 'Local command over stdio'),
-        ],
+          imported(server) ? iconBadge('download', 'From .mcp.json', 'warn', 'Added from the repository’s .mcp.json, which agents can write') : null,
+        ].filter(Boolean),
         description: h('span', { class: 'mono' }, server.transport === 'http' ? server.url || '' : [server.command, ...(server.args || [])].filter(Boolean).join(' ')),
         extra: [secrets.length ? h('div', { class: 'chips' }, secrets.map((k) => iconBadge('lock', `${k} ••••`, '', 'Secret value is stored encrypted and never shown'))) : null, testResult],
         controls: [

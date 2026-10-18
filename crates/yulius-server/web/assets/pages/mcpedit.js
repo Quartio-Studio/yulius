@@ -297,11 +297,23 @@ export function mountMcpEditor(ctx, sandbox, id) {
       button?.classList.remove('busy');
     }
   }
+  // A server from the repository's .mcp.json (agents can write it): its local command is never
+  // tested on the host, nor its private address, until a person changes them (SPEC-218, #654).
+  const imported = () => server && server.origin === 'mcp_json';
+  const refused = () => imported() && server.transport === 'stdio';
+  function importedNote() {
+    return h('p', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' },
+      server.transport === 'stdio'
+        ? 'This server came from the repository’s .mcp.json, which agents can write. Its command is not tested on the server until you change its command line and enter its environment again.'
+        : 'This server came from the repository’s .mcp.json, which agents can write. A private or local address is not tested until you change its URL.'));
+  }
   function testSection() {
     const contained = Boolean(ctx.store.state.me && ctx.store.state.me.instance && ctx.store.state.me.instance.contained);
-    const allowed = canEdit && (server.transport !== 'stdio' || !contained || admin);
+    const allowed = canEdit && !refused() && (server.transport !== 'stdio' || !contained || admin);
+    const why = refused() ? 'From the repository’s .mcp.json: tested once you change its command' : 'With isolation on, local-command servers are tested by instance administrators';
     return section('Test', null, h('div', { class: 'stack-sm' },
-      h('div', null, h('button', { type: 'button', class: 'btn mc-test', disabled: !allowed, title: allowed ? 'Connect and list its tools' : 'With isolation on, local-command servers are tested by instance administrators', onClick: runTest }, icon('plug', { size: 14 }), 'Test connection')),
+      imported() ? importedNote() : null,
+      h('div', null, h('button', { type: 'button', class: 'btn mc-test', disabled: !allowed, title: allowed ? 'Connect and list its tools' : why, onClick: runTest }, icon('plug', { size: 14 }), 'Test connection')),
       testResult));
   }
 
@@ -438,7 +450,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
       saved = snapshot();
       render();
       if (creating) el.querySelector('.mc-paste')?.focus({ preventScroll: true });
-      if (!creating && query.get('test') === '1') { replaceQuietly(`${base}/${encodeURIComponent(id)}`); runTest(); }
+      if (!creating && query.get('test') === '1') { replaceQuietly(`${base}/${encodeURIComponent(id)}`); if (!refused()) runTest(); }
     } catch (error) {
       if (alive) setChildren(body, loadError(`Couldn’t load the servers: ${error.message}`, load));
     }

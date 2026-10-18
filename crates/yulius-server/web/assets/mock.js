@@ -288,8 +288,8 @@ function seed(params) {
     { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
-    { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
-    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true },
+    { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
+    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
   ];
   // AdminUser (the superadmin is not listed).
   db.users = [
@@ -2610,7 +2610,7 @@ route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(body.name || '') || body.name.toLowerCase() === 'yulius') fail(422, 'invalid', 'invalid or reserved server name');
   if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
   db.nextId += 1;
-  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false };
+  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false, origin: 'person' };
   db.mcp.push(m);
   const { sandbox: _s, ...out } = m;
   return json(201, out);
@@ -2619,6 +2619,15 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
   if (!m) fail(404, 'not_found', 'not found');
   if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  // A .mcp.json server becomes a person's when what it runs changes (SPEC-218 MOR-003): a stdio
+  // command or arguments with its environment replaced, or an HTTP URL.
+  if (m.origin === 'mcp_json') {
+    const stdio = body.transport === 'stdio';
+    const changed = body.transport !== m.transport || (stdio
+      ? (body.command ?? null) !== m.command || JSON.stringify(body.args || []) !== JSON.stringify(m.args)
+      : (body.url ?? null) !== m.url);
+    if (changed && (!stdio || body.env || !m.env_keys.length)) m.origin = 'person';
+  }
   Object.assign(m, { name: body.name, transport: body.transport, command: body.command ?? null, args: body.args || [], url: body.url ?? null });
   if (body.enabled !== undefined) m.enabled = Boolean(body.enabled);
   // Secrets are write-only: an omitted map keeps the stored values, a given map replaces them.
@@ -2634,6 +2643,7 @@ route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
   // Tests see which servers were tested (`__yuliusMock.mcpTests`).
   (db.mcpTests ||= []).push(m.id);
+  if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; change its command or arguments and enter its environment again to test it' };
   return m.name === 'apify' ? { ok: false, tools: [], error: 'APIFY_TOKEN rejected (401)' } : { ok: true, tools: ['search_knowledge', 'get_customer', 'list_feedback', 'get_product_doc'], error: null };
 });
 
