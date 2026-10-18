@@ -152,11 +152,12 @@ but make sure it's in the default ci pipeline and will generalise for every othe
     or `vidoc_scan`.
 
   The same rule applies to the CI view (`ci_gate`) and to the verified gate the grant is read from
-  (`ci_verified_gate`). A pull request tested with its own jobs (it changed them, or bootstrap)
-  keeps the trusted security job(s): the integration branch's scanning jobs, else, when the key
+  (`ci_verified_gate`). A pull request or a merge train tested with its own jobs (they changed
+  them, or bootstrap) keeps the trusted security job(s): the integration branch's scanning jobs, else, when the key
   applies, the built-in one. Each replaces the pull request's job of the same key, so a job it
   named `security`, or one that only mentions the scanner, never stands in for the scan
-  (`keep_security_jobs`). A sandbox without CI, and a playground, get no built-in job. `enabled =
+  (`keep_security_jobs`). The security job joins even a CI at the 32-job limit, which bounds what
+  a project configures, not the scan Yulius adds. A sandbox without CI, and a playground, get no built-in job. `enabled =
   false` in `.config/vidoc.toml` keeps turning the scan off (the job ends skipped).
 - **VDP-002.** The briefing's "Security scan" section, the onboarding text, the infra-bootstrap
   workflow and skill, and AGENTS.md describe the policy:
@@ -280,8 +281,7 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   All passed. The order-dependent tests were run three times each.
 - `scripts/dev ci`: passed at be37290e (2206 tests), 56066584 (2207) and 7a33f248 (2209), each
   with 18 skipped, plus lint, macOS, doctests, deps and docs. The final
-  head's gate: at 6023905c (code as of 544cb5b7, the last code change), it passed with 2213
-  tests (18 skipped).
+  head's gate: GATE_LINE.
 - `python3 scripts/check_repository.py`: passed.
 - `python3 scripts/vidoc_scan.py --base origin/dev`, the change scan under the new policy, 29
   files sent in 23 chunks each time. The model's answers vary between runs, so each run was
@@ -353,6 +353,14 @@ command was `vidoc_scan.py --all --jobs 4 --deadline-minutes 400`, and the repor
   side of the editor's path checks, `files.rs:409`, pre-existing and tracked in #657. The other
   is the placeholder-only Vidoc key grant, `onboarding.rs:138`, by design (ADR-0116). Both are
   near lines this branch changed, so they counted as in the change.
+- Independent review round 6 (fresh session, at 4c412aeb) agreed with the two new entries. It
+  found two gaps in the VDP-001 fix: a merge train whose members changed the CI still ran their
+  own jobs without the trusted security job, and `keep_security_jobs` dropped the scan for a CI
+  at 32 jobs. Both were fixed test-first:
+  - `merge_train::a_train_with_its_own_jobs_keeps_the_security_job` failed (the train ran the
+    member's `echo fake pass`);
+  - the domain test's 32-job case failed;
+  - both pass now.
 
 ### Not tested here
 

@@ -359,11 +359,12 @@ fn built_in_security_job() -> Job {
 }
 
 /// `gate` with the built-in security job (SPEC-217 VDP-001) added, unless it already has a job
-/// keyed `security` or one that runs the scanner (`security-scan`, `vidoc_scan`), or is full.
-/// For the trusted CI (the profile's or the integration branch's) only.
+/// keyed `security` or one that runs the scanner (`security-scan`, `vidoc_scan`). For the trusted
+/// CI (the profile's or the integration branch's) only. It joins even a gate at [`MAX_JOBS`]: the
+/// limit bounds what a project configures, not the scan Yulius adds.
 #[must_use]
 pub fn with_security_job(mut gate: Gate) -> Gate {
-    if !gate.jobs.iter().any(scans) && gate.jobs.len() < MAX_JOBS {
+    if !gate.jobs.iter().any(scans) {
         gate.jobs.push(built_in_security_job());
     }
     gate
@@ -384,11 +385,8 @@ pub fn keep_security_jobs(mut own: Gate, trusted: Option<&Gate>, vidoc: bool) ->
     }
     own.jobs
         .retain(|job| !kept.iter().any(|k| k.key == job.key));
-    for job in kept {
-        if own.jobs.len() < MAX_JOBS {
-            own.jobs.push(job);
-        }
-    }
+    // Even past [`MAX_JOBS`]: the trusted gate's own jobs are bounded by it.
+    own.jobs.extend(kept);
     own
 }
 
@@ -1152,6 +1150,29 @@ mod tests {
         assert_eq!(
             kept.jobs.last().map(|j| j.command.as_str()),
             Some("python3 scripts/vidoc_scan.py --ci")
+        );
+        // A pull request at the job limit still gets the scan (review round 6), and so does a
+        // trusted gate at the limit.
+        let one = expand_jobs(&[def("job", "true")])?.remove(0);
+        let full = |source: GateSource| Gate {
+            jobs: (0..MAX_JOBS)
+                .map(|i| Job {
+                    name: format!("job{i}"),
+                    key: format!("job{i}"),
+                    ..one.clone()
+                })
+                .collect(),
+            source,
+        };
+        let kept = keep_security_jobs(full(GateSource::PullRequest), None, true);
+        assert_eq!(
+            kept.jobs.last().map(|j| j.command.as_str()),
+            Some(SECURITY_COMMAND)
+        );
+        let trusted = with_security_job(full(GateSource::ProjectConfig));
+        assert_eq!(
+            trusted.jobs.last().map(|j| j.command.as_str()),
+            Some(SECURITY_COMMAND)
         );
         Ok(())
     }

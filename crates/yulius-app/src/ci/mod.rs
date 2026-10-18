@@ -471,7 +471,7 @@ impl App {
 
     /// Whether the sandbox's CI runs the Vidoc scan: not a playground, and `VIDOC_API_KEY` among
     /// its applied agent secrets (SPEC-217 VDP-001).
-    async fn ci_scans(&self, sandbox: &SandboxRecord) -> bool {
+    pub(crate) async fn ci_scans(&self, sandbox: &SandboxRecord) -> bool {
         !sandbox.is_playground()
             && self
                 .applied_agent_secrets(&sandbox.id)
