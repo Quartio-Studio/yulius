@@ -1,11 +1,11 @@
 ---
 yulius-task: d2a80c6a-e19c-4259-91c0-276df322fe29
-status: in-progress
+status: done
 ---
 
 # SPEC-224: Flaky e2e under load: watching self-poll and onboarding duplicate toast
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: task #210
 Scope authorization: task #210: "Fix GitHub issue #581 … Both tests wait on conditions that hold
@@ -77,10 +77,10 @@ left, and the test that shows the duplicate depends on it happening by chance.
 ## Plan
 
 - [x] Spec with both reproduced causes
-- [ ] Onboarding: a left composer's late read says nothing (regression test, fix)
-- [ ] Watching: self-poll waits each read on its own budget (probe reproduction, fix)
-- [ ] Docs, changes entry, gates and a full e2e run green
-- [ ] Independent review answered, PR merged into dev on green
+- [x] Onboarding: a left composer's late read says nothing (regression test, fix)
+- [x] Watching: self-poll waits each read on its own budget (probe reproduction, fix)
+- [x] Docs, changes entry, gates and a full e2e run green
+- [x] Independent review answered, PR merged into dev on green
 
 ## Acceptance criteria
 
@@ -110,6 +110,13 @@ left, and the test that shows the duplicate depends on it happening by chance.
   back to the same sandbox page) would then never open the task again. The defect is a dead view
   acting, so the fix is there: the recovery read checks `destroyed` like the plan read does, and
   `openOnboarding` returns on a destroyed view, which covers any other late caller.
+- **The onboarding tests wait for the start's read in the sidebar.** Found while writing the
+  regression test: the document title follows task events only (`app.js` refreshes `currentTask`
+  on `task`, not on `tasks`), so the old wait for "Read again" in the title saw the mock's own
+  task event 1.2 s after the start, never the start's read of the tasks. `endStart` waits for that
+  event first, then renames the task, releases the held read and waits for the sidebar's list,
+  which follows list reads. That the title keeps a list reload's new title only until the next
+  task event is a small pre-existing display lag, outside this change (noted on #581).
 - **A mock hold for the recovery read** (`holdRecovery = promise`), like the mock's other
   per-route holds (`holdApprove`, `holdCreate`), since `hold=` keeps only one path and the test
   already holds the tasks read with it.
@@ -117,3 +124,33 @@ left, and the test that shows the duplicate depends on it happening by chance.
   read comes on its own, faster than the mock's task events) while one 30 s wait would let event
   reads alone pass it.
 - No ADR: no lasting decision beyond these test-local and view-local choices.
+
+## Evidence
+
+All on this branch (base `dev` a3b9b04a), 2026-10-18, sandbox CPU budget 4 (`YULIUS_CPUS`), host
+load average 17–58 (parallel tasks' suites).
+
+- Onboarding reproduction (temporary probes, not committed): trace points in `openOnboarding`, its
+  timer, `destroy()`, the start's check and the task route; 0–900 ms extra mock latency; a
+  0–600 ms open timer. 2 of 8 runs showed the destroyed composer's `openOnboarding` called from the
+  recovery read (`taskview.js:1239`) after `composer destroy` (trace in Context).
+- New test "a composer left before its reads answer adds no second toast to the start", run 5×
+  and (after the `endStart` rework) 4× in a temporary copy against `dev`'s `taskview.js`: 9/9
+  failed with `expected ["Onboarding started: opened #1.","Onboarding started."]`, task #204's
+  failure. With the fix: 4/4 passed, together with the old #581 test 4/4.
+- Watching reproduction: a temporary `await delay(1800)` in the mock's
+  `GET /api/tasks/{id}/transcript`, the test run 3×: 3/3 failed with `expected 5 to be greater than
+  5` (the issue's own failure). With the per-read waits: 3/3 passed under the same probe. With
+  `WATCH_POLL_MS = 1e9` (a view that does not poll by itself): 3/3 failed, so the test still
+  checks self-polling.
+- `npx e2e run tests/onboarding.e2e.ts`: 14/14 passed.
+- Full `npx e2e run` at load average ~56: 617 passed, 1 failed, 1 skipped (619); onboarding 14/14
+  and watching 24/24 passed. The failure, `pause.e2e.ts` "the Tasks list row menu pauses and
+  resumes a task" (the row's action not visible within 29 s), is outside this change (no pause,
+  task-list or row-menu code touched); `tests/pause.e2e.ts` alone then passed 3/3 (12/12). No
+  open issue tracks it; it is reported on #581 (this task opens no issues).
+- `scripts/dev ci`: passed (exit 0; nextest 2233 passed, 18 skipped).
+- `yulius security-scan` (vidoc-1, change scan at b825edee): no open critical or high finding. One
+  medium, `taskview.js:340` (a `needs_you` link used as `href`), is in code this branch does not
+  touch (its changes are at ~1239 and ~1310), so it does not block; Yulius CI files it.
+- Probe files and edits removed; `git status` clean before the evidence commit.
