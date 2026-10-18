@@ -1,11 +1,11 @@
 ---
 yulius-task: ed4be085-6aa1-410e-81e8-9f1f42fea584
-status: in-progress
+status: done
 ---
 
 # SPEC-228: Leftovers below a sandbox are removed as the sandbox's mapped root, link-safely
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: task #214
 Scope authorization: task #214: "Fix GitHub issue #675". Fixes #675, found by task #213. Extends
@@ -67,8 +67,8 @@ Confirmed against `dev` at c3ba79d0.
 - [x] A failed removal names the file that stayed
 - [x] Spec, ADR-0176 and docs record the fix
 - [x] remove-tree always walks down from a root (Vidoc finding)
-- [ ] Independent review approved and security scan run
-- [ ] Gates green and merged into dev
+- [x] Independent review approved and security scan run
+- [x] Gates green and merged into dev
 
 ## Acceptance criteria
 
@@ -122,8 +122,15 @@ Confirmed against `dev` at c3ba79d0.
   and its target is kept, a missing path is fine, a path outside the root is refused.
 - `scripts/dev ci` at e2357880: exit 0, 2240 tests passed, 17 skipped (clippy, docs, macOS
   compile, contracts included).
-- `scripts/dev security`: exit 0 at d50f5bae (two findings outside the change: manager.rs:904,
-  docker_smoke.rs:308, filed by CI); the final head is rescanned before delivery.
+- `scripts/dev security`: exit 0 at d50f5bae and at e2357880 (the final code). Findings outside the
+  change (manager.rs:904, manager.rs:536, docker_smoke.rs:308, leftovers.rs:237) are filed by CI.
+  One low in the change, "RemoveTree … unverified path containment" (`--below /d /d/../../x`): no
+  change needed, `remove_below` refuses any component that is not a plain name before opening
+  anything; `remove_tree_below_never_goes_through_a_link` now asserts it.
+- Independent review (fresh session, `om-code-review`): round 1 REQUEST CHANGES (1 major, 2 minor,
+  nits; all own code fixed above, one pre-existing filed as #680), round 2 APPROVE.
+- `origin/dev` (a68b30ee, #676) merged cleanly; no file of this change is touched by it. Merge into
+  `dev` follows on green Yulius CI.
 - Pre-existing finding of the review (a `0o000` directory on the no-isolation path): #680.
 - Not testable here: the real mapped namespace. A probe as the `yulius` user with
   `unshare --map-auto --map-root-user` was refused (this session itself runs in a sandbox; nested

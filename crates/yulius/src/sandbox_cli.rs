@@ -337,6 +337,14 @@ mod tests {
             ExitCode::FAILURE,
             "not below the root"
         );
+        // Vidoc (low): a relative escape is refused lexically, before anything is opened.
+        std::fs::create_dir_all(d.join("sandboxes/s1/x"))?;
+        assert_eq!(
+            remove(&d.join("sandboxes/s1/x/../../victim")),
+            ExitCode::FAILURE,
+            "`..` on the way"
+        );
+        assert!(d.join("sandboxes/victim/repo/README.md").exists());
         Ok(())
     }
 
