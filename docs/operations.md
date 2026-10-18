@@ -1129,7 +1129,7 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    fixes: the needrestart rule, the host's own Docker units, the modules file and loading, the
    binary's owner. A failed item, or a "sandbox Docker" that does not hold, is a regression. The
    update's outcome says it in one line ("Sandboxes may have lost Docker with this update" when
-   the report's "sandbox Docker" fails; "Sandboxes still get Docker; the host check after it left
+   the report's "sandbox Docker" does not hold; "Sandboxes still get Docker; the host check after it left
    N items to fix" when only other items failed), and the Sandbox Docker card lists the items of
    the latest root check (naming `sudo yulius host setup` when Docker held), never only in a log
    (SPEC-227).

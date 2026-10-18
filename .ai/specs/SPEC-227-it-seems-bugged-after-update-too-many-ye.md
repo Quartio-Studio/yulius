@@ -62,11 +62,11 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
   with failed items → one line "Sandboxes still get Docker; the host check after it left N items
   to fix (Sandbox Docker, below)."; otherwise a warning "Sandboxes may have lost Docker with this
   update." that points to the Sandbox Docker card's latest host check.
+- **HCW-003** `RealHost::write` reports a failure to write the file without its path (the caller
+  names it); a failure to create its folder still names the folder.
 - **HCW-004** An update that ends while Settings → Instance is open makes the Sandbox Docker card
   read its host check again (the outcome points to it), keyed by the run, its state and whether
   its check arrived (review round 1).
-- **HCW-003** `RealHost::write` reports a failure to write the file without its path (the caller
-  names it); a failure to create its folder still names the folder.
 
 ## Plan
 
@@ -86,17 +86,17 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
 - AC-3 (HCW-002) After an update whose check kept Docker, the outcome shows one line and none of
   the items; after one that lost it, "Sandboxes may have lost Docker with this update." and no
   items.
-- AC-5 (HCW-004) After an in-page update of `docker=kept&update=1` (no host check before), the
-  card shows the update's "left 3 items to fix" without a reload.
 - AC-4 (HCW-003) `RealHost::write` into a folder where no file can be created fails without the
   file's path in the error.
+- AC-5 (HCW-004) After an in-page update of `docker=kept&update=1` (no host check before), the
+  card shows the update's "left 3 items to fix" without a reload.
 
 ## Test plan
 
 - e2e `sandbox-docker.e2e.ts`: a new mock mode `docker=kept` (the screenshot's report: three failed
   items and an ok `sandbox Docker` line) for AC-1 and AC-3's kept case; the existing
   `docker=rebuild` tests for AC-2 and AC-3's lost case, now asserting the items are absent from the
-  outcome.
+  outcome; the kept update test first sees no host check in the card, then the update's (AC-5).
 - Unit test `a_file_that_cannot_be_written_is_named_once` (`host_setup/tests.rs`, the fake host
   can refuse a write as a read-only `/etc` does): the needrestart rule in a check and the Docker
   source in a setup are named once (AC-4, the caller side).
