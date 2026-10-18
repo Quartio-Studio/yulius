@@ -4,7 +4,9 @@
 
 Accepted. Specified in
 [SPEC-095](../../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md). Amends SPEC-037
-MGT-004 (the Superagent gets one setting) and SPEC-002 §7.2 (how MCP values reach a run).
+MGT-004 (the Superagent gets one setting) and SPEC-002 §7.2 (how MCP values reach a run). Amended
+by [0173](0173-the-mcp-test-refuses-servers-imported-from-mcp-json.md): imported servers are marked
+and the MCP Test does not run them on the host.
 
 ## Context
 

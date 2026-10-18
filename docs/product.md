@@ -74,7 +74,8 @@ watching, steering and unblocking.
   secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
-  Superagent never asks about them.
+  Superagent never asks about them. They show "From .mcp.json", and since agents can write that
+  file, Test does not run their command on the server until a person changes it (SPEC-218).
 - **Sandbox tabs**: the top row starts with All sandboxes, then a tab per sandbox in the order
   the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
   says it can be clicked or dragged; its menu moves it too.
