@@ -13,7 +13,9 @@ use std::path::Path;
 use crate::Git;
 use crate::error::GitError;
 use crate::runner::Invocation;
-use crate::validate::{require_absolute, validate_branch_name, validate_revision};
+use crate::validate::{
+    require_absolute, validate_branch_name, validate_remote_url, validate_revision,
+};
 
 /// Whether `sha` is a full hexadecimal object id.
 fn full_sha(sha: &str) -> bool {
@@ -43,15 +45,7 @@ impl Git {
                 reason: "a full object id is required".into(),
             });
         }
-        if !mirror.join("HEAD").exists() {
-            if let Some(parent) = mirror.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| GitError::Io {
-                    context: "creating the CD directory",
-                    source,
-                })?;
-            }
-            self.init(mirror, "main", true)?;
-        }
+        self.init_mirror(mirror)?;
         let refspec = format!("+refs/remotes/origin/{branch}:refs/heads/{branch}");
         self.run_ok(
             Invocation::new(self, "fetch", Some(mirror))
@@ -80,6 +74,70 @@ impl Git {
             });
         }
         Ok(())
+    }
+
+    /// Fetches `branch`'s head from `source` (a remote URL, or the absolute path of a repository)
+    /// into the bare `mirror` (created when missing) as `refs/heads/<branch>`, one commit deep,
+    /// checking every object and ignoring replacement refs, and returns it. Nothing is read from
+    /// a sandbox clone: the only configuration in play is the mirror's own, which only Yulius
+    /// writes (delivery environment runs, SPEC-219).
+    ///
+    /// # Errors
+    /// Invalid input, a branch `source` lacks, or Git failures.
+    pub fn mirror_fetch_head(
+        &self,
+        mirror: &Path,
+        source: &str,
+        branch: &str,
+    ) -> Result<String, GitError> {
+        require_absolute("environment mirror", mirror)?;
+        validate_branch_name(branch)?;
+        if source.starts_with('/') {
+            require_absolute("source repository", Path::new(source))?;
+        } else if source.contains("://") {
+            validate_remote_url(source)?;
+        } else {
+            return Err(GitError::InvalidInput {
+                what: "source",
+                reason: "a URL or an absolute path is required".into(),
+            });
+        }
+        self.init_mirror(mirror)?;
+        let refspec = format!("+refs/heads/{branch}:refs/heads/{branch}");
+        self.run_ok(
+            Invocation::new(self, "fetch", Some(mirror))
+                .env("GIT_NO_REPLACE_OBJECTS", "1")
+                .args([
+                    "-c",
+                    "transfer.fsckObjects=true",
+                    "-c",
+                    "fetch.fsckObjects=true",
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    "--depth=1",
+                    "--",
+                    source,
+                    &refspec,
+                ])
+                .timeout(self.network_timeout),
+        )?;
+        self.rev_parse(mirror, &format!("refs/heads/{branch}"))
+    }
+
+    /// Creates the bare `mirror` (and its parent) when it does not exist yet.
+    fn init_mirror(&self, mirror: &Path) -> Result<(), GitError> {
+        if mirror.join("HEAD").exists() {
+            return Ok(());
+        }
+        if let Some(parent) = mirror.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| GitError::Io {
+                context: "creating the mirror's directory",
+                source,
+            })?;
+        }
+        self.init(mirror, "main", true)
     }
 
     /// Writes the tree of commit `sha` of `mirror` as plain files into the new directory `dest`
