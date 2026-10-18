@@ -437,6 +437,7 @@ impl App {
             (None, None) => None,
         };
         let destination = existing.unwrap_or(file);
+        crate::race::reached(crate::race::Point::FileWrite, &destination);
         // A new file at an unpredictable name: an entry an agent planted there (a link out of
         // the folder) is never opened, so the save cannot write through it (#655).
         let suffix: String = self.deps.crypto.random_bytes()[..8]

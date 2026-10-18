@@ -10,6 +10,8 @@ use std::path::Path;
 pub enum Point {
     /// `file_read`: the path was resolved and checked, the file is not opened yet.
     FileRead,
+    /// `file_write`: the parent folder was resolved and checked, nothing is written yet.
+    FileWrite,
 }
 
 #[cfg(feature = "test-support")]
