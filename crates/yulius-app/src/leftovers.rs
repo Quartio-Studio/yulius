@@ -290,7 +290,7 @@ pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
     let refused = || {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "not below the data directory",
+            format!("not below {}", root.display()),
         )
     };
     let relative = path.strip_prefix(root).map_err(|_| refused())?;
@@ -335,20 +335,22 @@ pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
             remove_tree_at(&dir, last, path, 0)
         })
     } else {
-        std::fs::remove_file(&through)
+        // Only the item itself may have gone meanwhile; the tree's walk reports what stayed.
+        match std::fs::remove_file(&through) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
     };
     drop(dir);
-    match removed {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        other => other,
-    }
+    removed
 }
 
 /// Removes the directory `name` of `parent` and everything below it, each directory opened
 /// through its parent's handle with `O_NOFOLLOW` and each entry removed with `unlinkat`, so a link
 /// is removed itself, never followed. `shown` is the directory's path for errors, which name the
 /// entry that could not be removed. Past [`MAX_WRITABLE_DEPTH`] levels (each holds a handle) std's
-/// `remove_dir_all`, which never follows a link either, removes the rest.
+/// `remove_dir_all`, which never follows a link either, removes the rest through the parent's
+/// handle. Entries gone meanwhile are fine.
 fn remove_tree_at(
     parent: &std::os::fd::OwnedFd,
     name: &std::ffi::OsStr,
@@ -363,21 +365,27 @@ fn remove_tree_at(
     let named = |shown: &Path, err: std::io::Error| {
         std::io::Error::new(err.kind(), format!("{}: {err}", shown.display()))
     };
+    if depth >= MAX_WRITABLE_DEPTH {
+        let through = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(name);
+        return match std::fs::remove_dir_all(&through) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(named(shown, err)),
+            _ => Ok(()),
+        };
+    }
     let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     let dir = match openat(parent, name, flags, Mode::empty()) {
         Ok(dir) => dir,
         Err(Errno::ENOENT) => return Ok(()),
         // Swapped for a link or a file since it was listed: removed itself.
         Err(Errno::ELOOP | Errno::ENOTDIR) => {
-            return unlinkat(parent, name, UnlinkatFlags::NoRemoveDir)
-                .map_err(|e| named(shown, e.into()));
+            return match unlinkat(parent, name, UnlinkatFlags::NoRemoveDir) {
+                Ok(()) | Err(Errno::ENOENT) => Ok(()),
+                Err(err) => Err(named(shown, err.into())),
+            };
         }
         Err(err) => return Err(named(shown, err.into())),
     };
     let through = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
-    if depth >= MAX_WRITABLE_DEPTH {
-        return std::fs::remove_dir_all(&through).map_err(|e| named(shown, e));
-    }
     for child in std::fs::read_dir(&through).map_err(|e| named(shown, e))? {
         let child = child.map_err(|e| named(shown, e))?;
         let child_name = child.file_name();
@@ -1689,8 +1697,6 @@ mod tests {
         Ok(())
     }
 
-    /// Review round 3: the fallback that makes a read-only tree removable changes directories
-    /// through their own handles to a fixed 0o700, never through a link to what lies outside.
     /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root
     /// included, can unlink an entry of `/proc`.
     #[cfg(target_os = "linux")]
@@ -1705,6 +1711,25 @@ mod tests {
         );
     }
 
+    /// Review of SPEC-228 (major): a tree deeper than the handles the walk holds goes too.
+    #[test]
+    fn a_tree_deeper_than_the_walk_s_handles_goes() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let data = tmp.path().join("data");
+        let item = data.join("sandboxes/s1/ci/jobs/deep");
+        let mut deepest = item.clone();
+        for _ in 0..MAX_WRITABLE_DEPTH + 40 {
+            deepest.push("d");
+        }
+        std::fs::create_dir_all(&deepest)?;
+        std::fs::write(deepest.join("f"), "x")?;
+        remove_below(&data, &item)?;
+        assert!(!item.exists() && data.join("sandboxes/s1/ci/jobs").exists());
+        Ok(())
+    }
+
+    /// Review round 3: the fallback that makes a read-only tree removable changes directories
+    /// through their own handles to a fixed 0o700, never through a link to what lies outside.
     #[test]
     fn making_a_tree_writable_never_follows_a_link() -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;

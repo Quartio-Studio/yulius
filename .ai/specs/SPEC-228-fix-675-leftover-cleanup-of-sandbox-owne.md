@@ -62,10 +62,13 @@ Confirmed against `dev` at c3ba79d0.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Regression test: a sandbox's leftovers reach the mapped removal
-- [ ] Leftovers below a sandbox go through the link-safe mapped removal
-- [ ] A failed removal names the file that stayed
-- [ ] Spec, ADR, docs, review and gates green
+- [x] Regression test: a sandbox's leftovers reach the mapped removal
+- [x] Leftovers below a sandbox go through the link-safe mapped removal
+- [x] A failed removal names the file that stayed
+- [x] Spec, ADR-0176 and docs record the fix
+- [x] remove-tree always walks down from a root (Vidoc finding)
+- [ ] Independent review approved and security scan run
+- [ ] Gates green and merged into dev
 
 ## Acceptance criteria
 
