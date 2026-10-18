@@ -955,6 +955,25 @@ flowchart LR
   AG["agent"] -.->|"refused"| P
 ```
 
+A delivery profile's environment run (DLV-003; an agent's `delivery_deploy`) is a CD run of its
+stage ([SPEC-219](../.ai/specs/SPEC-219-fix-656-delivery-environment-runs-must-r.md), ADR-0175):
+`App::environment_head` (`crates/yulius-app/src/ci/environment.rs`) fetches the stage branch's head
+from origin, the token only in that command's environment, into its own mirror
+`<data>/cd/<sandbox>/environments.git` (`mirror_fetch_head`, one commit, objects checked), and
+`App::environment_command` writes its tree into `<data>/runs/env-<run>` with a fresh `HOME` and runs
+the command there through `ci_watch` in `cd_containment` (integration as dev, production as
+production). Nothing of it reads the sandbox clone, whose configuration agents write.
+
+```mermaid
+flowchart LR
+  AG["agent: delivery_deploy / person: Run"] --> RUN["environment run (audited)"]
+  GH["origin (GitHub)"] -->|"head of the stage branch, token in the command's env"| EMIR["environments.git (Yulius only)"]
+  CLONE["sandbox clone (agents write .git)"] -.->|"never read"| RUN
+  EMIR -->|"export_tree"| DIR["runs/env-run: src, fresh HOME"]
+  RUN --> DIR
+  DIR -->|"process host, CD containment"| CMD["/bin/sh -c command"]
+```
+
 Outside Yulius, GitHub keeps the production branch a person's
 ([ADR-0114](decisions/0114-agents-hold-a-token-github-refuses-on-production.md)). The agent's Git
 and `gh` get `App::agent_git_credential`: an installation token restricted to the repository and

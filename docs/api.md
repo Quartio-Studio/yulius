@@ -584,16 +584,18 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   command`, or a confirmation, advances every task for which the environment is due.
 - **Environment command trust contract.** `command` is shell text configured only by repository
   administrators through the sandbox profile. Each run is audited (actor, environment, command)
-  and executed as `/bin/sh -c <command>` in the sandbox's primary clone, checked out (detached)
-  at the head of `origin/<integration>` (`after: integration`) or `origin/<production>` (`after:
-  production`), with only `PATH`, `HOME` (the sandbox home), `LANG`, `YULIUS_ENVIRONMENT`,
-  `YULIUS_BRANCH` and `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept,
-  and a 30-minute limit after which the whole process group is killed and the shell reaped
-  (`state: "failed"`). It runs with the server's privileges, without sandbox containment; the
-  clone's `.git` and the sandbox home are writable by the sandbox's agents, so the checkout
-  ignores global/system Git config and disables hooks and fsmonitor (repository-local config
-  such as filter drivers is still read). Commands are visible to every reader of the sandbox:
-  keep secrets out of them. Runs left `running` by a server restart become `error`.
+  and executed as `/bin/sh -c <command>` like a CD run of its stage (SPEC-219, ADR-0175): the head
+  of `<integration>` (`after: integration`) or `<production>` (`after: production`) is fetched from
+  origin into a mirror only Yulius writes, its files are written into the run's own directory, and
+  the command runs there through the process host in the sandbox's containment (a production
+  environment as a CD production run), with `PATH`, `HOME` (fresh, the run's own), `LANG`,
+  `TERM`, `NO_COLOR`, `GIT_TERMINAL_PROMPT`, `YULIUS_ENVIRONMENT`, `YULIUS_BRANCH` and
+  `YULIUS_COMMIT` set, stdin closed, the last 1 MiB of combined output kept, and the CI job
+  timeout (30 minutes by default) after which the whole process group is killed (`state:
+  "failed"`). Nothing of a run reads the sandbox clone or the sandbox home, which the sandbox's
+  agents write. Commands are visible to every reader of the sandbox:
+  keep secrets out of them. Runs left `running` by a server restart have their process host
+  terminated and become `error`.
 
 ## CI (Yulius-run) and repository hygiene
 

@@ -4,6 +4,18 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-18
+
+- Delivery environment runs run contained, from a mirror only Yulius writes (SPEC-219, ADR-0175,
+  task #205, fixes #656). An environment's command no longer runs on the server in the sandbox's
+  clone, where a Git filter an agent planted in the clone's configuration ran during the checkout
+  and the command itself ran uncontained: an agent's `delivery_deploy` could run code on the host.
+  A run now fetches its branch's head from GitHub into `<data>/cd/<sandbox>/environments.git` (the
+  token never passes through the clone's configuration), writes its files into the run's own
+  directory with a fresh `HOME`, and runs the command through the process host in the sandbox's
+  containment, as CD dev runs do (production environments as CD production runs). It times out
+  with the CI job timeout, and a restart stops a running command.
+
 ## 2026-10-17
 
 - The Vidoc scan blocks medium findings in a change, and every project scans in CI (SPEC-217,
