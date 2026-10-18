@@ -118,9 +118,17 @@ export function mountInstancePage(ctx) {
   const leftovers = leftoversCard(ctx);
   frame.body.append(updatesCard, docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
+  /** The run outcome last rendered; `undefined` before the first render. */
+  let shownOutcome;
+
   function render(view) {
     if (!view) return;
     const run = view.run;
+    // An update that ends while the page is open wrote a new host check: the Sandbox Docker
+    // card, which the outcome points to, reads it again (#674).
+    const ended = run && OUTCOMES.has(run.state) ? `${run.id}:${run.state}:${run.docker ? 'checked' : ''}` : null;
+    if (shownOutcome !== undefined && ended && ended !== shownOutcome) docker.refresh();
+    shownOutcome = ended;
     const running = run && !OUTCOMES.has(run.state);
     const check = view.check || {};
     const available = view.available;

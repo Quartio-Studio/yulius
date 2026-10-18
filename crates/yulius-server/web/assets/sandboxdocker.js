@@ -45,7 +45,8 @@ export function hostCheckProblems(report) {
 /** Whether a failed host check still found that sandboxes get Docker: its own "sandbox Docker"
  * verdict (SPEC-203 HST-013) holds and nothing kept it from checking (#674). */
 export function hostCheckKeptDocker(report) {
-  return !report.error && (report.lines || []).some((l) => l.name === 'sandbox Docker' && l.outcome === 'ok');
+  const verdicts = (report.lines || []).filter((l) => l.name === 'sandbox Docker');
+  return !report.error && verdicts.length > 0 && verdicts.every((l) => l.outcome === 'ok');
 }
 
 function items(count) {
@@ -161,6 +162,8 @@ export function sandboxDockerCard(ctx) {
   refresh();
   return {
     el: card,
+    /** Reads it again: an update that ended on the page wrote a new host check. */
+    refresh,
     destroy() {
       gone = true;
       clearTimeout(timer);

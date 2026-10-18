@@ -125,7 +125,7 @@ pub trait Host {
     /// Writes a file (creating its directory) owned by root with `mode`.
     ///
     /// # Errors
-    /// Why it could not be written.
+    /// Why it could not be written, without the file's path: the caller names it.
     fn write(&mut self, path: &Path, content: &str, mode: u32) -> Result<(), String>;
     /// Whether a regular file is there.
     fn is_file(&self, path: &Path) -> bool;

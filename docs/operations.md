@@ -1131,7 +1131,8 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    update's outcome says it in one line ("Sandboxes may have lost Docker with this update" when
    the report's "sandbox Docker" fails; "Sandboxes still get Docker; the host check after it left
    N items to fix" when only other items failed), and the Sandbox Docker card lists the items of
-   the latest root check with `sudo yulius host setup` as the fix, never only in a log (SPEC-227).
+   the latest root check (naming `sudo yulius host setup` when Docker held), never only in a log
+   (SPEC-227).
    A helper unit installed before SPEC-203 keeps `/etc` read-only, so its re-check fails the
    needrestart rule, the modules file and "update helper" until `sudo yulius host setup` runs once.
    A regression does not roll the update back. The report is kept in

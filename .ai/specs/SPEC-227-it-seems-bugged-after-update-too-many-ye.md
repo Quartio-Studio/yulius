@@ -62,6 +62,9 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
   with failed items → one line "Sandboxes still get Docker; the host check after it left N items
   to fix (Sandbox Docker, below)."; otherwise a warning "Sandboxes may have lost Docker with this
   update." that points to the Sandbox Docker card's latest host check.
+- **HCW-004** An update that ends while Settings → Instance is open makes the Sandbox Docker card
+  read its host check again (the outcome points to it), keyed by the run, its state and whether
+  its check arrived (review round 1).
 - **HCW-003** `RealHost::write` reports a failure to write the file without its path (the caller
   names it); a failure to create its folder still names the folder.
 
@@ -78,10 +81,13 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
 
 - AC-1 (HCW-001) With a report of failed items and an ok `sandbox Docker` line, the card shows
   "sandboxes get Docker", the items and `sudo yulius host setup`, and no "may have lost Docker".
-- AC-2 (HCW-001) With a failed verdict, the card still says "may have lost Docker".
+- AC-2 (HCW-001) With a failed verdict (the `docker=rebuild` reports carry a failed `sandbox
+  Docker` line), the card still says "may have lost Docker".
 - AC-3 (HCW-002) After an update whose check kept Docker, the outcome shows one line and none of
   the items; after one that lost it, "Sandboxes may have lost Docker with this update." and no
   items.
+- AC-5 (HCW-004) After an in-page update of `docker=kept&update=1` (no host check before), the
+  card shows the update's "left 3 items to fix" without a reload.
 - AC-4 (HCW-003) `RealHost::write` into a folder where no file can be created fails without the
   file's path in the error.
 
@@ -91,6 +97,9 @@ failing on a sandbox's CI folder; a different defect, tracked separately.
   items and an ok `sandbox Docker` line) for AC-1 and AC-3's kept case; the existing
   `docker=rebuild` tests for AC-2 and AC-3's lost case, now asserting the items are absent from the
   outcome.
+- Unit test `a_file_that_cannot_be_written_is_named_once` (`host_setup/tests.rs`, the fake host
+  can refuse a write as a read-only `/etc` does): the needrestart rule in a check and the Docker
+  source in a setup are named once (AC-4, the caller side).
 - Unit test in `host_setup/system.rs` (Linux): writing `/proc/<name>` fails (no file can be created
   in procfs, even as root) and the error does not contain the path (AC-4).
 - `scripts/dev ci` and the e2e suite.

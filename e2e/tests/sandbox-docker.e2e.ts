@@ -76,11 +76,16 @@ test('a host check that kept Docker says so, with its items and the fix, not tha
 });
 
 test('an update whose re-check kept Docker says so in one line and lists its items once, in the card', async ({ app, browser, screen }) => {
+  // No host check before this update: the card shows the update's own once it ends.
   await app.open(mock('/admin/instance', '&update=1&docker=kept'));
+  await expect(screen.getByText('sandboxes get Docker')).toBeVisible();
+  expect(await bodyText(browser)).not.toMatch(/last host check/);
   await screen.getByRole('button', 'Update now…').click();
   await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
   await expect.poll(() => bodyText(browser), { timeout: 15000 }).toMatch(/Updated to 9c1e7d3/);
   await expect(screen.getByText(/Sandboxes still get Docker; the host check after it left 3 items to fix \(Sandbox Docker, below\)\./)).toBeVisible();
+  // The card read the update's check again, without a reload.
+  await expect(screen.getByText(/The last host check \(yulius 9c1e7d3, .*\) left 3 items to fix\./)).toBeVisible();
   const text = await bodyText(browser);
   expect(text).not.toMatch(/may have lost Docker/);
   expect(count(text, KEPT_ITEM)).toBe(1);
