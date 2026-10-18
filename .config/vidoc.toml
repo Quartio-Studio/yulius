@@ -387,6 +387,11 @@ path = "crates/yulius-app/src/ci/exec.rs"
 title = "from pull request-defined CI jobs"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
 
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "CI executes commands from untrusted pull request configuration"
+reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
 # The same finding where the gate picks the pull request's own jobs (`own_jobs_apply`), reported
 # when task #205 declared a module in this file.
 [[ignore]]
