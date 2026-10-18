@@ -136,10 +136,14 @@ watching, steering and unblocking.
 - **Vidoc security scan** (SPEC-195, ADR-0157): an optional instance key, which the superadmin sets,
   tests and removes like the Jev key, and which setup offers as a skippable step. With it, every
   project's agents and granted CI jobs run `yulius security-scan`: Vidoc's vidoc-1 reviews the
-  branch's changed files (or, with `--all`, the whole repository), and open critical or high
-  findings fail the scan. The code goes to Vidoc, but the key never reaches agents: the egress proxy
-  adds it toward `model.vidocsecurity.com` only. Infra bootstrap adds the `security` job only when
-  the instance has a key. Without one, the scan reports "not run".
+  branch's changed files (or, with `--all`, the whole repository). Open critical or high findings
+  fail the scan, and so do open medium findings in the lines the branch changed; the agent decides
+  on low ones there (SPEC-217, ADR-0172). Findings in code a pull request did not touch become
+  GitHub issues, filed once, reopened while reported and closed once the code is gone. Every project
+  whose sandbox has a Vidoc key runs the scan in CI as a built-in `security` job. The code goes to
+  Vidoc, but the key never reaches agents: the egress proxy adds it toward
+  `model.vidocsecurity.com` only. Infra bootstrap adds the `security` job only when
+  the instance has a key (CI adds the job by itself). Without one, the scan reports "not run".
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names

@@ -12,7 +12,7 @@ use support::{
 use yulius_app::auth::{DEVICE_STARTS_PER_MINUTE, MAX_DEVICE_GRANTS, MAX_DEVICE_GRANTS_PER_CLIENT};
 use yulius_app::error::AppError;
 use yulius_app::model::SandboxRecord;
-use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore};
+use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore, UserStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::TaskStatus;
@@ -490,6 +490,52 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
         "a disabled user is told so on the sign-in page"
     );
     assert!(again.set_cookie.is_none());
+    Ok(())
+}
+
+/// SPEC-217 audit (Vidoc, high): an account linked to one GitHub user is never taken over by
+/// another GitHub user who holds its login now (GitHub frees a renamed account's login); the
+/// login admits only a user not linked yet.
+#[tokio::test]
+async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    h.github.add_user("code-alice", 11, "alice");
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "alice"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::CREATED);
+    let first = github_login(&h, "code-alice").await?;
+    assert_eq!(
+        first.location.as_deref(),
+        Some("/s/studio"),
+        "alice links id 11"
+    );
+    // alice renames her GitHub account; someone else registers `alice` (another id). The fake
+    // finds a token's user by login, so the rename replaces alice's entry first.
+    h.github.add_user("code-alice", 11, "alice-renamed");
+    h.github.add_user("code-squatter", 31, "alice");
+    let squatter = github_login(&h, "code-squatter").await?;
+    assert_eq!(
+        squatter.location.as_deref(),
+        Some("/signin?error=not_admitted&next=/s/studio&login=alice"),
+        "the login of a linked account admits no one else"
+    );
+    assert!(squatter.set_cookie.is_none());
+    let linked = h.store.user_by_github_id(11).await?.ok_or("alice")?;
+    assert_eq!(linked.github_id, Some(11), "the link is kept");
+    assert!(h.store.user_by_github_id(31).await?.is_none());
+    // alice, under her new login, still signs in by her id.
+    let renamed = github_login(&h, "code-alice").await?;
+    assert_eq!(renamed.location.as_deref(), Some("/s/studio"));
+    let linked = h.store.user_by_github_id(11).await?.ok_or("alice")?;
+    assert_eq!(linked.github_login.as_deref(), Some("alice-renamed"));
     Ok(())
 }
 

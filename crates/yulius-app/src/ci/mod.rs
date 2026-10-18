@@ -34,6 +34,7 @@
 pub mod cd;
 mod disk_wait;
 mod exec;
+mod findings;
 pub mod hygiene;
 pub(crate) mod playground;
 mod tools;
@@ -116,6 +117,21 @@ impl Default for CiSettings {
             poll: Duration::from_secs(60),
         }
     }
+}
+
+/// A Vidoc finding outside a change that Yulius CI filed as an issue (SPEC-217 VSI-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiledFinding {
+    /// The scanner's fingerprint.
+    pub fingerprint: String,
+    /// The file it is in.
+    pub file: String,
+    /// The fingerprint names the text of a line of `file` (else the finding's title).
+    pub anchored: bool,
+    /// Its issue.
+    pub issue: u64,
+    /// Yulius closed the issue: the code is gone from the integration branch.
+    pub resolved: bool,
 }
 
 /// One CI run (one commit).
@@ -429,8 +445,41 @@ impl App {
         dom::project_jobs(config.commands.gate.as_deref(), &config.ci).map_err(|e| e.to_string())
     }
 
-    /// The sandbox's CI as configured now (cached for a minute per integration head).
+    /// The sandbox's CI as configured now (cached for a minute per integration head), with the
+    /// built-in security job when the sandbox can reach Vidoc (SPEC-217 VDP-001).
     pub(crate) async fn ci_gate(&self, sandbox: &SandboxRecord) -> GateView {
+        let mut view = self.ci_configured_gate(sandbox).await;
+        view.gate = self.ci_with_security(sandbox, view.gate).await;
+        view
+    }
+
+    /// `gate` with the built-in security job when the sandbox, not a playground, has
+    /// `VIDOC_API_KEY` among its applied agent secrets (its own, or the instance's Vidoc key);
+    /// a sandbox without CI gets none (SPEC-217 VDP-001).
+    pub(crate) async fn ci_with_security(
+        &self,
+        sandbox: &SandboxRecord,
+        gate: Option<Gate>,
+    ) -> Option<Gate> {
+        let gate = gate?;
+        Some(if self.ci_scans(sandbox).await {
+            dom::with_security_job(gate)
+        } else {
+            gate
+        })
+    }
+
+    /// Whether the sandbox's CI runs the Vidoc scan: not a playground, and `VIDOC_API_KEY` among
+    /// its applied agent secrets (SPEC-217 VDP-001).
+    pub(crate) async fn ci_scans(&self, sandbox: &SandboxRecord) -> bool {
+        !sandbox.is_playground()
+            && self
+                .applied_agent_secrets(&sandbox.id)
+                .await
+                .is_ok_and(|records| records.iter().any(|r| r.name == dom::VIDOC_SECRET))
+    }
+
+    async fn ci_configured_gate(&self, sandbox: &SandboxRecord) -> GateView {
         let now = self.now().0;
         let repo = self.sandbox_repo(&sandbox.id);
         let profile = delivery_profile(sandbox);
@@ -622,6 +671,7 @@ impl App {
                 }
             }
         }
+        let scans = self.ci_scans(sandbox).await;
         let pulls = match &token {
             Some(token) => {
                 self.deps
@@ -667,21 +717,29 @@ impl App {
                 // A pull request that changes the CI (an agent scoping a monorepo's jobs to
                 // its project, F 2026-10-12) is tested with its own jobs; one that removes them
                 // all is still tested with the integration branch's.
+                // Either way it keeps the trusted security job (SPEC-217 VDP-001).
                 Some(gate) => Some(match own {
-                    Some(jobs) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => Gate {
-                        jobs,
-                        source: GateSource::PullRequest,
-                    },
+                    Some(jobs) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => {
+                        let own = Gate {
+                            jobs,
+                            source: GateSource::PullRequest,
+                        };
+                        dom::keep_security_jobs(own, Some(gate), scans)
+                    }
                     _ => gate.clone(),
                 }),
                 // Bootstrap: the integration branch has no CI yet; the pull request that adds
                 // it is tested with its own configuration.
                 None if view.problem.is_none() => {
                     match self.ci_jobs_at(&repo, &pull.head_sha).await {
-                        Ok(jobs) if !jobs.is_empty() => Some(Gate {
-                            jobs,
-                            source: GateSource::PullRequest,
-                        }),
+                        Ok(jobs) if !jobs.is_empty() => Some(dom::keep_security_jobs(
+                            Gate {
+                                jobs,
+                                source: GateSource::PullRequest,
+                            },
+                            None,
+                            scans,
+                        )),
                         _ => None,
                     }
                 }
@@ -1342,10 +1400,11 @@ impl App {
                         "this commit has no CI configured".into(),
                     ));
                 }
-                Gate {
+                let own = Gate {
                     jobs,
                     source: GateSource::PullRequest,
-                }
+                };
+                dom::keep_security_jobs(own, None, self.ci_scans(sandbox).await)
             }
             None => {
                 return Err(AppError::Conflict(

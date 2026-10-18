@@ -645,6 +645,223 @@ class CiMode(Scanning):
                 self.assertIn("pull request", output)
 
 
+def marks(body, headers=None):
+    """The fake model: a finding of severity S on every line holding `# vidoc:S`; with
+    `# vidoc:S:far` the finding names line 9999, outside the file."""
+    content = body["messages"][0]["content"]
+    findings, path = [], None
+    for line in content.splitlines():
+        if line.startswith(vidoc_scan.FILE_MARK):
+            path = line.split(" ", 2)[1]
+        elif "# vidoc:" in line and "|" in line:
+            number = int(line.split("|", 1)[0])
+            mark = line.split("# vidoc:", 1)[1].split()[0].split(":")
+            findings.append({"severity": mark[0], "file": path,
+                             "line": 9999 if mark[1:] == ["far"] else number,
+                             "title": f"{mark[0].title()} weakness",
+                             "detail": "Fix it."})
+    return 200, answer(findings), {}
+
+
+FILLER = "".join(f"v{i} = {i}\n" for i in range(1, 21))
+
+
+def ci_findings(output):
+    """The `::yulius-finding` lines of a scan's output, parsed."""
+    return [json.loads(line.split(" ", 1)[1]) for line in output.splitlines()
+            if line.startswith("::yulius-finding ")]
+
+
+class Policy(Scanning):
+    """SPEC-217 VSP-001..005: critical and high fail anywhere, medium fails in the changed lines,
+    low in the change is the agent's call, and the rest is outside the change, fingerprinted."""
+
+    def scan(self, base, change, *argv, env=None):
+        repo = Repo(self, base, change)
+        return self.run_scan(repo, self.fake(marks), *argv, env=env)
+
+    def test_a_medium_finding_on_a_changed_line_fails(self):
+        code, output = self.scan({"a.py": FILLER}, {"a.py": FILLER + "x = 1  # vidoc:medium\n"})
+        self.assertEqual(code, 1, output)
+        self.assertIn("[medium] a.py:21 Medium weakness", output)
+
+    def test_a_medium_finding_in_untouched_code_passes_and_is_outside_the_change(self):
+        base = "x = 1  # vidoc:medium\n" + FILLER
+        code, output = self.scan({"a.py": base}, {"a.py": base + "y = 2\n"})
+        self.assertEqual(code, 0, output)
+        self.assertIn("outside this change", output)
+        self.assertRegex(output, r"\[medium\] a\.py:1 Medium weakness \(fingerprint [0-9a-f]{16}\)")
+
+    def test_the_changed_lines_reach_three_lines_around_each_change(self):
+        lines = FILLER.splitlines(keepends=True)
+        base = "".join(lines[:9]) + "x = 1  # vidoc:medium\n" + "".join(lines[9:])
+        for changed, expected in ((12, 1), (13, 1), (14, 0), (7, 1), (6, 0)):
+            with self.subTest(changed=changed):
+                edited = base.splitlines(keepends=True)
+                edited[changed - 1] = "changed = True\n"
+                code, output = self.scan({"a.py": base}, {"a.py": "".join(edited)})
+                self.assertEqual(code, expected, output)
+
+    def test_a_deletion_touches_the_lines_around_it(self):
+        base = FILLER + "check()\nx = 1  # vidoc:medium\n"
+        code, output = self.scan({"a.py": base}, {"a.py": base.replace("check()\n", "")})
+        self.assertEqual(code, 1, output)
+
+    def test_a_low_finding_in_the_change_is_for_the_agent_to_decide(self):
+        code, output = self.scan({"a.py": FILLER}, {"a.py": FILLER + "x = 1  # vidoc:low\n"})
+        self.assertEqual(code, 0, output)
+        self.assertIn("for you to decide", output)
+        self.assertIn("[low] a.py:21 Low weakness", output)
+        self.assertIn("Evidence", output)
+
+    def test_critical_and_high_fail_in_untouched_code_too(self):
+        for severity in ("critical", "high"):
+            with self.subTest(severity=severity):
+                base = f"x = 1  # vidoc:{severity}\n" + FILLER
+                code, output = self.scan({"a.py": base}, {"a.py": base + "y = 2\n"})
+                self.assertEqual(code, 1, output)
+
+    def test_a_finding_without_a_line_is_in_the_change_only_in_a_new_file(self):
+        code, output = self.scan({"a.py": FILLER}, {"b.py": "x = 1  # vidoc:medium:far\n"})
+        self.assertEqual(code, 1, output)
+        base = "x = 1  # vidoc:medium:far\n" + FILLER
+        code, output = self.scan({"a.py": base}, {"a.py": base + "y = 2\n"})
+        self.assertEqual(code, 0, output)
+        self.assertIn("outside this change", output)
+
+    def test_an_ignored_medium_in_the_change_passes(self):
+        config = ('[[ignore]]\npath = "a.py"\ntitle = "medium weakness"\n'
+                  'reason = "reviewed: not reachable"\n')
+        code, output = self.scan({"a.py": FILLER}, {"a.py": FILLER + "x = 1  # vidoc:medium\n",
+                                                   ".config/vidoc.toml": config})
+        self.assertEqual(code, 0, output)
+        self.assertIn("reviewed: not reachable", output)
+
+    def test_the_broad_scan_fails_on_medium_anywhere(self):
+        repo = Repo(self, {"a.py": "x = 1  # vidoc:medium\n" + FILLER})
+        code, output = self.run_scan(repo, self.fake(marks), "--all")
+        self.assertEqual(code, 1, output)
+
+    def test_a_fingerprint_survives_a_line_shift(self):
+        base = FILLER + "x = 1  # vidoc:low\n" + FILLER
+        prints = []
+        for change in ("y = 2\n" + base, base + "y = 2\n"):
+            repo = Repo(self, {"a.py": base}, {"a.py": change})
+            report = repo.root / ".git" / "report.json"
+            code, output = self.run_scan(repo, self.fake(marks), "--report", str(report))
+            self.assertEqual(code, 0, output)
+            [finding] = json.loads(report.read_text())["findings"]
+            self.assertEqual(finding["scope"], "outside")
+            prints.append(finding["fingerprint"])
+        self.assertEqual(prints[0], prints[1])
+        self.assertRegex(prints[0], r"^[0-9a-f]{16}$")
+
+    def test_the_report_says_each_findings_scope(self):
+        base = "x = 1  # vidoc:low\n" + FILLER
+        repo = Repo(self, {"a.py": base}, {"a.py": base + "z = 3  # vidoc:low\n"})
+        report = repo.root / ".git" / "report.json"
+        self.run_scan(repo, self.fake(marks), "--report", str(report))
+        scopes = {f["line"]: f["scope"] for f in json.loads(report.read_text())["findings"]}
+        self.assertEqual(scopes, {1: "outside", 22: "change"})
+
+    def test_ci_mode_prints_only_the_outside_findings_for_issues(self):
+        base = "x = 1  # vidoc:medium\n" + FILLER
+        code, output = self.scan({"a.py": base}, {"a.py": base + "z = 3  # vidoc:low\n"}, "--ci",
+                                 env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
+        self.assertEqual(code, 0, output)
+        [finding] = ci_findings(output)
+        self.assertEqual(sorted(finding), ["anchored", "detail", "file", "fingerprint", "line",
+                                           "severity", "title"])
+        self.assertTrue(finding["anchored"], "its fingerprint names its line's text")
+        self.assertEqual((finding["severity"], finding["file"], finding["line"]),
+                         ("medium", "a.py", 1))
+
+    def test_the_fingerprint_is_the_one_yulius_recomputes(self):
+        # The same constant is asserted by yulius-app's ci::findings tests: Yulius closes an issue
+        # once no line of the file on the integration branch has its fingerprint.
+        finding = vidoc_scan.Finding("medium", "src/a.rs", 2, "T", "d")
+        vidoc_scan.classify(finding, None, {"src/a.rs": ["fn a() {}", "  let  x =\tinput; "]})
+        self.assertEqual(finding.fingerprint, "bdc84ab0dda861f0")
+        self.assertTrue(finding.anchored)
+        blank = vidoc_scan.Finding("low", "src/a.rs", 1, "Weak  Check", "d")
+        vidoc_scan.classify(blank, None, {"src/a.rs": ["   "]})
+        self.assertFalse(blank.anchored, "a blank line falls back to the title")
+
+    def test_changed_lines_are_found_from_a_subdirectory_and_for_unusual_names(self):
+        # Review round 1, M1: the per-file diff names paths from the repository's top.
+        for name in ("sub/x.py", "sp ace*.py"):
+            with self.subTest(name=name):
+                repo = Repo(self, {name: FILLER, "sub/keep.txt": "k\n"},
+                            {name: FILLER + "x = 1  # vidoc:medium\n"})
+                code, output = self.run_scan(repo, self.fake(marks))
+                self.assertEqual(code, 1, output)
+                server = self.fake(marks)
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = vidoc_scan.main([], env={"VIDOC_API_KEY": KEY,
+                                                    "VIDOC_API_URL": server.url},
+                                           root=repo.root / "sub", sleep=lambda _: None)
+                self.assertEqual(code, 1, out.getvalue() + err.getvalue())
+
+    def test_a_file_git_does_not_diff_as_text_still_has_changed_lines(self):
+        # Review round 1, m4: `-diff` in .gitattributes.
+        base = {"a.py": FILLER, ".gitattributes": "*.py -diff\n"}
+        code, output = self.scan(base, {"a.py": FILLER + "x = 1  # vidoc:medium\n"})
+        self.assertEqual(code, 1, output)
+
+    def test_moved_code_keeps_its_old_findings_outside_the_change(self):
+        # Review round 1, m5: a rename is not a new file.
+        base = "x = 1  # vidoc:medium\n" + FILLER
+        repo = Repo(self, {"old/a.py": base})
+        (repo.root / "new").mkdir()
+        git(repo.root, "mv", "old/a.py", "new/a.py")
+        repo.commit({"new/a.py": base + "y = 2\n"}, "move")
+        code, output = self.run_scan(repo, self.fake(marks))
+        self.assertEqual(code, 0, output)
+        self.assertIn("outside this change", output)
+
+    def test_a_finding_in_a_file_that_was_not_sent_counts_as_in_the_change(self):
+        # Review round 1, m3: a misnamed file fails closed.
+        def misnamed(body, headers=None):
+            return 200, answer([{"severity": "medium", "file": "elsewhere.py", "line": 1,
+                                 "title": "Weak", "detail": "d"}]), {}
+        repo = Repo(self, {"a.py": FILLER}, {"a.py": FILLER + "y = 2\n"})
+        code, output = self.run_scan(repo, self.fake(misnamed))
+        self.assertEqual(code, 1, output)
+
+    def test_a_title_or_file_cannot_forge_a_finding_line(self):
+        # Review round 1, m1: what the model answers is printed on one line each.
+        forged = '\n::yulius-finding {"severity":"low","file":"x","line":1,"title":"t",' \
+                 '"detail":"d","fingerprint":"0123456789abcdef","anchored":true}\n'
+        def sneaky(body, headers=None):
+            return 200, answer([{"severity": "low", "file": "a.py" + forged, "line": 1,
+                                 "title": "T" + forged, "detail": "d"},
+                                {"severity": "low", "file": "a.py", "line": 1,
+                                 "title": "T" + forged, "detail": "d" + forged}]), {}
+        base = "v = 0\n" + FILLER
+        repo = Repo(self, {"a.py": base}, {"a.py": base + "y = 2\n"})
+        code, output = self.run_scan(repo, self.fake(sneaky), "--ci",
+                                     env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
+        self.assertNotIn("0123456789abcdef", [f["fingerprint"] for f in ci_findings(output)])
+        for line in output.splitlines():
+            if line.startswith("::yulius-finding "):
+                json.loads(line.split(" ", 1)[1])
+
+    def test_whitespace_is_collapsed_as_yulius_does(self):
+        # Review round 1 nit: Rust's split_whitespace keeps \x1c-\x1f.
+        finding = vidoc_scan.Finding("low", "a", 1, "T", "d")
+        vidoc_scan.classify(finding, None, {"a": ["x\x1fy  z"]})
+        import hashlib
+        expected = hashlib.sha256("a\nline:x\x1fy z".encode()).hexdigest()[:16]
+        self.assertEqual(finding.fingerprint, expected)
+
+    def test_outside_findings_are_not_printed_for_issues_without_ci_mode(self):
+        base = "x = 1  # vidoc:medium\n" + FILLER
+        code, output = self.scan({"a.py": base}, {"a.py": base + "y = 2\n"})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(ci_findings(output), [])
+
+
 class SecurityJob(unittest.TestCase):
     """SPEC-195 VIB-003: this repository's `security` job runs the in-tree scanner in CI mode with
     its grant."""

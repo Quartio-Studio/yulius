@@ -44,7 +44,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, macos, test, deps, then rustdoc with warnings denied |
-| `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open critical or high findings, exit 2 when it could not run. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
+| `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
@@ -150,12 +150,29 @@ for every branch that has that commit. It then prints `Security scan disabled: .
 scanned.` and exits 0. Agents report such a run as disabled, never as passed. Turn it off or on in a
 reviewed pull request that says why. Exit codes:
 
-- 0: passed (no open critical or high finding in a complete scan), nothing to scan, or disabled.
-  Its message says which; with `--ci`, nothing to scan and disabled end skipped, since nothing was
-  checked. Medium and low findings are printed but do not fail the scan.
-- 1: failed. The causes: an open critical or high finding (each one is printed with severity,
-  `file:line`, title and detail); an answer that could not be read; a request Vidoc refused with
-  another 4xx.
+- 0: passed (no open critical or high finding, and no open medium one in the change, in a
+  complete scan), nothing to scan, or disabled. Its message says which; with `--ci`, nothing to
+  scan and disabled end skipped, since nothing was checked.
+- 1: failed. The causes: an open critical or high finding anywhere in a scanned file, or an open
+  medium finding in the change (each one is printed with severity, `file:line`, title and detail);
+  an answer that could not be read; a request Vidoc refused with another 4xx.
+
+What counts as the change
+([SPEC-217](../../.ai/specs/SPEC-217-vidoc-security-didn-t-work-for-a-while-a.md),
+[ADR-0172](../decisions/0172-medium-findings-in-the-change-block-and-the-rest-become-issues.md)):
+the lines the branch added or modified since the merge base (`git diff -U0`), with 3 lines of
+slack because the model's line numbers are approximate, and the whole of a new file. In the broad
+scan every line counts.
+
+- **Low findings in the change** are printed "for you to decide": fix each one test-first, or say
+  in the spec's Evidence why not. They do not fail the scan.
+- **Medium and low findings outside the change** are printed under "outside this change", each
+  with a fingerprint: the path and the line's text, so it survives line shifts. With `--ci` they
+  are also printed as `::yulius-finding <json>` lines. When a pull request head's `security` job
+  ends, Yulius files each new fingerprint as an issue (`area: security`, `source: vidoc`, at most
+  5 per job) and reopens the closed issue of one reported again. When a `security` job of a pull
+  request or of `dev` ends, Yulius closes the issues whose line (fingerprint) or file is gone from
+  `dev`. `--report` gives each finding its `scope` and `fingerprint`.
 - 2: not run. The causes:
   - no key, or a key that is malformed or refused;
   - Vidoc unreachable after the retries, or out of quota;

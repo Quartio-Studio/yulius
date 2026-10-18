@@ -78,6 +78,17 @@ pub struct FakeGitHub {
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
     /// Issues opened (DLV-008).
     pub issues: Mutex<Vec<(String, NewIssue)>>,
+    /// When set, opening an issue fails as with GitHub down.
+    pub fail_issues: std::sync::atomic::AtomicBool,
+    /// Issues closed (number to the comments said, in order) by `set_issue_state`; any other
+    /// issue is open.
+    pub closed_issues: Mutex<HashMap<u64, Vec<String>>>,
+    /// Every comment `set_issue_state` added: (number, comment).
+    pub issue_comments: Mutex<Vec<(u64, String)>>,
+    /// Issues GitHub no longer has (deleted or transferred): `set_issue_state` answers NotFound.
+    pub missing_issues: Mutex<Vec<u64>>,
+    /// How many times `set_issue_state` was called.
+    pub issue_state_calls: std::sync::atomic::AtomicUsize,
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
@@ -270,6 +281,9 @@ impl GitHubPort for FakeGitHub {
         repo: &str,
         issue: &NewIssue,
     ) -> AppResult<GhIssue> {
+        if self.fail_issues.load(Ordering::SeqCst) {
+            return Err(AppError::Upstream("github down".into()));
+        }
         let mut issues = self.issues.lock().map_err(AppError::internal)?;
         issues.push((login_of(token), issue.clone()));
         let number = u64::try_from(issues.len()).unwrap_or(0) + 100;
@@ -279,6 +293,41 @@ impl GitHubPort for FakeGitHub {
             number,
             html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
         })
+    }
+    async fn set_issue_state(
+        &self,
+        token: &Secret,
+        _owner: &str,
+        _repo: &str,
+        number: u64,
+        open: bool,
+        comment: &str,
+    ) -> AppResult<bool> {
+        self.issue_state_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .missing_issues
+            .lock()
+            .map_err(AppError::internal)?
+            .contains(&number)
+        {
+            return Err(AppError::NotFound);
+        }
+        let mut closed = self.closed_issues.lock().map_err(AppError::internal)?;
+        if closed.contains_key(&number) != open {
+            return Ok(false);
+        }
+        if open {
+            closed.remove(&number);
+        } else {
+            closed.insert(number, vec![comment.to_owned()]);
+        }
+        drop(closed);
+        self.issue_comments
+            .lock()
+            .map_err(AppError::internal)?
+            .push((number, comment.to_owned()));
+        self.record(token, format!("set_issue_state #{number} open={open}"));
+        Ok(true)
     }
     async fn create_pull(
         &self,

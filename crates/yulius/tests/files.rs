@@ -243,6 +243,73 @@ async fn write_users_edit_files_inside_the_folder_only() -> TestResult {
     Ok(())
 }
 
+/// SPEC-217 audit (Vidoc, high): saving never writes through a link an agent planted at the
+/// temporary file's name: the file outside the folder keeps its content and the saved file gets
+/// the new one.
+#[tokio::test]
+async fn a_save_never_writes_through_a_planted_temporary_link() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(&repo)?;
+    std::fs::write(repo.join("a.txt"), "old\n")?;
+    std::fs::write(data.join("victim.db"), "precious")?;
+    // The name the old save wrote to before renaming, planted as a link out of the folder.
+    std::os::unix::fs::symlink(data.join("victim.db"), repo.join(".a.txt.yulius-edit"))?;
+    let read = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/content?path=a.txt",
+        None,
+        &alice,
+    )
+    .await?;
+    let sha = read.body["sha256"].as_str().ok_or("sha")?.to_owned();
+    let saved = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/content",
+        Some(json!({"path": "a.txt", "content": "new\n", "base_sha256": sha})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    assert_eq!(std::fs::read_to_string(data.join("victim.db"))?, "precious");
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt"))?, "new\n");
+    assert!(
+        std::fs::symlink_metadata(repo.join("a.txt"))?.is_file(),
+        "the saved file is a file, not the link"
+    );
+    // The mode is set on the new file's handle, never through a path an agent could swap
+    // (review round 2): the saved file keeps the old one's mode.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(repo.join("a.txt"), std::fs::Permissions::from_mode(0o640))?;
+    let read = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/content?path=a.txt",
+        None,
+        &alice,
+    )
+    .await?;
+    let sha = read.body["sha256"].as_str().ok_or("sha")?.to_owned();
+    let saved = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/content",
+        Some(json!({"path": "a.txt", "content": "newer\n", "base_sha256": sha})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    let mode = std::fs::metadata(repo.join("a.txt"))?.permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o640);
+    Ok(())
+}
+
 /// The Editor looks at the file in front every 2 s with the `sha256` it has (SPEC-181 EDT-014): an
 /// unchanged file answers 204 with no body, a changed one answers the file, with a read's rules.
 #[tokio::test]

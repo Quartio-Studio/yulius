@@ -878,7 +878,17 @@ Vidoc is an optional instance service, like Jev
   never resolve it.
 - **The scan.** It runs where the code is. `scripts/vidoc_scan.py`, embedded in the binary as
   `yulius security-scan`, reads `HEAD`'s tree and sends line-numbered chunks to `/v1/messages`.
-  It reads the JSON findings back, and fails on open critical or high ones.
+  It reads the JSON findings back. It fails on open critical or high ones, and on open medium ones
+  in the lines the branch changed (`git diff -U0`, 3 lines of slack; SPEC-217, ADR-0172). It prints
+  low ones in the change for the agent to decide, and fingerprints the rest as outside the change.
+- **The default pipeline.** `App::ci_gate` and `ci_verified_gate` add the built-in `security` job
+  (`yulius-domain` `ci::with_security_job`: `yulius security-scan --ci`, granted `VIDOC_API_KEY`)
+  when the sandbox's applied agent secrets have that key and its CI does not scan already.
+- **Issues.** When a `security` job ends, `ci/findings.rs` reads its `::yulius-finding` lines. On a
+  pull request head, it files each new fingerprint (table `security_findings`, migration 0036) and
+  reopens the issue of one reported again. On a pull request or on the integration branch, it
+  closes the issues whose fingerprint no line of the file on `origin/<integration>` has any more
+  (`GitHubPort::create_issue`, `set_issue_state`).
 - **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
   has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
 
@@ -888,10 +898,12 @@ flowchart LR
   FILE["YULIUS_VIDOC_API_KEY_FILE"] -.->|"while nothing is saved"| APP
   APP -->|"virtual agent secret VIDOC_API_KEY, unless the project has its own"| PX["Egress proxy"]
   AG["Agent: yulius security-scan, scripts/dev security"] -->|"x-api-key: yulius-secret-VIDOC_API_KEY"| PX
-  CI["CI job security, granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
+  CI["CI job security (built in when the key applies), granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
   PX -->|"the key toward model.vidocsecurity.com only"| V["Vidoc /v1/messages, vidoc-1"]
   V -->|"JSON findings: exit 0, 1, or 2 when not run"| AG
-  APP -->|"key set: briefing and onboarding add the scan"| BOOT["infra bootstrap"]
+  CI -->|"::yulius-finding lines: outside the change"| ISS["ci/findings.rs: file, reopen, close"]
+  ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
+  APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
 ```
 
 ## CD (deployment)

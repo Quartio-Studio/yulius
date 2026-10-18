@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
-use yulius_app::ci::{CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate};
+use yulius_app::ci::{CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, FiledFinding};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
@@ -14,6 +14,24 @@ use crate::{SqliteStore, bad_column, db, to_u32};
 
 const RUN_COLS: &str = "id, sandbox_id, reference, sha, source, state, reason, requested_by, \
     status_for, status_note, status_attempts, queued_at, started_at, ended_at";
+/// How long a claim without an issue holds (SPEC-217 VSI-002): a claim left by a process that
+/// stopped between claiming and filing is taken over after it.
+const SECURITY_CLAIM_TTL_MS: i64 = 60 * 60 * 1000;
+
+const FINDING_COLS: &str = "fingerprint, file, anchored, issue_number, resolved_at";
+
+fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<FiledFinding> {
+    let issue: i64 = row.get("issue_number")?;
+    let resolved: Option<i64> = row.get("resolved_at")?;
+    Ok(FiledFinding {
+        fingerprint: row.get("fingerprint")?,
+        file: row.get("file")?,
+        anchored: row.get("anchored")?,
+        issue: u64::try_from(issue).map_err(|_| bad_column("issue number", &issue.to_string()))?,
+        resolved: resolved.is_some(),
+    })
+}
+
 const JOB_COLS: &str = "id, run_id, ordinal, name, job_key, command, matrix, state, reason, \
     exit_code, started_at, ended_at, cpus, memory_mb";
 
@@ -414,6 +432,156 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn claim_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        (fingerprint, file, anchored): (&str, &str, bool),
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (sandbox, fingerprint, file) = (
+            sandbox.as_str().to_owned(),
+            fingerprint.to_owned(),
+            file.to_owned(),
+        );
+        self.call(move |c| {
+            let added = c
+                .execute(
+                    "INSERT INTO security_findings \
+                     (sandbox_id, fingerprint, file, anchored, claimed_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT (sandbox_id, fingerprint) DO UPDATE SET \
+                     claimed_at = excluded.claimed_at, file = excluded.file, \
+                     anchored = excluded.anchored \
+                     WHERE security_findings.issue_number IS NULL \
+                     AND security_findings.claimed_at < ?6",
+                    params![
+                        sandbox,
+                        fingerprint,
+                        file,
+                        anchored,
+                        at.0,
+                        at.0.saturating_sub(SECURITY_CLAIM_TTL_MS)
+                    ],
+                )
+                .map_err(db)?;
+            Ok(added == 1)
+        })
+        .await
+    }
+
+    async fn filed_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+    ) -> AppResult<Option<FiledFinding>> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        self.call(move |c| {
+            c.query_row(
+                &format!(
+                    "SELECT {FINDING_COLS} FROM security_findings \
+                     WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number IS NOT NULL"
+                ),
+                params![sandbox, fingerprint],
+                finding_from_row,
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn unresolved_security_findings(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<FiledFinding>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(&format!(
+                    "SELECT {FINDING_COLS} FROM security_findings \
+                     WHERE sandbox_id = ?1 AND issue_number IS NOT NULL AND resolved_at IS NULL \
+                     ORDER BY random() LIMIT ?2"
+                ))
+                .map_err(db)?;
+            statement
+                .query_map(params![sandbox, limit], finding_from_row)
+                .map_err(db)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db)
+        })
+        .await
+    }
+
+    async fn forget_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        issue: u64,
+    ) -> AppResult<()> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        let issue = i64::try_from(issue).map_err(AppError::internal)?;
+        self.call(move |c| {
+            c.execute(
+                "DELETE FROM security_findings \
+                 WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number = ?3",
+                params![sandbox, fingerprint, issue],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn resolve_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        at: Option<Timestamp>,
+    ) -> AppResult<()> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE security_findings SET resolved_at = ?3 \
+                 WHERE sandbox_id = ?1 AND fingerprint = ?2",
+                params![sandbox, fingerprint, at.map(|t| t.0)],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn settle_security_finding(
+        &self,
+        sandbox: &SandboxId,
+        fingerprint: &str,
+        issue: Option<u64>,
+    ) -> AppResult<()> {
+        let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
+        let issue = issue
+            .map(i64::try_from)
+            .transpose()
+            .map_err(AppError::internal)?;
+        self.call(move |c| {
+            match issue {
+                Some(number) => c.execute(
+                    "UPDATE security_findings SET issue_number = ?3 \
+                     WHERE sandbox_id = ?1 AND fingerprint = ?2",
+                    params![sandbox, fingerprint, number],
+                ),
+                None => c.execute(
+                    "DELETE FROM security_findings \
+                     WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number IS NULL",
+                    params![sandbox, fingerprint],
+                ),
+            }
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
             let changed = c
@@ -644,6 +812,98 @@ mod tests {
         assert_eq!(store.prune_ci_runs(2, Timestamp(100)).await?, 1);
         assert!(store.ci_run("m1").await?.is_some(), "main's verdict stays");
         assert!(store.ci_run("m0").await?.is_none());
+        Ok(())
+    }
+
+    /// SPEC-217 VSI-002: a fingerprint is claimed once per sandbox; a failed filing releases it,
+    /// a filed one stays.
+    #[tokio::test]
+    async fn security_findings_are_claimed_once_per_sandbox() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let (one, two) = (SandboxId::parse("s1")?, SandboxId::parse("s2")?);
+        let (at, print) = (Timestamp(5), "0123456789abcdef");
+        let finding = (print, "src/a.rs", true);
+        assert!(store.claim_security_finding(&one, finding, at).await?);
+        assert!(!store.claim_security_finding(&one, finding, at).await?);
+        assert!(
+            store.claim_security_finding(&two, finding, at).await?,
+            "per sandbox"
+        );
+        assert_eq!(
+            store.filed_security_finding(&one, print).await?,
+            None,
+            "not filed yet"
+        );
+        assert!(
+            store
+                .claim_security_finding(&two, finding, Timestamp(5 + 60 * 60 * 1000 + 1))
+                .await?,
+            "a claim left without an issue is taken over after an hour"
+        );
+        store.settle_security_finding(&one, print, None).await?;
+        assert!(
+            store.claim_security_finding(&one, finding, at).await?,
+            "released"
+        );
+        store.settle_security_finding(&one, print, Some(42)).await?;
+        store.settle_security_finding(&one, print, None).await?;
+        assert!(
+            !store.claim_security_finding(&one, finding, at).await?,
+            "filed stays"
+        );
+        let later = Timestamp(at.0 + 2 * 60 * 60 * 1000);
+        assert!(
+            !store.claim_security_finding(&one, finding, later).await?,
+            "a filed finding is never taken over"
+        );
+        let filed = FiledFinding {
+            fingerprint: print.into(),
+            file: "src/a.rs".into(),
+            anchored: true,
+            issue: 42,
+            resolved: false,
+        };
+        assert_eq!(
+            store.filed_security_finding(&one, print).await?,
+            Some(filed.clone())
+        );
+        assert_eq!(
+            store.unresolved_security_findings(&one, 10).await?,
+            std::slice::from_ref(&filed)
+        );
+        store
+            .resolve_security_finding(&one, print, Some(Timestamp(9)))
+            .await?;
+        assert_eq!(store.unresolved_security_findings(&one, 10).await?, []);
+        assert!(
+            store
+                .filed_security_finding(&one, print)
+                .await?
+                .is_some_and(|f| f.resolved)
+        );
+        store.resolve_security_finding(&one, print, None).await?;
+        assert_eq!(store.unresolved_security_findings(&one, 10).await?, [filed]);
+        // Another run already filed it anew as #43: forgetting the stale #42 keeps that record.
+        store.forget_security_finding(&one, print, 42).await?;
+        assert!(
+            store.claim_security_finding(&one, finding, at).await?,
+            "the issue-42 record is forgotten"
+        );
+        store.settle_security_finding(&one, print, Some(43)).await?;
+        store.forget_security_finding(&one, print, 42).await?;
+        assert!(
+            store
+                .filed_security_finding(&one, print)
+                .await?
+                .is_some_and(|f| f.issue == 43),
+            "a stale forget keeps the newer record"
+        );
+        store.forget_security_finding(&one, print, 43).await?;
+        assert_eq!(store.filed_security_finding(&one, print).await?, None);
+        assert!(
+            store.claim_security_finding(&one, finding, at).await?,
+            "a forgotten finding is claimed anew"
+        );
         Ok(())
     }
 

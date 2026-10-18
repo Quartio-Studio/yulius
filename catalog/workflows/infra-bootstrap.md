@@ -30,8 +30,8 @@ Follow `infra-bootstrap` for the content and `delivery-pipeline` for the deliver
   named in `secrets`. Move what deploys today there; ask with `needs_you` for what only a person
   gives. A merge deploys nothing; production is a person's. App keys live in an ignored `.env`
   (`secret_copy_to_env`).
-- Security scan: with a `## Security scan` briefing section, add the `security` job
-  (`yulius security-scan --ci`) and the rule to scan before delivery; else note: no Vidoc key on
-  this instance.
+- Security scan: with a `## Security scan` briefing section, CI runs the built-in job
+  (`yulius security-scan --ci`): add only the rule to scan before delivery; else note: no Vidoc
+  key on this instance.
 - Keep each step a small pull request (chain the next task). Afterwards the foundations stay
   stable: change them only when the product needs it, with a new ADR.

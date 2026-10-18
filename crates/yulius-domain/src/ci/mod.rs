@@ -333,6 +333,63 @@ pub fn effective_gate(profile: Option<&str>, project: &[Job]) -> Option<Gate> {
     })
 }
 
+/// The key of the built-in Vidoc security job (SPEC-217 VDP-001).
+pub const SECURITY_JOB: &str = "security";
+/// What the built-in security job runs: Yulius's embedded scanner in CI mode (SPEC-195).
+pub const SECURITY_COMMAND: &str = "yulius security-scan --ci";
+/// The agent secret the built-in security job is granted.
+pub const VIDOC_SECRET: &str = "VIDOC_API_KEY";
+
+/// Whether `job` runs the security scan: keyed `security`, or running the scanner.
+fn scans(job: &Job) -> bool {
+    job.key == SECURITY_JOB
+        || job.command.contains("security-scan")
+        || job.command.contains("vidoc_scan")
+}
+
+fn built_in_security_job() -> Job {
+    Job {
+        name: SECURITY_JOB.to_owned(),
+        key: SECURITY_JOB.to_owned(),
+        command: SECURITY_COMMAND.to_owned(),
+        matrix: None,
+        need: Need::default(),
+        secrets: vec![VIDOC_SECRET.to_owned()],
+    }
+}
+
+/// `gate` with the built-in security job (SPEC-217 VDP-001) added, unless it already has a job
+/// keyed `security` or one that runs the scanner (`security-scan`, `vidoc_scan`). For the trusted
+/// CI (the profile's or the integration branch's) only. It joins even a gate at [`MAX_JOBS`]: the
+/// limit bounds what a project configures, not the scan Yulius adds.
+#[must_use]
+pub fn with_security_job(mut gate: Gate) -> Gate {
+    if !gate.jobs.iter().any(scans) {
+        gate.jobs.push(built_in_security_job());
+    }
+    gate
+}
+
+/// The jobs of a pull request tested with its own configuration (SPEC-217 VDP-001), with the
+/// trusted security job(s) it cannot drop: the scanning jobs of `trusted` (the integration
+/// branch's CI, with the built-in job already added), else, with `vidoc`, the built-in job. Each
+/// replaces the pull request's job of the same key, so a job it named `security` or one that
+/// only mentions the scanner never stands in for the scan.
+#[must_use]
+pub fn keep_security_jobs(mut own: Gate, trusted: Option<&Gate>, vidoc: bool) -> Gate {
+    let mut kept: Vec<Job> = trusted
+        .map(|gate| gate.jobs.iter().filter(|job| scans(job)).cloned().collect())
+        .unwrap_or_default();
+    if kept.is_empty() && vidoc {
+        kept.push(built_in_security_job());
+    }
+    own.jobs
+        .retain(|job| !kept.iter().any(|k| k.key == job.key));
+    // Even past [`MAX_JOBS`]: the trusted gate's own jobs are bounded by it.
+    own.jobs.extend(kept);
+    own
+}
+
 /// The state of a run from its jobs' states: running while any job is active, then failed if
 /// any failed, error if any errored, cancelled if any was cancelled, else passed (skipped jobs
 /// included, SPEC-162). A run without jobs is an error.
@@ -991,6 +1048,132 @@ mod tests {
             Some((GateSource::ProjectConfig, 1))
         );
         assert_eq!(effective_gate(None, &[]), None);
+        Ok(())
+    }
+
+    /// SPEC-217 VDP-001: the built-in security job joins a gate once, granted the Vidoc key; a
+    /// gate that already scans keeps its own job.
+    #[test]
+    fn the_built_in_security_job_joins_a_gate_that_does_not_scan() -> Result<(), CiConfigError> {
+        let def = |name: &str, command: &str| JobDef {
+            name: name.into(),
+            command: command.into(),
+            matrix: Vec::new(),
+            need: Need::default(),
+            secrets: Vec::new(),
+        };
+        let gate = |defs: &[JobDef]| -> Result<Gate, CiConfigError> {
+            Ok(Gate {
+                jobs: expand_jobs(defs)?,
+                source: GateSource::ProjectConfig,
+            })
+        };
+        let added = with_security_job(gate(&[def("test", "make test")])?);
+        let names: Vec<_> = added.jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, ["test", "security"]);
+        assert_eq!(added.jobs[1].command, "yulius security-scan --ci");
+        assert_eq!(added.jobs[1].secrets, ["VIDOC_API_KEY"]);
+        assert_eq!(with_security_job(added.clone()), added, "added once");
+        for own in [
+            def("security", "make audit"),
+            def("scan", "yulius security-scan --ci"),
+            def("vidoc", "python3 scripts/vidoc_scan.py --ci"),
+        ] {
+            let mine = gate(&[def("test", "make test"), own])?;
+            assert_eq!(with_security_job(mine.clone()), mine);
+        }
+        Ok(())
+    }
+
+    /// SPEC-217 VDP-001 (the branch's own CI scan, medium): a pull request tested with its own
+    /// jobs cannot drop or replace the trusted security job, by its key or by a command that
+    /// merely mentions the scanner.
+    #[test]
+    fn a_pull_request_with_its_own_jobs_keeps_the_trusted_security_job() -> Result<(), CiConfigError>
+    {
+        let def = |name: &str, command: &str| JobDef {
+            name: name.into(),
+            command: command.into(),
+            matrix: Vec::new(),
+            need: Need::default(),
+            secrets: Vec::new(),
+        };
+        let gate = |source: GateSource, defs: &[JobDef]| -> Result<Gate, CiConfigError> {
+            Ok(Gate {
+                jobs: expand_jobs(defs)?,
+                source,
+            })
+        };
+        let commands = |gate: &Gate| -> Vec<(String, String)> {
+            gate.jobs
+                .iter()
+                .map(|j| (j.key.clone(), j.command.clone()))
+                .collect()
+        };
+        let trusted = with_security_job(gate(GateSource::ProjectConfig, &[def("test", "make")])?);
+        let own = gate(
+            GateSource::PullRequest,
+            &[
+                def("test", "make other"),
+                def("security", "echo fake pass"),
+                def("lint", "true # security-scan"),
+            ],
+        )?;
+        let kept = keep_security_jobs(own.clone(), Some(&trusted), false);
+        assert_eq!(
+            commands(&kept),
+            [
+                ("test".to_owned(), "make other".to_owned()),
+                ("lint".to_owned(), "true # security-scan".to_owned()),
+                ("security".to_owned(), SECURITY_COMMAND.to_owned()),
+            ]
+        );
+        assert_eq!(kept.source, GateSource::PullRequest);
+        // Bootstrap (no trusted CI yet): with a Vidoc key, the built-in job; without, unchanged.
+        let built_in = keep_security_jobs(own.clone(), None, true);
+        assert_eq!(
+            built_in.jobs.last().map(|j| j.command.as_str()),
+            Some(SECURITY_COMMAND)
+        );
+        assert_eq!(
+            built_in.jobs.len(),
+            3,
+            "the pull request's `security` job is replaced"
+        );
+        assert_eq!(keep_security_jobs(own.clone(), None, false), own);
+        // The integration branch's own scanning job (this repository's) is the one kept.
+        let mine = gate(
+            GateSource::ProjectConfig,
+            &[def("security", "python3 scripts/vidoc_scan.py --ci")],
+        )?;
+        let kept = keep_security_jobs(own, Some(&mine), true);
+        assert_eq!(
+            kept.jobs.last().map(|j| j.command.as_str()),
+            Some("python3 scripts/vidoc_scan.py --ci")
+        );
+        // A pull request at the job limit still gets the scan (review round 6), and so does a
+        // trusted gate at the limit.
+        let one = expand_jobs(&[def("job", "true")])?.remove(0);
+        let full = |source: GateSource| Gate {
+            jobs: (0..MAX_JOBS)
+                .map(|i| Job {
+                    name: format!("job{i}"),
+                    key: format!("job{i}"),
+                    ..one.clone()
+                })
+                .collect(),
+            source,
+        };
+        let kept = keep_security_jobs(full(GateSource::PullRequest), None, true);
+        assert_eq!(
+            kept.jobs.last().map(|j| j.command.as_str()),
+            Some(SECURITY_COMMAND)
+        );
+        let trusted = with_security_job(full(GateSource::ProjectConfig));
+        assert_eq!(
+            trusted.jobs.last().map(|j| j.command.as_str()),
+            Some(SECURITY_COMMAND)
+        );
         Ok(())
     }
 
