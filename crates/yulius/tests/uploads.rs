@@ -1060,5 +1060,11 @@ async fn an_editor_upload_never_replaces_a_file_through_a_swapped_folder() -> Te
         std::fs::read_to_string(outside.join("a.txt"))?,
         "precious\n"
     );
+    assert!(sent.status.is_success(), "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("docs.aside/a.txt"))?,
+        "new\n",
+        "the file was replaced in the real folder"
+    );
     Ok(())
 }

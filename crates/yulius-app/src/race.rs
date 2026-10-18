@@ -1,7 +1,7 @@
 //! Test-only pause points between a check of a folder a contained agent can change and its use
 //! (SPEC-220, ADR-0174). A test registers a hook that swaps a folder for a link exactly there, so
 //! the race is reproduced deterministically: no sleeps, no rename loops. Without the
-//! `test-support` feature (production builds) [`reached`] does nothing.
+//! `test-support` feature (production builds) the pause points do nothing.
 
 use std::path::Path;
 
