@@ -387,25 +387,26 @@ path = "crates/yulius-app/src/ci/exec.rs"
 title = "from pull request-defined CI jobs"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
 
-# A delivery environment's `command` is the sandbox profile's, which only repository administrators
-# set (`PATCH /api/sandboxes/{sid}`), never read from the repository; since SPEC-219 (#656) it runs
-# like a CD run of its stage: the commit's files from a mirror only Yulius writes, in the sandbox's
-# containment with a fresh HOME. Reported on task #205's change scan, which made it so.
+# A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
+# (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
+# when a repository admin or maintainer imports the repository (`import_profile`). Since SPEC-219
+# (#656) it runs like a CD run of its stage: the commit's files from a mirror only Yulius writes,
+# in the sandbox's containment with a fresh HOME and no secrets, so it gets no more than the
+# sandbox's agents have. Reported on task #205's change scan, which made it so; one entry per
+# wording Vidoc used.
 [[ignore]]
 path = "crates/yulius-app/src/delivery.rs"
 title = "command executed by environment runs"
-reason = "the command is the admin-set profile's, not the repository's, and runs contained from a Yulius-only mirror (SPEC-219, ADR-0175)"
+reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
 
-# The same finding, as Vidoc words it on another scan (one entry per wording).
 [[ignore]]
 path = "crates/yulius-app/src/delivery.rs"
 title = "deployment command taken from project configuration"
-reason = "the command is the admin-set profile's, not the repository's, and runs contained from a Yulius-only mirror (SPEC-219, ADR-0175)"
+reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
 
-# This file is configuration, reviewed like code: each entry names its reason, and the entries for
-# real weaknesses name the open issue that tracks them (#626, #654, #657). Vidoc reports those
-# entries themselves as "suppressed" whenever a change edits this file.
+# Vidoc reports the reviewed entry for #626 above as a suppression when a change edits this
+# file. Only that entry, in the wording it used; any other "suppressed" finding still counts.
 [[ignore]]
 path = ".config/vidoc.toml"
-title = "suppressed"
-reason = "the reviewed ignore list itself; each real weakness it lists has an open issue"
+title = "Unauthenticated browser adapter endpoint suppressed"
+reason = "the reviewed entry for the browser adapter's trust model, tracked in open issue #626"

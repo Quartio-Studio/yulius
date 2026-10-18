@@ -582,8 +582,10 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   Environments must follow the profile order for tasks in their stage (`conflict` otherwise);
   when no task is in that stage the run is standalone. A successful command with `verify:
   command`, or a confirmation, advances every task for which the environment is due.
-- **Environment command trust contract.** `command` is shell text configured only by repository
-  administrators through the sandbox profile. Each run is audited (actor, environment, command)
+- **Environment command trust contract.** `command` is shell text of the sandbox profile, set by
+  repository administrators or seeded once from the default branch's `yulius.toml`
+  `[delivery]` when a repository admin or maintainer imports the repository; a run never reads
+  it from the repository. Each run is audited (actor, environment, command)
   and executed as `/bin/sh -c <command>` like a CD run of its stage (SPEC-219, ADR-0175): the head
   of `<integration>` (`after: integration`) or `<production>` (`after: production`) is fetched from
   origin into a mirror only Yulius writes, its files are written into the run's own directory, and

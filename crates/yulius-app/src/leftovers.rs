@@ -869,7 +869,8 @@ impl App {
 
     /// Whether the run directory `runs/<name>` is still someone's: touched within a day, an
     /// attempt record's (its last one holds the terminal's final screen, shown after a restart),
-    /// a live attempt's, a CI job's of a queued or running run, or a running deploy's.
+    /// a live attempt's, a CI job's of a queued or running run, a running deploy's, or a running
+    /// delivery environment run's.
     async fn run_dir_owned(&self, name: &str, path: &Path) -> AppResult<bool> {
         let now = self.now().0;
         if !touched_ms(path).is_some_and(|t| now - t >= ENDED_RUN_AFTER_MS) {

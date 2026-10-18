@@ -17,8 +17,9 @@
 //! - reads degrade: GitHub or Git failures become `notes` instead of failing the page.
 //!
 //! Environment command trust contract (DLV-003, SPEC-002 §8): an environment `command` is
-//! shell text configured by a repository administrator in the sandbox profile (never read from
-//! the repository). Each run needs an explicit confirmation, is audited with actor,
+//! shell text of the sandbox profile, set by a repository administrator or seeded once from the
+//! default branch's `yulius.toml` when the repository is imported; a run never reads it from the
+//! repository. Each run needs an explicit confirmation, is audited with actor,
 //! environment and command, and runs as `/bin/sh -c <command>` like a CD run of its stage
 //! (SPEC-219, #656): the head of the stage's branch is fetched from origin into a mirror only
 //! Yulius writes, its tree is written into the run's own directory with a fresh `HOME`, and the
