@@ -179,3 +179,33 @@ inside the sandbox's containment like a CD dev run.
   contained (this change). Both are recorded as narrow `[[ignore]]` entries, one per wording Vidoc
   used (two wordings for the `delivery.rs` one), for round 2's reviewer to agree to. Then exit 0
   at e2afddb8; 10 findings outside the change, filed by Yulius CI.
+
+### Review round 2 (head faa98c75: request changes), answers
+
+- Round 1's fixes were verified (log handle, stale ignores, low items, `export_tree`).
+- MEDIUM, own code: the file-wide `.config/vidoc.toml` "suppressed" ignore is replaced by one for
+  the #626 entry's exact wording ("Unauthenticated browser adapter endpoint suppressed"); any
+  other "suppressed" finding still counts.
+- LOW, own code: the environment-command reasons, the `delivery.rs` module doc and the
+  `docs/api.md` trust contract now say the command is the profile's, set by an administrator or
+  seeded once from the default branch's `yulius.toml` at import, and never read from the
+  repository by a run; the `run_dir_owned` doc names environment runs. The stale issue list went
+  with the replaced entry. `origin/dev` (#662) is merged; `docs/changes.md` keeps both entries and
+  ADR-0173/0175 do not collide.
+- Nit left: Git before 2.32 ignores `GIT_CONFIG_GLOBAL`; Yulius's hosts run Git 2.43 (Ubuntu
+  24.04), as the `ci_checkout` comment already assumes.
+- Later scans reworded findings already judged by design, one narrow entry each: `delivery.rs`
+  "Environment command seeded from attacker-controlled repository content"; `ci/cd.rs`
+  "Production CD runs execute without isolation when containment is disabled" (pre-existing
+  fallback; uncontained is the development mode, where agents already run on the host);
+  `ci/mod.rs` "Untrusted pull request CI configuration executes arbitrary shell commands" and
+  `ci/exec.rs` "CI executes commands from untrusted pull request configuration" (CI runs the pull
+  request's code by design).
+- One scan was not run (Vidoc HTTP 503 after 5 attempts): unrun, not passed, and run again.
+- `scripts/dev ci` at 55b70a81 failed once on `local_ci::a_job_that_exits_with_the_skip_code_ends_skipped`:
+  `git worktree list` read another concurrent job's vanishing `locked` file during
+  `ci_checkout`, code this change does not touch. Not reproduced (the existing 16-way concurrency
+  test, and shell probes of 1500 lists beside 150 adds and 6×60 parallel list/prune/add, all
+  passed); filed as #666 with the evidence. Not quarantined: the race is in `ci_checkout`, so any
+  multi-job CI test can meet it. Run again: `scripts/dev ci` at 55b70a81 exit 0, 2224 tests
+  passed, 18 skipped; `scripts/dev security` exit 0 (5 findings outside the change).
