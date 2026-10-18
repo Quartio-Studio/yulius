@@ -367,6 +367,12 @@ path = "crates/yulius-app/src/delivery.rs"
 title = "command executed by environment runs"
 reason = "the command is the admin-set profile's, not the repository's, and runs contained from a Yulius-only mirror (SPEC-219, ADR-0175)"
 
+# The same finding, as Vidoc words it on another scan (one entry per wording).
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "deployment command taken from project configuration"
+reason = "the command is the admin-set profile's, not the repository's, and runs contained from a Yulius-only mirror (SPEC-219, ADR-0175)"
+
 # This file is configuration, reviewed like code: each entry names its reason, and the entries for
 # real weaknesses name the open issue that tracks them (#626, #654, #657). Vidoc reports those
 # entries themselves as "suppressed" whenever a change edits this file.
