@@ -3326,7 +3326,18 @@ function runUpdate(db, id) {
   }, UPDATE_STEP_MS * 4);
 }
 
-route('GET', '/api/update', ({ db }) => updateView(db));
+// `__yuliusMock.holdUpdateReads = true`: each read answers what it saw when it arrived, once
+// `releaseUpdate()` lets it go (the newest first); `updateReadsTaken` counts the held answers the
+// page has read, after which it handles them at once (#502).
+route('GET', '/api/update', async ({ db }) => {
+  const view = updateView(db);
+  if (!db.holdUpdateReads) return view;
+  await new Promise((resolve) => db.updateHolds.push(resolve));
+  const response = json(200, view);
+  const text = response.text.bind(response);
+  response.text = async () => { const body = await text(); db.updateReadsTaken += 1; return body; };
+  return response;
+});
 route('POST', '/api/admin/update/check', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   db.update.checkedAt = new Date().toISOString();
@@ -4961,6 +4972,13 @@ export function createMockTransport(params) {
     if (announce) db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
+  db.updateHolds = [];
+  db.updateReads = () => db.updateHolds.length;
+  db.updateReadsTaken = 0;
+  // Releases the newest held update read.
+  db.releaseUpdate = () => { const resolve = db.updateHolds.pop(); if (resolve) resolve(); };
+  // The server says the update view changed (`update.updated`), as after a check.
+  db.announceUpdate = () => emit(db, { type: 'update.updated', phase: null });
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for

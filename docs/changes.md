@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the row that moved in, so the check read "Checkout API" at rest (18 px over its menu). The mock
   now takes `ambient=0` (no ambient activity at all), the test uses it, and both checks wait for
   the hovered row's control to show and poll the overlap.
+- Two update checks sent together compare `main` once, and the update view never goes back to an
+  older read (SPEC-226, task #212, fixes #502). A "Check now" that waited for a check in progress
+  (two tabs opening the instance page, or the hourly check) reuses its result when it is younger
+  than 30 s; in the browser, an answer to an older `GET /api/update` arriving after a newer one is
+  dropped instead of showing the older state until the next change.
 - The test of a launch `/goal` watched again after a restart runs in CI again (SPEC-223, task
   #209, fixes #514). It was quarantined as flaky under load; the cause was its own setup: it
   stopped the first server once the run was recorded, not once it was spawned, so under load the
