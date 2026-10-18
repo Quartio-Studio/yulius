@@ -907,6 +907,15 @@ impl App {
         {
             return Ok(true);
         }
+        if let Some(run) = name.strip_prefix("env-")
+            && store
+                .running_environment_runs()
+                .await?
+                .iter()
+                .any(|r| r.id == run)
+        {
+            return Ok(true);
+        }
         Ok(false)
     }
 
