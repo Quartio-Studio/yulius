@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-18
+
+- Yulius no longer follows links an agent plants in its own sandbox when it reads or writes there
+  as the service user (SPEC-220, ADR-0174, task #206, fixes #657). Editor reads and saves,
+  uploads and terminal attachments, imported transcripts and skill copies open their folder once,
+  without following links, and do everything else through that handle; files get random
+  temporary names created exclusively. Before, a link swapped in between a check and the use, or
+  planted at a fixed name, could show a host file in the editor, place an upload outside the
+  sandbox, or overwrite a host file such as the database.
+
 ## 2026-10-17
 
 - The Vidoc scan blocks medium findings in a change, and every project scans in CI (SPEC-217,

@@ -170,24 +170,9 @@ title = "Unvalidated cache paths"
 reason = "parse_yulius_toml_caches rejects absolute and .. paths (check_repo_path) and real_dir_below never follows links"
 
 [[ignore]]
-path = "crates/yulius-app/src/files.rs"
-title = "TOCTOU between canonicalize and read"
-reason = "real: tracked in #657 (task #206); remove this entry with its fix"
-
-[[ignore]]
-path = "crates/yulius-app/src/imports.rs"
-title = "Deterministic temporary file"
-reason = "real: tracked in #657 (task #206); remove this entry with its fix"
-
-[[ignore]]
-path = "crates/yulius-app/src/uploads.rs"
-title = "TOCTOU in attachment folder"
-reason = "real: tracked in #657 (task #206); remove this entry with its fix"
-
-[[ignore]]
 path = "crates/yulius-harness/src/skills.rs"
 title = "symlink-containment check in copy_tree"
-reason = "the sources are instance-owned (data dir and bundled catalog), which agents cannot write; the destination-side link following is tracked in #657"
+reason = "the sources are instance-owned (data dir and bundled catalog), which agents cannot write; the destination side goes through folder handles (#657, ADR-0174)"
 
 [[ignore]]
 path = "crates/yulius-app/src/manage.rs"
@@ -295,7 +280,7 @@ title = "Resume session id used to build transcript path"
 reason = "plan_cockpit rejects an invalid resume id (valid_session_id) before step_back runs"
 
 # Task #160's change scan of its own branch (SPEC-217) on files it touched: by design, false
-# positives, test fixtures, or tracked (#657).
+# positives, test fixtures, or tracked.
 
 [[ignore]]
 path = "crates/yulius-app/src/ci/cd.rs"
@@ -316,11 +301,6 @@ reason = "the store's api_token lookup selects only rows with revoked_at IS NULL
 path = "crates/yulius-store/src/lib.rs"
 title = "backup_to writes to caller-supplied"
 reason = "only the operator's yulius backup CLI calls it, with the destination the operator typed; no HTTP route reaches it"
-
-[[ignore]]
-path = "crates/yulius-app/src/files.rs"
-title = "TOCTOU in file_write existence check"
-reason = "real: the write-side race is tracked in #657 (task #206); remove this entry with its fix"
 
 [[ignore]]
 path = "crates/yulius-app/src/ports/github.rs"
@@ -351,11 +331,6 @@ reason = "owner/name are GitHub's own names (letters, digits, '.', '-', '_'), ch
 path = "crates/yulius-github/src/fake/mod.rs"
 title = "credentials"
 reason = "the in-process fake GitHub for tests (feature fake); its constants are synthetic"
-
-[[ignore]]
-path = "crates/yulius-app/src/files.rs"
-title = "TOCTOU between symlink/permission checks"
-reason = "real and pre-existing: the write side of the editor's path checks (a parent swapped for a link between the check and the rename) is tracked in #657 (task #206); remove this entry with its fix"
 
 [[ignore]]
 path = "crates/yulius-app/src/onboarding.rs"
