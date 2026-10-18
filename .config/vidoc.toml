@@ -77,7 +77,16 @@ reason = "the person-triggered test resolves and classifies every address, refus
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config.rs"
 title = "Missing authorization for arbitrary command execution"
-reason = "the stdio test needs Configure, the same level as Work (shell, tasks) on an uncontained instance, and an instance admin on a contained one (skills_mcp::contained_instances_restrict_stdio_tests_to_admins); the imported-command gap is #654"
+reason = "the stdio test needs Configure, the same level as Work (shell, tasks) on an uncontained instance, and an instance admin on a contained one (skills_mcp::contained_instances_restrict_stdio_tests_to_admins); a command imported from .mcp.json is never run (#654, ADR-0173)"
+
+# The same finding in other words, first on task #204's change scan (SPEC-218): uncontained, every
+# task and shell of a Configure (write) user already runs on the host without containment, so the
+# Test adds no capability; contained, it needs an instance admin and never runs an agent's
+# `.mcp.json` command (cockpit::the_mcp_test_never_runs_a_command_from_the_repository_mcp_json).
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "host command execution via stdio MCP Test"
+reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
 
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config.rs"
@@ -87,7 +96,7 @@ reason = "the URL is fetched only by the person-triggered MCP test, which checks
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config/project.rs"
 title = "imports arbitrary stdio commands"
-reason = "real: tracked in #654 (task #204); remove this entry with its fix"
+reason = "fixed by #654 (ADR-0173): imported servers run only in agent runs, inside their containment when contained; the host-side Test refuses them (origin mcp_json)"
 
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config/project.rs"
