@@ -1,11 +1,11 @@
 ---
 yulius-task: 5df93cb6-8c5d-4ff1-9fae-71e0922f6476
-status: in-progress
+status: done
 ---
 
 # SPEC-219: delivery environment runs run contained, from a mirror only Yulius writes
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: Yulius task #205
 Scope authorization: issue [#656](https://github.com/Quartio-Studio/yulius/issues/656) (high, found
@@ -73,8 +73,9 @@ inside the sandbox's containment like a CD dev run.
 - [x] ADR-0175, architecture, product and changes updated
 - [x] Review round 1 answered: run logs read through a held handle, export without global Git config, stale scan ignores removed
 - [x] Gates and security scan green on the answered head
-- [ ] Review round 2 approves the exact head
-- [ ] Merged into dev on green CI with Fixes #656
+- [x] Review round 2 answered: narrow scan ignores, command source documented, dev merged
+- [x] Review round 3 approves the exact head
+- [x] Delivered: merge on green CI with Fixes #656
 
 ## Acceptance criteria
 
@@ -209,3 +210,11 @@ inside the sandbox's containment like a CD dev run.
   passed); filed as #666 with the evidence. Not quarantined: the race is in `ci_checkout`, so any
   multi-job CI test can meet it. Run again: `scripts/dev ci` at 55b70a81 exit 0, 2224 tests
   passed, 18 skipped; `scripts/dev security` exit 0 (5 findings outside the change).
+
+### Review round 3 (head 54fb9e62): approve
+
+The reviewer agreed to the five new ignore entries as narrow, by-design or pre-existing. Two
+informational notes were handled in this spec-only commit: the decision index keeps numeric order
+(0173 before 0175), and this Plan names round 3. Noted and left: the scanner's substring matching
+of ignore titles is pre-existing behaviour, and the CI entries' one-line reason simplifies
+ADR-0116's granted secrets (the comment above them states it).
