@@ -4864,8 +4864,8 @@ function openSocket(db, path) {
  * late"): keep its delay well under 15 s and its reason, or change that test with it.
  * `browserask=0` leaves it out: its toast stays while pointed at and can cover the tool panel's
  * top, which tests that point there would hit on a slow machine (#349). `ambient=0` leaves all of
- * it out: its task changes regroup the sidebar's rows under a resting pointer, which a test that
- * hovers a row would race on a slow machine (#515).
+ * it out: the request (#10 into "Needs you") and the task changes regroup the sidebar's rows under
+ * a resting pointer, which a test that hovers a row would race on a slow machine (#515).
  */
 function startAmbient(db) {
   if (db.ambient || db.noAmbient) return;

@@ -35,6 +35,9 @@ hover state shows.
     to starting.
   - Tick 4 moves #9 out of switching.
   - Tick 5 moves #8 to running.
+  - Tick 4 also bumps #12, "Checkout API" itself.
+  - The browser's sign-in request, about 5 s in, moves #10 into "Needs you" (`status.js`
+    `taskInfo`; `layout.js` repaints on `browser-action`).
 
   Each change regroups the sidebar (`layout.js` `renderTasks`), so rows shift by a row's height.
   `hover()` takes the target's centre, checks the hit target, then moves the mouse. If the list
@@ -101,8 +104,9 @@ hover state shows.
     for. The poll covers a layout pass that is still pending (`content-visibility: auto` rows,
     `@container tasks` rules).
 - **`ambient=0` turns off all ambient activity, not only the task changes.** A layout check wants
-  a still page. The browser's sign-in toast is ambient noise too, and `browserask=0` stays for the
-  tests that want the task changes without the toast (`notes.e2e.ts`).
+  a still page. The browser's sign-in request regroups the list too (#10 into "Needs you"), so
+  `browserask=0` alone does not keep a hovered list still. `browserask=0` stays for the tests that
+  only need the toast gone (`notes.e2e.ts`).
 - **Fix the test and the mock, not the page.** The page is right for a moving pointer.
 - No ADR. This applies the existing rule (wait on conditions on a page that only the test
   changes), as `browserask=0` did (SPEC-148 E2L-006).
