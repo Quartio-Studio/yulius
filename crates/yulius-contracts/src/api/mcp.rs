@@ -27,6 +27,9 @@ pub struct McpServerView {
     pub header_keys: Vec<String>,
     /// Enabled.
     pub enabled: bool,
+    /// `person` (a person added it or changed what it runs) or `mcp_json` (imported from the
+    /// repository's `.mcp.json`, which agents can write: the Test does not run its command).
+    pub origin: String,
 }
 
 /// Create/update body.

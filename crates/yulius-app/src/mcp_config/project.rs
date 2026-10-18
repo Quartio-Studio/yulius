@@ -23,8 +23,8 @@ use yulius_contracts::api::mcp::McpServerInput;
 use yulius_domain::vault::{SecretName, placeholder};
 
 use super::{
-    MAX_SECRET_BYTES, MAX_SERVERS_PER_SCOPE, McpServerRecord, bearer_of, name_key, secret_ref,
-    validate,
+    MAX_SECRET_BYTES, MAX_SERVERS_PER_SCOPE, McpOrigin, McpServerRecord, bearer_of, name_key,
+    secret_ref, validate,
 };
 use crate::context::App;
 use crate::error::AppResult;
@@ -299,7 +299,8 @@ impl App {
 
     async fn import_mcp_server(&self, sandbox: &SandboxRecord, input: &McpServerInput) {
         let added: AppResult<McpServerRecord> = async {
-            let record = self.new_mcp_record(Some(sandbox.id.clone()), input)?;
+            let record =
+                self.new_mcp_record(Some(sandbox.id.clone()), input, McpOrigin::McpJson)?;
             self.deps
                 .store
                 .insert_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
