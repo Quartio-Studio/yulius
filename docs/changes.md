@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   no late answer. The two end-to-end tests of #581 wait on what they mean under load: the watcher
   test gives each of its three self-paced reads its own 10 s, and the onboarding tests wait for
   the start's own read of the tasks in the sidebar (the document title follows task events only).
+- Undoing past a pasted image takes it out of the composer's tray again after an IME composition
+  that changed nothing (cancelled with Esc) (SPEC-225, task #211, fixes #513). Such a composition
+  marked the history as typing, so the next keystroke replaced the paste's undo step and the
+  upload, ending later, was attached to every step and sent after the text. A record that changes
+  nothing now leaves the history alone, and typing updates its step in place.
 - Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
   (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
   imported transcripts and skill copies open their folder once, without following links, and do
