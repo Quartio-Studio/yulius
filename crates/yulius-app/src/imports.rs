@@ -61,6 +61,8 @@ pub const MAX_DELETED_LIST_BYTES: u64 = 16 * 1024 * 1024;
 /// verbatim, SPEC-002 §9).
 pub const MAX_TRANSCRIPT_LINE_BYTES: usize = 4 * 1024 * 1024;
 /// Most auxiliary transcript files copied for one Claude session.
+/// Deepest folder level of auxiliary files copied (each level holds one open handle).
+const MAX_AUX_DEPTH: usize = 16;
 const MAX_AUX_FILES: usize = 1_000;
 /// Snapshot branch name candidates tried per day.
 const MAX_SNAPSHOT_BRANCHES: u32 = 50;
@@ -2143,6 +2145,29 @@ mod tests {
             0,
             "nothing written outside"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn auxiliary_trees_are_copied_to_a_bounded_depth() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let sandbox = dir.path().join("sandbox");
+        fs::create_dir_all(&sandbox)?;
+        let stored = dir.path().join("s.jsonl");
+        fs::write(&stored, "{}\n")?;
+        let aux = dir.path().join("s/subagents");
+        fs::create_dir_all(&aux)?;
+        fs::write(aux.join("agent-1.jsonl"), "{\"cwd\":\"/old\"}\n")?;
+        // Each folder level holds one open handle while it is copied: deeper ones are left out.
+        let deep = (0..MAX_AUX_DEPTH + 2).fold(aux.clone(), |path, n| path.join(format!("d{n}")));
+        fs::create_dir_all(&deep)?;
+        fs::write(deep.join("deep.jsonl"), "{}\n")?;
+        let dest = sandbox.join("home/.claude/projects/-wt/s.jsonl");
+        place_claude_transcript(&sandbox, &dest, &stored, "/wt", "t")?;
+        let copied = sandbox.join("home/.claude/projects/-wt/s/subagents");
+        assert!(fs::read_to_string(copied.join("agent-1.jsonl"))?.contains("/wt"));
+        let deep_copy = (0..MAX_AUX_DEPTH + 2).fold(copied, |path, n| path.join(format!("d{n}")));
+        assert!(!deep_copy.join("deep.jsonl").exists());
         Ok(())
     }
 
