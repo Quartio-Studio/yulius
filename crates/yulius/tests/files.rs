@@ -874,7 +874,10 @@ async fn a_save_never_lands_in_a_folder_swapped_for_a_link_after_the_check() -> 
         .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
         .collect::<Result<_, _>>()?;
     assert_eq!(names, ["a.txt"], "nothing new outside");
-    assert_eq!(std::fs::read_to_string(outside.join("a.txt"))?, "precious\n");
+    assert_eq!(
+        std::fs::read_to_string(outside.join("a.txt"))?,
+        "precious\n"
+    );
     assert_eq!(saved.status, StatusCode::FORBIDDEN, "{:?}", saved.body);
     Ok(())
 }

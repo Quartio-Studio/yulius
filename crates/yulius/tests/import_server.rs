@@ -1230,7 +1230,25 @@ async fn assert_imported_resume(
     app.prepare_imported_resume(claude_task).await?;
     assert_eq!(std::fs::read_to_string(&native)?, continued);
 
+    // The agent owns its home: a link planted at the temporary name the copy once used never
+    // makes the server truncate the file it points at (#657).
+    let planted = app.deps.harness.claude_transcript(
+        &sandbox_dir.join("home"),
+        &sandbox_dir.join("worktrees").join(main_task.as_str()),
+        MAIN_SESSION,
+    );
+    let victim = w.data_dir().join("victim.db");
+    std::fs::write(&victim, "precious")?;
+    std::fs::create_dir_all(planted.parent().ok_or("parent")?)?;
+    // Continuing the session copied it already; a fresh copy is what the link waits for.
+    if planted.exists() {
+        std::fs::remove_file(&planted)?;
+    }
+    let mut tmp = planted.clone().into_os_string();
+    tmp.push(".tmp");
+    std::os::unix::fs::symlink(&victim, &tmp)?;
     let session = app.prepare_imported_resume(main_task).await?;
+    assert_eq!(std::fs::read_to_string(&victim)?, "precious");
     assert_eq!(session.as_deref(), Some(MAIN_SESSION));
     let task = w.h.store.task(main_task).await?.ok_or("task")?;
     let main_worktree = PathBuf::from(task.worktree_path.clone().ok_or("worktree")?);
