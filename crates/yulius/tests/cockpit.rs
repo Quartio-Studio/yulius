@@ -830,7 +830,9 @@ async fn the_mcp_test_never_runs_a_command_from_the_repository_mcp_json() -> Tes
         json!({"mcpServers": {
             "helper": {"command": "/bin/sh", "args": ["-c", touch],
                        "env": {"NODE_OPTIONS": "--require ./agent.js"}},
-            "local": {"type": "http", "url": "http://127.0.0.1:9/mcp"}
+            "local": {"type": "http", "url": "http://127.0.0.1:9/mcp"},
+            "switch": {"command": "/bin/sh", "args": ["-c", "true"],
+                       "env": {"LD_PRELOAD": "./agent.so"}}
         }})
         .to_string(),
     )?;
@@ -945,6 +947,21 @@ async fn the_mcp_test_never_runs_a_command_from_the_repository_mcp_json() -> Tes
     assert_eq!(local["origin"], "mcp_json", "{local}");
     let result = test(local["id"].as_str().ok_or("id")?.to_owned()).await?;
     assert!(refused(&result), "{result}");
+
+    // Taken over through another transport, the file's hidden environment does not stay behind
+    // for a later switch back to a local command (review of SPEC-218).
+    let switch = server("switch")?;
+    let resp = call(
+        &h.router,
+        Method::PUT,
+        &format!("/api/mcp/{}", switch["id"].as_str().ok_or("id")?),
+        Some(json!({"name": "switch", "transport": "http", "url": "https://mcp.example.test/mcp"})),
+        &root,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    assert_eq!(resp.body["origin"], "person", "{}", resp.body);
+    assert_eq!(resp.body["env_keys"], json!([]), "{}", resp.body);
     Ok(())
 }
 
