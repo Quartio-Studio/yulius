@@ -90,7 +90,11 @@ impl SandboxIsolation for Holders {
         if let Ok(mut mapped) = self.mapped.lock() {
             mapped.push(path.to_path_buf());
         }
-        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+            std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+        } else {
+            std::fs::remove_file(path).map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -243,10 +247,18 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
     for gone in ["sysroots/old", "runtime/sandboxes/old", "cd/old"] {
         assert!(!w.at(gone).exists(), "{gone} is gone");
     }
+    let mapped = w.holders.mapped();
     assert!(
-        w.holders.mapped().contains(&w.at("sysroots/old")),
+        mapped.contains(&w.at("sysroots/old")),
         "the system layer goes through the isolation's mapped removal"
     );
+    // #675: CI jobs and agents write files there as the sandbox's mapped ids.
+    for sandbox_written in ["worktrees", "ci", "browser"] {
+        assert!(
+            mapped.contains(&old.join(sandbox_written)),
+            "{sandbox_written} goes through the mapped removal: {mapped:?}"
+        );
+    }
     for kept in [
         old.join("repo/README.md"),
         old.join("home/.claude/projects/x.jsonl"),
@@ -1133,6 +1145,10 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
 
     w.h.app.run_leftovers_round().await.ok_or("round")?;
     assert!(!live.join("ci/jobs/old").exists() && !live.join("ci/jobs/gate@7").exists());
+    assert!(
+        w.holders.mapped().contains(&live.join("ci/jobs/old")),
+        "#675: a stale checkout goes through the mapped removal"
+    );
     assert!(live.join("ci/jobs/gate.2/f").exists(), "a job still used");
     assert!(idle.join("ci/jobs/gate/build.log").exists());
     Ok(())
