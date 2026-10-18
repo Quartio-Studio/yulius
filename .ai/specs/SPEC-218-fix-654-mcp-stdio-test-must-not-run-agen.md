@@ -1,11 +1,11 @@
 ---
 yulius-task: 7ee59f6b-6d3a-4226-a2bc-b25e73e965b8
-status: in-progress
+status: done
 ---
 
 # SPEC-218: The MCP Test never runs a command an agent wrote
 
-Status: in-progress
+Status: done
 Date: 2026-10-18
 Owner: Yulius task #204
 Scope authorization: task #204, "Fix GitHub issue #654 … the minimal fix (an `origin` column
@@ -67,24 +67,24 @@ came from.
 ## Plan
 
 - [x] Spec and root cause of the host-run MCP Test written
-- [ ] Regression test: an imported stdio server's Test is refused in a contained harness (fails first)
-- [ ] Servers carry their origin (person or .mcp.json) and the Test refuses imported ones
-- [ ] A person's command change makes the server theirs; an enable toggle does not
-- [ ] The MCP pages show a server came from .mcp.json and never auto-test it
-- [ ] Docs, ADR, gates and independent review done
+- [x] Regression test: an imported stdio server's Test is refused in a contained harness (fails first)
+- [x] Servers carry their origin (person or .mcp.json) and the Test refuses imported ones
+- [x] A person's command change makes the server theirs; an enable toggle does not
+- [x] The MCP pages show a server came from .mcp.json and never auto-test it
+- [x] Docs, ADR, gates and independent review done
 
 ## Acceptance criteria
 
-- [ ] Regression test (contained harness, next to cockpit.rs
+- [x] Regression test (contained harness, next to cockpit.rs
   `a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking`): an imported
   `.mcp.json` stdio server whose command touches a marker file, tested by an instance
   administrator, is refused and the marker does not exist.
-- [ ] After a person changes its command (and replaces its env), the Test runs; a PUT that only
+- [x] After a person changes its command (and replaces its env), the Test runs; a PUT that only
   toggles `enabled` keeps it refused; a command change that keeps the file's env keeps it refused.
-- [ ] `?test=1` never runs an imported server's command (server-side refusal; the page does not
+- [x] `?test=1` never runs an imported server's command (server-side refusal; the page does not
   call the Test).
-- [ ] The MCP page shows that a server came from `.mcp.json`.
-- [ ] An imported HTTP server on a loopback URL is refused; the migration marks imported rows.
+- [x] The MCP page shows that a server came from `.mcp.json`.
+- [x] An imported HTTP server on a loopback URL is refused; the migration marks imported rows.
 
 ## Test plan
 
@@ -113,3 +113,38 @@ came from.
 - Refuse everywhere, not only on contained instances: one rule; uncontained instances lose nothing
   an agent run does not already do.
 - The env must be replaced with the command: the file's env values are agent-chosen and hidden.
+
+## Evidence
+
+- Reproduced first: `cockpit::the_mcp_test_never_runs_a_command_from_the_repository_mcp_json`
+  failed on dev's code at commit 98f415a0 with "the agent's command ran on the host" (the marker
+  file existed after an instance administrator's Test on a contained harness). It passes with the
+  fix, as do the review-round cases added at 5d5a49b9
+  (they failed first: `env_keys` was `["LD_PRELOAD"]`; the rename took the server over).
+- `cargo nextest run -p yulius -p yulius-app -E '(binary_id(yulius::main) & test(/^cockpit::/)) |
+  test(/mcp_config/)'`: 62 passed. Migration test
+  `version_thirty_six_imported_mcp_servers_come_from_mcp_json` and unit test
+  `only_a_change_of_what_runs_takes_a_server_over` pass.
+- `scripts/dev ci` at b51a2c02 (all code; later commits change only `.config/vidoc.toml` and this
+  spec): exit 0, nextest 2217 passed, 18 skipped; lint, macOS, deps, docs green.
+- e2e: `tests/mcp.e2e.ts` 3/3 (the new test failed first: no "From .mcp.json" badge; the rename
+  case failed first too). Full suite: 616 passed, 1 failed, 1 skipped; the failure is the known
+  load flake #581 (onboarding "leaving and coming back while Start onboarding runs"), outside this
+  change (onboarding, not MCP), which passed 3/3 when its file ran alone; commented on #581.
+- `scripts/dev security` (Vidoc vidoc-1, run as `python3 scripts/vidoc_scan.py`): ran (not
+  skipped). It reported the pre-existing uncontained stdio-Test gate (Configure equals Work when
+  uncontained) in changing words and severities, and "Only stdio imports from .mcp.json are gated"
+  on `mcp.js`. Both are false positives with `[[ignore]]` entries in `.config/vidoc.toml` that the
+  independent reviewer agreed to (one narrow entry per wording; a topic-wide title was refused in
+  review because it would hide a #654 regression). The two #654 entries now name the fix. Outside
+  the change (not failing; filed by CI): the public HTTP Test's reach (pre-existing), keys of
+  `.mcp.json` env/headers unvalidated (pre-existing), imported stdio servers enabled without
+  confirmation (the SPEC-095 design), and the migration list order comment (pre-existing).
+  No low findings in the change.
+- Independent review (fresh session, om-code-review): round 1 approved with two own-code minors
+  (take-over through another transport kept the file's env; the edit page dropped empty
+  arguments), both fixed test-first; round 3 requested narrower Vidoc ignores, done; approved.
+- Not tested: a real contained (bwrap) instance and the production UI against a real server; the
+  regression test uses the contained configuration with a recording harness, and the UI runs on the
+  mock, whose MCP rules mirror the server's.
+
