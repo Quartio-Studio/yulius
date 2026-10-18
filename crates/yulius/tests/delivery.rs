@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{Creds, FakeRemote, Resp, TestResult, call, harness_with_git};
+use support::{Creds, FakeRemote, Resp, TestResult, call};
 use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
 use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
@@ -162,6 +162,24 @@ impl GitPort for RealGit {
                 .await?;
         }
         Ok(())
+    }
+    /// The production Git against the bare origin (the URL is ignored, as everywhere here).
+    async fn mirror_fetch_head(
+        &self,
+        mirror: &Path,
+        _source: &str,
+        branch: &str,
+        _token: Option<&Secret>,
+    ) -> AppResult<String> {
+        let origin = self.origin.to_string_lossy().into_owned();
+        yulius::wiring::git::GitAdapter::new("git")
+            .mirror_fetch_head(mirror, &origin, branch, None)
+            .await
+    }
+    async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .export_tree(mirror, sha, dest)
+            .await
     }
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
         let head = self
@@ -637,7 +655,15 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
     });
-    let h = harness_with_git(real_git.clone())?;
+    // Environment runs go through the real process host, as in production (SPEC-219); its
+    // sockets live at <data>/runs/env-<uuid>/pty.sock, so the data directory's path is short.
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(real_git.clone()),
+        session_host: Some(Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
+        dir: Some(tempfile::Builder::new().prefix("ydl").tempdir_in("/tmp")?),
+        ..support::HarnessOptions::default()
+    })?;
     h.github.set_remote(Arc::new(BareRemote {
         origin: origin.clone(),
     }));

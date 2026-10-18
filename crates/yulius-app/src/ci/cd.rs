@@ -204,7 +204,7 @@ fn whole_lines(ring: &OutputRing) -> String {
 
 impl App {
     /// `<data>/cd/<sandbox>`: Yulius's own CD files, outside every sandbox.
-    fn cd_private_dir(&self, sandbox: &SandboxId) -> PathBuf {
+    pub(super) fn cd_private_dir(&self, sandbox: &SandboxId) -> PathBuf {
         self.config.data_dir.join("cd").join(sandbox.as_str())
     }
 
@@ -1060,7 +1060,7 @@ impl App {
     /// resolver: nothing an agent installed or wrote runs with production's secrets. Without
     /// sandbox isolation both run in the previous containment, production with the run's
     /// directory as its root. Only the run's directory and its environment's cache are bound in.
-    async fn cd_containment(
+    pub(super) async fn cd_containment(
         &self,
         sandbox: &SandboxRecord,
         env: CdEnv,
@@ -1198,7 +1198,7 @@ impl App {
             &plan,
             &token,
             &log,
-            (ring, &mut stages, None),
+            (ring, Some(&mut stages), None),
             cancel,
         )
         .await

@@ -119,6 +119,8 @@ pub(super) enum Sink<'a> {
     CiJob(&'a str),
     /// A CD run of a sandbox.
     CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
+    /// A delivery environment run (SPEC-219).
+    EnvironmentRun(&'a str),
 }
 
 /// What a watched process used, when its host measured it (SPEC-154). Unknown for a job Yulius
@@ -933,7 +935,7 @@ impl App {
                 &plan,
                 &token,
                 &log,
-                (ring, stages, Some(failures)),
+                (ring, Some(stages), Some(failures)),
                 cancel,
             )
             .await;
@@ -945,8 +947,9 @@ impl App {
     }
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
-    /// it to its end: its log into `ring`, `sink` and `failures` (a CI job's), cancellation, the
-    /// CI job timeout and the output limit. Returns how it ended and what it used.
+    /// it to its end: its log into `ring`, `sink`, `stages` (when its spans are recorded) and
+    /// `failures` (a CI job's), cancellation, the CI job timeout and the output limit. Returns how
+    /// it ended and what it used.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
     pub(super) async fn ci_watch(
         &self,
@@ -956,14 +959,13 @@ impl App {
         plan: &LaunchPlan,
         token: &[u8; 32],
         log: &Path,
-        (ring, stages, mut failures): (
+        (ring, mut stages, mut failures): (
             &mut OutputRing,
-            &mut OutputStages,
+            Option<&mut OutputStages>,
             Option<&mut FailureScanner>,
         ),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<(Ended, Used), String> {
-        let (sandbox, subject) = stages.subject();
         let host = &self.deps.session_host;
         host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
@@ -1030,8 +1032,7 @@ impl App {
                     if let Some(failures) = failures.as_deref_mut() {
                         failures.push(&fresh);
                     }
-                    let ops = stages.feed(&fresh, self.now());
-                    self.record_spans(&sandbox, (subject.0, &subject.1), ops).await;
+                    self.feed_stages(stages.as_deref_mut(), &fresh).await;
                     ticks += 1;
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
                         match sink {
@@ -1041,6 +1042,13 @@ impl App {
                             Sink::CdRun(id, sandbox) => {
                                 let shown = self.redact_for_sandbox(sandbox, &ring.text()).await;
                                 let _ = self.deps.store.set_cd_run_output(id, &shown).await;
+                            }
+                            Sink::EnvironmentRun(id) => {
+                                let _ = self
+                                    .deps
+                                    .store
+                                    .update_environment_run(id, &ring.text(), None)
+                                    .await;
                             }
                         }
                     }
@@ -1054,19 +1062,30 @@ impl App {
             if let Some(failures) = failures.as_deref_mut() {
                 failures.push(&fresh);
             }
-            let ops = stages.feed(&fresh, self.now());
-            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
-                .await;
+            self.feed_stages(stages.as_deref_mut(), &fresh).await;
             match read {
                 Ok(_) if tail.caught_up() => break,
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        let ops = stages.finish(self.now());
-        self.record_spans(&sandbox, (subject.0, &subject.1), ops)
-            .await;
+        if let Some(stages) = stages {
+            let ops = stages.finish(self.now());
+            let (sandbox, subject) = stages.subject();
+            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+                .await;
+        }
         Ok((ended, usage))
+    }
+
+    /// Records the spans the output `fresh` asks for, when the run's stages are recorded.
+    async fn feed_stages(&self, stages: Option<&mut OutputStages>, fresh: &[u8]) {
+        if let Some(stages) = stages {
+            let ops = stages.feed(fresh, self.now());
+            let (sandbox, subject) = stages.subject();
+            self.record_spans(&sandbox, (subject.0, &subject.1), ops)
+                .await;
+        }
     }
 }
 
