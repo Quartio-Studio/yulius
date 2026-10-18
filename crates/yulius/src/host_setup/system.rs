@@ -39,8 +39,9 @@ impl Host for RealHost {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
+        // The caller names the file (`cannot write <file>: <why>`).
         crate::wiring::update_files::write_atomic(path, content.as_bytes(), mode)
-            .map_err(|e| format!("{}: {e}", path.display()))
+            .map_err(|e| e.to_string())
     }
 
     fn is_file(&self, path: &Path) -> bool {
@@ -174,5 +175,23 @@ impl Host for RealHost {
                 ),
             },
         })
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// A failed write names no path: the item's own words name the file (`cannot write <file>:`),
+    /// so the operator reads it once (#674).
+    #[test]
+    fn a_failed_write_does_not_repeat_the_path() -> Result<(), String> {
+        // procfs takes no new file, even from root.
+        let path = Path::new("/proc/yulius-host-setup-test.conf");
+        let Err(why) = (RealHost { quiet: true }).write(path, "x\n", 0o644) else {
+            return Err("a file was written into /proc".to_owned());
+        };
+        assert!(!why.contains("/proc"), "{why}");
+        Ok(())
     }
 }

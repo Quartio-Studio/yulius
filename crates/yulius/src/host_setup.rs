@@ -125,7 +125,7 @@ pub trait Host {
     /// Writes a file (creating its directory) owned by root with `mode`.
     ///
     /// # Errors
-    /// Why it could not be written.
+    /// Why it could not be written, without the file's path: the caller names it.
     fn write(&mut self, path: &Path, content: &str, mode: u32) -> Result<(), String>;
     /// Whether a regular file is there.
     fn is_file(&self, path: &Path) -> bool;
@@ -704,7 +704,9 @@ impl<'a> Run<'a> {
              Types: deb\nURIs: https://download.docker.com/linux/{id}\nSuites: {codename}\n\
              Components: stable\nArchitectures: {arch}\nSigned-By: {DOCKER_KEY}\n"
         );
-        self.host.write(Path::new(DOCKER_SOURCE), &source, 0o644)?;
+        self.host
+            .write(Path::new(DOCKER_SOURCE), &source, 0o644)
+            .map_err(|why| format!("cannot write {DOCKER_SOURCE}: {why}"))?;
         // apt's lists were read before the source existed: the next install reads them again
         // (a fresh host's first install already ran `apt-get update`).
         self.apt_updated = false;
