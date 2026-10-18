@@ -730,6 +730,33 @@ test('undoing a paste takes its upload out of the tray, and an upload whose plac
   await expect(browser.locator('.composer-attachment.unplaced')).toHaveCount(1);
 });
 
+// #513 (SPEC-225): an IME composition that changed nothing (cancelled with Esc) is not typing, so
+// the next keystroke does not take the paste's undo step over and the upload stays with it.
+test('a composition that changed nothing after a paste does not attach its upload to the steps before it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.click();
+  await browser.keyboard.type('One ');
+  await holdUploads(browser);
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.evaluate(() => {
+    document.querySelector('.composer-prompt')!.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true }));
+  });
+  await browser.keyboard.type('x');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect(browser.locator('.composer-box .upload-status-float')).toHaveText(/Added b\.png/);
+  await expect.poll(() => trayNames(browser)).toEqual(['b.png']);
+  expect(await promptText(browser)).toBe('One [b.png]x');
+  // Undo past the paste: the upload leaves the tray with it.
+  for (let i = 0; i < 4 && (await promptText(browser)) !== 'One '; i += 1) await browser.keyboard.press('ControlOrMeta+z');
+  expect(await promptText(browser)).toBe('One ');
+  expect(await trayNames(browser)).toEqual([]);
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  expect(await lastPrompt(browser)).toBe('One');
+});
+
 test('a file put in the text after × lands at the caret the person left, which the × shifted', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
