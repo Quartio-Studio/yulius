@@ -14,10 +14,9 @@ use async_trait::async_trait;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{Creds, FakeRemote, Resp, TestResult, call, harness_with_git};
+use support::{Creds, FakeRemote, Resp, TestResult, call};
 use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
-use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, StepRecord,
@@ -25,6 +24,9 @@ use yulius_app::model::{
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
 use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState, GhPull};
+use yulius_app::ports::session::{
+    AttachedRun, Containment, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
+};
 use yulius_app::ports::store::{
     CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
@@ -162,6 +164,24 @@ impl GitPort for RealGit {
                 .await?;
         }
         Ok(())
+    }
+    /// The production Git against the bare origin (the URL is ignored, as everywhere here).
+    async fn mirror_fetch_head(
+        &self,
+        mirror: &Path,
+        _source: &str,
+        branch: &str,
+        _token: Option<&Secret>,
+    ) -> AppResult<String> {
+        let origin = self.origin.to_string_lossy().into_owned();
+        yulius::wiring::git::GitAdapter::new("git")
+            .mirror_fetch_head(mirror, &origin, branch, None)
+            .await
+    }
+    async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .export_tree(mirror, sha, dest)
+            .await
     }
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
         let head = self
@@ -561,7 +581,7 @@ fn valid_spec(task: &str) -> String {
 struct Fixture {
     h: support::Harness,
     git: Arc<RealGit>,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     origin: PathBuf,
     repo: PathBuf,
     /// Admin on the repository.
@@ -617,6 +637,15 @@ async fn add_user(
 }
 
 async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
+    fixture_with(profile, Box::new(|_| {}), None).await
+}
+
+/// [`fixture`] with the configuration adjusted, and another process host than the real one.
+async fn fixture_with(
+    profile: &DeliveryProfile,
+    configure: support::ConfigureFn,
+    host: Option<Arc<dyn SessionHost>>,
+) -> BoxResult<Fixture> {
     let root = tempfile::tempdir()?;
     let origin = root.path().join("origin.git");
     git(
@@ -637,7 +666,18 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
     });
-    let h = harness_with_git(real_git.clone())?;
+    // Environment runs go through the real process host, as in production (SPEC-219); its
+    // sockets live at <data>/runs/env-<uuid>/pty.sock, so the data directory's path is short.
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(real_git.clone()),
+        session_host: Some(
+            host.unwrap_or_else(|| Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
+        ),
+        dir: Some(tempfile::Builder::new().prefix("ydl").tempdir_in("/tmp")?),
+        configure: Some(configure),
+        ..support::HarnessOptions::default()
+    })?;
     h.github.set_remote(Arc::new(BareRemote {
         origin: origin.clone(),
     }));
@@ -726,7 +766,7 @@ async fn fixture(profile: &DeliveryProfile) -> BoxResult<Fixture> {
     Ok(Fixture {
         h,
         git: real_git,
-        _root: root,
+        root,
         origin,
         repo,
         alice,
@@ -1647,59 +1687,6 @@ async fn stale_heads_are_refused() -> TestResult {
         .await?;
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello again");
-    Ok(())
-}
-
-/// DLV-003 bound: an environment command that outlives its timeout is killed together with the
-/// processes it started (the whole process group), and the shell is reaped.
-#[tokio::test]
-async fn environment_timeout_kills_the_process_tree() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let spec = CommandSpec {
-        argv: vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "sleep 60 & echo $! > child.pid; echo started; wait".into(),
-        ],
-        cwd: dir.path().to_path_buf(),
-        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
-        timeout: Duration::from_millis(800),
-    };
-    let mut ring = OutputRing::new(4096);
-    let started = std::time::Instant::now();
-    let end = run_bounded(&spec, &mut ring, None).await;
-    assert_eq!(end, CommandEnd::TimedOut);
-    assert!(
-        started.elapsed() < Duration::from_secs(15),
-        "returned promptly"
-    );
-    assert!(ring.text().contains("started") && ring.text().contains("timed out"));
-    let pid = std::fs::read_to_string(dir.path().join("child.pid"))?
-        .trim()
-        .to_owned();
-    assert!(!pid.is_empty());
-    let alive = |pid: &str| {
-        Command::new("ps")
-            .args(["-o", "stat=", "-p", pid])
-            .output()
-            .map(|o| {
-                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-                o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
-            })
-            .unwrap_or(false)
-    };
-    let mut gone = false;
-    for _ in 0..100 {
-        if !alive(&pid) {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        gone,
-        "the background child {pid} of the timed-out command was killed"
-    );
     Ok(())
 }
 
@@ -4805,5 +4792,515 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
         "not among the open pull requests: {}",
         page.body
     );
+    Ok(())
+}
+
+/// A product profile with `dev-vm` deployed, and task t1's `feature.txt` ("hello") on the
+/// integration branch of origin, pushed past the sandbox clone (which stays stale).
+async fn deployable(f: &Fixture) -> BoxResult<()> {
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(product_with_deploy()),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    let origin = f.origin.to_string_lossy().into_owned();
+    git(
+        &wt,
+        &["push", "--quiet", &origin, "HEAD:refs/heads/quartio"],
+    )?;
+    Ok(())
+}
+
+/// `delivery_deploy` of `dev-vm` by t1's agent, to its end.
+async fn agent_deploys(f: &Fixture) -> BoxResult<Value> {
+    let agent = live_agent(f, "t1", "tok-deployer").await?;
+    let started = answer(
+        &agent_tool(
+            f,
+            &agent,
+            "delivery_deploy",
+            json!({"environment": "dev-vm"}),
+        )
+        .await?,
+    )?;
+    let run_id = started["run"]["run_id"].as_str().ok_or("run id")?;
+    f.wait_run(run_id).await
+}
+
+/// #656 (SPEC-219 AC-1): a filter driver an agent plants in the sandbox clone's own configuration
+/// never runs on the host when its agent deploys an environment: the run takes origin's commit
+/// into Yulius's own mirror and writes its files from there.
+#[tokio::test]
+async fn an_agent_planted_git_filter_never_runs_on_the_host() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    deployable(&f).await?;
+    let marker = f.root.path().join("smudge-ran");
+    git(
+        &f.repo,
+        &[
+            "config",
+            "--local",
+            "filter.x.smudge",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    )?;
+    std::fs::create_dir_all(f.repo.join(".git/info"))?;
+    std::fs::write(f.repo.join(".git/info/attributes"), "* filter=x\n")?;
+    // The filter is live: a checkout in the clone runs it.
+    git(&f.repo, &["fetch", "--quiet", "origin"])?;
+    let probe = f.root.path().join("probe");
+    git(
+        &f.repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            &probe.to_string_lossy(),
+            "origin/quartio",
+        ],
+    )?;
+    assert!(marker.exists(), "the planted filter runs in a checkout");
+    std::fs::remove_file(&marker)?;
+
+    let run = agent_deploys(&f).await?;
+    assert_eq!(run["state"], "succeeded", "{run}");
+    assert!(
+        run["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deployed hello on dev-vm"),
+        "{run}"
+    );
+    assert_eq!(run["commit"], f.origin_sha("quartio")?.as_str());
+    assert!(
+        !marker.exists(),
+        "the planted smudge filter ran on the host"
+    );
+    Ok(())
+}
+
+/// #656 (SPEC-219 AC-3): an environment run never fetches with the token in the sandbox clone,
+/// whose configuration its agents write: a planted `url.insteadOf` and `http.proxy` change
+/// nothing, and the run deploys origin's head although the clone never saw it.
+#[tokio::test]
+async fn an_environment_run_never_fetches_in_the_sandbox_clone() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    deployable(&f).await?;
+    let evil = f.root.path().join("evil.git");
+    git(
+        f.root.path(),
+        &["init", "--quiet", "--bare", &evil.to_string_lossy()],
+    )?;
+    let origin = f.origin.to_string_lossy().into_owned();
+    for (key, value) in [
+        (format!("url.{}.insteadOf", evil.display()), origin.clone()),
+        (
+            "url.https://evil.invalid/.insteadOf".to_owned(),
+            "https://github.com/".to_owned(),
+        ),
+        ("http.proxy".to_owned(), "http://127.0.0.1:9".to_owned()),
+    ] {
+        git(&f.repo, &["config", "--local", &key, &value])?;
+    }
+    let stale = git(&f.repo, &["rev-parse", "refs/remotes/origin/quartio"])?;
+    assert_ne!(stale, f.origin_sha("quartio")?);
+
+    let run = agent_deploys(&f).await?;
+    assert_eq!(run["state"], "succeeded", "{run}");
+    assert_eq!(run["commit"], f.origin_sha("quartio")?.as_str());
+    assert_eq!(
+        git(&f.repo, &["rev-parse", "refs/remotes/origin/quartio"])?,
+        stale,
+        "the sandbox clone was not fetched"
+    );
+    Ok(())
+}
+
+/// #656 (SPEC-219 AC-2): with containment on, an environment command runs in the sandbox's
+/// containment: a file of the host outside the sandbox and the run is not there, and `HOME` is the
+/// run's own.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn contained_environment_runs_see_only_their_sandbox() -> TestResult {
+    let probe = Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED contained_environment_runs_see_only_their_sandbox: bubblewrap cannot run here"
+        );
+        return Ok(());
+    }
+    let f = fixture_with(&DeliveryProfile::product(), contained(), None).await?;
+    let host_only = f.h.app.config.data_dir.join("host-only.txt");
+    std::fs::write(&host_only, "the host's\n")?;
+    let command = format!(
+        "if [ -e '{}' ]; then echo leaked; exit 7; fi; echo \"contained home=$HOME\"",
+        host_only.display()
+    );
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [
+                    {"name": "dev-vm", "after": "integration", "verify": "command", "command": command}
+                ]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "succeeded", "{run}");
+    let runs = f.h.app.config.data_dir.join("runs").join("env-");
+    assert!(
+        output.contains(&format!("contained home={}", runs.display())),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// Containment on.
+fn contained() -> support::ConfigureFn {
+    Box::new(|config| config.contained = true)
+}
+
+/// SPEC-219 ENV-004: an environment command past the CI job timeout (as CD runs) is killed with
+/// the processes it started, and the run fails saying so.
+#[tokio::test]
+async fn an_environment_command_past_its_timeout_is_killed() -> TestResult {
+    let f = fixture_with(
+        &DeliveryProfile::product(),
+        Box::new(|config| config.ci.job_timeout = Duration::from_secs(2)),
+        None,
+    )
+    .await?;
+    let pid_file = f.root.path().join("child.pid");
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": format!("sleep 60 & echo $! > '{}'; echo started; wait", pid_file.display())}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "failed", "{run}");
+    assert!(
+        output.contains("started") && output.contains("the command exceeded"),
+        "{output}"
+    );
+    let pid = std::fs::read_to_string(&pid_file)?.trim().to_owned();
+    let alive = || {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
+            })
+    };
+    for _ in 0..100 {
+        if !alive() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!("the background child {pid} of the timed-out command was not killed").into())
+}
+
+/// SPEC-219 ENV-004: the process host of a run that a restart left `running` keeps no command
+/// going: the startup reconciliation terminates it, removes the run's directory and records the
+/// run as `error`.
+#[tokio::test]
+async fn a_restart_ends_a_running_environment_command() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let pid_file = f.root.path().join("sleeper.pid");
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": format!("echo $$ > '{}'; exec sleep 60", pid_file.display())}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let agent = live_agent(&f, "t1", "tok-deployer").await?;
+    let started = answer(
+        &agent_tool(
+            &f,
+            &agent,
+            "delivery_deploy",
+            json!({"environment": "dev-vm"}),
+        )
+        .await?,
+    )?;
+    let run_id = started["run"]["run_id"].as_str().ok_or("run id")?;
+    let mut pid = String::new();
+    for _ in 0..400 {
+        if let Ok(text) = std::fs::read_to_string(&pid_file)
+            && !text.trim().is_empty()
+        {
+            pid = text.trim().to_owned();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!pid.is_empty(), "the command started");
+
+    assert_eq!(f.h.app.reconcile_environment_runs().await?, 1);
+    let run = f.wait_run(run_id).await?;
+    assert_eq!(run["state"], "error", "{run}");
+    let runs = f.h.app.config.data_dir.join("runs");
+    assert!(
+        !runs.join(format!("env-{run_id}")).exists(),
+        "the run's directory is removed"
+    );
+    let alive = || {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
+            })
+    };
+    for _ in 0..100 {
+        if !alive() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!("the command {pid} still runs").into())
+}
+
+/// SPEC-219 AC-2 (review of 5d72af32): a command that replaces its run's log with a link to a host
+/// file does not get Yulius to read that file into the run's output: the log is read through the
+/// handle Yulius opened before the command started, never by its path again.
+#[tokio::test]
+async fn a_relinked_run_log_never_reads_a_host_file() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let host_file = f.h.app.config.data_dir.join("host-secret.txt");
+    std::fs::write(&host_file, "HOST-SECRET-7f3a\n")?;
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": format!(
+                        "ln -sf '{}' \"$HOME/../log\"; sleep 3; echo after",
+                        host_file.display()
+                    )}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "succeeded", "{run}");
+    assert!(!output.contains("HOST-SECRET"), "{output}");
+    assert!(
+        output.contains("after"),
+        "the command's own output is kept: {output}"
+    );
+    Ok(())
+}
+
+/// Records the plan of the one run it is asked to start and refuses to start it.
+#[derive(Default)]
+struct RecordingHost {
+    plan: std::sync::Mutex<Option<(PathBuf, LaunchPlan)>>,
+}
+
+#[async_trait]
+impl SessionHost for RecordingHost {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        _: &str,
+        _: &str,
+        plan: &LaunchPlan,
+        _: &[u8; 32],
+        _: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        if let Ok(mut slot) = self.plan.lock() {
+            *slot = Some((run_dir.to_path_buf(), plan.clone()));
+        }
+        Err(AppError::Upstream("recorded, not started".into()))
+    }
+    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
+        Err(AppError::Upstream("nothing runs".into()))
+    }
+    fn inspect(&self, _: &Path) -> RunInspection {
+        RunInspection::Missing
+    }
+    fn terminate(&self, _: &Path) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+/// #656 (SPEC-219 ENV-002/003, AC-2 where bubblewrap cannot run): a contained server starts an
+/// environment run in the sandbox's containment, as a CD dev run: its root is the sandbox, only its
+/// own directory is writable, its `HOME` is fresh there, and it runs the commit's files written into
+/// that directory, not the sandbox clone.
+#[tokio::test]
+async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> TestResult {
+    let host = Arc::new(RecordingHost::default());
+    let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
+    deployable(&f).await?;
+    let run = agent_deploys(&f).await?;
+    assert_eq!(
+        run["state"], "error",
+        "the recording host starts nothing: {run}"
+    );
+    let (run_dir, plan) = host
+        .plan
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .ok_or("no run was started")?;
+    let runs = f.h.app.config.data_dir.join("runs");
+    assert!(
+        run_dir.starts_with(&runs)
+            && run_dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("env-")),
+        "{}",
+        run_dir.display()
+    );
+    let work = run_dir.join("work");
+    assert_eq!(plan.cwd, work.join("src"));
+    assert!(
+        plan.argv.iter().any(|arg| arg.contains("cat feature.txt")),
+        "{:?}",
+        plan.argv
+    );
+    let Containment::Bubblewrap {
+        sandbox_root,
+        home,
+        writable,
+        ..
+    } = &plan.containment
+    else {
+        return Err(format!("not contained: {:?}", plan.containment).into());
+    };
+    assert_eq!(sandbox_root, &f.h.app.config.data_dir.join("sandboxes/s1"));
+    assert_eq!(home, &work.join("home"));
+    assert!(
+        writable.iter().all(|dir| dir.starts_with(&work)),
+        "{writable:?}"
+    );
+    assert!(
+        plan.env
+            .iter()
+            .any(|(k, v)| k == "HOME" && *v == work.join("home").to_string_lossy()),
+        "{:?}",
+        plan.env
+    );
+    assert!(plan.secret_env.is_empty());
+    assert!(!run_dir.exists(), "the run's directory goes with it");
+    Ok(())
+}
+
+/// SPEC-219 ENV-003: a production environment's run, which only a person starts, runs as a CD
+/// production run: rooted at its own directory, not the sandbox, with a fresh `HOME` there.
+#[tokio::test]
+async fn a_production_environment_run_starts_in_production_containment() -> TestResult {
+    let host = Arc::new(RecordingHost::default());
+    let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "rollout", "after": "production", "verify": "command",
+                    "command": "./roll.sh"}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let started = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/environments/rollout/runs",
+            Some(json!({"confirm": true})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let run = f
+        .wait_run(started.body["run_id"].as_str().ok_or("run id")?)
+        .await?;
+    assert_eq!(run["commit"], f.origin_sha("main")?.as_str(), "{run}");
+    let (run_dir, plan) = host
+        .plan
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .ok_or("no run was started")?;
+    let work = run_dir.join("work");
+    let Containment::Bubblewrap {
+        sandbox_root, home, ..
+    } = &plan.containment
+    else {
+        return Err(format!("not contained: {:?}", plan.containment).into());
+    };
+    assert_eq!(
+        sandbox_root, &work,
+        "production is not rooted at the sandbox"
+    );
+    assert_eq!(home, &work.join("home"));
+    assert_eq!(plan.cwd, work.join("src"));
     Ok(())
 }

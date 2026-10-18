@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
+- Delivery environment runs run contained, from a mirror only Yulius writes (SPEC-219, ADR-0175,
+  task #205, fixes #656). An environment's command no longer runs on the server in the sandbox's
+  clone, where a Git filter an agent planted in the clone's configuration ran during the checkout
+  and the command itself ran uncontained: an agent's `delivery_deploy` could run code on the host.
+  A run now fetches its branch's head from GitHub into `<data>/cd/<sandbox>/environments.git` (the
+  token never passes through the clone's configuration), writes its files into the run's own
+  directory with a fresh `HOME`, and runs the command through the process host in the sandbox's
+  containment, as CD dev runs do (production environments as CD production runs). It times out
+  with the CI job timeout, and a restart stops a running command. A deploy command that relied on
+  the sandbox's home, or (for production environments) on host paths, must change: its `HOME` is
+  empty at every run. CI, CD and environment runs also no longer let a job point the log Yulius
+  reads at another file, and a run's files are written without the server's own Git filters.
 - The MCP Test no longer runs commands from the repository's `.mcp.json` on the server (SPEC-218,
   ADR-0173, #654, task #204). Agents can write that file, and Yulius imports its servers; an
   instance administrator pressing Test, or just opening a server's page from a link ending in
