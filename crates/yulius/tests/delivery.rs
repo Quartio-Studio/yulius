@@ -5116,6 +5116,44 @@ async fn a_restart_ends_a_running_environment_command() -> TestResult {
     Err(format!("the command {pid} still runs").into())
 }
 
+/// SPEC-219 AC-2 (review of 5d72af32): a command that replaces its run's log with a link to a host
+/// file does not get Yulius to read that file into the run's output: the log is read through the
+/// handle Yulius opened before the command started, never by its path again.
+#[tokio::test]
+async fn a_relinked_run_log_never_reads_a_host_file() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let host_file = f.h.app.config.data_dir.join("host-secret.txt");
+    std::fs::write(&host_file, "HOST-SECRET-7f3a\n")?;
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": format!(
+                        "ln -sf '{}' \"$HOME/../log\"; sleep 3; echo after",
+                        host_file.display()
+                    )}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "succeeded", "{run}");
+    assert!(!output.contains("HOST-SECRET"), "{output}");
+    assert!(
+        output.contains("after"),
+        "the command's own output is kept: {output}"
+    );
+    Ok(())
+}
+
 /// Records the plan of the one run it is asked to start and refuses to start it.
 #[derive(Default)]
 struct RecordingHost {
