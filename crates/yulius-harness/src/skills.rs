@@ -178,7 +178,8 @@ fn open_dir_at(dir: &OwnedFd, name: &OsStr, create: bool) -> Result<OwnedFd, Err
     }
 }
 
-/// The names in the folder `dir` (`.` and `..` left out).
+/// The names in the folder `dir` (`.` and `..` left out); more than [`MAX_LISTED_ENTRIES`] is an
+/// error, so a folder the agent filled is never read whole into memory.
 fn entries(dir: &OwnedFd) -> io::Result<Vec<OsString>> {
     use std::os::unix::ffi::OsStrExt as _;
     // A fresh description of the same folder, so every listing starts at its beginning.
@@ -188,6 +189,11 @@ fn entries(dir: &OwnedFd) -> io::Result<Vec<OsString>> {
         let entry = entry?;
         let name = entry.file_name().to_bytes();
         if name != b"." && name != b".." {
+            if names.len() == MAX_LISTED_ENTRIES {
+                return Err(io::Error::other(format!(
+                    "a folder in the skills folder has more than {MAX_LISTED_ENTRIES} entries"
+                )));
+            }
             names.push(OsStr::from_bytes(name).to_owned());
         }
     }
@@ -449,7 +455,8 @@ mod tests {
     }
 
     #[test]
-    fn a_skills_folder_with_too_many_entries_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_skills_folder_with_too_many_entries_is_refused() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let source = dir.path().join("catalog/review");
         fs::create_dir_all(&source)?;
