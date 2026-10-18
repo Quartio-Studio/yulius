@@ -9,7 +9,6 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   holdApprove?: Promise<void>;
   holdRecovery?: Promise<void>;
   recoveryWaiting?: number;
-  heldWaiting?: number;
   failPostPath?: string | null;
   failApprove?: boolean;
   startOnboarding(slug: string): void;
@@ -17,7 +16,7 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   touchTask(sandboxId: string, number: number, changes: Record<string, unknown>): void;
   request(method: string, path: string, body?: unknown): Promise<number>;
   sandboxes: { id: string; slug: string }[];
-  tasks: { sandbox_id: string; number: number }[];
+  tasks: { sandbox_id: string; number: number; status?: string; title?: string }[];
 } };
 
 /**
@@ -67,6 +66,29 @@ const settle = (browser: Browser) => browser.evaluate(() => new Promise<void>((r
 
 /** The onboarding toasts shown since `recordToasts`, in order. */
 const onboardingToasts = (browser: Browser) => browser.evaluate(() => (window as unknown as { __toasts: string[] }).__toasts.filter((text) => text.startsWith('Onboarding')));
+
+/**
+ * Ends a Start onboarding held at its read of the tasks (`hold=` on the sandbox's tasks) and waits
+ * until it has said all it says. That read brings a title only it (and the other held reads) has,
+ * given once the mock's own task event (the run working, 1.2 s after the start) has gone out; the
+ * document title follows task events only, so the sidebar's list says when it landed.
+ */
+async function endStart(browser: Browser) {
+  await expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    const id = db.sandboxes.find((s) => s.slug === 'website')!.id;
+    return db.tasks.find((t) => t.sandbox_id === id && t.number === 1)?.status ?? null;
+  }), { message: 'the onboarding run works' }).toBe('running');
+  await settle(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked & { __releaseTasks: () => void };
+    const id = w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id;
+    w.__yuliusMock.tasks.find((t) => t.sandbox_id === id && t.number === 1)!.title = 'Read again';
+    w.__releaseTasks();
+  });
+  await expect(browser.locator('.sidebar .task-row:has-text("Read again")')).toBeVisible();
+  await settle(browser);
+}
 
 /**
  * How far the onboarding region sits from the centre of the free page area (pixels, x and y). The
@@ -267,9 +289,8 @@ test('leaving and coming back while Start onboarding runs still shows it loading
   await expect(starting).toBeVisible();
   await expect(starting.getByRole('button')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Start onboarding')).toHaveCount(0);
-  // The start's own ending waits for its read of the tasks (held), which brings a title only that
-  // read has: once it shows, the start has said all it says. The mock makes task #1 as the start
-  // reaches it.
+  // The start's own ending waits for its read of the tasks (held). The mock makes task #1 as the
+  // start reaches it.
   await expect.poll(() => browser.evaluate(() => {
     const db = (window as unknown as { __yuliusMock: { tasks: { sandbox_id: string; number: number }[]; sandboxes: { id: string; slug: string }[] } }).__yuliusMock;
     const id = db.sandboxes.find((s) => s.slug === 'website')!.id;
@@ -277,19 +298,16 @@ test('leaving and coming back while Start onboarding runs still shows it loading
   })).toBe(true);
   await browser.evaluate(() => {
     const w = window as unknown as Mocked & { __releaseTasks?: () => void };
-    const db = w.__yuliusMock as unknown as { holdPath: string; held: Promise<void>; tasks: { sandbox_id: string; number: number; title: string }[] };
-    const id = w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id;
-    db.holdPath = `/api/sandboxes/${id}/tasks`;
+    const db = w.__yuliusMock as unknown as { holdPath: string; held: Promise<void> };
+    db.holdPath = `/api/sandboxes/${w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id}/tasks`;
     db.held = new Promise<void>((resolve) => { w.__releaseTasks = resolve; });
-    db.tasks.find((t) => t.sandbox_id === id && t.number === 1)!.title = 'Read again';
     w.__release!();
   });
   await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
-  await browser.evaluate(() => (window as unknown as { __releaseTasks: () => void }).__releaseTasks());
-  await expect.poll(() => browser.evaluate(() => document.title)).toMatch(/Read again/);
+  await endStart(browser);
   // One start, one toast: the page that opened the task says so, the composer left says nothing
   // (#436).
-  await expect.poll(() => onboardingToasts(browser)).toEqual(['Onboarding started: opened #1.']);
+  expect(await onboardingToasts(browser)).toEqual(['Onboarding started: opened #1.']);
 });
 
 // #581: the composer the person came back to asks for the superadmin's recovery state as it mounts.
@@ -334,17 +352,7 @@ test('a composer left before its reads answer adds no second toast to the start'
   await browser.evaluate(() => (window as unknown as { __releaseRecovery: () => void }).__releaseRecovery());
   await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.recoveryWaiting ?? 0), { message: 'the recovery read answered' }).toBe(0);
   await settle(browser);
-  // The start's read of the tasks brings a title only it (and reads since) have: once it shows and
-  // the page's queued tasks have run, the start has said all it says.
-  await browser.evaluate(() => {
-    const w = window as unknown as Mocked & { __releaseTasks: () => void };
-    const id = w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id;
-    (w.__yuliusMock.tasks as { sandbox_id: string; number: number; title?: string }[]).find((t) => t.sandbox_id === id && t.number === 1)!.title = 'Read again';
-    w.__releaseTasks();
-  });
-  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.heldWaiting ?? 0)).toBe(0);
-  await expect.poll(() => browser.evaluate(() => document.title)).toMatch(/Read again/);
-  await settle(browser);
+  await endStart(browser);
   expect(await onboardingToasts(browser)).toEqual(['Onboarding started: opened #1.']);
 });
 
