@@ -858,8 +858,18 @@ impl App {
     async fn prepare_run_extras(&self, sandbox: &SandboxRecord, home: &Path) {
         match self.skills_for_run(sandbox).await {
             Ok(skills) if !skills.is_empty() => {
-                let claude_dir = home.join(".claude").join("skills");
-                if let Err(err) = self.deps.harness.install_skills(&skills, &claude_dir) {
+                // The agent owns its home: the skills folder is reached from the sandbox
+                // directory without following links (#657).
+                let root = self.sandbox_dir(&sandbox.id);
+                let skills_dir = home
+                    .strip_prefix(&root)
+                    .unwrap_or(Path::new("home"))
+                    .join(".claude/skills");
+                if let Err(err) = self
+                    .deps
+                    .harness
+                    .install_skills(&skills, &root, &skills_dir)
+                {
                     tracing::warn!(error = %err, sandbox = %sandbox.id, "skill installation failed");
                 }
             }

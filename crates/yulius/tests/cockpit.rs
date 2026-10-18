@@ -1141,8 +1141,13 @@ impl HarnessPort for RecordingHarness {
     fn masker(&self) -> Box<dyn OutputMasker> {
         self.inner.masker()
     }
-    fn install_skills(&self, skills: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()> {
-        self.inner.install_skills(skills, claude_dir)
+    fn install_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<()> {
+        self.inner.install_skills(skills, root, skills_dir)
     }
 }
 

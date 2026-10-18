@@ -328,9 +328,15 @@ pub trait HarnessPort: Send + Sync {
     fn extract_claude_token(&self, output: &str) -> Option<String>;
     /// A new output masker.
     fn masker(&self) -> Box<dyn OutputMasker>;
-    /// Installs skill directories into the Claude home.
+    /// Installs skill directories into `skills_dir`, a path relative to `root` (the sandbox
+    /// directory, which the agent cannot replace; it can change everything below it).
     ///
     /// # Errors
-    /// I/O failures.
-    fn install_skills(&self, skills: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()>;
+    /// I/O failures, or a link on the way from `root` to `skills_dir`.
+    fn install_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<()>;
 }

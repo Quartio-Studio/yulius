@@ -90,8 +90,10 @@ fn io_error(name: &str) -> impl FnOnce(io::Error) -> SkillsError + '_ {
 /// failure. All sources are validated before anything is written.
 pub fn install_skills(
     sources: &[SkillDir],
-    claude_skills_dir: &Path,
+    root: &Path,
+    skills_dir: &Path,
 ) -> Result<InstallReport, SkillsError> {
+    let claude_skills_dir = &root.join(skills_dir);
     let mut names: Vec<&str> = Vec::new();
     for skill in sources {
         if !valid_name(&skill.name) || names.contains(&skill.name.as_str()) {
@@ -146,6 +148,7 @@ fn install_one(skill: &SkillDir, dir: &Path) -> Result<usize, SkillsError> {
             entries: 0,
         };
         fs::create_dir(&staging).map_err(io_error(&skill.name))?;
+        staged(&staging);
         let skipped = copy_tree(&root, &root, &staging, 0, &mut budget, &skill.name)?;
         fs::write(staging.join(MANAGED_MARKER), b"installed by yulius\n")
             .map_err(io_error(&skill.name))?;
@@ -172,6 +175,23 @@ fn install_one(skill: &SkillDir, dir: &Path) -> Result<usize, SkillsError> {
         let _ignored = fs::remove_dir_all(&staging);
     }
     result
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only pause point (ADR-0174): runs once the staging folder exists, before the copy.
+    static STAGED: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The staging folder exists and is empty; nothing is copied yet.
+fn staged(staging: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = STAGED.with(|hook| hook.borrow_mut().take()) {
+        hook(staging);
+    }
+    #[cfg(not(test))]
+    let _ = staging;
 }
 
 fn remove_any(path: &Path) -> io::Result<()> {
@@ -271,6 +291,31 @@ fn prune(dir: &Path, keep: &[&str]) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_planted_in_the_staging_folder_is_never_written_through()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("catalog/review");
+        fs::create_dir_all(&source)?;
+        fs::write(source.join("SKILL.md"), "---\nname: review\n---\n")?;
+        let victim = dir.path().join("yulius.db");
+        fs::write(&victim, "precious")?;
+        // The agent watches its skills folder and plants a link the moment staging appears.
+        let target = victim.clone();
+        STAGED.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |staging: &Path| {
+                std::os::unix::fs::symlink(&target, staging.join("SKILL.md")).ok();
+            }));
+        });
+        let skill = SkillDir {
+            name: "review".into(),
+            path: source,
+        };
+        let result = install_skills(&[skill], dir.path(), Path::new("home/.claude/skills"));
+        assert_eq!(fs::read_to_string(&victim)?, "precious", "{result:?}");
+        Ok(())
+    }
 
     #[test]
     fn names() {

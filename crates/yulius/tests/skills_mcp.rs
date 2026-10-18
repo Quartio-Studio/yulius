@@ -292,7 +292,10 @@ async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
     );
     let homes = tempfile::tempdir()?;
     let dir = homes.path().join("claude/skills");
-    w.h.app.deps.harness.install_skills(&run_set, &dir)?;
+    w.h.app
+        .deps
+        .harness
+        .install_skills(&run_set, homes.path(), Path::new("claude/skills"))?;
     assert!(dir.join("om-code-review/SKILL.md").is_file());
     assert!(
         dir.join("om-code-review/references/review-checklist.md")
