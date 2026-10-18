@@ -1197,6 +1197,8 @@ impl LogTail {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     /// SPEC-195 VSC-001: a CI job finds `yulius` (for `yulius security-scan`) on its PATH.

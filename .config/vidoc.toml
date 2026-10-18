@@ -357,3 +357,20 @@ reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, w
 path = "crates/yulius-app/src/ci/exec.rs"
 title = "from pull request-defined CI jobs"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
+
+# A delivery environment's `command` is the sandbox profile's, which only repository administrators
+# set (`PATCH /api/sandboxes/{sid}`), never read from the repository; since SPEC-219 (#656) it runs
+# like a CD run of its stage: the commit's files from a mirror only Yulius writes, in the sandbox's
+# containment with a fresh HOME. Reported on task #205's change scan, which made it so.
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "command executed by environment runs"
+reason = "the command is the admin-set profile's, not the repository's, and runs contained from a Yulius-only mirror (SPEC-219, ADR-0175)"
+
+# This file is configuration, reviewed like code: each entry names its reason, and the entries for
+# real weaknesses name the open issue that tracks them (#626, #654, #657). Vidoc reports those
+# entries themselves as "suppressed" whenever a change edits this file.
+[[ignore]]
+path = ".config/vidoc.toml"
+title = "suppressed"
+reason = "the reviewed ignore list itself; each real weakness it lists has an open issue"
