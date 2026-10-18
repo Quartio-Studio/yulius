@@ -28,12 +28,13 @@ launch `/goal` watched again after a restart.
   `spawning` or `live` (`yulius-store` `tasks.rs`). The attempt is `spawning` from
   `store.insert_attempt` until `session_host.spawn` returns (`supervisor.rs`, launch), and the
   launch-goal marker is written in between, so the test's marker assertion passed too.
-  `first.shutdown_timeout` then dropped the in-flight launch before the ptyhost was ready. Cut
-  before the host wrote `status.json`, the second server's `reconcile` found the attempt
-  `spawning` with no host in its run directory (`RunInspection::Missing`, seen in the
-  reproduction) and marked it lost (`Stopped(ServerLost)`). Cut after that but before its socket
-  accepted, `attach_run` failed too and the host was terminated, then marked lost. Only a host
-  already ready while the attempt was still `spawning` reattached. The reattach branch, where the launch-goal watch is armed, was never
+  `first.shutdown_timeout` then dropped the in-flight launch before the ptyhost was ready. What
+  the second server's `reconcile` found depends on how far the host got by then (a started host
+  outlives the first server and goes on starting). Cut before `command.spawn()`, there is no host:
+  the run directory has no `status.json` (`RunInspection::Missing`, seen in the reproduction), so
+  the run is marked lost (`Stopped(ServerLost)`). A host started but not attachable within the
+  attach's connect timeout is terminated if recorded, then marked lost. Only a host ready by then
+  is reattached. The reattach branch, where the launch-goal watch is armed, was never
   reached, and `flag_needs_attention` needs a running task: no flag ever came, whatever the budget.
   Under load the spawn (writing launch files, starting the ptyhost, waiting until it is ready)
   takes long enough to lose that race; on a quiet host it usually finishes first.
@@ -83,8 +84,8 @@ launch `/goal` watched again after a restart.
 ## Decisions
 
 - **Fix the test's wait, not the product.** The product does what SPEC-002 §7.1 asks of a run cut
-  during its spawn (no respawn; lost). Making `reconcile` arm the watch for a run with no process
-  would flag a task that is not running. No ADR: no lasting design decision changes.
+  during its spawn (no respawn; lost). Making `reconcile` arm the watch for a run it could not
+  reattach would flag a task that is not running. No ADR: no lasting design decision changes.
 - **Wait on `AttemptState::Live`** rather than on screen output: the agent here ignores its goal
   prompt and shows nothing specific, and `Live` is exactly "the host started and is ready", which
   survives the server's stop.
