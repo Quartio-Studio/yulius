@@ -60,6 +60,33 @@ test('a base being rebuilt, a sandbox on its own Docker and a re-check problem a
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// The report of #674: a helper unit from before SPEC-203 keeps /etc read-only, so the re-check's
+// safe fixes fail while its own "sandbox Docker" verdict holds.
+const KEPT_ITEM = 'needrestart: cannot write /etc/needrestart/conf.d/yulius.conf: Read-only file system (os error 30)';
+const count = (text: string, part: string) => text.split(part).length - 1;
+
+test('a host check that kept Docker says so, with its items and the fix, not that Docker may be lost', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&docker=kept'));
+  await expect(screen.getByText('sandboxes get Docker')).toBeVisible();
+  await expect(screen.getByText(/left 3 items to fix\. Sandboxes get Docker; run `sudo yulius host setup` on the server to fix them\./)).toBeVisible();
+  await expect(screen.getByText(KEPT_ITEM)).toBeVisible();
+  await expect(screen.getByText(/update helper: cannot write \/etc\/modules-load\.d after an update/)).toBeVisible();
+  expect(await bodyText(browser)).not.toMatch(/may have lost Docker/);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('an update whose re-check kept Docker says so in one line and lists its items once, in the card', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&docker=kept'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  await expect.poll(() => bodyText(browser), { timeout: 15000 }).toMatch(/Updated to 9c1e7d3/);
+  await expect(screen.getByText(/Sandboxes still get Docker; the host check after it left 3 items to fix \(Sandbox Docker, below\)\./)).toBeVisible();
+  const text = await bodyText(browser);
+  expect(text).not.toMatch(/may have lost Docker/);
+  expect(count(text, KEPT_ITEM)).toBe(1);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('without isolation the card says why and offers no smoke check', async ({ app, screen }) => {
   await app.open(mock('/admin/instance', '&docker=legacy'));
   await expect(screen.getByText(/sandboxes are not isolated on this server/)).toBeVisible();
@@ -73,6 +100,9 @@ test('an update whose re-check finds a regression says so in its outcome', async
   await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
   await expect.poll(() => bodyText(browser), { timeout: 15000 }).toMatch(/Updated to 9c1e7d3/);
   await expect(screen.getByText('Sandboxes may have lost Docker with this update.')).toBeVisible();
+  await expect(screen.getByText(/The Sandbox Docker card below has the latest host check\./)).toBeVisible();
+  // The items show once, in the card's latest host check, not again in the outcome.
+  expect(count(await bodyText(browser), 'kernel modules: cannot load overlay')).toBe(1);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
