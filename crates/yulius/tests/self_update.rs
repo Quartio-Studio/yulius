@@ -11,6 +11,7 @@ use crate::support;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
@@ -221,6 +222,39 @@ async fn a_newer_main_is_offered_to_superadmins_only() -> TestResult {
     assert!(r.body["available"].is_null());
     let error = r.body["check"]["error"].as_str().unwrap_or_default();
     assert!(error.contains("YULIUS_UPDATE_TOKEN_FILE"), "{error}");
+    Ok(())
+}
+
+/// #502 (SPEC-226 UPC-001): a "Check now" sent while another check compares (two tabs opening
+/// the instance page) waits for it and reuses its result: one compare for both.
+#[tokio::test]
+async fn concurrent_checks_make_one_compare() -> TestResult {
+    let i = instance().await?;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *i.source.gate.lock().map_err(|_| "lock")? = Some(gate.clone());
+    let cookie = i.admin.cookie.as_deref().ok_or("cookie")?;
+    let ctx = i.h.app.authenticate_cookie(cookie).await?.ok_or("session")?;
+    let first = tokio::spawn({
+        let app = i.h.app.clone();
+        let ctx = ctx.clone();
+        async move { app.check_updates_now(&ctx).await }
+    });
+    tokio::time::timeout(Duration::from_secs(10), i.source.entered.notified()).await?;
+    // Everything before the checks' lock runs at once: one poll leaves the second check queued
+    // on the lock, past its own look at the (stale) last check.
+    let second = i.h.app.check_updates_now(&ctx);
+    tokio::pin!(second);
+    assert!(futures::poll!(&mut second).is_pending(), "waits for the first check");
+    i.source.gate.lock().map_err(|_| "lock")?.take();
+    gate.notify_one();
+    let first = first.await??;
+    let second = second.await?;
+    assert_eq!(i.source.tokens.lock().map_err(|_| "lock")?.len(), 1, "one compare");
+    assert_eq!(
+        serde_json::to_value(&second)?,
+        serde_json::to_value(&first)?
+    );
+    assert_eq!(serde_json::to_value(&second)?["available"]["commit"], NEW);
     Ok(())
 }
 
