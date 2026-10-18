@@ -138,3 +138,29 @@ inside the sandbox's containment like a CD dev run.
   fail it; Yulius CI files them. No low finding was reported in the change.
 - `scripts/dev security` again with the ignore committed: exit 0; Vidoc did not report the
   `exec.rs` finding that time (its findings vary between runs), and 3 findings outside the change.
+
+### Review round 1 (head 5d72af32: request changes), answers
+
+- HIGH, own code: a run could replace its log with a link and have the host read a host file into
+  its output (`LogTail` reopened the log by path; shared with CD and CI). Fixed test-first
+  (`delivery::a_relinked_run_log_never_reads_a_host_file`, red 3 of 3 before): the log is opened
+  once before the spawn with `O_NOFOLLOW|O_NONBLOCK`, must be a regular file, and is read only
+  through that handle (also ends the FIFO hang).
+- MEDIUM, own scope: the three `.config/vidoc.toml` ignores tracking #656 are removed; the CI job
+  ignore is narrowed to the title "from pull request-defined CI jobs". The reviewer agreed it is
+  by design.
+- LOW, own code: production environment containment is tested
+  (`a_production_environment_run_starts_in_production_containment`); leftovers recognise a running
+  `env-` run directory (`leftovers::a_running_environment_run_keeps_its_directory`, red before);
+  the lost-run allowance covers the whole preparation (35 minutes); `docs/api.md`, ADR-0175 and
+  `docs/changes.md` say what the command sees, what `contained = false` means and what deploy
+  commands must change.
+- Pre-existing, fixed here because environment runs now use it: `export_tree` ignores the
+  server's global and system Git configuration and attributes
+  (`an_exported_tree_runs_no_filter_of_the_servers_configuration`, red before).
+- Pre-existing, filed: #663 (a CI job's log is created by path in the agent-writable
+  `ci/logs`), #664 (CD and environment run files are outside the disk quota).
+- Nits, left with reasons: the tail's skip-ahead uses CI's 512 KiB, so a burst can keep less
+  than 1 MiB (the stored tail is bounded either way); the restart test's double finish is
+  harmless (the second write is refused); the delivery test fake ignores `source` and `token`,
+  covered by `git_adapter::an_environment_head_is_fetched_from_github_into_the_mirror`.
