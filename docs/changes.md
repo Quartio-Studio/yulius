@@ -6,13 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-18
 
-- Yulius no longer follows links an agent plants in its own sandbox when it reads or writes there
-  as the service user (SPEC-220, ADR-0174, task #206, fixes #657). Editor reads and saves,
-  uploads and terminal attachments, imported transcripts and skill copies open their folder once,
-  without following links, and do everything else through that handle; files get random
-  temporary names created exclusively. Before, a link swapped in between a check and the use, or
-  planted at a fixed name, could show a host file in the editor, place an upload outside the
-  sandbox, or overwrite a host file such as the database.
+- Yulius no longer follows links an agent plants in its own sandbox in the five places of #657
+  (SPEC-220, ADR-0174, task #206). Editor reads and saves, uploads and terminal attachments,
+  imported transcripts and skill copies open their folder once, without following links, and do
+  everything else through that handle; files get random temporary names created exclusively.
+  Before, a link swapped in between a check and the use, or planted at a fixed name, could show a
+  host file in the editor, place an upload outside the sandbox, or overwrite a host file such as
+  the database. The same class remains, tracked, in editor deletes and listings (#660), the
+  transcript step-back (#661) and the config dir's preparation (#634).
 
 ## 2026-10-17
 

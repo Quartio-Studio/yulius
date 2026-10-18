@@ -64,8 +64,8 @@ through `openat`/`renameat`), `hooks.rs` `read_repo_doc` (the opened file's real
 
 ## Requirements
 
-- **HW-001** Every folder the server writes into below a sandbox is opened from an anchor the
-  agent cannot replace (the sandbox directory, or a canonical root whose real path is checked),
+- **HW-001** In the five places above, every folder the server uses below a sandbox is opened
+  from an anchor the agent cannot replace (the sandbox directory, or a canonical root whose real path is checked),
   one component at a time with `O_DIRECTORY | O_NOFOLLOW`; a link or a non-folder on the way is
   refused. Missing folders are created with `mkdirat` relative to their parent's handle.
 - **HW-002** Where links inside an editor root are followed by design (EDT-001: a link to a file
@@ -113,18 +113,24 @@ through `openat`/`renameat`), `hooks.rs` `read_repo_doc` (the opened file's real
 
 Each place gets one regression test, committed before its fix and shown failing:
 
-- `files::read_refuses_a_folder_swapped_after_the_check` and
-  `files::save_never_lands_in_a_folder_swapped_after_the_check` (yulius integration tests): the
-  pause hook swaps a middle folder for a link to an outside folder between the check and the use.
-- `import_server::imported_resume_never_writes_through_a_planted_link`: a `<session>.jsonl.tmp`
-  link to an outside file.
-- `uploads::an_attachment_folder_swapped_before_placing_leaves_the_outside_empty` (and the editor
-  variant): the pause hook swaps the destination folder after the last check.
-- `yulius-harness` `skills::a_linked_skills_folder_is_not_written_through` and a unit test that
-  plants a link in the staging folder while the copy runs (pause hook in the harness's tests).
+- `files::a_read_refuses_a_folder_swapped_for_a_link_after_the_check` and
+  `files::a_save_never_lands_in_a_folder_swapped_for_a_link_after_the_check` (yulius integration
+  tests): a pause point swaps a middle folder for a link to an outside folder between the check and
+  the use.
+- `import_server::import_resumes_applies_and_reruns_idempotently` (in `assert_imported_resume`): a
+  `<session>.jsonl.tmp` link to an outside file; unit tests
+  `imports::tests::a_linked_project_folder_is_never_written_through` and
+  `auxiliary_trees_are_copied_to_a_bounded_depth`.
+- `uploads::an_attachment_folder_swapped_for_a_link_leaves_the_outside_empty` and
+  `uploads::an_editor_upload_never_replaces_a_file_through_a_swapped_folder`: three pause points
+  model a `RENAME_EXCHANGE` loop (a link at each use, the folder at the re-check); the upload must
+  still succeed in the real folder.
+- `yulius-harness` `skills::a_linked_skills_folder_is_never_written_through` (a linked `skills` or
+  `.claude`), and unit tests `a_link_planted_in_the_staging_folder_is_never_written_through` (a
+  `cfg(test)` pause point) and `a_skills_folder_with_too_many_entries_is_refused`.
 
-The race tests use a pause hook compiled only with `yulius-app`'s `test-support` feature (and
-`cfg(test)` in the harness), so they are deterministic: no sleeps, no `RENAME_EXCHANGE` loops.
+The race tests use pause points compiled only with `yulius-app`'s `test-support` feature (and
+`cfg(test)` in the harness), so they are deterministic: no sleeps, no rename loops.
 
 ## Decisions
 
@@ -132,6 +138,8 @@ The race tests use a pause hook compiled only with `yulius-app`'s `test-support`
   links; races are tested with test-only pause points.
 - One pull request for the five places: one defect class, one fix pattern and one issue; split
   only if it grows past about 400 changed lines outside tests.
+- Pre-existing paths of the same class found on the way (the independent review): the transcript
+  step-back and the home's creation (#661), the config dir's preparation (commented on #634).
 - `files_list`, `file_create` (folders) and `file_delete` resolve by path too; they are outside
   #657's scope and are tracked in #660 (reproduced for `file_delete`), with the attachment
   removals (`remove_attachments`, `prune_old_drafts`).
