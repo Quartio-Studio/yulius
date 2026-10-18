@@ -734,8 +734,16 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 route('GET', '/api/me', ({ db }) => db.me);
-// Superadmin recovery (ACC-011): a code is set, three attempts left.
-route('GET', '/api/auth/recovery', ({ db }) => clone(db.recovery));
+// Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
+// (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
+// page that asked can be left before it answers (#581).
+route('GET', '/api/auth/recovery', async ({ db }) => {
+  if (db.holdRecovery) {
+    db.recoveryWaiting = (db.recoveryWaiting || 0) + 1;
+    try { await db.holdRecovery; } finally { db.recoveryWaiting -= 1; }
+  }
+  return clone(db.recovery);
+});
 route('POST', '/api/auth/recover', ({ db, body }) => {
   if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
   if (!body || body.code !== '123456') {

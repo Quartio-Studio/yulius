@@ -7,6 +7,9 @@ failOnPageErrors();
 type Mocked = Window & { __release?: () => void; __yuliusMock: {
   manualOnboarding?: boolean;
   holdApprove?: Promise<void>;
+  holdRecovery?: Promise<void>;
+  recoveryWaiting?: number;
+  heldWaiting?: number;
   failPostPath?: string | null;
   failApprove?: boolean;
   startOnboarding(slug: string): void;
@@ -14,6 +17,7 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   touchTask(sandboxId: string, number: number, changes: Record<string, unknown>): void;
   request(method: string, path: string, body?: unknown): Promise<number>;
   sandboxes: { id: string; slug: string }[];
+  tasks: { sandbox_id: string; number: number }[];
 } };
 
 /**
@@ -36,6 +40,33 @@ const touchOnboarding = (browser: Browser, changes: Record<string, unknown>) => 
   const db = (window as unknown as Mocked).__yuliusMock;
   db.touchTask(db.sandboxes.find((s) => s.slug === 'website')!.id, 1, c);
 }, changes);
+
+/**
+ * Records every toast as it shows (`window.__toasts`): one lives 5 s, and a loaded runner can take
+ * longer than that from the start's ending to the last check (#525).
+ */
+const recordToasts = (browser: Browser) => browser.evaluate(() => {
+  const seen: string[] = [];
+  (window as unknown as { __toasts: string[] }).__toasts = seen;
+  new MutationObserver(() => {
+    for (const el of document.querySelectorAll<HTMLElement>('.toast .toast-msg')) {
+      if (!el.dataset.recorded) { el.dataset.recorded = '1'; seen.push(el.textContent ?? ''); }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+});
+
+/**
+ * Lets the page run the tasks already queued (an answer on its way through `fetch`, the timer a
+ * view sets when it acts on it) before the next step: ten turns of its event loop, no wait for time.
+ */
+const settle = (browser: Browser) => browser.evaluate(() => new Promise<void>((resolve) => {
+  let left = 10;
+  const next = () => { if (left-- > 0) setTimeout(next, 0); else resolve(); };
+  next();
+}));
+
+/** The onboarding toasts shown since `recordToasts`, in order. */
+const onboardingToasts = (browser: Browser) => browser.evaluate(() => (window as unknown as { __toasts: string[] }).__toasts.filter((text) => text.startsWith('Onboarding')));
 
 /**
  * How far the onboarding region sits from the centre of the free page area (pixels, x and y). The
@@ -222,17 +253,7 @@ test('onboarding started elsewhere takes the open gate to its task and says so',
 test('leaving and coming back while Start onboarding runs still shows it loading', async ({ app, browser, screen }) => {
   await importRepository({ app, browser, screen }, 'website');
   await browser.evaluate(() => { location.hash = '#/s/website'; });
-  // Every toast is recorded as it shows: one lives 5 s, and a loaded runner can take longer than
-  // that from the start's ending to the last check (#525).
-  await browser.evaluate(() => {
-    const seen: string[] = [];
-    (window as unknown as { __toasts: string[] }).__toasts = seen;
-    new MutationObserver(() => {
-      for (const el of document.querySelectorAll<HTMLElement>('.toast .toast-msg')) {
-        if (!el.dataset.recorded) { el.dataset.recorded = '1'; seen.push(el.textContent ?? ''); }
-      }
-    }).observe(document.body, { childList: true, subtree: true });
-  });
+  await recordToasts(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Mocked;
     w.__yuliusMock.holdApprove = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -268,7 +289,63 @@ test('leaving and coming back while Start onboarding runs still shows it loading
   await expect.poll(() => browser.evaluate(() => document.title)).toMatch(/Read again/);
   // One start, one toast: the page that opened the task says so, the composer left says nothing
   // (#436).
-  await expect.poll(() => browser.evaluate(() => (window as unknown as { __toasts: string[] }).__toasts.filter((text) => text.startsWith('Onboarding')))).toEqual(['Onboarding started: opened #1.']);
+  await expect.poll(() => onboardingToasts(browser)).toEqual(['Onboarding started: opened #1.']);
+});
+
+// #581: the composer the person came back to asks for the superadmin's recovery state as it mounts.
+// Left (it opened the task) before that read answers, it must not act on the answer: rendering
+// again, it took back the opened task's announcement, and the start then said "Onboarding
+// started." too.
+test('a composer left before its reads answer adds no second toast to the start', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await recordToasts(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked;
+    w.__yuliusMock.holdApprove = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+  await expect(screen.getByRole('region', 'Starting onboarding website')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked & { __releaseRecovery?: () => void };
+    w.__yuliusMock.holdRecovery = new Promise<void>((resolve) => { w.__releaseRecovery = resolve; });
+  });
+  await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+  await expect(browser).toHaveURL(/#\/s\/website\/tasks$/);
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await expect(screen.getByRole('region', 'Starting onboarding website')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.recoveryWaiting ?? 0), { message: 'the composer’s recovery read waits' }).toBe(1);
+  await expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    const id = db.sandboxes.find((s) => s.slug === 'website')!.id;
+    return db.tasks.some((t) => t.sandbox_id === id && t.number === 1);
+  })).toBe(true);
+  // The start's own ending waits for its read of the tasks (held) until the left composer has had
+  // the recovery answer.
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked & { __releaseTasks?: () => void };
+    const db = w.__yuliusMock as unknown as { holdPath: string; held: Promise<void> };
+    db.holdPath = `/api/sandboxes/${w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id}/tasks`;
+    db.held = new Promise<void>((resolve) => { w.__releaseTasks = resolve; });
+    w.__release!();
+  });
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+  await expect(browser.locator('.taskview')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { __releaseRecovery: () => void }).__releaseRecovery());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.recoveryWaiting ?? 0), { message: 'the recovery read answered' }).toBe(0);
+  await settle(browser);
+  // The start's read of the tasks brings a title only it (and reads since) have: once it shows and
+  // the page's queued tasks have run, the start has said all it says.
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked & { __releaseTasks: () => void };
+    const id = w.__yuliusMock.sandboxes.find((s) => s.slug === 'website')!.id;
+    (w.__yuliusMock.tasks as { sandbox_id: string; number: number; title?: string }[]).find((t) => t.sandbox_id === id && t.number === 1)!.title = 'Read again';
+    w.__releaseTasks();
+  });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.heldWaiting ?? 0)).toBe(0);
+  await expect.poll(() => browser.evaluate(() => document.title)).toMatch(/Read again/);
+  await settle(browser);
+  expect(await onboardingToasts(browser)).toEqual(['Onboarding started: opened #1.']);
 });
 
 test('New task on a sandbox being onboarded stays on its onboarding task', async ({ app, browser, screen }) => {
