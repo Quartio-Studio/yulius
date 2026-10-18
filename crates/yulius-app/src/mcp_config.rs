@@ -97,6 +97,37 @@ impl McpTransport {
     }
 }
 
+/// Where a server came from (SPEC-218 MOR-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum McpOrigin {
+    /// A person added it, or changed what it runs.
+    Person,
+    /// Imported from the repository's `.mcp.json`, which agents can write: what it runs was chosen
+    /// by whoever wrote the file, so the MCP Test does not run it on the host.
+    McpJson,
+}
+
+impl McpOrigin {
+    /// Wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::McpJson => "mcp_json",
+        }
+    }
+
+    /// Parses a wire name.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "person" => Some(Self::Person),
+            "mcp_json" => Some(Self::McpJson),
+            _ => None,
+        }
+    }
+}
+
 /// A stored MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpServerRecord {
@@ -122,6 +153,8 @@ pub struct McpServerRecord {
     pub enabled: bool,
     /// Creation time.
     pub created_at: Timestamp,
+    /// Where it came from.
+    pub origin: McpOrigin,
 }
 
 impl McpServerRecord {
@@ -267,6 +300,31 @@ fn validate(input: &McpServerInput) -> AppResult<Fields> {
     }
 }
 
+/// Why the Test of a stdio server from `.mcp.json` does not run (SPEC-218 MOR-002).
+pub const IMPORTED_STDIO_REFUSAL: &str = "this server came from the repository's .mcp.json, which \
+     agents can write, so the Test does not run its command on the Yulius host; change its command \
+     or arguments and enter its environment again to test it";
+/// Why the Test of an HTTP server from `.mcp.json` on a private address does not run.
+pub const IMPORTED_PRIVATE_REFUSAL: &str = "this server came from the repository's .mcp.json, \
+     which agents can write, so the Test does not connect to its private or loopback address; \
+     change its URL to test it";
+
+/// Whether an update of a `.mcp.json` server makes it a person's (SPEC-218 MOR-003): it changes
+/// what the server runs, a stdio server's command or arguments together with its environment
+/// (whose stored values came from the file and are never shown), or an HTTP server's URL. An
+/// update that re-sends the stored fields, as the enable toggle does, does not.
+fn takes_over(current: &McpServerRecord, fields: &Fields, input: &McpServerInput) -> bool {
+    match fields.transport {
+        McpTransport::Stdio => {
+            let changed = current.transport != McpTransport::Stdio
+                || current.command != fields.command
+                || current.args != fields.args;
+            changed && (input.env.is_some() || current.env.is_none())
+        }
+        McpTransport::Http => current.transport != McpTransport::Http || current.url != fields.url,
+    }
+}
+
 /// Splits an `Authorization: Bearer <token>` header from other headers.
 fn bearer_of(headers: &BTreeMap<String, String>) -> (Option<String>, Vec<String>) {
     let mut bearer = None;
@@ -364,6 +422,7 @@ impl App {
                 .into_keys()
                 .collect(),
             enabled: record.enabled,
+            origin: record.origin.as_str().to_owned(),
         })
     }
 
@@ -414,7 +473,7 @@ impl App {
         } else {
             self.require(&ctx.user, &sid, Action::Configure).await?;
         }
-        let record = self.new_mcp_record((!instance).then_some(sid), input)?;
+        let record = self.new_mcp_record((!instance).then_some(sid), input, McpOrigin::Person)?;
         self.deps
             .store
             .insert_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
@@ -436,6 +495,7 @@ impl App {
         &self,
         sandbox_id: Option<SandboxId>,
         input: &McpServerInput,
+        origin: McpOrigin,
     ) -> AppResult<McpServerRecord> {
         let fields = validate(input)?;
         Ok(McpServerRecord {
@@ -450,6 +510,7 @@ impl App {
             headers: self.seal_secrets(&input.headers.clone().unwrap_or_default())?,
             enabled: input.enabled.unwrap_or(true),
             created_at: self.now(),
+            origin,
         })
     }
 
@@ -490,7 +551,14 @@ impl App {
             Some(map) => self.seal_secrets(map)?,
             None => current.headers.clone(),
         };
+        let origin =
+            if current.origin == McpOrigin::McpJson && !takes_over(&current, &fields, input) {
+                McpOrigin::McpJson
+            } else {
+                McpOrigin::Person
+            };
         let record = McpServerRecord {
+            origin,
             name: fields.name,
             transport: fields.transport,
             command: fields.command,
@@ -535,7 +603,9 @@ impl App {
     /// `POST /api/mcp/{id}/test`: connects, initializes and lists tools (bounded: 5 s for
     /// HTTP, 10 s for stdio, after which the process group is killed and reaped). A stdio test
     /// runs the command on the Yulius host outside any sandbox containment, so on a contained
-    /// instance it needs an instance administrator.
+    /// instance it needs an instance administrator, and it never runs a server imported from
+    /// `.mcp.json`, whose command an agent may have written (SPEC-218 MOR-002); nor does the
+    /// test of such an HTTP server connect to a private address.
     ///
     /// # Errors
     /// Access errors (connection failures are reported in the result, not as errors).
@@ -561,6 +631,9 @@ impl App {
                                 "link-local, metadata and broadcast addresses cannot be tested"
                                     .to_owned(),
                             ),
+                            probe::AddressClass::Private if record.origin == McpOrigin::McpJson => {
+                                Err(IMPORTED_PRIVATE_REFUSAL.to_owned())
+                            }
                             probe::AddressClass::Private => {
                                 self.require_instance_admin(ctx)?;
                                 probe::probe_http(url, &headers, Some((&host, &addrs))).await
@@ -571,6 +644,9 @@ impl App {
                         }
                     }
                 }
+            }
+            McpTransport::Stdio if record.origin == McpOrigin::McpJson => {
+                Err(IMPORTED_STDIO_REFUSAL.to_owned())
             }
             McpTransport::Stdio => {
                 if self.config.contained {
@@ -785,6 +861,66 @@ mod tests {
             "Bearer ${secret:quartio}".to_owned(),
         )]);
         assert_eq!(bearer_of(&headers).0.as_deref(), Some("${secret:quartio}"));
+    }
+
+    fn record(transport: McpTransport, env: bool) -> McpServerRecord {
+        McpServerRecord {
+            id: "m1".into(),
+            sandbox_id: None,
+            name: "helper".into(),
+            transport,
+            command: (transport == McpTransport::Stdio).then(|| "npx".into()),
+            args: vec!["-y".into(), "@apify/actors-mcp-server".into()],
+            url: (transport == McpTransport::Http).then(|| "https://mcp.example.com/mcp".into()),
+            env: env.then(|| Sealed(vec![1])),
+            headers: None,
+            enabled: true,
+            created_at: Timestamp(1),
+            origin: McpOrigin::McpJson,
+        }
+    }
+
+    /// SPEC-218 MOR-003: only a change of what a `.mcp.json` server runs makes it a person's.
+    #[test]
+    fn only_a_change_of_what_runs_takes_a_server_over() -> AppResult<()> {
+        let stdio = record(McpTransport::Stdio, true);
+        let same = input("helper", "stdio");
+        assert!(
+            !takes_over(&stdio, &validate(&same)?, &same),
+            "the enable toggle"
+        );
+        let mut env_only = same.clone();
+        env_only.env = Some(BTreeMap::new());
+        assert!(!takes_over(&stdio, &validate(&env_only)?, &env_only));
+        let mut command = same.clone();
+        command.command = Some("uvx".into());
+        assert!(
+            !takes_over(&stdio, &validate(&command)?, &command),
+            "the file's environment is kept"
+        );
+        assert!(
+            takes_over(
+                &record(McpTransport::Stdio, false),
+                &validate(&command)?,
+                &command
+            ),
+            "no environment stored"
+        );
+        let mut args = same.clone();
+        args.args = vec!["-y".into(), "other".into()];
+        args.env = Some(BTreeMap::new());
+        assert!(takes_over(&stdio, &validate(&args)?, &args));
+
+        let http = record(McpTransport::Http, false);
+        let mut url = input("helper", "http");
+        assert!(!takes_over(&http, &validate(&url)?, &url));
+        url.url = Some("https://other.example.com/mcp".into());
+        assert!(takes_over(&http, &validate(&url)?, &url));
+        assert!(
+            takes_over(&stdio, &validate(&url)?, &url),
+            "a new transport"
+        );
+        Ok(())
     }
 
     #[test]
