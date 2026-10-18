@@ -66,7 +66,7 @@ Also untested (issue #513): `drafts.js` sets a thumbnail on an upload that is ou
 - [x] e2e: thumbnail arriving while a paste is undone shows after redo and reload
 - [x] Docs, changes entry and gates green
 - [x] Independent review answered
-- [ ] Merged into dev on green CI
+- [x] Review fixes: exact undo steps, timing comment, Firefox note
 
 ## Acceptance criteria
 
