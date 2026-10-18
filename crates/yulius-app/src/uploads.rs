@@ -394,6 +394,79 @@ fn kind_in(folder: &OwnedFd, name: &str) -> AppResult<Option<SFlag>> {
     }
 }
 
+/// Gives the synced temporary file `temp` of `folder` its name as `placement` says, through the
+/// folder's handle only; returns the name and whether it replaced a file. `file` is the temporary
+/// file's own handle (its mode is set on it, never by path).
+fn place(
+    folder: &OwnedFd,
+    temp: &str,
+    wanted: &str,
+    placement: Placement,
+    file: std::fs::File,
+) -> AppResult<(String, bool)> {
+    let placed = match placement {
+        Placement::Create => {
+            if !link_new(folder, temp, wanted).map_err(|e| upload_io_error(&e))? {
+                return Err(AppError::Conflict(format!("{wanted} exists")));
+            }
+            (wanted.to_owned(), false)
+        }
+        Placement::Overwrite => {
+            let replaced = match fstatat(folder, wanted, AtFlags::AT_SYMLINK_NOFOLLOW) {
+                Ok(stat) => {
+                    let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+                    if kind == SFlag::S_IFLNK {
+                        return Err(AppError::Conflict(format!(
+                            "{wanted} is a link; it is not replaced"
+                        )));
+                    }
+                    if kind == SFlag::S_IFDIR {
+                        return Err(AppError::Conflict(format!(
+                            "a folder named {wanted} exists"
+                        )));
+                    }
+                    let _ = fchmod(&file, Mode::from_bits_truncate(stat.st_mode & 0o7777));
+                    true
+                }
+                Err(Errno::ENOENT) => false,
+                Err(err) => return Err(errno_error(err)),
+            };
+            renameat(folder, temp, folder, wanted).map_err(|e| upload_io_error(&e.into()))?;
+            (wanted.to_owned(), replaced)
+        }
+        Placement::FreeName => {
+            let mut placed = None;
+            for n in 1..=MAX_FREE_NAME_ATTEMPTS {
+                let name = candidate(wanted, n);
+                if link_new(folder, temp, &name).map_err(|e| upload_io_error(&e))? {
+                    placed = Some(name);
+                    break;
+                }
+            }
+            let name =
+                placed.ok_or_else(|| AppError::Conflict(format!("no free name for {wanted}")))?;
+            (name, false)
+        }
+    };
+    drop(file);
+    let _ = unlinkat(folder, temp, UnlinkatFlags::NoRemoveDir);
+    sync_dir(folder);
+    Ok(placed)
+}
+
+/// Entries of `folder` (`.` and `..` left out), counted through its handle up to `limit`.
+fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    let mut listing =
+        nix::dir::Dir::openat(folder, ".", flags, Mode::empty()).map_err(errno_error)?;
+    Ok(listing
+        .iter()
+        .filter_map(Result::ok)
+        .filter(|entry| !matches!(entry.file_name().to_bytes(), b"." | b".."))
+        .take(limit)
+        .count())
+}
+
 /// Makes a rename or link durable (best effort: not every file system syncs directories).
 fn sync_dir(folder: &OwnedFd) {
     let _ = nix::unistd::fsync(folder);
@@ -681,10 +754,7 @@ impl App {
         let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
             .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
         let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
-        let count = std::fs::read_dir(&dir.0)
-            .map_err(|e| io_error(&e))?
-            .take(MAX_ATTACHMENTS_PER_FOLDER + 1)
-            .count();
+        let count = count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?;
         if count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
                 "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
@@ -712,8 +782,8 @@ impl App {
     /// audits it.
     ///
     /// # Errors
-    /// `Conflict` when the name exists (and was not to be replaced), is a folder or a link, or
-    /// the folder changed during the upload; I/O errors.
+    /// `Conflict` when the name exists (and was not to be replaced) or is a folder or a link;
+    /// I/O errors.
     pub async fn finish_upload(&self, mut upload: Upload) -> AppResult<UploadedFile> {
         let mut file = upload
             .file
@@ -725,60 +795,13 @@ impl App {
         crate::race::reached(crate::race::Point::UploadReceived, &upload.dir);
         // No check of the folder's path again: everything goes through its handle (#657).
         crate::race::reached(crate::race::Point::UploadPlace, &upload.dir);
-        let (folder, temp) = (&upload.folder, upload.temp.as_str());
-        let (name, replaced) = match upload.placement {
-            Placement::Create => {
-                if !link_new(folder, temp, &upload.name).map_err(|e| upload_io_error(&e))? {
-                    return Err(AppError::Conflict(format!("{} exists", upload.name)));
-                }
-                (upload.name.clone(), false)
-            }
-            Placement::Overwrite => {
-                let replaced =
-                    match fstatat(folder, upload.name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
-                        Ok(stat) => {
-                            let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
-                            if kind == SFlag::S_IFLNK {
-                                return Err(AppError::Conflict(format!(
-                                    "{} is a link; it is not replaced",
-                                    upload.name
-                                )));
-                            }
-                            if kind == SFlag::S_IFDIR {
-                                return Err(AppError::Conflict(format!(
-                                    "a folder named {} exists",
-                                    upload.name
-                                )));
-                            }
-                            // On the temporary file's own handle, never by path.
-                            let _ = fchmod(&file, Mode::from_bits_truncate(stat.st_mode & 0o7777));
-                            true
-                        }
-                        Err(Errno::ENOENT) => false,
-                        Err(err) => return Err(errno_error(err)),
-                    };
-                renameat(folder, temp, folder, upload.name.as_str())
-                    .map_err(|e| upload_io_error(&e.into()))?;
-                (upload.name.clone(), replaced)
-            }
-            Placement::FreeName => {
-                let mut placed = None;
-                for n in 1..=MAX_FREE_NAME_ATTEMPTS {
-                    let name = candidate(&upload.name, n);
-                    if link_new(folder, temp, &name).map_err(|e| upload_io_error(&e))? {
-                        placed = Some(name);
-                        break;
-                    }
-                }
-                let name = placed.ok_or_else(|| {
-                    AppError::Conflict(format!("no free name for {}", upload.name))
-                })?;
-                (name, false)
-            }
-        };
-        drop(file);
-        let _ = unlinkat(folder, temp, UnlinkatFlags::NoRemoveDir);
-        sync_dir(folder);
+        // Off the runtime's threads: links, renames and the folder's fsync can be slow.
+        let folder = upload.folder.try_clone().map_err(|e| upload_io_error(&e))?;
+        let (temp, wanted, placement) =
+            (upload.temp.clone(), upload.name.clone(), upload.placement);
+        let (name, replaced) =
+            crate::projects::blocking(move || place(&folder, &temp, &wanted, placement, file))
+                .await?;
         let sha256 = hex_token(upload.hasher.clone().finalize().as_slice());
         let path = if upload.shown_dir.is_empty() {
             name.clone()
