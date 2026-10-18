@@ -5,6 +5,8 @@
 Accepted. Specified in [SPEC-215](../../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md).
 Amends PRJ-009 (SPEC-001: what a removed sandbox keeps), SPEC-008's upkeep of finished tasks and
 SPEC-171's playground purge (the system layer, runtime state and CD directory now go too).
+Amended by [0176](0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md): which leftovers
+the isolation's mapped removal deletes (every path below `sandboxes/`).
 
 ## Context
 

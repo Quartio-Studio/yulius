@@ -44,13 +44,18 @@ task #214, fixes #675. Amends [0170](0170-leftovers-are-deleted-by-kind-rules-ch
   item, but a mapped root removes whatever the service user can (uid 0 inside is the service
   user), and the fallback is the path nothing can test without sub-ids.
 - **A second link-safe removal in `yulius-sandbox`, or a directory handle passed across `bwrap`.**
-  Two copies of the walk to keep equal, or descriptor plumbing through `Mapper::run`; the helper
-  already lives in the `yulius` binary, which links `yulius-app`.
+  Another copy of the leftovers walk to keep equal (the skill copier in `yulius-harness` has its
+  own, for its own folders), or descriptor plumbing through `Mapper::run`; the helper already lives
+  in the `yulius` binary, which links `yulius-app`.
 
 ## Consequences
 
 - Sub-uid files below a sandbox are removed by the automatic rounds; a link a sandbox plants on the
   way fails that one removal and nothing outside is touched.
-- One short-lived mapped namespace per item below `sandboxes/` (hourly, a handful of items).
+- One short-lived mapped namespace (`bwrap` with `newuidmap`/`newgidmap`, some 50 ms or more) per
+  item below `sandboxes/`: old drafts, ended caches and Git records can be many in one round, which
+  is still small next to the hourly period.
+- `remove-tree` now requires `--below`: a server still running the previous version calls it
+  without and fails that one removal until it restarts on the new binary (an update restarts it).
 - The real mapped namespace is not exercised by the default suite (needs `bwrap`, `newuidmap` and
   sub-ids); the helper's walk and the routing are.

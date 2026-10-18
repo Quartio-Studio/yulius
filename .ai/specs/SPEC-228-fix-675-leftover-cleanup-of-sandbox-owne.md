@@ -95,7 +95,7 @@ Confirmed against `dev` at c3ba79d0.
 - Route by path (below `sandboxes/`), not by kind: every folder of a sandbox is written by its
   runs, so every kind there can hold sub-uid files; `Kind::mapped()` is gone (the path decides).
 - The link-safe walk runs inside the helper, reusing `yulius_app::leftovers::remove_below`
-  (one implementation), rather than a second copy in `yulius-sandbox` or a descriptor handed
+  (the leftovers walk, not a copy of it in `yulius-sandbox`), rather than a descriptor handed
   across `bwrap`. See ADR-0176 for the alternatives.
 - No separate service-user attempt for these paths: inside the mapped namespace uid 0 is the
   service user, so the helper removes whatever the service user could.
