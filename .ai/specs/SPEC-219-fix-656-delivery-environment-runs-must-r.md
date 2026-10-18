@@ -136,3 +136,5 @@ inside the sandbox's containment like a CD dev run.
   `[[ignore]]` in `.config/vidoc.toml`, subject to the independent reviewer's agreement. Four medium
   or low findings outside the change (cd.rs:1394, ci/mod.rs:723, wiring/git.rs:79, cd.rs:1071) do not
   fail it; Yulius CI files them. No low finding was reported in the change.
+- `scripts/dev security` again with the ignore committed: exit 0; Vidoc did not report the
+  `exec.rs` finding that time (its findings vary between runs), and 3 findings outside the change.
