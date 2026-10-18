@@ -14,6 +14,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   host file in the editor, place an upload outside the sandbox, or overwrite a host file such as
   the database. The same class remains, tracked, in editor deletes and listings (#660), the
   transcript step-back (#661) and the config dir's preparation (#634).
+- The MCP Test no longer runs commands from the repository's `.mcp.json` on the server (SPEC-218,
+  ADR-0173, #654, task #204). Agents can write that file, and Yulius imports its servers; an
+  instance administrator pressing Test, or just opening a server's page from a link ending in
+  `?test=1`, ran an imported server's command on the host, outside the containment. Imported
+  servers now say "From .mcp.json" on the MCP page, and their Test is off (also for an imported
+  HTTP server's private or local address) until a person changes the command line and enters its
+  environment again, or changes the URL. Turning a server on or off does not count. Servers
+  imported before the update are marked too, so a person changes such a server once to test it.
 
 ## 2026-10-17
 

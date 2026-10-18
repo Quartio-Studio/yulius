@@ -700,7 +700,10 @@ the file's servers that the sandbox lacks to its MCP servers, so task runs get t
 other server. The Superagent starts with `--settings` naming every one of them in
 `disabledMcpjsonServers`, so it never asks
 ([SPEC-095](../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
-[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). An MCP server's
+[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). Agents write the
+file, so imported servers have the origin `mcp_json`: the MCP Test, which runs on the host, never
+starts their command nor connects to their private address until a person changes what they run
+([decision 0173](decisions/0173-the-mcp-test-refuses-servers-imported-from-mcp-json.md)). An MCP server's
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
@@ -790,7 +793,7 @@ flowchart LR
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
   MS -->|"mcp_attachments: values in the secret environment"| HP
   SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
-  APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
+  APP -->|"import_project_mcp (also before task runs): origin mcp_json, never host-tested"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH

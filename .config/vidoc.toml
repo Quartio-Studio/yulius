@@ -77,17 +77,46 @@ reason = "the person-triggered test resolves and classifies every address, refus
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config.rs"
 title = "Missing authorization for arbitrary command execution"
-reason = "the stdio test needs Configure, the same level as Work (shell, tasks) on an uncontained instance, and an instance admin on a contained one (skills_mcp::contained_instances_restrict_stdio_tests_to_admins); the imported-command gap is #654"
+reason = "the stdio test needs Configure, the same level as Work (shell, tasks) on an uncontained instance, and an instance admin on a contained one (skills_mcp::contained_instances_restrict_stdio_tests_to_admins); a command imported from .mcp.json is never run by the Test (#654, ADR-0173)"
+
+# The same finding in words that change from scan to scan, first on task #204's change scans
+# (SPEC-218): "Arbitrary host command execution via stdio MCP Test on non-contained instances"
+# (medium), then "Stdio MCP test executes arbitrary commands on the host without containment"
+# (high). Uncontained, every task and shell of a Configure (write) user already runs on the host
+# without containment, so the Test adds no capability; contained, it needs an instance admin and
+# never runs an agent's `.mcp.json` command
+# (cockpit::the_mcp_test_never_runs_a_command_from_the_repository_mcp_json).
+# One narrow entry per wording, so a finding of another kind about the stdio Test (a #654
+# regression included) is still reported.
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "via stdio MCP Test on non-contained instances"
+reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
+
+[[ignore]]
+path = "crates/yulius-app/src/mcp_config.rs"
+title = "Stdio MCP test executes arbitrary commands on the host without containment"
+reason = "uncontained, Configure equals Work (tasks and shells run on the host); contained, an instance admin only, and .mcp.json commands are refused (ADR-0173)"
 
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config.rs"
 title = "Insufficient URL validation for HTTP MCP"
 reason = "the URL is fetched only by the person-triggered MCP test, which checks and pins the addresses and follows no redirects; agent runs connect through the egress proxy"
 
+# First on task #204's change scan (SPEC-218): imported http servers reach agent runs by design
+# (ADR-0078), and the agent can reach the URL itself through its egress proxy. Their Test connects
+# from the host only to a public address (a private or loopback one is refused for .mcp.json
+# servers), sending fixed JSON-RPC and the file's headers, which hold placeholders, never a secret
+# value (`file_value`); the tool names it lists are shown as text.
+[[ignore]]
+path = "crates/yulius-server/web/assets/pages/mcp.js"
+title = "Only stdio imports from .mcp.json are gated"
+reason = "imported http servers are attached by design (ADR-0078); their Test reaches public addresses only, with placeholder headers (ADR-0173)"
+
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config/project.rs"
 title = "imports arbitrary stdio commands"
-reason = "real: tracked in #654 (task #204); remove this entry with its fix"
+reason = "fixed by #654 (ADR-0173): imported servers run only in agent runs, inside their containment when contained; the host-side Test refuses them (origin mcp_json)"
 
 [[ignore]]
 path = "crates/yulius-app/src/mcp_config/project.rs"

@@ -811,6 +811,160 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     Ok(())
 }
 
+/// SPEC-218 MOR-001..003 (#654): agents write `.mcp.json`, so a server imported from it never
+/// has its command run on the host by the MCP Test, even when an instance administrator presses it
+/// on a contained instance. It stays refused through an enable toggle and through a command change
+/// that keeps the file's (hidden) environment; once a person changed its command and replaced its
+/// environment, it is theirs and the Test runs it. A loopback HTTP server from the file is not
+/// tested either.
+#[tokio::test]
+async fn the_mcp_test_never_runs_a_command_from_the_repository_mcp_json() -> TestResult {
+    let (h, _recorder, alice) = contained_harness().await?;
+    let root = support::user_with_token(&h, "u-root", "root", true).await?;
+    h.github.set_perm("root", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let marker = data.join("agent-code-ran");
+    let touch = format!("touch {}", marker.display());
+    std::fs::write(
+        data.join("sandboxes/s1/repo/.mcp.json"),
+        json!({"mcpServers": {
+            "helper": {"command": "/bin/sh", "args": ["-c", touch],
+                       "env": {"NODE_OPTIONS": "--require ./agent.js"}},
+            "local": {"type": "http", "url": "http://127.0.0.1:9/mcp"},
+            "switch": {"command": "/bin/sh", "args": ["-c", "true"],
+                       "env": {"LD_PRELOAD": "./agent.so"}}
+        }})
+        .to_string(),
+    )?;
+    // Opening the Cockpit imports the file (the launch itself is recorded and refused).
+    let opened = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        opened.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        opened.body
+    );
+    let listed = call(&h.router, Method::GET, "/api/sandboxes/s1/mcp", None, &root).await?;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    let server = |name: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        Ok(listed
+            .body
+            .as_array()
+            .ok_or("servers")?
+            .iter()
+            .find(|s| s["name"] == name)
+            .ok_or(format!("no {name}"))?
+            .clone())
+    };
+    let helper = server("helper")?;
+    let id = helper["id"].as_str().ok_or("id")?.to_owned();
+    let test = |id: String| {
+        let router = h.router.clone();
+        let root = root.clone();
+        async move {
+            let resp = call(
+                &router,
+                Method::POST,
+                &format!("/api/mcp/{id}/test"),
+                None,
+                &root,
+            )
+            .await?;
+            assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+            Ok::<Value, Box<dyn std::error::Error>>(resp.body)
+        }
+    };
+    let refused = |result: &Value| {
+        result["ok"] == false
+            && result["error"]
+                .as_str()
+                .is_some_and(|e| e.contains(".mcp.json"))
+    };
+
+    let result = test(id.clone()).await?;
+    assert!(!marker.exists(), "the agent's command ran on the host");
+    assert!(refused(&result), "{result}");
+    assert_eq!(helper["origin"], "mcp_json", "{helper}");
+
+    // The enable toggle re-sends the same command.
+    let put = |body: Value| {
+        let router = h.router.clone();
+        let root = root.clone();
+        let id = id.clone();
+        async move {
+            let resp = call(
+                &router,
+                Method::PUT,
+                &format!("/api/mcp/{id}"),
+                Some(body),
+                &root,
+            )
+            .await?;
+            assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+            Ok::<Value, Box<dyn std::error::Error>>(resp.body)
+        }
+    };
+    let toggled = put(
+        json!({"name": "helper", "transport": "stdio", "command": "/bin/sh",
+                             "args": ["-c", touch], "enabled": false}),
+    )
+    .await?;
+    assert_eq!(toggled["origin"], "mcp_json", "{toggled}");
+    let result = test(id.clone()).await?;
+    assert!(refused(&result) && !marker.exists(), "{result}");
+
+    // A new command with the file's environment kept is still the agent's.
+    let person = format!("{touch} && exit 0");
+    let kept_env = put(
+        json!({"name": "helper", "transport": "stdio", "command": "/bin/sh",
+                              "args": ["-c", person]}),
+    )
+    .await?;
+    assert_eq!(kept_env["origin"], "mcp_json", "{kept_env}");
+    let result = test(id.clone()).await?;
+    assert!(refused(&result) && !marker.exists(), "{result}");
+
+    // A person's command with a person's environment: the Test runs it.
+    let taken = put(
+        json!({"name": "helper", "transport": "stdio", "command": "/bin/sh",
+                           "args": ["-c", touch], "env": {}}),
+    )
+    .await?;
+    assert_eq!(taken["origin"], "person", "{taken}");
+    let result = test(id.clone()).await?;
+    assert!(!refused(&result), "{result}");
+    assert!(marker.exists(), "a person's command is tested");
+
+    // An imported loopback HTTP server is not probed for the agent either.
+    let local = server("local")?;
+    assert_eq!(local["origin"], "mcp_json", "{local}");
+    let result = test(local["id"].as_str().ok_or("id")?.to_owned()).await?;
+    assert!(refused(&result), "{result}");
+
+    // Taken over through another transport, the file's hidden environment does not stay behind
+    // for a later switch back to a local command (review of SPEC-218).
+    let switch = server("switch")?;
+    let resp = call(
+        &h.router,
+        Method::PUT,
+        &format!("/api/mcp/{}", switch["id"].as_str().ok_or("id")?),
+        Some(json!({"name": "switch", "transport": "http", "url": "https://mcp.example.test/mcp"})),
+        &root,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    assert_eq!(resp.body["origin"], "person", "{}", resp.body);
+    assert_eq!(resp.body["env_keys"], json!([]), "{}", resp.body);
+    Ok(())
+}
+
 /// The run directories of shells and Cockpits on disk.
 fn run_dirs(f: &Fixture) -> usize {
     std::fs::read_dir(f.data.join("shells"))
@@ -1151,8 +1305,10 @@ impl HarnessPort for RecordingHarness {
     }
 }
 
-#[tokio::test]
-async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult {
+/// A contained server whose Cockpit launches are recorded and refused, with alice (write) on `s1`
+/// and one pool subscription.
+async fn contained_harness()
+-> Result<(Harness, Arc<RecordingHarness>, Creds), Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let recorder = Arc::new(RecordingHarness {
         inner: yulius::wiring::harness::HarnessAdapter::new(exe, "http://127.0.0.1:9"),
@@ -1166,9 +1322,7 @@ async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult 
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
     h.github.set_perm("alice", "acme/fixture", perms("write"));
-    let data = h.app.config.data_dir.clone();
-    let repo = data.join("sandboxes/s1/repo");
-    std::fs::create_dir_all(&repo)?;
+    std::fs::create_dir_all(h.app.config.data_dir.join("sandboxes/s1/repo"))?;
     h.store
         .insert_account(&AccountRecord {
             id: AccountId::parse("acc-1")?,
@@ -1182,6 +1336,14 @@ async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult 
             updated_at: Timestamp(1),
         })
         .await?;
+    Ok((h, recorder, alice))
+}
+
+#[tokio::test]
+async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult {
+    let (h, recorder, alice) = contained_harness().await?;
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
     // The conversation Claude Code wrote, seen from the host.
     let home_host = data.join("users/u-alice/home");
     let project = yulius_harness::paths::claude_project_dir(&home_host.join(".claude"), &repo);
