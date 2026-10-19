@@ -584,7 +584,7 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
 });
 
 test('the tabs show a grip and say they can be clicked or dragged', async ({ app, browser, screen }) => {
-  // `ambient=0`: nothing on the page changes by itself while the pointer rests on a tab (#503).
+  // `ambient=0`: no ambient activity (task changes, toasts) while the pointer rests on a tab (#503).
   await app.open(mock('/s/studio', '&ambient=0'));
   await openNotes(screen, null);
   // SPEC-136 NOT-022/023: a decorative grip before each name, a title naming click and drag (the keys
@@ -613,8 +613,8 @@ test('the tabs show a grip and say they can be clicked or dragged', async ({ app
   const resting = await gripColour('notes-tab-me');
   expect(resting.grip).not.toEqual(resting.tab);
   expect(await axeViolations(browser)).toEqual([]);
-  // Hovered through the tab, not a point read before: `hover()` waits until the tab itself takes the
-  // pointer, so a toast over it is waited out instead of hovered for 5 s (#503).
+  // Hovered through the tab, not a point read before: `hover()` moves the pointer only once nothing
+  // covers the tab, so a toast over it is waited out instead of hovered for 5 s (#503).
   await browser.locator('#notes-tab-me').hover();
   const me = await screen.getByRole('tab', 'Me').boundingBox();
   if (!me) throw new Error('tabs not laid out');

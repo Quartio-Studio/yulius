@@ -22,7 +22,7 @@ something covers the tab, the test fails and says what covers it. It no longer f
 ## Context
 
 - **Symptom (#503, task #143, 2026-10-15 ~08:00Z).** One full `npx e2e run`, next to
-  `scripts/dev test`, failed the hover poll (`notes.e2e.ts:606`, now :613):
+  `scripts/dev test`, failed the hover poll (`notes.e2e.ts:606` when filed, :621 now):
   `expect.poll(...).toBe(...) timed out after 5000 ms, last: expected false to be true`.
 - **Candidates.**
   1. A toast over the tab. The mock's sandbox browser asks for an AWS sign-in 5 s after the start.
@@ -53,8 +53,8 @@ something covers the tab, the test fails and says what covers it. It no longer f
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| GRH-001 | The case hovers "Me" through `browser.locator('#notes-tab-me').hover()`, which finds the tab again and waits until the tab itself takes the pointer. It no longer makes a raw `mouse.move` to a box read earlier. A toast over the tab is waited out instead of hovered. The tab's box for the drag is read after the hover. | `notes.e2e.ts`; forced-toast run in Evidence |
-| GRH-002 | The case opens the mock with `ambient=0`, so nothing on the page changes by itself while the pointer rests. | `notes.e2e.ts` |
+| GRH-001 | The case hovers "Me" through `browser.locator('#notes-tab-me').hover()`, which finds the tab again, waits until it is visible and stable, and moves the pointer only once nothing covers it (Playwright's hit check). It no longer makes a raw `mouse.move` to a box read earlier. A toast over the tab is waited out instead of hovered. The tab's box for the drag is read after the hover. | `notes.e2e.ts`; forced-toast run in Evidence |
+| GRH-002 | The case opens the mock with `ambient=0`, so no ambient activity (task changes, toasts) runs while the pointer rests. | `notes.e2e.ts` |
 | GRH-003 | A grip that does not take the tab's colour on hover still fails the case. | mutation run in Evidence |
 
 ## Plan
