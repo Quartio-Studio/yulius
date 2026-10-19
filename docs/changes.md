@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- The Notes tab grip's hover check in `notes.e2e.ts` hovers the tab itself, not a point read
+  before (SPEC-236, task #222, fixes #503). The failure was the sandbox browser's sign-in toast
+  over the Notes tabs, which pauses while pointed at. #523 had already turned that toast off for
+  every notes test. The case now hovers only once nothing covers the tab, and opens the mock with
+  `ambient=0` (no ambient activity).
 - The supertask proposal no longer says "It replaces “After #12”" once #12 has left the task list
   (SPEC-234, task #220, fixes #587). If the task chosen in "Run after" is deleted or archived while
   the card is open, the start chip falls back to "Start now" and the card now closes, leaving the
