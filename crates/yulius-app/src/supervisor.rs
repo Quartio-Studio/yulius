@@ -443,6 +443,17 @@ pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<(
     file.write_all(bytes)
 }
 
+/// Saves the run's current screen as its final screen: at its end, and at every turn end so a run
+/// lost later (a reboot) still shows how its last turn ended (SPEC-229 RBT-002).
+pub(crate) fn save_screen(runtime: &TaskRuntime, run_dir: &Path) {
+    let (screen, (cols, rows)) = runtime.hub.formatted_screen();
+    let mut record = format!("{cols} {rows}\n").into_bytes();
+    record.extend_from_slice(&screen);
+    if let Err(err) = write_private_file(&run_dir.join(FINAL_SCREEN_FILE), &record) {
+        tracing::debug!(error = %err, "cannot save the final screen");
+    }
+}
+
 /// Reads a saved final screen: (cols, rows, redraw bytes).
 pub(crate) fn read_final_screen(run_dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
     let bytes = std::fs::read(run_dir.join(FINAL_SCREEN_FILE)).ok()?;
@@ -2165,9 +2176,12 @@ impl App {
             // No exit will consume it: the next run must not inherit it.
             *intent = None;
         }
+        // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
+        let mut ended = TaskStatus::Stopped(reason);
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Ok(next) = task.status.apply(TaskEvent::Lost(reason))
+            && let Ok(next) = task.status.after_loss(task.activity, reason)
         {
+            ended = next;
             let _ = self
                 .deps
                 .store
@@ -2178,7 +2192,7 @@ impl App {
         if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
-            rt.hub.exit(TaskStatus::Stopped(reason).as_str(), None);
+            rt.hub.exit(ended.as_str(), None);
         }
         self.publish_task(task_id).await;
         self.advance_chains(task_id).await;
@@ -2200,13 +2214,7 @@ impl App {
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
         if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
-            let (screen, (cols, rows)) = runtime.hub.formatted_screen();
-            let mut record = format!("{cols} {rows}\n").into_bytes();
-            record.extend_from_slice(&screen);
-            let path = PathBuf::from(&attempt.run_dir).join(FINAL_SCREEN_FILE);
-            if let Err(err) = crate::supervisor::write_private_file(&path, &record) {
-                tracing::debug!(error = %err, "cannot save the final screen");
-            }
+            save_screen(&runtime, Path::new(&attempt.run_dir));
         }
         let state = if intent.is_some() {
             AttemptState::Killed
@@ -3195,14 +3203,12 @@ impl App {
             .await?
         {
             if store.live_attempt(&task.id).await?.is_none() {
+                let next = task
+                    .status
+                    .after_loss(task.activity, StopReason::ServerLost)
+                    .unwrap_or(TaskStatus::Stopped(StopReason::ServerLost));
                 let _ = store
-                    .transition_task(
-                        &task.id,
-                        Some(task.status),
-                        TaskStatus::Stopped(StopReason::ServerLost),
-                        None,
-                        self.now(),
-                    )
+                    .transition_task(&task.id, Some(task.status), next, None, self.now())
                     .await;
             }
         }
