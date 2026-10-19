@@ -8,10 +8,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The supertask proposal no longer says "It replaces “After #12”" once #12 has left the task list
   (SPEC-234, task #220, fixes #587). If the task chosen in "Run after" is deleted or archived while
-  the card is open, the start chip falls back to "Start now" and the card now closes. Before this
-  fix the card stayed open, and "Start as chosen" started the task right away, which the card did
-  not say. The split card cannot get into this state, because it never opens with a "Run after"
-  task or a rule.
+  the card is open, the start chip falls back to "Start now" and the card now closes, leaving the
+  keyboard in the prompt. Before this fix the card stayed open, and "Start as chosen" started the
+  task right away, which the card did not say. The split card cannot get into this state, because
+  it never opens with a "Run after" task or a rule.
 - The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
   the DO budget", it calls `task_message`. A task that has not started gets the message in its
   request, as a person's queued message. A running task gets it typed into its session, labelled

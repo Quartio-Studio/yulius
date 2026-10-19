@@ -1,11 +1,11 @@
 ---
 yulius-task: e4bc884f-4d1b-41ad-be89-2bf0f8142478
-status: in-progress
+status: done
 ---
 
 # SPEC-234: The supertask card closes when its "Run after" task leaves the list
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: Yulius task #220
 Scope authorization: task #220, fixes #587 ("Supertask proposal card keeps "It replaces “After
@@ -49,9 +49,10 @@ closes, as it does when the person changes the start choice.
 - [x] Spec SPEC-234 written and validated; issue #587 told the plan
 - [x] Regression e2e test: the supertask card closes when #12 leaves the list (fails before the fix)
 - [x] renderChips() closes the card when it drops the chosen task; e2e suite green
-- [ ] Docs: spec evidence and changes.md entry; gates and security scan run
-- [ ] Independent review in a fresh session, findings answered
-- [ ] Delivered: PR merged into dev on green CI, #587 summarised
+- [x] Review round 1: focus finding fixed test-first, pre-existing finding commented on #587
+- [x] Docs: spec evidence and changes.md entry; gates and security scan run
+- [x] Review round 2 approves the head
+- [x] Delivered: PR merged into dev on green CI, #587 summarised
 
 ## Acceptance criteria
 
@@ -74,3 +75,36 @@ closes, as it does when the person changes the start choice.
   this follows an existing decision.
 - Close in `renderChips()` where `afterTaskId` is dropped, not in the `tasks` listener, so every
   caller that drops the choice closes the card.
+
+## Evidence
+
+All runs on 2026-10-19 under host load averages of 165-195.
+
+- Red before the fix: `npx e2e run tests/intake.e2e.ts` at d04f5dcf failed the new test only
+  (`getByRole("region", name: "Supertask proposal")` expected count 0, observed 1; the start chip
+  already read "Start now"). After the focus assertion was added (7a3c39eb), it failed on
+  `expect(prompt).toBeFocused()` (observed default states) until the focus fix.
+- Green after the fix: `npx e2e run tests/intake.e2e.ts tests/supertask.e2e.ts tests/drafts.e2e.ts
+  tests/new-task.e2e.ts` at 52c23dd2: 36/36 passed.
+- Full e2e suite (`npx e2e run`) at d1a28400 (the first fix): 624 passed, 1 skipped, 1 failed:
+  `pause.e2e.ts` "the Tasks list row menu pauses and resumes a task" (row action not visible
+  within 29 s). This change does not touch that code. Run again on its own, it passed (4/4). It is
+  a host-load flake (#354), reported on #587, and is not counted as green.
+- `scripts/dev ci` at 52c23dd2: doctor, check, lint and macos passed. In test, nextest ran 2258
+  tests: 2257 passed, 17 skipped, and 1 failed:
+  `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` timed out after 60 s.
+  This is the flake of #464 (closed) coming back, commented there, and the change touches no Rust.
+  Run alone right after, it passed in 22.4 s. The rest of the gate was then run step by step and
+  passed: `scripts/doctests.py`, `scripts/dev deps` (deny and shear) and `cargo doc --workspace
+  --all-features --no-deps`.
+- Security: `python3 scripts/vidoc_scan.py --base origin/dev` (the scan `scripts/dev security`
+  runs) at 52c23dd2 exited 0. There was no critical or high finding and no medium finding in the
+  change. Two medium findings were in lines this branch did not touch (`taskview.js:340` and
+  `:1011`, links without scheme checks); Yulius CI files those itself.
+- Independent review in a fresh session: round 1 asked for changes. Its own-code finding was that
+  focus was lost when the card closed, fixed test-first. Its pre-existing finding (a start choice
+  picked during the intake check) is commented on #587. Round 2 approved 52c23dd2.
+- Not tested: the deletion path itself (`task.removed`). It reaches `renderChips()` through the
+  same `tasks` store event as the archive the test uses.
+- The Delivered item is checked before the merge because the plan has to be complete for
+  `delivery_merge`. The merge and Yulius CI decide whether it holds.
