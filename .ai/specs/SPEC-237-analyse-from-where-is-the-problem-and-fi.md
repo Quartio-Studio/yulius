@@ -1,11 +1,11 @@
 ---
 yulius-task: d77f03a9-06c5-44af-9462-fc05cf467807
-status: in-progress
+status: done
 ---
 
 # SPEC-237: Production CD says a secret agents use is never for production, not "waiting for a person"
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: task #223
 Scope authorization: task #223: "analyse from where is the problem and fix" (two screenshots: the
@@ -50,7 +50,9 @@ secret of its own. Nobody is told to allow something that the server refuses.
 - **CAU-002** A production run naming such a secret is refused (`conflict`, nothing runs) with a
   message that says agents use it, so production never gets it, and that production names a
   separate secret (or its hosts and `.env` copies are revoked first). It no longer tells a person
-  to allow it.
+  to allow it. Other secrets waiting beside it are named in the same refusal, so one answer says
+  everything a person must do. MCP `cd_status` reads "NAME agents use it (production never gets
+  it: name a separate secret)".
 - **CAU-003** The CI/CD page shows `agents_use` as "agents use it: production never gets it" and,
   once under the list, what to do instead. The badge "waiting for a person to allow it" is kept
   for `not_allowed` only.
@@ -59,17 +61,22 @@ secret of its own. Nobody is told to allow something that the server refuses.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Both defects reported as issues
-- [ ] Server reports a secret agents use as never for production (state + refusal), test-first
-- [ ] CD page shows that state with what to do instead of a dead Secrets link
-- [ ] Spec, docs and changes kept true; gates green
-- [ ] Independent review answered and merged into dev
+- [x] Server reports a secret agents use as never for production (state + refusal), test-first
+- [x] CD page shows that state with what to do instead of a dead Secrets link
+- [x] Docs and changes kept true
+- [x] Review round 1 findings fixed test-first
+- [x] Gates green and spec evidence recorded
+- [x] Independent review answered and merged into dev
 
 ## Acceptance criteria
 
 - `cd::production_secrets_need_their_own_allowance`: with `.env` copies allowed, the production
   state is `agents_use` and the refused run's message says agents use it, with no "allows it for
   production"; once the copies are revoked the state is `not_allowed`, then `ready` when allowed.
-  A secret with a bound host is `agents_use` too. Fails on `dev`.
+  A secret with a bound host is `agents_use` too, while dev still reads it `not_allowed`, and a
+  plain secret named beside it appears in the refusal. Fails on `dev`.
+- `ci::cd::tests::agents_read_that_production_never_gets_a_secret_agents_use`: the `cd_status`
+  text for `agents_use`.
 - `cd.e2e.ts`: the mock's production names a secret agents use; the Production region shows
   "agents use it: production never gets it" and the hint, and no "waiting for a person to allow
   it". Fails on `dev`.
@@ -85,5 +92,35 @@ delivery.
 - A new state rather than reusing `production`: `production` means "dev names a production
   secret", the opposite case; one name per meaning keeps the API readable. Additive to the
   `state` string set of `CdSecret` (clients show unknown states as `missing`, the safe fallback).
+- The mock (`assets/mock.js`) refuses a production deploy for an `agents_use` secret with the
+  server's first sentence only; it does not add the other waiting secrets, as no e2e test drives
+  that mixed case (the Rust test covers the server's message). Review round 2 nit, accepted.
 - The page keeps the Secrets link on the row: adding a separate secret for production happens
   there. No ADR: this reports a decision already taken (SPEC-134 round 2 M-B) truthfully.
+
+## Evidence
+
+- Red: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^cd::production_/)'` at
+  f7f45f66 (tests only): `production_never_gets_a_secret_bound_to_hosts` failed (`not_allowed`,
+  expected `agents_use`), and `production_secrets_need_their_own_allowance` failed on the refusal
+  "a person who manages DEV_TOKEN allows it for production deploys on the Secrets page".
+  `npx e2e run tests/cd.e2e.ts` with dev's `cd.js`: the new test failed, with no "agents use it"
+  badge (the unknown state fell back to "not in Secrets yet").
+- Review round 1 red at 6118f620: the mixed refusal lacked PROD_TOKEN, and
+  `agents_read_that_production_never_gets_a_secret_agents_use` failed. Green at 38185fb2.
+- Green at 38185fb2: `scripts/dev ci` exit 0, with nextest 2262 tests run: 2262 passed (8 slow),
+  17 skipped; deny "advisories ok, bans ok, licenses ok, sources ok"; docs built.
+  `npx e2e run`: 60 files passed and 1 skipped, 629 tests passed and 1 skipped.
+  `npx e2e run tests/cd.e2e.ts`: 14 passed.
+- `scripts/dev security` (Vidoc vidoc-1, change scan at 38185fb2) exit 0: no open critical or
+  high finding, and no medium finding in the change. Three findings sit in lines this branch did
+  not touch (`ci/cd.rs:1522` production run output through `cd_status run_id`, `ci/cd.rs:809`
+  one-run TOCTOU, `env_files.rs:131` `.git` folder); Yulius CI files each as an issue.
+- An earlier `secrets.e2e.ts` run failed once on an axe target-size check of a Close button. That
+  is the known flake #640, in code this change does not touch; the file then passed 20/20 twice.
+- Independent review (fresh session, om-code-review): round 1 APPROVE with 3 low and 4 nit
+  findings, all own code. All seven were fixed test-first in 6118f620 and 38185fb2. Round 2 APPROVE
+  at 38185fb2 with two nits: the spec lines (added) and the mock's mixed-case wording (accepted,
+  see Decisions).
+- Not tested: the real page against a live instance with the reported project's secrets. The mock
+  and the HTTP API tests cover the same states.
