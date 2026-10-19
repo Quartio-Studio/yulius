@@ -16,9 +16,10 @@ use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp, wait_for,
-};
+use yulius_app::model::TaskMode;
+
+use crate::first_message::{data_dir, hooked, new_task, runtime, screen, start, stop, wait_for};
+use crate::pool_supervision::{ScriptedUsage, seed};
 use crate::support::agents::FakeAgentOptions;
 use crate::support::{
     self, TestResult, add_sandbox, harness_configured, perms, seed_task, user_with_token,
@@ -48,14 +49,27 @@ fn audited(data: &Path, id: &TaskId) -> Result<Vec<(String, String)>, Error> {
     Ok(rows.filter_map(Result::ok).collect())
 }
 
+/// A hooked app (its hook server up, so Claude Code's SessionStart reaches it) whose fake agent
+/// runs as `agent`.
+async fn app(data: &Path, agent: FakeAgentOptions) -> Result<Arc<App>, Error> {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (app, _) = start(data, &fake, agent, 0, Arc::new(ScriptedUsage::default())).await?;
+    Ok(app)
+}
+
 /// A running task whose agent answered its first message.
 async fn running(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller), Error> {
     let (sandbox, user) = seed(app, data, &["a-only"]).await?;
-    let id = new_task(app, &sandbox, &user, "Budget").await?;
-    wait_for("the first answer", Duration::from_secs(30), || {
-        let app = app.clone();
-        let id = id.clone();
-        async move { screen(&app, &id).contains("ECHO: Budget: answer with an echo") }
+    let id = new_task(
+        app,
+        &sandbox,
+        &user,
+        "Budget: answer with an echo",
+        TaskMode::Prompt,
+    )
+    .await?;
+    wait_for("the first answer", Duration::from_secs(30), || async {
+        screen(app, &id).contains("ECHO: Budget: answer with an echo")
     })
     .await?;
     Ok((id, superagent(&sandbox, &user, "admin")))
@@ -64,7 +78,7 @@ async fn running(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller),
 fn fake_agent() -> FakeAgentOptions {
     FakeAgentOptions {
         answers_first_message: true,
-        ..FakeAgentOptions::default()
+        ..hooked()
     }
 }
 
@@ -73,16 +87,10 @@ fn fake_agent() -> FakeAgentOptions {
 /// `sent`, the audit names the Superagent without the text, and the task's open `needs_you` ends.
 #[test]
 fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data) = temp()?;
+    let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_with(
-            &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            fake_agent(),
-        )?;
+        let app = app(&data, fake_agent()).await?;
         let (id, caller) = running(&app, &data).await?;
         let asked = NeedsYouRecord {
             action: "Approve spending on DigitalOcean".into(),
@@ -103,7 +111,7 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
         wait_for("the message", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
-            async move { screen(&app, &id).contains("in all.") }
+            async move { screen(&app, &id).contains("ECHO: Message from admin") }
         })
         .await?;
         let shown = screen(&app, &id);
@@ -113,9 +121,8 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
         );
         assert!(shown.contains("You may use the DO budget."), "{shown}");
         // The ESC was removed: the paste did not end inside the text, which reached the agent
-        // whole, the bell gone.
+        // whole (the unit tests cover the other control characters).
         assert!(shown.contains("Up to $250 [201~ in all."), "{shown}");
-        assert!(!shown.contains('\u{7}'), "{shown}");
 
         let rows = audited(&data, &id)?;
         assert_eq!(rows.len(), 1, "{rows:?}");
@@ -134,16 +141,10 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
 /// prompt box: nothing is typed, and the Superagent is told why.
 #[test]
 fn a_persons_draft_keeps_the_message_out() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data) = temp()?;
+    let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_with(
-            &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            fake_agent(),
-        )?;
+        let app = app(&data, fake_agent()).await?;
         let (id, caller) = running(&app, &data).await?;
         app.record_typing(&id, &caller.user);
         let refused = app
@@ -162,6 +163,102 @@ fn a_persons_draft_keeps_the_message_out() -> TestResult {
         assert!(audited(&data, &id)?.is_empty());
         stop(&app, &id).await
     })
+}
+
+/// SPEC-230 TMS-004: a Superagent's message never goes into Claude Code's folder-trust dialog
+/// of a goal run (whose goal is its launch prompt, so no first message is being typed): only a
+/// person answers it (ONE-005). The call is refused and nothing is typed.
+#[test]
+fn a_superagent_message_is_not_typed_into_a_trust_prompt() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let app = app(&data, agent).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        wait_for("the trust prompt", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+        let caller = superagent(&sandbox, &user, "admin");
+        let refused = app
+            .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
+            .await
+            .err()
+            .ok_or("the message was typed into the trust prompt")?;
+        assert!(refused.to_string().contains("trust"), "{refused}");
+        // Whatever reaches the fake agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("TRUST ANSWERED"), "{shown}");
+        assert!(!shown.contains("Superagent"), "{shown}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// AC-8 (TMS-004): a run that is running but whose Claude Code session has not started (no
+/// SessionStart yet) refuses the message: typed before its prompt box reads, it would be lost or
+/// answer a trust dialog about to show. Nothing is typed.
+#[test]
+fn a_session_that_has_not_started_refuses_the_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            no_session_start: true,
+            ..fake_agent()
+        };
+        let app = app(&data, agent).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        wait_for("the run", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .task(&id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|t| t.status == TaskStatus::Running)
+                && !screen(&app, &id).trim().is_empty()
+        })
+        .await?;
+        let caller = superagent(&sandbox, &user, "admin");
+        let refused = app
+            .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
+            .await
+            .err()
+            .ok_or("the message was typed before the session started")?;
+        assert!(
+            matches!(&refused, AppError::Conflict(m) if m.contains("starting")),
+            "{refused:?}"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("Superagent"), "{shown}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// Sandbox `s1` with alice (write) and bob (read); tasks stay where they are seeded (no

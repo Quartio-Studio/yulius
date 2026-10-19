@@ -89,7 +89,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
             name: "task_message".into(),
-            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal in the last minute, it is starting, paused or switching, or it ended (then continue it, or create a new task). Answers delivered: queued or sent. Audited.".into(),
+            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it, or create a new task). Answers delivered: queued or sent. Audited.".into(),
             input_schema: schema(json!({
                 "task_id": {"type": "string", "description": "Task id"},
                 "number": {"type": "integer", "description": "Task number within this sandbox"},

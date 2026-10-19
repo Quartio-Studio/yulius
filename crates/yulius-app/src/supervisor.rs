@@ -132,6 +132,13 @@ pub struct TaskRuntime {
     pub(crate) typing_opening_said: AtomicBool,
     /// Yulius types a Superagent's message into the run (SPEC-230): one at a time.
     pub(crate) typing_message: AtomicBool,
+    /// When the current run was spawned (ms): without a SessionStart hook, its prompt box is
+    /// taken to read input half [`crate::context::AppConfig::goal_ready_ms`] later, as the goal
+    /// typist does (SPEC-230).
+    pub(crate) spawned_ms: AtomicI64,
+    /// The current run was reattached after a server restart: its session started before it,
+    /// though this runtime saw no SessionStart (SPEC-230).
+    pub(crate) reattached: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
@@ -261,6 +268,8 @@ impl TaskRuntime {
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
             typing_message: AtomicBool::new(false),
+            spawned_ms: AtomicI64::new(0),
+            reattached: AtomicBool::new(false),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -1296,6 +1305,8 @@ impl App {
         // So is the new session's SessionStart: its hook can be answered before the run is
         // attached and watched, and must not be forgotten then (#243).
         runtime.session_started.store(false, Ordering::SeqCst);
+        runtime.spawned_ms.store(self.now().0, Ordering::SeqCst);
+        runtime.reattached.store(false, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -3114,6 +3125,9 @@ impl App {
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
+                self.runtime(&attempt.task_id)
+                    .reattached
+                    .store(true, Ordering::SeqCst);
                 if let Ok(Some(task)) = store.task(&attempt.task_id).await
                     && matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
                 {

@@ -7,9 +7,11 @@
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person, then a separate Enter; Claude Code queues a message submitted while the agent works
 //!   (TMS-003). Control characters other than line breaks and tabs never reach the TUI;
-//! - nothing is typed while a person typed in the last minute (their draft is theirs), while
-//!   Claude Code asks a person whether to trust the folder, while Yulius types the first message,
-//!   or while another message is typed; other states are refused with their name (TMS-004);
+//! - nothing is typed before Claude Code's session started (its SessionStart hook, or the goal
+//!   typist's fallback for a CLI without it; a run reattached after a restart had started), while
+//!   it asks a person whether to trust the folder, while a person typed in the last minute (their
+//!   draft is theirs), while Yulius types the first message, or while another message is typed;
+//!   other states are refused with their name (TMS-004);
 //! - the person needs write access; every message is audited `task.messaged` without its text
 //!   (TMS-005); a typed message ends the task's open `needs_you` (TMS-006).
 
@@ -165,16 +167,29 @@ impl App {
                 task.number
             )));
         }
-        // Only a person answers Claude Code's folder-trust dialog (SPEC-117 ONE-005): a paste and
-        // an Enter would answer it with its default and lose the message.
+        // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
+        // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
+        // and an Enter would answer it with its default. A run reattached after a restart had
+        // started; one whose CLI runs no SessionStart hook is taken as started once the goal
+        // typist would (`wait_input_ready`).
         if !runtime.session_started.load(Ordering::SeqCst)
-            && trust_prompt_shown(&runtime.hub.screen_text())
+            && !runtime.reattached.load(Ordering::SeqCst)
         {
-            return Err(AppError::Conflict(format!(
-                "task #{} waits for a person to answer Claude Code's folder-trust question in its \
-                 terminal; tell the person, then try again",
-                task.number
-            )));
+            if trust_prompt_shown(&runtime.hub.screen_text()) {
+                return Err(AppError::Conflict(format!(
+                    "task #{} waits for a person to answer Claude Code's folder-trust question \
+                     in its terminal; tell the person, then try again",
+                    task.number
+                )));
+            }
+            let ready_ms = i64::try_from(self.config.goal_ready_ms / 2).unwrap_or(i64::MAX);
+            let spawned = runtime.spawned_ms.load(Ordering::SeqCst);
+            if self.now().0.saturating_sub(spawned) < ready_ms {
+                return Err(AppError::Conflict(format!(
+                    "task #{} is still starting its session: try again in a minute",
+                    task.number
+                )));
+            }
         }
         if self.typed_recently(&task.id).is_some() {
             return Err(AppError::Conflict(format!(

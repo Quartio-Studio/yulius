@@ -55,9 +55,11 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   becomes LF.
 - TMS-004 (refusals): nothing is typed, and the answer says why, when the text is empty or longer
   than 64 KiB, the task is the caller's own (not possible for a Superagent, kept for safety), a
-  person typed into the task's terminal in the last minute (their draft is theirs), Claude Code
-  shows its folder-trust dialog before the session started (only a person answers it, SPEC-117
-  ONE-005; a paste and Enter would answer it with its default), Yulius is still
+  person typed into the task's terminal in the last minute (their draft is theirs), Claude Code's
+  session has not started (no SessionStart hook yet; without one, half the goal-ready timeout
+  after the spawn; a run reattached after a restart counts as started), Claude Code shows its
+  folder-trust dialog before the session started (only a person answers it, SPEC-117 ONE-005; a
+  paste and Enter would answer it with its default), Yulius is still
   typing the task's first message, another message to the task is being typed, or the task is
   neither waiting to start nor running (stopped, done, failed, starting, switching, paused): it
   names the state and what to do (continue the task, or create a new one).
@@ -95,20 +97,22 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   `COCKPIT_READ_ONLY_TOOLS`.
 - AC-7: A running task with an open `needs_you` has it ended by a sent message.
 - AC-8: A goal run whose terminal shows Claude Code's folder-trust dialog refuses the message,
-  naming the trust question, and nothing is typed into the dialog; a `running` task without a
-  live session refuses it too.
+  naming the trust question, and nothing is typed into the dialog; a running run whose
+  SessionStart has not come refuses it as still starting, and nothing is typed; a `running` task
+  without a live session refuses it too.
 
 ## Test plan
 
 - Unit (`crates/yulius-app/src/task_message.rs`): AC-2's sanitising of the text and the paste
   framing.
-- Integration, real processes (`crates/yulius/tests/task_message.rs`, the fake agent through the
-  PTY host, as `context_full.rs`): AC-1, AC-3, AC-7.
+- Integration, real processes (`crates/yulius/tests/task_message.rs`, the hooked fake agent
+  through the PTY host and the hook server, with `first_message.rs`'s helpers): AC-1, AC-3, AC-7.
 - Integration (`crates/yulius/tests/task_message.rs`, the in-memory harness): AC-4, AC-5.
 - Integration (`crates/yulius/tests/manage_tools.rs`, `cockpit.rs` through the MCP endpoint):
   AC-6.
-- Integration, real processes (`crates/yulius/tests/first_message.rs`, the fake agent's trust
-  prompt): AC-8; the in-memory part of AC-8 in `task_message.rs`.
+- Integration, real processes (`crates/yulius/tests/task_message.rs`, a hooked fake agent with
+  its trust prompt, or without its SessionStart hook): AC-8; the in-memory part of AC-8 there
+  too.
 
 ## Decisions
 
@@ -135,7 +139,8 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   (`first_message::a_superagent_message_is_not_typed_into_a_trust_prompt`) failed with "the
   message was typed into the trust prompt" before the fix.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
-  test(/^first_message::/))'`: 20 passed. `cargo nextest run -p yulius-app task_message`: 2
+  test(/^first_message::/) | test(/^cockpit::/) | test(/^manage_tools::/) | test(/^recovery::/)
+  | test(/^supervision::/))'`: 99 passed. `cargo nextest run -p yulius-app task_message`: 2
   passed (AC-2's cleaning and paste framing).
 - `scripts/dev ci` on 86640db2 (before the review fixes): exit 0, 2249 tests passed, 17 skipped;
   rerun on the final head before delivery (result in the pull request).
@@ -164,7 +169,23 @@ A task that cannot take it says why, so the Superagent can tell the person what 
      added to the ADR.
   8. (nit) product wording named the Superagent; 9. (nit) the Superagent's instructions list
      `task_message` among the tools used only when the person asks: both fixed.
-- Round 2's verdict on the final head is in the pull request.
+- Independent review, round 2 (fresh session, head 5809d586): round 1's answers accepted;
+  REQUEST CHANGES for one medium own-code finding, answered:
+  - A (medium) a message sent right after the task became `running`, before Claude Code's
+    SessionStart, could be lost (yet reported `sent`) or answer a trust dialog not yet drawn:
+    fixed test-first (`task_message::a_session_that_has_not_started_refuses_the_message` failed
+    with "the message was typed before the session started"); refused until SessionStart, or
+    half the goal-ready timeout after a hookless spawn. The real-process tests now run a hooked
+    fake agent.
+  - B (low) after a restart the fresh runtime has no SessionStart, so the trust words in any
+    output refused every message: a reattached run (`TaskRuntime::reattached`, set by
+    `reconcile`) counts as started. Not covered by a test (a restart with a live run and a
+    message is the reconcile suite's heavy setup); the change is the one flag read in the guard.
+  - C (low) a person's keys in the 300 ms between paste and Enter join the message: documented
+    in ADR-0178's Consequences rather than holding a person's keys.
+  - D (nit) the tool description names the trust refusal; E (nit) the changes entry rewrapped;
+    F (nit) the bell assertion that could not fail removed (the unit test covers it).
+- Round 3's verdict on the final head is in the pull request.
 - Not tested: a real Claude Code TUI (the fake agent models its bracketed paste and Enter);
   Claude Code's own queuing of a message submitted mid-turn is its documented behaviour, not
   exercised here.

@@ -31,9 +31,12 @@ Superagent, which acts for that person, could do neither.
   Superagent. It is not among `COCKPIT_READ_ONLY_TOOLS`, so on an uncontained server Claude Code
   asks the person first (ADR-0165).
 - **Nothing is typed over a person.** A person who typed into the terminal in the last minute
-  (`typed_recently`) owns the prompt box. So does Claude Code's folder-trust dialog before the
-  session started (`trust_prompt_shown`), which only a person answers: a paste and an Enter would
-  answer it with its default (SPEC-117 ONE-005). So do Yulius while it types the first message
+  (`typed_recently`) owns the prompt box. Nothing is typed before Claude Code's session started
+  (its SessionStart hook; without one, half the goal-ready timeout after the spawn, as the goal
+  typist waits; a run reattached after a restart had started): input typed earlier is lost or
+  left unsubmitted, and the folder-trust dialog may be about to show. Nor while that dialog shows
+  (`trust_prompt_shown`), which only a person answers: a paste and an Enter would answer it with
+  its default (SPEC-117 ONE-005). So do Yulius while it types the first message
   (`typing_opening`) and another message being typed (one per run, a flag cleared on drop). In
   each case the call is refused, not delayed. An Enter that fails after the paste says the text
   may still be in the prompt box, so the Superagent does not send it twice.
@@ -73,7 +76,11 @@ Superagent, which acts for that person, could do neither.
   wait for a message being typed. If one types within the 300 ms between the paste and its Enter,
   both texts go out as one prompt, or the goal typist's Ctrl-U clears the message. The window is
   narrow and both are rare at the same moment; the Superagent sees the task's transcript and can
-  send the message again.
+  send the message again. The same holds for a person's keys in those 300 ms: they are not held
+  back, as they are while Yulius types the first message, and join the message.
+- A run reattached after a restart is taken as started without looking for the trust dialog, so
+  a trust question still open across a restart is not detected here; the goal watch still flags
+  a trust question left unanswered.
 - On a contained server the Superagent calls the tool without asking, as it does `task_create`.
   Text it reads (a task's transcript, a session) could try to make it relay instructions to
   another task. Its instructions limit the tool to what the person asked, as for every changing

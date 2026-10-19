@@ -42,7 +42,7 @@ type BoxError = Box<dyn std::error::Error>;
 
 /// A server: the app and its internal listener on `port` (0 = any free port), as `yulius serve`
 /// would start it, with `probe` reading the subscriptions' usage.
-async fn start(
+pub(crate) async fn start(
     data: &Path,
     fake: &Path,
     agent: FakeAgentOptions,
@@ -95,7 +95,7 @@ async fn start_with(
     Ok((app, port))
 }
 
-fn hooked() -> FakeAgentOptions {
+pub(crate) fn hooked() -> FakeAgentOptions {
     FakeAgentOptions {
         transcript: true,
         hooks: true,
@@ -103,7 +103,7 @@ fn hooked() -> FakeAgentOptions {
     }
 }
 
-async fn new_task(
+pub(crate) async fn new_task(
     app: &Arc<App>,
     sandbox: &SandboxId,
     user: &UserId,
@@ -131,7 +131,7 @@ async fn new_task(
         .id)
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
+pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -146,7 +146,7 @@ where
     Err(format!("timed out waiting for {what}").into())
 }
 
-fn screen(app: &App, id: &TaskId) -> String {
+pub(crate) fn screen(app: &App, id: &TaskId) -> String {
     app.runtime(id).hub.screen_text()
 }
 
@@ -171,7 +171,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String
     out
 }
 
-async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
+pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     app.stop_task_now(id).await?;
     wait_for("the stop", Duration::from_secs(30), || async {
         TaskStore::task(app.deps.store.as_ref(), id)
@@ -183,14 +183,14 @@ async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     .await
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
 }
 
-fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
+pub(crate) fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
     // A short base: run sockets live at <data>/runs/<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yf").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
@@ -367,61 +367,6 @@ fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
         let said = notices(&mut watch);
         assert!(!said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
         app.terminal_leave(&attach).await;
-        stop(&app, &id).await
-    })?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-/// SPEC-230 TMS-004: a Superagent's message never goes into Claude Code's folder-trust dialog
-/// of a goal run (whose goal is its launch prompt, so no first message is being typed): only a
-/// person answers it (ONE-005). The call is refused and nothing is typed.
-#[test]
-fn a_superagent_message_is_not_typed_into_a_trust_prompt() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data) = data_dir()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let probe = Arc::new(ScriptedUsage::default());
-        let agent = FakeAgentOptions {
-            trust_prompt: true,
-            ..hooked()
-        };
-        let (app, _) = start(&data, &fake, agent, 0, probe).await?;
-        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
-        let id = new_task(
-            &app,
-            &sandbox,
-            &user,
-            "Make the header blue",
-            TaskMode::Goal,
-        )
-        .await?;
-        wait_for("the trust prompt", Duration::from_secs(60), || async {
-            screen(&app, &id).contains("Yes, I trust this folder")
-        })
-        .await?;
-        let caller = yulius_app::coordination::ProjectCaller {
-            sandbox,
-            user,
-            task: None,
-            actor: "cockpit:admin".into(),
-            detail: serde_json::json!({"via": "cockpit"}),
-        };
-        let refused = app
-            .tool_task_message(
-                &caller,
-                &serde_json::json!({"task_id": id.as_str(), "text": "Go on"}),
-            )
-            .await
-            .err()
-            .ok_or("the message was typed into the trust prompt")?;
-        assert!(refused.to_string().contains("trust"), "{refused}");
-        // Whatever reaches the fake agent shows within a second; nothing did.
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let shown = screen(&app, &id);
-        assert!(!shown.contains("TRUST ANSWERED"), "{shown}");
-        assert!(!shown.contains("Superagent"), "{shown}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
