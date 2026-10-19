@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- The task terminal no longer garbles when an agent prints a secret's value (SPEC-239, ADR-0181,
+  task #225, part of #705). The terminal used to replace the value with `[secret:NAME]`, which is
+  usually wider than the value. Claude Code redraws its screen by moving the cursor to rows and
+  columns it computed from what it wrote, so the extra width sent every later redraw to the wrong
+  cells. In the reported project this happened on most answers, because a secret's value was the
+  word "production". The terminals (task, Superagent, Cockpit shell) now show the label fitted to
+  the value's width: padded with `*`, or cut (`[secret:P]`). Transcripts and tool output keep the
+  full label. Whether an ordinary word should count as a secret at all stays on #705.
 - The Notes tab grip's hover check in `notes.e2e.ts` hovers the tab itself, not a point read
   before (SPEC-236, task #222, fixes #503). The failure was the sandbox browser's sign-in toast
   over the Notes tabs, which pauses while pointed at. #523 had already turned that toast off for

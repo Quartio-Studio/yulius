@@ -732,6 +732,12 @@ token the person's environment holds, answered while the person may work in the 
 access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
+Every terminal people watch (a task's, the Superagent's, a Cockpit shell's) replaces a value with
+its label fitted to the value's display width (`fitted_label`): `[secret:NAME]` followed by `*` padding, or cut short. A full-screen
+program's cursor-addressed redraws then land in the cells it meant. Text channels keep the full
+label ([SPEC-239](../.ai/specs/SPEC-239-termial-gets-bugged-often-fix.md),
+[decision 0181](decisions/0181-a-terminal-masks-a-secret-as-wide-as-its-value.md)).
+
 The Superagent uses the agent vault as a task's agent does
 ([SPEC-186](../.ai/specs/SPEC-186-the-superagent-uses-the-agent-vault-like.md),
 [decision 0150](decisions/0150-the-superagent-uses-agent-secrets-as-a-task-does.md)). It starts
