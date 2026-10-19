@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yulius_app::context::App;
 use yulius_app::coordination::ProjectCaller;
+use yulius_app::error::AppError;
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
@@ -189,11 +190,20 @@ async fn message(
     h: &support::Harness,
     caller: &ProjectCaller,
     args: Value,
-) -> Result<Value, String> {
-    h.app
-        .tool_task_message(caller, &args)
-        .await
-        .map_err(|err| err.to_string())
+) -> Result<Value, AppError> {
+    h.app.tool_task_message(caller, &args).await
+}
+
+/// The refusal of a call that must fail.
+async fn refusal(
+    h: &support::Harness,
+    caller: &ProjectCaller,
+    args: Value,
+) -> Result<AppError, Error> {
+    match message(h, caller, args.clone()).await {
+        Ok(answer) => Err(format!("{args} was taken: {answer}").into()),
+        Err(err) => Ok(err),
+    }
 }
 
 /// AC-4 (TMS-002): a task that has not started takes the message into its request, as a queued
@@ -238,24 +248,37 @@ async fn what_cannot_take_a_message_is_refused() -> TestResult {
     seed_task(&h, "t-queued", "s1", "u-alice", TaskStatus::Queued, None).await?;
     let caller = alice()?;
 
-    let closed = message(&h, &caller, json!({"task_id": "t-done", "text": "Go on"}))
-        .await
-        .err()
-        .ok_or("a closed task took a message")?;
-    assert!(closed.contains("closed"), "{closed}");
+    let closed = refusal(&h, &caller, json!({"task_id": "t-done", "text": "Go on"})).await?;
+    assert!(
+        matches!(&closed, AppError::Conflict(m) if m.contains("closed")),
+        "{closed:?}"
+    );
+
+    // Running, but no live session (no run attached here).
+    seed_task(&h, "t-running", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let detached = refusal(
+        &h,
+        &caller,
+        json!({"task_id": "t-running", "text": "Go on"}),
+    )
+    .await?;
+    assert!(
+        matches!(&detached, AppError::Conflict(m) if m.contains("no live session")),
+        "{detached:?}"
+    );
 
     for text in ["", "  \n\x1b\x07 "] {
-        let empty = message(&h, &caller, json!({"task_id": "t-queued", "text": text}))
-            .await
-            .err()
-            .ok_or("an empty message was taken")?;
-        assert!(empty.contains("empty"), "{empty}");
+        let empty = refusal(&h, &caller, json!({"task_id": "t-queued", "text": text})).await?;
+        assert!(
+            matches!(&empty, AppError::Invalid(m) if m.contains("empty")),
+            "{empty:?}"
+        );
     }
     let long = "x".repeat(64 * 1024 + 1);
+    let long = refusal(&h, &caller, json!({"task_id": "t-queued", "text": long})).await?;
     assert!(
-        message(&h, &caller, json!({"task_id": "t-queued", "text": long}))
-            .await
-            .is_err()
+        matches!(&long, AppError::Invalid(m) if m.contains("KiB")),
+        "{long:?}"
     );
 
     let elsewhere = superagent(
@@ -266,22 +289,17 @@ async fn what_cannot_take_a_message_is_refused() -> TestResult {
     add_sandbox(&h, "s2", "other", 20010).await?;
     h.github
         .set_perm("alice", "Quartio-Studio/other", perms("write"));
-    assert!(
-        message(
-            &h,
-            &elsewhere,
-            json!({"task_id": "t-queued", "text": "Go on"})
-        )
-        .await
-        .is_err()
-    );
+    let elsewhere = refusal(
+        &h,
+        &elsewhere,
+        json!({"task_id": "t-queued", "text": "Go on"}),
+    )
+    .await?;
+    assert!(matches!(elsewhere, AppError::NotFound), "{elsewhere:?}");
 
     let bob = superagent(&SandboxId::parse("s1")?, &UserId::parse("u-bob")?, "bob");
-    assert!(
-        message(&h, &bob, json!({"task_id": "t-queued", "text": "Go on"}))
-            .await
-            .is_err()
-    );
+    let bob = refusal(&h, &bob, json!({"task_id": "t-queued", "text": "Go on"})).await?;
+    assert!(matches!(bob, AppError::Forbidden(_)), "{bob:?}");
     let request = h
         .store
         .task(&TaskId::parse("t-queued")?)

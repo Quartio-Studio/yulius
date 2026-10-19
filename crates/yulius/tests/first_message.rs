@@ -373,6 +373,61 @@ fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
     Ok(())
 }
 
+/// SPEC-230 TMS-004: a Superagent's message never goes into Claude Code's folder-trust dialog
+/// of a goal run (whose goal is its launch prompt, so no first message is being typed): only a
+/// person answers it (ONE-005). The call is refused and nothing is typed.
+#[test]
+fn a_superagent_message_is_not_typed_into_a_trust_prompt() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start(&data, &fake, agent, 0, probe).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        wait_for("the trust prompt", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox,
+            user,
+            task: None,
+            actor: "cockpit:admin".into(),
+            detail: serde_json::json!({"via": "cockpit"}),
+        };
+        let refused = app
+            .tool_task_message(
+                &caller,
+                &serde_json::json!({"task_id": id.as_str(), "text": "Go on"}),
+            )
+            .await
+            .err()
+            .ok_or("the message was typed into the trust prompt")?;
+        assert!(refused.to_string().contains("trust"), "{refused}");
+        // Whatever reaches the fake agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("TRUST ANSWERED"), "{shown}");
+        assert!(!shown.contains("Superagent"), "{shown}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-106 OTR-002 (#425): a trust prompt nobody answers gets nothing typed into it; once the
 /// time to answer it is over the task is flagged and says why.
 #[test]

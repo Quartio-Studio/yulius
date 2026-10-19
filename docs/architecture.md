@@ -701,7 +701,8 @@ the audit actor, never on the caller's own task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
 one bracketed paste labelled with the person, then a separate Enter, refused while a person typed
-in the last minute (`typed_recently`), while Yulius types the first message or while another
+in the last minute (`typed_recently`), while Claude Code's folder-trust dialog shows
+(`trust_prompt_shown`), while Yulius types the first message or while another
 message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).

@@ -547,7 +547,7 @@ const TRUST_UNANSWERED: &str = "Claude Code still asks whether to trust this fol
      the terminal";
 
 /// Whether `screen` shows Claude Code's folder-trust dialog.
-fn trust_prompt_shown(screen: &str) -> bool {
+pub(crate) fn trust_prompt_shown(screen: &str) -> bool {
     TRUST_PROMPT_TEXTS.iter().any(|text| screen.contains(text))
 }
 

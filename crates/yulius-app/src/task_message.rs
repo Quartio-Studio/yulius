@@ -8,8 +8,8 @@
 //!   person, then a separate Enter; Claude Code queues a message submitted while the agent works
 //!   (TMS-003). Control characters other than line breaks and tabs never reach the TUI;
 //! - nothing is typed while a person typed in the last minute (their draft is theirs), while
-//!   Yulius types the first message, or while another message is typed; other states are refused
-//!   with their name (TMS-004);
+//!   Claude Code asks a person whether to trust the folder, while Yulius types the first message,
+//!   or while another message is typed; other states are refused with their name (TMS-004);
 //! - the person needs write access; every message is audited `task.messaged` without its text
 //!   (TMS-005); a typed message ends the task's open `needs_you` (TMS-006).
 
@@ -27,6 +27,7 @@ use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
+use crate::supervisor::trust_prompt_shown;
 
 /// Longest message, in bytes after cleaning.
 pub const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
@@ -164,6 +165,17 @@ impl App {
                 task.number
             )));
         }
+        // Only a person answers Claude Code's folder-trust dialog (SPEC-117 ONE-005): a paste and
+        // an Enter would answer it with its default and lose the message.
+        if !runtime.session_started.load(Ordering::SeqCst)
+            && trust_prompt_shown(&runtime.hub.screen_text())
+        {
+            return Err(AppError::Conflict(format!(
+                "task #{} waits for a person to answer Claude Code's folder-trust question in its \
+                 terminal; tell the person, then try again",
+                task.number
+            )));
+        }
         if self.typed_recently(&task.id).is_some() {
             return Err(AppError::Conflict(format!(
                 "a person typed into task #{}'s terminal in the last minute and may have a draft \
@@ -181,7 +193,15 @@ impl App {
         self.send_input(&task.id, &message_paste(login, text))
             .await?;
         tokio::time::sleep(SUBMIT_DELAY).await;
-        self.send_input(&task.id, b"\r").await?;
+        // The text is in the prompt box but not sent: said, so a retry does not send it twice.
+        self.send_input(&task.id, b"\r").await.map_err(|err| {
+            AppError::Conflict(format!(
+                "the message was pasted into task #{}'s session but not submitted ({}): it may \
+                 still be in its prompt box, so look before sending it again",
+                task.number,
+                err.public_message()
+            ))
+        })?;
         // The person spoke to the task through their Superagent: what it asked them is answered.
         self.end_needs_you(&task.id).await;
         Ok(())

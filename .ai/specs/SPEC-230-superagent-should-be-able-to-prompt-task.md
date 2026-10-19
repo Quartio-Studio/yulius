@@ -55,7 +55,9 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   becomes LF.
 - TMS-004 (refusals): nothing is typed, and the answer says why, when the text is empty or longer
   than 64 KiB, the task is the caller's own (not possible for a Superagent, kept for safety), a
-  person typed into the task's terminal in the last minute (their draft is theirs), Yulius is still
+  person typed into the task's terminal in the last minute (their draft is theirs), Claude Code
+  shows its folder-trust dialog before the session started (only a person answers it, SPEC-117
+  ONE-005; a paste and Enter would answer it with its default), Yulius is still
   typing the task's first message, another message to the task is being typed, or the task is
   neither waiting to start nor running (stopped, done, failed, starting, switching, paused): it
   names the state and what to do (continue the task, or create a new one).
@@ -92,6 +94,9 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 - AC-6: `task_message` is in the Superagent's tools, not a task agent's, and not among
   `COCKPIT_READ_ONLY_TOOLS`.
 - AC-7: A running task with an open `needs_you` has it ended by a sent message.
+- AC-8: A goal run whose terminal shows Claude Code's folder-trust dialog refuses the message,
+  naming the trust question, and nothing is typed into the dialog; a `running` task without a
+  live session refuses it too.
 
 ## Test plan
 
@@ -100,7 +105,10 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 - Integration, real processes (`crates/yulius/tests/task_message.rs`, the fake agent through the
   PTY host, as `context_full.rs`): AC-1, AC-3, AC-7.
 - Integration (`crates/yulius/tests/task_message.rs`, the in-memory harness): AC-4, AC-5.
-- Integration (`crates/yulius/tests/manage_tools.rs`): AC-6.
+- Integration (`crates/yulius/tests/manage_tools.rs`, `cockpit.rs` through the MCP endpoint):
+  AC-6.
+- Integration, real processes (`crates/yulius/tests/first_message.rs`, the fake agent's trust
+  prompt): AC-8; the in-memory part of AC-8 in `task_message.rs`.
 
 ## Decisions
 

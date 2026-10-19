@@ -31,9 +31,12 @@ Superagent, which acts for that person, could do neither.
   Superagent. It is not among `COCKPIT_READ_ONLY_TOOLS`, so on an uncontained server Claude Code
   asks the person first (ADR-0165).
 - **Nothing is typed over a person.** A person who typed into the terminal in the last minute
-  (`typed_recently`) owns the prompt box, as for the goal and `/compact`. So does Yulius while it
-  types the first message (`typing_opening`), and another message being typed (one per run, a
-  flag cleared on drop). In each case the call is refused, not delayed.
+  (`typed_recently`) owns the prompt box. So does Claude Code's folder-trust dialog before the
+  session started (`trust_prompt_shown`), which only a person answers: a paste and an Enter would
+  answer it with its default (SPEC-117 ONE-005). So do Yulius while it types the first message
+  (`typing_opening`) and another message being typed (one per run, a flag cleared on drop). In
+  each case the call is refused, not delayed. An Enter that fails after the paste says the text
+  may still be in the prompt box, so the Superagent does not send it twice.
 - **Clean text.** CRLF and CR become LF. Every control character except LF and tab is removed, so
   an ESC can neither end the paste nor drive the TUI. The text is trimmed, at most 64 KiB, and
   never empty.
@@ -60,7 +63,18 @@ Superagent, which acts for that person, could do neither.
   budget" queues the line into the waiting tasks and types it into the running ones.
 - An open Superagent gets the tool after an update by restarting once it is idle (the launch
   digest covers tool descriptors).
-- Typing into a session that shows a dialog puts the text into the dialog. Tasks run
-  without approval prompts, so this is limited to Claude Code's own dialogs. Yulius does not
-  type while the first message is pending. In the first seconds of a goal-mode run, a message
-  can still arrive before the goal is typed. The goal then follows it, so both reach the agent.
+- Typing into a session that shows another dialog puts the text into it. Tasks run without
+  approval prompts, and the trust dialog is refused, so this is limited to Claude Code's rarer
+  dialogs.
+- The person's draft counts for a minute (`TYPED_WINDOW_MS`, as for prompt attribution). A draft
+  left longer ago is submitted with the message, unlike the goal typist, which leaves any draft
+  typed since the run attached.
+- Yulius's other typists (the goal of a resumed session, `/compact` for a full context) do not
+  wait for a message being typed. If one types within the 300 ms between the paste and its Enter,
+  both texts go out as one prompt, or the goal typist's Ctrl-U clears the message. The window is
+  narrow and both are rare at the same moment; the Superagent sees the task's transcript and can
+  send the message again.
+- On a contained server the Superagent calls the tool without asking, as it does `task_create`.
+  Text it reads (a task's transcript, a session) could try to make it relay instructions to
+  another task. Its instructions limit the tool to what the person asked, as for every changing
+  tool; it adds no new reach, since `task_create` can already start a task with any prompt.
