@@ -1,11 +1,11 @@
 ---
 yulius-task: 3c89fa41-ddce-47c7-bcde-4566c81174fb
-status: in-progress
+status: done
 ---
 
 # SPEC-232: A leftover tree with an unreadable directory of its owner is removed
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: task #218
 Scope authorization: task #218: "Fix GitHub issue #680". Fixes #680, found in the review of
@@ -50,11 +50,11 @@ Confirmed against `dev` at b9080ea4.
 ## Plan
 
 - [x] Spec for #680 written and valid
-- [ ] Failing regression test for a 0o000/0o300 directory
-- [ ] make_writable_at and the tree top change modes through O_PATH handles
-- [ ] ADR, docs and changes entry
-- [ ] Independent review answered
-- [ ] Gates green and delivered on green CI
+- [x] Failing regression test for a 0o000/0o300 directory
+- [x] make_writable_at and the tree top change modes through O_PATH handles
+- [x] ADR, docs and changes entry
+- [x] Independent review answered
+- [x] Gates green and delivered on green CI
 
 ## Acceptance criteria
 
@@ -91,3 +91,26 @@ Confirmed against `dev` at b9080ea4.
 - The walk stays Linux only (it lists and removes through `/proc/self/fd`, as before); other
   platforms (macOS, a development host) only compile it, with a read-only open in place of
   `O_PATH`, which they lack.
+
+## Evidence
+
+- Test first: `cargo test -p yulius-app --lib leftovers::tests` at b66352ce (test only, dev code):
+  `a_tree_with_unreadable_directories_goes` FAILED with "/tmp/…/data/runs/old: Permission denied
+  (os error 13)"; its precondition (a `0o000` directory unreadable without the DAC capabilities)
+  held. After the fix (f56bd40b) all leftovers tests pass, `making_a_tree_writable_never_follows_a_link`
+  included.
+- Review finding (minor 1): `a_directory_handle_is_never_opened_through_a_link` passes; with
+  `O_NOFOLLOW` removed from `open_dir_handle` it fails (checked locally, reverted).
+- `scripts/dev ci` at 093e98ed: doctor, check, fmt, clippy (Linux and `aarch64-apple-darwin`) passed;
+  nextest 2258 of 2259 passed, 17 skipped. The one failure,
+  `local_ci::ci_jobs_get_the_secrets_the_integration_branch_grants_them`, is outside this change:
+  `yulius-git`'s runner reported "output pipe stayed open after git exited" (its `PIPE_GRACE`
+  under the gate's full load) while checking out a CI job. Alone it passed (9 s). It is reported on
+  #680, not filed. The remaining steps were then run one by one and passed: `scripts/doctests.py`,
+  `scripts/dev deps` (cargo-deny, cargo-shear), `cargo doc`.
+- After the review fixes (test and docs only): `cargo fmt --check`, `cargo clippy -p yulius-app
+  --all-targets --all-features -D warnings` and `scripts/check_repository.py` passed.
+- `scripts/dev security` at 093e98ed: exit 0. 2 files were sent to vidoc-1, with no open critical,
+  high or in-change medium finding, and no low finding listed.
+- Not tested: macOS at runtime (the walk is Linux-only, as before), and a live leftovers round on
+  a server without an isolation.
