@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   production needs a separate secret, and a refused production run gives the same reason. The
   redaction of a secret whose value is an ordinary word ("production"), seen in the same report,
   is #705.
+- Closing the last file, switching folder or leaving the Editor while Monaco's editor worker still
+  loads its script no longer reports an uncaught NetworkError on the page (SPEC-235, task #221,
+  fixes #509). Monaco ends that worker as its last file goes; the cut `importScripts` threw an
+  error nobody cancelled, which failed `editor.e2e.ts` under load. A worker the Editor has ended
+  now cancels its errors; one in use still reports them, and `failOnPageErrors()` has no allowlist.
 - The Notes tab grip's hover check in `notes.e2e.ts` hovers the tab itself, not a point read
   before (SPEC-236, task #222, fixes #503). The failure was the sandbox browser's sign-in toast
   over the Notes tabs, which pauses while pointed at. #523 had already turned that toast off for
