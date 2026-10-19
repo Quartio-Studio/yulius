@@ -350,13 +350,14 @@ const views = new WeakMap(); // host → what a person opened, closed and toggle
  * Loads and draws one subject's waterfall into `host` (`subject`: `ci_run:<id>`, …). A timeline
  * that has not changed since the last load is left as it is (its table toggle, its hover); one
  * that has is redrawn with the spans opened or closed and the table as the person left them.
+ * Returns the timeline, or `null` when it could not be read.
  */
 export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
   try {
     const timeline = await ctx.api.get(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages/timeline?subject=${encodeURIComponent(subject)}`);
     const text = JSON.stringify(timeline);
     const running = [...(timeline.spans || []), ...(timeline.related || [])].some((s) => !s.ended_at);
-    if (!running && drawn.get(host) === text && host.firstChild) return;
+    if (!running && drawn.get(host) === text && host.firstChild) return timeline;
     drawn.set(host, text);
     const key = `${sandbox.id} ${subject}`;
     if (views.get(host)?.key !== key) views.set(host, { key, open: new Map(), table: false });
@@ -368,8 +369,10 @@ export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
     const again = row ? [...host.querySelectorAll('.st-row')].find((r) => r.dataset.key === row)?.querySelector('.st-fold')
       : wasToggle ? host.querySelector('.db-table-toggle') : null;
     again?.focus();
+    return timeline;
   } catch (error) {
     setChildren(host, h('p', { class: 'muted small' }, `Couldn’t load the stages: ${error.message || error}`));
+    return null;
   }
 }
 

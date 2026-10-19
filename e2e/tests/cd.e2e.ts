@@ -161,6 +161,8 @@ test('production deploys only after the project slug is typed', async ({ app, br
   const run = screen.getByRole('region', 'Deploy');
   await expect(run.getByText('Deploying')).toBeVisible();
   await expect(run.getByText(/promoted the integration branch|by mkarp/)).toBeVisible();
+  // SPEC-238 CRV-003: its summary counts the time it has run, by itself.
+  await expect(browser.locator('.run-view .run-time')).toHaveText(/^\d+ s so far$/);
   // The time the person kept the confirmation open goes with it, as the run's confirmation wait
   // (SPEC-137 STG-302).
   const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm_ms?: number } } }).__yuliusMock.lastCdDeploy?.confirm_ms ?? null);

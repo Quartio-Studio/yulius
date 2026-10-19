@@ -76,6 +76,43 @@ test('a skipped job reads Skipped, not Passed', async ({ app, browser, screen })
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-238 CRV-003: "we see some dynamic summary all the time". A running run's view starts with
+// a summary that stays on top while the page scrolls: its state, its jobs, a time that grows by
+// itself and the stages running now (the mock's dev run ci_s4: four jobs still running).
+const secondsShown = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const text = document.querySelector('.run-view .run-time')?.textContent || '';
+  const m = /^(?:(\d+) min )?(\d+) s so far$/.exec(text);
+  return m ? Number(m[1] || 0) * 60 + Number(m[2]) : null;
+});
+
+test('a running run keeps a live summary on top: its time, its jobs and the stages running now', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s4'));
+  const run = screen.getByRole('region', 'CI run');
+  const summary = browser.locator('.run-view .run-summary');
+  await expect(run.getByText('Running')).toBeVisible();
+  await expect(summary).toContainText('3 jobs · 1 passed · 2 running');
+  await expect(summary).toContainText('Now: engine › build, package (gateway) and 2 more');
+  await expect.poll(() => secondsShown(browser)).not.toBeNull();
+  const first = (await secondsShown(browser))!;
+  await expect.poll(() => secondsShown(browser), { timeout: 5000 }).toBeGreaterThan(first);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Scrolled to the log in a short window, the summary is still at the top of the page.
+  await browser.setViewport({ width: 1440, height: 520 });
+  await browser.evaluate(() => { document.querySelector('.page')!.scrollTop = 100000; });
+  await expect.poll(() => browser.evaluate(() => {
+    const page = document.querySelector('.page')!;
+    const top = document.querySelector('.run-view .run-summary')!.getBoundingClientRect().top;
+    return page.scrollTop > 200 && Math.abs(top - page.getBoundingClientRect().top) <= 2;
+  })).toBe(true);
+  await browser.setViewport({ width: 1440, height: 900 });
+
+  // An ended run says how long it took and runs nothing now.
+  await app.open(mock('/s/studio/ci?run=ci_s2'));
+  await expect(browser.locator('.run-view .run-time')).toHaveText(/^took /);
+  await expect(browser.locator('.run-view .run-summary')).not.toContainText('Now:');
+});
+
 test('repository hygiene removes only what is safe', async ({ app, screen }) => {
   await app.open(mock('/s/studio/ci'));
   await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();

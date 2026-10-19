@@ -2822,6 +2822,11 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* A run's view in the CI/CD page (SPEC-238): "All runs" at the start, the run under it. */
 .run-view { min-width: 0; }
 .run-back { align-self: flex-start; }
+/* Its summary stays at the top of the page while the stages and the log scroll under it. */
+.run-summary { position: sticky; top: 0; z-index: var(--z-sticky); display: flex; flex-direction: column; gap: 4px; padding: 8px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.run-facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-variant-numeric: tabular-nums; }
+.run-facts:empty { display: none; }
+.run-now { color: var(--text-2); }
 @container (max-width: 820px) { .pl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* Narrow (a phone): the name and its figures on one line, the bar under them at full width. */
 @container (max-width: 520px) {

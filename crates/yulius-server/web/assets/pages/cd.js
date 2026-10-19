@@ -17,7 +17,7 @@ import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
-import { runView } from '../runview.js';
+import { runView, stageNow, soFar } from '../runview.js';
 
 const STATE = {
   running: { label: 'Deploying', tone: 'warn', icon: 'refresh' },
@@ -45,11 +45,6 @@ const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** The integration branch: the dev environment's branch (SPEC-152). */
 const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');
 const title = (env) => (env.name === 'dev' ? 'Dev' : 'Production');
-/** How long a deploy has been starting: "12 s so far", "1 min 5 s so far". */
-const soFar = (s) => {
-  const n = Math.floor(s);
-  return `${n < 60 ? `${n} s` : `${Math.floor(n / 60)} min ${n % 60} s`} so far`;
-};
 
 /** What a person asks an agent when CD is set up through the harness. */
 const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and scripts/cd/ (skill infra-bootstrap, step 3).
@@ -322,7 +317,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const view = into && into === shown ? into : deployView();
     if (view !== into) view.loading(placeholder('Loading the deploy…', 'loading'));
     let poll = null;
-    view.stop = () => clearTimeout(poll);
+    view.stop = () => { clearTimeout(poll); view.dispose(); };
     const head = view.head;
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
     // Its stages (SPEC-137): checks, promotion, deploy, verify and what their output names.
@@ -337,15 +332,20 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
         if (first) { view.ready(); first = false; }
         const st = stateOf(run.state);
         setChildren(head, badge(st.label, st.tone), h('strong', null, run.environment === 'dev' ? 'Dev' : 'Production'), h('code', { class: 'muted' }, shortSha(run.commit)),
-          h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by} · started ${relLong(run.started_at)}${run.reason ? ` · ${run.reason}` : ''}`),
+          h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by}${run.reason ? ` · ${run.reason}` : ''}`),
           h('span', { class: 'spacer' }),
           h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `cd_run:${id}`)), dataset: { route: pipelineHref(sandbox, `cd_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline'));
-        await loadWaterfall(ctx, sandbox, `cd_run:${id}`, stages, { title: 'Stages of this deploy' });
+        const timeline = await loadWaterfall(ctx, sandbox, `cd_run:${id}`, stages, { title: 'Stages of this deploy' });
+        if (destroyed || shown !== view) return;
+        // The summary (SPEC-238 CRV-003): how long and the stage running now.
+        const running = run.state === 'running';
+        const took = run.ended_at ? Date.parse(run.ended_at) - Date.parse(run.started_at) : null;
+        view.summarize({ running, startedAt: run.started_at, took: Number.isFinite(took) ? took : null, since: `started ${relLong(run.started_at)}`, now: running ? stageNow(timeline) : null });
         const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
         const exit = run.exit_code === null || run.exit_code === undefined ? '' : `\n[exit code ${run.exit_code}]`;
         output.textContent = (run.output || (run.state === 'running' ? 'Waiting for output…' : 'No output.')) + exit;
         if (atBottom || run.state === 'running') output.scrollTop = output.scrollHeight;
-        if (run.state === 'running' && !destroyed && shown === view) poll = setTimeout(load, POLL_ACTIVE_MS);
+        if (running) poll = setTimeout(load, POLL_ACTIVE_MS);
       } catch (error) {
         if (first && !destroyed && shown === view) view.loading(placeholder(`Couldn’t load the deploy: ${error.message}`, 'error'));
       }

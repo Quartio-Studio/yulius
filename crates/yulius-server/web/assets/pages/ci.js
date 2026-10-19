@@ -13,7 +13,7 @@ import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
-import { runView } from '../runview.js';
+import { runView, stageNow } from '../runview.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -69,8 +69,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   let poll = null;
   let destroyed = false;
   if (shownRun) {
-    showRun(shownRun);
-    return () => { destroyed = true; clearTimeout(poll); };
+    const view = showRun(shownRun);
+    return () => { destroyed = true; clearTimeout(poll); view.dispose(); };
   }
   host.append(runsHost, hygieneHost);
 
@@ -228,15 +228,22 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         }
         render(run);
         head.append(h('span', { class: 'spacer' }), pipeline);
-        await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
-        if (ACTIVE.has(run.state) && !destroyed) poll = setTimeout(load, POLL_ACTIVE_MS);
+        const timeline = await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
+        if (destroyed) return;
+        // The summary (SPEC-238 CRV-003): how long, the stages running now and the jobs.
+        view.summarize({
+          running: ACTIVE.has(run.state) && Boolean(run.started_at), startedAt: run.started_at, took: run.duration_ms,
+          since: `${run.started_at ? 'started' : 'queued'} ${relLong(run.started_at || run.queued_at)}`,
+          now: ACTIVE.has(run.state) ? stageNow(timeline) : null, line: jobsLine(run.jobs),
+        });
+        if (ACTIVE.has(run.state)) poll = setTimeout(load, POLL_ACTIVE_MS);
       } catch (error) {
         if (first && !destroyed) view.loading(placeholder(`Couldn’t load the run: ${error.message}`, 'error'));
       }
     };
     const render = (run) => {
       setChildren(head, stateBadge(run.state), h('strong', null, run.label), h('code', { class: 'muted' }, shortSha(run.sha)),
-        h('span', { class: 'muted small' }, [run.duration_ms ? `took ${duration(run.duration_ms)}` : `${run.started_at ? 'started' : 'queued'} ${relLong(run.started_at || run.queued_at)}`, run.reason ? ` · ${run.reason}` : ''].join('')));
+        run.reason ? h('span', { class: 'muted small' }, run.reason) : null);
       const jobs = run.jobs || [];
       setChildren(tabs, jobs.map((job, i) => {
         const tab = h('button', { type: 'button', class: ['ci-tab', i === selected && 'active'], role: 'tab', 'aria-selected': String(i === selected), onClick: () => { selected = i; render(run); } },
@@ -251,6 +258,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       if (atBottom || ACTIVE.has(job.state)) output.scrollTop = output.scrollHeight;
     };
     load();
+    return view;
   }
 
   // ---- hygiene
