@@ -15,7 +15,7 @@ use support::{Creds, TestResult, add_sandbox, call, harness_configured, perms, u
 use yulius_app::automations::{AutomationRunRecord, RunState, run_key};
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
+use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskMode, TaskOrigin, TaskRecord};
 use yulius_app::ports::store::{SandboxStore, TaskStore};
 use yulius_app::ports::store_ext::{AutomationStore, WorkflowStore};
 use yulius_app::supervisor::RunStart;
@@ -887,6 +887,34 @@ async fn due_run_creates_exactly_one_task() -> TestResult {
         .await?;
     assert_eq!(w.h.app.automation_tick().await?.created, 1);
     assert_eq!(automation_tasks(&w.h, &id).await?.len(), 2);
+    Ok(())
+}
+
+/// SPEC-240 AGM-001 (#719): a run's task starts in goal mode, scheduled or Run now, so a run that
+/// changes no repository file is Done once its goal is achieved instead of waiting at "Your turn".
+#[tokio::test]
+async fn an_automation_runs_its_task_as_a_goal() -> TestResult {
+    let w = world().await?;
+    let scheduled = create_automation(&w, daily("Nightly triage", "0 9 * * *")).await?;
+    set_clock(&w.h, BASE + 9 * HOUR + 10_000);
+    assert_eq!(w.h.app.automation_tick().await?.created, 1);
+    let mut body = daily("On demand", "0 9 1 1 *");
+    body["enabled"] = json!(false);
+    let manual = create_automation(&w, body).await?;
+    let run = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/automations/{manual}/run"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(run.body["state"], "task_created", "{}", run.body);
+    for id in [&scheduled, &manual] {
+        let tasks = automation_tasks(&w.h, id).await?;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].mode, TaskMode::Goal, "{}", tasks[0].title);
+    }
     Ok(())
 }
 
