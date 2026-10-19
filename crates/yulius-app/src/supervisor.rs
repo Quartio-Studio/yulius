@@ -136,8 +136,8 @@ pub struct TaskRuntime {
     /// taken to read input half [`crate::context::AppConfig::goal_ready_ms`] later, as the goal
     /// typist does (SPEC-230).
     pub(crate) spawned_ms: AtomicI64,
-    /// The current run was reattached after a server restart: its session started before it,
-    /// though this runtime saw no SessionStart (SPEC-230).
+    /// The current run was reattached after a server restart: this runtime saw no SessionStart,
+    /// and its screen may hold the trust dialog's words as output (SPEC-230).
     pub(crate) reattached: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
@@ -3151,9 +3151,12 @@ impl App {
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
-                self.runtime(&attempt.task_id)
-                    .reattached
-                    .store(true, Ordering::SeqCst);
+                let runtime = self.runtime(&attempt.task_id);
+                runtime.reattached.store(true, Ordering::SeqCst);
+                // Its session may not read input yet if it was spawned moments before.
+                runtime
+                    .spawned_ms
+                    .store(attempt.started_at.0, Ordering::SeqCst);
                 // An idle run's screen is kept now, from the host's snapshot: its next settled
                 // turn may never come before a reboot (SPEC-229 RBT-002).
                 if let Ok(Some(task)) = store.task(&attempt.task_id).await

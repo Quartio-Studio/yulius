@@ -56,9 +56,10 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 - TMS-004 (refusals): nothing is typed, and the answer says why, when the text is empty or longer
   than 64 KiB, the task is the caller's own (not possible for a Superagent, kept for safety), a
   person typed into the task's terminal in the last minute (their draft is theirs), Claude Code's
-  session has not started (no SessionStart hook yet; without one, half the goal-ready timeout
-  after the spawn; a run reattached after a restart counts as started), Claude Code shows its
-  folder-trust dialog before the session started (only a person answers it, SPEC-117 ONE-005; a
+  session has not started (no SessionStart hook yet; without one seen, half the goal-ready
+  timeout after the run's spawn, a run reattached after a restart included), Claude Code shows
+  its folder-trust dialog before the session started (not read for a reattached run, whose output
+  may hold its words) (only a person answers it, SPEC-117 ONE-005; a
   paste and Enter would answer it with its default), Yulius is still
   typing the task's first message, another message to the task is being typed, or the task is
   neither waiting to start nor running (stopped, done, failed, starting, switching, paused): it
@@ -140,7 +141,7 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   message was typed into the trust prompt" before the fix.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
   test(/^first_message::/) | test(/^cockpit::/) | test(/^manage_tools::/) | test(/^recovery::/)
-  | test(/^supervision::/))'`: 99 passed. `cargo nextest run -p yulius-app task_message`: 2
+  | test(/^supervision::/))'`: 99 passed (before round 3); `task_message::` 8 passed after it, and the 2 unit tests. `cargo nextest run -p yulius-app task_message`: 2
   passed (AC-2's cleaning and paste framing).
 - `scripts/dev ci` on 86640db2 (before the review fixes): exit 0, 2249 tests passed, 17 skipped;
   rerun on the final head before delivery (result in the pull request).
@@ -185,7 +186,22 @@ A task that cannot take it says why, so the Superagent can tell the person what 
     in ADR-0178's Consequences rather than holding a person's keys.
   - D (nit) the tool description names the trust refusal; E (nit) the changes entry rewrapped;
     F (nit) the bell assertion that could not fail removed (the unit test covers it).
-- Round 3's verdict on the final head is in the pull request.
+- Independent review, round 3 (fresh session, head 3f635c82, after merging origin/dev
+  64e04189; the reconcile conflict kept both the `reattached` flag and SPEC-229's `save_screen`):
+  APPROVE, no critical, high or medium own-code finding. Its low findings and nits, fixed:
+  1. (low) a run reattached moments after its spawn skipped the starting window: on reattach
+     `spawned_ms` is the attempt's start, and only the trust-text check is skipped; test-first
+     (`task_message::a_run_reattached_soon_after_its_spawn_is_still_starting` failed with "the
+     message was typed into a session that may not read yet").
+  2. (low) B had no test: `task_message::a_run_reattached_after_a_restart_takes_messages`
+     (trust words in the output, restart, message sent); with the reattached check removed it
+     fails with the trust refusal.
+  3. (nit) architecture, API and the decisions index list the starting refusal; the index has
+     0177 before 0178 again.
+  4. (nit) a hookless CLI showing the trust words keeps refusing, as the goal typist waits: in
+     ADR-0178's Consequences.
+- The fixes after round 3 are re-reviewed (round 4) before delivery; its verdict is in the pull
+  request.
 - Not tested: a real Claude Code TUI (the fake agent models its bracketed paste and Enter);
   Claude Code's own queuing of a message submitted mid-turn is its documented behaviour, not
   exercised here.

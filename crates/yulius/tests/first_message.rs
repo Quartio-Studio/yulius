@@ -53,7 +53,7 @@ pub(crate) async fn start(
 }
 
 /// [`start`] with `configure` applied to the app's configuration.
-async fn start_with(
+pub(crate) async fn start_with(
     data: &Path,
     fake: &Path,
     agent: FakeAgentOptions,

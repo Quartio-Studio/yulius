@@ -18,7 +18,9 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 
 use yulius_app::model::TaskMode;
 
-use crate::first_message::{data_dir, hooked, new_task, runtime, screen, start, stop, wait_for};
+use crate::first_message::{
+    data_dir, hooked, new_task, runtime, screen, start, start_with, stop, wait_for,
+};
 use crate::pool_supervision::{ScriptedUsage, seed};
 use crate::support::agents::FakeAgentOptions;
 use crate::support::{
@@ -255,6 +257,99 @@ fn a_session_that_has_not_started_refuses_the_message() -> TestResult {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let shown = screen(&app, &id);
         assert!(!shown.contains("Superagent"), "{shown}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A running task whose agent printed the trust dialog's words (as an agent reading Yulius' own
+/// code does), then a server restart: the new server, with `goal_ready_ms`, reattaches the run.
+fn restarted(
+    data: &Path,
+    goal_ready_ms: u64,
+) -> Result<(tokio::runtime::Runtime, Arc<App>, TaskId, ProjectCaller), Error> {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let (app, port) = start(
+            data,
+            &fake,
+            fake_agent(),
+            0,
+            Arc::new(ScriptedUsage::default()),
+        )
+        .await?;
+        let (id, caller) = running(&app, data).await?;
+        app.send_input(&id, b"Yes, I trust this folder\r").await?;
+        wait_for("the trust words", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yes, I trust this folder")
+        })
+        .await?;
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    let app = rt.block_on(async {
+        let (app, _) = start_with(
+            data,
+            &fake,
+            fake_agent(),
+            port,
+            Arc::new(ScriptedUsage::default()),
+            |config| config.goal_ready_ms = goal_ready_ms,
+        )
+        .await?;
+        app.reconcile().await?;
+        wait_for("the reattached screen", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+        Ok::<_, Error>(app)
+    })?;
+    Ok((rt, app, id, caller))
+}
+
+/// Round 2 B: after a restart the new server saw no SessionStart, yet the run's session started
+/// long ago: the trust dialog's words in its output are no trust question, and the message is
+/// typed.
+#[test]
+fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let (rt, app, id, caller) = restarted(&data, 2_000)?;
+    rt.block_on(async {
+        // Past the hookless window from the run's spawn (1 s with this configuration).
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let answer = app
+            .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
+            .await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Message from admin")
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Round 3 finding 1: a run reattached within the hookless window of its spawn may not read input
+/// yet: the window counts from its spawn, not from the restart, and the message is refused.
+#[test]
+fn a_run_reattached_soon_after_its_spawn_is_still_starting() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let (rt, app, id, caller) = restarted(&data, 600_000)?;
+    rt.block_on(async {
+        let refused = app
+            .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
+            .await
+            .err()
+            .ok_or("the message was typed into a session that may not read yet")?;
+        assert!(
+            matches!(&refused, AppError::Conflict(m) if m.contains("starting")),
+            "{refused:?}"
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

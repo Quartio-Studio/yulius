@@ -169,13 +169,15 @@ impl App {
         }
         // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
         // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
-        // and an Enter would answer it with its default. A run reattached after a restart had
-        // started; one whose CLI runs no SessionStart hook is taken as started once the goal
-        // typist would (`wait_input_ready`).
-        if !runtime.session_started.load(Ordering::SeqCst)
-            && !runtime.reattached.load(Ordering::SeqCst)
-        {
-            if trust_prompt_shown(&runtime.hub.screen_text()) {
+        // and an Enter would answer it with its default. Without a SessionStart seen (a CLI
+        // without the hook, or a run reattached after a restart), the run is taken as started
+        // half the goal-ready timeout after its spawn, as the goal typist does
+        // (`wait_input_ready`). A reattached run's screen is not read for the dialog: its output
+        // since may hold the dialog's words.
+        if !runtime.session_started.load(Ordering::SeqCst) {
+            if !runtime.reattached.load(Ordering::SeqCst)
+                && trust_prompt_shown(&runtime.hub.screen_text())
+            {
                 return Err(AppError::Conflict(format!(
                     "task #{} waits for a person to answer Claude Code's folder-trust question \
                      in its terminal; tell the person, then try again",
