@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- A watcher of someone else's waiting task reads "The agent is waiting for @owner's reply." or
+  "The agent needs @owner's attention." instead of being told to type in a terminal they do not
+  have (SPEC-233, task #219, fixes #576). The owner's texts are unchanged.
 - A leftover tree holding a directory its owner cannot read (mode `0o000` or `0o300`) is removed
   instead of failing with "Permission denied" every round (SPEC-232, ADR-0179, task #218, fixes
   #680). It mattered without an isolation and for the service user's own trees outside
