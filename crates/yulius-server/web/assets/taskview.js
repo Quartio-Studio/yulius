@@ -1073,7 +1073,11 @@ export function mountComposer(ctx, sandbox) {
     workflowChip.title = workflowId === AUTO ? 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not' : wfLabel;
     const tasks = ctx.store.tasksOf(sandbox.id);
     const after = (tasks || []).find((t) => t.id === afterTaskId);
-    if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
+    if (afterTaskId && tasks && !after) {
+      afterTaskId = ''; // gone (a kept draft waits for the list)
+      // An open supertask card names "After #12": it answered a choice that is gone (SPEC-234).
+      if (split) clearSplit();
+    }
     const rule = startRule ? ruleText(startRule) : '';
     // A kept time that has passed (a draft from yesterday) waits for the person instead: sending
     // it would be refused, and starting it now was not asked for (SPEC-105).
