@@ -308,7 +308,7 @@ link-safe walk as root of the mapped namespace
 ([decision 0176](decisions/0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md)); a
 failure names the entry that stayed. No link is followed: an item reached through one is never listed, and the
 removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
-the opened directory, so a link a sandbox swaps in after the check fails the removal. The automatic round runs at every start and hourly. People reach the
+the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
 loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
 
