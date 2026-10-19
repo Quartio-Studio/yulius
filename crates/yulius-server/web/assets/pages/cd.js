@@ -3,8 +3,9 @@
 // [cd.prod] from what production deploys), what each runs, the secrets it needs, what is
 // deployed, and the runs with their output. Dev deploys after a confirmation (people with write
 // access; agents use cd_deploy); production only by an administrator who types the project's slug.
-// A confirmed deploy opens its dialog at once, saying what starts, while the server checks and
-// promotes (SPEC-189); the same dialog then shows the run.
+// A run opens in place of the environments and runs at `?section=cd&run=<id>` (SPEC-238: a view,
+// not a dialog). A confirmed deploy shows that view at once, saying what starts, while the server
+// checks and promotes (SPEC-189); the same view then shows the run.
 // "Set up CD with an agent" starts an Infra bootstrap task, so CD is configured through the harness.
 
 import { enc } from '../api.js';
@@ -16,6 +17,7 @@ import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
+import { runView, stageNow, soFar, focusIfLost } from '../runview.js';
 
 const STATE = {
   running: { label: 'Deploying', tone: 'warn', icon: 'refresh' },
@@ -40,16 +42,17 @@ const SECRET_STATE = {
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;
 
-const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
+/** A deploy's state in words, tone and icon. */
+export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** The integration branch: the dev environment's branch (SPEC-152). */
 const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');
 const title = (env) => (env.name === 'dev' ? 'Dev' : 'Production');
-/** How long a deploy has been starting: "12 s so far", "1 min 5 s so far". */
-const soFar = (s) => {
-  const n = Math.floor(s);
-  return `${n < 60 ? `${n} s` : `${Math.floor(n / 60)} min ${n % 60} s`} so far`;
-};
+/** What a run's card's open button is called. */
+const openLabel = (run) => `Open the ${run.environment === 'dev' ? 'dev' : 'production'} deploy at ${shortSha(run.commit)}`;
+// The deploy whose view was left last, per sandbox: the list it goes back to puts the keyboard on
+// its card (SPEC-238 review round 1).
+const leftRun = new Map();
 
 /** What a person asks an agent when CD is set up through the harness. */
 const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and scripts/cd/ (skill infra-bootstrap, step 3).
@@ -67,8 +70,9 @@ How we deploy (fill in what you know):
 export const CD_SUB = `deploys run on this ${BRAND.name} machine, from protected branches`;
 
 /**
- * Mount the CD tab into `section`, with its header action in `actions`; returns its teardown, which
- * stops its refreshes and closes its run dialog. Its addresses are the CI/CD page's `?section=cd`.
+ * Mount the CD tab into `section`, with its header action in `actions`: the environments and runs,
+ * or the run `?run=` names in their place. Returns its teardown, which stops its refreshes. Its
+ * addresses are the CI/CD page's `?section=cd`.
  */
 export function mountCdSection(ctx, sandbox, route, section, actions) {
   const write = allows(sandbox.access, 'write');
@@ -77,15 +81,27 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
   const setupButton = h('button', { type: 'button', class: 'btn', disabled: !write, title: write ? 'Start a task that sets up or changes CD' : 'Requires write access', onClick: () => setUp() }, icon('spark', { size: 16 }), 'Set up CD with an agent');
   setChildren(actions, setupButton);
   const host = h('div');
-  section.append(host);
   let timer = null;
   let destroyed = false;
-  let openRun = null;
+  // The run view shown in place of the list: `shown.stop()` ends what refreshes it.
+  let shown = null;
   let last = { runs: [] };
+  const shownRun = route && route.query && route.query.get('run');
+  if (shownRun) {
+    showRun(shownRun);
+    focusIfLost(shown.el);
+    return () => { destroyed = true; if (shown) shown.stop(); leftRun.set(sandbox.id, shownRun); };
+  }
+  section.append(host);
 
   const reload = loader(host, 'CD', () => ctx.api.get(`${base}/cd`), (overview) => {
     schedule(overview);
-    return render(overview);
+    const drawn = render(overview);
+    // Back from a deploy's view: the keyboard goes to that deploy's card, once.
+    const left = (overview.runs || []).find((r) => r.run_id === leftRun.get(sandbox.id));
+    leftRun.delete(sandbox.id);
+    if (left) focusIfLost(drawn.querySelector(`[aria-label="${CSS.escape(openLabel(left))}"]`));
+    return drawn;
   }, { shape: loadingLayout });
 
   /** The page while it loads (SPEC-120): two environment cards, the Runs heading, run cards. */
@@ -186,8 +202,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       description: [run.note || `${run.branch}`, run.reason ? ` · ${run.reason}` : null],
       extra: h('div', { class: 'item-meta' }, h('span', { title: dateTime(run.started_at) }, `Started ${relLong(run.started_at)}`), ` · by ${run.requested_by}`),
       controls,
-      onOpen: () => showRun(run.run_id),
-      openLabel: `Open the ${label.toLowerCase()} deploy at ${shortSha(run.commit)}`,
+      onOpen: () => openLater(run.run_id),
+      openLabel: openLabel(run),
     });
   }
 
@@ -233,8 +249,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens there.
       if (destroyed) return;
       reload({ quiet: true });
-      // Still watched, the dialog becomes the run; closed meanwhile, a toast says it went out.
-      if (starting.open()) showRun(run.run_id, starting.modal);
+      // Still watched, the view becomes the run; left for the list meanwhile, a toast says it went out.
+      if (starting.open()) showRun(run.run_id, starting.view);
       else toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
       starting.stop();
@@ -245,7 +261,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
   }
 
   /**
-   * The Deploy dialog before its run exists (SPEC-189): what starts, what the server does now (the
+   * The Deploy view before its run exists (SPEC-189): what starts, what the server does now (the
    * checks, and production's promotion, as the confirmation listed them) and the time it has taken.
    */
   function startingDialog(env, overview) {
@@ -262,18 +278,27 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const state = h('div', { class: 'stack-sm', role: 'status' });
     const row = h('div', { class: 'cd-starting-row' },
       h('div', { class: 'cd-starting' }, h('span', { class: 'cd-starting-spinner', 'aria-hidden': 'true' }), state), elapsed);
-    const modal = deployDialog(h('div', { class: 'stack' }, head, row));
+    // All runs while it starts: the list again, the keyboard back on the Deploy button that started
+    // it (the view and its link go), or on the CD tab when that button is gone or off.
+    const view = deployView({ onBack: () => {
+      view.stop(); shown = null; view.el.remove(); host.hidden = false;
+      const button = host.querySelector(`[aria-label="${title(env)} environment"] .cd-env-head button`);
+      if (button && !button.disabled) button.focus();
+      else document.querySelector('.tl-tabs [role="radio"][aria-checked="true"]')?.focus();
+    } });
+    focusIfLost(view.el);
+    view.loading(h('div', { class: 'stack' }, head, row));
     requestAnimationFrame(() => setChildren(state,
       h('p', null, h('span', { class: 'sr-only' }, 'Starting: '), doing),
-      h('p', { class: 'muted small' }, 'Its stages and output appear here as soon as it starts. Closing this does not stop it.')));
+      h('p', { class: 'muted small' }, 'Its stages and output appear here as soon as it starts. Going back to all runs does not stop it.')));
     const since = performance.now();
     const tick = setInterval(() => { elapsed.textContent = soFar((performance.now() - since) / 1000); }, 1000);
     const stop = () => { clearInterval(tick); elapsed.remove(); };
-    modal.stop = stop;
+    view.stop = stop;
     return {
-      modal,
+      view,
       stop,
-      open: () => openRun === modal,
+      open: () => !destroyed && shown === view,
       refused(error, what) {
         const message = error && error.message ? error.message : String(error);
         if (error && error.code) console.warn(`Couldn’t deploy ${env.name}: ${error.code}`, error);
@@ -295,55 +320,64 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     }
   }
 
-  /** A run from a toast: here while the CD tab shows, else through its address (SPEC-189). */
+  /** A run, from its card or a toast: its own address, which Back and Forward come back to. */
   function openLater(id) {
-    if (destroyed) ctx.navigate(`${page}&run=${encodeURIComponent(id)}`);
-    else showRun(id);
+    ctx.navigate(`${page}&run=${encodeURIComponent(id)}`);
   }
 
-  /** The Deploy dialog, one at a time: `modal.stop()` ends what refreshes it when it closes. */
-  function deployDialog(body) {
-    if (openRun) openRun.close();
-    const modal = openModal({
-      title: 'Deploy', wide: true, body,
-      actions: [{ label: 'Close' }],
-      onClose: () => { modal.stop(); openRun = null; if (!destroyed) replaceQuietly(page); },
-    });
-    modal.stop = () => {};
-    openRun = modal;
-    return modal;
+  /** The Deploy view, in place of the list: `view.stop()` ends what refreshes it. */
+  function deployView({ onBack } = {}) {
+    if (shown) shown.stop();
+    const view = runView({ name: 'Deploy', list: page, onBack });
+    view.stop = () => {};
+    host.hidden = true;
+    section.append(view.el);
+    shown = view;
+    return view;
   }
 
-  /** A run's output in a dialog, refreshed while it runs; `into` is its starting dialog (SPEC-189). */
+  /** A run's output in place of the list, refreshed while it runs; `into` is its starting view (SPEC-189). */
   function showRun(id, into) {
     if (destroyed) return;
-    const modal = into && into === openRun ? into : deployDialog(placeholder('Loading the deploy…', 'loading'));
+    const view = into && into === shown ? into : deployView();
+    if (view !== into) view.loading(placeholder('Loading the deploy…', 'loading'));
     let poll = null;
-    modal.stop = () => clearTimeout(poll);
-    const head = h('div', { class: 'row-wrap' });
+    view.stop = () => { clearTimeout(poll); view.dispose(); };
+    const head = view.head;
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
     // Its stages (SPEC-137): checks, promotion, deploy, verify and what their output names.
     const stages = h('div', { class: 'run-stages' });
-    const body = h('div', { class: 'stack' }, head, stages, output);
-    replaceQuietly(`${page}&run=${encodeURIComponent(id)}`);
+    setChildren(view.body, stages, output);
+    if (into) { replaceQuietly(`${page}&run=${encodeURIComponent(id)}`); view.linkBack(); }
     let first = true;
+    let lastNow = null;
     const load = async () => {
       try {
         const run = await ctx.api.get(`${base}/cd/runs/${enc(id)}`);
-        if (first) { setChildren(modal.body, body); first = false; }
+        if (destroyed || shown !== view) return;
+        if (first) { view.ready(); first = false; }
         const st = stateOf(run.state);
         setChildren(head, badge(st.label, st.tone), h('strong', null, run.environment === 'dev' ? 'Dev' : 'Production'), h('code', { class: 'muted' }, shortSha(run.commit)),
-          h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by} · started ${relLong(run.started_at)}${run.reason ? ` · ${run.reason}` : ''}`),
+          h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by}${run.reason ? ` · ${run.reason}` : ''}`),
           h('span', { class: 'spacer' }),
           h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `cd_run:${id}`)), dataset: { route: pipelineHref(sandbox, `cd_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline'));
-        await loadWaterfall(ctx, sandbox, `cd_run:${id}`, stages, { title: 'Stages of this deploy' });
+        // The summary (SPEC-238 CRV-003): how long and the stage running now; drawn before the
+        // stages load, so it keeps its height, and again with what runs now.
+        const running = run.state === 'running';
+        const took = run.ended_at ? Date.parse(run.ended_at) - Date.parse(run.started_at) : NaN;
+        const summarize = (now) => view.summarize({ running, startedAt: run.started_at, took, since: `started ${relLong(run.started_at)}`, now: running ? now : null });
+        summarize(lastNow);
+        const timeline = await loadWaterfall(ctx, sandbox, `cd_run:${id}`, stages, { title: 'Stages of this deploy' });
+        if (destroyed || shown !== view) return;
+        lastNow = stageNow(timeline);
+        summarize(lastNow);
         const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
         const exit = run.exit_code === null || run.exit_code === undefined ? '' : `\n[exit code ${run.exit_code}]`;
         output.textContent = (run.output || (run.state === 'running' ? 'Waiting for output…' : 'No output.')) + exit;
         if (atBottom || run.state === 'running') output.scrollTop = output.scrollHeight;
-        if (run.state === 'running' && modal.dialog.isConnected) poll = setTimeout(load, POLL_ACTIVE_MS);
+        if (running) poll = setTimeout(load, POLL_ACTIVE_MS);
       } catch (error) {
-        if (first) setChildren(modal.body, placeholder(`Couldn’t load the deploy: ${error.message}`, 'error'));
+        if (first && !destroyed && shown === view) view.loading(placeholder(`Couldn’t load the deploy: ${error.message}`, 'error'));
       }
     };
     load();
@@ -369,8 +403,5 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     });
   }
 
-  const deepRun = route && route.query && route.query.get('run');
-  if (deepRun) showRun(deepRun);
-
-  return () => { destroyed = true; clearTimeout(timer); if (openRun) openRun.close(); };
+  return () => { destroyed = true; clearTimeout(timer); if (shown) shown.stop(); };
 }

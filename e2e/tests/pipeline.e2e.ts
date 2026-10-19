@@ -120,7 +120,7 @@ test('filters narrow the stages and stay in the address', async ({ app, browser,
 });
 
 test('a CI run, a deploy and a task each show a waterfall of their stages', async ({ app, browser, screen }) => {
-  // A CI run's dialog: its queue, preparation and jobs with the stages their output named.
+  // A CI run's view: its queue, preparation and jobs with the stages their output named.
   await app.open(mock('/s/studio/ci?run=ci_s2'));
   const run = screen.getByRole('region', 'Stages of this run');
   await expect(run).toContainText('Queue');
@@ -164,7 +164,7 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
   await app.open(mock('/s/studio/cd?run=cd_s2'));
   const deploy = screen.getByRole('region', 'Stages of this deploy');
   for (const text of ['Checks', 'Deployment', 'Deploy', 'build', 'upload']) await expect(deploy).toContainText(text);
-  await screen.getByRole('dialog', 'Deploy').getByRole('link', 'In Pipeline').click();
+  await screen.getByRole('region', 'Deploy').getByRole('link', 'In Pipeline').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&open=cd_run%3Acd_s2$/);
   await expect(screen.getByRole('region', 'Deployment stages')).toBeVisible();
 
@@ -237,7 +237,7 @@ test('a job’s stages fold under it, a failed job opens, and the fold outlives 
   await expect(fold).toHaveAttribute('aria-expanded', 'true');
   await expect(browser.locator('.st-row[data-key="job:j1@1/checkout"]')).toBeVisible();
   await expect(browser.locator('.st-row:has-text("build")')).toBeVisible();
-  // The running run's dialog redraws its stages every few seconds: what was opened stays open.
+  // The running run's view redraws its stages every few seconds: what was opened stays open.
   await browser.evaluate(() => { document.querySelector('.st-waterfall')?.setAttribute('data-probe', 'old'); });
   await expect(browser.locator('.st-waterfall[data-probe]')).toHaveCount(0);
   await expect(browser.locator('.st-row.st-job:has-text("engine") .st-fold')).toHaveAttribute('aria-expanded', 'true');
@@ -308,7 +308,7 @@ test('a short run’s axis names each tick once; a requeued job keeps each wait,
   expect(await browser.evaluate(() => [...document.querySelectorAll('.st-bars-legend li')].map((t) => t.textContent))).toEqual(['Waiting', 'Ran', 'Skipped', 'Failed']);
   // A wait with no job span still shows, on its own row, under Run.
   await expect(browser.locator('.st-row:has-text("Waiting for a job slot")')).toHaveCount(1);
-  // On a phone the CI dialog's stages fit the width.
+  // On a phone the CI run's stages fit the width.
   await browser.setViewport({ width: 390, height: 844 });
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');

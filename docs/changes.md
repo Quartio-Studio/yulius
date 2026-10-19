@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   production needs a separate secret, and a refused production run gives the same reason. The
   redaction of a secret whose value is an ordinary word ("production"), seen in the same report,
   is #705.
+- A CI run and a deploy open on the CI/CD page itself instead of in a dialog over it (SPEC-238,
+  ADR-0180, task #224). The run replaces its tab's list at its own address, with "All runs" to go
+  back, so Back, Forward and the sidebar's CI/CD link return to it. Its summary stays at the top
+  while the log scrolls and shows the time so far, ticking, the stages running now and a CI run's
+  jobs. Above the tabs, on both, a Now summary lists every CI run and deploy that is running, with
+  its time, and links to it; when nothing runs it says how the latest CI run and deploy ended.
 - The task terminal no longer garbles when an agent prints a secret's value (SPEC-239, ADR-0181,
   task #225, part of #705). The terminal used to replace the value with `[secret:NAME]`, which is
   usually wider than the value. Claude Code redraws its screen by moving the cursor to rows and
