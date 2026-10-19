@@ -5,7 +5,8 @@
 Accepted. Specified in [SPEC-220](../../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md);
 task #206, fixes #657. It generalizes the rule `secret_copy_to_env` already follows
 (SPEC-129, `vault/env_files.rs`) and the ones of #634 (`claude_config.rs`) and #649
-(`leftovers.rs`).
+(`leftovers.rs`). Refined by [0179](0179-a-tree-is-made-writable-through-o-path-handles.md): a
+removal makes directories writable through `O_PATH` handles and `/proc/self/fd`, not `fchmod`.
 
 ## Context
 

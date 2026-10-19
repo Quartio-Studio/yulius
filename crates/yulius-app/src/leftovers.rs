@@ -329,7 +329,7 @@ pub fn remove_below(root: &Path, path: &Path) -> std::io::Result<()> {
         // path: a sandbox could swap a directory for a link between a check and a chmod), then
         // removed again.
         remove_tree_at(&dir, last, path, 0).or_else(|_| {
-            if let Ok(tree) = openat(&dir, *last, flags, Mode::empty()) {
+            if let Some(tree) = open_dir_handle(&dir, last) {
                 make_writable_at(&tree, 0, &mut { MAX_DIRS_MADE_WRITABLE });
             }
             remove_tree_at(&dir, last, path, 0)
@@ -413,31 +413,50 @@ const MAX_WRITABLE_DEPTH: usize = 256;
 
 /// Makes the directory `dir` and every directory below it writable and searchable for its owner
 /// (a fixed 0o700) through their own handles: each subdirectory is opened relative to its
-/// parent's handle with `O_NOFOLLOW`, entries are typed without following links, and the mode is
-/// set with `fchmod`, so a link never carries the change outside the tree. `budget` bounds the
-/// directories changed.
+/// parent's handle by [`open_dir_handle`], entries are typed without following links, and the
+/// mode is set by `chmod` on the handle's `/proc/self/fd` entry, which changes exactly the
+/// directory the handle pinned (`fchmod` refuses an `O_PATH` handle), so a link never carries the
+/// change outside the tree and a directory its owner cannot read (#680) is changed too. `budget`
+/// bounds the directories changed.
 fn make_writable_at(dir: &std::os::fd::OwnedFd, depth: usize, budget: &mut usize) {
-    use nix::fcntl::{OFlag, openat};
-    use nix::sys::stat::{Mode, fchmod};
     use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::PermissionsExt as _;
     if depth > MAX_WRITABLE_DEPTH || *budget == 0 {
         return;
     }
     *budget -= 1;
-    let _ = fchmod(dir, Mode::from_bits_truncate(0o700));
-    let listing = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
-    let Ok(children) = std::fs::read_dir(&listing) else {
+    let through = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    let _ = std::fs::set_permissions(&through, std::fs::Permissions::from_mode(0o700));
+    let Ok(children) = std::fs::read_dir(&through) else {
         return;
     };
     for child in children.flatten() {
         if !child.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
-        let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        if let Ok(opened) = openat(dir, child.file_name().as_os_str(), flags, Mode::empty()) {
+        if let Some(opened) = open_dir_handle(dir, &child.file_name()) {
             make_writable_at(&opened, depth + 1, budget);
         }
     }
+}
+
+/// The directory `name` of `parent`, opened as a handle that needs no permission on the directory
+/// itself (`O_PATH` on Linux; elsewhere it must be readable) and with `O_NOFOLLOW`: `None` when it
+/// is gone, a link or no directory.
+fn open_dir_handle(
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+) -> Option<std::os::fd::OwnedFd> {
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::{Mode, SFlag, fstat};
+    #[cfg(target_os = "linux")]
+    let handle_only = OFlag::O_PATH;
+    #[cfg(not(target_os = "linux"))]
+    let handle_only = OFlag::empty();
+    let flags = handle_only | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let handle = openat(parent, name, flags, Mode::empty()).ok()?;
+    let kind = SFlag::from_bits_truncate(fstat(&handle).ok()?.st_mode) & SFlag::S_IFMT;
+    (kind == SFlag::S_IFDIR).then_some(handle)
 }
 
 /// The directory a worktree's Git record (`.git/worktrees/<name>/gitdir`) points at, when that
@@ -1725,6 +1744,72 @@ mod tests {
         std::fs::write(deepest.join("f"), "x")?;
         remove_below(&data, &item)?;
         assert!(!item.exists() && data.join("sandboxes/s1/ci/jobs").exists());
+        Ok(())
+    }
+
+    /// #680: a directory its owner cannot read (no `r`: 0o000, 0o300), the item itself or one
+    /// below it, is made writable and goes too. The gate runs as root, whose DAC capabilities open
+    /// any directory: the test drops them from its own thread (capabilities are per thread), so
+    /// the kernel checks the owner's bits as it does for the service user.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tree_with_unreadable_directories_goes() -> TestResult {
+        use rustix::thread::{CapabilitySet, capabilities, set_capabilities};
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir()?;
+        let data = tmp.path().join("data");
+        let item = data.join("runs/old");
+        std::fs::create_dir_all(item.join("b/c"))?;
+        std::fs::create_dir(item.join("a"))?;
+        std::fs::write(item.join("a/f"), "x")?;
+        std::fs::write(item.join("b/c/f"), "x")?;
+        for (dir, mode) in [("b/c", 0o000), ("b", 0o300), ("a", 0o000), ("", 0o000)] {
+            std::fs::set_permissions(item.join(dir), std::fs::Permissions::from_mode(mode))?;
+        }
+
+        let held = capabilities(None)?;
+        let mut owner_only = held;
+        owner_only.effective -=
+            CapabilitySet::DAC_OVERRIDE | CapabilitySet::DAC_READ_SEARCH | CapabilitySet::FOWNER;
+        set_capabilities(None, owner_only)?;
+        let unreadable = std::fs::read_dir(&item).err().map(|e| e.kind());
+        let removed = remove_below(&data, &item);
+        set_capabilities(None, held)?;
+
+        assert_eq!(
+            unreadable,
+            Some(std::io::ErrorKind::PermissionDenied),
+            "the owner's bits are checked"
+        );
+        removed?;
+        assert!(!exists(&item) && data.join("runs").exists());
+        Ok(())
+    }
+
+    /// Review of SPEC-232: a name swapped for a link (to a directory) or a file after it was
+    /// listed is never opened as a directory handle, so its target is never changed or walked.
+    #[test]
+    fn a_directory_handle_is_never_opened_through_a_link() -> TestResult {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir()?;
+        let outside = tmp.path().join("runtime");
+        std::fs::create_dir(&outside)?;
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o750))?;
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("real"))?;
+        std::fs::write(tree.join("file"), "x")?;
+        std::os::unix::fs::symlink(&outside, tree.join("link"))?;
+        let handle = nix::fcntl::open(
+            &tree,
+            nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_NOFOLLOW,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        assert!(open_dir_handle(&handle, "link".as_ref()).is_none());
+        assert!(open_dir_handle(&handle, "file".as_ref()).is_none());
+        assert!(open_dir_handle(&handle, "gone".as_ref()).is_none());
+        assert!(open_dir_handle(&handle, "real".as_ref()).is_some());
+        let mode = std::fs::metadata(&outside)?.permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o750);
         Ok(())
     }
 
