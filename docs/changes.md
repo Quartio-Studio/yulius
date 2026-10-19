@@ -12,6 +12,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   keyboard in the prompt. Before this fix the card stayed open, and "Start as chosen" started the
   task right away, which the card did not say. The split card cannot get into this state, because
   it never opens with a "Run after" task or a rule.
+- A watcher of someone else's waiting task reads "The agent is waiting for @owner's reply." or
+  "The agent needs @owner's attention." instead of being told to type in a terminal they do not
+  have (SPEC-233, task #219, fixes #576). The owner's texts are unchanged.
+- A leftover tree holding a directory its owner cannot read (mode `0o000` or `0o300`) is removed
+  instead of failing with "Permission denied" every round (SPEC-232, ADR-0179, task #218, fixes
+  #680). It mattered without an isolation and for the service user's own trees outside
+  `sandboxes/`. Such a directory is now opened as an `O_PATH` handle, given `0o700` through it and
+  walked, still never following a link.
 - The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
   the DO budget", it calls `task_message`. A task that has not started gets the message in its
   request, as a person's queued message. A running task gets it typed into its session, labelled

@@ -3214,6 +3214,7 @@ dependencies = [
  "flate2",
  "nix 0.31.3",
  "reqwest",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
