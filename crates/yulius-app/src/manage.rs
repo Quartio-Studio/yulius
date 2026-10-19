@@ -227,7 +227,7 @@ impl TaskChange {
 }
 
 /// The audit detail of a tool's call: the caller's detail with `extra` fields.
-fn tool_detail(caller: &ProjectCaller, extra: &Value) -> String {
+pub(crate) fn tool_detail(caller: &ProjectCaller, extra: &Value) -> String {
     let mut detail = caller.detail.clone();
     if let (Some(detail), Some(extra)) = (detail.as_object_mut(), extra.as_object()) {
         detail.extend(extra.clone());
@@ -238,7 +238,7 @@ fn tool_detail(caller: &ProjectCaller, extra: &Value) -> String {
 impl App {
     /// The person a caller acts for, as the UI's functions take them, once they may change
     /// things in its project ([`App::manage_authority`]).
-    async fn manage_context(&self, caller: &ProjectCaller) -> AppResult<AuthContext> {
+    pub(crate) async fn manage_context(&self, caller: &ProjectCaller) -> AppResult<AuthContext> {
         Ok(AuthContext {
             user: self.manage_authority(caller).await?,
             csrf_token: None,

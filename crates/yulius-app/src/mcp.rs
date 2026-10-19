@@ -25,12 +25,13 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
 /// MGT-006, SPEC-066 MGT-012) and using its agent vault as a task's agent does, but the project
-/// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150). Everything else belongs to a
-/// task.
-pub const COCKPIT_TOOLS: [&str; 20] = [
+/// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150), and messaging tasks for its
+/// person (SPEC-230, ADR-0178). Everything else belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 21] = [
     "tasks_list",
     "task_get",
     "task_create",
+    "task_message",
     "task_stop",
     "task_archive",
     "task_delete",
@@ -51,7 +52,7 @@ pub const COCKPIT_TOOLS: [&str; 20] = [
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation.";
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -80,11 +81,21 @@ pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// Tools only a Cockpit is served (SPEC-178, ADR-0144): `secret_verify`, whose input is, on a
-/// match, the value's SHA-256. The Superagent's conversation is its person's own; a task's
-/// transcript is read by every member who can view the project.
+/// Tools only a Cockpit is served: `secret_verify` (SPEC-178, ADR-0144), whose input is, on a
+/// match, the value's SHA-256 (the Superagent's conversation is its person's own; a task's
+/// transcript is read by every member who can view the project), and `task_message` (SPEC-230,
+/// ADR-0178): a person speaks to their tasks, tasks do not prompt each other.
 fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
+        ToolDescriptor {
+            name: "task_message".into(),
+            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it, or create a new task). Answers delivered: queued or sent. Audited.".into(),
+            input_schema: schema(json!({
+                "task_id": {"type": "string", "description": "Task id"},
+                "number": {"type": "integer", "description": "Task number within this sandbox"},
+                "text": {"type": "string", "description": "The message, as the person would type it (at most 64 KiB)"}
+            }), &["text"]),
+        },
         ToolDescriptor {
             name: "secret_verify".into(),
             description: "Check whether a value the person holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash (or sha256sum's line). Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and on a match the lines the value stands for. Never returns the value. Audited.".into(),
@@ -539,6 +550,9 @@ impl App {
             "workflows_list" => self.tool_workflows_list(&project).await,
             "secrets_list" => self.tool_secrets_list(&project).await,
             _ => match caller {
+                McpCaller::Cockpit(caller) if name == "task_message" => {
+                    self.tool_task_message(caller, &args).await
+                }
                 McpCaller::Cockpit(_) if name == "secret_verify" => {
                     self.tool_secret_verify(&project, &args).await
                 }

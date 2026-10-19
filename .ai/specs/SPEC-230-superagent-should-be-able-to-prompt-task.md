@@ -1,0 +1,232 @@
+---
+yulius-task: 650b7384-9fa7-4049-bb69-b663c3cfa6cd
+status: done
+---
+
+# SPEC-230: The Superagent sends messages to tasks
+
+Status: done
+Date: 2026-10-19
+Owner: Yulius task #216
+Scope authorization: task #216: "superagent should be able to prompt tasks" (screenshot: the
+person tells their Superagent "you can use the budget from DO"; the Superagent answers that the
+tasks "don't know yet. Their prompts are fixed, and #4 and #5 are still queued, so I can't message
+them until they start", and that once they run it could only message them as other Claude Code
+sessions on the machine, which Yulius does not provide).
+
+## Goal
+
+When a person asks their Superagent to tell a task something ("tell #5 it may use the DO budget"),
+the Superagent does it in one tool call, `task_message`, whatever state the task is in that can
+take a message: a task that has not started gets it in its request (the queued message a person
+adds in the task view), a running task gets it typed into its session as the person would type it.
+A task that cannot take it says why, so the Superagent can tell the person what to do instead.
+
+## Context
+
+- Queued messages (SPEC-052, `App::queue_task_message`): a person adds a message to the request of
+  a task that never started (queued, chained, prepared, waiting for capacity, no run and no
+  session); it is refused once the task started ("type into its session instead").
+- A running task's session is a Claude Code TUI in a PTY (`App::send_input`). People type into it
+  from the task view (`terminal.rs`, which records who typed, `record_typing`). Yulius itself types
+  into it: the first message (`type_opening`, bracketed pastes then Enter), the goal (`spawn_goal`)
+  and `/compact` for a full context (`context_full.rs::type_line`). Each leaves a person's draft
+  alone and sends Enter separately, 300 ms after the text, so the TUI sees typed text and then a
+  submit. Claude Code takes a message submitted while it works and gives it to the agent as soon
+  as it can (queued messages), so a busy agent needs no wait.
+- The Superagent's management tools (SPEC-037, SPEC-066, ADR-0029, ADR-0049) act for its person
+  (`ProjectCaller`, `manage_context`), resolve a task by `task_id` or `number`
+  (`agent_task_ref`), and are audited with the caller (`cockpit:<login>`). New tools reach open
+  Superagents through the launch digest (they restart once idle). Tools not in
+  `COCKPIT_READ_ONLY_TOOLS` are asked about on an uncontained server (ADR-0165).
+- `needs_you` (SPEC-134): a prompt a person types into the task ends the task's open request.
+
+## Requirements
+
+- TMS-001 (tool): `task_message {task_id | number, text}` is served to the Superagent only (not to
+  task agents) and is not among the tools it runs without asking.
+- TMS-002 (not started): a task that has not started takes the message into its request exactly as
+  the task view's queued message does (same rules, size bound and wording, as the Superagent's
+  person). The answer says `queued`.
+- TMS-003 (running): a task that is `running` with a live run gets the message typed into its
+  session: one bracketed paste of `Message from <login> (through their Superagent):` and the text,
+  then a separate Enter. The answer says `sent`. Control characters other than line breaks and
+  tabs are removed first (no escape sequence reaches the TUI, nor the end of the paste); CRLF
+  becomes LF.
+- TMS-004 (refusals): nothing is typed, and the answer says why, when the text is empty or longer
+  than 64 KiB, the task is the caller's own (not possible for a Superagent, kept for safety), a
+  person typed into the task's terminal in the last minute (their draft is theirs), Claude Code's
+  session has not started (no SessionStart hook yet, which leaves a marker in the run folder that
+  a restarted server reads; without the hook, half the goal-ready timeout after the run's spawn),
+  Claude Code shows its folder-trust dialog before the session started (only a person answers
+  it, SPEC-117 ONE-005; a paste and Enter would answer it with its default), Yulius is still
+  typing the task's first message, another message to the task is being typed, or the task is
+  neither waiting to start nor running (stopped, done, failed, starting, switching, paused): it
+  names the state and what to do (continue the task, or create a new one).
+- TMS-005 (authority and audit): the person needs write access to the project (as for the task
+  view); each sent or queued message is audited `task.messaged` with the caller and the task, never
+  the text.
+- TMS-006 (answers what the task asked): a message typed into a running task ends the task's open
+  `needs_you` request, as a person's typed prompt does.
+- TMS-007 (instructions): the Superagent's MCP instructions say to use `task_message` when the
+  person wants a task told something, only when asked.
+
+## Plan
+
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A message typed into a running task's session reaches its agent, guarded
+- [x] task_message is served to the Superagent, routes queued and running tasks, audited
+- [x] Docs: ADR, architecture, API, product and the Superagent's instructions name the tool
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+
+## Acceptance criteria
+
+- AC-1: A running task (real PTY host, fake agent) given a message by `task_message` echoes
+  `Message from admin (through their Superagent):` followed by the text, multi-line text included;
+  the answer says `sent`, and the audit holds `task.messaged` without the text.
+- AC-2: Escape sequences and other control characters in the text never reach the session (an
+  embedded `ESC[201~` does not end the paste).
+- AC-3: A person who typed into the running task within the last minute makes `task_message`
+  refuse, and nothing is typed.
+- AC-4: A queued task given a message has it in its request under "Added by <login> before the
+  task started"; the answer says `queued`.
+- AC-5: A stopped or done task refuses with its state named; an empty text is refused; a task of
+  another project is not found.
+- AC-6: `task_message` is in the Superagent's tools, not a task agent's, and not among
+  `COCKPIT_READ_ONLY_TOOLS`.
+- AC-7: A running task with an open `needs_you` has it ended by a sent message.
+- AC-8: A goal run whose terminal shows Claude Code's folder-trust dialog refuses the message,
+  naming the trust question, and nothing is typed into the dialog; a running run whose
+  SessionStart has not come refuses it as still starting, and nothing is typed; a `running` task
+  without a live session refuses it too.
+
+## Test plan
+
+- Unit (`crates/yulius-app/src/task_message.rs`): AC-2's sanitising of the text and the paste
+  framing.
+- Integration, real processes (`crates/yulius/tests/task_message.rs`, the hooked fake agent
+  through the PTY host and the hook server, with `first_message.rs`'s helpers): AC-1, AC-3, AC-7.
+- Integration (`crates/yulius/tests/task_message.rs`, the in-memory harness): AC-4, AC-5.
+- Integration (`crates/yulius/tests/manage_tools.rs`, `cockpit.rs` through the MCP endpoint):
+  AC-6.
+- Integration, real processes (`crates/yulius/tests/task_message.rs`, a hooked fake agent with
+  its trust prompt, or without its SessionStart hook): AC-8; the in-memory part of AC-8 there
+  too.
+
+## Decisions
+
+- **One tool for both states.** The Superagent should not need to know whether a task has
+  started; the state decides between the request and the session, and the answer says which.
+  ADR-0178.
+- **Type into the session, as a person would.** Alternatives: a hook that adds the message as
+  context at the agent's next tool call or Stop (never reaches an idle session, which no hook
+  wakes), or Claude Code's agent messaging (only local sessions the Superagent can see, not
+  Yulius tasks). Typing reaches idle and busy sessions alike, and Claude Code queues it while the
+  agent works.
+- **The Superagent only.** Task agents prompting each other would let one task's content steer
+  another without a person; the person's own Superagent is the person speaking.
+- **A person's draft wins.** As for the goal and `/compact`, a person who typed in the last minute
+  owns the prompt box; the Superagent is told to try later rather than mixing its text into theirs.
+- **The text is labelled.** The agent and anyone reading the transcript see the message came from
+  the person through their Superagent, not from the task's own flow.
+
+## Evidence
+
+- Test-first: the four `task_message.rs` integration tests failed against a stub
+  (`Invalid("not yet")`) before the implementation; `cockpit::a_cockpit_manages_the_project_for_its_owner`
+  failed on the tool list before `task_message` was served; the review's trust-dialog case
+  (`first_message::a_superagent_message_is_not_typed_into_a_trust_prompt`) failed with "the
+  message was typed into the trust prompt" before the fix.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
+  test(/^first_message::/) | test(/^cockpit::/) | test(/^manage_tools::/) | test(/^recovery::/)
+  | test(/^supervision::/))'`: 99 passed (before round 3). After round 4: `task_message::`,
+  `first_message::`, `recovery::`, `supervision::`, `agent_hooks::`, `update_supervision::` and
+  `task_done::`: 100 passed, 10 of them `task_message::`. `cargo nextest run -p yulius-app task_message`: 2
+  passed (AC-2's cleaning and paste framing).
+- `scripts/dev ci` on 86640db2 (before the review fixes): exit 0, 2249 tests passed, 17 skipped;
+  rerun on the final head before delivery (result in the pull request).
+- `scripts/dev security` (Vidoc vidoc-1, change scan, 86640db2): exit 0, no critical, high or
+  medium finding. One low finding in the change, for me to decide: `mcp.rs:101` "Hash-oracle
+  verification of secret values" is `secret_verify`, unchanged here (only its doc comment moved
+  into the shared one beside `task_message`); its design (audited, Superagent-only, values are
+  high-entropy secrets) is ADR-0144's, so it is not this change's to fix. One low finding outside
+  the change (`supervisor.rs:1930`, transcript path) is filed by Yulius CI.
+- Independent review, round 1 (fresh session, `om-code-review`, head 86640db2): REQUEST CHANGES
+  for one medium own-code finding, answered:
+  1. (medium) a message could be typed into Claude Code's folder-trust dialog of a goal run:
+     fixed test-first (refused while `!session_started && trust_prompt_shown`, AC-8).
+  2. (low) other Yulius typists ignore `typing_message` in the 300 ms window: kept narrow and
+     worded accurately in ADR-0178's Consequences.
+  3. (low) a failed Enter after the paste invited a duplicate retry: the error now says the text
+     may still be in the prompt box.
+  4. (low) a draft older than a minute is submitted with the message: the spec's choice, now in
+     the ADR's Consequences.
+  5. (low) guard paths and error kinds untested: the in-memory test asserts `Conflict`,
+     `Invalid`, `NotFound` and `Forbidden`, and a `running` task without a live session. The
+     concurrent-message and first-message guards are runtime flags not reachable from the
+     integration tests; their logic is the same `Conflict` early return.
+  6. (low) spec Evidence missing: this section.
+  7. (low) prompt-injection relay on a contained server: same reach as `task_create`, sentence
+     added to the ADR.
+  8. (nit) product wording named the Superagent; 9. (nit) the Superagent's instructions list
+     `task_message` among the tools used only when the person asks: both fixed.
+- Independent review, round 2 (fresh session, head 5809d586): round 1's answers accepted;
+  REQUEST CHANGES for one medium own-code finding, answered:
+  - A (medium) a message sent right after the task became `running`, before Claude Code's
+    SessionStart, could be lost (yet reported `sent`) or answer a trust dialog not yet drawn:
+    fixed test-first (`task_message::a_session_that_has_not_started_refuses_the_message` failed
+    with "the message was typed before the session started"); refused until SessionStart, or
+    half the goal-ready timeout after a hookless spawn. The real-process tests now run a hooked
+    fake agent.
+  - B (low) after a restart the fresh runtime has no SessionStart, so the trust words in any
+    output refused every message: a reattached run (`TaskRuntime::reattached`, set by
+    `reconcile`) counts as started. Not covered by a test (a restart with a live run and a
+    message is the reconcile suite's heavy setup); the change is the one flag read in the guard.
+  - C (low) a person's keys in the 300 ms between paste and Enter join the message: documented
+    in ADR-0178's Consequences rather than holding a person's keys.
+  - D (nit) the tool description names the trust refusal; E (nit) the changes entry rewrapped;
+    F (nit) the bell assertion that could not fail removed (the unit test covers it).
+- Independent review, round 3 (fresh session, head 3f635c82, after merging origin/dev
+  64e04189; the reconcile conflict kept both the `reattached` flag and SPEC-229's `save_screen`):
+  APPROVE, no critical, high or medium own-code finding. Its low findings and nits, fixed:
+  1. (low) a run reattached moments after its spawn skipped the starting window: on reattach
+     `spawned_ms` is the attempt's start, and only the trust-text check is skipped; test-first
+     (`task_message::a_run_reattached_soon_after_its_spawn_is_still_starting` failed with "the
+     message was typed into a session that may not read yet").
+  2. (low) B had no test: `task_message::a_run_reattached_after_a_restart_takes_messages`
+     (trust words in the output, restart, message sent); with the reattached check removed it
+     fails with the trust refusal.
+  3. (nit) architecture, API and the decisions index list the starting refusal; the index has
+     0177 before 0178 again.
+  4. (nit) a hookless CLI showing the trust words keeps refusing, as the goal typist waits: in
+     ADR-0178's Consequences.
+- Independent review, round 4 (fresh session, head 935e514a): APPROVE, no critical, high or
+  medium own-code finding. Its low findings and nits, fixed:
+  1. (low) reconcile set the run's state after `attach_run`, so a call in between saw a run with
+     neither: the state is now set before the attach.
+  2. (low) a reattached run was not checked for the trust dialog, so one open across a restart
+     could be answered: the SessionStart hook leaves a `session-started` marker in the run
+     folder and reconcile restores `session_started` from it, replacing the `reattached` flag;
+     test-first (`a_trust_dialog_open_across_a_restart_refuses_the_message` failed with "the
+     message answered the trust dialog", `a_run_reattached_after_a_restart_takes_messages`,
+     now with a 300 s window, failed with "still starting its session").
+  3. (nit) "the window counts from the spawn" is proven by
+     `the_hookless_window_counts_from_the_spawn` (a hookless run spawned more than the window
+     ago takes a message right after the restart).
+  4. (nit) the refusal is asserted as "still starting its session"; 5. (nit) the module doc and
+     6. (nit) the spec and ADR wording are updated.
+- Independent review, round 5 (fresh session, head 8aa0bcff): APPROVE, no critical, high or
+  medium own-code finding; it checked the marker's other reader (the launch-goal watch after a
+  restart, improved), its lifecycle (one run folder per attempt) and forgery (the agent already
+  holds the token that calls the hook). Its findings, fixed: 1. (low) `reconcile` could
+  overwrite a SessionStart served meanwhile with false: it now only ever sets the flag (a
+  microsecond race, not reproducible in a test); 2. (low) a started run without a marker falls
+  back to the hookless rule, including live runs at this change's deploy: in ADR-0178's
+  Consequences; 3. (nit) the ADR names the launch-goal watch as the other reader; 4. (nit)
+  `the_hookless_window_counts_from_the_spawn` uses a 5 s window and a run older than it, so a
+  restart under load cannot make it pass for the wrong reason.
+- The round-5 delta is re-reviewed (round 6) before delivery; its verdict is in the pull request.
+- Not tested: a real Claude Code TUI (the fake agent models its bracketed paste and Enter);
+  Claude Code's own queuing of a message submitted mid-turn is its documented behaviour, not
+  exercised here.

@@ -1551,6 +1551,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_create",
             "task_delete",
             "task_get",
+            "task_message",
             "task_stop",
             "tasks_list",
             "workflows_list",
@@ -1629,6 +1630,20 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     // Its start fails in the background, after `task_create` answered (#460: under load the
     // archive came first and was refused while the task was still queued).
     task_rests(&f, &task.id).await?;
+    // A task that ended takes no message, and the Superagent is told what to do instead
+    // (SPEC-230 TMS-004).
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_message",
+        json!({"number": task.number, "text": "Use the DO budget"}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("takes no message now"),
+        "{refused}"
+    );
     let (archived, is_error) =
         cockpit_tool(&f, &token, "task_archive", json!({"number": task.number})).await?;
     assert!(!is_error, "{archived}");

@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
+  the DO budget", it calls `task_message`. A task that has not started gets the message in its
+  request, as a person's queued message. A running task gets it typed into its session, labelled
+  "Message from alice (through their Superagent)", and its agent reads it even mid-turn. The
+  tool never types over a person who typed there in the last minute, before Claude Code's
+  session started or into its folder-trust question, and a task in any other state is refused
+  with what to do instead. Task agents are not given the tool.
 - A reboot no longer turns finished tasks into "Stopped (server restarted)" warnings with a blank
   terminal (SPEC-229, ADR-0177, task #215, fixes #685). After the host rebooted on 2026-10-18, every task with
   a session read that way, including #213 and #214, whose goals were achieved and pull requests

@@ -697,6 +697,18 @@ and `automation_template_enable` call the UI's own functions with that person an
 the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
+`task_message`, the Superagent's only, passes on what its person says to a task
+(`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
+through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
+one bracketed paste labelled with the person, then a separate Enter, refused before Claude Code's
+session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
+reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
+while a person typed
+in the last minute (`typed_recently`), while Claude Code's folder-trust dialog shows
+(`trust_prompt_shown`), while Yulius types the first message or while another
+message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
+([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
+[decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
 Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
@@ -802,6 +814,7 @@ flowchart LR
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management and vault tools"]
+  MCP -->|"task_message: not started → request (queued); running → paste + Enter (send_input)"| TASK["A task of the project"]
   MCP -->|"secret_copy_to_env (SecretUser::Superagent)"| ENV[".env in the sandbox repository"]
   MCP -->|"secret_create_from_file: reads a work-folder or ~/ file, no links"| VA[("Agent vault: new secret, no hosts")]
   AG["Task agent"] -->|"Bearer task token"| MCP

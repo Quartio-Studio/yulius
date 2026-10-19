@@ -130,6 +130,12 @@ pub struct TaskRuntime {
     pub(crate) typing_opening: AtomicBool,
     /// A person was told their keys wait for the first message (once per first message).
     pub(crate) typing_opening_said: AtomicBool,
+    /// Yulius types a Superagent's message into the run (SPEC-230): one at a time.
+    pub(crate) typing_message: AtomicBool,
+    /// When the current run was spawned (ms; a reattached run's attempt start): without a
+    /// SessionStart, its prompt box is taken to read input half
+    /// [`crate::context::AppConfig::goal_ready_ms`] later, as the goal typist does (SPEC-230).
+    pub(crate) spawned_ms: AtomicI64,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
@@ -258,6 +264,8 @@ impl TaskRuntime {
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
+            typing_message: AtomicBool::new(false),
+            spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -430,6 +438,22 @@ fn launch_goal_settled(run_dir: &Path) {
     }
 }
 
+/// File in a run directory once its Claude Code session started (its SessionStart hook reached
+/// Yulius): a restarted server knows the reattached run's prompt box reads input (SPEC-230).
+const SESSION_STARTED_FILE: &str = "session-started";
+
+/// Whether the session of the run in `run_dir` started.
+fn session_started_marked(run_dir: &Path) -> bool {
+    run_dir.join(SESSION_STARTED_FILE).exists()
+}
+
+/// Records that the session of the run in `run_dir` started.
+pub(crate) fn mark_session_started(run_dir: &Path) {
+    if let Err(err) = write_private_file(&run_dir.join(SESSION_STARTED_FILE), b"") {
+        tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not record the session start");
+    }
+}
+
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -570,7 +594,7 @@ const TRUST_UNANSWERED: &str = "Claude Code still asks whether to trust this fol
      the terminal";
 
 /// Whether `screen` shows Claude Code's folder-trust dialog.
-fn trust_prompt_shown(screen: &str) -> bool {
+pub(crate) fn trust_prompt_shown(screen: &str) -> bool {
     TRUST_PROMPT_TEXTS.iter().any(|text| screen.contains(text))
 }
 
@@ -1319,6 +1343,7 @@ impl App {
         // So is the new session's SessionStart: its hook can be answered before the run is
         // attached and watched, and must not be forgotten then (#243).
         runtime.session_started.store(false, Ordering::SeqCst);
+        runtime.spawned_ms.store(self.now().0, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -3120,9 +3145,18 @@ impl App {
                 .ok()
                 .and_then(|b| b.try_into().ok());
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
-            self.runtime(&attempt.task_id)
-                .replay_transcript
-                .store(true, Ordering::SeqCst);
+            let runtime = self.runtime(&attempt.task_id);
+            runtime.replay_transcript.store(true, Ordering::SeqCst);
+            // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
+            // was spawned, and whether its session started (a SessionStart this server did not
+            // see left its marker).
+            runtime
+                .spawned_ms
+                .store(attempt.started_at.0, Ordering::SeqCst);
+            // Only ever set here: a SessionStart hook served meanwhile is not undone.
+            if session_started_marked(Path::new(&attempt.run_dir)) {
+                runtime.session_started.store(true, Ordering::SeqCst);
+            }
             let reattached = match host_token {
                 Some(token) => self
                     .attach_run(&attempt.task_id, &attempt, &token)
