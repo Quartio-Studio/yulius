@@ -58,7 +58,10 @@ watching, steering and unblocking.
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
   automations and enables the ready-made ones (asking the person before each change only on an
   uncontained server). Task agents
-  can do the same for their task's owner, except to their own task. When a usage limit cuts its
+  can do the same for their task's owner, except to their own task. Told "tell #5 it may use the
+  DO budget", it passes the message on (the Superagent only, not task agents): a task that has not
+  started gets it in its request, a running one gets it typed into its session as "Message from
+  alice (through their Superagent)", unless someone typed there in the last minute (SPEC-230). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as

@@ -890,6 +890,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
+| `task_message` (the Cockpit only, SPEC-230) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` + Enter; refused while a person typed there in the last minute, while the first message or another message is typed, and in every other state; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -1108,7 +1109,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
     `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
-    `task_create`, `task_stop`, `task_archive`, `task_delete`, `automation_create`,
+    `task_create`, `task_message` (SPEC-230), `task_stop`, `task_archive`, `task_delete`, `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
