@@ -216,8 +216,17 @@ A task that cannot take it says why, so the Superagent can tell the person what 
      ago takes a message right after the restart).
   4. (nit) the refusal is asserted as "still starting its session"; 5. (nit) the module doc and
      6. (nit) the spec and ADR wording are updated.
-- The fixes after round 4 are re-reviewed (round 5) before delivery; its verdict is in the pull
-  request.
+- Independent review, round 5 (fresh session, head 8aa0bcff): APPROVE, no critical, high or
+  medium own-code finding; it checked the marker's other reader (the launch-goal watch after a
+  restart, improved), its lifecycle (one run folder per attempt) and forgery (the agent already
+  holds the token that calls the hook). Its findings, fixed: 1. (low) `reconcile` could
+  overwrite a SessionStart served meanwhile with false: it now only ever sets the flag (a
+  microsecond race, not reproducible in a test); 2. (low) a started run without a marker falls
+  back to the hookless rule, including live runs at this change's deploy: in ADR-0178's
+  Consequences; 3. (nit) the ADR names the launch-goal watch as the other reader; 4. (nit)
+  `the_hookless_window_counts_from_the_spawn` uses a 5 s window and a run older than it, so a
+  restart under load cannot make it pass for the wrong reason.
+- The round-5 delta is re-reviewed (round 6) before delivery; its verdict is in the pull request.
 - Not tested: a real Claude Code TUI (the fake agent models its bracketed paste and Enter);
   Claude Code's own queuing of a message submitted mid-turn is its documented behaviour, not
   exercised here.

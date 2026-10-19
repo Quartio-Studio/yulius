@@ -81,12 +81,15 @@ Superagent, which acts for that person, could do neither.
   narrow and both are rare at the same moment; the Superagent sees the task's transcript and can
   send the message again. The same holds for a person's keys in those 300 ms: they are not held
   back, as they are while Yulius types the first message, and join the message.
-- The marker also restores `session_started` for the goal typist and the first-message key
-  hold of a reattached run, which before saw a fresh runtime as not started; both then read the
-  trust dialog's words in its output as output, as they do before a restart.
-- For a CLI that never runs the SessionStart hook, the trust dialog's words anywhere on its
-  screen refuse messages for the rest of the run, as they keep the goal typist waiting
-  (`wait_input_ready`). Every supported Claude Code runs the hook.
+- The marker also restores `session_started` for the launch-goal watch of a reattached run
+  (SPEC-146 GWR-002), which before saw a fresh runtime as not started: it is ready sooner, and
+  reads the trust dialog's words in the run's output as output, as it does before a restart.
+- A run whose session started but that has no marker falls back to the hookless rule: a CLI that
+  never runs the SessionStart hook, a marker write that failed (logged), a server killed between
+  the hook and the write, or a run spawned before this change and still live when it is
+  deployed. There the trust dialog's words anywhere on its screen refuse messages with the trust
+  reason for as long as they show, as they keep the goal typist waiting (`wait_input_ready`).
+  It fails safe: nothing is typed.
 - On a contained server the Superagent calls the tool without asking, as it does `task_create`.
   Text it reads (a task's transcript, a session) could try to make it relay instructions to
   another task. Its instructions limit the tool to what the person asked, as for every changing

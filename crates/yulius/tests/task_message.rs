@@ -421,7 +421,8 @@ fn a_run_reattached_soon_after_its_spawn_is_still_starting() -> TestResult {
 }
 
 /// Round 4 nit 3: the hookless window counts from the run's spawn, not from the restart: a run
-/// spawned longer ago than the window takes the message right after the restart.
+/// spawned longer ago than the window (5 s) takes the message right after the restart, sooner
+/// than the window after it.
 #[test]
 fn the_hookless_window_counts_from_the_spawn() -> TestResult {
     let (_dir, data) = data_dir()?;
@@ -431,7 +432,7 @@ fn the_hookless_window_counts_from_the_spawn() -> TestResult {
     };
     let shown = "ECHO: Budget: answer with an echo";
     let before = BeforeRestart::Running;
-    let (rt, app, id, caller) = restarted(&data, &agent, before, 1_100, 2_000, shown)?;
+    let (rt, app, id, caller) = restarted(&data, &agent, before, 5_100, 10_000, shown)?;
     rt.block_on(async {
         let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");

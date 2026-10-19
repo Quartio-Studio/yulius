@@ -3153,10 +3153,10 @@ impl App {
             runtime
                 .spawned_ms
                 .store(attempt.started_at.0, Ordering::SeqCst);
-            runtime.session_started.store(
-                session_started_marked(Path::new(&attempt.run_dir)),
-                Ordering::SeqCst,
-            );
+            // Only ever set here: a SessionStart hook served meanwhile is not undone.
+            if session_started_marked(Path::new(&attempt.run_dir)) {
+                runtime.session_started.store(true, Ordering::SeqCst);
+            }
             let reattached = match host_token {
                 Some(token) => self
                     .attach_run(&attempt.task_id, &attempt, &token)
