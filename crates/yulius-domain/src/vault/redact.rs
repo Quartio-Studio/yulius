@@ -21,25 +21,29 @@ pub fn label(name: &str) -> String {
 
 /// [`label`] fitted to `width` columns, for a terminal whose redraws address cells: padded with
 /// `*` after the label when wider, cut and closed with `]` when narrower, `*` below two columns.
-/// Names are ASCII, so the label is one column per byte.
+/// Names are ASCII, so the label is one column per character.
 #[must_use]
 pub fn fitted_label(name: &str, width: usize) -> String {
     let full = label(name);
-    if width >= full.len() {
-        format!("{full}{}", "*".repeat(width - full.len()))
+    let columns = full.chars().count();
+    if width >= columns {
+        format!("{full}{}", "*".repeat(width - columns))
     } else if width >= 2 {
-        format!("{}]", &full[..width - 1])
+        let cut: String = full.chars().take(width - 1).collect();
+        format!("{cut}]")
     } else {
         "*".repeat(width)
     }
 }
 
-/// What stands for `original`, a form of the secret `name`, in the output.
-pub type Replacement = fn(name: &str, original: &[u8]) -> Vec<u8>;
+/// What stands for `form`, a form of the secret `name`, in the output, of which a stream already
+/// emitted the first `shown` bytes (a beginning shorter than its hold minimum): the replacement
+/// takes the place of `form[shown..]`.
+pub type Replacement = fn(name: &str, form: &[u8], shown: usize) -> Vec<u8>;
 
 /// The [`Replacement`] of text channels: the whole [`label`].
 #[must_use]
-pub fn label_replacement(name: &str, _original: &[u8]) -> Vec<u8> {
+pub fn label_replacement(name: &str, _form: &[u8], _shown: usize) -> Vec<u8> {
     label(name).into_bytes()
 }
 
@@ -127,12 +131,24 @@ pub fn apply_with(
     names: &[String],
     replace: Replacement,
 ) -> Vec<u8> {
+    splice(data, matches, names, |m, name| {
+        replace(name, &data[m.start..m.end], 0)
+    })
+}
+
+/// Replaces `matches` (sorted, non-overlapping, inside `data`) with what `replacement` gives.
+fn splice(
+    data: &[u8],
+    matches: &[Match],
+    names: &[String],
+    mut replacement: impl FnMut(&Match, &str) -> Vec<u8>,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut at = 0;
     for m in matches {
         out.extend_from_slice(&data[at..m.start]);
         let name = names.get(m.secret).map_or("?", String::as_str);
-        out.extend(replace(name, &data[m.start..m.end]));
+        out.extend(replacement(m, name));
         at = m.end;
     }
     out.extend_from_slice(&data[at..]);
@@ -484,12 +500,15 @@ impl<M: Matcher> StreamRedactor<M> {
         let mut combined = std::mem::take(&mut self.recent);
         combined.extend_from_slice(&data);
         // Matches in data coordinates; one that began in already emitted bytes covers the
-        // start of `data`.
-        let matches: Vec<Match> = self
+        // start of `data`. `found` keeps each one's place in `combined`.
+        let found: Vec<Match> = self
             .matcher
             .find(&combined)
             .into_iter()
             .filter(|m| m.end > offset)
+            .collect();
+        let matches: Vec<Match> = found
+            .iter()
             .map(|m| Match {
                 start: m.start.saturating_sub(offset),
                 end: m.end - offset,
@@ -518,7 +537,18 @@ impl<M: Matcher> StreamRedactor<M> {
         }
         let emitted: Vec<Match> = matches.into_iter().filter(|m| m.end <= cut).collect();
         self.used.extend(emitted.iter().map(|m| m.secret));
-        let out = apply_with(&data[..cut], &emitted, self.matcher.names(), self.replace);
+        let replace = self.replace;
+        let out = splice(&data[..cut], &emitted, self.matcher.names(), |m, name| {
+            let at = found
+                .iter()
+                .find(|f| f.end == m.end + offset)
+                .map_or(m.start + offset, |f| f.start);
+            replace(
+                name,
+                &combined[at..m.end + offset],
+                offset.saturating_sub(at),
+            )
+        });
         self.held = data[cut..].to_vec();
         // Remember the last emitted bytes (a beginning of a value may be among them).
         let keep = self.matcher.max_len().saturating_sub(1);
@@ -711,8 +741,8 @@ mod tests {
     /// A replacement sees the bytes it stands for, also when a value was split across chunks.
     #[test]
     fn streams_use_their_replacement() {
-        fn stars(_name: &str, original: &[u8]) -> Vec<u8> {
-            vec![b'*'; original.len()]
+        fn stars(_name: &str, form: &[u8], shown: usize) -> Vec<u8> {
+            vec![b'*'; form.len() - shown]
         }
         let text = format!("a {VALUE} b\n");
         let bytes = text.as_bytes();

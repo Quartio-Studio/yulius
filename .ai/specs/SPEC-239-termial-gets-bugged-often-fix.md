@@ -51,13 +51,14 @@ Confirmed against `dev` at c7b2df6b.
 ## Requirements
 
 - **TRM-001** In the terminals people watch (task, Superagent, Cockpit shell: the live stream and
-  the snapshot), a redacted form of a secret is replaced by text of the same display width
-  (`unicode-width`, as the hub's `vt100` screen counts it).
+  the snapshot), a redacted form of a secret is replaced by text of the same display width, counted
+  as the hub's `vt100` screen counts it: the `unicode-width` of each character added up.
 - **TRM-002** That text reads `[secret:NAME]`, followed by `*` up to the value's width when the
   value is wider, so the full label stays searchable. When the value is narrower, the label is cut
   and closed with `]` (for example `[secret:P]` for a 10-column value). Below two columns it is
   `*` alone. When the redactor has already shown a short beginning of the value (under the 4-byte
-  hold minimum, as before), the rest of the value is masked to its own width.
+  hold minimum, as before), the mask covers the value's columns minus those of the whole characters
+  already shown.
 - **TRM-003** A cursor-addressed redraw over a redacted value lands in the same cells as it would
   over the value: the screen equals the unredacted screen with the value's cells masked.
 - **TRM-004** The value never shows in the terminal, as before (split chunks, held tails,
@@ -97,7 +98,11 @@ the repository gate (`scripts/dev ci`) and the security scan.
   (layout kept, but the name is lost); stripping redaction from the terminal (leaks the value);
   re-rendering the screen server-side (a large change for the same result). Text channels keep the
   full label, because nothing there addresses cells.
-- Width is measured with `unicode-width` 0.2, the version `vt100` already uses, so the hub's screen
-  and the replacement agree. A value with characters whose width differs between terminals
-  (ambiguous width) can still shift xterm.js by a column. Values are ASCII in practice.
+- Width is measured with `unicode-width` 0.2, the version `vt100` already uses, and added up
+  character by character, as `vt100` does. That makes the hub's screen and the replacement agree
+  (a review finding: the grapheme-aware string width differed for emoji sequences). A value with
+  ambiguous-width characters or a tab can still shift xterm.js by a column. Values are ASCII in
+  practice.
+- The mask shows a value's width, which is roughly its length. The agent can already read the
+  length, so this is accepted (ADR-0181).
 - The ordinary-word policy of #705 is not part of this change: the PR says "Part of #705".

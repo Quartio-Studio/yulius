@@ -20,16 +20,20 @@ terminals people watch.
 
 ## Decision
 
-- In the terminals only, a value is replaced by `fitted_label(name, width)`. The width is the
-  value's display width as `unicode-width` 0.2 counts it, the crate and version behind the hub's
-  `vt100` screen. When the value is at least as wide as the label, the result is the full label
-  followed by `*` up to that width. When the value is narrower, the label is cut and closed with
+- In the terminals only, a value is replaced by `fitted_label(name, width)`. The width is counted
+  as the hub's `vt100` screen counts it: each character's `unicode-width` 0.2 width added up (no
+  grapheme rules, so an emoji with a skin-tone modifier takes 4 columns), and no column for a
+  control character below 256. When the value is at least as wide as the label, the result is the
+  full label followed by `*` up to that width. When the value is narrower, the label is cut and closed with
   `]` (`[secret:P]`). Below two columns it is `*`.
 - The domain redactor takes the replacement as a function (`Replacement`, through
-  `StreamRedactor::with_replacement` and `redact_all_with`). Every other channel keeps
+  `StreamRedactor::with_replacement` and `redact_all_with`). The function gets the whole form that
+  was found and how many of its bytes the stream had already shown. Every other channel keeps
   `label_replacement`, the full `[secret:NAME]`.
 - Holding and releasing tails is unchanged. When a beginning of a value has already been shown
-  (under the 4-byte hold minimum), the rest of the value is masked to its own width.
+  (under the 4-byte hold minimum, or released after 40 ms of quiet), the mask covers the value's
+  width minus the columns of the whole characters already shown. The screen draws nothing for a
+  character cut in the middle.
 
 ## Alternatives
 
@@ -50,8 +54,12 @@ terminals people watch.
   screen and splits the stream at every point.
 - A short value shows a shortened label (`[secret:P]`), not the full name. Its full name still shows
   in the transcript.
-- Characters whose width differs between terminals (East Asian ambiguous width) can still shift
-  xterm.js by a column, because `unicode-width` counts them as narrow. Agent secrets are ASCII in
-  practice.
+- Anyone watching a terminal can now read each value's display width, which is roughly its length,
+  from the label and its padding. The old fixed label did not show it. This is accepted: the agent
+  can already read the length (`${#VAR}`), and the length is not the value.
+- Some characters are drawn differently by xterm.js and `vt100`: ambiguous-width characters, and
+  grapheme clusters, which xterm.js may join. A tab moves to a tab stop that no printable mask can
+  reach. A value holding any of these can still shift a viewer by a column. Agent secrets are ASCII
+  in practice.
 - Tests that search a screen for `[secret:NAME]` still find it whenever the value is at least as
   wide as the label. Text right after it is now preceded by the `*` padding.

@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use unicode_width::UnicodeWidthStr as _;
+use unicode_width::UnicodeWidthChar as _;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::vault::redact::{PlainMatcher, StreamRedactor, fitted_label, redact_all_with};
 
@@ -29,11 +29,31 @@ struct Inner {
 #[derive(Clone, Default)]
 pub struct TerminalScrub(Arc<Mutex<Inner>>);
 
-/// What stands for a value on a screen: its label fitted to the value's width, so a program's
-/// cursor-addressed redraws land in the cells it meant (SPEC-239, ADR-0181). The width is the
-/// one the hub's `vt100` screen gives the value.
-fn screen_label(name: &str, original: &[u8]) -> Vec<u8> {
-    fitted_label(name, String::from_utf8_lossy(original).width()).into_bytes()
+/// What stands for a value on a screen: its label fitted to the columns the value takes past
+/// what was already shown, so a program's cursor-addressed redraws land in the cells it meant
+/// (SPEC-239, ADR-0181).
+fn screen_label(name: &str, form: &[u8], shown: usize) -> Vec<u8> {
+    let width = screen_width(form).saturating_sub(drawn_width(&form[..shown.min(form.len())]));
+    fitted_label(name, width).into_bytes()
+}
+
+/// Columns `bytes` take on the hub's `vt100` screen, which adds up each character's width (no
+/// grapheme rules) and draws no control character below 256.
+fn screen_width(bytes: &[u8]) -> usize {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .map(|c| c.width().unwrap_or(usize::from(u32::from(c) >= 256)))
+        .sum()
+}
+
+/// Columns a shown beginning took: its whole characters (an unfinished one is dropped by the
+/// screen once the label's first byte comes).
+fn drawn_width(shown: &[u8]) -> usize {
+    let whole = match std::str::from_utf8(shown) {
+        Ok(_) => shown.len(),
+        Err(err) => err.valid_up_to(),
+    };
+    screen_width(&shown[..whole])
 }
 
 /// The streaming redactor of a terminal over `matcher`.
@@ -240,16 +260,12 @@ mod tests {
     }
 
     /// Values whose width the screen counts character by character (an emoji with a skin-tone
-    /// modifier, a heart with a variation selector, a control character) leave the cursor where
-    /// the value would, in a whole snapshot and split at every byte.
+    /// modifier, a heart with a variation selector) and a value cut inside a character leave
+    /// the cursor where the value would, in a whole snapshot and split at every byte. (A tab
+    /// moves to a tab stop no printable mask can reach; agent secrets hold none in practice.)
     #[test]
     fn values_take_the_columns_the_screen_counts() {
-        for value in [
-            "ok 👍🏽 deploy-key",
-            "love ❤️ production",
-            "tab\tseparated",
-            "pässwörd-geheim",
-        ] {
+        for value in ["ok 👍🏽 deploy-key", "love ❤️ production", "pässwörd-geheim"] {
             let matcher = Arc::new(PlainMatcher::new(vec![("KEY".into(), needles(value))]));
             let raw = format!("a {value} b|").into_bytes();
             let want = cursor_after(&raw);
