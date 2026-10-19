@@ -119,7 +119,8 @@ delivery.
 - An earlier `secrets.e2e.ts` run failed once on an axe target-size check of a Close button. That
   is the known flake #640, in code this change does not touch; the file then passed 20/20 twice.
 - Independent review (fresh session, om-code-review): round 1 APPROVE with 3 low and 4 nit
-  findings, all own code. All seven were fixed test-first in 6118f620 and 38185fb2. Round 2 APPROVE
+  findings (6 own code, 1 pre-existing: the `cd_status` wording). All seven were fixed test-first in
+  6118f620 and 38185fb2. Round 2 APPROVE
   at 38185fb2 with two nits: the spec lines (added) and the mock's mixed-case wording (accepted,
   see Decisions).
 - Not tested: the real page against a live instance with the reported project's secrets. The mock
