@@ -28,22 +28,27 @@ closes, as it does when the person changes the start choice.
   leaves the card open. Only `startChanged()`, run on the person's own choice, calls `clearSplit()`.
 - Why tests missed it: the SPEC-188 tests cover the person's own changes (`startChanged()`), not a
   change of the task list under an open card.
-- The split card (TSK-011) is not affected: it opens only without `afterTaskId` and without
-  `startRule` (and never with `supertask` or `prepare`), and `renderChips()` drops only
-  `afterTaskId` (it never drops a rule; a passed time only changes `prepare`, which also keeps the
-  split card from opening). Draft changes from another tab (`draftChanged()`) do not touch the start
-  choice. So no list change can leave a split card naming a stale choice.
+- The split card (TSK-011) is not affected: `start()` opens it only when `afterTaskId` and
+  `startRule` are empty after the intake check, and `renderChips()` drops only `afterTaskId` (it
+  never drops a rule). Draft changes from another tab (`draftChanged()`) do not touch the start
+  choice, and every choice the person makes goes through `startChanged()`, which closes either
+  card. So no list change can leave a split card naming a stale choice.
+- Seen on the way (review, pre-existing since #586, commented on #587, outside this change):
+  `start()` reads `supertask` and `prepare` before the intake check, so a choice picked during the
+  check is not honoured by a card opened after it.
 
 ## Requirements
 
 - STC-001: when `renderChips()` drops a chosen "Run after" task because it left the list, an open
   supertask card closes; the prompt stays, and the next Start asks again with the current choice.
+- STC-002: when the keyboard was in the card, it lands in the prompt (as `startChanged()` does), not
+  on the page's body.
 
 ## Plan
 
 - [x] Spec SPEC-234 written and validated; issue #587 told the plan
 - [x] Regression e2e test: the supertask card closes when #12 leaves the list (fails before the fix)
-- [ ] renderChips() closes the card when it drops the chosen task; e2e suite green
+- [x] renderChips() closes the card when it drops the chosen task; e2e suite green
 - [ ] Docs: spec evidence and changes.md entry; gates and security scan run
 - [ ] Independent review in a fresh session, findings answered
 - [ ] Delivered: PR merged into dev on green CI, #587 summarised
@@ -52,7 +57,8 @@ closes, as it does when the person changes the start choice.
 
 - An e2e test opens the supertask card with "After #12", makes #12 leave the mock's task list (a
   `task.updated` event archiving it, which the store turns into a `tasks` event), and the card
-  closes; the start chip reads "Start now" and the prompt is kept. The test fails before the fix.
+  closes; the start chip reads "Start now", the prompt is kept and holds the keyboard. The test
+  fails before the fix (first the card, then the focus).
 - The split card case is shown unreachable (Context) and needs no test.
 
 ## Test plan

@@ -1076,7 +1076,12 @@ export function mountComposer(ctx, sandbox) {
     if (afterTaskId && tasks && !after) {
       afterTaskId = ''; // gone (a kept draft waits for the list)
       // An open supertask card names "After #12": it answered a choice that is gone (SPEC-234).
-      if (split) clearSplit();
+      // The keyboard in it lands in the prompt, as after a changed choice (startChanged).
+      if (split) {
+        const focused = split.el.contains(document.activeElement);
+        clearSplit();
+        if (focused) prompt.focus({ preventScroll: true });
+      }
     }
     const rule = startRule ? ruleText(startRule) : '';
     // A kept time that has passed (a draft from yesterday) waits for the person instead: sending
