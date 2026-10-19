@@ -6,7 +6,9 @@ Accepted. Specified in [SPEC-215](../../.ai/specs/SPEC-215-leftovers-are-found-a
 Amends PRJ-009 (SPEC-001: what a removed sandbox keeps), SPEC-008's upkeep of finished tasks and
 SPEC-171's playground purge (the system layer, runtime state and CD directory now go too).
 Amended by [0176](0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md): which leftovers
-the isolation's mapped removal deletes (every path below `sandboxes/`).
+the isolation's mapped removal deletes (every path below `sandboxes/`). Refined by
+[0179](0179-a-tree-is-made-writable-through-o-path-handles.md): directories are opened `O_PATH` and
+changed through `/proc/self/fd`, so an owner's unreadable directory is made writable too.
 
 ## Context
 
@@ -55,7 +57,8 @@ without SSH.
   removes through the opened directory (`/proc/self/fd/<fd>/<name>`), so a link that appears
   after the last check fails the removal instead of steering it. Below that, std's
   `remove_dir_all` removes links as links, and a read-only tree is made writable through
-  directory handles (`O_NOFOLLOW`, `fchmod` to a fixed 0o700), never by path. Only the isolation's
+  directory handles (`O_PATH | O_NOFOLLOW`, a fixed 0o700 set through `/proc/self/fd`; ADR-0179),
+  never by path. Only the isolation's
   mapped removal goes by path: a removed sandbox's system trees, and a stale smoke test's or an
   unowned sandbox's trees under `sandboxes/`. No run of those is left.
 - **Run directories.** `runs/<name>` stays while an attempt record owns it (an ended task's last

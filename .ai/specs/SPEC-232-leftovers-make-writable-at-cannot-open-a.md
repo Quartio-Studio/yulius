@@ -69,7 +69,10 @@ Confirmed against `dev` at b9080ea4.
   `item/{a 0o000 dir, b 0o300 dir holding c 0o000}` with files, plus the item itself `0o000`,
   drops the DAC capabilities of its thread when root, calls `remove_below` and checks the item is
   gone and its parent kept. Without the fix it fails with "Permission denied".
-- `making_a_tree_writable_never_follows_a_link` keeps proving R2 for a link inside the tree.
+- `making_a_tree_writable_never_follows_a_link` keeps proving R2 for a link already in the tree.
+- `leftovers::tests::a_directory_handle_is_never_opened_through_a_link` (new, review finding):
+  `open_dir_handle` refuses a name that is a link to a directory, a file or gone, so a directory
+  swapped for one after the listing is never changed or walked; it fails without `O_NOFOLLOW`.
 
 ## Decisions
 
@@ -78,12 +81,13 @@ Confirmed against `dev` at b9080ea4.
   the directory itself; a link fails or is skipped), checked to be a directory with `fstat`, its
   mode set with `chmod` on `/proc/self/fd/N`, which resolves to the very inode the handle pinned,
   and it is listed and descended through that same handle. `fchmodat(parent, name)` was rejected:
-  it resolves the name again and follows a link swapped in after the check (no
-  `AT_SYMLINK_NOFOLLOW` on kernels before 6.6). Reopening the child by name after the chmod was
-  rejected for the same race. See ADR-0179.
+  it looks the name up again, so a directory or link swapped in after the check is changed instead
+  (followed out of the tree without `AT_SYMLINK_NOFOLLOW`). Reopening the child by name after the
+  chmod was rejected for the same race. See ADR-0179.
 - **Capabilities in the test, not a skip.** A test skipped as root never runs in the gate (it runs
   as root); dropping the thread's DAC capabilities makes root an ordinary owner. Capabilities are
   per thread, so other tests are unaffected. It uses `rustix` (already in the lockfile) with its
   `thread` feature, as a Linux dev-dependency of `yulius-app`.
-- Other platforms (macOS, a development host) have no `O_PATH`: they keep the read-only open, and
-  `/proc/self/fd`, which the walk already needs, is Linux only anyway.
+- The walk stays Linux only (it lists and removes through `/proc/self/fd`, as before); other
+  platforms (macOS, a development host) only compile it, with a read-only open in place of
+  `O_PATH`, which they lack.
