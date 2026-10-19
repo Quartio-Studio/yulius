@@ -17,8 +17,10 @@ const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 20000;
 const shortSha = (sha) => String(sha || '').slice(0, 7);
 const envTitle = (name) => (name === 'dev' ? 'Dev' : 'Production');
-// The overviews last read, per sandbox: `{ ci, cd }`, each kept until a read of it succeeds.
+// The overviews last read, per sandbox: `{ ci, cd, at }`, each kept until a read of it succeeds,
+// and drawn on a mount only while younger than KEPT_MS (older ones may name runs long ended).
 const lastRead = new Map();
+const KEPT_MS = 60000;
 
 /** Mount the summary for `sandbox`: `{ el, destroy }`; `destroy()` stops its reads and its clock. */
 export function mountNowSummary(ctx, sandbox) {
@@ -91,7 +93,7 @@ export function mountNowSummary(ctx, sandbox) {
       if (destroyed) return;
       // A failed read keeps what was read of that overview before (review round 1).
       const kept = lastRead.get(sandbox.id) || {};
-      const read = { ci: ci.status === 'fulfilled' ? ci.value : kept.ci, cd: cd.status === 'fulfilled' ? cd.value : kept.cd };
+      const read = { ci: ci.status === 'fulfilled' ? ci.value : kept.ci, cd: cd.status === 'fulfilled' ? cd.value : kept.cd, at: Date.now() };
       lastRead.set(sandbox.id, read);
       if (read.ci || read.cd) active = render(read.ci, read.cd);
       else active = Boolean(clock);
@@ -102,7 +104,7 @@ export function mountNowSummary(ctx, sandbox) {
   }
 
   const kept = lastRead.get(sandbox.id);
-  if (kept) render(kept.ci, kept.cd);
+  if (kept && Date.now() - kept.at < KEPT_MS) render(kept.ci, kept.cd);
   load();
   return { el, destroy: () => { destroyed = true; clearTimeout(timer); clearInterval(clock); } };
 }

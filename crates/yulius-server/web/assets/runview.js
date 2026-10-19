@@ -20,7 +20,9 @@ const STAGES_NAMED = 2;
 export function focusIfLost(el) {
   requestAnimationFrame(() => {
     const active = document.activeElement;
-    const lost = !active || active === document.body || !active.isConnected || (active.checkVisibility && !active.checkVisibility());
+    // `checkVisibility` where the browser has it, else a hidden element has no boxes.
+    const isHidden = (node) => (node.checkVisibility ? !node.checkVisibility() : node.getClientRects().length === 0);
+    const lost = !active || active === document.body || !active.isConnected || isHidden(active);
     if (lost && el && el.isConnected) el.focus();
   });
 }

@@ -273,10 +273,13 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const state = h('div', { class: 'stack-sm', role: 'status' });
     const row = h('div', { class: 'cd-starting-row' },
       h('div', { class: 'cd-starting' }, h('span', { class: 'cd-starting-spinner', 'aria-hidden': 'true' }), state), elapsed);
-    // All runs while it starts: the list again, the keyboard on the CD tab (the view and its link go).
+    // All runs while it starts: the list again, the keyboard back on the Deploy button that started
+    // it (the view and its link go), or on the CD tab when that button is gone or off.
     const view = deployView({ onBack: () => {
       view.stop(); shown = null; view.el.remove(); host.hidden = false;
-      document.querySelector('.tl-tabs [role="radio"][aria-checked="true"]')?.focus();
+      const button = host.querySelector(`[aria-label="${title(env)} environment"] .cd-env-head button`);
+      if (button && !button.disabled) button.focus();
+      else document.querySelector('.tl-tabs [role="radio"][aria-checked="true"]')?.focus();
     } });
     focusIfLost(view.el);
     view.loading(h('div', { class: 'stack' }, head, row));

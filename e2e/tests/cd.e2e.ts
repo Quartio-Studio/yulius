@@ -238,7 +238,8 @@ test('a starting deploy left for all runs goes on, and its toast opens it', asyn
   await dialog.getByRole('link', 'All runs').press('Enter');
   await expect(dialog).toBeHidden();
   await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
-  await expect(screen.getByRole('radio', 'CD (deployment)')).toBeFocused();
+  // The keyboard goes back to the Deploy button that started it (review round 2).
+  await expect(screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…')).toBeFocused();
 
   await releaseDeploy(browser);
   await expect(screen.getByText('Deploying production.')).toBeVisible();
@@ -373,7 +374,8 @@ test('the Now summary says what runs on both tabs and opens it', async ({ app, b
 // Review round 1 (CRV-004): the summary reads nothing while the page is hidden and nothing once it
 // is gone; its timers are counted with stubbed setTimeout/setInterval (unit, in the page).
 test('the Now summary stops its reads and clock when it goes and reads nothing while hidden (unit, in the page)', async ({ app, browser }) => {
-  await app.open(mock('/s/studio/ci'));
+  // A page with no poller of its own (review round 2): only the unit's timers land in the stubs.
+  await app.open(mock('/s/studio/automations', '&ambient=0&browserask=0'));
   const result = await browser.evaluate(async () => {
     const url = '/assets/pages/cinow.js';
     const { mountNowSummary } = await import(url);
@@ -381,11 +383,14 @@ test('the Now summary stops its reads and clock when it goes and reads nothing w
     const intervals = new Set<number>();
     let next = 1;
     const real = { st: window.setTimeout.bind(window), ct: window.clearTimeout.bind(window), si: window.setInterval.bind(window), ci: window.clearInterval.bind(window) };
+    // Only the module's own timers are stubbed (review round 2): the page's other timers keep
+    // running for real, so none of them lands in these maps. Stub ids are negative.
+    const mine = () => (new Error().stack || '').includes('/pages/cinow.js');
     Object.assign(window, {
-      setTimeout: (fn: () => void) => { const id = next++; timeouts.set(id, fn); return id; },
-      clearTimeout: (id: number) => { timeouts.delete(id); },
-      setInterval: () => { const id = next++; intervals.add(id); return id; },
-      clearInterval: (id: number) => { intervals.delete(id); },
+      setTimeout: (fn: () => void, ms?: number) => { if (!mine()) return real.st(fn, ms); const id = -next++; timeouts.set(id, fn); return id; },
+      clearTimeout: (id: number) => { if (id < 0) timeouts.delete(id); else real.ct(id); },
+      setInterval: (fn: () => void, ms?: number) => { if (!mine()) return real.si(fn, ms); const id = -next++; intervals.add(id); return id; },
+      clearInterval: (id: number) => { if (id < 0) intervals.delete(id); else real.ci(id); },
     });
     const reads: string[] = [];
     const running = { runs: [{ id: 'r1', label: 'dev', sha: 'abcdef0', state: 'running', jobs: [], started_at: new Date().toISOString() }] };
@@ -405,13 +410,29 @@ test('the Now summary stops its reads and clock when it goes and reads nothing w
       const rescheduled = timeouts.size;
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
       now.destroy();
-      return { first, whileHidden, rescheduled, clock: intervals.size, pending: timeouts.size };
+      const ended = { clock: intervals.size, pending: timeouts.size };
+      // Mounted again, it draws its last reads at once; a minute later it waits for a fresh read
+      // instead (review round 2: kept reads have an age limit).
+      const again = mountNowSummary(ctx, { id: 'sb_x', slug: 'x' });
+      const drawnAtOnce = Boolean(again.el.querySelector('.ci-now-list'));
+      again.destroy();
+      const realNow = Date.now;
+      Date.now = () => realNow() + 61_000;
+      let drawnWhenOld: boolean;
+      try {
+        const late = mountNowSummary(ctx, { id: 'sb_x', slug: 'x' });
+        drawnWhenOld = Boolean(late.el.querySelector('.ci-now-list'));
+        late.destroy();
+      } finally {
+        Date.now = realNow;
+      }
+      return { first, whileHidden, rescheduled, ...ended, drawnAtOnce, drawnWhenOld };
     } finally {
       Object.assign(window, { setTimeout: real.st, clearTimeout: real.ct, setInterval: real.si, clearInterval: real.ci });
       delete (document as unknown as { hidden?: boolean }).hidden;
     }
   });
-  expect(result).toEqual({ first: 2, whileHidden: 0, rescheduled: 1, clock: 0, pending: 0 });
+  expect(result).toEqual({ first: 2, whileHidden: 0, rescheduled: 1, clock: 0, pending: 0, drawnAtOnce: true, drawnWhenOld: false });
 });
 
 test('with nothing running the Now summary says how the latest runs ended', async ({ app, screen }) => {
