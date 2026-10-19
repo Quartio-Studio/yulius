@@ -1,10 +1,12 @@
 // CI/CD page (SPEC-151, ADR-0125): CI (tests) and CD (deployment) as two sections of one page,
 // chosen with the Secrets page's tabs. The section is kept in `?section=cd` (CI is the plain
 // address, the one the `yulius/ci` commit status links to); `/s/<slug>/cd` opens the CD tab too.
+// Above the tabs, the Now summary says what runs, on both (SPEC-238).
 
 import { sectionedPage } from './common.js';
 import { mountCiSection, CI_SUB } from './ci.js';
 import { mountCdSection, CD_SUB } from './cd.js';
+import { mountNowSummary } from './cinow.js';
 
 const SECTIONS = [
   { value: '', label: 'CI (tests)', icon: 'check', sub: CI_SUB, mount: mountCiSection },
@@ -14,6 +16,7 @@ const SECTIONS = [
 /** Mount the CI/CD page: `/s/<slug>/ci`, `?section=cd` for the CD tab. */
 export function mountCiCdPage(ctx, sandbox, route) {
   const path = `/s/${encodeURIComponent(sandbox.slug)}/ci`;
-  const page = sectionedPage(ctx, sandbox, route, { title: 'CI/CD', path, sections: SECTIONS });
-  return { ...page, key: `ci:${sandbox.id}` };
+  const now = mountNowSummary(ctx, sandbox);
+  const page = sectionedPage(ctx, sandbox, route, { title: 'CI/CD', path, sections: SECTIONS, before: now.el });
+  return { ...page, destroy: () => { now.destroy(); page.destroy(); }, key: `ci:${sandbox.id}` };
 }

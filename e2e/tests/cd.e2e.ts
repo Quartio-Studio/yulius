@@ -297,6 +297,61 @@ test('a refusal after its view was left is a toast; a page left with it open dra
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
 });
 
+// SPEC-238 CRV-004: "go back easily after this is closed and we see some dynamic summary all the
+// time". Above the tabs, on both, the page says what runs now, with a time that grows by itself,
+// and each one opens its run; with nothing running, how the latest CI run and deploy ended.
+const nowSeconds = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const text = document.querySelector('.ci-now .run-time')?.textContent || '';
+  const m = /^(?:(\d+) min )?(\d+) s so far$/.exec(text);
+  return m ? Number(m[1] || 0) * 60 + Number(m[2]) : null;
+});
+
+test('the Now summary says what runs on both tabs and opens it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  const now = screen.getByRole('region', 'Now');
+  await expect(now.getByRole('link', 'Running: CI quartio at 9f3c2a1')).toBeVisible();
+  await expect(now).toContainText('3 jobs · 1 passed · 2 running');
+  await expect.poll(() => nowSeconds(browser)).not.toBeNull();
+  const first = (await nowSeconds(browser))!;
+  await expect.poll(() => nowSeconds(browser), { timeout: 5000 }).toBeGreaterThan(first);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A production deploy joins it, from the CD tab, and stays there on the CI tab.
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  await expect(screen.getByRole('region', 'Deploy').getByText('Deploying')).toBeVisible();
+  await expect(now.getByRole('link', /^Deploying: CD Production at 4be81c0$/)).toBeVisible();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(now.getByRole('link', /^Deploying: CD Production at 4be81c0$/)).toBeVisible();
+
+  // Its link opens the run, on its tab; Back returns to where the person was.
+  await now.getByRole('link', 'Running: CI quartio at 9f3c2a1').click();
+  await expect(screen.getByRole('region', 'CI run').getByText('quartio')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s4$/);
+  await expect(screen.getByRole('radio', 'CI (tests)')).toHaveAttribute('aria-checked', 'true');
+  await now.getByRole('link', /^Deploying: CD Production/).click();
+  await expect(screen.getByRole('region', 'Deploy')).toBeVisible();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await browser.evaluate(() => history.back());
+  await expect(screen.getByRole('region', 'CI run')).toBeVisible();
+
+  // On a phone the summary and the run view wrap, the page never scrolls sideways.
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(now.getByRole('link', 'Running: CI quartio at 9f3c2a1')).toBeVisible();
+  expect(await browser.evaluate(() => { const page = document.querySelector('.page')!; return page.scrollWidth <= page.clientWidth; })).toBe(true);
+});
+
+test('with nothing running the Now summary says how the latest runs ended', async ({ app, screen }) => {
+  await app.open(mock('/s/sandbox-3/ci'));
+  const now = screen.getByRole('region', 'Now');
+  await expect(now).toContainText('Nothing is running.');
+  await expect(now.getByRole('link', /^Last CI run: dev at 77aa01b, passed/)).toBeVisible();
+  await app.open(mock('/s/product/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Now')).toHaveText('Nothing is running.');
+});
+
 test('members deploy dev but never production, and an empty dev says so', async ({ app, screen }) => {
   await app.open(mock('/s/studio/cd', '&role=member'));
   await expect(screen.getByRole('button', 'Deploy production…')).toBeDisabled();

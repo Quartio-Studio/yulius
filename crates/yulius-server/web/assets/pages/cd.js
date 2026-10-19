@@ -40,7 +40,8 @@ const SECRET_STATE = {
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;
 
-const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
+/** A deploy's state in words, tone and icon. */
+export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** The integration branch: the dev environment's branch (SPEC-152). */
 const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');

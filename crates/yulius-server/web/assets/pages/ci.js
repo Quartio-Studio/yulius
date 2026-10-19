@@ -25,7 +25,7 @@ const STATE = {
   // SPEC-162: the job exited with $YULIUS_CI_SKIP_CODE: it checked nothing and blocks nothing.
   skipped: { label: 'Skipped', tone: 'warn', icon: 'forward' },
 };
-const ACTIVE = new Set(['queued', 'running']);
+export const ACTIVE = new Set(['queued', 'running']);
 const SOURCE = {
   yulius_toml: 'yulius.toml on the integration branch',
   profile: 'the sandbox’s delivery profile',
@@ -34,11 +34,13 @@ const SOURCE = {
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 20000;
 
-const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
+/** A CI run's or job's state in words, tone and icon. */
+export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const stateBadge = (state) => badge(stateOf(state).label, stateOf(state).tone);
 const shortSha = (sha) => String(sha || '').slice(0, 7);
 
-function jobsLine(jobs) {
+/** A run's jobs in a line: "3 jobs · 1 passed · 2 running". */
+export function jobsLine(jobs) {
   const list = Array.isArray(jobs) ? jobs : [];
   const count = (state) => list.filter((j) => j.state === state).length;
   const parts = [plural(list.length, 'job')];

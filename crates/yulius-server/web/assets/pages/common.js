@@ -26,9 +26,10 @@ export function pageFrame({ title, sub, actions = [] }) {
  * plain `path`), the others are `?section=<value>`, written quietly on a change. `mount(ctx,
  * sandbox, route, host, actions)` fills its own part and the header's actions and returns its
  * teardown; a section shown by a tab change gets no route (it starts fresh). An alias address
- * (`/cd`, `/pipeline`) is rewritten to `path` with its query. Returns {el, destroy}.
+ * (`/cd`, `/pipeline`) is rewritten to `path` with its query. `before` (an element) goes above
+ * the tabs, shown with every section (CI/CD's Now summary, SPEC-238). Returns {el, destroy}.
  */
-export function sectionedPage(ctx, sandbox, route, { title, path, sections }) {
+export function sectionedPage(ctx, sandbox, route, { title, path, sections, before = null }) {
   const frame = pageFrame({ title });
   const asked = route.query.get('section');
   let current = sections.some((o) => o.value && o.value === asked) ? asked : '';
@@ -76,7 +77,7 @@ export function sectionedPage(ctx, sandbox, route, { title, path, sections }) {
   }
 
   renderTabs();
-  frame.body.append(tabs, host);
+  frame.body.append(...[before, tabs, host].filter(Boolean));
   // The address's own state (`?run=`, `?days=`, filters) is the section's it names.
   show(route);
   return { el: frame.el, destroy: stop };
