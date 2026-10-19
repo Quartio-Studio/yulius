@@ -10,7 +10,7 @@ Date: 2026-10-19
 Owner: task #215
 Scope authorization: task #215: "this can't be this way, something got fucked up. Identify and
 fix" (two screenshots: every task of two projects "Stopped (server restarted)" with a warning and a
-blank terminal). Extends SPEC-002 §7.1 (reconcile never respawns) and SPEC-001 TSK-014 (Done);
+blank terminal). Fixes #685. Extends SPEC-002 §7.1 (reconcile never respawns) and SPEC-001 TSK-014 (Done);
 decision in [ADR-0177](../../docs/decisions/0177-a-run-lost-after-its-goal-closes-the-task.md).
 
 ## Goal
@@ -46,19 +46,20 @@ Reproduced on the instance (server 77925fd, main) on 2026-10-19.
 - RBT-001: When a run is lost (reconcile after a restart, or a lost process) and its task was
   `Running` with activity `Done`, the task becomes `Closed` (with `closed_at`), not
   `Stopped(reason)`. Any other lost task keeps today's `Stopped(reason)`.
-- RBT-002: Every clean Stop (turn end) writes the run's current screen to its `final-screen`
-  file, so a run lost later still shows the screen its last turn ended on.
+- RBT-002: Whenever a running task's activity becomes idle (`waiting` or `done`: the turn
+  settled), the run's current screen is written to its `final-screen` file, so a run lost later
+  still shows the screen its last turn settled on.
 - RBT-003: The `stopped_server_lost` message says Yulius restarted and the session ended, not that
   the agent was working.
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Regression tests: a reboot after the goal closes the task and keeps its screen
-- [ ] A run lost after its achieved goal records Closed, not Stopped (server restarted)
-- [ ] Every clean turn end saves the screen a lost run shows
-- [ ] The server-restarted message no longer claims the agent was working
-- [ ] Spec, ADR-0177, docs and changes entry
+- [x] Regression tests: a reboot after the goal closes the task and keeps its screen
+- [x] A run lost after its achieved goal records Closed, not Stopped (server restarted)
+- [x] Every clean turn end saves the screen a lost run shows
+- [x] The server-restarted message no longer claims the agent was working
+- [x] Spec, ADR-0177, docs and changes entry
 - [ ] Independent review answered, gates green, merged into dev
 
 ## Acceptance criteria
@@ -75,16 +76,20 @@ Reproduced on the instance (server 77925fd, main) on 2026-10-19.
   (real ptyhost and fake agent; phase 1 one task Done and one Your turn; both processes
   SIGKILLed while no server runs; phase 2 `reconcile`). Fails on `dev` (status
   `stopped_server_lost`, no `final-screen`).
-- `crates/yulius-server/web/assets/status.test.js` or the existing JS unit test of
-  `endedMessage`, if one exists; otherwise the wording is checked in review.
+- `crates/yulius-domain/src/task.rs`: `a_lost_run_closes_a_finished_task_and_stops_the_others`
+  (`TaskStatus::after_loss` for every activity and the switching and stopping states).
+- `e2e/tests/task-done.e2e.ts`: `a session a restart ended says so without claiming the agent was
+  working` (unit, in the page: `endedMessage('stopped_server_lost')`).
 - Full gate `scripts/dev ci`; e2e suite for the web wording.
 
 ## Decisions
 
 - A finished task whose session a reboot ended is `Closed`, the state a person's close of a Done
   task already gives; no new status (ADR-0177).
-- The screen is saved at each clean Stop, not periodically: a turn end is when the screen is the
-  one worth keeping, and it costs one small file write per turn.
+- The screen is saved when the turn settles (activity becomes idle), not at the Stop hook nor
+  periodically: Claude Code prints the goal verdict after its Stop hook, and a settled turn is
+  the screen worth keeping, at one small file write per turn. A run cut mid-turn shows its
+  previous turn's screen.
 - No automatic respawn after a reboot (SPEC-002 §7.1 stays): an interrupted task is continued by a
   person.
 

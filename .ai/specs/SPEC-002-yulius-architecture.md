@@ -1844,7 +1844,9 @@ Restart reconciliation (server start): for each attempt in `spawning|live`: conn
 (2 s). Success with matching token → reattach. Else if `exit.json` exists → record exit. Else if
 `status.json` pid is alive with matching start time and boot id but socket unusable → kill it,
 record `lost`. Else record `lost`. Never respawn automatically (DATA-002); the task becomes
-`stopped(server_lost)` and is continuable.
+`stopped(server_lost)` and is continuable, unless it was `running` with activity `done`: a finished
+task lost nothing and becomes `closed` (SPEC-229, ADR-0177). Every settled turn saves the run's
+screen (`final-screen`), so a lost run's terminal still shows it.
 
 ### 7.2 Harness adapters
 
@@ -2432,7 +2434,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Stop hook unanswered (Yulius down or slow) | the transcript's closing records on catch-up; the next clean Stop | The task settles at the restart's catch-up or the next Stop; while Yulius runs the Stop hook stays the turn boundary. |
 | ptyhost crash | socket EOF + no exit.json + pid gone | Child is in ptyhost's session → receives SIGHUP; contained runs die with bwrap; attempt `lost`, task `stopped`. |
 | Agent crash | exit frame non-zero | Task `stopped(crashed)`; Continue offered. |
-| VM reboot | boot id mismatch | All live attempts `lost`; tasks continuable; automations resume schedule. |
+| VM reboot | boot id mismatch | All live attempts `lost`; finished (`done`) tasks `closed`, the rest continuable (SPEC-229); terminals show the last settled screen; automations resume schedule. |
 | Usage limit | transcript/rate-limit events | Rotation (§6.3); with no candidate the task pauses as `limit` (ADR-17). |
 | Every subscription exhausted | pool policy at a boundary or start | Gentle pause held by the harness (ADR-17); resume when capacity returns. |
 | Server restart during a pause | open `capacity_pauses` rows | Paused runs are reattached and stay held (the hook client keeps polling); the resume loop resumes them. |
