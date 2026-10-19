@@ -13,6 +13,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   tool never types over a person who typed there in the last minute, before Claude Code's
   session started or into its folder-trust question, and a task in any other state is refused
   with what to do instead. Task agents are not given the tool.
+- A reboot no longer turns finished tasks into "Stopped (server restarted)" warnings with a blank
+  terminal (SPEC-229, ADR-0177, task #215, fixes #685). After the host rebooted on 2026-10-18, every task with
+  a session read that way, including #213 and #214, whose goals were achieved and pull requests
+  merged. A run lost while its task was Done now closes the task; every settled turn saves its
+  screen, so a lost run's terminal shows how its last turn ended; and the message for a session a
+  restart ended no longer says the agent was working.
 
 ## 2026-10-18
 

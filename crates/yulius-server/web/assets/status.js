@@ -31,7 +31,8 @@ const ENDED_MESSAGES = {
   stopped_lost: { tone: 'warn', text: `The agent's process was lost. ${SAFE}` },
   stopped_switch_failed: { tone: 'warn', text: `The session couldn’t continue on another subscription, so the agent stopped. ${SAFE}`, accounts: true },
   stopped_switch_timeout: { tone: 'warn', text: `Continuing on another subscription took too long, so the agent stopped. ${SAFE}`, accounts: true },
-  stopped_server_lost: { tone: 'warn', text: `${BRAND.name} restarted while the agent was working. ${SAFE}` },
+  // Idle sessions end too (a reboot ends every one): it does not say the agent was working.
+  stopped_server_lost: { tone: 'warn', text: `${BRAND.name} restarted, which ended this session. ${SAFE}` },
   failed_spawn_error: { tone: 'error', text: 'Claude Code couldn’t start — usually a subscription must sign in again, or no slot is free.', accounts: true, retry: true },
   failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually a subscription must sign in again, or the machine is busy.', accounts: true, retry: true },
   failed_precondition: { tone: 'error', text: 'The task couldn’t start because the sandbox is not ready yet.', retry: true },

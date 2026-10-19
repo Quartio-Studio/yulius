@@ -1320,6 +1320,19 @@ flowchart LR
     attention -.->|"agent works on"| working
 ```
 
+A reboot (or any lost run) ends a task by what it was doing
+([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
+the run's screen to its `final-screen`, so the terminal of a run lost later is not blank:
+
+```mermaid
+flowchart LR
+    settled["activity becomes waiting / done,\nor an idle run reattached"] -->|"writes (hub with output)"| screen["runs/&lt;attempt&gt;/final-screen"]
+    lost["run lost: reconcile found it dead or missing,\na lost connection, a stop that timed out"] --> which{"task running\nwith activity done?"}
+    which -->|"yes: nothing was lost"| closed["closed"]
+    which -->|"no"| stopped["stopped(server_lost / lost)\nContinue offered"]
+    screen -.->|"no live run: the terminal shows it"| view["task terminal"]
+```
+
 ## Run metrics
 
 A run's tokens, turns and active time are computed from its own transcript lines and its

@@ -293,6 +293,16 @@ impl App {
             .store
             .set_activity(&task.id, Some(activity), self.now())
             .await?;
+        // The turn settled: its screen is kept, so a run lost later (a reboot) still shows how
+        // its last turn ended (SPEC-229 RBT-002).
+        if activity.is_idle()
+            && let Ok(Some(attempt)) = self.deps.store.live_attempt(&task.id).await
+        {
+            crate::supervisor::save_screen(
+                &self.runtime(&task.id).hub,
+                std::path::Path::new(&attempt.run_dir),
+            );
+        }
         self.publish_task(&task.id).await;
         Ok(())
     }
