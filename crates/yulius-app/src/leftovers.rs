@@ -1728,6 +1728,46 @@ mod tests {
         Ok(())
     }
 
+    /// #680: a directory its owner cannot read (no `r`: 0o000, 0o300), the item itself or one
+    /// below it, is made writable and goes too. The gate runs as root, whose DAC capabilities open
+    /// any directory: the test drops them from its own thread (capabilities are per thread), so
+    /// the kernel checks the owner's bits as it does for the service user.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tree_with_unreadable_directories_goes() -> TestResult {
+        use rustix::thread::{CapabilitySet, capabilities, set_capabilities};
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir()?;
+        let data = tmp.path().join("data");
+        let item = data.join("runs/old");
+        std::fs::create_dir_all(item.join("b/c"))?;
+        std::fs::create_dir(item.join("a"))?;
+        std::fs::write(item.join("a/f"), "x")?;
+        std::fs::write(item.join("b/c/f"), "x")?;
+        for (dir, mode) in [("b/c", 0o000), ("b", 0o300), ("a", 0o000), ("", 0o000)] {
+            std::fs::set_permissions(item.join(dir), std::fs::Permissions::from_mode(mode))?;
+        }
+
+        let held = capabilities(None)?;
+        let mut owner_only = held;
+        owner_only.effective -= CapabilitySet::DAC_OVERRIDE
+            | CapabilitySet::DAC_READ_SEARCH
+            | CapabilitySet::FOWNER;
+        set_capabilities(None, owner_only)?;
+        let unreadable = std::fs::read_dir(&item).err().map(|e| e.kind());
+        let removed = remove_below(&data, &item);
+        set_capabilities(None, held)?;
+
+        assert_eq!(
+            unreadable,
+            Some(std::io::ErrorKind::PermissionDenied),
+            "the owner's bits are checked"
+        );
+        removed?;
+        assert!(!exists(&item) && data.join("runs").exists());
+        Ok(())
+    }
+
     /// Review round 3: the fallback that makes a read-only tree removable changes directories
     /// through their own handles to a fixed 0o700, never through a link to what lies outside.
     #[test]
