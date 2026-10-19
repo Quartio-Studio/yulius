@@ -78,7 +78,7 @@ impl App {
 
     /// Whether a task is past taking queued messages: it is no longer waiting, or it has had a
     /// run or a provider session (QMS-001; the store's conditional update holds the same rule).
-    async fn task_started(&self, task: &TaskRecord) -> AppResult<bool> {
+    pub(crate) async fn task_started(&self, task: &TaskRecord) -> AppResult<bool> {
         let waiting = matches!(
             task.status,
             TaskStatus::Queued

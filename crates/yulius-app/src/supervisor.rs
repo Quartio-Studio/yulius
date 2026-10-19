@@ -130,6 +130,8 @@ pub struct TaskRuntime {
     pub(crate) typing_opening: AtomicBool,
     /// A person was told their keys wait for the first message (once per first message).
     pub(crate) typing_opening_said: AtomicBool,
+    /// Yulius types a Superagent's message into the run (SPEC-230): one at a time.
+    pub(crate) typing_message: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
@@ -258,6 +260,7 @@ impl TaskRuntime {
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
+            typing_message: AtomicBool::new(false),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
