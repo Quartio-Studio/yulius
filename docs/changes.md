@@ -10,8 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the DO budget", it calls `task_message`. A task that has not started gets the message in its
   request, as a person's queued message. A running task gets it typed into its session, labelled
   "Message from alice (through their Superagent)", and its agent reads it even mid-turn. The tool
-  never types over a person who typed there in the last minute, and a task in any other state is
-  refused with what to do instead. Task agents are not given the tool.
+  never types over a person who typed there in the last minute or into Claude Code's
+  folder-trust question, and a task in any other state is refused with what to do instead. Task agents are not given the tool.
 
 ## 2026-10-18
 

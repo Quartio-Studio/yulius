@@ -1,11 +1,11 @@
 ---
 yulius-task: 650b7384-9fa7-4049-bb69-b663c3cfa6cd
-status: in-progress
+status: done
 ---
 
 # SPEC-230: The Superagent sends messages to tasks
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: Yulius task #216
 Scope authorization: task #216: "superagent should be able to prompt tasks" (screenshot: the
@@ -72,11 +72,11 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A message typed into a running task's session reaches its agent, guarded
-- [ ] task_message is served to the Superagent, routes queued and running tasks, audited
-- [ ] Docs: ADR, architecture, API, product and the Superagent's instructions name the tool
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A message typed into a running task's session reaches its agent, guarded
+- [x] task_message is served to the Superagent, routes queued and running tasks, audited
+- [x] Docs: ADR, architecture, API, product and the Superagent's instructions name the tool
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -129,4 +129,42 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 
 ## Evidence
 
-To be completed.
+- Test-first: the four `task_message.rs` integration tests failed against a stub
+  (`Invalid("not yet")`) before the implementation; `cockpit::a_cockpit_manages_the_project_for_its_owner`
+  failed on the tool list before `task_message` was served; the review's trust-dialog case
+  (`first_message::a_superagent_message_is_not_typed_into_a_trust_prompt`) failed with "the
+  message was typed into the trust prompt" before the fix.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
+  test(/^first_message::/))'`: 20 passed. `cargo nextest run -p yulius-app task_message`: 2
+  passed (AC-2's cleaning and paste framing).
+- `scripts/dev ci` on 86640db2 (before the review fixes): exit 0, 2249 tests passed, 17 skipped;
+  rerun on the final head before delivery (result in the pull request).
+- `scripts/dev security` (Vidoc vidoc-1, change scan, 86640db2): exit 0, no critical, high or
+  medium finding. One low finding in the change, for me to decide: `mcp.rs:101` "Hash-oracle
+  verification of secret values" is `secret_verify`, unchanged here (only its doc comment moved
+  into the shared one beside `task_message`); its design (audited, Superagent-only, values are
+  high-entropy secrets) is ADR-0144's, so it is not this change's to fix. One low finding outside
+  the change (`supervisor.rs:1930`, transcript path) is filed by Yulius CI.
+- Independent review, round 1 (fresh session, `om-code-review`, head 86640db2): REQUEST CHANGES
+  for one medium own-code finding, answered:
+  1. (medium) a message could be typed into Claude Code's folder-trust dialog of a goal run:
+     fixed test-first (refused while `!session_started && trust_prompt_shown`, AC-8).
+  2. (low) other Yulius typists ignore `typing_message` in the 300 ms window: kept narrow and
+     worded accurately in ADR-0178's Consequences.
+  3. (low) a failed Enter after the paste invited a duplicate retry: the error now says the text
+     may still be in the prompt box.
+  4. (low) a draft older than a minute is submitted with the message: the spec's choice, now in
+     the ADR's Consequences.
+  5. (low) guard paths and error kinds untested: the in-memory test asserts `Conflict`,
+     `Invalid`, `NotFound` and `Forbidden`, and a `running` task without a live session. The
+     concurrent-message and first-message guards are runtime flags not reachable from the
+     integration tests; their logic is the same `Conflict` early return.
+  6. (low) spec Evidence missing: this section.
+  7. (low) prompt-injection relay on a contained server: same reach as `task_create`, sentence
+     added to the ADR.
+  8. (nit) product wording named the Superagent; 9. (nit) the Superagent's instructions list
+     `task_message` among the tools used only when the person asks: both fixed.
+- Round 2's verdict on the final head is in the pull request.
+- Not tested: a real Claude Code TUI (the fake agent models its bracketed paste and Enter);
+  Claude Code's own queuing of a message submitted mid-turn is its documented behaviour, not
+  exercised here.
