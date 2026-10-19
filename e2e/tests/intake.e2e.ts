@@ -170,10 +170,13 @@ test('the supertask proposal closes when its "Run after" task leaves the list (S
   await screen.getByRole('button', 'Start task').click();
   const card = screen.getByRole('region', 'Supertask proposal');
   await expect(card).toHaveText(/It replaces “After #12”\./);
+  await expect(card.getByRole('button', 'Run as a supertask')).toBeFocused();
   // Someone archives #12: the server announces it and the sandbox's list drops it.
   await touchTask(browser, 'sb_studio', 12, { archived: true });
   await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
   await expect(card).toHaveCount(0);
+  // The keyboard was in the card: it lands in the prompt, as after a changed start choice.
+  await expect(prompt).toBeFocused();
   await expect(prompt).toHaveText(BROAD);
   await expect(browser).toHaveURL(/#\/s\/studio$/);
 });
