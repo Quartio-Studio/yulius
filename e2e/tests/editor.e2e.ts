@@ -711,8 +711,8 @@ test('an editor worker in use whose script fails to load is still an uncaught er
     expect.stringContaining("uncaught: Uncaught NetworkError: Failed to execute 'importScripts'"),
     'uncaught: Uncaught [object ErrorEvent]',
   ]);
-  // Expected here: taken off the list `failOnPageErrors()` checks after the test.
-  await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.length = 0; });
+  // Expected here: these two are taken off the list `failOnPageErrors()` checks after the test.
+  await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.splice(0, 2); });
 });
 
 // Review round 1: the strip drawn again during a drag (a save ending, a tab closed) must not leave

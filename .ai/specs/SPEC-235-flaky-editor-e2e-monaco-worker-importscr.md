@@ -1,11 +1,11 @@
 ---
 yulius-task: dc274028-c9f6-4710-b429-8bcdb5ef4607
-status: in-progress
+status: done
 ---
 
 # SPEC-235: A Monaco worker ended while its script loads raises no uncaught error
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: task #221
 Scope authorization: task #221, "Fix GitHub issue #509". Fixes #509. Builds on SPEC-127 (the
@@ -81,9 +81,9 @@ console sees it there; the product loses nothing, as the worker was no longer wa
 - [x] Ended Monaco workers raise no uncaught error
 - [x] Loaded proof: editor suite repeated at a 0.2 CPU share
 - [x] Gate, security scan and docs green
-- [ ] Full e2e suite green and spec evidence recorded
-- [ ] Independent review answered and approved
-- [ ] Delivered: pull request merged into dev on green
+- [x] Full e2e suite green and spec evidence recorded
+- [x] Independent review answered and approved
+- [x] Delivered: pull request merged into dev on green
 
 ## Acceptance criteria
 
@@ -115,3 +115,40 @@ console sees it there; the product loses nothing, as the worker was no longer wa
   closes a file quickly, and every other test closing files would need it); cancelling every
   worker load error by its message (would hide a worker script that really fails to load);
   patching the vendored Monaco bundle (lost on the next update).
+
+## Evidence
+
+All on 2026-10-19, Chromium 153 (Playwright 1.63), host load average 175–242 from other tasks.
+
+- **Reproduction, probe page** (scratch, not committed): `MonacoEnvironment.getWorker` +
+  `terminate()` after 50, 300 and 1000 ms while a test server held `editor.worker-*.js` 2 s
+  (before the headers, or after half the body) → the #509 error on `window` each time; after
+  2600 ms (loaded) → none. A reset connection → the error at every delay.
+- **Regression test fails on dev**: "an editor worker ended while its script loads…" on dev's
+  `editorview.js`, `--repeat-each 3`: 0/3, each in `afterEach` with
+  `uncaught: Uncaught NetworkError: Failed to execute 'importScripts' … editor.worker-_vAIFJDs.js
+  failed to load.`, every step of the test passing. With the fix: 3/3.
+- **R2 guard**: "an editor worker in use whose script fails to load…": 3/3 on dev and 3/3 with the
+  fix (the browser's NetworkError, then Monaco's `Uncaught [object ErrorEvent]`); 0/3 with a mutant
+  that cancels every worker error (only Monaco's rethrow is left).
+- **Loaded proof**: `CI=true npx e2e run tests/editor.e2e.ts --repeat-each 10 --workers 4` while a
+  controller held a 2 s CPU-bound probe near 0.20 of a CPU (busy loops set every 20 s; 177 probes,
+  median 0.18, 0.12–0.33), 14:46–15:45: **260 passed, 0 failed** in 3483 s (about 54
+  worker-seconds per test, 14 s unloaded). The median sat a little under the 0.20 target, so the
+  proof is no lighter than the target.
+- `scripts/dev ci`: exit 0 (2258 tests). `scripts/dev security`: exit 0, Vidoc vidoc-1 change scan,
+  no finding.
+- Full e2e suite (`CI=true npx e2e run`, the config's workers), head `4edc35ae`: 625 passed,
+  1 skipped (needs a model), 1 failed: `pause.e2e.ts` › "the Tasks list row menu pauses and resumes
+  a task", `.tl-row[data-task-id="tsk_studio_8"] … .tl-action:last-child` not visible for 28.7 s
+  after a hover. Outside this change: neither that test, the mock nor the Tasks list is touched, and
+  the test hovers row #8 on the default mock, whose ambient activity moves that row (queued →
+  starting → running at about 12–20 s), the hover race #515 fixed elsewhere with `ambient=0`. No
+  open issue tracks it; noted on #509 (this task opens no issues).
+- After merging `origin/dev` (`c7b2df6b`): `editor.e2e.ts` 26/26.
+- Independent review (fresh session, `om-code-review`) of `4edc35ae`: APPROVE; root cause checked
+  against the vendored Monaco. Findings: minor, this Evidence section (done); nit, the in-use test
+  cleared every recorded error (now `splice(0, 2)`, only the two expected); nit, merge `dev`
+  (done).
+- `support.ts` and `failOnPageErrors()` are unchanged (no allowlist); the vendored Monaco is
+  unchanged.
