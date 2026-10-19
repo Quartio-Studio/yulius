@@ -141,7 +141,8 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   message was typed into the trust prompt" before the fix.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
   test(/^first_message::/) | test(/^cockpit::/) | test(/^manage_tools::/) | test(/^recovery::/)
-  | test(/^supervision::/))'`: 99 passed (before round 3); `task_message::` 8 passed after it, and the 2 unit tests. `cargo nextest run -p yulius-app task_message`: 2
+  | test(/^supervision::/))'`: 99 passed (before round 3); `task_message::` 8 passed after
+  it, and the 2 unit tests. `cargo nextest run -p yulius-app task_message`: 2
   passed (AC-2's cleaning and paste framing).
 - `scripts/dev ci` on 86640db2 (before the review fixes): exit 0, 2249 tests passed, 17 skipped;
   rerun on the final head before delivery (result in the pull request).
