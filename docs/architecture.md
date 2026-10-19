@@ -1246,7 +1246,10 @@ Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the edit
 the background keeps its files' text without Monaco models. Sign-out and an expired session forget
 the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
 run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
-and an editor made earlier lacks them (decision 0122).
+and an editor made earlier lacks them (decision 0122). Monaco ends a worker it no longer needs (the
+editor worker once the last file closes), also while the worker still loads its script; each worker
+of `MonacoEnvironment.getWorker` cancels its errors once it is ended, so that cut load is no
+uncaught error, while a worker in use still reports its errors (SPEC-235).
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
