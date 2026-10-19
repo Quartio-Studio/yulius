@@ -33,7 +33,7 @@ use yulius_app::ports::store::TaskStore;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::{Activity, AttemptState, TaskStatus};
+use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
@@ -2212,6 +2212,184 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
         .await?;
         stop(&app, &done).await?;
         stop(&app, &late).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The ptyhost and agent pids a run recorded.
+fn run_pids(run_dir: &Path) -> Result<(i32, i32), BoxError> {
+    let status: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run_dir.join("status.json"))?)?;
+    let host = status["ptyhost_pid"].as_i64().ok_or("ptyhost_pid")?;
+    let child = status["child_pid"].as_i64().ok_or("child_pid")?;
+    Ok((i32::try_from(host)?, i32::try_from(child)?))
+}
+
+/// SPEC-229 (task #215, 2026-10-18: the host rebooted and #213/#214, Done with their pull requests
+/// merged, read "Stopped (server restarted)" with a blank terminal): a reboot ends every session
+/// while Yulius is down. A task whose goal was achieved lost nothing and is Closed (RBT-001); one
+/// whose turn ended otherwise is Stopped (server restarted); both keep the screen their last turn
+/// ended on (RBT-002).
+#[test]
+fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    };
+
+    // Phase 1: one task Done, the other's turn ended after a prompt typed after its goal.
+    let first = runtime()?;
+    let (done, waiting, sandbox, user) = first.block_on(async {
+        let (app, _) = start(&data, &fake, agent.clone(), 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let done = goal_task(&app, &sandbox, &user, "Finish before the reboot").await?;
+        let waiting = goal_task(&app, &sandbox, &user, "Wait at the reboot").await?;
+        for id in [&done, &waiting] {
+            wait_for("Done", Duration::from_secs(90), || async {
+                activity(&app, id).await == Some(Activity::Done)
+            })
+            .await?;
+        }
+        app.send_input(&waiting, b"one more\r").await?;
+        wait_for("Your turn", Duration::from_secs(20), || async {
+            activity(&app, &waiting).await == Some(Activity::Waiting)
+        })
+        .await?;
+        Ok::<_, BoxError>((done, waiting, sandbox, user))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    // An update first (the processes live on) to a server that saves screens, from one that did
+    // not: the reattached idle runs save theirs at once, before any new turn.
+    let update = runtime()?;
+    update.block_on(async {
+        let (app, _) = start(&data, &fake, agent.clone(), 0).await?;
+        let mut run_dirs = Vec::new();
+        for id in [&done, &waiting] {
+            let attempt = app.deps.store.live_attempt(id).await?.ok_or("attempt")?;
+            let run_dir = PathBuf::from(&attempt.run_dir);
+            std::fs::remove_file(run_dir.join("final-screen"))?;
+            run_dirs.push(run_dir);
+        }
+        app.reconcile().await?;
+        for run_dir in &run_dirs {
+            wait_for(
+                "the reattached run's screen",
+                Duration::from_secs(10),
+                || {
+                    let saved = run_dir.join("final-screen").exists();
+                    async move { saved }
+                },
+            )
+            .await?;
+        }
+        assert_eq!(
+            activity(&app, &done).await,
+            Some(Activity::Done),
+            "still Done"
+        );
+        Ok::<_, BoxError>(())
+    })?;
+    update.shutdown_timeout(Duration::from_secs(5));
+
+    // The reboot: every process ends with no exit recorded (the host first, so nobody records it).
+    let rt = runtime()?;
+    rt.block_on(async {
+        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let mut run_dirs = Vec::new();
+        for id in [&done, &waiting] {
+            let attempt = TaskStore::live_attempt(&store, id)
+                .await?
+                .ok_or("attempt")?;
+            let run_dir = PathBuf::from(&attempt.run_dir);
+            let (host, child) = run_pids(&run_dir)?;
+            for pid in [host, child] {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            for pid in [host, child] {
+                wait_for("the process gone", Duration::from_secs(10), || async move {
+                    process_gone(pid.unsigned_abs())
+                })
+                .await?;
+            }
+            run_dirs.push(run_dir);
+        }
+        drop(store);
+
+        // Phase 2: the server after the reboot. A Done task whose attempt was never recorded
+        // live is swept by the same rule.
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let unattached = app
+            .deps
+            .store
+            .insert_task(&TaskRecord {
+                id: TaskId::parse("t-unattached")?,
+                sandbox_id: sandbox.clone(),
+                number: 0,
+                title: "Done without a live attempt".into(),
+                prompt: String::new(),
+                harness: Harness::ClaudeCode,
+                model: None,
+                effort: None,
+                workflow_id: None,
+                status: TaskStatus::Running,
+                activity: Some(Activity::Done),
+                branch: None,
+                worktree_path: None,
+                spec_path: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                created_by: user.clone(),
+                owner: user.clone(),
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                closed_at: None,
+                archived_at: None,
+                queued_at: None,
+                gate_blocks: 0,
+                wake_enabled: true,
+                mode: TaskMode::Goal,
+                supertask: false,
+            })
+            .await?;
+        app.reconcile().await?;
+        let swept = task(&app, &unattached.id).await?;
+        assert_eq!(
+            (swept.status, swept.closed_at.is_some()),
+            (TaskStatus::Closed, true),
+            "the sweep closes a Done task with no live attempt"
+        );
+        let closed = task(&app, &done).await?;
+        assert_eq!(
+            (closed.status, closed.closed_at.is_some()),
+            (TaskStatus::Closed, true),
+            "a finished task the reboot ended is Closed"
+        );
+        assert_eq!(
+            task(&app, &waiting).await?.status,
+            TaskStatus::Stopped(StopReason::ServerLost),
+            "a task whose turn ended without its goal is Stopped (server restarted)"
+        );
+        for (run_dir, text) in run_dirs
+            .iter()
+            .zip(["ECHO: /goal Finish before the reboot", "ECHO: one more"])
+        {
+            let screen = std::fs::read(run_dir.join("final-screen"))
+                .map_err(|e| format!("no saved screen in {}: {e}", run_dir.display()))?;
+            assert!(
+                String::from_utf8_lossy(&screen).contains(text),
+                "the saved screen shows how the last turn ended ({text}): {:?}",
+                String::from_utf8_lossy(&screen)
+            );
+        }
+        Ok::<_, BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
