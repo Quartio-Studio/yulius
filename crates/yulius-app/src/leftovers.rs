@@ -1769,9 +1769,8 @@ mod tests {
 
         let held = capabilities(None)?;
         let mut owner_only = held;
-        owner_only.effective -= CapabilitySet::DAC_OVERRIDE
-            | CapabilitySet::DAC_READ_SEARCH
-            | CapabilitySet::FOWNER;
+        owner_only.effective -=
+            CapabilitySet::DAC_OVERRIDE | CapabilitySet::DAC_READ_SEARCH | CapabilitySet::FOWNER;
         set_capabilities(None, owner_only)?;
         let unreadable = std::fs::read_dir(&item).err().map(|e| e.kind());
         let removed = remove_below(&data, &item);
