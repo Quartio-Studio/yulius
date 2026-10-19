@@ -1,11 +1,11 @@
 ---
 yulius-task: 0f066e1f-c5b7-41ec-a65e-f7289bf1cebb
-status: in-progress
+status: done
 ---
 
 # SPEC-236: The Notes tab grip's hover check hovers the tab it reads (#503)
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: Yulius task #222
 Scope authorization: the person's request (task #222). Fix GitHub issue #503 in
@@ -15,9 +15,9 @@ no new GitHub issue; mention the fix on #510 without closing it.
 ## Goal
 
 The grip's hover check passes on any machine, under any load, because it waits on a condition the
-page really reaches: the pointer is on the "Me" tab, and its grip takes the tab's colour. If
-something covers the tab, the test fails and says what covers it. It no longer fails with
-`expected false to be true` after 5 s.
+page really reaches: the pointer is on the "Me" tab, and its grip takes the tab's colour. The
+pointer moves there only once nothing covers the tab, so a toast over it is waited out instead of
+hovered into a 5 s `expected false to be true`.
 
 ## Context
 
@@ -34,14 +34,14 @@ something covers the tab, the test fails and says what covers it. It no longer f
 - **Cause: the sign-in toast over the Notes tabs (candidate 1).** With the toast on and the
   unchanged case hovering after the toast shows, `:hover` is on `#toasts > .toast.toast-warn`. The
   case then fails with `expect.poll(...).toBe(...) timed out after 5000 ms, last: expected false to
-  be true`, the issue's exact signature. Without the toast it passes. A run at rest reaches the
-  hover in about 2 s, before the toast; a loaded run reaches it after 5 s.
+  be true`, the issue's exact signature. Without the toast it passes. So a run passes when it
+  reaches the hover before the toast at 5 s, and fails when load delays it past that.
 - **Already removed from the file by #523.** #503 was filed at 08:00Z on 2026-10-15. PR #523
   (SPEC-148 E2L-006, merged 14:02Z the same day) found the same cause under load ("failed 10 of
   10") and opened every notes mock page with `browserask=0`. It did not reference #503, so the
   issue stayed open.
 - **Candidate 2 ruled out.** On dev (`browserask=0`), a probe hovered "Me" again and again until
-  28 s after load under a held 0.2 CPU share: 1922 hovers in 8 page loads, 0 misses. The task
+  26-28 s after load under a held 0.2 CPU share: 1922 hovers in 8 page loads, 0 misses. The task
   changes at 12-20 s regroup the sidebar, not the Notes tabs.
 - **Why the test was fragile.** It read the tab's box once and moved the mouse there with no hit
   check. Anything over the tab at that moment turned into a 5 s poll that cannot recover, because
@@ -65,8 +65,8 @@ something covers the tab, the test fails and says what covers it. It no longer f
 - [x] File passes loaded runs 1-10
 - [x] File passes loaded runs 11-20
 - [x] Gate green and spec Evidence written
-- [ ] Independent review approves the final head
-- [ ] Merged into dev with #503 and #510 commented
+- [x] Independent review approves the final head
+- [x] Merged into dev with #503 and #510 commented (merge armed on the reviewed head)
 
 ## Acceptance criteria
 
@@ -79,7 +79,7 @@ something covers the tab, the test fails and says what covers it. It no longer f
 
 ## Test plan
 
-- A probe that is not committed: it hovers "Me" again and again until 24-28 s after load and logs
+- A probe that is not committed: it hovers "Me" again and again until 26-28 s after load and logs
   `document.querySelectorAll(':hover')`. Run with the toast on and with `browserask=0`, at rest and
   under a held 0.2 CPU share.
 - The changed case with the cause forced (toast on, hovering after the toast shows), then without.
@@ -138,7 +138,7 @@ every ~20 s, from the median of three 2 s probes.
 - **20 runs in a row under load.** `E2E_TELEMETRY_DISABLED=1 npx e2e run tests/notes.e2e.ts`, with
   no retries (`retries: 0`) and no sleeps.
   - 20 of 20 runs passed, 36 of 36 tests each (720 tests), from 14:38 to 16:45.
-  - Each run took 305-467 s (10-13 s per test).
+  - Each run took 305-467 s for its 36 tests on 2 workers.
   - The controller logged 381 samples over the window: mean share 0.201 (min 0.051, max 0.493),
     with 11 loops on average. `scripts/dev ci` ran during runs 2-13, so the controller held
     the share with fewer loops.
@@ -154,3 +154,8 @@ every ~20 s, from the median of three 2 s probes.
   its move would still get the pointer and time the hover out. Here it would fail with Playwright's
   call log rather than the colour poll. Nothing in this case shows a toast (`browserask=0`,
   `ambient=0`).
+- **Review.** Round 1 (fresh session, at a5244372): request changes, with no code change asked:
+  the Evidence section, a line number, and two wordings. All were fixed (c4159509 and this
+  Evidence). Round 2 (fresh session, at 179c3e8c after the dev merge): approve, with four wording
+  nits in the spec and `docs/changes.md`, all fixed. #503 and #510 were commented (#510 stays
+  open: this covers one of its tests).
