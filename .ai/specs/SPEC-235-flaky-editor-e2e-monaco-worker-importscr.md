@@ -81,7 +81,7 @@ console sees it there; the product loses nothing, as the worker was no longer wa
 - [x] Ended Monaco workers raise no uncaught error
 - [x] Loaded proof: editor suite repeated at a 0.2 CPU share
 - [x] Gate, security scan and docs green
-- [x] Full e2e suite green and spec evidence recorded
+- [x] Full e2e suite run (one pre-existing failure outside the change) and evidence recorded
 - [x] Independent review answered and approved
 - [x] Delivered: pull request merged into dev on green
 
