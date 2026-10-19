@@ -1,11 +1,11 @@
 ---
 yulius-task: d5037714-ba92-4ff7-973f-095c6dc6a614
-status: in-progress
+status: done
 ---
 
 # SPEC-233: A watcher is told the agent waits for the owner, not to type in a terminal
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: task #219
 Scope authorization: task #219: "Fix GitHub issue #576". Fixes #576, found by task #170. Extends
@@ -47,8 +47,10 @@ Confirmed against `dev` at b9080ea4.
 - [x] Spec records the root cause of #576
 - [x] Regression e2e test fails on the watcher's texts
 - [x] Watchers are told the agent waits for the owner
-- [ ] Independent review approved
-- [ ] Gates green and merged into dev
+- [x] Independent review approved
+- [x] Repository gate and security scan pass
+- [x] Full e2e suite passes
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -70,3 +72,22 @@ repository gate run before delivery.
   control, is already on the card. No ADR: a wording fix within SPEC-179.
 - The sidebar labels "Your turn" / "Needs your action" (`statusInfo()` in `status.js`) are shared
   by every view of a task and are not this change; noted on #576.
+
+## Evidence
+
+- Red: `npx e2e run tests/watching.e2e.ts` at 7966a67c (the test on dev b9080ea4's code): 1 failed,
+  24 passed; the new test found no "@anna-q's reply" text, and the trace shows the watcher's bar
+  reading "The agent is waiting for your reply. Type it in the terminal below."
+- Green at 4c1a4c92: `npx e2e run tests/watching.e2e.ts tests/reply.e2e.ts tests/task-done.e2e.ts`:
+  46 passed (the owner's texts in `reply.e2e.ts` and `task-done.e2e.ts` unchanged).
+- `python3 scripts/bootstrap.py && scripts/dev ci` at 4c1a4c92: exit 0, nextest 2258 passed,
+  17 skipped.
+- `scripts/dev security` at 4c1a4c92: exit 0; vidoc-1 change scan, no open critical, high or
+  medium finding in the change; no low finding listed.
+- Full e2e `npx e2e run` at 4c1a4c92: 625 passed, 1 skipped (the model-driven agent test, no key).
+- Independent review in a fresh session (`om-code-review`) of b9080ea4..4c1a4c92: APPROVE, no
+  own-code finding to fix; two nits left as they are (the comment above the first branch covers
+  both; the substring match is backed by the negative checks). Two pre-existing watcher texts
+  (`taskview.js:328` "What you type waits until it resumes.", `:337` "Needs you: …") are noted on
+  #576, outside this change.
+- The last Plan item is ticked with the delivery: Yulius merges this head into dev only on green CI.
