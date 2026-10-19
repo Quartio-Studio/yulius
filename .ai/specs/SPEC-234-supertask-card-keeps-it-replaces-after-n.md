@@ -42,7 +42,7 @@ closes, as it does when the person changes the start choice.
 ## Plan
 
 - [x] Spec SPEC-234 written and validated; issue #587 told the plan
-- [ ] Regression e2e test: the supertask card closes when #12 leaves the list (fails before the fix)
+- [x] Regression e2e test: the supertask card closes when #12 leaves the list (fails before the fix)
 - [ ] renderChips() closes the card when it drops the chosen task; e2e suite green
 - [ ] Docs: spec evidence and changes.md entry; gates and security scan run
 - [ ] Independent review in a fresh session, findings answered
