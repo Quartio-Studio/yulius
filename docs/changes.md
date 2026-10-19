@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- The task terminal no longer garbles when an agent prints a secret's value (SPEC-239, ADR-0181,
+  task #225, part of #705). The terminal used to replace the value with `[secret:NAME]`, which is
+  usually wider than the value. Claude Code redraws its screen by moving the cursor to rows and
+  columns it computed from what it wrote, so the extra width sent every later redraw to the wrong
+  cells. In the reported project this happened on most answers, because a secret's value was the
+  word "production". The terminals (task, Superagent, Cockpit shell) now show the label fitted to
+  the value's width: padded with `*`, or cut (`[secret:P]`). Transcripts and tool output keep the
+  full label. Whether an ordinary word should count as a secret at all stays on #705.
 - Closing the last file, switching folder or leaving the Editor while Monaco's editor worker still
   loads its script no longer reports an uncaught NetworkError on the page (SPEC-235, task #221,
   fixes #509). Monaco ends that worker as its last file goes; the cut `importScripts` threw an
