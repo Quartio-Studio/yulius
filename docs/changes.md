@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- Closing the last file, switching folder or leaving the Editor while Monaco's editor worker still
+  loads its script no longer reports an uncaught NetworkError on the page (SPEC-235, task #221,
+  fixes #509). Monaco ends that worker as its last file goes; the cut `importScripts` threw an
+  error nobody cancelled, which failed `editor.e2e.ts` under load. A worker the Editor has ended
+  now cancels its errors; one in use still reports them, and `failOnPageErrors()` has no allowlist.
 - The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
   the DO budget", it calls `task_message`. A task that has not started gets the message in its
   request, as a person's queued message. A running task gets it typed into its session, labelled
