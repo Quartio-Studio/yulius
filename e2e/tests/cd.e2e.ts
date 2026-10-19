@@ -426,13 +426,29 @@ test('the Now summary stops its reads and clock when it goes and reads nothing w
       } finally {
         Date.now = realNow;
       }
-      return { first, whileHidden, rescheduled, ...ended, drawnAtOnce, drawnWhenOld };
+      // A failed read does not make what was kept younger (review round 3): 50 s on, both reads
+      // fail; 61 s after the last good read, a mount draws nothing of it.
+      const failing = { api: { get: async () => { throw new Error('down'); } } };
+      let drawnAfterFailures: boolean;
+      try {
+        Date.now = () => realNow() + 50_000;
+        const down = mountNowSummary(failing, { id: 'sb_x', slug: 'x' });
+        await settle();
+        down.destroy();
+        Date.now = () => realNow() + 61_000;
+        const after = mountNowSummary(failing, { id: 'sb_x', slug: 'x' });
+        drawnAfterFailures = Boolean(after.el.querySelector('.ci-now-list'));
+        after.destroy();
+      } finally {
+        Date.now = realNow;
+      }
+      return { first, whileHidden, rescheduled, ...ended, drawnAtOnce, drawnWhenOld, drawnAfterFailures };
     } finally {
       Object.assign(window, { setTimeout: real.st, clearTimeout: real.ct, setInterval: real.si, clearInterval: real.ci });
       delete (document as unknown as { hidden?: boolean }).hidden;
     }
   });
-  expect(result).toEqual({ first: 2, whileHidden: 0, rescheduled: 1, clock: 0, pending: 0, drawnAtOnce: true, drawnWhenOld: false });
+  expect(result).toEqual({ first: 2, whileHidden: 0, rescheduled: 1, clock: 0, pending: 0, drawnAtOnce: true, drawnWhenOld: false, drawnAfterFailures: false });
 });
 
 test('with nothing running the Now summary says how the latest runs ended', async ({ app, screen }) => {

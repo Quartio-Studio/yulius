@@ -17,8 +17,9 @@ const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 20000;
 const shortSha = (sha) => String(sha || '').slice(0, 7);
 const envTitle = (name) => (name === 'dev' ? 'Dev' : 'Production');
-// The overviews last read, per sandbox: `{ ci, cd, at }`, each kept until a read of it succeeds,
-// and drawn on a mount only while younger than KEPT_MS (older ones may name runs long ended).
+// The overviews last read, per sandbox: `{ ci, ciAt, cd, cdAt }`, each kept until a read of it
+// succeeds, and drawn on a mount only while its read is younger than KEPT_MS (an older one may
+// name runs long ended). A failed read changes neither the overview nor its time.
 const lastRead = new Map();
 const KEPT_MS = 60000;
 
@@ -92,8 +93,9 @@ export function mountNowSummary(ctx, sandbox) {
       const [ci, cd] = await Promise.allSettled([ctx.api.get(`${base}/ci`), ctx.api.get(`${base}/cd`)]);
       if (destroyed) return;
       // A failed read keeps what was read of that overview before (review round 1).
-      const kept = lastRead.get(sandbox.id) || {};
-      const read = { ci: ci.status === 'fulfilled' ? ci.value : kept.ci, cd: cd.status === 'fulfilled' ? cd.value : kept.cd, at: Date.now() };
+      const read = { ...(lastRead.get(sandbox.id) || {}) };
+      if (ci.status === 'fulfilled') Object.assign(read, { ci: ci.value, ciAt: Date.now() });
+      if (cd.status === 'fulfilled') Object.assign(read, { cd: cd.value, cdAt: Date.now() });
       lastRead.set(sandbox.id, read);
       if (read.ci || read.cd) active = render(read.ci, read.cd);
       else active = Boolean(clock);
@@ -103,8 +105,11 @@ export function mountNowSummary(ctx, sandbox) {
     if (!destroyed) timer = setTimeout(load, active ? POLL_ACTIVE_MS : POLL_IDLE_MS);
   }
 
-  const kept = lastRead.get(sandbox.id);
-  if (kept && Date.now() - kept.at < KEPT_MS) render(kept.ci, kept.cd);
+  const kept = lastRead.get(sandbox.id) || {};
+  const young = (value, at) => (value && Date.now() - at < KEPT_MS ? value : undefined);
+  const keptCi = young(kept.ci, kept.ciAt);
+  const keptCd = young(kept.cd, kept.cdAt);
+  if (keptCi || keptCd) render(keptCi, keptCd);
   load();
   return { el, destroy: () => { destroyed = true; clearTimeout(timer); clearInterval(clock); } };
 }
