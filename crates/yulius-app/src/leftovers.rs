@@ -1786,6 +1786,33 @@ mod tests {
         Ok(())
     }
 
+    /// Review of SPEC-232: a name swapped for a link (to a directory) or a file after it was
+    /// listed is never opened as a directory handle, so its target is never changed or walked.
+    #[test]
+    fn a_directory_handle_is_never_opened_through_a_link() -> TestResult {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir()?;
+        let outside = tmp.path().join("runtime");
+        std::fs::create_dir(&outside)?;
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o750))?;
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("real"))?;
+        std::fs::write(tree.join("file"), "x")?;
+        std::os::unix::fs::symlink(&outside, tree.join("link"))?;
+        let handle = nix::fcntl::open(
+            &tree,
+            nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_NOFOLLOW,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        assert!(open_dir_handle(&handle, "link".as_ref()).is_none());
+        assert!(open_dir_handle(&handle, "file".as_ref()).is_none());
+        assert!(open_dir_handle(&handle, "gone".as_ref()).is_none());
+        assert!(open_dir_handle(&handle, "real".as_ref()).is_some());
+        let mode = std::fs::metadata(&outside)?.permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o750);
+        Ok(())
+    }
+
     /// Review round 3: the fallback that makes a read-only tree removable changes directories
     /// through their own handles to a fixed 0o700, never through a link to what lies outside.
     #[test]
