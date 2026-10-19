@@ -1745,6 +1745,14 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
 /// An agent secret's value, referenced by the sandbox's `apify` MCP server (SPEC-147).
 const SECRET_VALUE: &str = "apify_synthetic_9f3Qz7LmWc2Rk8Tn";
 const SECRET_LABEL: &str = "[secret:APIFY_KEY]";
+
+/// The label as a terminal screen shows it: as wide as the value (SPEC-239 TRM-002).
+fn screen_label() -> String {
+    format!(
+        "{SECRET_LABEL}{}",
+        "*".repeat(SECRET_VALUE.len() - SECRET_LABEL.len())
+    )
+}
 /// A literal bearer typed into an MCP server's form (not an agent secret).
 const LITERAL_BEARER: &str = "quartio-literal-bearer-5521";
 
@@ -1886,7 +1894,12 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
             "echo \"raw=<$YULIUS_MCP_APIFY_APIFY_TOKEN>\"\r".into(),
         )))
         .await?;
-    read_until(&mut socket, &mut screen, &format!("raw=<{SECRET_LABEL}>")).await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("raw=<{}>", screen_label()),
+    )
+    .await?;
     // Without its fingerprints (Yulius unreachable) a command does not run.
     socket
         .send(Message::text(typed(
@@ -1923,7 +1936,7 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     read_until(
         &mut socket,
         &mut screen,
-        &format!("shown-{SECRET_LABEL}-end\r\n"),
+        &format!("shown-{}-end\r\n", screen_label()),
     )
     .await?;
     assert!(!screen.contains(SECRET_VALUE), "{screen}");
@@ -1940,7 +1953,7 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     read_until(
         &mut socket,
         &mut screen,
-        &format!("shown-{SECRET_LABEL}-end"),
+        &format!("shown-{}-end", screen_label()),
     )
     .await?;
     assert!(!screen.contains(SECRET_VALUE), "{screen}");

@@ -53,9 +53,11 @@ Confirmed against `dev` at c7b2df6b.
 - **TRM-001** In the terminals people watch (task, Superagent, Cockpit shell: the live stream and
   the snapshot), a redacted form of a secret is replaced by text of the same display width
   (`unicode-width`, as the hub's `vt100` screen counts it).
-- **TRM-002** That text reads `[secret:NAME]`. When the value is wider, `*` fills it out before the
-  closing bracket. When the value is narrower, the label is cut and closed with `]` (for example
-  `[secret:P]` for a 10-column value). It is `*` alone below two columns.
+- **TRM-002** That text reads `[secret:NAME]`, followed by `*` up to the value's width when the
+  value is wider, so the full label stays searchable. When the value is narrower, the label is cut
+  and closed with `]` (for example `[secret:P]` for a 10-column value). Below two columns it is
+  `*` alone. When the redactor has already shown a short beginning of the value (under the 4-byte
+  hold minimum, as before), the rest of the value is masked to its own width.
 - **TRM-003** A cursor-addressed redraw over a redacted value lands in the same cells as it would
   over the value: the screen equals the unredacted screen with the value's cells masked.
 - **TRM-004** The value never shows in the terminal, as before (split chunks, held tails,
