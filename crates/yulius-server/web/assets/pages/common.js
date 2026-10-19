@@ -45,7 +45,7 @@ export function sectionedPage(ctx, sandbox, route, { title, path, sections, befo
       onClick: () => {
         if (current === o.value) return;
         current = o.value;
-        // The shown section goes first: its run dialog writes its own address as it closes.
+        // The shown section goes first, so nothing of it draws or writes after the new address.
         stop();
         replaceQuietly(current ? `${path}?section=${current}` : path);
         renderTabs();

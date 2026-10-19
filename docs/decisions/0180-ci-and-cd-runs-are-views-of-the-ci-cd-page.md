@@ -37,8 +37,13 @@ meaning, in a view instead of a dialog).
   It lists each CI run and deploy that is queued or running, with its state, its jobs and the time
   so far, and links to each one. When nothing runs, one line names the latest CI run and the latest
   deploy and how each ended. It reads `/ci` and `/cd` every 3 s while something runs and every 20 s
-  otherwise. It skips a read while the page is hidden and stops when the page goes. Until its first
-  read it holds a line of its own height, so the tabs do not move.
+  otherwise. It skips a read while the page is hidden and stops when the page goes. A failed read
+  of one overview keeps the last one read. Opening a run or "All runs" mounts the page again, so
+  the summary first draws the overviews it read last (kept in memory per sandbox). On the first
+  visit it holds a line of its own height. Either way the tabs do not move when the read comes.
+- **The keyboard follows the view.** When the control that opened a run went, opening the run
+  focuses its region, which is announced by name. "All runs" and Back focus that run's card in the
+  list, and "All runs" on a starting deploy focuses the CD tab.
 
 ## Alternatives
 

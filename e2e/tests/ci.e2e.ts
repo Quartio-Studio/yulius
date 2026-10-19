@@ -19,10 +19,12 @@ test('the CI page shows the jobs in force and opens a failed run at the failing 
   await expect(screen.getByText('cargo clippy --all-targets -- -D warnings')).toBeVisible();
   await expect(screen.getByText(/superseded by 0d7e5f3/)).toBeVisible();
 
-  // SPEC-238 CRV-001: a run opens inside the CI tab at its own address, not in a dialog.
-  await screen.getByRole('button', 'Open the run of PR #218 at 0d7e5f3').click();
+  // SPEC-238 CRV-001: a run opens inside the CI tab at its own address, not in a dialog, and the
+  // keyboard goes with it (review round 1: the card it was on is gone).
+  await screen.getByRole('button', 'Open the run of PR #218 at 0d7e5f3').press('Enter');
   const run = screen.getByRole('region', 'CI run');
   await expect(run).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('CI run');
   await expect(run.getByRole('tab', /test \(2\/2\)/)).toHaveAttribute('aria-selected', 'true');
   await expect(browser.locator('.run-output')).toHaveText(/1 failed/);
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
@@ -36,6 +38,8 @@ test('the CI page shows the jobs in force and opens a failed run at the failing 
   await run.getByRole('link', 'All runs').click();
   await expect(run).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+  // Back in the list, the keyboard is on the run it came from.
+  await expect(screen.getByRole('button', 'Open the run of PR #218 at 0d7e5f3')).toBeFocused();
   await browser.evaluate(() => history.back());
   await expect(screen.getByRole('region', 'CI run')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
@@ -61,6 +65,11 @@ test('a run opens from the link of its commit status', async ({ app, screen }) =
   await expect(run).toBeVisible();
   await expect(run.getByText('PR #221')).toBeVisible();
   await expect(run.getByRole('tab', /lint/)).toHaveAttribute('aria-selected', 'true');
+  // Review round 1: the header's Check for commits works in the run's view too.
+  await screen.getByRole('button', 'Check for commits').click();
+  await expect(screen.getByText('Looked for new commits.')).toBeVisible();
+  await expect(screen.getByText(/Couldn’t check for commits/)).toBeHidden();
+  await expect(run).toBeVisible();
 });
 
 // SPEC-162 SKP-003: PR #221 passed with "test (2/2)" skipped (it exited with the skip code): the
@@ -107,9 +116,13 @@ test('a running run keeps a live summary on top: its time, its jobs and the stag
   })).toBe(true);
   await browser.setViewport({ width: 1440, height: 900 });
 
-  // An ended run says how long it took and runs nothing now.
-  await app.open(mock('/s/studio/ci?run=ci_s2'));
+  // An ended run says how long it took and runs nothing now, before its stages have loaded (review
+  // round 1: the summary does not grow under them).
+  await app.open(mock('/s/studio/ci?run=ci_s2', '&hold=/api/sandboxes/sb_studio/stages/timeline'));
   await expect(browser.locator('.run-view .run-time')).toHaveText(/^took /);
+  await expect(browser.locator('.run-view .run-stages .st-row')).toHaveCount(0);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(browser.locator('.run-view .run-stages .st-row').first()).toBeVisible();
   await expect(browser.locator('.run-view .run-summary')).not.toContainText('Now:');
 });
 

@@ -12,6 +12,19 @@ import { stageLabel } from './stages.js';
 const WAITS = new Set(['queue', 'wait', 'pause']);
 const STAGES_NAMED = 2;
 
+/**
+ * Focus `el` once it is in the page, when the keyboard has nowhere to be: on the page itself or
+ * on an element that went or is hidden (the card or link that opened a view, which a remount
+ * removed). Focus a person put elsewhere (the sidebar, a terminal) stays where it is.
+ */
+export function focusIfLost(el) {
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    const lost = !active || active === document.body || !active.isConnected || (active.checkVisibility && !active.checkVisibility());
+    if (lost && el && el.isConnected) el.focus();
+  });
+}
+
 /** How long something has been running: "12 s so far", "1 min 5 s so far". */
 export function soFar(seconds) {
   const n = Math.max(0, Math.floor(seconds));
@@ -56,7 +69,8 @@ export function runView({ name, list, onBack }) {
   let clock = null;
   const stopClock = () => { clearInterval(clock); clock = null; };
   const content = h('div', { class: 'stack run-content' });
-  const el = h('section', { class: 'run-view stack', 'aria-label': name }, back, content);
+  // Focusable from script, so opening a run takes the keyboard there (it is announced by name).
+  const el = h('section', { class: 'run-view stack', 'aria-label': name, tabindex: '-1' }, back, content);
   return {
     el, head, body, back,
     loading: (node) => setChildren(content, node),
@@ -65,19 +79,23 @@ export function runView({ name, list, onBack }) {
     linkBack: () => { backTo = null; back.dataset.route = list; },
     /**
      * The summary's facts: how long (`startedAt` while `running`, ticking each second; `took` ms
-     * once ended; else `since`, "queued 2 min ago"), the stages running now and a line of its own.
+     * once ended, with `since`, "started 2 hours ago"; else `since` alone), the stages running now
+     * and a line of its own.
      */
     summarize({ running, startedAt, took, since, now, line }) {
       stopClock();
       const start = startedAt ? Date.parse(startedAt) : NaN;
-      if (running && Number.isFinite(start)) {
+      const ticking = running && Number.isFinite(start);
+      const ended = !running && Number.isFinite(took);
+      if (ticking) {
         const tick = () => { time.textContent = soFar((Date.now() - start) / 1000); };
         tick();
         clock = setInterval(tick, 1000);
       } else {
-        time.textContent = Number.isFinite(took) && took !== null ? `took ${duration(took)}` : since || '';
+        time.textContent = ended ? `took ${duration(took)}` : since || '';
       }
       setChildren(facts, time.textContent ? time : null,
+        ended && since ? h('span', null, since) : null,
         running && now ? h('span', { class: 'run-now' }, `Now: ${now}`) : null,
         line ? h('span', null, line) : null);
     },

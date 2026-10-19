@@ -2822,6 +2822,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* A run's view in the CI/CD page (SPEC-238): "All runs" at the start, the run under it. */
 .run-view { min-width: 0; }
 .run-back { align-self: flex-start; }
+.run-view:focus { outline: none; }
+/* Focus scrolled into view lands below the sticky summary, never under it (WCAG 2.4.11). */
+.page:has(.run-summary) { scroll-padding-top: 96px; }
 /* Its summary stays at the top of the page while the stages and the log scroll under it. */
 .run-summary { position: sticky; top: 0; z-index: var(--z-sticky); display: flex; flex-direction: column; gap: 4px; padding: 8px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
 .run-facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-variant-numeric: tabular-nums; }

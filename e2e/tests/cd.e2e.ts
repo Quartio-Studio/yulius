@@ -28,6 +28,8 @@ test('the CD page shows dev and production as their branches define them', async
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_s2$/);
   await expect(dev).toBeHidden();
   expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(0);
+  // Ended: how long it took and when it started (review round 1).
+  await expect(browser.locator('.run-view .run-facts')).toHaveText(/^took \S.* started .+ ago$/);
   expect(await axeViolations(browser)).toEqual([]);
   await view.getByRole('link', 'All runs').click();
   await expect(view).toBeHidden();
@@ -161,8 +163,9 @@ test('production deploys only after the project slug is typed', async ({ app, br
   const run = screen.getByRole('region', 'Deploy');
   await expect(run.getByText('Deploying')).toBeVisible();
   await expect(run.getByText(/promoted the integration branch|by mkarp/)).toBeVisible();
-  // SPEC-238 CRV-003: its summary counts the time it has run, by itself.
+  // SPEC-238 CRV-003: its summary counts the time it has run, by itself, and names its stage.
   await expect(browser.locator('.run-view .run-time')).toHaveText(/^\d+ s so far$/);
+  await expect(browser.locator('.run-view .run-summary')).toContainText('Now: build');
   // The time the person kept the confirmation open goes with it, as the run's confirmation wait
   // (SPEC-137 STG-302).
   const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm_ms?: number } } }).__yuliusMock.lastCdDeploy?.confirm_ms ?? null);
@@ -232,9 +235,10 @@ test('a starting deploy left for all runs goes on, and its toast opens it', asyn
   const dialog = screen.getByRole('region', 'Deploy');
   await expect(dialog.getByText('Starting')).toBeVisible();
   await expect(dialog.getByText(/Going back to all runs does not stop it/)).toBeVisible();
-  await dialog.getByRole('link', 'All runs').click();
+  await dialog.getByRole('link', 'All runs').press('Enter');
   await expect(dialog).toBeHidden();
   await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toBeFocused();
 
   await releaseDeploy(browser);
   await expect(screen.getByText('Deploying production.')).toBeVisible();
@@ -308,9 +312,13 @@ const nowSeconds = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browse
 
 test('the Now summary says what runs on both tabs and opens it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?section=cd'));
+  // The deploy started below keeps running for the whole test.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdRunMs: number } }).__yuliusMock.cdRunMs = 600000; });
   const now = screen.getByRole('region', 'Now');
-  await expect(now.getByRole('link', 'Running: CI quartio at 9f3c2a1')).toBeVisible();
+  await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toBeVisible();
   await expect(now).toContainText('3 jobs · 1 passed · 2 running');
+  // Each link's name is its visible text (WCAG 2.5.3, review round 1).
+  await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toHaveText('Running CI quartio at 9f3c2a1');
   await expect.poll(() => nowSeconds(browser)).not.toBeNull();
   const first = (await nowSeconds(browser))!;
   await expect.poll(() => nowSeconds(browser), { timeout: 5000 }).toBeGreaterThan(first);
@@ -322,16 +330,35 @@ test('the Now summary says what runs on both tabs and opens it', async ({ app, b
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   await confirm.getByRole('button', 'Deploy production').click();
   await expect(screen.getByRole('region', 'Deploy').getByText('Deploying')).toBeVisible();
-  await expect(now.getByRole('link', /^Deploying: CD Production at 4be81c0$/)).toBeVisible();
+  await expect(now.getByRole('link', /^Deploying CD Production at 4be81c0$/)).toBeVisible();
   await screen.getByRole('radio', 'CI (tests)').click();
-  await expect(now.getByRole('link', /^Deploying: CD Production at 4be81c0$/)).toBeVisible();
+  await expect(now.getByRole('link', /^Deploying CD Production at 4be81c0$/)).toBeVisible();
 
-  // Its link opens the run, on its tab; Back returns to where the person was.
-  await now.getByRole('link', 'Running: CI quartio at 9f3c2a1').click();
+  // A failed read of one overview keeps what it showed of that one (review round 1).
+  type Mock = { __yuliusMock: { failPath: string | null; failedReads: number; holdPath: string | null; held: Promise<void> | null }; __releaseNow?: () => void };
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.failPath = '/api/sandboxes/sb_studio/cd'; });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.failedReads), { timeout: 10000 }).toBeGreaterThan(0);
+  await expect(now.getByRole('link', /^Deploying CD Production at 4be81c0$/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.failPath = null; });
+
+  // Its link opens the run, on its tab, the summary drawn at once as it was (its reads held) so
+  // the tabs stay put; Back returns to where the person was.
+  await browser.evaluate(() => {
+    const w = window as unknown as Mock;
+    w.__yuliusMock.holdPath = '/api/sandboxes/sb_studio/cd';
+    w.__yuliusMock.held = new Promise((resolve) => { w.__releaseNow = resolve; });
+  });
+  await now.getByRole('link', 'Running CI quartio at 9f3c2a1').click();
   await expect(screen.getByRole('region', 'CI run').getByText('quartio')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s4$/);
+  await expect(browser.locator('.ci-now .ci-now-row')).toHaveCount(2);
+  await browser.evaluate(() => { const w = window as unknown as Mock; w.__yuliusMock.holdPath = null; w.__releaseNow!(); });
+  // The link of the run in view adds no history entry.
+  const entries = await browser.evaluate(() => history.length);
+  await now.getByRole('link', 'Running CI quartio at 9f3c2a1').click();
+  expect(await browser.evaluate(() => history.length)).toBe(entries);
   await expect(screen.getByRole('radio', 'CI (tests)')).toHaveAttribute('aria-checked', 'true');
-  await now.getByRole('link', /^Deploying: CD Production/).click();
+  await now.getByRole('link', /^Deploying CD Production/).click();
   await expect(screen.getByRole('region', 'Deploy')).toBeVisible();
   await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
   await browser.evaluate(() => history.back());
@@ -339,15 +366,59 @@ test('the Now summary says what runs on both tabs and opens it', async ({ app, b
 
   // On a phone the summary and the run view wrap, the page never scrolls sideways.
   await browser.setViewport({ width: 390, height: 844 });
-  await expect(now.getByRole('link', 'Running: CI quartio at 9f3c2a1')).toBeVisible();
+  await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toBeVisible();
   expect(await browser.evaluate(() => { const page = document.querySelector('.page')!; return page.scrollWidth <= page.clientWidth; })).toBe(true);
+});
+
+// Review round 1 (CRV-004): the summary reads nothing while the page is hidden and nothing once it
+// is gone; its timers are counted with stubbed setTimeout/setInterval (unit, in the page).
+test('the Now summary stops its reads and clock when it goes and reads nothing while hidden (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/ci'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/pages/cinow.js';
+    const { mountNowSummary } = await import(url);
+    const timeouts = new Map<number, () => void>();
+    const intervals = new Set<number>();
+    let next = 1;
+    const real = { st: window.setTimeout.bind(window), ct: window.clearTimeout.bind(window), si: window.setInterval.bind(window), ci: window.clearInterval.bind(window) };
+    Object.assign(window, {
+      setTimeout: (fn: () => void) => { const id = next++; timeouts.set(id, fn); return id; },
+      clearTimeout: (id: number) => { timeouts.delete(id); },
+      setInterval: () => { const id = next++; intervals.add(id); return id; },
+      clearInterval: (id: number) => { intervals.delete(id); },
+    });
+    const reads: string[] = [];
+    const running = { runs: [{ id: 'r1', label: 'dev', sha: 'abcdef0', state: 'running', jobs: [], started_at: new Date().toISOString() }] };
+    const ctx = { api: { get: async (path: string) => { reads.push(path); return path.endsWith('/ci') ? running : { runs: [] }; } } };
+    const settle = () => new Promise((resolve) => real.st(resolve, 0));
+    try {
+      const now = mountNowSummary(ctx, { id: 'sb_x', slug: 'x' });
+      await settle();
+      const first = reads.length;
+      // Hidden: the next read is skipped, and it waits again.
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      const [id, fn] = [...timeouts][0];
+      timeouts.delete(id);
+      fn();
+      await settle();
+      const whileHidden = reads.length - first;
+      const rescheduled = timeouts.size;
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      now.destroy();
+      return { first, whileHidden, rescheduled, clock: intervals.size, pending: timeouts.size };
+    } finally {
+      Object.assign(window, { setTimeout: real.st, clearTimeout: real.ct, setInterval: real.si, clearInterval: real.ci });
+      delete (document as unknown as { hidden?: boolean }).hidden;
+    }
+  });
+  expect(result).toEqual({ first: 2, whileHidden: 0, rescheduled: 1, clock: 0, pending: 0 });
 });
 
 test('with nothing running the Now summary says how the latest runs ended', async ({ app, screen }) => {
   await app.open(mock('/s/sandbox-3/ci'));
   const now = screen.getByRole('region', 'Now');
   await expect(now).toContainText('Nothing is running.');
-  await expect(now.getByRole('link', /^Last CI run: dev at 77aa01b, passed/)).toBeVisible();
+  await expect(now.getByRole('link', /^Last CI run: dev at 77aa01b passed/)).toBeVisible();
   await app.open(mock('/s/product/ci?section=cd'));
   await expect(screen.getByRole('region', 'Now')).toHaveText('Nothing is running.');
 });

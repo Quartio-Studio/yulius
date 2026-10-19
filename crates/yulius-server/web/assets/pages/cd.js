@@ -17,7 +17,7 @@ import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
-import { runView, stageNow, soFar } from '../runview.js';
+import { runView, stageNow, soFar, focusIfLost } from '../runview.js';
 
 const STATE = {
   running: { label: 'Deploying', tone: 'warn', icon: 'refresh' },
@@ -46,6 +46,11 @@ const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** The integration branch: the dev environment's branch (SPEC-152). */
 const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');
 const title = (env) => (env.name === 'dev' ? 'Dev' : 'Production');
+/** What a run's card's open button is called. */
+const openLabel = (run) => `Open the ${run.environment === 'dev' ? 'dev' : 'production'} deploy at ${shortSha(run.commit)}`;
+// The deploy whose view was left last, per sandbox: the list it goes back to puts the keyboard on
+// its card (SPEC-238 review round 1).
+const leftRun = new Map();
 
 /** What a person asks an agent when CD is set up through the harness. */
 const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and scripts/cd/ (skill infra-bootstrap, step 3).
@@ -82,13 +87,19 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
   const shownRun = route && route.query && route.query.get('run');
   if (shownRun) {
     showRun(shownRun);
-    return () => { destroyed = true; if (shown) shown.stop(); };
+    focusIfLost(shown.el);
+    return () => { destroyed = true; if (shown) shown.stop(); leftRun.set(sandbox.id, shownRun); };
   }
   section.append(host);
 
   const reload = loader(host, 'CD', () => ctx.api.get(`${base}/cd`), (overview) => {
     schedule(overview);
-    return render(overview);
+    const drawn = render(overview);
+    // Back from a deploy's view: the keyboard goes to that deploy's card, once.
+    const left = (overview.runs || []).find((r) => r.run_id === leftRun.get(sandbox.id));
+    leftRun.delete(sandbox.id);
+    if (left) focusIfLost(drawn.querySelector(`[aria-label="${CSS.escape(openLabel(left))}"]`));
+    return drawn;
   }, { shape: loadingLayout });
 
   /** The page while it loads (SPEC-120): two environment cards, the Runs heading, run cards. */
@@ -187,7 +198,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       extra: h('div', { class: 'item-meta' }, h('span', { title: dateTime(run.started_at) }, `Started ${relLong(run.started_at)}`), ` · by ${run.requested_by}`),
       controls,
       onOpen: () => openLater(run.run_id),
-      openLabel: `Open the ${label.toLowerCase()} deploy at ${shortSha(run.commit)}`,
+      openLabel: openLabel(run),
     });
   }
 
@@ -262,7 +273,12 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const state = h('div', { class: 'stack-sm', role: 'status' });
     const row = h('div', { class: 'cd-starting-row' },
       h('div', { class: 'cd-starting' }, h('span', { class: 'cd-starting-spinner', 'aria-hidden': 'true' }), state), elapsed);
-    const view = deployView({ onBack: () => { view.stop(); shown = null; view.el.remove(); host.hidden = false; } });
+    // All runs while it starts: the list again, the keyboard on the CD tab (the view and its link go).
+    const view = deployView({ onBack: () => {
+      view.stop(); shown = null; view.el.remove(); host.hidden = false;
+      document.querySelector('.tl-tabs [role="radio"][aria-checked="true"]')?.focus();
+    } });
+    focusIfLost(view.el);
     view.loading(h('div', { class: 'stack' }, head, row));
     requestAnimationFrame(() => setChildren(state,
       h('p', null, h('span', { class: 'sr-only' }, 'Starting: '), doing),
@@ -326,6 +342,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     setChildren(view.body, stages, output);
     if (into) { replaceQuietly(`${page}&run=${encodeURIComponent(id)}`); view.linkBack(); }
     let first = true;
+    let lastNow = null;
     const load = async () => {
       try {
         const run = await ctx.api.get(`${base}/cd/runs/${enc(id)}`);
@@ -336,12 +353,16 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
           h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by}${run.reason ? ` · ${run.reason}` : ''}`),
           h('span', { class: 'spacer' }),
           h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `cd_run:${id}`)), dataset: { route: pipelineHref(sandbox, `cd_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline'));
+        // The summary (SPEC-238 CRV-003): how long and the stage running now; drawn before the
+        // stages load, so it keeps its height, and again with what runs now.
+        const running = run.state === 'running';
+        const took = run.ended_at ? Date.parse(run.ended_at) - Date.parse(run.started_at) : NaN;
+        const summarize = (now) => view.summarize({ running, startedAt: run.started_at, took, since: `started ${relLong(run.started_at)}`, now: running ? now : null });
+        summarize(lastNow);
         const timeline = await loadWaterfall(ctx, sandbox, `cd_run:${id}`, stages, { title: 'Stages of this deploy' });
         if (destroyed || shown !== view) return;
-        // The summary (SPEC-238 CRV-003): how long and the stage running now.
-        const running = run.state === 'running';
-        const took = run.ended_at ? Date.parse(run.ended_at) - Date.parse(run.started_at) : null;
-        view.summarize({ running, startedAt: run.started_at, took: Number.isFinite(took) ? took : null, since: `started ${relLong(run.started_at)}`, now: running ? stageNow(timeline) : null });
+        lastNow = stageNow(timeline);
+        summarize(lastNow);
         const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
         const exit = run.exit_code === null || run.exit_code === undefined ? '' : `\n[exit code ${run.exit_code}]`;
         output.textContent = (run.output || (run.state === 'running' ? 'Waiting for output…' : 'No output.')) + exit;

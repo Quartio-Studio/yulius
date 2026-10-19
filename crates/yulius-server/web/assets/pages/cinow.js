@@ -1,12 +1,14 @@
 // The CI/CD page's "Now" summary (SPEC-238 CRV-004, ADR-0180), above its tabs and so on both:
 // each CI run and deploy queued or running, with its jobs and a time that grows by itself, each a
 // link to its run; with nothing running, how the latest CI run and the latest deploy ended. It
-// reads both overviews every few seconds while something runs, now and then otherwise.
+// reads both overviews every few seconds while something runs, now and then otherwise. A page
+// mounted again (a run opened, All runs) draws the last overviews it read at once, so the tabs
+// under it do not move.
 
 import { enc } from '../api.js';
 import { h, setChildren, pollPaused, badge, bar } from '../dom.js';
 import { relLong } from '../format.js';
-import { href } from '../router.js';
+import { href, currentLocation } from '../router.js';
 import { soFar } from '../runview.js';
 import { stateOf as ciState, jobsLine, ACTIVE } from './ci.js';
 import { stateOf as cdState } from './cd.js';
@@ -15,27 +17,28 @@ const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 20000;
 const shortSha = (sha) => String(sha || '').slice(0, 7);
 const envTitle = (name) => (name === 'dev' ? 'Dev' : 'Production');
+// The overviews last read, per sandbox: `{ ci, cd }`, each kept until a read of it succeeds.
+const lastRead = new Map();
 
 /** Mount the summary for `sandbox`: `{ el, destroy }`; `destroy()` stops its reads and its clock. */
 export function mountNowSummary(ctx, sandbox) {
   const base = `/api/sandboxes/${enc(sandbox.id)}`;
   const page = `/s/${encodeURIComponent(sandbox.slug)}/ci`;
-  // Until the first read, a line of its height (the page's own loading status says what loads), so
-  // the tabs do not move when it comes.
+  // Until the first read, what was read last, or a line of its height (the page's own loading
+  // status says what loads), so the tabs do not move when it comes.
   const el = h('section', { class: 'ci-now', 'aria-label': 'Now' }, h('div', { class: 'ci-now-row', 'aria-hidden': 'true' }, bar(40)));
   let timer = null;
   let clock = null;
   let destroyed = false;
 
-  const link = (path, name, ...children) => h('a', { href: href(path), dataset: { route: path }, 'aria-label': name }, ...children);
+  // A link named by its text (WCAG 2.5.3); the one of the run in view adds no history entry.
+  const link = (path, ...children) => h('a', { href: href(path), dataset: { route: path }, onClick: (event) => { if (currentLocation().full === path) event.preventDefault(); } }, ...children);
 
   /** One run that is going on: its state, what it is, a line about it and its time so far. */
   function liveRow({ path, kind, st, what, sha, line, startedAt, queuedAt }) {
-    const name = `${st.label}: ${kind} ${what} at ${shortSha(sha)}`;
     const time = startedAt ? h('span', { class: 'run-time', dataset: { since: startedAt } }, '') : h('span', null, `queued ${relLong(queuedAt)}`);
     return h('li', { class: 'ci-now-row' },
-      badge(st.label, st.tone),
-      link(path, name, h('span', { class: 'ci-now-kind' }, kind), ' ', what, ' ', h('code', null, shortSha(sha))),
+      link(path, badge(st.label, st.tone), ' ', h('span', { class: 'ci-now-kind' }, kind), ' ', what, ' at ', h('code', null, shortSha(sha))),
       line ? h('span', { class: 'muted' }, line) : null,
       h('span', { class: 'muted ci-now-time' }, time));
   }
@@ -62,11 +65,11 @@ export function mountNowSummary(ctx, sandbox) {
       const parts = [];
       if (lastCi) {
         const words = `${ciState(lastCi.state).label.toLowerCase()} ${relLong(lastCi.ended_at || lastCi.queued_at)}`;
-        parts.push(link(`${page}?run=${encodeURIComponent(lastCi.id)}`, `Last CI run: ${lastCi.label} at ${shortSha(lastCi.sha)}, ${words}`, `Last CI run: ${lastCi.label} ${words}`));
+        parts.push(link(`${page}?run=${encodeURIComponent(lastCi.id)}`, `Last CI run: ${lastCi.label} at ${shortSha(lastCi.sha)} ${words}`));
       }
       if (lastCd) {
         const words = `${cdState(lastCd.state).label.toLowerCase()} ${relLong(lastCd.ended_at || lastCd.started_at)}`;
-        parts.push(link(`${page}?section=cd&run=${encodeURIComponent(lastCd.run_id)}`, `Last deploy: ${envTitle(lastCd.environment)} at ${shortSha(lastCd.commit)}, ${words}`, `Last deploy: ${envTitle(lastCd.environment)} ${words}`));
+        parts.push(link(`${page}?section=cd&run=${encodeURIComponent(lastCd.run_id)}`, `Last deploy: ${envTitle(lastCd.environment)} at ${shortSha(lastCd.commit)} ${words}`));
       }
       setChildren(el, h('p', { class: 'muted small ci-now-idle' }, h('span', null, 'Nothing is running.'), parts));
     }
@@ -86,8 +89,11 @@ export function mountNowSummary(ctx, sandbox) {
     if (!pollPaused()) {
       const [ci, cd] = await Promise.allSettled([ctx.api.get(`${base}/ci`), ctx.api.get(`${base}/cd`)]);
       if (destroyed) return;
-      // A failed read keeps what was shown; nothing read yet shows nothing.
-      if (ci.status === 'fulfilled' || cd.status === 'fulfilled') active = render(ci.value, cd.value);
+      // A failed read keeps what was read of that overview before (review round 1).
+      const kept = lastRead.get(sandbox.id) || {};
+      const read = { ci: ci.status === 'fulfilled' ? ci.value : kept.ci, cd: cd.status === 'fulfilled' ? cd.value : kept.cd };
+      lastRead.set(sandbox.id, read);
+      if (read.ci || read.cd) active = render(read.ci, read.cd);
       else active = Boolean(clock);
     } else {
       active = Boolean(clock);
@@ -95,6 +101,8 @@ export function mountNowSummary(ctx, sandbox) {
     if (!destroyed) timer = setTimeout(load, active ? POLL_ACTIVE_MS : POLL_IDLE_MS);
   }
 
+  const kept = lastRead.get(sandbox.id);
+  if (kept) render(kept.ci, kept.cd);
   load();
   return { el, destroy: () => { destroyed = true; clearTimeout(timer); clearInterval(clock); } };
 }

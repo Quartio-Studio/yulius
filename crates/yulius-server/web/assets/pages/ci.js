@@ -13,7 +13,7 @@ import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
-import { runView, stageNow } from '../runview.js';
+import { runView, stageNow, focusIfLost } from '../runview.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -38,6 +38,8 @@ const POLL_IDLE_MS = 20000;
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const stateBadge = (state) => badge(stateOf(state).label, stateOf(state).tone);
 const shortSha = (sha) => String(sha || '').slice(0, 7);
+/** What a run's card's open button is called. */
+const openLabel = (run) => `Open the run of ${run.label} at ${shortSha(run.sha)}`;
 
 /** A run's jobs in a line: "3 jobs · 1 passed · 2 running". */
 export function jobsLine(jobs) {
@@ -50,6 +52,10 @@ export function jobsLine(jobs) {
   }
   return parts.join(' · ');
 }
+
+// The run whose view was left last, per sandbox: the list it goes back to puts the keyboard on its
+// card (SPEC-238 review round 1).
+const leftRun = new Map();
 
 /** What the CI/CD page's sub-heading says on the CI tab. */
 export const CI_SUB = `tests run on this ${BRAND.name} machine`;
@@ -72,13 +78,19 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   let destroyed = false;
   if (shownRun) {
     const view = showRun(shownRun);
-    return () => { destroyed = true; clearTimeout(poll); view.dispose(); };
+    focusIfLost(view.el);
+    return () => { destroyed = true; clearTimeout(poll); view.dispose(); leftRun.set(sandbox.id, shownRun); };
   }
   host.append(runsHost, hygieneHost);
 
   const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
     schedule(overview);
-    return renderOverview(overview);
+    const drawn = renderOverview(overview);
+    // Back from a run's view: the keyboard goes to that run's card, once.
+    const left = (overview.runs || []).find((r) => r.id === leftRun.get(sandbox.id));
+    leftRun.delete(sandbox.id);
+    if (left) focusIfLost(drawn.querySelector(`[aria-label="${CSS.escape(openLabel(left))}"]`));
+    return drawn;
   }, { shape: loadingLayout });
 
   /** The runs while they load (SPEC-120): the configuration card, the Runs heading, run cards. */
@@ -158,7 +170,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       extra: h('div', { class: 'item-meta' }, meta),
       controls,
       onOpen: () => ctx.navigate(`${page}?run=${encodeURIComponent(run.id)}`),
-      openLabel: `Open the run of ${run.label} at ${shortSha(run.sha)}`,
+      openLabel: openLabel(run),
     });
   }
 
@@ -166,6 +178,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     syncButton.disabled = true;
     try {
       await ctx.api.post(`${base}/ci/sync`);
+      // A run's view has no list to refresh (review round 1): it says the look happened.
+      if (shownRun) { toast('Looked for new commits.', { kind: 'ok' }); return; }
       reload({ quiet: true });
       loadHygiene();
     } catch (error) {
@@ -199,7 +213,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   /** A run while it loads (SPEC-120, #449): its head line, the job tabs and the output box. */
   function runLoading() {
     return h('div', { class: 'stack' },
-      h('div', { class: 'run-summary' }, h('div', { class: 'row-wrap run-head' }, bar('sm'), bar('lg'), bar('sm'), bar('md'))),
+      h('div', { class: 'run-summary' }, h('div', { class: 'row-wrap run-head' }, bar('sm'), bar('lg'), bar('sm'), bar('md'), h('span', { class: 'spacer' }), h('span', { class: 'skeleton-button skeleton-button-sm' })),
+        h('div', { class: 'run-facts muted small' }, bar('lg'))),
       h('div', { class: 'ci-tabs' }, [0, 1, 2].map(() => h('span', { class: 'ci-tab' }, bar('md')))),
       h('div', { class: 'code-view run-output' }, bar(60), bar(40), bar(52)));
   }
@@ -215,6 +230,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     const stages = h('div', { class: 'run-stages' });
     const pipeline = h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `ci_run:${id}`)), dataset: { route: pipelineHref(sandbox, `ci_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline');
     view.loading(placeholder('Loading the CI run…', 'loading', runLoading));
+    let lastNow = null;
     host.append(view.el);
     let first = true;
     const load = async () => {
@@ -230,14 +246,18 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         }
         render(run);
         head.append(h('span', { class: 'spacer' }), pipeline);
+        // The summary (SPEC-238 CRV-003): how long, the stages running now and the jobs; drawn
+        // before the stages load, so it keeps its height, and again with what runs now.
+        const summarize = (now) => view.summarize({
+          running: ACTIVE.has(run.state) && Boolean(run.started_at), startedAt: run.started_at, took: run.duration_ms ?? NaN,
+          since: `${run.started_at ? 'started' : 'queued'} ${relLong(run.started_at || run.queued_at)}`,
+          now: ACTIVE.has(run.state) ? now : null, line: jobsLine(run.jobs),
+        });
+        summarize(lastNow);
         const timeline = await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
         if (destroyed) return;
-        // The summary (SPEC-238 CRV-003): how long, the stages running now and the jobs.
-        view.summarize({
-          running: ACTIVE.has(run.state) && Boolean(run.started_at), startedAt: run.started_at, took: run.duration_ms,
-          since: `${run.started_at ? 'started' : 'queued'} ${relLong(run.started_at || run.queued_at)}`,
-          now: ACTIVE.has(run.state) ? stageNow(timeline) : null, line: jobsLine(run.jobs),
-        });
+        lastNow = stageNow(timeline);
+        summarize(lastNow);
         if (ACTIVE.has(run.state)) poll = setTimeout(load, POLL_ACTIVE_MS);
       } catch (error) {
         if (first && !destroyed) view.loading(placeholder(`Couldn’t load the run: ${error.message}`, 'error'));

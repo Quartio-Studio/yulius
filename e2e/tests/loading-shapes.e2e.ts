@@ -369,6 +369,7 @@ test('the delivery dialog and a CI run load as their sections', async ({ app, br
   await expectQuietShape(browser, shape);
   expect(await browser.locator(`${shape} .ci-tabs > .ci-tab`).count()).toBeGreaterThanOrEqual(2);
   const head = await box(browser, `${shape} .run-head`);
+  const summary = await box(browser, `${shape} .run-summary`);
   const tabs = await box(browser, `${shape} .ci-tabs`);
   const output = await box(browser, `${shape} .run-output`);
   expect(await axeViolations(browser)).toEqual([]);
@@ -376,6 +377,9 @@ test('the delivery dialog and a CI run load as their sections', async ({ app, br
   await expect(browser.locator(shape)).toHaveCount(0);
   await expect(screen.getByRole('region', 'CI run').getByRole('tab', /lint/)).toBeVisible();
   expectSameBox(head, await box(browser, '.run-view .run-head'), ['x', 'y', 'width']);
+  // Its facts line is there from the start: the summary keeps its height (review round 1).
+  await expect(browser.locator('.run-view .run-time')).not.toHaveText('');
+  expectSameBox(summary, await box(browser, '.run-view .run-summary'));
   expectSameBox(tabs, await box(browser, '.run-view .ci-tabs'), ['x', 'width']);
   expectSameBox(output, await box(browser, '.run-view .run-output'), ['x', 'width']);
 });
