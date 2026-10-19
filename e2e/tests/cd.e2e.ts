@@ -20,20 +20,31 @@ test('the CD page shows dev and production as their branches define them', async
   await expect(screen.getByText('ssh: connect to host')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
 
-  // A failed dev deploy opens with its output, the secret's value never in it.
+  // A failed dev deploy opens with its output, the secret's value never in it, in place of the
+  // environments and the runs (SPEC-238): a view at its own address, not a dialog.
   await screen.getByRole('button', /Open the dev deploy at 7d1e0c9/).click();
-  const dialog = screen.getByRole('dialog', 'Deploy');
+  const view = screen.getByRole('region', 'Deploy');
   await expect(browser.locator('.run-output')).toHaveText(/\[secret:DEV_HOST\]/);
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_s2$/);
-  await browser.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+  await expect(dev).toBeHidden();
+  expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(0);
+  // Ended: how long it took and when it started (review round 1).
+  await expect(browser.locator('.run-view .run-facts')).toHaveText(/^took \S.* started .+ ago$/);
+  expect(await axeViolations(browser)).toEqual([]);
+  await view.getByRole('link', 'All runs').click();
+  await expect(view).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  // Back returns to the deploy, and the CD tab with it.
+  await browser.evaluate(() => history.back());
+  await expect(screen.getByRole('region', 'Deploy')).toBeVisible();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await screen.getByRole('region', 'Deploy').getByRole('link', 'All runs').click();
 
   // Dev needs a secret nobody allowed yet: nothing runs, and the page says why.
   await dev.getByRole('button', 'Deploy dev').click();
   await screen.getByRole('dialog', 'Deploy dev?').getByRole('button', 'Deploy dev').click();
-  // SPEC-189 CDS-003: the refusal is said in the Deploy dialog the confirmation opened.
-  const refused = screen.getByRole('dialog', 'Deploy');
+  // SPEC-189 CDS-003: the refusal is said in the Deploy view the confirmation opened.
+  const refused = screen.getByRole('region', 'Deploy');
   await expect(refused.getByText(/DEV_HOST allows using it outside the proxy/)).toBeVisible();
   await expect(refused.getByText('Not started')).toBeVisible();
   await expect(refused.getByText('Starting')).toBeHidden();
@@ -91,17 +102,17 @@ test('the earlier CD address opens the CD tab, and a deploy with it', async ({ a
   await expect(screen.getByRole('navigation', 'Sandbox').getByRole('link', 'CI/CD')).toHaveAttribute('aria-current', 'page');
 
   await app.open(mock('/s/studio/cd?run=cd_s2'));
-  const dialog = screen.getByRole('dialog', 'Deploy');
+  const view = screen.getByRole('region', 'Deploy');
   await expect(browser.locator('.run-output')).toHaveText(/\[secret:DEV_HOST\]/);
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_s2$/);
-  await browser.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+  await view.getByRole('link', 'All runs').click();
+  await expect(view).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
   await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
 });
 
 // SPEC-151 CCD-003, review round 1: the tab left is gone. Its late answers draw nothing, and a
-// deploy it started opens no dialog over the other tab nor names itself in the address.
+// deploy it started opens no view over the other tab nor names itself in the address.
 test('a tab left behind draws nothing when its answers come late', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?section=cd', '&hold=/api/sandboxes/sb_studio/cd'));
   await screen.getByRole('radio', 'CI (tests)').click();
@@ -123,18 +134,17 @@ test('a tab left behind draws nothing when its answers come late', async ({ app,
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   await confirm.getByRole('button', 'Deploy production').click();
   await expect(confirm).toBeHidden();
-  // The starting deploy's dialog is modal (SPEC-189): the person closes it, then leaves.
-  await expect(screen.getByRole('dialog', 'Deploy')).toBeVisible();
-  await browser.keyboard.press('Escape');
-  await expect(screen.getByRole('dialog', 'Deploy')).toBeHidden();
+  // The person leaves the starting deploy's view for the CI tab.
+  await expect(screen.getByRole('region', 'Deploy')).toBeVisible();
   await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('region', 'Deploy')).toBeHidden();
   await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
   await browser.evaluate(() => { (window as unknown as { __releaseDeploy: () => void }).__releaseDeploy(); });
   // The deploy itself went out: the CD tab lists it.
   await screen.getByRole('radio', 'CD (deployment)').click();
   await expect(browser.locator('.item-card:has-text("Production")').first()).toContainText('Deploying');
   await screen.getByRole('radio', 'CI (tests)').click();
-  await expect(screen.getByRole('dialog', 'Deploy')).toBeHidden();
+  await expect(screen.getByRole('region', 'Deploy')).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
 });
 
@@ -150,16 +160,19 @@ test('production deploys only after the project slug is typed', async ({ app, br
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   expect(await axeViolations(browser)).toEqual([]);
   await go.click();
-  const run = screen.getByRole('dialog', 'Deploy');
+  const run = screen.getByRole('region', 'Deploy');
   await expect(run.getByText('Deploying')).toBeVisible();
   await expect(run.getByText(/promoted the integration branch|by mkarp/)).toBeVisible();
+  // SPEC-238 CRV-003: its summary counts the time it has run, by itself, and names its stage.
+  await expect(browser.locator('.run-view .run-time')).toHaveText(/^\d+ s so far$/);
+  await expect(browser.locator('.run-view .run-summary')).toContainText('Now: build');
   // The time the person kept the confirmation open goes with it, as the run's confirmation wait
   // (SPEC-137 STG-302).
   const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm_ms?: number } } }).__yuliusMock.lastCdDeploy?.confirm_ms ?? null);
   expect(typeof sent === 'number' && sent > 0).toBe(true);
 });
 
-type Held = Window & { __yuliusMock: { holdCdDeploy?: Promise<void> }; __releaseDeploy?: () => void; __startDialog?: Element | null };
+type Held = Window & { __yuliusMock: { holdCdDeploy?: Promise<void> }; __releaseDeploy?: () => void; __startView?: Element | null };
 const holdDeploy = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
   const w = window as unknown as Held;
   w.__yuliusMock.holdCdDeploy = new Promise((resolve) => { w.__releaseDeploy = resolve; });
@@ -173,8 +186,9 @@ const elapsedSeconds = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => br
 
 // Task #174 (SPEC-189, #585): "when I clicked deploy nothing happened for a while and I thought it
 // broke". The server answers a deploy after its checks and promotion (seconds to a minute); the
-// page says at once that it is starting and what it does, then shows the run in the same dialog.
-test('a confirmed deploy opens its dialog at once and says what is starting', async ({ app, browser, screen }) => {
+// page says at once that it is starting and what it does, then shows the run in the same view
+// (SPEC-238: a view in the CD tab, no longer a dialog).
+test('a confirmed deploy opens its view at once and says what is starting', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/cd'));
   await holdDeploy(browser);
   await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
@@ -183,46 +197,49 @@ test('a confirmed deploy opens its dialog at once and says what is starting', as
   await confirm.getByRole('button', 'Deploy production').click();
 
   // Before any answer: what is starting, what it does now, and time that moves.
-  const dialog = screen.getByRole('dialog', 'Deploy');
+  const dialog = screen.getByRole('region', 'Deploy');
   await expect(dialog.getByText('Starting')).toBeVisible();
   await expect(dialog.getByText(/Checking, then promoting quartio at 9f3c2a1 into main/)).toBeVisible();
   await expect(dialog.getByText(/stages and output appear here/)).toBeVisible();
   await expect(dialog.getByText('main · by mkarp')).toBeVisible();
   // Its state is said in a live region filled after it exists, so a screen reader hears it.
-  expect(await browser.evaluate(() => document.querySelector('dialog[open] [role="status"]')?.textContent || '')).toMatch(/^Starting: Checking, then promoting/);
+  expect(await browser.evaluate(() => document.querySelector('.run-view [role="status"]')?.textContent || '')).toMatch(/^Starting: Checking, then promoting/);
   expect(await elapsedSeconds(browser)).not.toBeNull();
   const first = (await elapsedSeconds(browser))!;
   await expect.poll(() => elapsedSeconds(browser), { timeout: 5000 }).toBeGreaterThan(first);
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
   expect(await axeViolations(browser)).toEqual([]);
-  await browser.evaluate(() => { (window as unknown as Held).__startDialog = document.querySelector('dialog[open]'); });
+  await browser.evaluate(() => { (window as unknown as Held).__startView = document.querySelector('.run-view'); });
 
-  // The answer turns the same dialog into the run, without a toast over it.
+  // The answer turns the same view into the run, without a toast over it.
   await releaseDeploy(browser);
   await expect(dialog.getByText('Deploying')).toBeVisible();
   await expect(browser.locator('.run-output')).toHaveText(/to production/);
   await expect(dialog.getByText('Starting')).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_\d+$/);
   expect(await browser.evaluate(() => {
-    const kept = (window as unknown as Held).__startDialog;
+    const kept = (window as unknown as Held).__startView;
     return Boolean(kept && kept.isConnected && kept.querySelector('.run-output'));
   })).toBe(true);
   await expect(screen.getByText('Deploying production.')).toBeHidden();
   expect(await browser.evaluate(() => document.querySelector('.cd-starting-elapsed') === null)).toBe(true);
 });
 
-test('a starting deploy closed meanwhile goes on, and its toast opens it', async ({ app, browser, screen }) => {
+test('a starting deploy left for all runs goes on, and its toast opens it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/cd'));
   await holdDeploy(browser);
   await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
   const confirm = screen.getByRole('dialog', 'Deploy production?');
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   await confirm.getByRole('button', 'Deploy production').click();
-  const dialog = screen.getByRole('dialog', 'Deploy');
+  const dialog = screen.getByRole('region', 'Deploy');
   await expect(dialog.getByText('Starting')).toBeVisible();
-  await expect(dialog.getByText(/Closing this does not stop it/)).toBeVisible();
-  await browser.keyboard.press('Escape');
+  await expect(dialog.getByText(/Going back to all runs does not stop it/)).toBeVisible();
+  await dialog.getByRole('link', 'All runs').press('Enter');
   await expect(dialog).toBeHidden();
+  await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
+  // The keyboard goes back to the Deploy button that started it (review round 2).
+  await expect(screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…')).toBeFocused();
 
   await releaseDeploy(browser);
   await expect(screen.getByText('Deploying production.')).toBeVisible();
@@ -240,7 +257,7 @@ test('a starting deploy closed meanwhile goes on, and its toast opens it', async
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   await confirm.getByRole('button', 'Deploy production').click();
   await expect(dialog.getByText('Starting')).toBeVisible();
-  await browser.keyboard.press('Escape');
+  await dialog.getByRole('link', 'All runs').click();
   await expect(dialog).toBeHidden();
   await releaseDeploy(browser);
   await expect(screen.getByText('Deploying production.')).toBeVisible();
@@ -252,21 +269,21 @@ test('a starting deploy closed meanwhile goes on, and its toast opens it', async
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_\d+$/);
 });
 
-test('a refusal after its dialog closed is a toast; a page left with it open draws nothing', async ({ app, browser, screen }) => {
+test('a refusal after its view was left is a toast; a page left with it open draws nothing', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/cd'));
   // Dev is refused for a secret nobody allowed, after the server's checks took their time.
   await holdDeploy(browser);
   await screen.getByRole('region', 'Dev environment').getByRole('button', 'Deploy dev').click();
   await screen.getByRole('dialog', 'Deploy dev?').getByRole('button', 'Deploy dev').click();
-  const dialog = screen.getByRole('dialog', 'Deploy');
+  const dialog = screen.getByRole('region', 'Deploy');
   await expect(dialog.getByText(/Checking quartio at 9f3c2a1/)).toBeVisible();
-  await browser.keyboard.press('Escape');
+  await dialog.getByRole('link', 'All runs').click();
   await expect(dialog).toBeHidden();
   await releaseDeploy(browser);
   await expect(screen.getByText(/Couldn’t deploy dev: nothing ran: a person who manages DEV_HOST/)).toBeVisible();
   await expect(dialog).toBeHidden();
 
-  // Another page while production starts: its dialog goes with the CD tab, and nothing comes back.
+  // Another page while production starts: its view goes with the CD tab, and nothing comes back.
   await holdDeploy(browser);
   await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
   const confirm = screen.getByRole('dialog', 'Deploy production?');
@@ -283,6 +300,164 @@ test('a refusal after its dialog closed is a toast; a page left with it open dra
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('Deploying production.')).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+});
+
+// SPEC-238 CRV-004: "go back easily after this is closed and we see some dynamic summary all the
+// time". Above the tabs, on both, the page says what runs now, with a time that grows by itself,
+// and each one opens its run; with nothing running, how the latest CI run and deploy ended.
+const nowSeconds = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const text = document.querySelector('.ci-now .run-time')?.textContent || '';
+  const m = /^(?:(\d+) min )?(\d+) s so far$/.exec(text);
+  return m ? Number(m[1] || 0) * 60 + Number(m[2]) : null;
+});
+
+test('the Now summary says what runs on both tabs and opens it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  // The deploy started below keeps running for the whole test.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdRunMs: number } }).__yuliusMock.cdRunMs = 600000; });
+  const now = screen.getByRole('region', 'Now');
+  await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toBeVisible();
+  await expect(now).toContainText('3 jobs · 1 passed · 2 running');
+  // Each link's name is its visible text (WCAG 2.5.3, review round 1).
+  await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toHaveText('Running CI quartio at 9f3c2a1');
+  await expect.poll(() => nowSeconds(browser)).not.toBeNull();
+  const first = (await nowSeconds(browser))!;
+  await expect.poll(() => nowSeconds(browser), { timeout: 5000 }).toBeGreaterThan(first);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A production deploy joins it, from the CD tab, and stays there on the CI tab.
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  await expect(screen.getByRole('region', 'Deploy').getByText('Deploying')).toBeVisible();
+  await expect(now.getByRole('link', /^Deploying CD Production at 4be81c0$/)).toBeVisible();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(now.getByRole('link', /^Deploying CD Production at 4be81c0$/)).toBeVisible();
+
+  // A failed read of one overview keeps what it showed of that one (review round 1).
+  type Mock = { __yuliusMock: { failPath: string | null; failedReads: number; holdPath: string | null; held: Promise<void> | null }; __releaseNow?: () => void };
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.failPath = '/api/sandboxes/sb_studio/cd'; });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.failedReads), { timeout: 10000 }).toBeGreaterThan(0);
+  await expect(now.getByRole('link', /^Deploying CD Production at 4be81c0$/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.failPath = null; });
+
+  // Its link opens the run, on its tab, the summary drawn at once as it was (its reads held) so
+  // the tabs stay put; Back returns to where the person was.
+  await browser.evaluate(() => {
+    const w = window as unknown as Mock;
+    w.__yuliusMock.holdPath = '/api/sandboxes/sb_studio/cd';
+    w.__yuliusMock.held = new Promise((resolve) => { w.__releaseNow = resolve; });
+  });
+  await now.getByRole('link', 'Running CI quartio at 9f3c2a1').click();
+  await expect(screen.getByRole('region', 'CI run').getByText('quartio')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s4$/);
+  await expect(browser.locator('.ci-now .ci-now-row')).toHaveCount(2);
+  await browser.evaluate(() => { const w = window as unknown as Mock; w.__yuliusMock.holdPath = null; w.__releaseNow!(); });
+  // The link of the run in view adds no history entry.
+  const entries = await browser.evaluate(() => history.length);
+  await now.getByRole('link', 'Running CI quartio at 9f3c2a1').click();
+  expect(await browser.evaluate(() => history.length)).toBe(entries);
+  await expect(screen.getByRole('radio', 'CI (tests)')).toHaveAttribute('aria-checked', 'true');
+  await now.getByRole('link', /^Deploying CD Production/).click();
+  await expect(screen.getByRole('region', 'Deploy')).toBeVisible();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await browser.evaluate(() => history.back());
+  await expect(screen.getByRole('region', 'CI run')).toBeVisible();
+
+  // On a phone the summary and the run view wrap, the page never scrolls sideways.
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toBeVisible();
+  expect(await browser.evaluate(() => { const page = document.querySelector('.page')!; return page.scrollWidth <= page.clientWidth; })).toBe(true);
+});
+
+// Review round 1 (CRV-004): the summary reads nothing while the page is hidden and nothing once it
+// is gone; its timers are counted with stubbed setTimeout/setInterval (unit, in the page).
+test('the Now summary stops its reads and clock when it goes and reads nothing while hidden (unit, in the page)', async ({ app, browser }) => {
+  // A page with no poller of its own (review round 2): only the unit's timers land in the stubs.
+  await app.open(mock('/s/studio/automations', '&ambient=0&browserask=0'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/pages/cinow.js';
+    const { mountNowSummary } = await import(url);
+    const timeouts = new Map<number, () => void>();
+    const intervals = new Set<number>();
+    let next = 1;
+    const real = { st: window.setTimeout.bind(window), ct: window.clearTimeout.bind(window), si: window.setInterval.bind(window), ci: window.clearInterval.bind(window) };
+    // Only the module's own timers are stubbed (review round 2): the page's other timers keep
+    // running for real, so none of them lands in these maps. Stub ids are negative.
+    const mine = () => (new Error().stack || '').includes('/pages/cinow.js');
+    Object.assign(window, {
+      setTimeout: (fn: () => void, ms?: number) => { if (!mine()) return real.st(fn, ms); const id = -next++; timeouts.set(id, fn); return id; },
+      clearTimeout: (id: number) => { if (id < 0) timeouts.delete(id); else real.ct(id); },
+      setInterval: (fn: () => void, ms?: number) => { if (!mine()) return real.si(fn, ms); const id = -next++; intervals.add(id); return id; },
+      clearInterval: (id: number) => { if (id < 0) intervals.delete(id); else real.ci(id); },
+    });
+    const reads: string[] = [];
+    const running = { runs: [{ id: 'r1', label: 'dev', sha: 'abcdef0', state: 'running', jobs: [], started_at: new Date().toISOString() }] };
+    const ctx = { api: { get: async (path: string) => { reads.push(path); return path.endsWith('/ci') ? running : { runs: [] }; } } };
+    const settle = () => new Promise((resolve) => real.st(resolve, 0));
+    try {
+      const now = mountNowSummary(ctx, { id: 'sb_x', slug: 'x' });
+      await settle();
+      const first = reads.length;
+      // Hidden: the next read is skipped, and it waits again.
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      const [id, fn] = [...timeouts][0];
+      timeouts.delete(id);
+      fn();
+      await settle();
+      const whileHidden = reads.length - first;
+      const rescheduled = timeouts.size;
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      now.destroy();
+      const ended = { clock: intervals.size, pending: timeouts.size };
+      // Mounted again, it draws its last reads at once; a minute later it waits for a fresh read
+      // instead (review round 2: kept reads have an age limit).
+      const again = mountNowSummary(ctx, { id: 'sb_x', slug: 'x' });
+      const drawnAtOnce = Boolean(again.el.querySelector('.ci-now-list'));
+      again.destroy();
+      const realNow = Date.now;
+      Date.now = () => realNow() + 61_000;
+      let drawnWhenOld: boolean;
+      try {
+        const late = mountNowSummary(ctx, { id: 'sb_x', slug: 'x' });
+        drawnWhenOld = Boolean(late.el.querySelector('.ci-now-list'));
+        late.destroy();
+      } finally {
+        Date.now = realNow;
+      }
+      // A failed read does not make what was kept younger (review round 3): 50 s on, both reads
+      // fail; 61 s after the last good read, a mount draws nothing of it.
+      const failing = { api: { get: async () => { throw new Error('down'); } } };
+      let drawnAfterFailures: boolean;
+      try {
+        Date.now = () => realNow() + 50_000;
+        const down = mountNowSummary(failing, { id: 'sb_x', slug: 'x' });
+        await settle();
+        down.destroy();
+        Date.now = () => realNow() + 61_000;
+        const after = mountNowSummary(failing, { id: 'sb_x', slug: 'x' });
+        drawnAfterFailures = Boolean(after.el.querySelector('.ci-now-list'));
+        after.destroy();
+      } finally {
+        Date.now = realNow;
+      }
+      return { first, whileHidden, rescheduled, ...ended, drawnAtOnce, drawnWhenOld, drawnAfterFailures };
+    } finally {
+      Object.assign(window, { setTimeout: real.st, clearTimeout: real.ct, setInterval: real.si, clearInterval: real.ci });
+      delete (document as unknown as { hidden?: boolean }).hidden;
+    }
+  });
+  expect(result).toEqual({ first: 2, whileHidden: 0, rescheduled: 1, clock: 0, pending: 0, drawnAtOnce: true, drawnWhenOld: false, drawnAfterFailures: false });
+});
+
+test('with nothing running the Now summary says how the latest runs ended', async ({ app, screen }) => {
+  await app.open(mock('/s/sandbox-3/ci'));
+  const now = screen.getByRole('region', 'Now');
+  await expect(now).toContainText('Nothing is running.');
+  await expect(now.getByRole('link', /^Last CI run: dev at 77aa01b passed/)).toBeVisible();
+  await app.open(mock('/s/product/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Now')).toHaveText('Nothing is running.');
 });
 
 test('members deploy dev but never production, and an empty dev says so', async ({ app, screen }) => {

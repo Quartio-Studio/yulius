@@ -264,11 +264,11 @@ test('a deleted skill is not remembered as the sandbox’s place', async ({ app,
   await expect(browser).toHaveURL(/#\/s\/studio$/);
 });
 
-test('closing a CI run by leaving the page does not rewrite the new address', async ({ app, browser, screen }) => {
+test('leaving a CI run by Back does not rewrite the new address', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/git'));
   await expect(heading(screen)).toHaveText('Git');
   await browser.evaluate(() => { window.location.hash = '#/s/studio/ci?run=ci_s3'; });
-  await expect(screen.getByRole('dialog', 'CI run')).toBeVisible();
+  await expect(screen.getByRole('region', 'CI run')).toBeVisible();
   await browser.evaluate(() => history.back());
   await expect(heading(screen)).toHaveText('Git');
   await expect(browser).toHaveURL(/#\/s\/studio\/git$/);

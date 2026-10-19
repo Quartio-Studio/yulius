@@ -138,6 +138,10 @@ watching, steering and unblocking.
   every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans the
   pull request's changes with Vidoc's vidoc-1. A job that checked nothing exits with
   `$YULIUS_CI_SKIP_CODE` and reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
+  A run opens in place of the CI/CD page's list, at its own address, so Back and the sidebar come
+  back to it; its summary stays on top with the time so far and the stages running now. Above the
+  tabs the Now summary lists what runs, CI and deploys, with its time, one click from each
+  (SPEC-238, ADR-0180).
 - **Vidoc security scan** (SPEC-195, ADR-0157): an optional instance key, which the superadmin sets,
   tests and removes like the Jev key, and which setup offers as a skippable step. With it, every
   project's agents and granted CI jobs run `yulius security-scan`: Vidoc's vidoc-1 reviews the
@@ -165,8 +169,8 @@ watching, steering and unblocking.
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets a person allowed for each, and shows each run on the CD
-  (deployment) page; a confirmed deploy opens its dialog at once, saying what it checks and
-  promotes, and that dialog becomes the run. A merge deploys nothing: a person or an agent
+  (deployment) page; a confirmed deploy shows its run's view at once, saying what it checks and
+  promotes, and that view becomes the run. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass

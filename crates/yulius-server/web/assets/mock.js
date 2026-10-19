@@ -1816,9 +1816,9 @@ function cdOf(db, sid) {
   return db.cd[sid];
 }
 
-/** A running mock deploy finishes about 15 s after it started. */
-function progressCd(run) {
-  if (run.state === 'running' && Date.now() - run.created > 15000) {
+/** A running mock deploy finishes about 15 s after it started (`__yuliusMock.cdRunMs` changes it). */
+function progressCd(run, ms = 15000) {
+  if (run.state === 'running' && Date.now() - run.created > ms) {
     run.state = 'passed';
     run.exit_code = 0;
     run.ended_at = new Date().toISOString();
@@ -1831,7 +1831,7 @@ const cdSummary = (run) => ({ ...run, created: undefined, output: undefined });
 function cdOverview(db, sid) {
   const sandbox = sandboxOf(db, sid);
   const cd = cdOf(db, sid);
-  const runs = cd.runs.map(progressCd);
+  const runs = cd.runs.map((r) => progressCd(r, db.cdRunMs));
   return {
     slug: sandbox.slug,
     environments: cd.environments.map((env) => {
@@ -1860,7 +1860,7 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
-  if (cd.runs.some((r) => r.environment === name && progressCd(r).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
+  if (cd.runs.some((r) => r.environment === name && progressCd(r, db.cdRunMs).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
   db.nextId += 1;
   const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, name === 'prod' && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {});
   cd.runs.unshift(run);
@@ -1869,14 +1869,14 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
 route('GET', `/api/sandboxes/${ID}/cd/runs/${ID}`, ({ db, p }) => {
   const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
   if (!run) fail(404, 'not_found', 'not found');
-  return { ...progressCd(run), created: undefined };
+  return { ...progressCd(run, db.cdRunMs), created: undefined };
 });
 route('POST', `/api/sandboxes/${ID}/cd/runs/${ID}/cancel`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
   if (!run) fail(404, 'not_found', 'not found');
   need(sandbox, run.environment === 'prod' ? 'admin' : 'write');
-  if (progressCd(run).state !== 'running') fail(409, 'conflict', 'the run already ended');
+  if (progressCd(run, db.cdRunMs).state !== 'running') fail(409, 'conflict', 'the run already ended');
   run.state = 'cancelled';
   run.reason = `cancelled by ${db.me.user.login}`;
   run.ended_at = new Date().toISOString();
@@ -3193,6 +3193,19 @@ route('GET', `/api/sandboxes/${ID}/stages/timeline`, ({ db, p, query }) => {
   const [kind, ...rest] = (query.get('subject') || '').split(':');
   const id = rest.join(':');
   if (!['task', 'ci_run', 'cd_run'].includes(kind) || !id) fail(422, 'invalid', 'subject must be task:<id>, ci_run:<id> or cd_run:<id>');
+  // A deploy still running (SPEC-238): its checks done, its deploy running its "build" stage.
+  const deploying = kind === 'cd_run' && cdOf(db, p[0]).runs.find((r) => r.run_id === id && r.state === 'running');
+  if (deploying) {
+    const s = (...args) => stageSpan(kind, id, ...args);
+    const e = { environment: deploying.environment };
+    const since = (Date.now() - deploying.created) / MIN;
+    return { subject_kind: kind, subject_id: id, related: [], spans: [
+      s('prepare', 'prepare', 'checks', since, 0.01, e),
+      s('run', 'run', 'run', since - 0.01, null, e),
+      s('run/deploy', 'deploy', 'deploy', since - 0.01, null, { ...e, parent_key: 'run' }),
+      s('run/deploy/stage:1', 'stage', 'build', since - 0.01, null, { ...e, parent_key: 'run/deploy' }),
+    ] };
+  }
   return { subject_kind: kind, subject_id: id, ...mockTimeline(kind, id) };
 });
 
