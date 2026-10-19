@@ -704,6 +704,8 @@ mod tests {
         assert_eq!(fitted_label("KEY", 2), "[]");
         assert_eq!(fitted_label("KEY", 1), "*");
         assert_eq!(fitted_label("KEY", 0), "");
+        // A name is ASCII today; one that is not is cut by characters, never mid-character.
+        assert_eq!(fitted_label("ÉTÉ", 10), "[secret:É]");
     }
 
     /// A replacement sees the bytes it stands for, also when a value was split across chunks.

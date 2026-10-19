@@ -232,6 +232,47 @@ mod tests {
         }
     }
 
+    /// Where the cursor is after `bytes` on a screen wide enough for them.
+    fn cursor_after(bytes: &[u8]) -> (u16, u16) {
+        let mut parser = vt100::Parser::new(4, 200, 0);
+        parser.process(bytes);
+        parser.screen().cursor_position()
+    }
+
+    /// Values whose width the screen counts character by character (an emoji with a skin-tone
+    /// modifier, a heart with a variation selector, a control character) leave the cursor where
+    /// the value would, in a whole snapshot and split at every byte.
+    #[test]
+    fn values_take_the_columns_the_screen_counts() {
+        for value in [
+            "ok 👍🏽 deploy-key",
+            "love ❤️ production",
+            "tab\tseparated",
+            "pässwörd-geheim",
+        ] {
+            let matcher = Arc::new(PlainMatcher::new(vec![("KEY".into(), needles(value))]));
+            let raw = format!("a {value} b|").into_bytes();
+            let want = cursor_after(&raw);
+            assert_eq!(
+                cursor_after(&redact_screen(&matcher, &raw)),
+                want,
+                "{value}"
+            );
+            for split in 0..=raw.len() {
+                let mut stream = screen_redactor(Arc::clone(&matcher));
+                let mut out = stream.push(&raw[..split]);
+                out.extend(stream.flush());
+                out.extend(stream.push(&raw[split..]));
+                out.extend(stream.flush());
+                assert!(
+                    !String::from_utf8_lossy(&out).contains(value),
+                    "{value} at {split}"
+                );
+                assert_eq!(cursor_after(&out), want, "{value} split at {split}");
+            }
+        }
+    }
+
     /// A value of wide characters takes the columns the screen gives it.
     #[test]
     fn wide_values_keep_their_columns() {
