@@ -957,6 +957,9 @@ CD runs a project's deploy and verify scripts like CI runs its checks
 ([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
 ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
 tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
+A CI run or a deploy is a view of its tab at its own address (`?run=<id>`, `runview.js`), with a
+sticky live summary, and the Now summary above both tabs (`pages/cinow.js`) lists what runs and
+links to it ([decision 0180](decisions/0180-ci-and-cd-runs-are-views-of-the-ci-cd-page.md)).
 `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
 protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
 changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
@@ -1429,7 +1432,7 @@ the job's end and the end trigger adds them to its span
 ([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
-the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
+the run views (decision 0180), the task overview and the Dashboard's Overview draw them. Spans older than 180
 days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's spans on a time
 axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
 job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
@@ -1449,7 +1452,8 @@ flowchart LR
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
   S --> API["GET …/stages/timeline, summary, spans"]
-  API --> UI["Dashboard (Overview, Pipeline tab), run dialogs, task overview"]
+  API --> UI["Dashboard (Overview, Pipeline tab), run views, task overview"]
+  UI -->|"stages running now"| NOW["run view's live summary"]
 ```
 
 ## Notes

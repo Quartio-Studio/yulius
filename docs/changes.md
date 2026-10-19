@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- A CI run and a deploy open on the CI/CD page itself instead of in a dialog over it (SPEC-238,
+  ADR-0180, task #224). The run replaces its tab's list at its own address, with "All runs" to go
+  back, so Back, Forward and the sidebar's CI/CD link return to it. Its summary stays at the top
+  while the log scrolls and shows the time so far, ticking, the stages running now and a CI run's
+  jobs. Above the tabs, on both, a Now summary lists every CI run and deploy that is running, with
+  its time, and links to it; when nothing runs it says how the latest CI run and deploy ended.
 - The Notes tab grip's hover check in `notes.e2e.ts` hovers the tab itself, not a point read
   before (SPEC-236, task #222, fixes #503). The failure was the sandbox browser's sign-in toast
   over the Notes tabs, which pauses while pointed at. #523 had already turned that toast off for

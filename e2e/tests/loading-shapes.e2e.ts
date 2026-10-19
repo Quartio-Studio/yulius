@@ -338,7 +338,7 @@ test('the New sandbox dialog’s repository and template lists load as their row
   expectSameBox(name, await dialogBox(browser, '.card.list > .list-item .list-main'), ['x']);
 });
 
-test('the delivery and CI run dialogs load as their sections', async ({ app, browser, screen }) => {
+test('the delivery dialog and a CI run load as their sections', async ({ app, browser, screen }) => {
   // Delivery: the stage track over the Pull request, Task spec and Next cards. The strip reads the
   // delivery when the task opens; the dialog's read is held after that.
   await app.open(mock('/s/studio/t/13'));
