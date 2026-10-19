@@ -81,6 +81,7 @@ function loadMonaco() {
     script.onload = () => {
       window.require.config({ paths: { vs: MONACO_BASE } });
       window.require(['vs/editor/editor.main'], () => {
+        quietEndedWorkers(window.MonacoEnvironment);
         setupMonaco(window.monaco);
         resolve(window.monaco);
       }, (error) => reject(error));
@@ -89,6 +90,26 @@ function loadMonaco() {
     document.head.append(script);
   }).catch((error) => { monacoPromise = null; throw error; });
   return monacoPromise;
+}
+
+/**
+ * Monaco ends a worker it no longer needs (its editor worker once the last file is closed), also
+ * while the worker still loads its script: the cut load throws in the worker, and an `error` event
+ * nobody cancels is reported on the page as uncaught (#509). Each worker of `editor.main`'s
+ * `getWorker` cancels its errors once it is ended; a worker still in use reports them as before.
+ */
+function quietEndedWorkers(environment) {
+  const getWorker = environment?.getWorker;
+  if (typeof getWorker !== 'function') return;
+  environment.getWorker = function (...args) {
+    const worker = getWorker.apply(this, args);
+    if (!(worker instanceof Worker)) return worker;
+    let ended = false;
+    const terminate = worker.terminate.bind(worker);
+    worker.terminate = () => { ended = true; terminate(); };
+    worker.addEventListener('error', (event) => { if (ended) event.preventDefault(); });
+    return worker;
+  };
 }
 
 // Monaco's chrome follows the tokens (brand, theme), not VS Code's blue (VS Code theme colour ids).

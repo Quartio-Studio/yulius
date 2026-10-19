@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock } from './support.ts';
+import { axeViolations, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock, pageErrors } from './support.ts';
 
 failOnPageErrors();
 
@@ -693,6 +693,26 @@ test('an editor worker ended while its script loads raises no error, and the nex
   await editorShown(browser);
   await expect.poll(async () => (await workers()).ready, { timeout: MONACO_LOAD_MS }).toBe(1);
   expect(requests).toBe(2);
+});
+
+// #509, the other side: only an ended worker is quiet. A worker in use whose script fails to load
+// is an error the page still reports.
+test('an editor worker in use whose script fails to load is still an uncaught error (#509)', async ({ app, browser, screen }) => {
+  let requests = 0;
+  await browser.route(/\/vendor\/monaco\/vs\/assets\/editor\.worker-[^/]*\.js$/, async (route) => { requests += 1; await route.abort(); });
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect.poll(() => requests, { message: 'the editor worker asked for its script' }).toBe(1);
+  // The browser's report of the worker's error, then Monaco's own (`onUnexpectedError`).
+  await expect.poll(() => pageErrors(browser)).toEqual([
+    expect.stringContaining("uncaught: Uncaught NetworkError: Failed to execute 'importScripts'"),
+    'uncaught: Uncaught [object ErrorEvent]',
+  ]);
+  // Expected here: taken off the list `failOnPageErrors()` checks after the test.
+  await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.length = 0; });
 });
 
 // Review round 1: the strip drawn again during a drag (a save ending, a tab closed) must not leave
