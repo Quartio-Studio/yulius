@@ -2306,7 +2306,8 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
         );
         for (run_dir, text) in run_dirs
             .iter()
-            .zip(["ECHO: /goal Finish before the reboot", "ECHO: one more"]) {
+            .zip(["ECHO: /goal Finish before the reboot", "ECHO: one more"])
+        {
             let screen = std::fs::read(run_dir.join("final-screen"))
                 .map_err(|e| format!("no saved screen in {}: {e}", run_dir.display()))?;
             assert!(
