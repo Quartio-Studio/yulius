@@ -1,11 +1,11 @@
 ---
 yulius-task: e5d31bdb-b25e-4a37-afbb-44a90f083b0e
-status: in-progress
+status: done
 ---
 
 # SPEC-229: A reboot leaves finished tasks finished and every task its last screen
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: task #215
 Scope authorization: task #215: "this can't be this way, something got fucked up. Identify and
@@ -61,7 +61,7 @@ Reproduced on the instance (server 77925fd, main) on 2026-10-19.
 - [x] Every clean turn end saves the screen a lost run shows
 - [x] The server-restarted message no longer claims the agent was working
 - [x] Spec, ADR-0177, docs and changes entry
-- [ ] Independent review answered, gates green, merged into dev
+- [x] Independent review answered, gates green, merged into dev
 
 ## Acceptance criteria
 
@@ -96,4 +96,30 @@ Reproduced on the instance (server 77925fd, main) on 2026-10-19.
 
 ## Evidence
 
-Pending.
+- **Reproduction.** On the instance (server 77925fd), `/proc/uptime` puts the host's boot at
+  2026-10-18 17:54 UTC; `task_get` shows #213 and #214 `stopped_server_lost`, updated
+  17:54:12Z, with every step done and their pull requests merged at 15:05Z. Filed as #685.
+- **Regression test first.** `task_done::a_reboot_closes_a_done_task_and_keeps_every_screen`
+  failed on `dev` at c2c04ef4 (`left: (Stopped(ServerLost), false)`, `right: (Closed, true)`), then
+  with the status fix alone on the missing `final-screen`, and passes with the fix. Its update
+  phase (screen files deleted, processes alive, `reconcile`) failed before the reattach save
+  ("timed out waiting for the reattached run's screen") and passes after it.
+- **Unit tests.** `task::tests::a_lost_run_closes_a_finished_task_and_stops_the_others` and
+  `supervisor::tests::a_screen_is_saved_only_from_a_hub_with_output` (failed while a hub without
+  output overwrote the saved screen).
+- **Web.** `task-done.e2e.ts` "a session a restart ended says so…" failed on the old wording
+  ("Yulius restarted while the agent was working.") and passes; the file's 15 tests pass.
+  The full suite (`npx e2e run`) passed at 3b7309df: 624 tests passed, 1 skipped (60 files).
+- **Gate.** `scripts/dev ci` exit 0 at 3b7309df: 2245 tests passed, 17 skipped; fmt, clippy,
+  doctests, deny, shear and doc passed.
+- **Security.** `scripts/dev security` (vidoc-1, change scan of 13 files) exit 0: no open
+  critical, high or medium finding in the change.
+- **Independent review.** Round 1 asked for changes. One major: a hook that arrived before
+  reattach could save a blank screen over a good one. Minors: a non-atomic write, the announced
+  status, a sweep test, the deploy gap, and ADR consequences. All were fixed test-first. Round 2
+  approved 3b7309df. The reviewer found that `mark_lost` does not save a live screen while Yulius
+  runs; that was already so on `dev`, and is filed as #686.
+- **Not testable here.** A real host reboot. The test kills the session host and agent with
+  SIGKILL while no server runs, which is what reconciliation sees after one. Tasks recorded
+  `stopped_server_lost` before this change keep that status, because their activity was cleared
+  and cannot be recovered.
