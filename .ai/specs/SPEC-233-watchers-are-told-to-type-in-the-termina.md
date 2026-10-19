@@ -45,8 +45,8 @@ Confirmed against `dev` at b9080ea4.
 ## Plan
 
 - [x] Spec records the root cause of #576
-- [ ] Regression e2e test fails on the watcher's texts
-- [ ] Watchers are told the agent waits for the owner
+- [x] Regression e2e test fails on the watcher's texts
+- [x] Watchers are told the agent waits for the owner
 - [ ] Independent review approved
 - [ ] Gates green and merged into dev
 

@@ -343,10 +343,15 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
-      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
+      // A watcher has no terminal and cannot type (SPEC-179): the answer is the owner's (#576).
+      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, owner()
+        ? h('strong', null, `The agent needs @${owner()}'s attention.`)
+        : [h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.']),
         owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply')];
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
-      content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
+      content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, owner()
+        ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)
+        : [h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.']),
         owner() ? null : replying ? null : replyButton];
       textAnswer = !owner();
     }

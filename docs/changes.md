@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- A watcher of someone else's waiting task reads "The agent is waiting for @owner's reply." or
+  "The agent needs @owner's attention." instead of being told to type in a terminal they do not
+  have (SPEC-233, task #219, fixes #576). The owner's texts are unchanged.
 - The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
   the DO budget", it calls `task_message`. A task that has not started gets the message in its
   request, as a person's queued message. A running task gets it typed into its session, labelled
