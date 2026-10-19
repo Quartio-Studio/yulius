@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- The Notes tab grip's hover check in `notes.e2e.ts` hovers the tab itself, not a point read
+  before (SPEC-236, task #222, fixes #503). The failure was the sandbox browser's sign-in toast
+  over the Notes tabs, which pauses while pointed at. #523 had already turned that toast off for
+  every notes test. The case now waits until the tab really takes the pointer, and runs on a still
+  page (`ambient=0`).
 - The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
   the DO budget", it calls `task_message`. A task that has not started gets the message in its
   request, as a person's queued message. A running task gets it typed into its session, labelled
