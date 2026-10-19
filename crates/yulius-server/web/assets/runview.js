@@ -9,14 +9,15 @@ import { href } from './router.js';
 /**
  * The view's frame: `name` names the region ("CI run", "Deploy"); "All runs" goes to `list` (a
  * page address), or calls `onBack` instead while the view has no address of its own (a deploy
- * still starting, SPEC-189). Returns the region `el`, its `head` line and its `body`, shown by
+ * still starting, SPEC-189) until `linkBack()`. Returns the region `el`, its `head` line and its `body`, shown by
  * `ready()`; until then `loading(node)` stands in for both (the run's loading shape).
  */
 export function runView({ name, list, onBack }) {
-  const attrs = { class: 'btn btn-sm run-back', href: href(list) };
-  if (onBack) attrs.onClick = (event) => { event.preventDefault(); onBack(); };
-  else attrs.dataset = { route: list };
-  const back = h('a', attrs, icon('back', { size: 14 }), 'All runs');
+  let backTo = onBack || null;
+  // Until `linkBack()`, a click calls `onBack` (the router leaves a prevented click alone).
+  const back = h('a', { class: 'btn btn-sm run-back', href: href(list), onClick: (event) => { if (backTo) { event.preventDefault(); backTo(); } } },
+    icon('back', { size: 14 }), 'All runs');
+  if (!backTo) back.dataset.route = list;
   const head = h('div', { class: 'row-wrap run-head' });
   const body = h('div', { class: 'stack' });
   const summary = h('div', { class: 'run-summary' }, head);
@@ -26,5 +27,7 @@ export function runView({ name, list, onBack }) {
     el, head, body, back,
     loading: (node) => setChildren(content, node),
     ready: () => { if (!summary.isConnected) setChildren(content, summary, body); },
+    /** The view has its own address now: "All runs" is a link to the list. */
+    linkBack: () => { backTo = null; back.dataset.route = list; },
   };
 }
