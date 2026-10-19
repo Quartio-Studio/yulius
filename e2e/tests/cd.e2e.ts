@@ -77,7 +77,7 @@ test('production says a secret agents use is never for production', async ({ app
   const confirm = screen.getByRole('dialog', 'Deploy production?');
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
   await confirm.getByRole('button', 'Deploy production').click();
-  const refused = screen.getByRole('dialog', 'Deploy');
+  const refused = screen.getByRole('region', 'Deploy');
   await expect(refused.getByText(/agents use PAY_KEY/)).toBeVisible();
   await expect(refused.getByText('Not started')).toBeVisible();
 });
