@@ -722,7 +722,7 @@ CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": 
 CdEnvironment = {"name": "dev|prod", "label": "dev|production", "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
                  "promote", "promotes_from": "<integration head>"|null,
-                 "secrets": [{"name", "state": "ready|not_allowed|missing"}],
+                 "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
 CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
@@ -734,7 +734,9 @@ CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|er
 promotion the integration commit promoted; the deploy refuses (`conflict`) when the branch moved
 since. `confirm_ms` (optional, production) is how long the person kept the confirmation open, as the
 page measured it; up to an hour it is recorded as the run's confirmation wait (SPEC-137). A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
-copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it.
+copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it. For
+production, such a secret (agents use it) has the state `agents_use`: production never gets it, a
+run naming it is refused, and production names a separate secret instead (SPEC-237).
 
 Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or

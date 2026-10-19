@@ -1453,7 +1453,13 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
         let secrets: Vec<String> = env
             .secrets
             .iter()
-            .map(|s| format!("{} {}", s.name, s.state.replace('_', " ")))
+            .map(|s| match s.state.as_str() {
+                "agents_use" => format!(
+                    "{} agents use it (production never gets it: name a separate secret)",
+                    s.name
+                ),
+                state => format!("{} {}", s.name, state.replace('_', " ")),
+            })
             .collect();
         out.push_str(&format!("  secrets: {}\n", secrets.join(", ")));
     }
@@ -1584,6 +1590,45 @@ impl App {
 mod tests {
     use super::*;
     use crate::ports::isolation::SandboxJoin;
+
+    /// #704 (SPEC-237): `cd_status` tells an agent what a production secret agents use means.
+    #[test]
+    fn agents_read_that_production_never_gets_a_secret_agents_use() {
+        let env = CdEnvironment {
+            name: "prod".into(),
+            label: "production".into(),
+            state: "ready".into(),
+            branch: "main".into(),
+            head: None,
+            problem: None,
+            about: None,
+            deploy: Some("sh deploy.sh".into()),
+            verify: None,
+            promote: false,
+            promotes_from: None,
+            secrets: vec![
+                CdSecret {
+                    name: "PAY_KEY".into(),
+                    state: "agents_use".into(),
+                },
+                CdSecret {
+                    name: "HOST".into(),
+                    state: "not_allowed".into(),
+                },
+            ],
+            deployed: None,
+            last_run: None,
+        };
+        let mut text = String::new();
+        environment_text(&mut text, &env);
+        assert!(
+            text.contains(
+                "secrets: PAY_KEY agents use it (production never gets it: name a separate secret), \
+                 HOST not allowed"
+            ),
+            "{text}"
+        );
+    }
 
     /// Review H-A and C1: production joins the sandbox's network only. Its system is the host's,
     /// read-only, `/var` (Yulius's data) is empty, the resolver is the sandbox's, and nothing of

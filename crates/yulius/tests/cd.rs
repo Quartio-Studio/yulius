@@ -271,6 +271,12 @@ impl Fixture {
         Ok(())
     }
 
+    /// The state production's first secret has on the CD page.
+    async fn prod_secret_state(&self) -> BoxResult<Value> {
+        let overview = self.get("/api/sandboxes/s1/cd").await?;
+        Ok(overview["environments"][1]["secrets"][0]["state"].clone())
+    }
+
     /// Waits until run `id` ended and returns it with its output.
     async fn ended(&self, id: &str) -> BoxResult<Value> {
         let deadline = tokio::time::Instant::now() + WAIT;
@@ -1026,6 +1032,61 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     Ok(())
 }
 
+/// #704 (SPEC-237 CAU-001, CAU-002): a secret the proxy sends to a host is one agents use, so
+/// production never gets it and the page does not ask a person to allow it; dev is unchanged, and
+/// the refusal still names a plain secret waiting beside it.
+#[tokio::test]
+async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
+    let f = fixture(
+        "[cd.dev]\n\
+         deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+         secrets = \"DEV_TOKEN\"\n\n\
+         [cd.prod]\n\
+         deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+         verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         secrets = \"DEV_TOKEN PROD_TOKEN\"\n",
+    )
+    .await?;
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PROD_TOKEN", "value": "prod-value-0123456789", "auto_allow": false})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(f.prod_secret_state().await?, "not_allowed");
+    let hosts = call(
+        &f.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{}", f.secret),
+        Some(json!({"hosts": ["api.example.com"]})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(hosts.status, StatusCode::OK, "{}", hosts.body);
+    assert_eq!(f.prod_secret_state().await?, "agents_use");
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    assert_eq!(
+        overview["environments"][0]["secrets"][0]["state"],
+        "not_allowed"
+    );
+    assert_eq!(
+        overview["environments"][1]["secrets"][1]["state"],
+        "not_allowed"
+    );
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let said = refused.body.to_string();
+    assert!(said.contains("agents use DEV_TOKEN"), "{said}");
+    assert!(
+        said.contains("a person who manages PROD_TOKEN allows it for production deploys"),
+        "{said}"
+    );
+    Ok(())
+}
+
 /// Review H1 (CDR-002): production runs get only secrets a person allowed for production; an
 /// allowance for `.env` files (which any agent of the project could use) is not enough.
 #[tokio::test]
@@ -1038,25 +1099,17 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     )
     .await?;
     f.allow_secret().await?;
+    // Agents use it (its .env copies), so no person can allow it for production (round 2, M-B):
+    // the page and the refusal say so instead of asking a person to allow it (#704, SPEC-237).
     let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let said = refused.body.to_string();
     assert!(
-        refused.body.to_string().contains("for production deploys"),
-        "{}",
-        refused.body
+        said.contains("agents use DEV_TOKEN") && said.contains("separate secret"),
+        "{said}"
     );
-    let overview = call(
-        &f.h.router,
-        Method::GET,
-        "/api/sandboxes/s1/cd",
-        None,
-        &f.bob,
-    )
-    .await?;
-    assert_eq!(
-        overview.body["environments"][1]["secrets"][0]["state"],
-        "not_allowed"
-    );
+    assert!(!said.contains("allows it for production"), "{said}");
+    assert_eq!(f.prod_secret_state().await?, "agents_use");
 
     // A secret agents can use (its .env copies) is no production secret (round 2, M-B).
     let cd_prod_path = format!("/api/agent-secrets/{}/cd-prod", f.secret);
@@ -1089,10 +1142,20 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
             )
             .await?
     );
+    // Nobody uses it any more: now a person can allow it.
+    assert_eq!(f.prod_secret_state().await?, "not_allowed");
+    let waiting = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(waiting.status, StatusCode::CONFLICT, "{}", waiting.body);
+    assert!(
+        waiting.body.to_string().contains("for production deploys"),
+        "{}",
+        waiting.body
+    );
     // Someone who manages the secret (its maker) allows it on the Secrets page.
     let allowed = cd_prod(true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["cd_prod"], true);
+    assert_eq!(f.prod_secret_state().await?, "ready");
     let started = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let run = f

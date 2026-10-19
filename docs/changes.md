@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-19
 
+- The CI/CD page no longer tells a person to allow a production secret that cannot be allowed
+  (SPEC-237, task #223, fixes #704). A secret that agents use, through `.env` copies or proxy
+  hosts, never goes to production (SPEC-134), and the Secrets page offers no Allow for it. The CD
+  page still listed it as "waiting for a person to allow it". Its production state is now
+  `agents_use`: the page reads "agents use it: production never gets it" and explains that
+  production needs a separate secret, and a refused production run gives the same reason. The
+  redaction of a secret whose value is an ordinary word ("production"), seen in the same report,
+  is #705.
 - A CI run and a deploy open on the CI/CD page itself instead of in a dialog over it (SPEC-238,
   ADR-0180, task #224). The run replaces its tab's list at its own address, with "All runs" to go
   back, so Back, Forward and the sidebar's CI/CD link return to it. Its summary stays at the top

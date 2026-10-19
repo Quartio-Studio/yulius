@@ -348,7 +348,7 @@ impl App {
         }
         // A secret agents can use (its `.env` copies, its hosts) is no production secret
         // (round 2, M-B).
-        if allow && (record.env_files == EnvFiles::Allowed || !record.hosts.is_empty()) {
+        if allow && agents_use(&record) {
             return Err(AppError::Conflict(
                 "agents can use this secret (copies into .env files or hosts the proxy sends it \
                  to): revoke those, or add a separate secret for production deploys"
@@ -725,6 +725,9 @@ pub(crate) enum CdSecretState {
     Missing,
     /// A production secret, named by dev: dev never gets it.
     Production,
+    /// Named by production, a secret agents use ([`agents_use`]): production never gets it and
+    /// nobody can allow it (SPEC-237 CAU-001).
+    AgentsUse,
 }
 
 impl CdSecretState {
@@ -734,6 +737,7 @@ impl CdSecretState {
             Self::NotAllowed => "not_allowed",
             Self::Missing => "missing",
             Self::Production => "production",
+            Self::AgentsUse => "agents_use",
         }
     }
 }
@@ -754,6 +758,12 @@ fn allowed_for(record: &VaultSecretRecord, env: yulius_domain::cd::CdEnv) -> boo
     }
 }
 
+/// Whether agents can use `record` (its `.env` copies or hosts the proxy sends it to): such a
+/// secret is no production secret (SPEC-134 round 2, M-B).
+fn agents_use(record: &VaultSecretRecord) -> bool {
+    record.env_files == EnvFiles::Allowed || !record.hosts.is_empty()
+}
+
 impl App {
     /// The state of each secret `names` for runs of `env` (SPEC-134 CDT-001).
     pub(crate) async fn cd_secret_states(
@@ -772,6 +782,9 @@ impl App {
                         CdSecretState::Production
                     }
                     Some(r) if allowed_for(r, env) => CdSecretState::Ready,
+                    Some(r) if env == yulius_domain::cd::CdEnv::Prod && agents_use(r) => {
+                        CdSecretState::AgentsUse
+                    }
                     Some(_) => CdSecretState::NotAllowed,
                 };
                 (name.clone(), state)
@@ -831,6 +844,32 @@ impl App {
         if !waiting.is_empty() {
             let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             if env == yulius_domain::cd::CdEnv::Prod {
+                // Nobody can allow those (round 2, M-B): say what to do instead (SPEC-237 CAU-002),
+                // and name the others waiting for a person too, so one refusal says it all.
+                let (used, others): (Vec<&VaultSecretRecord>, Vec<&VaultSecretRecord>) =
+                    waiting.iter().partition(|r| agents_use(r));
+                if !used.is_empty() {
+                    let used: Vec<&str> = used.iter().map(|r| r.name.as_str()).collect();
+                    let others: Vec<&str> = others.iter().map(|r| r.name.as_str()).collect();
+                    let it = if used.len() == 1 { "it" } else { "them" };
+                    let also = if others.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ". Also, a person who manages {} allows {} for production deploys",
+                            others.join(", "),
+                            if others.len() == 1 { "it" } else { "them" },
+                        )
+                    };
+                    return Err(AppError::Conflict(format!(
+                        "nothing ran: agents use {names} (copies into .env files or hosts the \
+                         proxy sends {it} to), so production deploys never get {it} and nobody \
+                         can allow {it} for them. Production names a separate secret of its own \
+                         in [cd.prod] secrets of yulius.toml, added on the Secrets page ({link}); \
+                         or a person first revokes the .env copies and hosts of {names}{also}",
+                        names = used.join(", "),
+                    )));
+                }
                 return Err(AppError::Conflict(format!(
                     "nothing ran: a person who manages {} allows {} for production deploys on \
                      the Secrets page: {link}",
