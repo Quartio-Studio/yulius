@@ -361,22 +361,23 @@ test('the delivery and CI run dialogs load as their sections', async ({ app, bro
   await browser.keyboard.press('Escape');
   await expect(browser.locator('.modal')).toHaveCount(0);
 
-  // A CI run: its head line, the job tabs and the output box (its stages load after the run).
+  // A CI run (SPEC-238: a view in the CI tab): its head line, the job tabs and the output box (its
+  // stages load after the run).
   await app.open(mock('/s/studio/ci?run=ci_s3', '&hold=/api/sandboxes/sb_studio/ci/runs/ci_s3'));
-  shape = '.modal .modal-body > .skeleton[role="status"]';
+  shape = '.run-view .run-content > .skeleton[role="status"]';
   await expect(browser.locator(shape)).toHaveText('Loading the CI run…');
   await expectQuietShape(browser, shape);
   expect(await browser.locator(`${shape} .ci-tabs > .ci-tab`).count()).toBeGreaterThanOrEqual(2);
-  const head = await dialogBox(browser, `> .skeleton[role="status"] .row-wrap`);
-  const tabs = await dialogBox(browser, `> .skeleton[role="status"] .ci-tabs`);
-  const output = await dialogBox(browser, `> .skeleton[role="status"] .run-output`);
+  const head = await box(browser, `${shape} .run-head`);
+  const tabs = await box(browser, `${shape} .ci-tabs`);
+  const output = await box(browser, `${shape} .run-output`);
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(shape)).toHaveCount(0);
-  await expect(screen.getByRole('dialog', 'CI run').getByRole('tab', /lint/)).toBeVisible();
-  expectSameBox(head, await dialogBox(browser, '.row-wrap'), ['x', 'y', 'width']);
-  expectSameBox(tabs, await dialogBox(browser, '.ci-tabs'), ['x', 'width']);
-  expectSameBox(output, await dialogBox(browser, '.run-output'), ['x', 'width']);
+  await expect(screen.getByRole('region', 'CI run').getByRole('tab', /lint/)).toBeVisible();
+  expectSameBox(head, await box(browser, '.run-view .run-head'), ['x', 'y', 'width']);
+  expectSameBox(tabs, await box(browser, '.run-view .ci-tabs'), ['x', 'width']);
+  expectSameBox(output, await box(browser, '.run-view .run-output'), ['x', 'width']);
 });
 
 test('a task’s changes, commits and overview load in their own layouts', async ({ app, browser, screen }) => {

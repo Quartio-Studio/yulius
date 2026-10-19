@@ -2819,6 +2819,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .pl-chosen td { background: var(--accent-soft); }
 .pl-failed { color: var(--danger-fg); }
 .run-stages { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+/* A run's view in the CI/CD page (SPEC-238): "All runs" at the start, the run under it. */
+.run-view { min-width: 0; }
+.run-back { align-self: flex-start; }
 @container (max-width: 820px) { .pl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* Narrow (a phone): the name and its figures on one line, the bar under them at full width. */
 @container (max-width: 520px) {

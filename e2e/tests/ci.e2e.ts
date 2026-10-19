@@ -19,19 +19,37 @@ test('the CI page shows the jobs in force and opens a failed run at the failing 
   await expect(screen.getByText('cargo clippy --all-targets -- -D warnings')).toBeVisible();
   await expect(screen.getByText(/superseded by 0d7e5f3/)).toBeVisible();
 
+  // SPEC-238 CRV-001: a run opens inside the CI tab at its own address, not in a dialog.
   await screen.getByRole('button', 'Open the run of PR #218 at 0d7e5f3').click();
-  const dialog = screen.getByRole('dialog', 'CI run');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('tab', /test \(2\/2\)/)).toHaveAttribute('aria-selected', 'true');
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run).toBeVisible();
+  await expect(run.getByRole('tab', /test \(2\/2\)/)).toHaveAttribute('aria-selected', 'true');
   await expect(browser.locator('.run-output')).toHaveText(/1 failed/);
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
+  expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(0);
+  await expect(screen.getByRole('heading', 'Runs')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
 
-  await dialog.getByRole('tab', /lint/).click();
+  await run.getByRole('tab', /lint/).click();
   await expect(browser.locator('.run-output')).toHaveText(/no warnings/);
-  await browser.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+  // All runs goes back to the list; Back and Forward move between the two.
+  await run.getByRole('link', 'All runs').click();
+  await expect(run).toBeHidden();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+  await browser.evaluate(() => history.back());
+  await expect(screen.getByRole('region', 'CI run')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
+  await browser.evaluate(() => history.back());
+  await expect(screen.getByRole('region', 'CI run')).toBeHidden();
+  await browser.evaluate(() => history.forward());
+  await expect(screen.getByRole('region', 'CI run')).toBeVisible();
+  // The sidebar's CI/CD link, from another page, comes back to the run (SPEC-113 places).
+  await screen.getByRole('link', 'Tasks').click();
+  await expect(screen.getByRole('region', 'CI run')).toBeHidden();
+  await screen.getByRole('link', 'CI/CD').click();
+  await expect(screen.getByRole('region', 'CI run')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
+  await screen.getByRole('region', 'CI run').getByRole('link', 'All runs').click();
 
   await screen.getByRole('button', 'Run again: PR #218 at 0d7e5f3').click();
   await expect(screen.getByText('PR #218 queued again.')).toBeVisible();
@@ -39,10 +57,10 @@ test('the CI page shows the jobs in force and opens a failed run at the failing 
 
 test('a run opens from the link of its commit status', async ({ app, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s3'));
-  const dialog = screen.getByRole('dialog', 'CI run');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('PR #221')).toBeVisible();
-  await expect(dialog.getByRole('tab', /lint/)).toHaveAttribute('aria-selected', 'true');
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run).toBeVisible();
+  await expect(run.getByText('PR #221')).toBeVisible();
+  await expect(run.getByRole('tab', /lint/)).toHaveAttribute('aria-selected', 'true');
 });
 
 // SPEC-162 SKP-003: PR #221 passed with "test (2/2)" skipped (it exited with the skip code): the
@@ -51,9 +69,9 @@ test('a skipped job reads Skipped, not Passed', async ({ app, browser, screen })
   await app.open(mock('/s/studio/ci'));
   await expect(screen.getByText('3 jobs · 2 passed · 1 skipped')).toBeVisible();
   await screen.getByRole('button', 'Open the run of PR #221 at 4be81c0').click();
-  const dialog = screen.getByRole('dialog', 'CI run');
+  const run = screen.getByRole('region', 'CI run');
   await expect(browser.locator('.ci-tab:has-text("test (2/2)") .ci-skipped [aria-label="Skipped"]')).toBeVisible();
-  await dialog.getByRole('tab', /test \(2\/2\)/).click();
+  await run.getByRole('tab', /test \(2\/2\)/).click();
   await expect(browser.locator('.run-output')).toHaveText(/scan not run[\s\S]*\[exit code 78\]/);
   expect(await axeViolations(browser)).toEqual([]);
 });

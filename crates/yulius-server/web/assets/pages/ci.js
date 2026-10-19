@@ -1,18 +1,19 @@
 // CI tab of the CI/CD page (SPEC-001 DLV-006/007, SPEC-002 ADR-21, SPEC-151): Yulius is the
 // projects' only CI. The jobs in force and where they come from, the runs of pull request heads and
 // of the integration and production branches with each job's log, Run again and Cancel, and
-// repository hygiene (stale branches and worktrees). A run opens from `?run=<id>`, the link of the
-// `yulius/ci` commit status.
+// repository hygiene (stale branches and worktrees). A run opens in place of the list at
+// `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog).
 
 import { enc } from '../api.js';
-import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
+import { h, badge, itemCard, emptyState, setChildren, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural } from '../format.js';
 import { allows } from '../status.js';
-import { replaceQuietly, href } from '../router.js';
+import { href } from '../router.js';
 import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
+import { runView } from '../runview.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -52,20 +53,26 @@ function jobsLine(jobs) {
 export const CI_SUB = `tests run on this ${BRAND.name} machine`;
 
 /**
- * Mount the CI tab into `host`, with its header action in `actions`; returns its teardown, which
- * stops its refreshes and closes its run dialog.
+ * Mount the CI tab into `host`, with its header action in `actions`: the runs and the hygiene, or
+ * the run `?run=` names in their place. Returns its teardown, which stops its refreshes.
  */
 export function mountCiSection(ctx, sandbox, route, host, actions) {
   const write = allows(sandbox.access, 'write');
   const base = `/api/sandboxes/${enc(sandbox.id)}`;
   const syncButton = h('button', { type: 'button', class: 'btn', disabled: !write, title: write ? 'Look for new commits now' : 'Requires write access', onClick: () => sync() }, icon('refresh', { size: 16 }), 'Check for commits');
   setChildren(actions, syncButton);
+  const page = `/s/${encodeURIComponent(sandbox.slug)}/ci`;
+  const shownRun = route && route.query && route.query.get('run');
   const runsHost = h('div');
   const hygieneHost = h('div');
-  host.append(runsHost, hygieneHost);
   let timer = null;
+  let poll = null;
   let destroyed = false;
-  let openRun = null;
+  if (shownRun) {
+    showRun(shownRun);
+    return () => { destroyed = true; clearTimeout(poll); };
+  }
+  host.append(runsHost, hygieneHost);
 
   const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
     schedule(overview);
@@ -148,7 +155,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       description: [jobsLine(run.jobs), run.reason ? ` · ${run.reason}` : null],
       extra: h('div', { class: 'item-meta' }, meta),
       controls,
-      onOpen: () => showRun(run.id),
+      onOpen: () => ctx.navigate(`${page}?run=${encodeURIComponent(run.id)}`),
       openLabel: `Open the run of ${run.label} at ${shortSha(run.sha)}`,
     });
   }
@@ -190,37 +197,31 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   /** A run while it loads (SPEC-120, #449): its head line, the job tabs and the output box. */
   function runLoading() {
     return h('div', { class: 'stack' },
-      h('div', { class: 'row-wrap' }, bar('sm'), bar('lg'), bar('sm'), bar('md')),
+      h('div', { class: 'run-summary' }, h('div', { class: 'row-wrap run-head' }, bar('sm'), bar('lg'), bar('sm'), bar('md'))),
       h('div', { class: 'ci-tabs' }, [0, 1, 2].map(() => h('span', { class: 'ci-tab' }, bar('md')))),
       h('div', { class: 'code-view run-output' }, bar(60), bar(40), bar(52)));
   }
 
-  /** The run's jobs and logs in a dialog, refreshed while it runs. */
+  /** The run's jobs and logs in place of the list, refreshed while it runs (SPEC-238). */
   function showRun(id) {
-    if (openRun) openRun.close();
     let selected = 0;
-    let poll = null;
+    const view = runView({ name: 'CI run', list: page });
     const tabs = h('div', { class: 'ci-tabs', role: 'tablist', 'aria-label': 'Jobs' });
-    const head = h('div', { class: 'row-wrap' });
+    const head = view.head;
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
     // Its stages (SPEC-137): queue, preparation, jobs and what their output names, as a waterfall.
     const stages = h('div', { class: 'run-stages' });
     const pipeline = h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `ci_run:${id}`)), dataset: { route: pipelineHref(sandbox, `ci_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline');
-    const body = h('div', { class: 'stack' }, head, stages, tabs, output);
-    const modal = openModal({
-      title: 'CI run', wide: true, body: placeholder('Loading the CI run…', 'loading', runLoading),
-      actions: [{ label: 'Close' }],
-      // Closed because the page went (another address): that address stays as it is (SPEC-113).
-      onClose: () => { clearTimeout(poll); openRun = null; if (!destroyed) replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci`); },
-    });
-    openRun = modal;
-    replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci?run=${encodeURIComponent(id)}`);
+    view.loading(placeholder('Loading the CI run…', 'loading', runLoading));
+    host.append(view.el);
     let first = true;
     const load = async () => {
       try {
         const run = await ctx.api.get(`${base}/ci/runs/${enc(id)}`);
+        if (destroyed) return;
         if (first) {
-          setChildren(modal.body, body);
+          setChildren(view.body, stages, tabs, output);
+          view.ready();
           const failing = (run.jobs || []).findIndex((j) => j.state === 'failed' || j.state === 'error');
           selected = failing >= 0 ? failing : 0;
           first = false;
@@ -228,9 +229,9 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         render(run);
         head.append(h('span', { class: 'spacer' }), pipeline);
         await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
-        if (ACTIVE.has(run.state) && modal.dialog.isConnected) poll = setTimeout(load, POLL_ACTIVE_MS);
+        if (ACTIVE.has(run.state) && !destroyed) poll = setTimeout(load, POLL_ACTIVE_MS);
       } catch (error) {
-        if (first) setChildren(modal.body, placeholder(`Couldn’t load the run: ${error.message}`, 'error'));
+        if (first && !destroyed) view.loading(placeholder(`Couldn’t load the run: ${error.message}`, 'error'));
       }
     };
     const render = (run) => {
@@ -298,8 +299,5 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
   }
 
-  const deepRun = route && route.query && route.query.get('run');
-  if (deepRun) showRun(deepRun);
-
-  return () => { destroyed = true; clearTimeout(timer); if (openRun) openRun.close(); };
+  return () => { destroyed = true; clearTimeout(timer); };
 }
