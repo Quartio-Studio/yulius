@@ -247,3 +247,22 @@ test('a task being stopped says Stopping… on its Delete item and can be stoppe
   // A stop whose session could not be ended is retried from the same menu (SPEC-065).
   await expect(screen.getByRole('menuitem', /^Stop/)).not.toHaveAttribute('aria-disabled', 'true');
 });
+
+// SPEC-229 (task #215, 2026-10-19): after the host rebooted, idle and finished tasks read
+// "Yulius restarted while the agent was working", which was untrue. A finished task now comes
+// back Closed (server side); a stopped one says the restart ended its session.
+test('a session a restart ended says so without claiming the agent was working (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { endedMessage, statusInfo } = await import(statusUrl);
+    const lost = endedMessage('stopped_server_lost');
+    const closed = statusInfo({ status: 'closed', steps: { done: 8, total: 8 } });
+    return { tone: lost.tone, text: lost.text, closed: [closed.label, closed.tone] };
+  });
+  expect(read).toEqual({
+    tone: 'warn',
+    text: 'Yulius restarted, which ended this session. Its branch and changes are safe.',
+    closed: ['Closed', 'closed'],
+  });
+});
