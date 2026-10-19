@@ -25,8 +25,10 @@ task #215, fixes #685. Refines restart reconciliation in SPEC-002 §7.1 (still n
   a Done task gives (`TaskStatus::after_loss`). Every other lost task keeps `stopped(<reason>)` and
   stays continuable.
 - **A settled turn keeps its screen.** Whenever a running task's activity becomes idle (`waiting`
-  or `done`), the run's current screen is written to its `final-screen` file; the run's end writes
-  it again as before. A run lost later shows the screen its last turn settled on.
+  or `done`), and when reconciliation reattaches an idle run, the run's current screen is written
+  to its `final-screen` file; the run's end writes it again as before. A hub with no output (a
+  runtime made before its run was reattached) never overwrites it, and the file is replaced whole
+  (a temporary file renamed over it). A run lost later shows the screen its last turn settled on.
 - **Honest words.** The `stopped_server_lost` message says Yulius restarted and the session
   ended, not that the agent was working (idle sessions end too).
 
@@ -47,5 +49,10 @@ task #215, fixes #685. Refines restart reconciliation in SPEC-002 §7.1 (still n
 - After a reboot, finished tasks read Closed (a check mark, no warning) and every task's terminal
   shows its last settled screen; interrupted tasks still read Stopped (server restarted) with
   Continue.
-- A Done task closed this way counts as `closed` in analytics, like one a person closed.
+- Everything a person's close of a Done task does follows, by design: the task leaves the
+  sidebar's Active list and stays under Tasks with Continue (HRN-002); its worktree, if clean, may
+  be removed by the disk and CI hygiene rounds (Continue recreates it); it counts as `closed` in
+  analytics; and its `closed_at` is the time the loss was recorded, not when it became Done.
+- Tasks already recorded `stopped(server_lost)` before this change stay so: the store cleared
+  their activity, so whether they were Done cannot be told afterwards. A person archives them.
 - One extra write of a few kilobytes into the run directory per settled turn.

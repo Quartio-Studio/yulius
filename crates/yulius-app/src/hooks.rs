@@ -299,7 +299,7 @@ impl App {
             && let Ok(Some(attempt)) = self.deps.store.live_attempt(&task.id).await
         {
             crate::supervisor::save_screen(
-                &self.runtime(&task.id),
+                &self.runtime(&task.id).hub,
                 std::path::Path::new(&attempt.run_dir),
             );
         }

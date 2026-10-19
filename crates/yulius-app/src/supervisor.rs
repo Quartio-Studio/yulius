@@ -443,13 +443,28 @@ pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<(
     file.write_all(bytes)
 }
 
-/// Saves the run's current screen as its final screen: at its end, and at every turn end so a run
-/// lost later (a reboot) still shows how its last turn ended (SPEC-229 RBT-002).
-pub(crate) fn save_screen(runtime: &TaskRuntime, run_dir: &Path) {
-    let (screen, (cols, rows)) = runtime.hub.formatted_screen();
+/// Saves the run's current screen as its final screen: at its end, at every settled turn and
+/// after a reattach, so a run lost later (a reboot) still shows how its last turn ended (SPEC-229
+/// RBT-002). A hub without output (a runtime made before its run was reattached) keeps the saved
+/// screen. The file is replaced whole (a temporary file renamed over it): a reset or a concurrent
+/// save never leaves a torn one.
+pub(crate) fn save_screen(hub: &crate::hub::Hub, run_dir: &Path) {
+    static SAVES: AtomicU64 = AtomicU64::new(0);
+    if !hub.has_output() {
+        return;
+    }
+    let (screen, (cols, rows)) = hub.formatted_screen();
     let mut record = format!("{cols} {rows}\n").into_bytes();
     record.extend_from_slice(&screen);
-    if let Err(err) = write_private_file(&run_dir.join(FINAL_SCREEN_FILE), &record) {
+    let temporary = run_dir.join(format!(
+        ".{FINAL_SCREEN_FILE}.{}.{}",
+        std::process::id(),
+        SAVES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let saved = write_private_file(&temporary, &record)
+        .and_then(|()| std::fs::rename(&temporary, run_dir.join(FINAL_SCREEN_FILE)));
+    if let Err(err) = saved {
+        let _ = std::fs::remove_file(&temporary);
         tracing::debug!(error = %err, "cannot save the final screen");
     }
 }
@@ -2177,11 +2192,9 @@ impl App {
             *intent = None;
         }
         // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
-        let mut ended = TaskStatus::Stopped(reason);
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Ok(next) = task.status.after_loss(task.activity, reason)
         {
-            ended = next;
             let _ = self
                 .deps
                 .store
@@ -2192,6 +2205,11 @@ impl App {
         if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
+            // What the store recorded, whoever won the transition.
+            let ended = match self.deps.store.task(task_id).await {
+                Ok(Some(task)) if task.status.is_resting() => task.status,
+                _ => TaskStatus::Stopped(reason),
+            };
             rt.hub.exit(ended.as_str(), None);
         }
         self.publish_task(task_id).await;
@@ -2214,7 +2232,7 @@ impl App {
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
         if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
-            save_screen(&runtime, Path::new(&attempt.run_dir));
+            save_screen(&runtime.hub, Path::new(&attempt.run_dir));
         }
         let state = if intent.is_some() {
             AttemptState::Killed
@@ -3119,6 +3137,17 @@ impl App {
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
+                // An idle run's screen is kept now, from the host's snapshot: its next settled
+                // turn may never come before a reboot (SPEC-229 RBT-002).
+                if let Ok(Some(task)) = store.task(&attempt.task_id).await
+                    && task.status == TaskStatus::Running
+                    && task.activity.is_some_and(Activity::is_idle)
+                {
+                    save_screen(
+                        &self.runtime(&attempt.task_id).hub,
+                        Path::new(&attempt.run_dir),
+                    );
+                }
                 if let Ok(Some(task)) = store.task(&attempt.task_id).await
                     && matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
                 {
@@ -3733,6 +3762,30 @@ mod tests {
             (120, 40, b"\x1b[1mbye".as_slice())
         );
         assert!(super::read_final_screen(&dir.path().join("missing")).is_none());
+        Ok(())
+    }
+
+    /// SPEC-229 RBT-002 (review): a hub with no output yet (a runtime made fresh by a hook that
+    /// came before reattach) never replaces a saved screen with a blank one; one with output
+    /// replaces it whole, leaving no temporary file behind.
+    #[test]
+    fn a_screen_is_saved_only_from_a_hub_with_output() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(super::FINAL_SCREEN_FILE);
+        super::write_private_file(&path, b"80 24\nthe last turn")?;
+        let hub = crate::hub::Hub::new(120, 40);
+        super::save_screen(&hub, dir.path());
+        assert_eq!(std::fs::read(&path)?, b"80 24\nthe last turn");
+
+        hub.output(1, b"a newer turn");
+        super::save_screen(&hub, dir.path());
+        let (cols, rows, bytes) = super::read_final_screen(dir.path()).ok_or("unreadable")?;
+        assert_eq!((cols, rows), (120, 40));
+        assert!(String::from_utf8_lossy(&bytes).contains("a newer turn"));
+        let names: Vec<_> = std::fs::read_dir(dir.path())?
+            .map(|e| e.map(|e| e.file_name()))
+            .collect::<Result<_, _>>()?;
+        assert_eq!(names, [std::ffi::OsString::from(super::FINAL_SCREEN_FILE)]);
         Ok(())
     }
 

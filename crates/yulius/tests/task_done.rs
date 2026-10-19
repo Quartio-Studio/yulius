@@ -2243,7 +2243,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
 
     // Phase 1: one task Done, the other's turn ended after a prompt typed after its goal.
     let first = runtime()?;
-    let (done, waiting) = first.block_on(async {
+    let (done, waiting, sandbox, user) = first.block_on(async {
         let (app, _) = start(&data, &fake, agent.clone(), 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let done = goal_task(&app, &sandbox, &user, "Finish before the reboot").await?;
@@ -2259,9 +2259,42 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
             activity(&app, &waiting).await == Some(Activity::Waiting)
         })
         .await?;
-        Ok::<_, BoxError>((done, waiting))
+        Ok::<_, BoxError>((done, waiting, sandbox, user))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
+
+    // An update first (the processes live on) to a server that saves screens, from one that did
+    // not: the reattached idle runs save theirs at once, before any new turn.
+    let update = runtime()?;
+    update.block_on(async {
+        let (app, _) = start(&data, &fake, agent.clone(), 0).await?;
+        let mut run_dirs = Vec::new();
+        for id in [&done, &waiting] {
+            let attempt = app.deps.store.live_attempt(id).await?.ok_or("attempt")?;
+            let run_dir = PathBuf::from(&attempt.run_dir);
+            std::fs::remove_file(run_dir.join("final-screen"))?;
+            run_dirs.push(run_dir);
+        }
+        app.reconcile().await?;
+        for run_dir in &run_dirs {
+            wait_for(
+                "the reattached run's screen",
+                Duration::from_secs(10),
+                || {
+                    let saved = run_dir.join("final-screen").exists();
+                    async move { saved }
+                },
+            )
+            .await?;
+        }
+        assert_eq!(
+            activity(&app, &done).await,
+            Some(Activity::Done),
+            "still Done"
+        );
+        Ok::<_, BoxError>(())
+    })?;
+    update.shutdown_timeout(Duration::from_secs(5));
 
     // The reboot: every process ends with no exit recorded (the host first, so nobody records it).
     let rt = runtime()?;
@@ -2290,9 +2323,49 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
         }
         drop(store);
 
-        // Phase 2: the server after the reboot.
+        // Phase 2: the server after the reboot. A Done task whose attempt was never recorded
+        // live is swept by the same rule.
         let (app, _) = start(&data, &fake, agent, 0).await?;
+        let unattached = app
+            .deps
+            .store
+            .insert_task(&TaskRecord {
+                id: TaskId::parse("t-unattached")?,
+                sandbox_id: sandbox.clone(),
+                number: 0,
+                title: "Done without a live attempt".into(),
+                prompt: String::new(),
+                harness: Harness::ClaudeCode,
+                model: None,
+                effort: None,
+                workflow_id: None,
+                status: TaskStatus::Running,
+                activity: Some(Activity::Done),
+                branch: None,
+                worktree_path: None,
+                spec_path: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                created_by: user.clone(),
+                owner: user.clone(),
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                closed_at: None,
+                archived_at: None,
+                queued_at: None,
+                gate_blocks: 0,
+                wake_enabled: true,
+                mode: TaskMode::Goal,
+                supertask: false,
+            })
+            .await?;
         app.reconcile().await?;
+        let swept = task(&app, &unattached.id).await?;
+        assert_eq!(
+            (swept.status, swept.closed_at.is_some()),
+            (TaskStatus::Closed, true),
+            "the sweep closes a Done task with no live attempt"
+        );
         let closed = task(&app, &done).await?;
         assert_eq!(
             (closed.status, closed.closed_at.is_some()),

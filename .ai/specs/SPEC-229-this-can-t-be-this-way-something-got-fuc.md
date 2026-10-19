@@ -47,8 +47,9 @@ Reproduced on the instance (server 77925fd, main) on 2026-10-19.
   `Running` with activity `Done`, the task becomes `Closed` (with `closed_at`), not
   `Stopped(reason)`. Any other lost task keeps today's `Stopped(reason)`.
 - RBT-002: Whenever a running task's activity becomes idle (`waiting` or `done`: the turn
-  settled), the run's current screen is written to its `final-screen` file, so a run lost later
-  still shows the screen its last turn settled on.
+  settled), and when reconciliation reattaches an idle run, the run's current screen is written
+  to its `final-screen` file, so a run lost later still shows the screen its last turn settled
+  on. A hub with no output never overwrites a saved screen, and the file is replaced whole.
 - RBT-003: The `stopped_server_lost` message says Yulius restarted and the session ended, not that
   the agent was working.
 
