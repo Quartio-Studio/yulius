@@ -27,6 +27,16 @@ struct Inner {
 #[derive(Clone, Default)]
 pub struct TerminalScrub(Arc<Mutex<Inner>>);
 
+/// The streaming redactor of a terminal over `matcher`.
+pub(crate) fn screen_redactor(matcher: Arc<PlainMatcher>) -> StreamRedactor<Arc<PlainMatcher>> {
+    StreamRedactor::new(matcher, 4)
+}
+
+/// A whole terminal snapshot redacted with `matcher`.
+fn redact_screen(matcher: &PlainMatcher, bytes: &[u8]) -> Vec<u8> {
+    redact_all(matcher, bytes).0
+}
+
 impl App {
     /// Redacts a whole terminal snapshot for `sandbox` and forgets any held output.
     pub(crate) async fn terminal_snapshot(
@@ -41,7 +51,7 @@ impl App {
             let _ = redactor.flush();
         }
         match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) => redact_all(matcher.as_ref(), bytes).0,
+            Ok(matcher) => redact_screen(matcher.as_ref(), bytes),
             Err(err) => {
                 tracing::error!(error = %err, "terminal snapshot withheld: agent secrets unreadable");
                 b"\r\n[Yulius: the screen is withheld until agent secrets can be read]\r\n".to_vec()
@@ -132,5 +142,58 @@ impl App {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yulius_domain::vault::encode::needles;
+
+    const NAME: &str = "PIPEDREAM_PROJECT_ENVIRONMENT";
+    const VALUE: &str = "production";
+    const COLS: u16 = 40;
+
+    fn matcher() -> Arc<PlainMatcher> {
+        Arc::new(PlainMatcher::new(vec![(NAME.into(), needles(VALUE))]))
+    }
+
+    /// The screen's rows after `bytes`.
+    fn screen(bytes: &[u8]) -> Vec<String> {
+        let mut parser = vt100::Parser::new(6, COLS, 0);
+        parser.process(bytes);
+        parser.screen().rows(0, COLS).collect()
+    }
+
+    /// Output drawn as Claude Code draws it: two lines, then the cursor goes back up two rows and
+    /// one of them is rewritten in place, and a mark is put at a column of the first line.
+    fn redraw() -> Vec<u8> {
+        format!(
+            "allowed for {VALUE}. Yulius tracks\r\nthree allowances\r\n\x1b[2A\r\x1b[2Kdev is not {VALUE}\x1b[1B\r\x1b[2Kfine\x1b[1A\x1b[30G!"
+        )
+        .into_bytes()
+    }
+
+    /// The unredacted screen with each cell of the value covered by `mask`.
+    fn masked(rows: &[String], mask: &str) -> Vec<String> {
+        rows.iter().map(|row| row.replace(VALUE, mask)).collect()
+    }
+
+    /// TRM-003: a redraw over a redacted value lands where it would over the value, whatever
+    /// the chunking (a held tail included).
+    #[test]
+    fn redraws_over_a_redacted_value_keep_their_cells() {
+        let raw = redraw();
+        let plain = screen(&raw);
+        assert_eq!(plain[0].trim_end(), "dev is not production        !");
+        let expected = masked(&plain, "[secret:P]");
+        for split in 0..=raw.len() {
+            let mut stream = screen_redactor(matcher());
+            let mut out = stream.push(&raw[..split]);
+            out.extend(stream.push(&raw[split..]));
+            out.extend(stream.flush());
+            assert_eq!(screen(&out), expected, "split at {split}");
+        }
+        assert_eq!(screen(&redact_screen(&matcher(), &raw)), expected);
     }
 }

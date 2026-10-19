@@ -508,7 +508,7 @@ impl App {
         sandbox: &SandboxId,
     ) -> Option<StreamRedactor<Arc<PlainMatcher>>> {
         match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) if !matcher.is_empty() => Some(StreamRedactor::new(matcher, 4)),
+            Ok(matcher) if !matcher.is_empty() => Some(super::terminal::screen_redactor(matcher)),
             Ok(_) => None,
             Err(err) => {
                 tracing::error!(error = %err, "agent secrets could not be loaded for the terminal");
