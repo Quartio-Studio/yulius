@@ -77,10 +77,12 @@ console sees it there; the product loses nothing, as the worker was no longer wa
 ## Plan
 
 - [x] Root cause reproduced and spec written
-- [ ] Regression test: an editor worker ended while its script loads (fails on dev)
-- [ ] Ended Monaco workers raise no uncaught error
-- [ ] Loaded proof: editor suite repeated at a 0.2 CPU share
-- [ ] Gates, docs and independent review
+- [x] Regression test: an editor worker ended while its script loads (fails on dev)
+- [x] Ended Monaco workers raise no uncaught error
+- [x] Loaded proof: editor suite repeated at a 0.2 CPU share
+- [x] Gate, security scan and docs green
+- [ ] Full e2e suite green and spec evidence recorded
+- [ ] Independent review answered and approved
 - [ ] Delivered: pull request merged into dev on green
 
 ## Acceptance criteria
