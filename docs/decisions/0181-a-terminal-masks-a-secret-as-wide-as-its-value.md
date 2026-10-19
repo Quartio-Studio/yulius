@@ -24,8 +24,8 @@ terminals people watch.
   as the hub's `vt100` screen counts it: each character's `unicode-width` 0.2 width added up (no
   grapheme rules, so an emoji with a skin-tone modifier takes 4 columns), and no column for a
   control character below 256. When the value is at least as wide as the label, the result is the
-  full label followed by `*` up to that width. When the value is narrower, the label is cut and closed with
-  `]` (`[secret:P]`). Below two columns it is `*`.
+  full label followed by `*` up to that width. When the value is narrower, the label is cut and
+  closed with `]` (`[secret:P]`). Below two columns it is `*`.
 - The domain redactor takes the replacement as a function (`Replacement`, through
   `StreamRedactor::with_replacement` and `redact_all_with`). The function gets the whole form that
   was found and how many of its bytes the stream had already shown. Every other channel keeps

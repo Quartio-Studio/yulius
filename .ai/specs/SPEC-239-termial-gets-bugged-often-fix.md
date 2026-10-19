@@ -1,11 +1,11 @@
 ---
 yulius-task: 2cf95875-6d3c-49dd-a8f0-30897ff23619
-status: in-progress
+status: done
 ---
 
 # SPEC-239: A secret redacted in the terminal keeps the screen's layout
 
-Status: in-progress
+Status: done
 Date: 2026-10-19
 Owner: task #225
 Scope authorization: task #225: "termial gets bugged often, fix", with a screenshot of a task
@@ -66,13 +66,13 @@ Confirmed against `dev` at c7b2df6b.
 
 ## Plan
 
-- [ ] Spec records the root cause of the garbled terminal
-- [ ] Regression test replays a cursor-addressed stream and fails on dev
-- [ ] Terminal masks a secret with a label of the value's width
-- [ ] ADR, architecture and changes record the terminal mask
-- [ ] Independent review approved
-- [ ] Repository gate and security scan pass
-- [ ] Merged into dev on green CI
+- [x] Spec records the root cause of the garbled terminal
+- [x] Regression test replays a cursor-addressed stream and fails on dev
+- [x] Terminal masks a secret with a label of the value's width
+- [x] ADR, architecture and changes record the terminal mask
+- [x] Independent review approved
+- [x] Repository gate and security scan pass
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -106,3 +106,40 @@ the repository gate (`scripts/dev ci`) and the security scan.
 - The mask shows a value's width, which is roughly its length. The agent can already read the
   length, so this is accepted (ADR-0181).
 - The ordinary-word policy of #705 is not part of this change: the PR says "Part of #705".
+
+## Evidence
+
+- Red: at 2b916d2b (the new test against dev c7b2df6b's redaction),
+  `cargo test -p yulius-app --lib vault::terminal` failed:
+  `redraws_over_a_redacted_value_keep_their_cells` at split 0 left the screen
+  `["allowed for [secret:PIPEDREAM_PROJECT_EN", "dev is not [secret:PIPEDREAM_PROJECT_ENV",
+  "IRONMENT]owances             !", "fine", …]`. That is the screenshot's garbling, where the
+  expected screen was `["dev is not [secret:P]        !", "fine", …]`.
+- Red (review round 1): at 47688503, `values_take_the_columns_the_screen_counts` failed for
+  `ok 👍🏽 deploy-key` (cursor column 21, expected 23), and `fitted_label("ÉTÉ", 10)` panicked.
+- Green: `cargo test -p yulius-app --lib vault::terminal`: 3 passed.
+  `cargo test -p yulius-domain --lib vault::redact`: 10 passed.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^secrets_redaction::/) |
+  test(/^cockpit::/) | test(/^secrets::/) | test(/^sessions::/) | test(/^task_transcript::/) |
+  test(/^browser::/))'` at e25b00f8: 92 passed. These run the real ptyhost with a fake agent,
+  Superagent screens and the text channels. In `cockpit.rs`, the two screen checks now expect
+  the padded label.
+- `python3 scripts/bootstrap.py && scripts/dev ci` at 6a386771: exit 0. Nextest: 2265 passed,
+  17 skipped.
+- `scripts/dev security` at 6a386771: exit 0. The vidoc-1 change scan found no open critical or
+  high finding, and no medium finding in the change. It listed no low finding in the change. It
+  reported three findings in code this branch did not touch (`vault/runtime.rs:612`, `:745`,
+  `:835`), which Yulius CI files as issues.
+- Independent review in a fresh session (`om-code-review`):
+  - Round 1, at a47596e3: APPROVE, with four minors and one nit in this change's own code. They
+    were the width counted per grapheme rather than per character, a cut character counted as a
+    stray byte, the width disclosure missing from the ADR, the spec unfinished, and a non-ASCII
+    name panicking. All were fixed test-first in 47688503 and 6a386771.
+  - Round 2, at 6a386771: APPROVE. Nits were left as they are:
+    - The lookup by `end` in `process()` has a fallback that never runs (harmless, few matches
+      per chunk).
+    - A literal U+FFFD in a value would count one column too many (not a realistic value).
+    - xterm.js's handling of an interrupted UTF-8 sequence was not verified (only the rare
+      mid-character split).
+- Not tested: a live Claude Code session in the browser terminal (xterm.js) showing a secret.
+  The `vt100` screen stands in for it, as the hub's snapshots do.
