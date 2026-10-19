@@ -40,6 +40,35 @@ test('the CD page shows dev and production as their branches define them', async
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// #704 (SPEC-237 CAU-003): production names a secret agents use (its .env copies). Nobody can
+// allow it, so the page says production never gets it, not that it waits for a person.
+test('production says a secret agents use is never for production', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  const prod = screen.getByRole('region', 'Production environment');
+  await expect(prod.getByText('Promotes')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: { secrets: { name: string; state: string }[] }[] }> } };
+    w.__yuliusMock.cd.sb_studio.environments[1].secrets.push({ name: 'PAY_KEY', state: 'agents_use' });
+  });
+  // Leaving and coming back reads the environments again.
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(prod.getByText('agents use it: production never gets it')).toBeVisible();
+  await expect(prod.getByText(/Give production a separate secret/)).toBeVisible();
+  await expect(prod.getByText('waiting for a person to allow it')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A production deploy is refused with the same reason.
+  await prod.getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  const refused = screen.getByRole('dialog', 'Deploy');
+  await expect(refused.getByText(/agents use PAY_KEY/)).toBeVisible();
+  await expect(refused.getByText('Not started')).toBeVisible();
+});
+
 // Task #145 (SPEC-151): "make CI/CD one tab with a tab like in secrets team/agent". One sidebar
 // entry, one page; its sections are the Secrets page's tabs, kept in ?section=.
 test('CI and CD are two tabs of the CI/CD page, like the Secrets sections', async ({ app, browser, screen }) => {

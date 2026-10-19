@@ -34,6 +34,8 @@ const SECRET_STATE = {
   not_allowed: { label: 'waiting for a person to allow it', tone: 'warn' },
   missing: { label: 'not in Secrets yet', tone: 'danger' },
   production: { label: 'a production secret: dev never gets it', tone: 'danger' },
+  // Nobody can allow it: the Secrets page offers no Allow for a secret agents use (SPEC-237).
+  agents_use: { label: 'agents use it: production never gets it', tone: 'danger' },
 };
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;
@@ -146,7 +148,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
         h('ul', { class: 'cd-secrets' }, env.secrets.map((s) => {
           const ss = SECRET_STATE[s.state] || SECRET_STATE.missing;
           return h('li', null, h('code', null, s.name), badge(ss.label, ss.tone), s.state === 'ready' ? null : h('a', { href: link }, 'Secrets'));
-        }))));
+        })),
+        env.secrets.some((s) => s.state === 'agents_use')
+          ? h('p', { class: 'small muted' }, 'Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.prod] secrets of yulius.toml.')
+          : null));
     }
     if (env.last_run) {
       const run = env.last_run;
