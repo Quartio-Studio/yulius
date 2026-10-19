@@ -1453,7 +1453,13 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
         let secrets: Vec<String> = env
             .secrets
             .iter()
-            .map(|s| format!("{} {}", s.name, s.state.replace('_', " ")))
+            .map(|s| match s.state.as_str() {
+                "agents_use" => format!(
+                    "{} agents use it (production never gets it: name a separate secret)",
+                    s.name
+                ),
+                state => format!("{} {}", s.name, state.replace('_', " ")),
+            })
             .collect();
         out.push_str(&format!("  secrets: {}\n", secrets.join(", ")));
     }

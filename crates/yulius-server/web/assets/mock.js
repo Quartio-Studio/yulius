@@ -1860,7 +1860,8 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   const used = env.secrets.filter((s) => s.state === 'agents_use').map((s) => s.name);
-  if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends it to), so production deploys never get it and nobody can allow it for them. Production names a separate secret of its own in [cd.prod] secrets of yulius.toml`);
+  const it = used.length === 1 ? 'it' : 'them';
+  if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends ${it} to), so production deploys never get ${it} and nobody can allow ${it} for them. Production names a separate secret of its own in [cd.prod] secrets of yulius.toml`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
   if (cd.runs.some((r) => r.environment === name && progressCd(r).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
   db.nextId += 1;

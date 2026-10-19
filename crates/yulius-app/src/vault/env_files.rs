@@ -844,21 +844,30 @@ impl App {
         if !waiting.is_empty() {
             let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             if env == yulius_domain::cd::CdEnv::Prod {
-                // Nobody can allow those (round 2, M-B): say what to do instead (SPEC-237 CAU-002).
-                let used: Vec<&str> = waiting
-                    .iter()
-                    .filter(|r| agents_use(r))
-                    .map(|r| r.name.as_str())
-                    .collect();
+                // Nobody can allow those (round 2, M-B): say what to do instead (SPEC-237 CAU-002),
+                // and name the others waiting for a person too, so one refusal says it all.
+                let (used, others): (Vec<&VaultSecretRecord>, Vec<&VaultSecretRecord>) =
+                    waiting.iter().partition(|r| agents_use(r));
                 if !used.is_empty() {
+                    let used: Vec<&str> = used.iter().map(|r| r.name.as_str()).collect();
+                    let others: Vec<&str> = others.iter().map(|r| r.name.as_str()).collect();
+                    let it = if used.len() == 1 { "it" } else { "them" };
+                    let also = if others.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ". Also, a person who manages {} allows {} for production deploys",
+                            others.join(", "),
+                            if others.len() == 1 { "it" } else { "them" },
+                        )
+                    };
                     return Err(AppError::Conflict(format!(
                         "nothing ran: agents use {names} (copies into .env files or hosts the \
                          proxy sends {it} to), so production deploys never get {it} and nobody \
                          can allow {it} for them. Production names a separate secret of its own \
                          in [cd.prod] secrets of yulius.toml, added on the Secrets page ({link}); \
-                         or a person first revokes the .env copies and hosts of {names}",
+                         or a person first revokes the .env copies and hosts of {names}{also}",
                         names = used.join(", "),
-                        it = if used.len() == 1 { "it" } else { "them" },
                     )));
                 }
                 return Err(AppError::Conflict(format!(

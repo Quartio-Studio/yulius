@@ -150,7 +150,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
           return h('li', null, h('code', null, s.name), badge(ss.label, ss.tone), s.state === 'ready' ? null : h('a', { href: link }, 'Secrets'));
         })),
         env.secrets.some((s) => s.state === 'agents_use')
-          ? h('p', { class: 'small muted' }, 'Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.prod] secrets of yulius.toml.')
+          ? h('p', { class: 'small muted' }, 'Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.prod] secrets of yulius.toml; or remove its .env copies and hosts first, then allow it for production deploys.')
           : null));
     }
     if (env.last_run) {
