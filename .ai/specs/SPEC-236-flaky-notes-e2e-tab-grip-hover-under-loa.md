@@ -62,8 +62,10 @@ something covers the tab, the test fails and says what covers it. It no longer f
 - [x] Spec SPEC-236 drafted with the failure's candidates
 - [x] Failure reproduced under load and the cause named
 - [x] Hover check waits on a still, really hovered tab
-- [ ] File passes 20 consecutive loaded runs
-- [ ] Independent review answered and gates green
+- [x] File passes loaded runs 1-10
+- [x] File passes loaded runs 11-20
+- [x] Gate green and spec Evidence written
+- [ ] Independent review approves the final head
 - [ ] Merged into dev with #503 and #510 commented
 
 ## Acceptance criteria
@@ -103,3 +105,52 @@ something covers the tab, the test fails and says what covers it. It no longer f
 - **Out of scope.** The other cases in `notes.e2e.ts` that point at the tabs already avoid the
   toast through `browserask=0`. #510 lists other notes timeouts under load; this change covers
   only this case, so #510 stays open.
+
+## Evidence
+
+All runs were on `feat/222` at dev b9080ea4, in a sandbox with 12 cores and `YULIUS_CPUS=4` (2
+e2e workers), on a host at load average 150-195. A load controller (scratchpad, not committed) held
+a 2 s CPU-bound probe at 0.2 of a CPU. It added or removed busy loops (`sh -c 'while :; do :; done'`)
+every ~20 s, from the median of three 2 s probes.
+
+- **Reproduction of the exact signature (throwaway copy of the case, removed).** The case was copied
+  unchanged, with two changes: it opened the mock without `browserask=0`, and it waited for
+  `.toast-warn` to be visible before reading the "Me" box. This forces the timing of a run that
+  reaches the hover after 5 s.
+  - Toast on: `:hover` was `["toasts", "toast toast-warn"]`. The case failed at the hover poll with
+    `ASSERTION_FAILED: expect.poll(...).toBe(...) timed out after 5000 ms`, `last: expected false
+    to be true`, the issue's exact output.
+  - Toast off (`browserask=0`): `:hover` was `["term-tabs notes-tabs", "notes-tab-me"]`. Passed.
+  - At rest, a probe that hovered "Me" again and again with the toast on had `:hover` on
+    `#toasts > div.toast.toast-warn` from 6.6 s on. It was still there 5 s later with the pointer
+    still.
+- **Ambient task changes ruled out (throwaway probe, removed).** With `browserask=0` (dev's
+  setting), the probe hovered "Me" again and again until 26-28 s after load.
+  - At rest: 3 page loads, 1204 hovers, 0 misses.
+  - Under the held 0.2 share: 8 page loads, 1922 hovers, 0 misses.
+- **Changed case with the cause forced.** The same throwaway copy, with
+  `browser.locator('#notes-tab-me').hover()` instead of the raw move. Toast on, hovering after the
+  toast showed: passed, `:hover` on `notes-tab-me` (the hover waited the toast out). Toast off:
+  passed.
+- **Mutation.** `.notes-tabs .term-tab:hover .notes-tab-grip` removed from `styles.css:2295`, with
+  the changed case alone: failed with `expect.poll(...).toBe(...) timed out after 5000 ms`, `last:
+  expected false to be true`. The hover does not hide a grip that loses its hover colour. Reverted.
+- **20 runs in a row under load.** `E2E_TELEMETRY_DISABLED=1 npx e2e run tests/notes.e2e.ts`, with
+  no retries (`retries: 0`) and no sleeps.
+  - 20 of 20 runs passed, 36 of 36 tests each (720 tests), from 14:38 to 16:45.
+  - Each run took 305-467 s (10-13 s per test).
+  - The controller logged 381 samples over the window: mean share 0.201 (min 0.051, max 0.493),
+    with 11 loops on average. `scripts/dev ci` ran during runs 2-13, so the controller held
+    the share with fewer loops.
+  - Comments in the case changed during run 1 (review wording, c4159509); the code did not.
+- **Gate.** `python3 scripts/bootstrap.py && scripts/dev ci` exited 0: 2258 tests passed, 17
+  skipped.
+- **Security.** `scripts/dev security` ran Vidoc on vidoc-1 over 3 changed files (1 sent in 2
+  chunks, 2 prose skipped): "no open critical or high finding, and no open medium one in the
+  change".
+- **Not run.** The full e2e suite: this change touches one case of `notes.e2e.ts`, which passed 20
+  loaded runs in full. Yulius CI's own load, before the PR's CI run.
+- **Not tested.** A toast that appears in the few milliseconds between `hover()`'s hit check and
+  its move would still get the pointer and time the hover out. Here it would fail with Playwright's
+  call log rather than the colour poll. Nothing in this case shows a toast (`browserask=0`,
+  `ambient=0`).
