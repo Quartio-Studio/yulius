@@ -119,7 +119,9 @@ updating by itself, on both tabs.
   after it change only JavaScript, CSS, Markdown and e2e tests, with no Rust and no Cargo files. On
   the final head, `python3 scripts/check_repository.py` passes and the 119 script tests pass. The
   first gate run failed in the repository check, because `index.html` did not preload the two new
-  modules; `check_repository.py --sync-brand` fixed that in b6e84741.
+  modules; `check_repository.py --sync-brand` fixed that in b6e84741. The head delivered merges
+  origin/dev (#707, Rust changes gated on dev, no conflicts); Yulius CI's gate on that exact head
+  (quality, e2e, security) is what the merge waits for.
 - **Security.**
   - `python3 scripts/vidoc_scan.py` (the change scan) exits 0 at 12676cfb and again at 04adae75:
     no critical, high or in-change medium finding, and no low finding listed.
@@ -130,9 +132,10 @@ updating by itself, on both tabs.
   - Round 3: 1 nit.
   - All were in own code and all were fixed test-first. The reviewer approved 04adae75 with no
     open findings.
-- **Seen in the app.** In the mock at 1280×800, the CD tab shows the Now line ("CI quartio
-  9f3c2a1 · 3 jobs · 1 passed · 2 running · 57 s so far") above the tabs. A run's view shows "All
-  runs", the sticky summary, its stages and its log in place of the list.
+- **Seen in the app.** In the mock at 1280×800, the CD tab shows the Now line above the tabs: the
+  running CI run, its jobs line and its time so far (this was seen before review round 1; the link
+  now reads "Running CI quartio at 9f3c2a1", as cd.e2e checks). A run's view shows "All runs", the
+  sticky summary, its stages and its log in place of the list.
 - **Not tested here.** The real server and a real deploy. The views read the same `/ci`, `/cd`,
   `/ci/runs/<id>`, `/cd/runs/<id>` and `/stages/timeline` APIs as before, and the API and the
   server are unchanged. Not tried: screen readers other than the accessibility tree that axe and
