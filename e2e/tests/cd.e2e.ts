@@ -56,10 +56,12 @@ test('production says a secret agents use is never for production', async ({ app
   await screen.getByRole('radio', 'CD (deployment)').click();
   await expect(prod.getByText('agents use it: production never gets it')).toBeVisible();
   await expect(prod.getByText(/Give production a separate secret/)).toBeVisible();
+  // The other way out, as the Secrets page and the server's refusal say.
+  await expect(prod.getByText(/or remove its \.env copies and hosts first/)).toBeVisible();
   await expect(prod.getByText('waiting for a person to allow it')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
 
-  // A production deploy is refused with the same reason.
+  // The mock refuses a production deploy as the server does (cd::production_secrets_need_their_own_allowance).
   await prod.getByRole('button', 'Deploy production…').click();
   const confirm = screen.getByRole('dialog', 'Deploy production?');
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
