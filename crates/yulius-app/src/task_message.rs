@@ -7,9 +7,9 @@
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person, then a separate Enter; Claude Code queues a message submitted while the agent works
 //!   (TMS-003). Control characters other than line breaks and tabs never reach the TUI;
-//! - nothing is typed before Claude Code's session started (its SessionStart hook, or the goal
-//!   typist's fallback for a CLI without it; a run reattached after a restart had started), while
-//!   it asks a person whether to trust the folder, while a person typed in the last minute (their
+//! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
+//!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
+//!   while it asks a person whether to trust the folder, while a person typed in the last minute (their
 //!   draft is theirs), while Yulius types the first message, or while another message is typed;
 //!   other states are refused with their name (TMS-004);
 //! - the person needs write access; every message is audited `task.messaged` without its text
@@ -169,15 +169,12 @@ impl App {
         }
         // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
         // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
-        // and an Enter would answer it with its default. Without a SessionStart seen (a CLI
-        // without the hook, or a run reattached after a restart), the run is taken as started
+        // and an Enter would answer it with its default. Without a SessionStart (a CLI without
+        // the hook; a reattached run's is read from its marker), the run is taken as started
         // half the goal-ready timeout after its spawn, as the goal typist does
-        // (`wait_input_ready`). A reattached run's screen is not read for the dialog: its output
-        // since may hold the dialog's words.
+        // (`wait_input_ready`).
         if !runtime.session_started.load(Ordering::SeqCst) {
-            if !runtime.reattached.load(Ordering::SeqCst)
-                && trust_prompt_shown(&runtime.hub.screen_text())
-            {
+            if trust_prompt_shown(&runtime.hub.screen_text()) {
                 return Err(AppError::Conflict(format!(
                     "task #{} waits for a person to answer Claude Code's folder-trust question \
                      in its terminal; tell the person, then try again",

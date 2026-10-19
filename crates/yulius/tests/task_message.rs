@@ -263,27 +263,56 @@ fn a_session_that_has_not_started_refuses_the_message() -> TestResult {
     Ok(())
 }
 
-/// A running task whose agent printed the trust dialog's words (as an agent reading Yulius' own
-/// code does), then a server restart: the new server, with `goal_ready_ms`, reattaches the run.
+/// What the first server leaves running before a restart.
+#[derive(Clone, Copy)]
+enum BeforeRestart {
+    /// A running task whose agent printed the trust dialog's words (as an agent reading Yulius'
+    /// own code does).
+    TrustWords,
+    /// A goal task whose Claude Code still asks whether to trust the folder.
+    TrustDialog,
+    /// A running task.
+    Running,
+}
+
+/// Runs `before` on a first server with `agent` (waiting until its run was spawned more than
+/// `spawned_for_ms` ago), restarts the server with `goal_ready_ms`, reattaches the run and waits
+/// for its screen to show `shown`.
 fn restarted(
     data: &Path,
+    agent: &FakeAgentOptions,
+    before: BeforeRestart,
+    spawned_for_ms: i64,
     goal_ready_ms: u64,
+    shown: &str,
 ) -> Result<(tokio::runtime::Runtime, Arc<App>, TaskId, ProjectCaller), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let first = runtime()?;
     let (port, id, caller) = first.block_on(async {
-        let (app, port) = start(
-            data,
-            &fake,
-            fake_agent(),
-            0,
-            Arc::new(ScriptedUsage::default()),
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(data, &fake, agent.clone(), 0, probe).await?;
+        let (id, caller) = match before {
+            BeforeRestart::TrustWords | BeforeRestart::Running => running(&app, data).await?,
+            BeforeRestart::TrustDialog => {
+                let (sandbox, user) = seed(&app, data, &["a-only"]).await?;
+                let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
+                (id, superagent(&sandbox, &user, "admin"))
+            }
+        };
+        if matches!(before, BeforeRestart::TrustWords) {
+            app.send_input(&id, b"Yes, I trust this folder\r").await?;
+        }
+        wait_for(
+            "the screen before the restart",
+            Duration::from_secs(60),
+            || async { screen(&app, &id).contains(shown) },
         )
         .await?;
-        let (id, caller) = running(&app, data).await?;
-        app.send_input(&id, b"Yes, I trust this folder\r").await?;
-        wait_for("the trust words", Duration::from_secs(30), || async {
-            screen(&app, &id).contains("ECHO: Yes, I trust this folder")
+        wait_for("the run's age", Duration::from_secs(30), || async {
+            match app.deps.store.live_attempt(&id).await {
+                Ok(Some(attempt)) => app.now().0 - attempt.started_at.0 > spawned_for_ms,
+                _ => false,
+            }
         })
         .await?;
         Ok::<_, Error>((port, id, caller))
@@ -291,18 +320,14 @@ fn restarted(
     first.shutdown_timeout(Duration::from_secs(5));
     let rt = runtime()?;
     let app = rt.block_on(async {
-        let (app, _) = start_with(
-            data,
-            &fake,
-            fake_agent(),
-            port,
-            Arc::new(ScriptedUsage::default()),
-            |config| config.goal_ready_ms = goal_ready_ms,
-        )
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_with(data, &fake, agent.clone(), port, probe, |config| {
+            config.goal_ready_ms = goal_ready_ms;
+        })
         .await?;
         app.reconcile().await?;
         wait_for("the reattached screen", Duration::from_secs(30), || async {
-            screen(&app, &id).contains("Yes, I trust this folder")
+            screen(&app, &id).contains(shown)
         })
         .await?;
         Ok::<_, Error>(app)
@@ -310,19 +335,23 @@ fn restarted(
     Ok((rt, app, id, caller))
 }
 
-/// Round 2 B: after a restart the new server saw no SessionStart, yet the run's session started
-/// long ago: the trust dialog's words in its output are no trust question, and the message is
-/// typed.
+/// A Superagent's message to `id`.
+async fn send(app: &Arc<App>, caller: &ProjectCaller, id: &TaskId) -> Result<Value, AppError> {
+    app.tool_task_message(caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
+        .await
+}
+
+/// Round 2 B, round 4 finding 2: a run whose session started before a restart (its SessionStart
+/// left a marker in its run folder) takes messages at once on the new server, the trust dialog's
+/// words in its output notwithstanding, and long before any hookless window ends.
 #[test]
 fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
     let (_dir, data) = data_dir()?;
-    let (rt, app, id, caller) = restarted(&data, 2_000)?;
+    let shown = "ECHO: Yes, I trust this folder";
+    let before = BeforeRestart::TrustWords;
+    let (rt, app, id, caller) = restarted(&data, &fake_agent(), before, 0, 600_000, shown)?;
     rt.block_on(async {
-        // Past the hookless window from the run's spawn (1 s with this configuration).
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let answer = app
-            .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
-            .await?;
+        let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
         wait_for("the message", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Message from admin")
@@ -334,22 +363,78 @@ fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
     Ok(())
 }
 
-/// Round 3 finding 1: a run reattached within the hookless window of its spawn may not read input
-/// yet: the window counts from its spawn, not from the restart, and the message is refused.
+/// Round 4 finding 2: a run whose Claude Code still asks whether to trust the folder across a
+/// restart, past the hookless window, refuses the message: nothing answers the dialog.
+#[test]
+fn a_trust_dialog_open_across_a_restart_refuses_the_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let agent = FakeAgentOptions {
+        trust_prompt: true,
+        ..hooked()
+    };
+    let shown = "Yes, I trust this folder";
+    let before = BeforeRestart::TrustDialog;
+    let (rt, app, id, caller) = restarted(&data, &agent, before, 1_100, 2_000, shown)?;
+    rt.block_on(async {
+        let refused = send(&app, &caller, &id)
+            .await
+            .err()
+            .ok_or("the message answered the trust dialog")?;
+        assert!(
+            matches!(&refused, AppError::Conflict(m) if m.contains("folder-trust question")),
+            "{refused:?}"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("TRUST ANSWERED"), "{shown}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Round 3 finding 1: a run without a SessionStart reattached within the hookless window of its
+/// spawn may not read input yet: the message is refused as still starting.
 #[test]
 fn a_run_reattached_soon_after_its_spawn_is_still_starting() -> TestResult {
     let (_dir, data) = data_dir()?;
-    let (rt, app, id, caller) = restarted(&data, 600_000)?;
+    let agent = FakeAgentOptions {
+        no_session_start: true,
+        ..fake_agent()
+    };
+    let shown = "ECHO: Budget: answer with an echo";
+    let before = BeforeRestart::Running;
+    let (rt, app, id, caller) = restarted(&data, &agent, before, 0, 600_000, shown)?;
     rt.block_on(async {
-        let refused = app
-            .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": "Go on"}))
+        let refused = send(&app, &caller, &id)
             .await
             .err()
             .ok_or("the message was typed into a session that may not read yet")?;
         assert!(
-            matches!(&refused, AppError::Conflict(m) if m.contains("starting")),
+            matches!(&refused, AppError::Conflict(m) if m.contains("still starting its session")),
             "{refused:?}"
         );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Round 4 nit 3: the hookless window counts from the run's spawn, not from the restart: a run
+/// spawned longer ago than the window takes the message right after the restart.
+#[test]
+fn the_hookless_window_counts_from_the_spawn() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let agent = FakeAgentOptions {
+        no_session_start: true,
+        ..fake_agent()
+    };
+    let shown = "ECHO: Budget: answer with an echo";
+    let before = BeforeRestart::Running;
+    let (rt, app, id, caller) = restarted(&data, &agent, before, 1_100, 2_000, shown)?;
+    rt.block_on(async {
+        let answer = send(&app, &caller, &id).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

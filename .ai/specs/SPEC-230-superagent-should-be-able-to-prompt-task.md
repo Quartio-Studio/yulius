@@ -56,11 +56,10 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 - TMS-004 (refusals): nothing is typed, and the answer says why, when the text is empty or longer
   than 64 KiB, the task is the caller's own (not possible for a Superagent, kept for safety), a
   person typed into the task's terminal in the last minute (their draft is theirs), Claude Code's
-  session has not started (no SessionStart hook yet; without one seen, half the goal-ready
-  timeout after the run's spawn, a run reattached after a restart included), Claude Code shows
-  its folder-trust dialog before the session started (not read for a reattached run, whose output
-  may hold its words) (only a person answers it, SPEC-117 ONE-005; a
-  paste and Enter would answer it with its default), Yulius is still
+  session has not started (no SessionStart hook yet, which leaves a marker in the run folder that
+  a restarted server reads; without the hook, half the goal-ready timeout after the run's spawn),
+  Claude Code shows its folder-trust dialog before the session started (only a person answers
+  it, SPEC-117 ONE-005; a paste and Enter would answer it with its default), Yulius is still
   typing the task's first message, another message to the task is being typed, or the task is
   neither waiting to start nor running (stopped, done, failed, starting, switching, paused): it
   names the state and what to do (continue the task, or create a new one).
@@ -141,8 +140,9 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   message was typed into the trust prompt" before the fix.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
   test(/^first_message::/) | test(/^cockpit::/) | test(/^manage_tools::/) | test(/^recovery::/)
-  | test(/^supervision::/))'`: 99 passed (before round 3); `task_message::` 8 passed after
-  it, and the 2 unit tests. `cargo nextest run -p yulius-app task_message`: 2
+  | test(/^supervision::/))'`: 99 passed (before round 3). After round 4: `task_message::`,
+  `first_message::`, `recovery::`, `supervision::`, `agent_hooks::`, `update_supervision::` and
+  `task_done::`: 100 passed, 10 of them `task_message::`. `cargo nextest run -p yulius-app task_message`: 2
   passed (AC-2's cleaning and paste framing).
 - `scripts/dev ci` on 86640db2 (before the review fixes): exit 0, 2249 tests passed, 17 skipped;
   rerun on the final head before delivery (result in the pull request).
@@ -201,7 +201,22 @@ A task that cannot take it says why, so the Superagent can tell the person what 
      0177 before 0178 again.
   4. (nit) a hookless CLI showing the trust words keeps refusing, as the goal typist waits: in
      ADR-0178's Consequences.
-- The fixes after round 3 are re-reviewed (round 4) before delivery; its verdict is in the pull
+- Independent review, round 4 (fresh session, head 935e514a): APPROVE, no critical, high or
+  medium own-code finding. Its low findings and nits, fixed:
+  1. (low) reconcile set the run's state after `attach_run`, so a call in between saw a run with
+     neither: the state is now set before the attach.
+  2. (low) a reattached run was not checked for the trust dialog, so one open across a restart
+     could be answered: the SessionStart hook leaves a `session-started` marker in the run
+     folder and reconcile restores `session_started` from it, replacing the `reattached` flag;
+     test-first (`a_trust_dialog_open_across_a_restart_refuses_the_message` failed with "the
+     message answered the trust dialog", `a_run_reattached_after_a_restart_takes_messages`,
+     now with a 300 s window, failed with "still starting its session").
+  3. (nit) "the window counts from the spawn" is proven by
+     `the_hookless_window_counts_from_the_spawn` (a hookless run spawned more than the window
+     ago takes a message right after the restart).
+  4. (nit) the refusal is asserted as "still starting its session"; 5. (nit) the module doc and
+     6. (nit) the spec and ADR wording are updated.
+- The fixes after round 4 are re-reviewed (round 5) before delivery; its verdict is in the pull
   request.
 - Not tested: a real Claude Code TUI (the fake agent models its bracketed paste and Enter);
   Claude Code's own queuing of a message submitted mid-turn is its documented behaviour, not

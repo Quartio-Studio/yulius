@@ -701,8 +701,9 @@ the audit actor, never on the caller's own task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
 one bracketed paste labelled with the person, then a separate Enter, refused before Claude Code's
-session started (SessionStart, or half the goal-ready timeout after the spawn, `spawned_ms`; a
-run reattached after a restart is not read for the trust dialog), while a person typed
+session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
+reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
+while a person typed
 in the last minute (`typed_recently`), while Claude Code's folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while another
 message is typed (`TaskRuntime::typing_message`); audited `task.messaged`

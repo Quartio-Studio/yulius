@@ -347,10 +347,12 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(&ctx.task).await {
             tracing::warn!(error = %err, task = %ctx.task.id, "step sync from the spec failed");
         }
-        // The prompt box reads input from now on: the goal can be typed (TSK-010).
+        // The prompt box reads input from now on: the goal can be typed (TSK-010). A restarted
+        // server reads it from the run's marker (SPEC-230).
         self.runtime(&ctx.task.id)
             .session_started
             .store(true, Ordering::SeqCst);
+        crate::supervisor::mark_session_started(Path::new(&ctx.attempt.run_dir));
         let briefing = self.briefing(&ctx.task, ctx.attempt.harness).await?;
         Ok(HookOutput::additional_context(
             events::SESSION_START,

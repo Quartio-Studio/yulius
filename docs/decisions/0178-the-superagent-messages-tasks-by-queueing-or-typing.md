@@ -31,14 +31,16 @@ Superagent, which acts for that person, could do neither.
   Superagent. It is not among `COCKPIT_READ_ONLY_TOOLS`, so on an uncontained server Claude Code
   asks the person first (ADR-0165).
 - **Nothing is typed over a person.** A person who typed into the terminal in the last minute
-  (`typed_recently`) owns the prompt box. Nothing is typed before Claude Code's session started
-  (its SessionStart hook; without one seen, half the goal-ready timeout after the run's spawn, as
-  the goal typist waits, also for a run reattached after a restart, whose spawn time is the
-  attempt's start): input typed earlier is lost or left unsubmitted, and the folder-trust dialog
-  may be about to show. Nor while that dialog shows (`trust_prompt_shown`, not read for a
-  reattached run, whose output may hold the dialog's words), which only a person answers: a paste
-  and an Enter would answer it with its default (SPEC-117 ONE-005). So do Yulius while it types the first message
-  (`typing_opening`) and another message being typed (one per run, a flag cleared on drop). In
+  (`typed_recently`) owns the prompt box. Nothing is typed before Claude Code's session started:
+  input typed earlier is lost or left unsubmitted, and the folder-trust dialog may be about to
+  show. The SessionStart hook says it started and leaves a `session-started` marker in the run
+  folder, which a restarted server reads when it reattaches the run. Without either (a CLI
+  without the hook), the run is taken as started half the goal-ready timeout after its spawn
+  (the attempt's start), as the goal typist waits. Nor is anything typed while that dialog shows
+  before the session started (`trust_prompt_shown`), which only a person answers: a paste and an
+  Enter would answer it with its default (SPEC-117 ONE-005). So do Yulius while it types the
+  first message (`typing_opening`) and another message being typed (one per run, a flag cleared
+  on drop). In
   each case the call is refused, not delayed. An Enter that fails after the paste says the text
   may still be in the prompt box, so the Superagent does not send it twice.
 - **Clean text.** CRLF and CR become LF. Every control character except LF and tab is removed, so
@@ -79,9 +81,9 @@ Superagent, which acts for that person, could do neither.
   narrow and both are rare at the same moment; the Superagent sees the task's transcript and can
   send the message again. The same holds for a person's keys in those 300 ms: they are not held
   back, as they are while Yulius types the first message, and join the message.
-- A run reattached after a restart is not checked for the trust dialog, so a trust question still
-  open across a restart and older than the hookless window is not detected here; the goal watch
-  still flags a trust question left unanswered.
+- The marker also restores `session_started` for the goal typist and the first-message key
+  hold of a reattached run, which before saw a fresh runtime as not started; both then read the
+  trust dialog's words in its output as output, as they do before a restart.
 - For a CLI that never runs the SessionStart hook, the trust dialog's words anywhere on its
   screen refuse messages for the rest of the run, as they keep the goal typist waiting
   (`wait_input_ready`). Every supported Claude Code runs the hook.
