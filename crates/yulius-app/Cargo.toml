@@ -44,3 +44,7 @@ nix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The leftovers test of an unreadable directory drops its thread's DAC capabilities (#680).
+rustix = { workspace = true, features = ["thread"] }
