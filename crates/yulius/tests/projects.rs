@@ -7,8 +7,11 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::repos::{OWNER, World, git};
 use support::{TestResult, call};
-use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
-use yulius_app::ports::store::CoordinationStore;
+use yulius_app::model::{
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord,
+};
+use yulius_app::ports::store::{AccountStore, CoordinationStore};
+use yulius_app::supervisor::RunStart;
 use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
@@ -1310,5 +1313,181 @@ async fn onboarding_adds_the_security_scan_when_the_instance_has_a_vidoc_key() -
         !prep.prompt.contains("vidoc-instance-key"),
         "the key never reaches a prompt"
     );
+    Ok(())
+}
+
+/// A Claude subscription with capacity, so an onboarding task's run gets as far as its worktree.
+async fn subscription(w: &World) -> TestResult {
+    w.h.store
+        .insert_account(&AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("a-empty")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Claude".into(),
+            credential: Some(w.h.app.deps.crypto.seal(b"sk-ant-oat01-empty-repo-test")?),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    Ok(())
+}
+
+/// The remote's branches, `name sha` per line.
+fn remote_heads(remote: &std::path::Path) -> Result<String, Error> {
+    Ok(git(
+        remote,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )?)
+}
+
+// SPEC-241 EMP-001: an empty clone's HEAD names the host's local default (here `master`), not
+// GitHub's default branch (`main`).
+#[tokio::test]
+async fn an_empty_repository_records_githubs_default_branch() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+    let fresh = import(&w, &alice, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["default_branch"], "main", "{}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "pending");
+    assert_eq!(
+        remote_heads(&remote)?,
+        "",
+        "adding a repository writes nothing to it"
+    );
+    Ok(())
+}
+
+// SPEC-241 EMP-002: "Couldn't start onboarding: git: revision not found: origin/master" on a new
+// GitHub repository with no commits.
+#[tokio::test]
+async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["default_branch"], "main");
+    assert_eq!(fresh.body["onboarding"], "preparing", "{}", fresh.body);
+
+    // GitHub's default branch holds one commit adding only README.md, pushed as the App.
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    assert_eq!(git(&remote, &["rev-list", "--count", "main"])?.trim(), "1");
+    assert_eq!(
+        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        "README.md"
+    );
+    assert_eq!(git(&remote, &["show", "main:README.md"])?, "# fresh\n");
+    assert_eq!(
+        git(&remote, &["log", "-1", "--format=%an", "main"])?.trim(),
+        "ALICE",
+        "authored by the person who started onboarding"
+    );
+    let calls = w.git.calls();
+    assert!(
+        calls.iter().any(|c| c == "push main->main token=inst-7"),
+        "{calls:?}"
+    );
+
+    // With a subscription its run gets a worktree from that commit: where "revision not found:
+    // origin/master" was. This harness has no process host, so the run stops right after.
+    let sid = SandboxId::parse(text(&fresh.body["id"]))?;
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let task_id = record.onboarding_task_id.ok_or("onboarding task")?;
+    subscription(&w).await?;
+    let run = w
+        .h
+        .app
+        .start_run(&task_id, RunStart::Fresh { prompt: None }, None)
+        .await;
+    let Err(err) = run else {
+        return Err("this harness has no process host".into());
+    };
+    assert!(err.to_string().contains("process host"), "{err}");
+    let task = w.h.store.task(&task_id).await?.ok_or("task")?;
+    let worktree = task.worktree_path.ok_or("the onboarding task has a worktree")?;
+    assert_eq!(
+        git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
+        git(&remote, &["rev-parse", "main"])?
+    );
+    assert!(std::path::Path::new(&worktree).join("README.md").exists());
+    Ok(())
+}
+
+// SPEC-241 EMP-002/003: a sandbox added before (recorded with the empty clone's `master`) is set
+// up on GitHub's branch when Start onboarding is pressed; a repository with commits is untouched.
+#[tokio::test]
+async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commits() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    let shop = w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    for repo in ["fresh", "shop"] {
+        w.grant("alice", repo, "admin");
+    }
+    let fresh = import(&w, &alice, "Quartio-Studio/fresh").await?.body;
+    let sid = SandboxId::parse(text(&fresh["id"]))?;
+    // As recorded before this fix.
+    w.h.store.set_default_branch(&sid, "master").await?;
+
+    let started = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/onboarding/approve"),
+        None,
+        &alice_browser,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    assert_eq!(started.body["default_branch"], "main", "{}", started.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+
+    let pushes = |calls: Vec<String>| calls.iter().filter(|c| c.starts_with("push")).count();
+    let (shop_before, pushed_before) = (git(&shop, &["for-each-ref"])?, pushes(w.git.calls()));
+    let shop_box = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
+    assert_eq!(shop_box.status, StatusCode::CREATED, "{:?}", shop_box.body);
+    assert_eq!(shop_box.body["onboarding"], "preparing");
+    assert_eq!(git(&shop, &["for-each-ref"])?, shop_before, "nothing pushed");
+    assert_eq!(pushes(w.git.calls()), pushed_before, "{:?}", w.git.calls());
+    Ok(())
+}
+
+// SPEC-241 EMP-003: a first commit the remote refuses fails the start with the reason; the
+// sandbox stays pending and starts once the remote accepts it.
+#[tokio::test]
+async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "main")?;
+    git(&remote, &["config", "receive.maxInputSize", "1"])?;
+    w.grant("alice", "fresh", "admin");
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "pending", "{}", fresh.body);
+    let approve = format!("/api/sandboxes/{}/onboarding/approve", text(&fresh.body["id"]));
+    let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(refused.status, StatusCode::BAD_GATEWAY, "{:?}", refused.body);
+    assert!(
+        text(&refused.body["error"]["message"]).contains("maximum allowed size"),
+        "{:?}",
+        refused.body
+    );
+    assert_eq!(remote_heads(&remote)?, "");
+
+    git(&remote, &["config", "--unset", "receive.maxInputSize"])?;
+    let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
     Ok(())
 }

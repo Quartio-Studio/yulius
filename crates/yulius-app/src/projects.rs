@@ -293,7 +293,7 @@ impl App {
     ///
     /// # Errors
     /// Installation lookup or GitHub failures.
-    async fn installation_repo(&self, owner: &str, name: &str) -> AppResult<Option<GhRepo>> {
+    pub(crate) async fn installation_repo(&self, owner: &str, name: &str) -> AppResult<Option<GhRepo>> {
         let (app, installation) = self.installation().await?;
         Ok(self
             .deps
@@ -644,11 +644,17 @@ impl App {
             .git
             .sync_clone(&clone_url(owner, name), repo_dir, token)
             .await?;
-        let default_branch = match self.deps.git.default_branch(repo_dir).await {
-            Ok(branch) => branch,
-            Err(err) => {
-                tracing::warn!(error = %err, "default branch detection failed");
-                String::new()
+        // An empty clone's HEAD names this host's own default (`master` when unset), not GitHub's:
+        // the caller then takes the branch GitHub reports (SPEC-241 EMP-001).
+        let default_branch = if self.remote_is_empty(repo_dir).await {
+            String::new()
+        } else {
+            match self.deps.git.default_branch(repo_dir).await {
+                Ok(branch) => branch,
+                Err(err) => {
+                    tracing::warn!(error = %err, "default branch detection failed");
+                    String::new()
+                }
             }
         };
         let root = repo_dir.to_path_buf();

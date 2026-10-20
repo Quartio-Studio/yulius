@@ -22,6 +22,7 @@ pub mod coordination;
 pub mod delivery;
 pub mod discipline;
 pub mod disk;
+mod empty_repo;
 pub mod error;
 pub mod events;
 pub mod files;

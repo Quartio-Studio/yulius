@@ -164,13 +164,42 @@ impl GitPort for LocalGit {
         Ok(())
     }
 
+    /// As the real adapter: `origin/HEAD`, else the branch the clone's `HEAD` names (an empty
+    /// clone's local default, not GitHub's).
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
-        let head = git(
+        if let Ok(head) = git(
             repo,
             &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        ) {
+            return Ok(head.trim().trim_start_matches("origin/").to_owned());
+        }
+        let head = git(repo, &["symbolic-ref", "--short", "HEAD"]).map_err(upstream)?;
+        Ok(head.trim().to_owned())
+    }
+
+    async fn remote_branches(
+        &self,
+        repo: &Path,
+    ) -> AppResult<Vec<yulius_app::ports::git::BranchInfo>> {
+        let refs = git(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:lstrip=3) %(objectname)",
+                "refs/remotes/origin/",
+            ],
         )
         .map_err(upstream)?;
-        Ok(head.trim().trim_start_matches("origin/").to_owned())
+        Ok(refs
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(name, _)| *name != "HEAD")
+            .map(|(name, sha)| yulius_app::ports::git::BranchInfo {
+                name: name.to_owned(),
+                sha: sha.to_owned(),
+                committed_ms: 0,
+            })
+            .collect())
     }
 
     async fn branch_exists(&self, repo: &Path, branch: &str) -> AppResult<bool> {
@@ -799,6 +828,25 @@ impl World {
             pull: level != "none",
         };
         self.h.github.set_perm(login, &full, perms);
+    }
+
+    /// A bare remote `owner/name` with no commits whose `HEAD` names `head` (what a clone of it
+    /// then calls its branch), registered with the Git fake. Returns its path.
+    pub fn empty_remote(&self, owner: &str, name: &str, head: &str) -> Result<PathBuf, BoxError> {
+        let bare = self
+            .scratch
+            .path()
+            .join("remotes")
+            .join(owner)
+            .join(format!("{name}.git"));
+        std::fs::create_dir_all(&bare)?;
+        git(
+            &bare,
+            &["init", "--quiet", "--bare", &format!("--initial-branch={head}")],
+        )?;
+        self.git
+            .add_remote(&format!("https://github.com/{owner}/{name}.git"), &bare);
+        Ok(bare)
     }
 
     /// A bare remote `owner/name` with `files` committed on `main` and extra branches pointing
