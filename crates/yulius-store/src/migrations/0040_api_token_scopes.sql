@@ -3,3 +3,5 @@
 -- `read` and `operate` are made on purpose in Settings for a person's local agent.
 ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'cli';
 CREATE INDEX api_tokens_user ON api_tokens (user_id, revoked_at);
+-- Remote change pull requests are looked up by their project and action (ADR-0189).
+CREATE INDEX audit_log_target_action ON audit_log (target, action);

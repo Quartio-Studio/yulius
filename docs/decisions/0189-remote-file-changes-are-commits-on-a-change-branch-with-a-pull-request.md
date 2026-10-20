@@ -38,11 +38,14 @@ and ADR-0175 (environment runs read a mirror of origin, never the sandbox's clon
   pull request into the integration branch as the person. The scratch directory is removed on
   every path. A change that changes nothing is refused before anything is pushed. Audited
   `project.change`.
-- **Merging** (`change_merge`) takes only an open pull request of a `yulius/change-` branch into the
-  integration branch, from the repository itself. It decides as delivery does: Yulius CI's run at
-  the exact head alone when the project has Yulius CI (pending or failed refuses, with the
-  state), else GitHub's checks, and a project with no checks at all merges unchecked. It merges
-  that head with the profile's merge method as the person and deletes the branch. Audited
+- **Merging** (`change_merge`) takes only a pull request `project_change` opened, as its
+  `project.change` audit entry records it (pull request, branch and commit), still open, into the
+  integration branch, from the repository itself, with its head still the commit Yulius made: a
+  branch someone else named `yulius/change-…`, or one pushed to since, is refused. After a fetch,
+  it decides as delivery does: Yulius CI's run at the exact head alone when the integration branch
+  or the pull request itself has Yulius CI (pending or failed refuses, with the state), else
+  GitHub's checks, and a project with no checks at all merges unchecked. It merges that head with
+  the profile's merge method as the person and deletes the branch. Audited
   `project.change_merged`. A task's pull request is never merged this way: its task delivers it.
 - **Work that needs judgment** is a task (`task_create`): the agent edits, tests, gets reviewed
   and delivers through the one delivery path.

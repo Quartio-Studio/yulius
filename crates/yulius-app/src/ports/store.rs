@@ -611,6 +611,9 @@ pub trait AuditStore: Send + Sync {
         target: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()>;
+    /// The details of the newest `limit` entries of `action` about `target`, newest first.
+    async fn audit_details(&self, target: &str, action: &str, limit: u32)
+    -> AppResult<Vec<String>>;
 }
 
 /// Every store area; the SQLite adapter implements this.

