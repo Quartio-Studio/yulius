@@ -454,9 +454,11 @@ function renamableName(account, rename) {
   const show = (focus = false) => {
     const name = account.label || account.id;
     const pencil = iconButton('pencil', `Rename ${name}`, edit, { class: 'account-rename' });
-    // The name is a second, pointer-only way in: the pencil is the keyboard's one tab stop.
-    setChildren(holder,
-      h('button', { type: 'button', class: 'account-name-text', title: `Rename ${name}`, tabindex: '-1', 'aria-hidden': 'true', onClick: edit }, h('strong', { class: 'ellipsis' }, name)),
+    // The name is a second, pointer-only way in (read as text): the pencil is the keyboard's one
+    // tab stop.
+    const text = h('strong', { class: 'ellipsis account-name-text', title: `Rename ${name}` }, name);
+    text.addEventListener('click', edit);
+    setChildren(holder, text,
       pencil);
     if (focus) pencil.focus();
   };
@@ -467,11 +469,13 @@ function renamableName(account, rename) {
     // save what Escape cancelled.
     let busy = false;
     let closed = false;
-    const close = () => { closed = true; show(true); };
+    // Focus goes back to the pencil only when a key ended the edit: a person who clicked
+    // elsewhere (another subscription's Rename among them) keeps their focus there.
+    const close = (focus) => { closed = true; show(focus); };
     const finish = async (save, fromKey) => {
       if (busy || closed) return;
       const name = input.value.trim();
-      if (!save || name === account.label) { close(); return; }
+      if (!save || name === account.label) { close(fromKey); return; }
       const refuse = (message) => {
         error.textContent = message;
         if (fromKey) input.focus();
@@ -481,7 +485,7 @@ function renamableName(account, rename) {
       try {
         await rename(name);
         busy = false;
-        close();
+        close(fromKey);
       } catch (err) {
         busy = false;
         refuse((err && err.message) || 'Couldn’t rename the subscription.');

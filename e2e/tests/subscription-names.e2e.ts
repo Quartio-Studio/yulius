@@ -70,6 +70,24 @@ test('a subscription is renamed in place and the new name shows with its email e
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test("leaving one subscription's name for another's Rename keeps the second one open", async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await screen.getByRole('button', 'Rename Claude #1').click();
+  await expect(screen.getByRole('textbox', 'New name for Claude #1')).toBeFocused();
+  // Unchanged, then saved by leaving: neither takes the keyboard from the next field.
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  await expect(screen.getByRole('textbox', 'New name for Claude #4')).toBeFocused();
+  await screen.getByRole('textbox', 'New name for Claude #4').fill('personal');
+  await screen.getByRole('button', 'Rename Claude #5').click();
+  const third = screen.getByRole('textbox', 'New name for Claude #5');
+  await expect(third).toBeFocused();
+  await expect(screen.getByText('Subscription renamed to personal.')).toBeVisible();
+  await expect(third).toBeFocused();
+  await expect(browser.locator('main .account-card:has-text("Claude #1") .account-name strong')).toHaveText('Claude #1');
+  await third.press('Escape');
+  await expect(screen.getByRole('button', 'Rename Claude #5')).toBeFocused();
+});
+
 test('someone who does not manage subscriptions sees their names without emails (UI-022)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks/14', '&ambient=0&role=member'));
   await expect(screen.getByText('Claude #2').first()).toBeVisible();
