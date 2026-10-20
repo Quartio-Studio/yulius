@@ -170,7 +170,7 @@ Confirmed against `dev` at 06b58375.
 - [x] Review round 2 findings fixed test-first
 - [x] Review round 3 findings fixed test-first
 - [x] Independent review approved and findings fixed
-- [x] Repository gate and security scan pass
+- [x] Repository gate passes; security scan unrun (Vidoc key quota, see Evidence)
 
 ## Acceptance criteria
 
