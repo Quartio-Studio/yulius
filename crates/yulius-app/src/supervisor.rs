@@ -21,7 +21,7 @@ use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
-    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
+    Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
