@@ -66,13 +66,15 @@ Confirmed against `dev` at 33410359.
 ## Plan
 
 - [x] Spec for the sign-in that confirms itself
-- [ ] Server ends a sign-in once its token is captured
-- [ ] Cancel endpoint for a running sign-in
-- [ ] Sign-in dialog closes itself on success with a toast naming the subscription
-- [ ] Failed, timed-out and lost sign-ins show a banner with Try again
-- [ ] Closing a running sign-in cancels it
-- [ ] Docs, ADR-0184 and changes entry match the flow
-- [ ] Independent review answered and gates green
+- [x] Server ends a sign-in once its token is captured
+- [x] Cancel endpoint for a running sign-in
+- [x] Sign-in dialog closes itself on success with a toast naming the subscription
+- [x] Failed, timed-out and lost sign-ins show a banner with Try again
+- [x] Closing a running sign-in cancels it
+- [x] Docs, ADR-0184 and changes entry match the flow
+- [x] Review round 1 findings fixed test-first
+- [x] Gates green on the fixed head
+- [ ] Review round 2 approves the head
 - [ ] Merge into dev on green CI
 
 ## Acceptance criteria
