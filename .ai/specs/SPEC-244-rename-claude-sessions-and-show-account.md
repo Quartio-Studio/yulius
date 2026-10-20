@@ -17,9 +17,10 @@ lists what a person manages on a subscription, and ROT-007, which defines what T
 A person who manages the Claude subscriptions can give each one a name of their own, such as
 "work Max" or "personal", by editing it in place on the Subscriptions page. Each subscription also
 shows the email of the Claude account behind it, stored when Yulius signs it in. Every place that
-names a subscription shows that name and email: the Subscriptions page, the Status panel, the
-Dashboard's pool, Task details and the analytics. When no email is known, the place says
-"email unknown".
+names a subscription shows that name: the Subscriptions page, the Status panel, the Dashboard's
+pool, Task details and the analytics. For the people who manage subscriptions it shows the email
+beside the name, as UI-022 already requires ("sign-in email (administrators)"). When no email is
+known, they read "email unknown".
 
 ## Context
 
@@ -51,7 +52,9 @@ Confirmed against `dev` at 33410359.
 - **Who manages subscriptions.** Instance administrators and the superadmin (ACC-009,
   `require_instance_admin`). Everyone signed in sees a subscription's name, status and usage in
   the Status panel and the capacity view. Members of a sandbox see the subscription of its tasks
-  in Task details.
+  in Task details. UI-022 (F 2026-10-08) already planned the account's "sign-in email
+  (administrators)" for the Status panel. `docs/api.md` listed `email` as planned and not reported
+  yet.
 - **Parallel work.** Task #229 changes how the sign-in terminal ends (`accounts.rs`, `admin.js`).
   This change stays clear of the terminal flow; it adds one call after a credential is stored.
 
@@ -63,7 +66,7 @@ Confirmed against `dev` at 33410359.
 | SUB-002 | Only people who may manage subscriptions rename them: instance administrators and the superadmin. Anyone else gets 403 from `PATCH /api/admin/accounts/{id}`, and the page is not offered to them (unchanged ACC-009). Every rename is audited (`account.updated` with the new name). |
 | SUB-003 | Each subscription stores the email of its Claude account. When a sign-in stores a credential, Yulius asks Claude's profile endpoint for the account's email, using that credential, and stores the answer. A sign-in whose email cannot be read (the token may not read the profile, Claude refused it, or no answer) stores no email. An email from an earlier sign-in is dropped then, because the new sign-in may be another Claude account. The sign-in itself succeeds or fails exactly as before; reading the email never blocks or fails it. |
 | SUB-004 | Subscriptions signed in before this change get their email read once, in the background usage round, while their credential still works. A definite answer, an email or a refusal, ends the attempts for that sign-in. A temporary failure (no answer, throttling) is tried again on a later round. Without an email the subscription reads "email unknown" until its next sign-in. |
-| SUB-005 | Wherever a subscription is named, its email is shown with its name, or "email unknown" when no email is stored: the Subscriptions page, the Status panel and the Dashboard pool (each account row), Task details (the current subscription and each run's), and the analytics' tokens by subscription. The API carries `email` (`string \| null`) next to `label` in `AccountView`, `StatusAccount` and `CapacityAccount`. It carries `account_email` next to `account_label` on a task (`TaskSummary`), a run (`AttemptView`) and a run's analytics row. Every viewer who sees the name sees the email. |
+| SUB-005 | Wherever a subscription is named, an administrator (instance administrator or superadmin) sees its email with its name, or "email unknown" when none is stored. That covers the Subscriptions page, the Status panel and the Dashboard pool (each account row), Task details (the current subscription and each run's), and the analytics' tokens by subscription. Everyone else sees the name as before and no email line (UI-022). The API carries `email` next to `label` in `AccountView` (`null` while unknown), and for administrators only in `StatusAccount` and `CapacityAccount` (absent otherwise or while unknown). It carries `account_email` next to `account_label` on a task's detail and its runs (`TaskDetail`, `AttemptView`) and on the analytics' tokens by subscription, for administrators only. Task summaries, which go to everyone who sees the task, never carry it. |
 | SUB-006 | The email is personal data handled as such. It is read only from Claude's answer to Yulius's own request: never from the sign-in terminal, never guessed. It must look like an address (one `@`, printable characters, at most 254 characters), or it is not stored. It is never written to logs. |
 
 ## Plan
@@ -89,9 +92,10 @@ Confirmed against `dev` at 33410359.
   sign-in succeeded (integration tests with a fake probe).
 - An account without an email checked before is read once by the background round and not again
   after a definite answer; a temporary failure is retried (integration test).
-- `AccountView`, `StatusAccount`, `CapacityAccount`, the task summary, the attempt view and the
-  analytics row carry the email (`null` when unknown), and the UI shows "email unknown" for
-  `null` (unit and e2e tests).
+- For an administrator, `AccountView`, `StatusAccount`, `CapacityAccount`, the task detail, its
+  runs and the analytics' tokens by subscription carry the email. For a member, none of them
+  does, and neither does a task summary. The UI shows "email unknown" to administrators only
+  (integration, unit and e2e tests).
 - The profile answer parser takes `account.email` or `account.email_address`. It refuses anything
   that is not an address and reads 403 as "may not read" (adapter unit tests).
 
@@ -121,10 +125,14 @@ Confirmed against `dev` at 33410359.
   - Asking the person to type the email. That is not read from the credentials, and a typo would
     be shown as fact.
   Recorded in [ADR-0185](../../docs/decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md).
-- **Who sees the email: whoever sees the name.** Subscriptions are a shared resource of an
-  instance whose users are all admitted by its superadmin. Task details must say which Claude
-  account a task ran on, which is the point of the feedback. Showing the email only to
-  administrators would hide it exactly where members need it.
+- **Who sees the email: administrators (UI-022).** SPEC-001 UI-022 already says an account
+  shows its "sign-in email (administrators)". The people who manage the subscriptions, and asked
+  to tell them apart, are administrators, and they see the email everywhere a subscription is
+  named, Task details included. Showing a person's email to every member was considered and
+  rejected: it would widen who sees personal data beyond the product requirement. Members see the
+  name, which administrators can now make meaningful. Task summaries go out on the event stream
+  to everyone who sees the task, so they never carry the email; only the task detail request adds
+  it, per viewer.
 - **Unknown is stored as `NULL` plus `email_checked_at`.** `email_checked_at` marks a definite
   answer for the current sign-in, so the backfill asks once per sign-in, not every round. A new
   sign-in resets both.

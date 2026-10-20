@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-20
 
+- Subscriptions can be renamed, and administrators see the email of the Claude account behind each
+  one (SPEC-244, ADR-0185, task #230, feedback from an early user). On the Subscriptions page, the
+  pencil or a click on the name edits it in place; Enter saves and Escape cancels. The email is
+  read from Claude's profile with the subscription's own credential when it signs in. The
+  background usage round reads it once for subscriptions signed in before. Administrators see the
+  email next to the name on the Subscriptions page, in the Status panel, on the Dashboard, in Task
+  details and in the analytics. Everyone else sees the name only. Claude may refuse the profile to
+  `setup-token` sign-ins; such a subscription reads "email unknown", and the name tells it apart.
+
 - A finished automation run is Done instead of waiting under Needs you (SPEC-240, ADR-0182, task
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run
   that opens no pull request, such as "Work through open issues", could never meet the Done rule

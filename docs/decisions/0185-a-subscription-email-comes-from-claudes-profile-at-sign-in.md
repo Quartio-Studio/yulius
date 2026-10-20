@@ -35,8 +35,12 @@ see the session email"). Amends SPEC-001 ROT-007 and ROT-009.
   never answered. These are the subscriptions connected before this change, and temporary
   failures from earlier rounds.
 - Only an answer to Yulius's own request is stored: it must be one `@`, printable, at most 254
-  characters. It is never logged. Whoever sees a subscription's name sees its email; no email
-  reads "email unknown".
+  characters. It is never logged.
+- The email is for administrators, as SPEC-001 UI-022 says ("sign-in email (administrators)").
+  They see it wherever a subscription is named: the Subscriptions page, the Status panel, the
+  Dashboard pool, Task details and the analytics. None is stored for an administrator to see, so
+  the page reads "email unknown". Everyone else sees the name only. Task summaries, which go to
+  every viewer of a task, never carry it.
 
 ## Alternatives
 
@@ -48,8 +52,9 @@ see the session email"). Amends SPEC-001 ROT-007 and ROT-009.
 - **Read the sign-in terminal.** Rejected: the CLI never prints the email.
 - **Let the person type the email.** Rejected: that is a second name, not the account behind the
   credential, and a typo would be shown as fact.
-- **Show the email to administrators only.** Rejected: Task details, which sandbox members read,
-  is where people need to know which Claude account a task used.
+- **Show the email to everyone who sees the name.** Rejected: UI-022 limits the sign-in email to
+  administrators, and a person's address would reach every member. The editable name is what
+  members see.
 
 ## Consequences
 
