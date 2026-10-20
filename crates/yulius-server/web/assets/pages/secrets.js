@@ -140,7 +140,7 @@ function namedIcon(name) {
  * copy here (VLT-002), then shows a check and the tooltip "Copied" for a moment. Its name stays
  * `label`; the toast announces the copy.
  */
-function copyButton(label, text, what) {
+export function copyButton(label, text, what) {
   let timer = null;
   const draw = (copied) => {
     setChildren(button, namedIcon(copied ? 'check' : 'copy'));

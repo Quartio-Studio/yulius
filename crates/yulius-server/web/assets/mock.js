@@ -794,6 +794,36 @@ route('POST', '/api/device/approve', ({ body }) => {
   return json(204);
 });
 
+// Personal API tokens (SPEC-247): one `yulius login` token to start with; a new token is shown once.
+const apiTokens = (db) => {
+  if (!db.apiTokens) db.apiTokens = [{ id: 'tok_cli', label: 'yulius CLI', scope: 'cli', created_at: new Date(Date.now() - 3 * 86400000).toISOString(), last_used_at: new Date(Date.now() - 3600000).toISOString() }];
+  return db.apiTokens;
+};
+route('GET', '/api/me/tokens', ({ db }) => apiTokens(db));
+route('POST', '/api/me/tokens', ({ db, body }) => {
+  const label = String((body && body.label) || '').trim();
+  if (!label || label.length > 80) fail(422, 'invalid', 'a label of 1-80 characters is required');
+  if (!['operate', 'read'].includes(body.scope)) fail(422, 'invalid', 'scope must be operate or read');
+  const tokens = apiTokens(db);
+  const view = { id: `tok_${tokens.length + 1}`, label, scope: body.scope, created_at: new Date().toISOString(), last_used_at: null };
+  tokens.unshift(view);
+  const token = `yul_mock${String(tokens.length).padStart(4, '0')}`;
+  return json(201, {
+    token,
+    view,
+    mcp_url: `${ORIGIN}/mcp`,
+    claude_command: `claude mcp add --transport http yulius ${ORIGIN}/mcp --header "Authorization: Bearer ${token}"`,
+    cli_command: `yulius remote login ${ORIGIN}`,
+  });
+});
+route('DELETE', `/api/me/tokens/${ID}`, ({ db, p }) => {
+  const tokens = apiTokens(db);
+  const at = tokens.findIndex((t) => t.id === p[0]);
+  if (at < 0) fail(404, 'not_found', 'not found');
+  tokens.splice(at, 1);
+  return json(204);
+});
+
 route('GET', '/api/sandboxes', ({ db }) => db.sandboxes);
 route('GET', '/api/github/repositories', ({ db }) => {
   if (!db.me.user.github_linked && !db.me.user.is_superadmin) fail(403, 'forbidden', 'sign in with GitHub to work with repositories');
