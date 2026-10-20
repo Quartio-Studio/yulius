@@ -66,7 +66,8 @@ code does.
 - [x] Hand-over and deleted-task tests, message test tidied
 - [x] The 200-secret cap is checked in the store transaction
 - [x] Documents corrected and the ADR index ordered
-- [ ] Gates, independent review and delivery
+- [x] Gates green and review round 1 fixed
+- [ ] Review round 2 approved and merged on green
 
 ## Acceptance criteria
 
