@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-20
 
+- A new GitHub repository with no commits can be onboarded (SPEC-241, ADR-0187, task #227). Starting
+  its onboarding failed with "git: revision not found: origin/master": the empty clone named the
+  server's own default branch, and there was no branch for the onboarding task to start from. Import
+  now records GitHub's default branch, and starting onboarding pushes one commit adding `README.md`
+  to it first; a repository with commits is never written to. Creating a project now says what
+  GitHub refused: the App permission it lacks, in GitHub's words, with the App's permission and
+  installation pages, or, for an installation on only selected repositories, that the repository was
+  created and where to add it before importing it.
 - A finished automation run is Done instead of waiting under Needs you (SPEC-240, ADR-0182, task
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run
   that opens no pull request, such as "Work through open issues", could never meet the Done rule

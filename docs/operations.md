@@ -790,7 +790,7 @@ The manifest flow requests these repository permissions:
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
 | Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
 | Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |
-| Administration | Read and write | Create repositories in an organization (New sandbox) and add branch rulesets to them. |
+| Administration | Read and write | Create repositories (New sandbox, in an organization or a personal account) and add branch rulesets to them. Repository creation (Read and write) also lets GitHub create them, without the rest of Administration. |
 | Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
 | Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |
 
@@ -809,6 +809,20 @@ integration" means the App lacks the permission. For checks, Yulius keeps workin
 sources it can read. It names the missing permission on the Git page, as one line for instance
 administrators, with a link to the App's permission page. Checks it cannot read never count as
 passed, so merges and releases that require checks wait.
+
+**Creating a project fails.** Yulius says which of these it is
+([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md)):
+
+- "GitHub refused to create …: the Yulius GitHub App lacks the repository permission
+  Administration: Read and write …": add it as below. Nothing was created.
+- "… was created on GitHub, but the Yulius GitHub App cannot reach it: its installation covers
+  only selected repositories": open the installation page the message links (Settings → GitHub
+  Apps, or Applications for a personal account, → the App → Configure), add the repository under
+  Repository access (or choose All repositories), then add it in Yulius with Import repository.
+
+**An empty repository** (created on GitHub without a README) can be imported as it is. When its
+onboarding starts, Yulius pushes one commit adding `README.md` to the default branch GitHub reports,
+then onboards it as any other repository.
 
 **Adding a permission to an existing App** (for example Commit statuses on an App created before
 2026-10-10):
