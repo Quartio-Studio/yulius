@@ -1332,6 +1332,8 @@ async fn subscription(w: &World) -> TestResult {
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
+            email: None,
+            email_checked_at: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
