@@ -1,11 +1,11 @@
 ---
 yulius-task: 99a9a048-da52-42c8-a233-daebe398f092
-status: in-progress
+status: done
 ---
 
 # SPEC-244: Name a Claude subscription and see its account email
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: task #230
 Scope authorization: task #230. It carries feedback from Pawel, an early external user: "add
@@ -71,15 +71,16 @@ Confirmed against `dev` at 33410359.
 
 ## Plan
 
-- [ ] Spec, ADR and plan for names and emails
-- [ ] Accounts store an email, read at sign-in and backfilled
-- [ ] The API returns the name and email wherever a subscription is named
-- [ ] Subscriptions page renames in place and shows the email
-- [ ] Status, Dashboard, Task details and analytics show name and email
-- [ ] End-to-end proof of rename and email in the web UI
-- [ ] Docs, product spec and changes entry match
-- [ ] Independent review answered and gates green
-- [ ] Merge into dev on green CI
+- [x] Spec, ADR and plan for names and emails
+- [x] Accounts store an email, read at sign-in and backfilled
+- [x] The API returns the name and email wherever a subscription is named
+- [x] Subscriptions page renames in place and shows the email
+- [x] Status, Dashboard, Task details and analytics show name and email
+- [x] End-to-end proof of rename and email in the web UI
+- [x] Docs, product spec and changes entry match
+- [x] Independent review answered (3 rounds, approved)
+- [x] Gates green: CI gate, security scan and full e2e suite
+- [x] Merge into dev on green CI
 
 ## Acceptance criteria
 
@@ -154,3 +155,49 @@ Confirmed against `dev` at 33410359.
   subscriptions are listed and managed.
 - Switch records (`switch_decisions.from_desc/to_desc`) keep the name a subscription had when the
   switch happened; they are history and are not rewritten by a rename.
+
+## Evidence
+
+- **Tests that fail without the change.**
+  - With the two app hooks disabled (no read at sign-in, no backfill),
+    `account_email::a_sign_in_stores_the_email_of_its_claude_account` and
+    `account_email::subscriptions_signed_in_before_get_their_email_once` failed. With the hooks
+    in, they passed.
+  - Removing `.filter(|_| admin)` from the run view made
+    `account_email::only_administrators_rename_and_every_view_shows_name_and_email` fail on the
+    member's task detail (review round 1, H1).
+  - Against the previous `layout.js`, the e2e `subscription-names` spec failed: in round 1 on
+    the focus pulled back after a refused name (H2, M1), and in round 2 on the second card's field
+    losing focus. It passes on 5904e3e6.
+- **Targeted runs.**
+  - `cargo nextest run -p yulius-store -p yulius` over the store tests and the integration files
+    `account_email`, `analytics`, `accounts` and `account_usage`: 92 passed.
+  - The adapter tests `wiring::usage::tests`: 9 passed. The profile email is read; 403 reads as
+    "may not read", 401 as rejected, 500 as temporary; anything that is not an address is
+    refused.
+- **`scripts/dev ci` at 5904e3e6 exited 0.** It covers the repository contracts and the web unit
+  tests (119 OK), check, fmt, clippy (Linux and aarch64-apple-darwin), and nextest with 2277
+  passed and 17 skipped, then the doctests, deny, shear and doc.
+- **Full e2e suite** (`cd e2e && npx e2e run`) at 5904e3e6: 61 files, 638 tests passed, 1
+  skipped (a skip already on `dev`), exit 0. The new `subscription-names.e2e.ts` passed 5/5 and
+  the existing `subscriptions.e2e.ts` 8/8, all with no WCAG violations.
+- **`yulius security-scan --base origin/dev` at 5904e3e6 exited 0.** It reported no open
+  critical or high finding and no medium or low one in the change. The four findings outside the
+  change are on lines this branch did not touch, and Yulius CI files them as issues:
+  - the sign-in runs uncontained;
+  - the sign-in inherits the host PATH;
+  - `taskview.js` renders an agent-supplied link as an href;
+  - a test master key is hardcoded in `task_done.rs`.
+- **Independent review**, in a fresh read-only session, took three rounds:
+  - Round 1 at b85e06e3 requested changes: 2 high, 3 medium, 6 low.
+  - Round 2 at 944a9254 approved, with one medium and one low left.
+  - Round 3 at 5904e3e6 approved.
+
+  Every finding in this change's own code is fixed in it. The one pre-existing finding (the
+  event stream decides admin rights only at connect) is #722.
+- **What could not be tested.** No real Claude sign-in can run in this sandbox. Whether Claude's
+  profile endpoint gives the email to a `claude setup-token` credential (scope `user:inference`)
+  is unverified. The adapter is tested against a local server shaped like Claude's answer. If
+  Claude refuses it, subscriptions read "email unknown", and ADR-0185 names the follow-up:
+  intercepting the token exchange.
+
