@@ -514,6 +514,7 @@ impl App {
             return text_result(format!("unknown tool: {name}"), true);
         };
         if !caller.scope.allows(action) {
+            self.audit_remote(caller, name, None, false).await;
             return text_result(
                 format!(
                     "{name} changes things, and this token is read-only; make an operate token on Settings to use it"
@@ -542,15 +543,21 @@ impl App {
             Reach::Project => {
                 let found = match self.remote_project(&args).await {
                     Ok(found) => found,
-                    Err(err) => return text_result(err.public_message(), true),
+                    Err(err) => {
+                        if action != Action::View {
+                            self.audit_remote(caller, name, None, false).await;
+                        }
+                        return text_result(err.public_message(), true);
+                    }
                 };
                 let sandbox = match self.require(&caller.ctx.user, &found.id, action).await {
                     Ok((sandbox, _)) => sandbox,
                     Err(err) => {
                         // A refused change is audited too; a project the person cannot see is
-                        // not found, and reveals nothing by an audit entry of theirs.
-                        if action != Action::View && !matches!(err, AppError::NotFound) {
-                            self.audit_remote(caller, name, Some(&found.id), false)
+                        // not found, and its entry names the token, not the project.
+                        if action != Action::View {
+                            let visible = !matches!(err, AppError::NotFound);
+                            self.audit_remote(caller, name, visible.then_some(&found.id), false)
                                 .await;
                         }
                         return text_result(err.public_message(), true);
@@ -601,7 +608,8 @@ impl App {
             .ok_or(AppError::NotFound)
     }
 
-    /// Audits a remote call of a tool that changes something, never its arguments (RMT-015).
+    /// Audits a remote call of a tool that changes something, never its arguments (RMT-015):
+    /// about its project, else about the token (`token:<id>`).
     async fn audit_remote(
         &self,
         caller: &RemoteCaller,
@@ -617,7 +625,10 @@ impl App {
                 self.now(),
                 &caller.actor(),
                 "remote.tool",
-                sandbox.map(SandboxId::as_str),
+                Some(&sandbox.map_or_else(
+                    || format!("token:{}", caller.token_id),
+                    |id| id.as_str().to_owned(),
+                )),
                 Some(&detail),
             )
             .await

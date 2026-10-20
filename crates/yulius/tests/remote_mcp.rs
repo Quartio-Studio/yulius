@@ -373,6 +373,14 @@ async fn project_tools_follow_the_persons_access_and_are_audited() -> TestResult
     let automation = json!({"project": "acme/shop", "name": "Nightly docs", "cron": "0 3 * * *", "prompt": "Bring the docs up to date"});
     let (error, said, _) = remote(&w, &bob, "automation_create", automation.clone()).await?;
     assert!(error && said.contains("write access"), "{said}");
+    let (error, said, _) = remote(
+        &w,
+        &bob,
+        "task_create",
+        json!({"project": "acme/shop", "prompt": "Add a page"}),
+    )
+    .await?;
+    assert!(error && said.contains("write access"), "{said}");
     let (error, hidden, _) =
         remote(&w, &carol, "tasks_list", json!({"project": "acme/shop"})).await?;
     let (_, missing, _) =
@@ -405,12 +413,12 @@ async fn project_tools_follow_the_persons_access_and_are_audited() -> TestResult
         .collect();
     assert_eq!(
         remote_calls.len(),
-        2,
-        "the refused and the created automation: {entries:?}"
+        3,
+        "the refused automation and task, and the created automation: {entries:?}"
     );
     for (_, actor, detail) in &remote_calls {
         let detail: Value = serde_json::from_str(detail)?;
-        assert_eq!(detail["tool"], "automation_create");
+        assert!(detail["tool"] == "automation_create" || detail["tool"] == "task_create");
         assert!(detail["token"].is_string());
         assert!(!detail.to_string().contains("Bring the docs"), "{detail}");
         assert!(actor == "remote:alice" || actor == "remote:bob");
@@ -1476,5 +1484,87 @@ async fn a_change_of_several_large_files_fits_in_one_request() -> TestResult {
         origin_file(&origin, &branch, "data/5.txt").map(|t| t.len()),
         Some(big.len())
     );
+
+    // With Yulius CI on the pull request, a failed run at its head refuses the merge.
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::RunState;
+    let (error, said, ci) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "ci", "files": [{"path": "yulius.toml", "content": "[[ci.jobs]]\nname = \"test\"\ncommand = \"false\"\n"}]}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let number = ci["pull_request"]["number"].as_u64().ok_or("number")?;
+    let record =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    w.h.app.ci_sync_sandbox(&record).await?;
+    let runs =
+        w.h.store
+            .ci_runs_for_sha(&record.id, text(&ci["commit"]))
+            .await?;
+    let run = runs.first().ok_or("a run of the pull request")?;
+    w.h.store
+        .transition_ci_run(
+            &run.id,
+            &[RunState::Queued],
+            RunState::Failed,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "change_merge",
+        json!({"project": "Quartio-Studio/shop", "number": number}),
+    )
+    .await?;
+    assert!(error && said.contains("failure"), "{said}");
+    Ok(())
+}
+
+/// RMT-015: every call of a tool that changes something is audited, refused ones too: by a
+/// read-only token, or on a project that cannot be found (review finding 7). Without a project the
+/// entry's target is the token.
+#[tokio::test]
+async fn refused_changes_are_audited_against_the_token() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let read = make_token(&w, &browser, "watch", "read").await?;
+    let operate = make_token(&w, &browser, "laptop", "operate").await?;
+    let (error, _, _) = remote(
+        &w,
+        &bearer(text(&read["token"])),
+        "project_import",
+        json!({"repo": "Quartio-Studio/x"}),
+    )
+    .await?;
+    assert!(error);
+    let (error, _, _) = remote(
+        &w,
+        &bearer(text(&operate["token"])),
+        "task_create",
+        json!({"project": "acme/ghost", "prompt": "x"}),
+    )
+    .await?;
+    assert!(error);
+    for (made, tool) in [(&read, "project_import"), (&operate, "task_create")] {
+        let id = text(&made["view"]["id"]);
+        let entries = audits(&w, &format!("token:{id}")).await?;
+        assert!(
+            entries
+                .iter()
+                .any(|(action, actor, detail)| action == "remote.tool"
+                    && actor == "remote:alice"
+                    && detail.contains(&format!("\"tool\":\"{tool}\""))
+                    && detail.contains("\"ok\":false")),
+            "{tool}: {entries:?}"
+        );
+    }
     Ok(())
 }

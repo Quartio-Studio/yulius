@@ -54,8 +54,9 @@ task #233. Amends SPEC-051 OBD-002 (onboarding starts only in the browser) for `
   window), then 429 with `Retry-After: 60`. Tools that create tasks keep their 20 an hour per
   project.
 - **Audit.** Every remote call of a tool that changes something, refused or done, is audited
-  `remote.tool` with the actor `remote:<login>`, the project, the tool, the token's id and whether
-  it succeeded, never the arguments (they carry prompts and file contents). The tools' own audits
+  `remote.tool` with the actor `remote:<login>`, the project (else the token, `token:<id>`, for
+  instance tools, read-only refusals and projects not found), the tool, the token's id and
+  whether it succeeded, never the arguments (they carry prompts and file contents). The tools' own audits
   name the same actor.
 - **The CLI** is a client of the same endpoint (`yulius remote login|logout|status|tools|call`,
   `yulius project|task|ci …`, `yulius secrets list`), so each operation exists once. Its token is

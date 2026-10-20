@@ -70,6 +70,8 @@ Yulius CI is configured by `[[ci.jobs]]` in the repository's `yulius.toml`. To c
 other file, without a task:
 
 1. Read the file: "show me yulius.toml" (`project_file_read`; `yulius project cat yulius.toml`).
+   What it reads has the project's agent secrets masked as `[secret:NAME]`, as every tool
+   result does; do not write such a masked copy back.
 2. Change it: "add a job that runs `cargo test`" (`project_change`). Yulius commits your whole
    new file as you, on a new branch `yulius/change-…`, and opens a pull request into the
    integration branch. From a checkout's root, `yulius project change -m "ci: run cargo test"

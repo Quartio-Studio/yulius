@@ -111,8 +111,8 @@ impl App {
         })
     }
 
-    /// `DELETE /api/me/tokens/{id}`: revokes one of the caller's tokens at once. Any of their
-    /// sessions or tokens may revoke (a lost laptop's token from another one).
+    /// `DELETE /api/me/tokens/{id}`: revokes one of the caller's tokens at once, from their
+    /// browser or any of their tokens that may change things (a lost laptop's from another one).
     ///
     /// # Errors
     /// `NotFound` for an id that is not a live token of the caller; store failures.
