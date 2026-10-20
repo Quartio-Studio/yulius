@@ -107,8 +107,8 @@ code does.
 
 Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
 
-- `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest 2315
-  passed, 17 skipped. The first run, before the dev merge, failed only
+- `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest 2316
+  passed, 17 skipped (on the review round 1 head). The first run, before the dev merge, failed only
   `supervision::a_usage_limit_moves_the_session_to_the_next_account` (60 s timeout under the full
   suite's load): the open flaky issue #539, outside this change; it passed 3/3 alone.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 12
@@ -121,6 +121,12 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
 - Store tests (`cargo nextest run -p yulius-store vault::`): 14 passed, with
   `adding_and_switching_on_stop_at_the_cap` (insert and switch-on refused at the cap, an
   already-on switch not refused, switching off then on fits).
+- Review round 1 (independent, fresh session; approved with minor findings, all fixed):
+  `task_done::a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints` (a real run whose
+  spawn is held while control passes) failed before the fix ("timed out waiting for the new
+  owner's fingerprints: Some([\"MY_TOKEN\"])") and passed 3/3 after; the rewrite opens with
+  `O_NOFOLLOW | O_NONBLOCK` and checks the handle is a regular file; the store test asserts a
+  project secret gets no switch row; SPEC-245 RES-002 names the rewritten file.
 - FUP-001 has no red test: it removes a field and a method without callers; the compiler and the
   hand-over tests (which read the current holder) are its evidence.
 - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used its
@@ -130,4 +136,4 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
 - Not tested: a contained session reading the rewritten file through its read-only bind (the test
   checks the inode stays the same); a fingerprint fallback read racing the rewrite (it would read
   invalid JSON and withhold output, failing closed).
-- Size: about 210 changed lines outside tests and docs.
+- Size: about 240 changed lines outside tests and docs.
