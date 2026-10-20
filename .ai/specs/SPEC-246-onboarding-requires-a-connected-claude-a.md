@@ -182,7 +182,14 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   2a140666, 60967e66 (`waits_for_account` in the summary and the UI's strip, sidebar and time
   label; `waiting_notice`; `fail_reason`; the tests above). The account-removal UI refresh is
   covered by re-reading `/api/me` on a refused start; no event is published on removal (unchanged).
-  Round 2 reviewed the head carrying this Evidence.
+  Round 2 (520166c6): approve, with minors fixed after it: the waiting wording is neutral ("none
+  is usable", also for accounts that must sign in again); paused tasks are shown again when
+  account usability changes (`republish_when_accounts_change` in the resume pass, test
+  `a_waiting_task_is_shown_again_when_an_account_is_connected`, which fails without it); the
+  composer's split proposal refused for want of an account says so once and keeps the prompt
+  (e2e); `Me` and the Superagent's errors documented; the mock's proposal refuses too. Automation
+  Run now stays machinery (it waits), as ADR-0190 decides. Round 3 reviewed the head carrying
+  this.
 - **Gates** on e5ea247f (dev merged at b06db25c): `scripts/dev ci` exit 0 (2324 tests passed, 17
   skipped; lint, macOS compile, deps, doctests); e2e `npx e2e run` 656 passed, 1 skipped.
 - **Security scan not run.** `scripts/dev security` exit 2: "Vidoc cannot be reached … HTTP 429:

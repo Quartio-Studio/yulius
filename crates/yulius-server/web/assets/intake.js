@@ -6,6 +6,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton } from './dom.js';
 import { allows, isLive } from './status.js';
+import { ACCOUNT_REQUIRED } from './claude.js';
 
 /** Prompts with fewer words are never checked (the server's rule, BREADTH_MIN_WORDS). */
 const CHECK_MIN_WORDS = 3;
@@ -76,6 +77,11 @@ export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
       proposal = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/intake/proposal`, { prompt }, { timeoutMs: PROPOSAL_WAIT_MS, signal: controller.signal });
     } catch (error) {
       if (error && error.code === 'aborted') return;
+      // No Claude account to propose with, nor to run the task (SPEC-246): said, the prompt kept.
+      if (error && error.code === ACCOUNT_REQUIRED) {
+        if (!done) { errorToast(error, 'Couldn’t start the task'); finish(close); }
+        return;
+      }
       proposal = null;
     }
     if (done) return;

@@ -1224,6 +1224,7 @@ route('POST', `/api/sandboxes/${ID}/intake/check`, ({ db, p, body }) => {
 });
 route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  needClaude(db);
   // A test can hold the answer (`__yuliusMock.holdProposal = promise`) to look at the waiting card.
   await (db.holdProposal || delay(900));
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());

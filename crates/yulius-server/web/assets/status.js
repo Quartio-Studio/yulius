@@ -210,8 +210,9 @@ export function resetAround(iso) {
  * pauses only when every subscription is used up, and continues by itself.
  */
 export function pausedLine(task) {
-  // Not capacity: no Claude account is usable, so it waits for one to be connected (SPEC-246).
-  if (task.waits_for_account) return 'Waiting for a Claude account: none is connected (Subscriptions)';
+  // Not capacity: no Claude account is usable (none connected, or every one must sign in again),
+  // so it waits for one (SPEC-246).
+  if (task.waits_for_account) return 'Waiting for a Claude account: none is usable (Subscriptions)';
   const reset = resetAround(task.resumes_at);
   return `Paused: no subscription has capacity left${reset ? ` (${reset})` : ''}`;
 }

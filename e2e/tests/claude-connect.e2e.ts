@@ -77,7 +77,26 @@ test('onboarding waits for Claude and a start that failed for it is offered agai
 // for one, and says so wherever it is shown, not "no subscription has capacity left".
 test('a task waiting with no Claude account says it waits for one, not for capacity', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/7', '&claude=0'));
-  await expect(screen.getByRole('link', /Search indexing\s*, Waiting for a Claude account: none is connected/)).toBeVisible();
+  await expect(screen.getByRole('link', /Search indexing\s*, Waiting for a Claude account: none is usable/)).toBeVisible();
   await expect(browser.locator('.strip-status')).toHaveText('Paused · waits for a Claude account');
   await expect(screen.getByText(/no subscription has capacity left|resets ~/)).toHaveCount(0);
+});
+
+// The review of SPEC-246 (round 2): a request the composer would split asks Claude for a proposal
+// first; without an account that is refused too, and said once, with the prompt kept.
+test('a mixed request without a Claude account is refused, not "created as one task"', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&claude=0'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill([
+    'Finish the release before Friday, all of this has to land together please.',
+    '1. Make the attention bar opaque over the terminal and keep its colours readable.',
+    '2. Route new tasks past exhausted accounts in the backend subscription pool.',
+  ].join('\n'));
+  await prompt.press('ControlOrMeta+Enter');
+  const toast = browser.locator('.toast-error');
+  await expect(toast).toContainText('Connect a Claude account first');
+  await expect(toast.getByRole('button', { name: 'Connect Claude' })).toBeVisible();
+  await expect(screen.getByText('Created as one task.')).toHaveCount(0);
+  await expect(screen.getByRole('region', 'Split proposal')).toHaveCount(0);
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
 });

@@ -61,7 +61,7 @@ function emptyTerminalMessage(task) {
     case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
     case 'waiting_capacity': return task.waits_for_account
-      ? { title: 'Waiting for Claude', text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one.` }
+      ? { title: 'Waiting for Claude', text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one or signs one in again.` }
       : { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
     case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.', busy: true };
     case 'chained': {

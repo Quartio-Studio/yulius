@@ -53,9 +53,13 @@ Me = {
   "csrf_token": "…",
   "instance": {"owner_login": "Quartio-Studio", "owner_kind": "org|user|null",
                "public_url": "https://yulius.quartio.ai", "github_configured": true,
-               "contained": true}
+               "contained": true, "claude_connected": true}
 }
 ```
+
+`instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
+while false the UI shows Connect Claude first and a person's start of an agent answers `409`
+`claude_account_required` (SPEC-246).
 
 CLI device approval: `POST /api/device/start` → `{"device_code","user_code","verification_url",
 "interval_s","expires_in_s"}`; `POST /api/device/poll {"device_code"}` →
