@@ -979,6 +979,8 @@ impl App {
         if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
             return Ok(false);
         }
+        // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
+        self.prepare_default_branch(&record, actor).await?;
         let Some(task) = self.onboarding_task(sandbox).await? else {
             return Ok(false);
         };

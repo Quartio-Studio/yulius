@@ -166,6 +166,19 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
+    async fn set_default_branch(&self, id: &SandboxId, branch: &str) -> AppResult<()> {
+        let (id, branch) = (id.as_str().to_owned(), branch.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE sandboxes SET default_branch = ?1 WHERE id = ?2",
+                params![branch, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn set_onboarding(
         &self,
         id: &SandboxId,

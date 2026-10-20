@@ -199,6 +199,8 @@ pub trait SandboxStore: Send + Sync {
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16>;
     /// Replaces the profile JSON.
     async fn set_profile(&self, id: &SandboxId, profile_json: &str) -> AppResult<()>;
+    /// Replaces the recorded default branch (an empty repository's, SPEC-241 EMP-002).
+    async fn set_default_branch(&self, id: &SandboxId, branch: &str) -> AppResult<()>;
     /// Sets onboarding state and task.
     async fn set_onboarding(
         &self,
