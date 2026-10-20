@@ -150,7 +150,8 @@ Confirmed against `dev` at 33410359.
   onboarding of the left-behind empty repository). Adapter: `yulius-github` client test
   `a_refused_repository_creation_names_the_accepted_permissions` (header read from the fake
   GitHub's 403). Units: `creation_refusals` wording and pages; `map_creation` (CRT-003).
-- **Gate.** `scripts/dev ci` at c4bf881a: exit 0, 2282 tests passed, 17 skipped (916bf2b9: 2281).
+- **Gate.** `scripts/dev ci` at 9eae375d (after merging dev at 13d6d68c): exit 0, 2293 tests passed, 17
+  skipped (c4bf881a before the merge: 2282).
 - **Security.** `scripts/dev security` at c4bf881a: exit 0, no critical, high or medium finding in
   the change; the reported findings are in code the branch did not touch (port allocation in
   `yulius-store`, the fake GitHub's rulesets and fixtures), which Yulius CI files as issues.
