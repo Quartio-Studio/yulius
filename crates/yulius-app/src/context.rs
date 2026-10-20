@@ -206,6 +206,9 @@ pub struct App {
     /// Serializes creating a sandbox's onboarding task so Start onboarding and a waiting new task
     /// never create two (SPEC-097).
     pub(crate) onboarding_task_lock: tokio::sync::Mutex<()>,
+    /// Serializes giving an empty repository its first commit, so two starts never share its
+    /// scratch clone or push twice (SPEC-241).
+    pub(crate) repository_seed_lock: tokio::sync::Mutex<()>,
     /// Serializes changes of how waiting tasks start, so two never make tasks wait for each other
     /// (SPEC-126).
     pub(crate) start_change_lock: tokio::sync::Mutex<()>,
@@ -266,6 +269,7 @@ impl App {
             recovery_lock: tokio::sync::Mutex::new(()),
             automation_template_lock: tokio::sync::Mutex::new(()),
             onboarding_task_lock: tokio::sync::Mutex::new(()),
+            repository_seed_lock: tokio::sync::Mutex::new(()),
             start_change_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),

@@ -497,7 +497,24 @@ impl GitHubPort for RepoGitHub {
     async fn current_user(&self, token: &Secret) -> AppResult<GhUser> {
         self.base.current_user(token).await
     }
+    /// An installation token sees the installation's repositories (with no person's
+    /// permissions); a person's token goes to the fake.
     async fn repo_access(&self, token: &Secret, owner: &str, name: &str) -> AppResult<RepoAccess> {
+        if token.expose().starts_with("inst-") {
+            let listed = self
+                .installation_repos
+                .lock()
+                .map_err(AppError::internal)?
+                .iter()
+                .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
+                .cloned();
+            return Ok(
+                listed.map_or(RepoAccess::NoAccess, |repo| RepoAccess::Access {
+                    permissions: GitHubPermissions::default(),
+                    repo,
+                }),
+            );
+        }
         self.base.repo_access(token, owner, name).await
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {

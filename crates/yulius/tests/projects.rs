@@ -1595,3 +1595,62 @@ async fn a_created_repository_out_of_the_installations_reach_is_explained() -> T
     assert_eq!(remote_heads(&remote)?.trim(), "main");
     Ok(())
 }
+
+// Review of SPEC-241: a sandbox recorded with an empty clone's `master` heals at Start onboarding
+// once someone pushed `main` to GitHub, and Yulius then writes nothing to the repository.
+#[tokio::test]
+async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+    w.github.add_installation_repo(OWNER, "fresh", true);
+    let fresh = import(&w, &alice, "Quartio-Studio/fresh").await?.body;
+    let sid = SandboxId::parse(text(&fresh["id"]))?;
+    w.h.store.set_default_branch(&sid, "master").await?;
+
+    // Someone pushes a first commit to GitHub's `main` (and a feature branch) themselves.
+    let seed = w.scratch.path().join("someone");
+    git(
+        w.scratch.path(),
+        &[
+            "clone",
+            "--quiet",
+            &remote.to_string_lossy(),
+            &seed.to_string_lossy(),
+        ],
+    )?;
+    std::fs::write(seed.join("app.txt"), "theirs\n")?;
+    git(&seed, &["checkout", "--quiet", "-b", "main"])?;
+    git(&seed, &["add", "-A"])?;
+    git(&seed, &["commit", "--quiet", "-m", "theirs"])?;
+    git(
+        &seed,
+        &["push", "--quiet", "origin", "main", "main:feature"],
+    )?;
+    let theirs = git(&remote, &["rev-parse", "main"])?;
+
+    let started = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/onboarding/approve"),
+        None,
+        &alice_browser,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["default_branch"], "main", "{}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    assert_eq!(
+        git(&remote, &["rev-parse", "main"])?,
+        theirs,
+        "nothing pushed"
+    );
+    assert!(
+        !w.git.calls().iter().any(|c| c.starts_with("push")),
+        "{:?}",
+        w.git.calls()
+    );
+    Ok(())
+}

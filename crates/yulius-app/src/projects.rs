@@ -584,10 +584,12 @@ impl App {
                 return Err(err);
             }
         };
-        let default_branch = if default_branch.is_empty() {
-            repo.default_branch.clone()
-        } else {
+        let default_branch = if !default_branch.is_empty() {
             default_branch
+        } else if repo.default_branch.is_empty() {
+            "main".to_owned()
+        } else {
+            repo.default_branch.clone()
         };
         let profile = import_profile(&owner, &name, yulius_toml.as_deref());
         // Every imported repository is onboarded: the full preparation when its docs do not follow

@@ -67,6 +67,9 @@ Confirmed against `dev` at 33410359.
   authored by the person who starts onboarding (else the sandbox's creator) and pushed with the
   installation token, as a created project's scaffold is. Onboarding then continues as for any
   repository with one branch.
+- **EMP-004** When the clone lacks the recorded default branch but GitHub's reported default
+  branch exists on origin (someone pushed since the import), starting onboarding corrects the
+  record and writes nothing to the repository. Concurrent starts of one instance seed one at a time.
 - **EMP-003** A repository that has branches is never written to by EMP-002. A push GitHub refuses
   (someone pushed first, a rule) fails the start with the reason, and the sandbox stays `pending`
   so that it can be started again.
@@ -74,11 +77,12 @@ Confirmed against `dev` at 33410359.
   error names the permission in GitHub's words (for example "Administration: Read and write"),
   using the `X-Accepted-GitHub-Permissions` header when GitHub sends it, the App's permission page
   and the installation page where the owner accepts the change, and that nothing was created.
-- **CRT-002** When the repository was created but the App's installation cannot reach it (it is
-  not among the installation's repositories), the error says that the repository now exists on
+- **CRT-002** When the repository was created but the App's installation cannot reach it (the
+  installation token gets 404 for it), the error says that the repository now exists on
   GitHub, that the installation covers only selected repositories, where to add it (the
   installation page), and that it can then be added with Import, which EMP-002 sets up.
-- **CRT-003** Other failures keep their current messages.
+- **CRT-003** Other failures keep their current messages, including a 403 that names no
+  permission and does not say "Resource not accessible by integration" (an organization's policy).
 
 ## Plan
 

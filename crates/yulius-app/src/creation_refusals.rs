@@ -4,6 +4,7 @@
 
 use crate::context::App;
 use crate::error::AppError;
+use crate::ports::github::RepoAccess;
 
 /// Asked for when GitHub names no permission: what it documents for creating a repository.
 const CREATE_PERMISSION: &str = "administration=write";
@@ -149,17 +150,20 @@ impl App {
         AppError::Forbidden(missing_permission(owner, name, accepted, pages.as_ref()))
     }
 
-    /// `err` from setting up the created `owner/name`, or, when the App's installation does not
-    /// include it, the refusal that says where to add it (diagnosed only after the failure:
-    /// GitHub may list a new repository a moment after creating it).
+    /// `err` from setting up the created `owner/name`, or, when the App's installation cannot
+    /// see it, the refusal that says where to add it (asked only after the failure: GitHub may
+    /// give the installation a new repository a moment after creating it).
     pub(crate) async fn created_but_unreachable(
         &self,
         owner: &str,
         name: &str,
         err: AppError,
     ) -> AppError {
-        match self.installation_repo(owner, name).await {
-            Ok(None) => {
+        let Ok(token) = self.installation_token().await else {
+            return err;
+        };
+        match self.deps.github.repo_access(&token, owner, name).await {
+            Ok(RepoAccess::NoAccess) => {
                 let pages = self.app_pages().await;
                 AppError::Forbidden(unreachable(owner, name, pages.as_ref()))
             }

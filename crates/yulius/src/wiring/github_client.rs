@@ -91,14 +91,22 @@ fn map_refusal(err: GitHubError) -> AppError {
     }
 }
 
-/// [`map_err`] for creating a repository: a 403 is a permission the App lacks, and carries what
-/// GitHub accepts instead (the `create_repo` port contract, SPEC-241 CRT-001).
+/// [`map_err`] for creating a repository: a 403 that names accepted permissions, or says
+/// "Resource not accessible by integration", is a permission the App lacks and carries what
+/// GitHub accepts (the `create_repo` port contract, SPEC-241 CRT-001); any other 403 (an
+/// organization's policy) keeps GitHub's message.
 fn map_creation(err: GitHubError) -> AppError {
     match err {
         GitHubError::Forbidden {
+            message,
             accepted_permissions,
-            ..
-        } => AppError::Forbidden(accepted_permissions.unwrap_or_default()),
+        } if accepted_permissions.is_some()
+            || message
+                .to_ascii_lowercase()
+                .contains("not accessible by integration") =>
+        {
+            AppError::Forbidden(accepted_permissions.unwrap_or_default())
+        }
         other => map_err(other),
     }
 }
@@ -683,6 +691,15 @@ mod tests {
             map_creation(refused(None)),
             AppError::Forbidden(accepted) if accepted.is_empty()
         ));
+        // Another refusal (an organization's policy) keeps GitHub's words.
+        let policy = map_creation(GitHubError::Forbidden {
+            message: "Members cannot create private repositories".into(),
+            accepted_permissions: None,
+        });
+        assert!(
+            matches!(&policy, AppError::Upstream(text) if text.contains("Members cannot create")),
+            "{policy:?}"
+        );
         assert!(matches!(
             map_creation(GitHubError::Invalid {
                 message: "name already exists on this account".into()

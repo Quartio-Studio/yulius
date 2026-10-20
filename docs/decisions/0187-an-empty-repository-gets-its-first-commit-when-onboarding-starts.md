@@ -24,8 +24,10 @@ task #227. Extends SPEC-051/SPEC-097 (onboarding) and PRJ-003..005 (create from 
 - Import records GitHub's reported default branch for a clone without branches, never the empty
   clone's `HEAD`.
 - `start_onboarding` (every start: Add repository in the browser, Start onboarding, later starts)
-  checks the sandbox's clone; when it has no branch of origin, it fetches again (someone may have
-  pushed since). When origin still has no branch, Yulius commits `README.md` (`# <name>`)
+  checks the sandbox's clone; when it lacks the recorded default branch, it fetches again (someone
+  may have pushed since) under a lock that serializes these first commits, and asks GitHub for the
+  repository's default branch with the installation token. When origin now has that branch and the
+  record names another, the record is corrected. When origin still has no branch, Yulius commits `README.md` (`# <name>`)
   on GitHub's reported default branch (`main` when it reports none or a name Git refuses), authored
   by the person starting onboarding (else the sandbox's creator), pushes it with the installation
   token as a created project's scaffold is, fetches again and corrects the recorded branch. It is
@@ -35,8 +37,10 @@ task #227. Extends SPEC-051/SPEC-097 (onboarding) and PRJ-003..005 (create from 
   returns `Forbidden(accepted)` for a 403, and creating a project then answers 403 naming the
   permission in GitHub's words ("Administration: Read and write (or Repository creation: Read and
   write)"), the App's permission page and its installation page, and that nothing was created.
-- When the scaffold of a created repository cannot be cloned or pushed and the installation's
-  repositories do not include it, the answer says that the repository exists, that the
+- A 403 without accepted permissions and without "Resource not accessible by integration" (an
+  organization's policy) keeps GitHub's message.
+- When the scaffold of a created repository cannot be cloned or pushed and the installation token
+  cannot see the repository (404), the answer says that the repository exists, that the
   installation covers only selected repositories, where to add it, and to import it then.
 
 ## Alternatives
@@ -56,7 +60,7 @@ task #227. Extends SPEC-051/SPEC-097 (onboarding) and PRJ-003..005 (create from 
 ## Consequences
 
 - An empty repository onboards without a manual step, and a sandbox stuck with `master` heals at
-  its next Start onboarding.
+  its next Start onboarding, whether the repository is still empty or someone pushed to it since.
 - A person who creates a project and lacks the permission sees the exact permission and the two
   pages to change it. A repository left behind by an unreachable installation can be imported.
 - The empty repository's first commit is on its default branch before any protection exists; a
