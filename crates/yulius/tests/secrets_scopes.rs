@@ -864,3 +864,56 @@ async fn switching_on_respects_the_projects_limit() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-248 FUP-003: concurrent switch-ons cannot pass the limit: the store counts the secrets
+/// reaching the project in the transaction that switches one on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_switch_ons_stop_at_the_projects_limit() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = world().await?;
+    let mut ids = Vec::new();
+    for n in 0..20 {
+        let body = secret("personal", &format!("MINE_{n}"), MINE, HOST);
+        ids.push(add(&w, &w.alice, "s1", body).await?);
+    }
+    let template = w.h.store.vault_get(&ids[0]).await?.ok_or("secret")?;
+    let s2 = SandboxId::parse("s2")?;
+    for n in 0..199 {
+        let mut filler = template.clone();
+        filler.id = format!("filler-{n}");
+        filler.owner_id = None;
+        filler.sandbox_id = Some(s2.clone());
+        filler.name = format!("FILLER_{n}");
+        w.h.store.vault_insert(&filler).await?;
+    }
+    // Each switch-on on its own worker, all at once.
+    let switches = ids.iter().map(|id| {
+        let (router, alice) = (w.h.router.clone(), w.alice.clone());
+        let path = format!("/api/sandboxes/s2/agent-secrets/{id}/enabled");
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::PUT,
+                &path,
+                Some(json!({"enabled": true})),
+                &alice,
+            )
+            .await
+            .map(|r| (r.status, r.body))
+            .map_err(|e| e.to_string())
+        })
+    });
+    let switched = futures::future::join_all(switches).await;
+    let mut on = 0;
+    for result in switched {
+        let (status, body) = result??;
+        if status.is_success() {
+            on += 1;
+        } else {
+            assert!(body.to_string().contains("at most"), "{body}");
+        }
+    }
+    assert_eq!(on, 1);
+    assert_eq!(w.h.store.vault_agent_in(&s2).await?.len(), 200);
+    Ok(())
+}
