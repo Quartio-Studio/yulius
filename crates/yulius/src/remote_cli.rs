@@ -32,7 +32,7 @@ pub enum RemoteAction {
     /// Store a personal API token for an instance (make one on Settings → Connect your local
     /// agent); it is checked first.
     Login {
-        /// The instance, e.g. https://yulius.example.com.
+        /// The instance, e.g. `https://yulius.example.com`.
         url: String,
         /// Read the token from stdin instead of asking for it.
         #[arg(long)]

@@ -290,6 +290,8 @@ struct Pass {
     port: u16,
     user: UserId,
     session_hash: Option<String>,
+    /// The API token it was granted to (SPEC-247): revoking it ends the grant.
+    token: Option<String>,
     created: i64,
     expires: i64,
     checked: i64,
@@ -491,6 +493,12 @@ impl App {
         host: &str,
         to: &str,
     ) -> AppResult<String> {
+        // A preview forwards every method: a read-only token gets none (SPEC-247 RMT-002).
+        if ctx.read_only() {
+            return Err(AppError::Forbidden(
+                "a read-only API token opens no preview".into(),
+            ));
+        }
         let target = self.preview_target(host).await.map_err(|refusal| {
             if refusal == PreviewRefusal::UnknownHost || refusal == PreviewRefusal::Disabled {
                 AppError::NotFound
@@ -518,6 +526,7 @@ impl App {
                     port: target.port,
                     user: ctx.user.id.clone(),
                     session_hash: ctx.session_hash.clone(),
+                    token: ctx.token.as_ref().map(|t| t.id.clone()),
                     created: now,
                     expires: now.saturating_add(HANDSHAKE_TTL_MS),
                     checked: now,
@@ -626,6 +635,15 @@ impl App {
         };
         if user.disabled_at.is_some() {
             return false;
+        }
+        if let Some(token) = &pass.token {
+            let live = matches!(
+                self.deps.store.api_tokens_of(&user.id).await,
+                Ok(tokens) if tokens.iter().any(|t| &t.id == token)
+            );
+            if !live {
+                return false;
+            }
         }
         if let Some(hash) = &pass.session_hash {
             let live = matches!(
