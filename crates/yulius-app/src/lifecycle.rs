@@ -361,11 +361,6 @@ impl App {
                 },
             )
             .await?;
-        // A task that starts (now, after a task, by a rule) needs an agent: refused at once without
-        // a usable account (SPEC-246 CLA-002); a prepared one starts only when a person says so.
-        if prepared.is_none() {
-            self.ensure_agent_account(harness.provider()).await?;
-        }
         if after.is_some() {
             self.ensure_chain_room(&sid).await?;
         }
@@ -375,6 +370,12 @@ impl App {
             return Err(AppError::Invalid(
                 "the prompt must be 1 byte to 64 KiB".into(),
             ));
+        }
+        // A task that starts (now, after a task, by a rule) needs an agent: refused without a
+        // usable account before anything is created (SPEC-246 CLA-002); a prepared one starts
+        // only when a person says so.
+        if prepared.is_none() {
+            self.ensure_agent_account(harness.provider()).await?;
         }
         let choice = self.auto_choose(&sid, prompt, mode, workflow).await?;
         let task = self

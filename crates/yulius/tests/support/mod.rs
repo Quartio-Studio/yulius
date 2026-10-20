@@ -1446,13 +1446,14 @@ pub async fn seed_github_user(
     })
 }
 
-/// A connected Claude subscription with no capacity left until a reset hours away: a start passes
+/// A connected Claude subscription with no capacity left until a reset days away (past any clock a
+/// test advances): a start passes
 /// the account gate (SPEC-246) and then waits `waiting_capacity` without a process (ROT-010), as
 /// these harnesses have no process host.
 pub async fn exhausted_subscription(h: &Harness) -> Result<(), Box<dyn std::error::Error>> {
     use yulius_app::model::{AccountRecord, AccountStatus};
     use yulius_app::ports::store::AccountStore;
-    let resets = h.app.now().plus_millis(5 * 3_600_000).0;
+    let resets = h.app.now().plus_millis(6 * 24 * 3_600_000).0;
     let usage = serde_json::json!({
         "primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": resets},
         "secondary": {"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets},

@@ -176,6 +176,11 @@ impl App {
             account_email: None,
             mode: task.mode.as_str().to_owned(),
             resumes_at: self.capacity_returns_at(task).await.map(rfc3339),
+            waits_for_account: task.status == TaskStatus::WaitingCapacity
+                && self
+                    .agent_accounts(task.harness.provider())
+                    .await
+                    .is_ok_and(|a| a != crate::account_gate::AgentAccounts::Usable),
             after,
             next,
             held_prompt: self.held_prompt_view(&task.id).await,

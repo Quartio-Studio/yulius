@@ -3,6 +3,7 @@
 //! waits without saying why.
 
 use yulius_domain::harness::Provider;
+use yulius_domain::task::FailReason;
 
 use crate::context::App;
 use crate::error::{AppError, AppResult};
@@ -55,10 +56,33 @@ pub(crate) fn refusal(state: AgentAccounts) -> Option<AppError> {
 }
 
 /// What a task started by itself (a chain, a rule, an automation, a time) says while it waits for
-/// an account (CLA-004).
-pub(crate) const WAITING_NOTICE: &str = "Yulius is holding this task: no Claude account is \
-     connected. An instance administrator connects one in Subscriptions (/admin/accounts); the \
-     task then starts by itself.";
+/// an account (CLA-004); `None` while one is usable (it only waits for capacity).
+pub(crate) fn waiting_notice(state: AgentAccounts) -> Option<&'static str> {
+    match state {
+        AgentAccounts::Usable => None,
+        AgentAccounts::None => Some(
+            "Yulius is holding this task: no Claude account is connected. An instance \
+             administrator connects one in Subscriptions (/admin/accounts); the task then starts \
+             by itself.",
+        ),
+        AgentAccounts::NeedSignIn => Some(
+            "Yulius is holding this task: every Claude account must sign in again. An instance \
+             administrator signs one in in Subscriptions (/admin/accounts); the task then starts \
+             by itself.",
+        ),
+    }
+}
+
+/// Why a start that failed ended (CLA-005): no usable account, a precondition, or the spawn.
+pub(crate) fn fail_reason(err: &AppError) -> FailReason {
+    match err {
+        AppError::AccountRequired(_) => FailReason::NoAccount,
+        AppError::Conflict(_) | AppError::Capacity(_) | AppError::Invalid(_) => {
+            FailReason::Precondition
+        }
+        _ => FailReason::SpawnError,
+    }
+}
 
 impl App {
     /// Whether an agent of `provider` can be started now (CLA-001).
@@ -173,7 +197,36 @@ mod tests {
             .ok_or("refused")?
             .public_message();
         assert!(stale.contains("must sign in again"), "{stale}");
-        assert!(WAITING_NOTICE.contains(CONNECT_PATH));
         Ok(())
+    }
+
+    #[test]
+    fn the_waiting_notice_tells_no_account_from_a_needed_sign_in() -> TestResult {
+        assert_eq!(waiting_notice(AgentAccounts::Usable), None);
+        let none = waiting_notice(AgentAccounts::None).ok_or("notice")?;
+        assert!(none.contains("no Claude account is connected"), "{none}");
+        let stale = waiting_notice(AgentAccounts::NeedSignIn).ok_or("notice")?;
+        assert!(stale.contains("must sign in again"), "{stale}");
+        for text in [none, stale] {
+            assert!(text.contains("/admin/accounts") && text.contains("starts by itself"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_start_refused_for_want_of_an_account_fails_as_no_account() {
+        let refused = refusal(AgentAccounts::None);
+        assert_eq!(
+            refused.as_ref().map(fail_reason),
+            Some(FailReason::NoAccount)
+        );
+        assert_eq!(
+            fail_reason(&AppError::Conflict("not cloned".into())),
+            FailReason::Precondition
+        );
+        assert_eq!(
+            fail_reason(&AppError::Internal("spawn".into())),
+            FailReason::SpawnError
+        );
     }
 }

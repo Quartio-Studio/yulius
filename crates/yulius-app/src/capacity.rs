@@ -288,15 +288,21 @@ impl App {
                 )
                 .await?;
             // A start with no account to run on waits for one to be connected, and says so
-            // (SPEC-246 CLA-004); otherwise the pool is only out of capacity.
-            let unconnected = kind == PauseKind::Start
-                && self.agent_accounts(task.harness.provider()).await?
-                    != crate::account_gate::AgentAccounts::Usable;
-            self.runtime(task_id).hub.notice(if unconnected {
-                crate::account_gate::WAITING_NOTICE
+            // (SPEC-246 CLA-004); otherwise (or when the accounts cannot be read) the pool is only
+            // out of capacity.
+            let accounts = if kind == PauseKind::Start {
+                self.agent_accounts(task.harness.provider())
+                    .await
+                    .unwrap_or(crate::account_gate::AgentAccounts::Usable)
             } else {
-                "Yulius paused this task: no subscription has capacity left. It continues by itself."
-            });
+                crate::account_gate::AgentAccounts::Usable
+            };
+            self.runtime(task_id).hub.notice(
+                crate::account_gate::waiting_notice(accounts).unwrap_or(
+                    "Yulius paused this task: no subscription has capacity left. It continues by \
+                     itself.",
+                ),
+            );
         }
         self.publish_task(task_id).await;
         self.capacity_changed();

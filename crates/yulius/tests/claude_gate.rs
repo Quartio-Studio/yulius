@@ -278,6 +278,23 @@ async fn a_start_by_machinery_waits_for_an_account_and_says_why() -> TestResult 
     assert!(said.contains("no Claude account is connected"), "{said}");
     assert!(said.contains("/admin/accounts"), "{said}");
     assert!(said.contains("starts by itself"), "{said}");
+    // Its summary says so too, for whoever opens it later (the Paused card, its time label).
+    let summary = h
+        .app
+        .task_summary(&h.store.task(&id).await?.ok_or("task")?)
+        .await?;
+    assert!(summary.waits_for_account, "{summary:?}");
+
+    // Signed in once but expired: it says the account must sign in again.
+    account(&h, "a-stale", AccountStatus::Relogin, true).await?;
+    seed_task(&h, "t-stale", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let stale = TaskId::parse("t-stale")?;
+    let mut rx = h.app.runtime(&stale).hub.watch();
+    h.app
+        .pause_task(&stale, PauseKind::Start, None, None)
+        .await?;
+    let said = notice_of(&mut rx);
+    assert!(said.contains("must sign in again"), "{said}");
 
     account(&h, "a-ok", AccountStatus::Ok, true).await?;
     seed_task(&h, "t-later", "s1", "u-alice", TaskStatus::Queued, None).await?;
@@ -288,5 +305,10 @@ async fn a_start_by_machinery_waits_for_an_account_and_says_why() -> TestResult 
         .await?;
     let said = notice_of(&mut rx);
     assert!(said.contains("no subscription has capacity left"), "{said}");
+    let summary = h
+        .app
+        .task_summary(&h.store.task(&later).await?.ok_or("task")?)
+        .await?;
+    assert!(!summary.waits_for_account, "only out of capacity");
     Ok(())
 }

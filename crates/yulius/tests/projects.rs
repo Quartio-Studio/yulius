@@ -1787,3 +1787,56 @@ async fn a_failed_onboarding_start_is_retried_once_claude_is_connected() -> Test
     );
     Ok(())
 }
+
+// SPEC-246 CLA-004: a start by machinery (here a prepared task's time) with no Claude account is
+// not refused and does not fail: the task waits `waiting_capacity` and its viewers are told that
+// no Claude account is connected.
+#[tokio::test]
+async fn a_scheduled_start_without_claude_waits_and_says_why() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let w = World::without_claude("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    let sid = SandboxId::parse(text(&shop.body["id"]))?;
+    w.h.store.set_onboarding(&sid, "ready", None).await?;
+    let at = w.h.app.now().plus_millis(3_600_000);
+    let prepared = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "Nightly sweep", "start_at": yulius_app::auth::rfc3339(at)})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(prepared.status, StatusCode::CREATED, "{:?}", prepared.body);
+    let id = TaskId::parse(text(&prepared.body["id"]))?;
+    let mut frames = w.h.app.runtime(&id).hub.watch();
+
+    w.h.clock.0.store(at.0 + 1_000, Ordering::SeqCst);
+    w.h.app.release_due_prepared().await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let status = w.h.store.task(&id).await?.ok_or("task")?.status;
+        if status == TaskStatus::WaitingCapacity {
+            break;
+        }
+        assert!(
+            !matches!(status, TaskStatus::Failed(_)),
+            "it waits, it does not fail: {status:?}"
+        );
+        assert!(tokio::time::Instant::now() < deadline, "still {status:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let mut said = Vec::new();
+    while let Ok(frame) = frames.try_recv() {
+        if let yulius_app::hub::HubFrame::Notice(text) = frame {
+            said.push(text);
+        }
+    }
+    let said = said.join("\n");
+    assert!(said.contains("no Claude account is connected"), "{said}");
+    assert!(said.contains("/admin/accounts"), "{said}");
+    Ok(())
+}

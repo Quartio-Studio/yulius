@@ -1021,13 +1021,7 @@ impl App {
             let result = self.launch_attempt(&task, start, account).await;
             drop(guard);
             if let Err(err) = &result {
-                let reason = match err {
-                    AppError::AccountRequired(_) => FailReason::NoAccount,
-                    AppError::Conflict(_) | AppError::Capacity(_) | AppError::Invalid(_) => {
-                        FailReason::Precondition
-                    }
-                    _ => FailReason::SpawnError,
-                };
+                let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
                     && matches!(current.status, TaskStatus::Starting | TaskStatus::Queued)
                 {
