@@ -103,8 +103,9 @@ pub struct CapacityState {
     pub(crate) email_not_before: tokio::sync::Mutex<HashMap<AccountId, Timestamp>>,
     /// The last usage round asked for by opening the subscriptions list (debounced).
     pub(crate) usage_asked: Mutex<Option<Timestamp>>,
-    /// Whether a Claude account was usable at the last resume pass: when it changes, the paused
-    /// tasks are shown again, so their `waits_for_account` follows (SPEC-246 CLA-004).
+    /// The Claude accounts' state at the last resume pass (usable, every one to sign in again,
+    /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
+    /// follows (SPEC-246 CLA-004).
     accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
 }
 

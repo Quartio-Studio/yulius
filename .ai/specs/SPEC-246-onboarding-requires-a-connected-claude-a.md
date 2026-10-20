@@ -188,10 +188,17 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   `a_waiting_task_is_shown_again_when_an_account_is_connected`, which fails without it); the
   composer's split proposal refused for want of an account says so once and keeps the prompt
   (e2e); `Me` and the Superagent's errors documented; the mock's proposal refuses too. Automation
-  Run now stays machinery (it waits), as ADR-0190 decides. Round 3 reviewed the head carrying
-  this.
+  Run now stays machinery (it waits), as ADR-0190 decides. Round 3 (eba5c0b6): request changes —
+  the split-proposal e2e test never reached the proposal (prompt under the mock's 40 words), so it
+  passed without the fix. Rewritten with the five-line request and a held proposal; the mock
+  refuses after the hold; it asserts the toasts exactly and now fails without the intake fix
+  ("Created as one task." first) and passes with it (3 runs). Also: the Connect Claude step reads
+  "none is usable yet: connect one, or sign one in again"; `intake_proposal` and the proposal's API
+  row name `claude_account_required`. Round 4 reviewed the head carrying this.
 - **Gates** on e5ea247f (dev merged at b06db25c): `scripts/dev ci` exit 0 (2324 tests passed, 17
-  skipped; lint, macOS compile, deps, doctests); e2e `npx e2e run` 656 passed, 1 skipped.
+  skipped; lint, macOS compile, deps, doctests); e2e `npx e2e run` 656 passed, 1 skipped. On
+  eba5c0b6: `scripts/dev ci` exit 0 (2325 passed), e2e 657 passed. The final head is gated again
+  before delivery (see the pull request's Yulius CI).
 - **Security scan not run.** `scripts/dev security` exit 2: "Vidoc cannot be reached … HTTP 429:
   This API key has used its 50,000,000 tokens." Unrun, not passed; the change was reviewed by hand
   for security (every gate check runs after the access check; UI text goes through `h()`).

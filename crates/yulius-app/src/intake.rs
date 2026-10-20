@@ -326,7 +326,8 @@ impl App {
     /// no tasks means "keep it as one task".
     ///
     /// # Errors
-    /// `Conflict` without a proposer or account, `Capacity` while other proposals run,
+    /// `Conflict` without a proposer, `AccountRequired` without a usable Claude account,
+    /// `Capacity` while other proposals run,
     /// `Upstream` when Claude fails or its proposal is unusable.
     pub async fn intake_proposal(
         &self,

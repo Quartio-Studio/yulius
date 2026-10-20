@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -82,21 +82,39 @@ test('a task waiting with no Claude account says it waits for one, not for capac
   await expect(screen.getByText(/no subscription has capacity left|resets ~/)).toHaveCount(0);
 });
 
-// The review of SPEC-246 (round 2): a request the composer would split asks Claude for a proposal
-// first; without an account that is refused too, and said once, with the prompt kept.
+// The review of SPEC-246 (rounds 2 and 3): a request the composer would split asks Claude for a
+// proposal first; without an account that is refused too, and said once, with the prompt kept.
+const MIXED = [
+  'Finish the release before Friday, all of this has to land together please.',
+  '1. Make the attention bar opaque over the terminal and keep its colours readable.',
+  '2. Stop the tools rail pills from overflowing the rail on narrow windows.',
+  '3. Route new tasks past exhausted accounts in the backend subscription pool.',
+  '4. Make the server mark tasks Done reliably once the pull request is tested.',
+].join('\n');
+
 test('a mixed request without a Claude account is refused, not "created as one task"', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&claude=0'));
+  await browser.evaluate(() => {
+    const mocked = window as unknown as { __yuliusMock: { holdProposal?: Promise<void>; releaseProposal?: () => void } };
+    mocked.__yuliusMock.holdProposal = new Promise<void>((resolve) => { mocked.__yuliusMock.releaseProposal = resolve; });
+  });
+  const tasksBefore = await browser.evaluate(() => (window as unknown as { __yuliusMock: { tasks: unknown[] } }).__yuliusMock.tasks.length);
   const prompt = screen.getByRole('textbox', 'Task prompt');
-  await prompt.fill([
-    'Finish the release before Friday, all of this has to land together please.',
-    '1. Make the attention bar opaque over the terminal and keep its colours readable.',
-    '2. Route new tasks past exhausted accounts in the backend subscription pool.',
-  ].join('\n'));
+  await prompt.fill(MIXED);
   await prompt.press('ControlOrMeta+Enter');
+  // It is the split proposal that is asked first, and refused.
+  await expect(screen.getByRole('region', 'Split proposal')).toHaveText(/Splitting your request…/);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseProposal: () => void } }).__yuliusMock.releaseProposal());
   const toast = browser.locator('.toast-error');
   await expect(toast).toContainText('Connect a Claude account first');
+  await expect(toast).toHaveCount(1);
+  // Said once: no "Created as one task." before the refusal.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.toast .toast-msg')].map((m) => m.textContent))).toEqual([
+    'Couldn’t start the task: Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).',
+  ]);
   await expect(toast.getByRole('button', { name: 'Connect Claude' })).toBeVisible();
-  await expect(screen.getByText('Created as one task.')).toHaveCount(0);
   await expect(screen.getByRole('region', 'Split proposal')).toHaveCount(0);
   await expect(browser).toHaveURL(/#\/s\/studio$/);
+  expect(await promptText(browser)).toContain('Finish the release before Friday');
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { tasks: unknown[] } }).__yuliusMock.tasks.length)).toBe(tasksBefore);
 });

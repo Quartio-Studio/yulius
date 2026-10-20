@@ -27,8 +27,10 @@ export function connectClaudeStep(me, what = 'Tasks and onboarding start once on
     icon('warn'),
     h('span', { class: 'banner-text' },
       h('strong', null, 'Connect Claude first. '),
-      `Agents run on a Claude subscription, and none is connected yet. ${what}`,
-      isAdmin(me) ? null : ' An instance administrator connects one in Subscriptions.'),
+      // None connected, or every one must sign in again: either is done in Subscriptions.
+      isAdmin(me)
+        ? `Agents run on a Claude subscription, and none is usable yet: connect one, or sign one in again. ${what}`
+        : `Agents run on a Claude subscription, and none is usable yet. An instance administrator connects one in Subscriptions. ${what}`),
     isAdmin(me) ? h('a', { class: 'btn btn-sm btn-primary', href: href(CONNECT_PATH), dataset: { route: CONNECT_PATH } }, 'Connect Claude') : null);
 }
 
