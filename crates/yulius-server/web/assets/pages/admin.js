@@ -179,7 +179,8 @@ const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   let terminal = null;
   let current = loginId;
-  // running → ok | error | cancelled | lost (the server no longer has the sign-in).
+  // running → ok | error | cancelled | lost (the server no longer has the sign-in) |
+  // connection (reconnecting gave up; the sign-in may still run).
   let phase = 'running';
   let closed = false;
   const status = h('span', { class: 'muted small' }, SIGN_IN_RUNNING);
@@ -192,7 +193,8 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     onClose: () => {
       closed = true;
       if (terminal) terminal.destroy();
-      if (phase === 'running') cancel(current);
+      // A sign-in that may still run is cancelled; one lost to the connection too, best effort.
+      if (phase === 'running' || phase === 'connection') cancel(current);
       onFinish();
     },
   });
@@ -220,6 +222,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
       if (!error || error.code !== 'not_found') { errorToast(error, 'Couldn’t cancel the sign-in'); return; }
     }
     if (ended === 'ok') { await connectedToast(); return; }
+    if (ended === 'running') { toast(`Sign-in of ${account.label} is still stopping; its card shows how it ended.`); return; }
     const now = await fresh();
     if (!now) return;
     toast(['ok', 'limited'].includes(now.status)
@@ -300,9 +303,14 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
       // arrive before its error frame), or reconnecting failed and the sign-in is out of reach.
       onConnection: (state, detail) => {
         if (state !== 'failed' || terminal !== view || phase !== 'running') return;
-        phase = 'lost';
-        if (detail && detail.code === CLOSE_REVOKED) ended('This sign-in is no longer available', 'It ended or expired.');
-        else ended('The connection to this sign-in was lost', 'Try again to start a new sign-in.');
+        if (detail && detail.code === CLOSE_REVOKED) {
+          phase = 'lost';
+          ended('This sign-in is no longer available', 'It ended or expired.');
+        } else {
+          // The sign-in may still run on the server: closing the dialog still cancels it.
+          phase = 'connection';
+          ended('The connection to this sign-in was lost', 'Try again to start a new sign-in.');
+        }
       },
     });
     terminal = view;

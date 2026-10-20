@@ -962,7 +962,9 @@ impl App {
         ended.as_mut().enable();
         if session.is_running() {
             session.request_cancel();
-            self.deps
+            // The cancel has happened: a failed audit write is logged, not answered.
+            if let Err(err) = self
+                .deps
                 .store
                 .audit(
                     self.now(),
@@ -971,7 +973,10 @@ impl App {
                     Some(session.account_id.as_str()),
                     None,
                 )
-                .await?;
+                .await
+            {
+                tracing::error!(error = %err, "could not audit a cancelled sign-in");
+            }
             let _ = tokio::time::timeout(CANCEL_WAIT, ended).await;
         }
         Ok(session.phase().0)
