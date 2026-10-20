@@ -147,6 +147,7 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 - [x] Review round 1 fixed: automation children, task messages, hand-over cache, switch limit
 - [x] Review round 2 fixed: the proxy reads an agent run's current holder per request
 - [x] Gates green and an independent review of the delivered head
+- [x] Merge with dev (schema 39) re-verified and its review confirmed
 
 ## Acceptance criteria
 
