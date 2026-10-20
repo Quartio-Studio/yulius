@@ -730,8 +730,9 @@ YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
 2. Open the public URL, enter the token, choose the superadmin password (twice; at least 8
    characters, 12 or more recommended) and confirm both warnings: **the password can be recovered
-   only with the recovery code** (SPEC-001 ACC-002, ACC-011). Store the recovery code shown next. The last two steps ask for the Jev API key and the Vidoc API key (both optional;
-   skip them to add them later in Settings → Instance).
+   only with the recovery code** (SPEC-001 ACC-002, ACC-011). Store the recovery code shown next.
+   The last two steps ask for the Jev API key and the Vidoc API key (both optional; skip them to
+   add them later in Settings → Instance).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
