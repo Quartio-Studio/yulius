@@ -684,6 +684,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let needs_you = || async {
             app.list_sandboxes(&ctx)
@@ -746,6 +747,7 @@ async fn continued_goal_task(
         user: app.deps.store.user(user).await?.ok_or("user")?,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     app.continue_task(
         &ctx,
@@ -954,6 +956,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let new_task = |mode: TaskMode, prompt: &str| NewTask {
             sandbox: sandbox.clone(),
@@ -1861,6 +1864,7 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.continue_task(
             &ctx,
@@ -2491,6 +2495,7 @@ fn a_done_task_can_be_archived() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
         wait_for("the shell probe", Duration::from_secs(90), || async {
@@ -2543,6 +2548,7 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let id = app
             .create_task_internal(NewTask {
@@ -2633,11 +2639,13 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
             user: person.clone(),
             csrf_token: Some("csrf".into()),
             session_hash: Some("session".into()),
+            token: None,
         };
         let admin = yulius_app::auth::AuthContext {
             user: person,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         host.arm();
         let starter = Arc::clone(&app);
@@ -2715,6 +2723,7 @@ fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestR
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: Some("csrf".into()),
             session_hash: Some("session".into()),
+            token: None,
         };
         host.arm();
         let starter = Arc::clone(&app);
@@ -2770,6 +2779,7 @@ fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
         wait_for("the shell probe", Duration::from_secs(90), || async {
@@ -2983,6 +2993,7 @@ async fn running_task(
         user: app.deps.store.user(&user).await?.ok_or("user")?,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
     wait_for("the session", Duration::from_secs(60), || async {
@@ -3229,6 +3240,7 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.create_agent_secret(
             &ctx,
@@ -3247,6 +3259,7 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             user: bob.clone(),
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.create_agent_secret(
             &bobs,

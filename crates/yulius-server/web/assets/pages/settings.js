@@ -12,6 +12,7 @@ import { DESKTOP_KEY } from '../notifications.js';
 import { showShortcuts, SHEET_KEYS } from '../shortcuts.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice } from '../theme.js';
 import { BRAND } from '../brand.js';
+import { agentTokensBody } from './apitokens.js';
 
 function section(iconName, title, description, ...content) {
   return h('section', { class: 'settings-section' },
@@ -103,6 +104,7 @@ export function mountSettingsPage(ctx) {
       row('archive', 'Archived tasks', 'Tasks you archived, with restore', open('/archived', 'archived tasks')),
       row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device', 'CLI device approval')),
       row('logout', 'Sign out', `Sign out of ${BRAND.name} in this browser`, h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
+    section('plug', 'Connect your local agent', 'API tokens for your own agents and the yulius CLI', agentTokensBody(ctx)),
     section('gear', 'Preferences', 'kept in this browser',
       row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),

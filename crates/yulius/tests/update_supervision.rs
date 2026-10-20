@@ -265,6 +265,7 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
             user,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.check_updates_now(&ctx).await?;
         app.start_update(

@@ -73,6 +73,7 @@ async fn add_stripe_key(app: &App, user: &UserRecord, sandbox: &SandboxId) -> Te
         user: user.clone(),
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     app.create_agent_secret(
         &ctx,

@@ -1624,6 +1624,16 @@ span.composer-attachment-open { cursor: default; }
 .settings-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); }
 .settings-identity + .settings-row, .settings-body > .settings-row:first-child { border-top: 0; }
 .settings-row-icon { display: inline-flex; color: var(--muted); }
+/* Connect your local agent (SPEC-247): API tokens and the commands that use them. */
+.agent-connect { display: grid; gap: 12px; padding: 12px 20px 16px; min-width: 0; }
+.agent-token-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 240px) auto; gap: 12px; align-items: end; }
+@media (max-width: 640px) { .agent-token-form { grid-template-columns: minmax(0, 1fr); } }
+.agent-created-box { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.agent-command .secret-value { overflow-x: auto; white-space: nowrap; }
+.agent-token-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.agent-token { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); min-width: 0; }
+.agent-token-text { min-width: 0; overflow-wrap: anywhere; }
+.agent-token-label { font-weight: 500; }
 .settings-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .settings-row-control { display: flex; align-items: center; gap: 8px; }
 .settings-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 16px 20px; }

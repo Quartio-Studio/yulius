@@ -642,7 +642,7 @@ impl App {
 
     /// The `tools/call` result of a tool's outcome: short text rendered from the tool's record
     /// (SPEC-086), redacted and bounded; with `structured`, the record too.
-    async fn tool_result(
+    pub(crate) async fn tool_result(
         &self,
         sandbox: &SandboxId,
         name: &str,

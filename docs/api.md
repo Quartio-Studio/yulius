@@ -8,8 +8,10 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 
 - JSON bodies (`Content-Type: application/json`), ≤ 1 MiB; uploads (import chunks, dropped files)
   are raw bodies with their own limits. Timestamps are RFC 3339 UTC strings.
-- Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (CLI
-  tokens). The cookie is `__Host-yulius_session` when the public URL is HTTPS (host-only and
+- Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (personal API
+  tokens: `cli` from `yulius login`, `operate` or `read` from Settings, SPEC-247; a `read` token
+  gets 403 for anything but GET and HEAD, and for every WebSocket). The cookie is
+  `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
   State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
   `GET /api/me`. A cookie session is refused (403) for a request that announces an `Origin` other
@@ -58,9 +60,37 @@ Me = {
 CLI device approval: `POST /api/device/start` → `{"device_code","user_code","verification_url",
 "interval_s","expires_in_s"}`; `POST /api/device/poll {"device_code"}` →
 `{"status":"pending|approved|denied|expired","token":"yul_…|null"}`; `POST /api/device/approve
-{"user_code","approve":bool}` (web session) → 204.
+{"user_code","approve":bool}` (web session only; a bearer token is 403, SPEC-247) → 204.
 Device start needs no session and is limited per client: 5 starts a minute, at most 10 live
 grants per client and 1000 per instance; past either it answers 429.
+
+## API tokens and the remote MCP (SPEC-247)
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/me/tokens` | → `[ApiTokenView]`: the caller's live tokens, newest first |
+| POST | `/api/me/tokens` | browser session only (a bearer request is 403), `{"label": "1-80 chars", "scope": "operate|read"}` → 201 `{"token": "yul_…" (shown once), "view": ApiTokenView, "mcp_url", "claude_command", "cli_command"}`; 422 for another scope or label, 429 past 50 live tokens |
+| DELETE | `/api/me/tokens/{id}` | → 204; 404 for an id that is not a live token of the caller. Revoked tokens are refused at once |
+| POST | `/mcp` | the remote MCP: JSON-RPC 2.0 (`initialize`, `ping`, `tools/list`, `tools/call`; notifications → 202), MCP streamable HTTP with JSON answers (`GET`/`DELETE` → 405); bodies up to 32 MiB (a `project_change` of 50 files of 256 KiB), larger → 413. `Authorization: Bearer yul_…` of scope `operate` or `read` only: none or an unknown, revoked, task or `ck_` token → 401 (`WWW-Authenticate: Bearer`), a `cli` token → 403, past 120 requests a minute per token → 429 (`Retry-After: 60`); the body of a refusal is a JSON-RPC error. Cookies are not read |
+
+```json
+ApiTokenView = {"id": "…", "label": "laptop Claude Code", "scope": "cli|read|operate",
+                "created_at": "…", "last_used_at": "…|null"}
+```
+
+The remote MCP's tools are listed by `tools/list` (a `read` token is served those that need view
+access only). Instance tools: `projects_list`, `repositories_list`, `project_import {repo}`.
+Every other tool takes `project` (`owner/name`, slug or id) and needs, on that project, the
+person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `task_delivery`,
+`sessions_search`, `session_read`, `ci_runs`, `ci_run`, `cd_status`, `project_files`,
+`project_file_read`, `automations_list`, `workflows_list`, `secrets_list`), work
+(`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
+`task_unpause`, `task_start_now`, `task_archive`, `task_delete`, `ci_rerun`, `ci_cancel`,
+`cd_deploy` (dev only), `project_change`, `change_merge`), configure (`automation_*`,
+`secret_update`, `secret_hosts_answer`) or administer (`onboarding_skip`). A project the person
+cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
+true}` adds the tool's record as `structuredContent`. `initialize` answers
+`_meta: {"yulius/person": login, "yulius/scope": scope}`. See [remote-control.md](remote-control.md).
 
 ## Sandboxes
 
@@ -75,7 +105,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session or `operate` token | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a `cli` token (`yulius onboard` only uploads, SPEC-051; an `operate` token is the person's own agent, SPEC-247); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 | POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
 | POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |

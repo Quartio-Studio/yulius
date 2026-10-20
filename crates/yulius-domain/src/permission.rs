@@ -97,8 +97,74 @@ impl Action {
     }
 }
 
+/// What a personal API token may do (SPEC-247, ADR-0188). A token never grants more than its
+/// person's access to a sandbox; its scope can only narrow it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TokenScope {
+    /// A `yulius login` token and every token made before scopes: the REST API as before, never
+    /// the remote MCP, and never starting onboarding (SPEC-051 OBD-002).
+    Cli,
+    /// Read-only: what view access allows, through the REST API (GET/HEAD) and the remote MCP.
+    Read,
+    /// Everything the person may do, through the REST API and the remote MCP.
+    Operate,
+}
+
+impl TokenScope {
+    /// Stable wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Read => "read",
+            Self::Operate => "operate",
+        }
+    }
+
+    /// Parses a wire name.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "cli" => Some(Self::Cli),
+            "read" => Some(Self::Read),
+            "operate" => Some(Self::Operate),
+            _ => None,
+        }
+    }
+
+    /// Whether a token of this scope may take `action` (the person's access is checked apart).
+    #[must_use]
+    pub fn allows(self, action: Action) -> bool {
+        match self {
+            Self::Read => action == Action::View,
+            Self::Cli | Self::Operate => true,
+        }
+    }
+
+    /// Whether this scope may use the remote MCP.
+    #[must_use]
+    pub fn remote(self) -> bool {
+        matches!(self, Self::Read | Self::Operate)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn token_scopes_narrow_and_round_trip() {
+        for scope in [TokenScope::Cli, TokenScope::Read, TokenScope::Operate] {
+            assert_eq!(TokenScope::parse(scope.as_str()), Some(scope));
+        }
+        assert_eq!(TokenScope::parse("admin"), None);
+        assert!(TokenScope::Read.allows(Action::View));
+        for action in [Action::Work, Action::Configure, Action::Administer] {
+            assert!(!TokenScope::Read.allows(action), "{action:?}");
+            assert!(TokenScope::Operate.allows(action), "{action:?}");
+        }
+        assert!(!TokenScope::Cli.remote());
+        assert!(TokenScope::Read.remote() && TokenScope::Operate.remote());
+    }
+
     use super::*;
 
     #[test]
