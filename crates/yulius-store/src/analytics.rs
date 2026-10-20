@@ -79,6 +79,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsRun> {
             None => None,
         },
         account_label: row.get("account_label")?,
+        account_email: row.get("account_email")?,
         started_at: Timestamp(row.get("started_at")?),
         ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
         metrics,
@@ -146,7 +147,7 @@ fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
         conn,
         &format!(
             "{cohort} SELECT a.task_id, a.seq, a.harness, a.account_id, ac.label AS account_label, \
-             a.started_at, a.ended_at, m.attempt_id AS metrics_attempt, m.model, m.input_tokens, \
+             ac.email AS account_email, a.started_at, a.ended_at, m.attempt_id AS metrics_attempt, m.model, m.input_tokens, \
              m.output_tokens, m.cache_read, m.cache_write, m.turns, m.active_ms \
              FROM attempts a JOIN cohort c ON c.id = a.task_id \
              LEFT JOIN metrics m ON m.attempt_id = a.id \

@@ -8,6 +8,7 @@
 
 mod support;
 
+mod account_email;
 mod account_usage;
 mod accounts;
 mod agent_hooks;

@@ -8,7 +8,7 @@
 // This is the page's Overview tab; its Pipeline (stages) tab is pages/pipeline.js (SPEC-161).
 
 import { h, svgEl, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
-import { compact, duration, int } from '../format.js';
+import { compact, duration, int, accountRef } from '../format.js';
 import { statusInfo } from '../status.js';
 import { sectionedPage, loader } from './common.js';
 import { modelLabel } from '../models.js';
@@ -178,7 +178,7 @@ function subscriptions(capacity) {
   const accounts = Array.isArray(capacity.accounts) ? capacity.accounts : [];
   return card('Subscriptions', 'whole instance · Claude subscriptions in one pool', h('div', { class: 'stack' },
     capacityPanel(capacity),
-    accounts.length ? h('div', { class: 'account-list' }, accounts.map((a, i) => accountUsage({ ...a, id: a.id || `pool-${i}`, provider: 'anthropic' }, { foldable: true, open: false }))) : null));
+    accounts.length ? h('div', { class: 'account-list' }, accounts.map((a, i) => accountUsage({ ...a, id: a.id || `pool-${i}`, provider: 'anthropic' }, { foldable: true, open: false, showEmail: Boolean(a.id) }))) : null));
 }
 
 /**
@@ -244,7 +244,7 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
   // `done` counts running tasks whose goal is achieved: finished, though their session is open.
   const byStatus = Object.entries(tasks.by_status || {}).map(([status, count]) => ({ status, info: status === 'done' ? statusInfo({ status: 'running', activity: 'done' }) : statusInfo({ status, activity: null }), value: count }));
   const byModel = (Array.isArray(data.tokens_by_model) ? data.tokens_by_model : []).map((r) => ({ label: r.model === 'unknown' ? 'Unknown model' : modelLabel(r.model), value: sumTokens(r) }));
-  const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || (r.account_id ? 'Removed subscription' : 'No subscription'), value: sumTokens(r) }));
+  const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: accountRef(r.account_label, r.account_email, { unknown: false }) || (r.account_id ? 'Removed subscription' : 'No subscription'), value: sumTokens(r) }));
   const byOrigin = Object.entries(tasks.by_origin || {}).map(([origin, count]) => ({ label: ORIGIN_NAMES[origin] || origin, value: count }));
 
   const feedbackBar = rated ? h('div', { class: 'db-ratio', 'aria-hidden': 'true' },

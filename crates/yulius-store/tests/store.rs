@@ -1510,3 +1510,71 @@ async fn a_playground_record_moves_to_github_once() -> R {
     );
     Ok(())
 }
+
+/// An account keeps the email of its Claude account and when Claude answered for it; a rename
+/// keeps both, and a new credential (another sign-in, maybe of another Claude account) drops
+/// both (SPEC-244 SUB-003).
+#[tokio::test]
+async fn an_account_email_lasts_until_the_next_sign_in() -> R {
+    use yulius_app::model::{AccountRecord, AccountStatus, Sealed};
+    use yulius_app::ports::store::AccountStore;
+    use yulius_domain::harness::Provider;
+    use yulius_domain::ids::AccountId;
+
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let id = AccountId::parse("acc1")?;
+    store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: Provider::Anthropic,
+            label: "work Max".into(),
+            credential: Some(Sealed(vec![1])),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let fresh = store.account(&id).await?.ok_or("account")?;
+    assert_eq!((fresh.email, fresh.email_checked_at), (None, None));
+
+    // An answer for another credential (an older sign-in) is not stored.
+    let stored = store
+        .set_account_email(
+            &id,
+            &Sealed(vec![9]),
+            Some("old@example.com"),
+            Some(Timestamp(4)),
+            Timestamp(4),
+        )
+        .await?;
+    assert!(!stored);
+    assert_eq!(store.account(&id).await?.ok_or("account")?.email, None);
+    let stored = store
+        .set_account_email(
+            &id,
+            &Sealed(vec![1]),
+            Some("pawel@example.com"),
+            Some(Timestamp(5)),
+            Timestamp(5),
+        )
+        .await?;
+    assert!(stored);
+    store.update_account(&id, "personal", Timestamp(6)).await?;
+    let named = store.account(&id).await?.ok_or("account")?;
+    assert_eq!(named.label, "personal");
+    assert_eq!(named.email.as_deref(), Some("pawel@example.com"));
+    assert_eq!(named.email_checked_at, Some(Timestamp(5)));
+
+    store
+        .set_account_credential(&id, &Sealed(vec![2]), AccountStatus::Ok, Timestamp(7))
+        .await?;
+    let signed_in = store.account(&id).await?.ok_or("account")?;
+    assert_eq!((signed_in.email, signed_in.email_checked_at), (None, None));
+    assert_eq!(signed_in.label, "personal");
+    Ok(())
+}

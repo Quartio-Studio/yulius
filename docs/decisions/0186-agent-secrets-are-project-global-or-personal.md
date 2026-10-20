@@ -55,7 +55,7 @@ the project can change the automation's prompt.
   (transcripts, terminals, MCP results, logs, proxy responses) covers every secret that can reach
   any of its runs. The fingerprint file a run receives covers only its own set, so no run holds
   hashes of another person's value to guess against offline.
-- **Upgrade without loss.** Schema 38 turns each team-wide agent secret into a global one switched
+- **Upgrade without loss.** Schema 39 turns each team-wide agent secret into a global one switched
   on for every live sandbox; project secrets are unchanged. A global secret added later is on only
   for the project it was added from.
 

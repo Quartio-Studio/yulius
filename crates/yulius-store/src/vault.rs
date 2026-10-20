@@ -1205,19 +1205,19 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-245 MIG-001: the upgrade to version 38 keeps every secret; a team-wide agent secret
+    /// SPEC-245 MIG-001: the upgrade to version 39 keeps every secret; a team-wide agent secret
     /// becomes a global one switched on for every live sandbox.
     #[tokio::test]
     async fn the_upgrade_switches_team_wide_agent_secrets_on_everywhere()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("v37.db");
+        let path = dir.path().join("v38.db");
         {
             let conn = rusqlite::Connection::open(&path)?;
-            for sql in &crate::MIGRATIONS[..37] {
+            for sql in &crate::MIGRATIONS[..38] {
                 conn.execute_batch(sql)?;
             }
-            conn.pragma_update(None, "user_version", 37)?;
+            conn.pragma_update(None, "user_version", 38)?;
             conn.execute_batch(
                 "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
                  INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);

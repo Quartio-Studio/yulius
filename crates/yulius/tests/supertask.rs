@@ -427,6 +427,8 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
             last_error: None,
             created_at: yulius_domain::time::Timestamp(1),
             updated_at: yulius_domain::time::Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let s = create(

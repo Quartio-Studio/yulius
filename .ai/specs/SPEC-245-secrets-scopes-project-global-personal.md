@@ -122,7 +122,7 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 
 ### Migration (MIG)
 
-- MIG-001. Schema version 38 keeps every row: project secrets stay project secrets, and every
+- MIG-001. Schema version 39 keeps every row: project secrets stay project secrets, and every
   instance-wide agent secret becomes a global secret switched on for every project that exists
   (not removed), so no run loses a secret it had. Team secrets are unchanged.
 
@@ -138,7 +138,7 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 ## Plan
 
 - [x] Spec and ADR-0186 for the three scopes
-- [x] Schema 38: owners, project switches, names unique per scope; team-wide agent secrets become globals switched on everywhere
+- [x] Schema 39: owners, project switches, names unique per scope; team-wide agent secrets become globals switched on everywhere
 - [x] A run's secrets resolve by scope and precedence, personal ones only for their owner's tasks
 - [x] Personal secrets stay in the proxy; redaction and fingerprints cover each scope
 - [x] Management API: scopes, permissions, switches and visibility
@@ -205,7 +205,7 @@ named in the pull request:
   owner's secrets at once; switching on respects the 200-secret limit. Review round 2 added: a client resolved before
   a hand-over (an open keep-alive connection) no longer carries the previous owner's secret. A mutation of the owner
   rule (`Holder::may_hold` returning true for personal secrets) turned 3 of the first 5 red.
-- Store tests (`yulius-store` `vault::tests`): migration from version 37 (team-wide agent secret
+- Store tests (`yulius-store` `vault::tests`): migration from version 38 (team-wide agent secret
   switched on for live sandboxes only, project and team secrets untouched), names unique per
   scope, switches, insert-and-switch in one transaction, cascades. App unit tests
   (`vault::reach`): precedence, shadowing, owner-only, automation holder.

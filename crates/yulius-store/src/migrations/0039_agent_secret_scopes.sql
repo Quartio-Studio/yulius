@@ -1,4 +1,4 @@
--- Yulius schema version 38 (SPEC-245, ADR-0186): an agent secret is a project's (`sandbox_id`),
+-- Yulius schema version 39 (SPEC-245, ADR-0186): an agent secret is a project's (`sandbox_id`),
 -- one person's (`owner_id`) or global (neither). Global and personal secrets reach a project only
 -- while they are switched on for it (`vault_enabled`). Names are unique within a scope.
 ALTER TABLE vault_secrets ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE CASCADE;

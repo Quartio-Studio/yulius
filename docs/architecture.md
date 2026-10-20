@@ -229,6 +229,28 @@ sequenceDiagram
     N->>T: the lost turn, redone
 ```
 
+## Subscription names and emails
+
+A subscription (an `accounts` row) has the name a person gives it and the email of the Claude
+account behind its credential ([SPEC-244](../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md),
+[decision 0185](decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)).
+Administrators rename it in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}`).
+The email is read, never typed. After a sign-in stores a credential, the app asks Claude's profile
+with that credential through the usage adapter. The background usage round asks the same for
+every signed-in account whose email was never answered. A definite answer is stored with
+`email_checked_at`; a temporary failure backs that account off. A new credential clears both.
+Only administrators get the email in views (UI-022); task summaries never carry it.
+
+```mermaid
+flowchart LR
+  L["Sign-in (claude setup-token)"] -->|"set_account_credential: email, email_checked_at = NULL"| DB[("accounts")]
+  L -->|"record_account_email"| P["UsageProbe::account_email: GET /api/oauth/profile"]
+  R["Background usage round"] -->|"backfill_account_emails: email_checked_at IS NULL"| P
+  P -->|"address, none or 401/403: set_account_email(email, now)"| DB
+  P -->|"timeout, 5xx, 429: back off"| R
+  DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
+```
+
 ## Full context
 
 A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
@@ -872,7 +894,7 @@ into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
 gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by
 instance administrators, personal ones only by their owner (404 to everyone else), through
-`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`. Schema version 38 switched every team-wide
+`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`. Schema version 39 switched every team-wide
 agent secret on for every live sandbox.
 
 ```mermaid

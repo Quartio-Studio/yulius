@@ -158,6 +158,8 @@ async fn fixture_ending(
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
     }
@@ -1196,6 +1198,8 @@ async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResul
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
     }
@@ -1223,6 +1227,8 @@ async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let resp = open_cockpit(&f, &f.alice).await?;
@@ -1334,6 +1340,8 @@ async fn contained_harness()
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     Ok((h, recorder, alice))
@@ -2157,6 +2165,8 @@ async fn insert_account(h: &Harness, id: &str, token: &str, used: f64) -> TestRe
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     Ok(())
