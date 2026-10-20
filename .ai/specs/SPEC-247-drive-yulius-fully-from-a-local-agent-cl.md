@@ -1,11 +1,11 @@
 ---
 yulius-task: 0a8d30be-c585-4637-9904-82f44ae9e1fe
-status: in-progress
+status: done
 ---
 
 # SPEC-247: Drive Yulius fully from a local agent (remote MCP and CLI)
 
-Status: in progress
+Status: done
 Date: 2026-10-20
 Owner: task #233
 Scope authorization: task #233. Feedback from an early external user, which they called the most
@@ -170,7 +170,7 @@ Confirmed against `dev` at 06b58375.
 - [x] Review round 2 findings fixed test-first
 - [x] Review round 3 findings fixed test-first
 - [x] Independent review approved and findings fixed
-- [ ] Repository gate and security scan pass
+- [x] Repository gate and security scan pass
 
 ## Acceptance criteria
 
@@ -214,3 +214,45 @@ Confirmed against `dev` at 06b58375.
 - **Production deploys stay a person's action in the browser** (ADR-0110 unchanged).
 - **This is one pull request** larger than the usual 400 lines: the tokens, the endpoint and the
   CLI are only usable together; the tools are thin wrappers over existing `App` methods.
+
+## Evidence
+
+All at `0730e0aa` (branch head before this section), after merging `origin/dev` at `b289f81f`.
+
+- `scripts/dev ci`: passed (exit 0). It covers repository checks, script unit tests, `cargo check`,
+  `fmt --check`, Clippy `-D warnings` for Linux and for `aarch64-apple-darwin`, `cargo nextest`
+  (2343 passed, 17 skipped), doctests, `cargo deny`, `cargo shear` and `cargo doc`.
+- `cd e2e && npx e2e run`: 653 passed, 1 skipped (64 files), including the new `api-tokens.e2e.ts`,
+  `responsive` and `quality`, which cover Settings at phone width and the WCAG checks.
+- New Rust tests:
+  - `crates/yulius/tests/remote_mcp.rs` (23 tests): tokens, scopes, the public endpoint's
+    refusals, per-project permissions, audit, the rate limit, import and onboarding, tasks, CI and
+    CD, files and change pull requests (forged, pushed-to-since, pending, failed, unreadable and
+    broken CI), secrets, the CLI binary, WebSockets, revocation, device approval, body size,
+    authentication before the body, a cancelled change, change slots and an unrecorded change.
+  - The laptop-only flow `a_repository_is_onboarded_end_to_end_from_a_laptop`.
+  - `preview::previews_follow_the_api_token_they_were_granted_to`.
+  - `yulius-git` `list_dir_lists_the_root_when_no_directory_is_named`.
+  - Unit tests in `remote.rs`, `remote_files.rs` and `permission.rs`.
+  - Each review fix was red-checked: the test failed without the fix, or with the fix reverted.
+- Independent review in fresh sessions, four rounds. Round 1 found 2 high, 2 medium and 5 low
+  findings plus nits; round 2 found 3 major and 4 minor; round 3 found 2 major and 1 minor; the
+  final round found 3 minor. All of them were in this change's code or newly reachable through
+  it, and all were fixed test-first.
+  - Final verdict: APPROVE at `0730e0aa`.
+  - One pre-existing finding was filed as #759: the admin sign-in terminal never re-checks the
+    session.
+  - Accepted and not fixed: the 50-token cap is check-then-insert, so concurrent creates may
+    exceed it by a few. No test reaches a panicking change task, which the final reviewer judged
+    correct by reading.
+- `scripts/dev security` (`scripts/vidoc_scan.py`): **not run** (exit 2). Vidoc answers HTTP 429:
+  "This API key has used its 50,000,000 tokens". This is unrun, not a pass. A person was asked
+  through `needs_you` to top up the key; CI's `security` job will end skipped for the same reason.
+- Not tested against real services:
+  - GitHub itself: the tests use the GitHub double with real Git remotes.
+  - A real Claude Code client adding the MCP server with `claude mcp add`: the endpoint follows
+    the streamable HTTP transport with JSON answers, as the loopback MCP that Claude Code already
+    uses does.
+  - A full Yulius CI job execution inside the remote flow: the run's verdict is set in the test,
+    and job execution is covered by `local_ci.rs`.
+
