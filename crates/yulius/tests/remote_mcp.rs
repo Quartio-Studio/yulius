@@ -1867,5 +1867,22 @@ async fn a_refused_pull_request_leaves_no_branch() -> TestResult {
     assert!(error && said.contains("422"), "{said}");
     let branches = support::repos::git(&origin, &["branch", "--list", "yulius/change-*"])?;
     assert_eq!(branches.trim(), "", "no change branch is left");
+    // Audited once, as failed (round-3 review: the spawned task audits, the caller does not).
+    let sid =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?
+            .id;
+    let audited: Vec<String> = audits(&w, sid.as_str())
+        .await?
+        .into_iter()
+        .filter(|(action, _, detail)| {
+            action == "remote.tool" && detail.contains("\"tool\":\"project_change\"")
+        })
+        .map(|(_, _, detail)| detail)
+        .collect();
+    assert_eq!(audited.len(), 1, "{audited:?}");
+    assert!(audited[0].contains("\"ok\":false"), "{audited:?}");
     Ok(())
 }

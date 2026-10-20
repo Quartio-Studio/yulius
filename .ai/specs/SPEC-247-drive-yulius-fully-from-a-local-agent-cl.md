@@ -168,7 +168,8 @@ Confirmed against `dev` at 06b58375.
 - [x] Remote control guide, ADRs, API, architecture and product docs
 - [x] Review round 1 findings fixed test-first
 - [x] Review round 2 findings fixed test-first
-- [ ] Independent review approved and findings fixed
+- [x] Review round 3 findings fixed test-first
+- [x] Independent review approved and findings fixed
 - [ ] Repository gate and security scan pass
 
 ## Acceptance criteria

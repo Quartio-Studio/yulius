@@ -815,7 +815,7 @@ impl App {
             // removes its scratch clone and records its pull request, a merge records itself, and
             // either is audited with its token (RMT-015) in the same task.
             "project_change" | "change_merge" => {
-                let (app, caller, ctx, sandbox, args, name) = (
+                let (app, owner, who, place, input, tool) = (
                     Arc::clone(self),
                     caller.clone(),
                     ctx.clone(),
@@ -823,22 +823,29 @@ impl App {
                     args.clone(),
                     name.to_owned(),
                 );
-                tokio::spawn(
+                let task = tokio::spawn(
                     async move {
-                        let actor = caller.actor();
-                        let outcome = if name == "project_change" {
-                            app.remote_change(&ctx, &actor, &sandbox, &args).await
+                        let actor = owner.actor();
+                        let outcome = if tool == "project_change" {
+                            app.remote_change(&who, &actor, &place, &input).await
                         } else {
-                            app.remote_change_merge(&ctx, &actor, &sandbox, &args).await
+                            app.remote_change_merge(&who, &actor, &place, &input).await
                         };
-                        app.audit_remote(&caller, &name, Some(&sandbox.id), outcome.is_ok())
+                        app.audit_remote(&owner, &tool, Some(&place.id), outcome.is_ok())
                             .await;
                         outcome
                     }
                     .in_current_span(),
-                )
-                .await
-                .map_err(AppError::internal)?
+                );
+                match task.await {
+                    Ok(outcome) => outcome,
+                    // It panicked or was cancelled before its own audit: audit the failure here.
+                    Err(err) => {
+                        self.audit_remote(caller, name, Some(&sandbox.id), false)
+                            .await;
+                        Err(AppError::internal(err))
+                    }
+                }
             }
             "secret_update" | "secret_hosts_answer" => {
                 if args.get("value").is_some() {

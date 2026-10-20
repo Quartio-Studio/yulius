@@ -438,7 +438,9 @@ impl App {
         let pull = match opened {
             Ok(pull) => pull,
             Err(err) => {
-                // No change branch without its pull request: a retry would push another.
+                // No change branch without its pull request: a retry would push another. Should
+                // GitHub have opened it after all (a timeout), deleting the branch closes it: a
+                // closed pull request with no record beats an open one change_merge refuses.
                 if let Err(gone) = self
                     .deps
                     .github
