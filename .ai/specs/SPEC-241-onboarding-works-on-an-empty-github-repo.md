@@ -150,10 +150,15 @@ Confirmed against `dev` at 33410359.
   onboarding of the left-behind empty repository). Adapter: `yulius-github` client test
   `a_refused_repository_creation_names_the_accepted_permissions` (header read from the fake
   GitHub's 403). Units: `creation_refusals` wording and pages; `map_creation` (CRT-003).
-- **Gate.** `scripts/dev ci` at 916bf2b9: exit 0, 2281 tests passed, 17 skipped.
-- **Security.** `scripts/dev security` at 916bf2b9: exit 0, no critical, high or medium finding in
+- **Gate.** `scripts/dev ci` at c4bf881a: exit 0, 2282 tests passed, 17 skipped (916bf2b9: 2281).
+- **Security.** `scripts/dev security` at c4bf881a: exit 0, no critical, high or medium finding in
   the change; the reported findings are in code the branch did not touch (port allocation in
   `yulius-store`, the fake GitHub's rulesets and fixtures), which Yulius CI files as issues.
+  Low findings in the change: a credential-looking subscription value in the test helper
+  `subscription` (now an obviously synthetic value); and "path traversal" in the test double
+  `RepoGitHub::create_repo` joining owner and name into a scratch path, left as is: it is test
+  code under a temporary directory, and the app validates both names (`valid_owner`,
+  `valid_repo_name`) before it calls the port.
 - **Review.** Independent review round 1 at 7de34693: approve with six minor findings and three
   nits, all fixed in 916bf2b9 (narrower 403 mapping, record healing, a lock around first commits, a
   single-repository lookup instead of the installation listing, the `main` fallback at import, the
