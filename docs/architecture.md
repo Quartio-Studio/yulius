@@ -852,6 +852,35 @@ serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a cop
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets an administrator made team-wide stay team-wide.
 
+## Agent secret scopes
+
+Since SPEC-245 ([decision 0186](decisions/0186-agent-secrets-are-project-global-or-personal.md))
+an agent secret is a project's (`sandbox_id`), global (no sandbox, no owner) or personal
+(`owner_id`, cascading with the user). `vault_enabled (secret_id, sandbox_id)` switches a global or
+personal secret on for a project; a new one is on for the project it was added from. Names are
+unique within a scope. `VaultStore::vault_agent_in(sandbox)` lists the candidates (the project's,
+and the global and personal ones, of every owner, switched on there); `vault/reach.rs` resolves
+them for a `Holder`: one per name, project > personal > global, then the instance Vidoc key, and
+never another person's. A task's holder is its owner unless an automation started it
+(`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
+nobody. `EgressClient::person` carries the holder to the proxy. A personal secret is never copied
+into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
+production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
+gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by
+instance administrators, personal ones only by their owner (404 to everyone else), through
+`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`. Schema version 38 switched every team-wide
+agent secret on for every live sandbox.
+
+```mermaid
+flowchart LR
+  C["vault_agent_in(project): project + switched-on global + switched-on personal (all owners)"] --> H{"run's holder"}
+  H -->|"task (not automation) or Superagent: its person"| P["per name: project > own personal > global"]
+  H -->|"CI job, CD run, automation's task, MCP refs"| N["per name: project > global"]
+  P --> X["egress proxy, placeholders, tools"]
+  N --> X
+  C --> R["Yulius' redaction of the project (every candidate)"]
+```
+
 Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
 secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its
 list again without a reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).

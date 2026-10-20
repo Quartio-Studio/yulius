@@ -160,7 +160,8 @@ pub struct SecretsImportArgs {
     pub file: Option<PathBuf>,
     /// The sandbox of the secrets (id, slug or `owner/name`).
     pub sandbox: Option<String>,
-    /// Team-wide secrets, for every sandbox (SPEC-216).
+    /// Team-wide team secrets (SPEC-216); global agent secrets, switched on for the sandbox
+    /// (SPEC-245).
     pub instance: bool,
     /// Agent secrets a person allows each host and production deploys of, instead of agents
     /// setting them up (SPEC-216).

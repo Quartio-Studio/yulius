@@ -82,10 +82,12 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 - RES-004. A CI job's `secrets = "NAME …"` grant resolves among the project's secrets and the
   global ones on for the project (project first); never personal ones, as a CI run belongs to no
   person. CD resolves the same way.
-- RES-005. A personal secret is used only through the egress proxy: `secret_copy_to_env`,
-  `${secret:NAME}` MCP references and `browser_fill_secret` refuse it (or skip it), saying why,
-  as each would put its value where other people's tasks of the project read it. It is never
-  allowed for production deploys.
+- RES-005. A personal secret is used only through the egress proxy: `secret_copy_to_env` and
+  `browser_fill_secret` refuse it, saying why, and `${secret:NAME}` MCP references resolve, as CI
+  does, among the project's and the switched-on global secrets only: each would put its value
+  where other people's tasks of the project read it. It is never allowed for production deploys.
+  An agent's `secret_create_from_file` refuses a name that already reaches the project in any
+  scope (SPEC-211: an existing name is never replaced).
 - RES-006. Redaction of a project's text (transcripts, terminals, MCP results, CI and CD logs,
   proxy responses) covers every secret that can reach any of its runs, personal ones of every
   owner included.
@@ -100,7 +102,8 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 - MAN-003. Personal secrets: only their owner lists, creates, edits, deletes, reveals them,
   answers their requests and switches them on or off for a project the owner may work in. To
   everyone else, administrators included, they do not exist (absent from lists, 404 by id); their
-  vault activity is shown to their owner only.
+  vault activity is shown to their owner only (once deleted, like any deleted secret's, to
+  instance administrators).
 - MAN-004. `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled` `{ "enabled": bool }` switches a
   global or personal secret for a project; audited `vault.agent.enable` / `vault.agent.disable`.
   A project secret answers `Invalid`.
