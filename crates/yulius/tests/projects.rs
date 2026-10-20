@@ -1323,7 +1323,12 @@ async fn subscription(w: &World) -> TestResult {
             id: yulius_domain::ids::AccountId::parse("a-empty")?,
             provider: yulius_domain::harness::Provider::Anthropic,
             label: "Claude".into(),
-            credential: Some(w.h.app.deps.crypto.seal(b"synthetic-subscription-credential")?),
+            credential: Some(
+                w.h.app
+                    .deps
+                    .crypto
+                    .seal(b"synthetic-subscription-credential")?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
