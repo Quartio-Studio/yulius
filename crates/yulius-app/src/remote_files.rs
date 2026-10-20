@@ -524,15 +524,27 @@ impl App {
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let mut gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
-        // A pull request that brings Yulius CI is tested with it before it merges.
-        if gate == GateResult::NotConfigured
-            && self.config.ci.enabled
-            && self
+        // As the scheduler decides (`ci_sync_sandbox`): a pull request that brings Yulius CI is
+        // tested with it before it merges; one whose configuration Yulius CI cannot read, or any
+        // while the integration branch's is unusable (then nothing is tested), never merges here.
+        if gate == GateResult::NotConfigured && self.config.ci.enabled {
+            if let Some(problem) = self.ci_gate(sandbox).await.problem {
+                return Err(AppError::Conflict(format!(
+                    "Yulius CI tests nothing while the integration branch's yulius.toml is unusable ({problem}); merge this fix on GitHub, or have a task fix it"
+                )));
+            }
+            match self
                 .ci_jobs_at(&self.sandbox_repo(&sandbox.id), &pull.head_sha)
                 .await
-                .is_ok_and(|jobs| !jobs.is_empty())
-        {
-            gate = GateResult::Run(None);
+            {
+                Ok(jobs) if !jobs.is_empty() => gate = GateResult::Run(None),
+                Ok(_) => {}
+                Err(why) => {
+                    return Err(AppError::Conflict(format!(
+                        "Yulius CI cannot read the pull request's yulius.toml ({why}); fix it with another project_change"
+                    )));
+                }
+            }
         }
         let state = match gate {
             GateResult::NotConfigured => domain_checks(

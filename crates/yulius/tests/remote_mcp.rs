@@ -1600,3 +1600,72 @@ async fn the_token_is_checked_before_the_body_is_read() -> TestResult {
     assert_eq!(large.status, StatusCode::PAYLOAD_TOO_LARGE);
     Ok(())
 }
+
+/// RMT-026 (round-2 review): a change whose `yulius.toml` Yulius CI cannot read is refused rather
+/// than merged unchecked, and when the integration branch's own CI configuration is broken (so
+/// Yulius CI tests nothing) the merge says so instead of waiting for ever.
+#[tokio::test]
+async fn a_change_with_unreadable_ci_is_never_merged_unchecked() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = imported_shop(&w, &[("README.md", "# Shop\n")]).await?;
+    let shop = |extra: Value| {
+        let mut args = json!({"project": "Quartio-Studio/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+    let broken = "[[ci.jobs]]\nname = 3\n";
+    let (error, said, change) = remote(
+        &w,
+        &alice,
+        "project_change",
+        shop(json!({"title": "ci", "files": [{"path": "yulius.toml", "content": broken}]})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let record =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    w.h.app.ci_sync_sandbox(&record).await?;
+    let number = change["pull_request"]["number"].as_u64().ok_or("number")?;
+    let (error, said, _) =
+        remote(&w, &alice, "change_merge", shop(json!({"number": number}))).await?;
+    assert!(error && said.contains("yulius.toml"), "{said}");
+    Ok(())
+}
+
+/// The other half: the integration branch's configuration is broken.
+#[tokio::test]
+async fn a_broken_integration_ci_is_named_when_merging() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = imported_shop(
+        &w,
+        &[
+            ("README.md", "# Shop\n"),
+            ("yulius.toml", "[[ci.jobs]]\nname = 3\n"),
+        ],
+    )
+    .await?;
+    let fixed = "[[ci.jobs]]\nname = \"test\"\ncommand = \"true\"\n";
+    let (error, said, change) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "ci: fix", "files": [{"path": "yulius.toml", "content": fixed}]}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let number = change["pull_request"]["number"].as_u64().ok_or("number")?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "change_merge",
+        json!({"project": "Quartio-Studio/shop", "number": number}),
+    )
+    .await?;
+    assert!(error && said.contains("tests nothing"), "{said}");
+    Ok(())
+}
