@@ -149,14 +149,15 @@ pub struct UpdateAccount {
     pub label: String,
 }
 
-/// One account in [`CapacityView`]. Everyone sees label, email, status and usage; `id` and
+/// One account in [`CapacityView`]. Everyone sees label, status and usage; `id`, `email` and
 /// `in_use_by` are for instance administrators only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapacityAccount {
     /// Label.
     pub label: String,
-    /// Email of the Claude account behind it; `null` while unknown (SPEC-244 SUB-005).
-    #[serde(default)]
+    /// Email of the Claude account behind it (instance administrators only, UI-022; absent while
+    /// unknown, SPEC-244 SUB-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,

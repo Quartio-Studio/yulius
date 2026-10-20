@@ -59,12 +59,23 @@ test('a subscription is renamed in place and the new name shows with its email e
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test('someone who does not manage subscriptions sees their names without emails (UI-022)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks/14', '&ambient=0&role=member'));
+  await expect(screen.getByText('Claude #2').first()).toBeVisible();
+  await expect(browser.locator('main')).not.toContainText('@quartio.dev');
+  await expect(browser.locator('main')).not.toContainText('email unknown');
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold:has-text("Claude #2") .account-sub')).toHaveText('Claude');
+  expect(await browser.evaluate(() => document.querySelector('.status-pop')?.textContent?.includes('@') ?? null)).toBe(false);
+});
+
 test('a subscription without an email reads "email unknown" in Task details (unit, in the page)', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const lines = await browser.evaluate(async () => {
     const url = '/assets/format.js';
     const { accountRef } = await import(url);
-    return [accountRef('personal', null), accountRef('work Max', 'pawel@example.com'), accountRef(null, null)];
+    return [accountRef('personal', null), accountRef('work Max', 'pawel@example.com'), accountRef(null, null), accountRef('personal', null, { unknown: false })];
   });
-  expect(lines).toEqual(['personal · email unknown', 'work Max · pawel@example.com', null]);
+  // An administrator's view says the email is unknown; anyone else's leaves it out (UI-022).
+  expect(lines).toEqual(['personal · email unknown', 'work Max · pawel@example.com', null, 'personal']);
 });

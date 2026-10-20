@@ -673,7 +673,14 @@ impl App {
         to: Option<&str>,
     ) -> AppResult<AnalyticsSummary> {
         let (data, range, days) = self.analytics_cohort(ctx, sandbox, from, to).await?;
-        Ok(summarize(&data, range, days, self.now()))
+        let mut summary = summarize(&data, range, days, self.now());
+        // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
+        if !(ctx.user.is_superadmin || ctx.user.is_instance_admin) {
+            for account in &mut summary.tokens_by_account {
+                account.account_email = None;
+            }
+        }
+        Ok(summary)
     }
 
     /// `GET /api/analytics/tasks` rows (read access; only visible sandboxes).

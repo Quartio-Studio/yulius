@@ -51,14 +51,15 @@ pub struct SandboxStatus {
     pub live_sessions: u32,
 }
 
-/// An account as shown in the status panel. Everyone sees label, email, provider, status and
-/// usage; the remaining fields are present only for instance administrators.
+/// An account as shown in the status panel. Everyone sees label, provider, status and usage;
+/// the remaining fields are present only for instance administrators.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusAccount {
     /// Label.
     pub label: String,
-    /// Email of the Claude account behind it; `null` while unknown (SPEC-244 SUB-005).
-    #[serde(default)]
+    /// Email of the Claude account behind it (instance administrators only, UI-022; absent while
+    /// unknown, SPEC-244 SUB-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     /// Provider (`anthropic`).
     pub provider: String,

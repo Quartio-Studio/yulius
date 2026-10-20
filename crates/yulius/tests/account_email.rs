@@ -458,8 +458,8 @@ async fn task_on(
 }
 
 /// SUB-001, SUB-002, SUB-005: an administrator's rename persists and every view that names the
-/// subscription shows the new name with the email; anyone else is refused the rename but sees
-/// the name and email where they see the subscription.
+/// subscription shows the new name, with the email for administrators (UI-022); anyone else is
+/// refused the rename and sees the new name without the email.
 #[tokio::test]
 async fn only_administrators_rename_and_every_view_shows_name_and_email() -> TestResult {
     let h = harness_with(HarnessOptions::default())?;
@@ -523,10 +523,13 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
             .find(|a| a["label"] == "work Max")
             .map(|a| (a["label"].clone(), a["email"].clone()))
     };
-    let expected = Some((json!("work Max"), json!("pawel@example.com")));
+    let with_email = Some((json!("work Max"), json!("pawel@example.com")));
     let accounts = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
-    assert_eq!(named(&accounts.body), expected);
-    for who in [&admin, &member] {
+    assert_eq!(named(&accounts.body), with_email);
+    for (who, expected) in [
+        (&admin, with_email.clone()),
+        (&member, Some((json!("work Max"), Value::Null))),
+    ] {
         let status = call(&h.router, Method::GET, "/api/status", None, who).await?;
         assert_eq!(named(&status.body["accounts"]), expected, "{}", status.body);
         let capacity = call(&h.router, Method::GET, "/api/capacity", None, who).await?;
@@ -559,5 +562,12 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
         detail.body["attempts"][0]["account_email"],
         "pawel@example.com"
     );
+    // Task lists and live updates go to everyone who sees the task: no email there.
+    let listed = h
+        .app
+        .task_summary(&h.store.task(&task).await?.ok_or("task")?)
+        .await?;
+    assert_eq!(listed.account_label.as_deref(), Some("work Max"));
+    assert_eq!(listed.account_email, None);
     Ok(())
 }

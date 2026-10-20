@@ -190,9 +190,14 @@ export function accountEmail(email) {
   return email || 'email unknown';
 }
 
-/** A subscription as one line: its name and its Claude account's email (SPEC-244 SUB-005). */
-export function accountRef(label, email) {
-  return label ? `${label} · ${accountEmail(email)}` : null;
+/**
+ * A subscription as one line: its name and its Claude account's email (SPEC-244 SUB-005). The
+ * server sends emails to administrators only (UI-022); `unknown` says whether a missing one reads
+ * "email unknown" (an administrator's view) or is left out.
+ */
+export function accountRef(label, email, { unknown = true } = {}) {
+  if (!label) return null;
+  return email || unknown ? `${label} · ${accountEmail(email)}` : label;
 }
 
 export function plural(n, word, many) {

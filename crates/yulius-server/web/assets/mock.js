@@ -399,7 +399,7 @@ function summary(task) {
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
-    steps: stepsSummary(task), archived: task.archived, account_label: task.account_label, account_email: accountEmailOf(task.account_label),
+    steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
@@ -550,14 +550,18 @@ const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 /** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
 const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].includes(task.status);
 
+/** Whether the mock's person administers the instance: subscription emails are theirs (UI-022). */
+const isAdmin = (db) => Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
+
 function detail(db, task) {
   const live = LIVE.has(task.status);
   const ran = hasStarted(task) && (task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done'));
   return {
     ...summary(task),
+    ...(isAdmin(db) && task.account_label && accountEmailOf(task.account_label) ? { account_email: accountEmailOf(task.account_label) } : {}),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', account_email: accountEmailOf(task.account_label || 'Claude #1'), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
@@ -3021,8 +3025,8 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
     ],
     tokens_by_account: [
-      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, account_email: a.email ?? null, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
-      { account_id: 'acc_deleted', account_label: null, account_email: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
+      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...(isAdmin(db) && a.email ? { account_email: a.email } : {}), ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
+      { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
     ],
     switches: { total: Math.round(total * 0.15) },
     feedback: { correct: Math.round(total * 0.3), incorrect: Math.round(total * 0.06) },
@@ -3277,8 +3281,8 @@ route('GET', '/api/status', ({ db }) => {
     // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
-      ? { label: a.label, email: a.email ?? null, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
-      : { label: a.label, email: a.email ?? null, provider: a.provider, status: a.status, usage: a.usage })),
+      ? { label: a.label, ...(a.email ? { email: a.email } : {}), provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
+      : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),
     contained: db.me.instance.contained,
   };
 });
@@ -3659,8 +3663,8 @@ route('GET', '/api/capacity', ({ db }) => {
     paused_tasks: paused.length,
     resumes_at: null,
     accounts: db.accounts.map((a) => ({
-      label: a.label, email: a.email ?? null, status: a.status, usage: a.usage, available: isAvailable(a),
-      ...(admin ? { id: a.id, in_use_by: a.in_use_by } : {}),
+      label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
+      ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),
   };

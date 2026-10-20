@@ -118,15 +118,13 @@ impl App {
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
-        let account = match store.live_attempt(&task.id).await? {
+        let account_label = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
-                Some(id) => store.account(&id).await?,
+                Some(id) => store.account(&id).await?.map(|a| a.label),
                 None => None,
             },
             None => None,
         };
-        let (account_label, account_email) =
-            account.map_or((None, None), |a| (Some(a.label), a.email));
         let (after, next) = self.chain_links(task).await;
         let times = store.task_times(&task.id).await?;
         let not_started =
@@ -173,7 +171,9 @@ impl App {
             steps: progress(&steps),
             archived: task.archived_at.is_some(),
             account_label,
-            account_email,
+            // The sign-in email is for administrators (UI-022), and summaries go to everyone who
+            // sees the task: only `task_detail` adds it, for an administrator (SPEC-244).
+            account_email: None,
             mode: task.mode.as_str().to_owned(),
             resumes_at: self.capacity_returns_at(task).await.map(rfc3339),
             after,
@@ -327,7 +327,15 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        let summary = self.task_summary(&task).await?;
+        let mut summary = self.task_summary(&task).await?;
+        // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
+        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        if admin
+            && let Some(attempt) = store.live_attempt(&task.id).await?
+            && let Some(id) = attempt.account_id
+        {
+            summary.account_email = store.account(&id).await?.and_then(|a| a.email);
+        }
         let mut attempts = Vec::new();
         let mut wall_ms: i64 = 0;
         let now = self.now();
@@ -338,8 +346,9 @@ impl App {
                 Some(id) => store.account(id).await?,
                 None => None,
             };
-            let (account_label, account_email) =
-                account.map_or((None, None), |acc| (Some(acc.label), acc.email));
+            let (account_label, account_email) = account.map_or((None, None), |acc| {
+                (Some(acc.label), acc.email.filter(|_| admin))
+            });
             attempts.push(AttemptView {
                 seq: a.seq,
                 harness: a.harness.as_str().to_owned(),

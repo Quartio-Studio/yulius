@@ -463,10 +463,32 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
         (&a["account_id"], &a["runs"], &a["input"]),
         (&json!("acc-a"), &json!(2), &json!(100))
     );
-    assert_eq!(a["account_email"], "a@example.com", "SPEC-244 SUB-005");
+    assert!(
+        a["account_email"].is_null(),
+        "subscription emails are for administrators (UI-022, SPEC-244)"
+    );
     let b = by(&s["tokens_by_account"], "account_label", "Claude B")?;
     assert!(b["output"].is_null());
-    assert!(b["account_email"].is_null(), "unknown stays null");
+    let as_admin = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/summary?from=2026-10-01&to=2026-10-07",
+        None,
+        &admin,
+    )
+    .await?;
+    let a = by(
+        &as_admin.body["tokens_by_account"],
+        "account_label",
+        "Claude A",
+    )?;
+    assert_eq!(a["account_email"], "a@example.com", "SPEC-244 SUB-005");
+    let b = by(
+        &as_admin.body["tokens_by_account"],
+        "account_label",
+        "Claude B",
+    )?;
+    assert!(b["account_email"].is_null(), "unknown stays unknown");
 
     // Durations from attempts: t1 = 30 + 10 min, t2 = 20 min; active time from metrics: only
     // t1's first run reported it (SPEC-087 MET-005).

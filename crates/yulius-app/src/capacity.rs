@@ -746,7 +746,7 @@ impl App {
             }
             accounts.push(CapacityAccount {
                 label: record.label.clone(),
-                email: record.email.clone(),
+                email: if admin { record.email.clone() } else { None },
                 status: record.status.as_str().to_owned(),
                 usage: usage_view(&usage),
                 available: is_available,

@@ -126,8 +126,9 @@ pub struct AccountTokens {
     pub account_id: Option<String>,
     /// Account label (`null` when the account was deleted or the run had none).
     pub account_label: Option<String>,
-    /// Email of its Claude account (`null` when unknown, deleted or none, SPEC-244).
-    #[serde(default)]
+    /// Email of its Claude account (instance administrators only, UI-022; absent when unknown,
+    /// deleted or none, SPEC-244).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
     /// Totals.
     #[serde(flatten)]

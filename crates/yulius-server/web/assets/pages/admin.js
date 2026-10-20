@@ -241,12 +241,12 @@ export function mountAccountsPage(ctx, route) {
         toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
       };
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
-      const usageHost = h('div', null, accountUsage(account, { rename }), tokenTotals(account));
+      const usageHost = h('div', null, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
       const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
-          if (!usageHost.querySelector('.account-rename-input')) setChildren(usageHost, accountUsage(account, { rename }), tokenTotals(account));
+          if (!usageHost.querySelector('.account-rename-input')) setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);

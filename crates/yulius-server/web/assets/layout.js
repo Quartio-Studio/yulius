@@ -431,7 +431,7 @@ export function renderStatus(data) {
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',
-      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a) }))), troubled.length > 0 || accounts.length <= 3),
+      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a), showEmail: Boolean(a.id) }))), troubled.length > 0 || accounts.length <= 3),
   ];
 }
 
@@ -490,12 +490,12 @@ function renamableName(account, rename) {
 
 /**
  * One account, shared by the Status panel (foldable: a row that expands) and the Accounts page:
- * an avatar with initials, label, email ("email unknown" until Claude gave one) and plan (when
- * the provider reports it), its state when it is not ready, and each usage window as a
- * horizontal row like Claude's own usage page. With `rename` (the Accounts page) the name is
- * edited in place.
+ * an avatar with initials, label, email for administrators (`showEmail`; "email unknown" until
+ * Claude gave one) and plan (when the provider reports it), its state when it is not ready, and
+ * each usage window as a horizontal row like Claude's own usage page. With `rename` (the Accounts
+ * page) the name is edited in place.
  */
-export function accountUsage(account, { foldable = false, open = false, rename = null } = {}) {
+export function accountUsage(account, { foldable = false, open = false, rename = null, showEmail = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
   const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
@@ -522,7 +522,10 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       h('span', { class: 'account-name' },
         rename && !foldable ? renamableName(account, rename) : h('strong', { class: 'ellipsis', title: account.label || account.id }, account.label || account.id),
         account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
-      h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))),
+      // The sign-in email is for administrators (UI-022); others see the provider as before.
+      showEmail
+        ? h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))
+        : h('span', { class: 'account-sub' }, provider)),
     state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null,
     foldable ? glance() : null,
     foldable ? icon('down', { size: 14 }) : null,
