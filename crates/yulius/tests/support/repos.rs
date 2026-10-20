@@ -435,6 +435,8 @@ pub struct RepoGitHub {
     /// The App's installation covers only selected repositories, and a created repository is
     /// not among them: it is neither listed nor reachable over Git.
     pub selected_only: AtomicBool,
+    /// GitHub fails every repository read with an installation token (an outage).
+    pub fail_installation_reads: AtomicBool,
 }
 
 impl RepoGitHub {
@@ -501,6 +503,11 @@ impl GitHubPort for RepoGitHub {
     /// permissions); a person's token goes to the fake.
     async fn repo_access(&self, token: &Secret, owner: &str, name: &str) -> AppResult<RepoAccess> {
         if token.expose().starts_with("inst-") {
+            if self.fail_installation_reads.load(Ordering::SeqCst) {
+                return Err(AppError::Upstream(
+                    "GitHub upstream error (HTTP 503)".into(),
+                ));
+            }
             let listed = self
                 .installation_repos
                 .lock()
@@ -721,6 +728,7 @@ impl World {
             refuse_rulesets: AtomicBool::new(false),
             refuse_creation: Mutex::new(None),
             selected_only: AtomicBool::new(false),
+            fail_installation_reads: AtomicBool::new(false),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

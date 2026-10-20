@@ -67,12 +67,12 @@ Confirmed against `dev` at 33410359.
   authored by the person who starts onboarding (else the sandbox's creator) and pushed with the
   installation token, as a created project's scaffold is. Onboarding then continues as for any
   repository with one branch.
-- **EMP-004** When the clone lacks the recorded default branch but GitHub's reported default
-  branch exists on origin (someone pushed since the import), starting onboarding corrects the
-  record and writes nothing to the repository. Concurrent starts of one instance seed one at a time.
 - **EMP-003** A repository that has branches is never written to by EMP-002. A push GitHub refuses
   (someone pushed first, a rule) fails the start with the reason, and the sandbox stays `pending`
   so that it can be started again.
+- **EMP-004** When the clone lacks the recorded default branch but GitHub's reported default
+  branch exists on origin (someone pushed since the import), starting onboarding corrects the
+  record and writes nothing to the repository. Concurrent starts of one instance seed one at a time.
 - **CRT-001** When GitHub refuses to create the repository for a missing App permission (403), the
   error names the permission in GitHub's words (for example "Administration: Read and write"),
   using the `X-Accepted-GitHub-Permissions` header when GitHub sends it, the App's permission page
@@ -138,6 +138,7 @@ Confirmed against `dev` at 33410359.
   default is `main`.
 - **Tests (`crates/yulius/tests/projects.rs`)**, each failing without the change:
   `an_empty_repository_records_githubs_default_branch` (EMP-001),
+  `an_unreadable_default_branch_falls_back_to_main` (EMP-002 when GitHub cannot be read),
   `onboarding_an_empty_repository_pushes_a_first_commit_and_starts` (EMP-002: one commit adding
   `README.md`, by the starting person, pushed with the installation token; the onboarding task's
   worktree is created at it), `start_onboarding_corrects_the_branch_and_leaves_repositories_with_commits`
@@ -156,7 +157,11 @@ Confirmed against `dev` at 33410359.
 - **Review.** Independent review round 1 at 7de34693: approve with six minor findings and three
   nits, all fixed in 916bf2b9 (narrower 403 mapping, record healing, a lock around first commits, a
   single-repository lookup instead of the installation listing, the `main` fallback at import, the
-  spec's evidence; ADR 0187 was reserved with `record_number`). The audit row
+  spec's evidence; ADR 0187 was reserved with `record_number`). Round 2 at c959c8b7: approve; its
+  nits are fixed at the head (a failed GitHub read falls back as before, docs name the healing,
+  requirement order). Its remark on the ticked Plan follows the project's discipline: every Plan
+  item is checked and the status set to done before delivery, since Yulius merges after the turn.
+  The lock stays one per instance: only a start whose clone lacks its recorded branch takes it. The audit row
   `sandbox.repository.seeded` is not asserted: the test world's store is in memory and exposes no
   audit read.
 - **Not tested.** Real GitHub: no throwaway account to create repositories in. The refusals are

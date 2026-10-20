@@ -1654,3 +1654,22 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
     );
     Ok(())
 }
+
+// Review of SPEC-241: GitHub failing to say the default branch does not stop an empty repository's
+// onboarding; its first commit goes to `main`.
+#[tokio::test]
+async fn an_unreadable_default_branch_falls_back_to_main() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+    w.github
+        .fail_installation_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "preparing", "{}", fresh.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}

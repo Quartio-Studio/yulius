@@ -56,9 +56,12 @@ impl App {
         let token = self.installation_token().await?;
         // What GitHub holds now: someone may have pushed since, or a start just before this one.
         self.deps.git.sync_clone(&url, &repo, &token).await?;
-        let branch = self.reported_default_branch(&token, owner, name).await?;
+        let reported = self.reported_default_branch(&token, owner, name).await;
         if !self.remote_is_empty(&repo).await {
-            if record.default_branch != branch && self.has_remote_branch(&repo, &branch).await {
+            if let Some(branch) = reported
+                && record.default_branch != branch
+                && self.has_remote_branch(&repo, &branch).await
+            {
                 self.deps
                     .store
                     .set_default_branch(&record.id, &branch)
@@ -66,6 +69,7 @@ impl App {
             }
             return Ok(false);
         }
+        let branch = reported.unwrap_or_else(|| FALLBACK_BRANCH.to_owned());
         self.push_first_commit(record, actor, &token, &branch)
             .await?;
         if record.default_branch != branch {
@@ -142,23 +146,24 @@ impl App {
         pushed
     }
 
-    /// The default branch GitHub reports for `owner/name` to the App's installation, else
-    /// [`FALLBACK_BRANCH`]; never what an empty clone's `HEAD` names (EMP-001).
-    ///
-    /// # Errors
-    /// GitHub failures other than the repository being out of the installation's reach.
+    /// The default branch GitHub reports for `owner/name` to the App's installation; `None`
+    /// when it reports none, one Git refuses, or cannot be read (then [`FALLBACK_BRANCH`] for an
+    /// empty repository). Never what an empty clone's `HEAD` names (EMP-001).
     async fn reported_default_branch(
         &self,
         token: &Secret,
         owner: &str,
         name: &str,
-    ) -> AppResult<String> {
-        let reported = match self.deps.github.repo_access(token, owner, name).await? {
-            RepoAccess::Access { repo, .. } => Some(repo.default_branch),
-            RepoAccess::NoAccess => None,
-        };
-        Ok(reported
-            .filter(|branch| self.deps.git.valid_branch(branch))
-            .unwrap_or_else(|| FALLBACK_BRANCH.to_owned()))
+    ) -> Option<String> {
+        match self.deps.github.repo_access(token, owner, name).await {
+            Ok(RepoAccess::Access { repo, .. }) => {
+                Some(repo.default_branch).filter(|branch| self.deps.git.valid_branch(branch))
+            }
+            Ok(RepoAccess::NoAccess) => None,
+            Err(err) => {
+                tracing::warn!(repo = %format!("{owner}/{name}"), error = %err, "reading GitHub's default branch failed");
+                None
+            }
+        }
     }
 }
