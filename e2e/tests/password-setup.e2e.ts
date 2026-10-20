@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -40,6 +40,7 @@ test('setup refuses 7 characters, takes 8 with a 12-character recommendation and
   await expect(browser.locator('#setup-password-advice')).toHaveText('Short passwords are easier to guess: at least 12 characters recommended.');
   await expect.poll(() => invalid(browser, 'Superadmin password')).toBe(null);
   await expect(screen.getByRole('button', 'Create superadmin')).toBeEnabled();
+  expect(await axeViolations(browser)).toEqual([]);
 
   await screen.getByRole('button', 'Create superadmin').click();
   // Set up: the mock issues no recovery code, so the optional key steps follow at once.
@@ -84,6 +85,7 @@ test('recovery refuses 7 characters and resets the password with 8', async ({ ap
   await password.fill('zaq1@WSX');
   await repeat.fill('zaq1@WSX');
   await expect(browser.locator('#recovery-password-advice')).toHaveText('Short passwords are easier to guess: at least 12 characters recommended.');
+  await expect.poll(() => invalid(browser, 'New password')).toBe(null);
   await screen.getByRole('button', 'Reset password').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Password changed — your new recovery code');
 });

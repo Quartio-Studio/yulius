@@ -12,7 +12,7 @@ Scope authorization: task #228. An early external user wanted the superadmin pas
 (8 characters) during first setup, but Yulius required 12. The task asks for a hard minimum of 8
 (NIST SP 800-63B), a non-blocking hint when the password is short or weak ("at least 12
 characters recommended"), and no blocking of common or keyboard-pattern passwords. Amends SPEC-001
-ACC-001 and ACC-011. Login rate limiting (ACC-013) and the recovery lockout (ACC-011) are
+ACC-001. Login rate limiting (ACC-013) and the recovery lockout (ACC-011) are
 unchanged.
 
 ## Goal
