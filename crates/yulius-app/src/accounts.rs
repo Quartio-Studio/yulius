@@ -657,8 +657,6 @@ impl App {
     /// pressing Refresh. A failure backs that account off for the provider's `Retry-After`, or
     /// [`USAGE_BACKOFF_MS`] without one (at most [`USAGE_BACKOFF_MAX_MS`]).
     pub async fn refresh_usage_round(&self, not_before: &mut HashMap<AccountId, Timestamp>) {
-        self.backfill_account_emails(&mut *self.capacity.email_not_before.lock().await)
-            .await;
         let Ok(accounts) = self.deps.store.accounts().await else {
             return;
         };
@@ -699,6 +697,10 @@ impl App {
                 }
             }
         }
+        // Emails never answered for the current sign-in (SPEC-244 SUB-004), after the usage reads
+        // so a slow profile request never delays them.
+        self.backfill_account_emails(&mut *self.capacity.email_not_before.lock().await)
+            .await;
     }
 
     /// Creates an account in `pending_login` and starts its login terminal (ROT-001/002).

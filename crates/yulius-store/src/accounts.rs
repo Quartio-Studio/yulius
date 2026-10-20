@@ -107,18 +107,25 @@ impl AccountStore for SqliteStore {
     async fn set_account_email(
         &self,
         id: &AccountId,
+        credential: &Sealed,
         email: Option<&str>,
         checked_at: Option<Timestamp>,
         at: Timestamp,
-    ) -> AppResult<()> {
-        let (id, email) = (id.as_str().to_owned(), email.map(str::to_owned));
+    ) -> AppResult<bool> {
+        let (id, cred, email) = (
+            id.as_str().to_owned(),
+            credential.0.clone(),
+            email.map(str::to_owned),
+        );
         self.call(move |c| {
-            c.execute(
-                "UPDATE accounts SET email = ?1, email_checked_at = ?2, updated_at = ?3 WHERE id = ?4",
-                params![email, checked_at.map(|t| t.0), at.0, id],
-            )
-            .map_err(db)?;
-            Ok(())
+            let changed = c
+                .execute(
+                    "UPDATE accounts SET email = ?1, email_checked_at = ?2, updated_at = ?3 \
+                     WHERE id = ?4 AND credential = ?5",
+                    params![email, checked_at.map(|t| t.0), at.0, id, cred],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
         })
         .await
     }

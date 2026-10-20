@@ -296,6 +296,9 @@ fn bump(map: &mut BTreeMap<String, u32>, key: &str) {
     *map.entry(key.to_owned()).or_default() += 1;
 }
 
+/// One account's label, email and token totals while summarizing.
+type AccountAcc = (Option<String>, Option<String>, Acc);
+
 /// Aggregates a cohort.
 #[must_use]
 pub fn summarize(
@@ -334,9 +337,7 @@ pub fn summarize(
     let mut all = Acc::default();
     let mut by_model: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
-    #[allow(clippy::type_complexity)]
-    let mut by_account: BTreeMap<Option<String>, (Option<String>, Option<String>, Acc)> =
-        BTreeMap::new();
+    let mut by_account: BTreeMap<Option<String>, AccountAcc> = BTreeMap::new();
     let mut wall_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut active_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut total_wall: u64 = 0;

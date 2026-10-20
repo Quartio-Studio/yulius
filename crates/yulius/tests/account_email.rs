@@ -30,6 +30,7 @@ use yulius_app::ports::store::{AccountStore, TaskStore};
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
+use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::AccountUsage;
@@ -466,6 +467,14 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     let member = admit_and_sign_in(&h, &admin, "member", 4242, false).await?;
+    h.github.set_perm(
+        "member",
+        "Quartio-Studio/studio",
+        GitHubPermissions {
+            pull: true,
+            ..Default::default()
+        },
+    );
     let instance_admin = admit_and_sign_in(&h, &admin, "operator", 4243, true).await?;
     signed_in_account(&h, "a-work", "token", Some("pawel@example.com")).await?;
     signed_in_account(&h, "a-other", "token-2", None).await?;
@@ -562,6 +571,24 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
         detail.body["attempts"][0]["account_email"],
         "pawel@example.com"
     );
+    // A member who reads the task sees the subscription's name without its email (UI-022).
+    let seen = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/tasks/{task}"),
+        None,
+        &member,
+    )
+    .await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(seen.body["account_label"], "work Max");
+    assert_eq!(seen.body["attempts"][0]["account_label"], "work Max");
+    assert!(
+        seen.body.get("account_email").is_none()
+            && seen.body["attempts"][0].get("account_email").is_none(),
+        "{}",
+        seen.body
+    );
     // Task lists and live updates go to everyone who sees the task: no email there.
     let listed = h
         .app
@@ -569,5 +596,68 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
         .await?;
     assert_eq!(listed.account_label.as_deref(), Some("work Max"));
     assert_eq!(listed.account_email, None);
+    Ok(())
+}
+
+/// A profile read that a re-login overtakes: the account is signed in again (perhaps as another
+/// Claude account) while Claude answers for the old credential.
+struct RacedProfile {
+    relogin: Mutex<Option<(yulius_store::SqliteStore, Sealed)>>,
+}
+
+#[async_trait]
+impl UsageProbe for RacedProfile {
+    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        Err(UsageFailure::not_shared())
+    }
+
+    async fn account_email(
+        &self,
+        _: Provider,
+        credential: &Secret,
+    ) -> Result<Option<String>, UsageFailure> {
+        if credential.expose() == "old-sign-in" {
+            let relogin = self.relogin.lock().ok().and_then(|mut r| r.take());
+            if let Some((store, fresh)) = relogin {
+                let id = AccountId::parse("a-raced").map_err(|_| UsageFailure::new("id"))?;
+                store
+                    .set_account_credential(&id, &fresh, AccountStatus::Ok, Timestamp(3))
+                    .await
+                    .map_err(|_| UsageFailure::new("relogin"))?;
+            }
+            return Ok(Some("old@example.com".into()));
+        }
+        Err(UsageFailure::new("Claude did not answer just now."))
+    }
+}
+
+/// SUB-003: the old sign-in's answer never lands on the new credential; the new sign-in's email
+/// stays unknown until it is read for that credential.
+#[tokio::test]
+async fn an_answer_for_an_older_sign_in_is_not_stored() -> TestResult {
+    let probe = Arc::new(RacedProfile {
+        relogin: Mutex::new(None),
+    });
+    let h = harness_with(HarnessOptions {
+        usage: Some(probe.clone()),
+        ..HarnessOptions::default()
+    })?;
+    signed_in_account(&h, "a-raced", "old-sign-in", None).await?;
+    let fresh = h.app.deps.crypto.seal(b"new-sign-in")?;
+    if let Ok(mut relogin) = probe.relogin.lock() {
+        *relogin = Some((h.store.clone(), fresh.clone()));
+    }
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    let record = h
+        .store
+        .account(&AccountId::parse("a-raced")?)
+        .await?
+        .ok_or("account")?;
+    assert_eq!(record.credential, Some(fresh));
+    assert_eq!(
+        (record.email, record.email_checked_at),
+        (None, None),
+        "the old sign-in's email is not the new one's"
+    );
     Ok(())
 }

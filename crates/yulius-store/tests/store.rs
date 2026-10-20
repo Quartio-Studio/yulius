@@ -1542,14 +1542,28 @@ async fn an_account_email_lasts_until_the_next_sign_in() -> R {
     let fresh = store.account(&id).await?.ok_or("account")?;
     assert_eq!((fresh.email, fresh.email_checked_at), (None, None));
 
-    store
+    // An answer for another credential (an older sign-in) is not stored.
+    let stored = store
         .set_account_email(
             &id,
+            &Sealed(vec![9]),
+            Some("old@example.com"),
+            Some(Timestamp(4)),
+            Timestamp(4),
+        )
+        .await?;
+    assert!(!stored);
+    assert_eq!(store.account(&id).await?.ok_or("account")?.email, None);
+    let stored = store
+        .set_account_email(
+            &id,
+            &Sealed(vec![1]),
             Some("pawel@example.com"),
             Some(Timestamp(5)),
             Timestamp(5),
         )
         .await?;
+    assert!(stored);
     store.update_account(&id, "personal", Timestamp(6)).await?;
     let named = store.account(&id).await?.ok_or("account")?;
     assert_eq!(named.label, "personal");

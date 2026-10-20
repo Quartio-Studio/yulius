@@ -189,7 +189,15 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   const offs = [
     ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) render(); }),
     // The task moves on while you read: its state, steps and times follow.
-    ctx.store.on('task', (t) => { if (t.id === task.id) { current = { ...current, ...t }; render(); } }),
+    ctx.store.on('task', (t) => {
+      if (t.id !== task.id) return;
+      // Summaries never carry the subscription's email (SPEC-244): a new subscription drops the
+      // old one's until the detail is read again.
+      const moved = t.account_label !== current.account_label;
+      current = { ...current, ...t };
+      if (moved) { delete current.account_email; load(); }
+      render();
+    }),
     ctx.store.on('steps', (taskId) => { if (taskId === task.id) load(); }),
   ];
   const el = h('div', { class: 'page ti-page' }, h('div', { class: 'page-inner ti-inner' }, head, body));

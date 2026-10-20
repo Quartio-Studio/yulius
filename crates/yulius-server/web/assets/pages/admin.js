@@ -246,7 +246,8 @@ export function mountAccountsPage(ctx, route) {
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
-          if (!usageHost.querySelector('.account-rename-input')) setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
+          if (usageHost.querySelector('.account-rename-input')) pendingReload = true;
+          else setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
@@ -295,8 +296,19 @@ export function mountAccountsPage(ctx, route) {
     });
   }
 
-  // A name being edited is not redrawn away by another subscription's update.
-  const off = ctx.store.on('account', () => { if (!host.querySelector('.account-rename-input')) reload({ quiet: true }); });
+  // A name being edited is not redrawn away by an update: the reload waits until the field
+  // closes (the reload keeps focus on the same control).
+  let pendingReload = false;
+  const off = ctx.store.on('account', () => {
+    if (host.querySelector('.account-rename-input')) pendingReload = true;
+    else reload({ quiet: true });
+  });
+  host.addEventListener('focusout', () => setTimeout(() => {
+    if (pendingReload && !host.querySelector('.account-rename-input')) {
+      pendingReload = false;
+      reload({ quiet: true });
+    }
+  }, 0));
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);

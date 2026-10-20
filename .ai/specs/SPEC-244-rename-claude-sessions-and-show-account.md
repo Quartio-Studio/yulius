@@ -62,7 +62,7 @@ Confirmed against `dev` at 33410359.
 
 | ID | Requirement |
 | --- | --- |
-| SUB-001 | On the Subscriptions page each subscription's name can be edited in place: a Rename button (or a click on the name) turns the name into a text field. Enter or leaving the field saves it, and Escape cancels. The name is trimmed, and an empty name or one over 80 characters is refused with the server's message while the field stays open. A saved name shows at once on the page and, through `account.updated`, in every open view. |
+| SUB-001 | On the Subscriptions page each subscription's name can be edited in place: a Rename button (or a click on the name) turns the name into a text field. Enter or leaving the field saves it, and Escape cancels, even after a name was typed. The name is trimmed. An empty name is refused with "Give the subscription a name.", and a name the server refuses (over 80 characters, control characters) gets the server's message. Either way the field stays open; focus returns to it only after Enter, never when the person left it. Once editing ends, the keyboard is back on the Rename button. A saved name shows at once on the page and, through `account.updated`, in every open view. |
 | SUB-002 | Only people who may manage subscriptions rename them: instance administrators and the superadmin. Anyone else gets 403 from `PATCH /api/admin/accounts/{id}`, and the page is not offered to them (unchanged ACC-009). Every rename is audited (`account.updated` with the new name). |
 | SUB-003 | Each subscription stores the email of its Claude account. When a sign-in stores a credential, Yulius asks Claude's profile endpoint for the account's email, using that credential, and stores the answer. A sign-in whose email cannot be read (the token may not read the profile, Claude refused it, or no answer) stores no email. An email from an earlier sign-in is dropped then, because the new sign-in may be another Claude account. The sign-in itself succeeds or fails exactly as before; reading the email never blocks or fails it. |
 | SUB-004 | Subscriptions signed in before this change get their email read once, in the background usage round, while their credential still works. A definite answer, an email or a refusal, ends the attempts for that sign-in. A temporary failure (no answer, throttling) is tried again on a later round. Without an email the subscription reads "email unknown" until its next sign-in. |
@@ -105,11 +105,22 @@ Confirmed against `dev` at 33410359.
   clears an old email.
 - Adapter (`wiring/usage.rs`): a local HTTP server answering the profile request with an email,
   without one, with 403, 401 and 500; the parser refuses a non-address.
-- App/integration (`crates/yulius/tests/accounts.rs`, `account_usage.rs`): sign-in stores the email
-  through a fake probe; refused read clears it; backfill round reads once and retries temporary
-  failures; rename by a non-admin is 403; views carry the email.
-- Web: the mock serves emails (one subscription with `null`). The e2e `subscriptions` spec renames
-  in place, refuses an empty name, and sees the name and email in Status and Task details.
+- App/integration (`crates/yulius/tests/account_email.rs`, and `analytics.rs` for the tokens by
+  subscription), with a fake probe:
+  - a sign-in stores the email, and a refused read clears it;
+  - the backfill round reads once and retries temporary failures;
+  - an answer for an older sign-in is not stored;
+  - a non-admin's rename is 403;
+  - the views carry the email for administrators and not for a member, task detail included.
+- Store (`crates/yulius-store/tests/store.rs`): the email lasts until the next sign-in, and a write
+  for another credential is refused.
+- Web: the mock serves emails at `example.com`, with one subscription at `null`. The e2e
+  `subscription-names` spec:
+  - renames in place;
+  - refuses an empty name without trapping focus;
+  - cancels a typed name with Escape;
+  - sees the name and email in Status and Task details as an administrator, and no email as a
+    member.
 - Gates: `scripts/dev ci`, the e2e suite, `scripts/dev security`.
 
 ## Decisions

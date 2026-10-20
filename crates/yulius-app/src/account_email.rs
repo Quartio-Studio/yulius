@@ -66,18 +66,18 @@ impl App {
                 return EmailRead::RetryAfter(wait);
             }
         };
-        let store = &self.deps.store;
-        let current = store.account(&account.id).await.ok().flatten();
-        if current.and_then(|a| a.credential) != account.credential {
-            return EmailRead::Answered;
-        }
         let now = self.now();
-        if store
-            .set_account_email(&account.id, email.as_deref(), Some(now), now)
+        // Written only while the account still holds the credential asked about: a sign-in that
+        // overtook this request has its own read (SUB-003).
+        match self
+            .deps
+            .store
+            .set_account_email(&account.id, sealed, email.as_deref(), Some(now), now)
             .await
-            .is_err()
         {
-            return EmailRead::RetryAfter(USAGE_BACKOFF_MS);
+            Ok(true) => {}
+            Ok(false) => return EmailRead::Answered,
+            Err(_) => return EmailRead::RetryAfter(USAGE_BACKOFF_MS),
         }
         tracing::info!(
             account = %account.id,

@@ -446,41 +446,52 @@ function accountInitials(account) {
 /**
  * A subscription's name that its manager edits in place (SPEC-244 SUB-001): the pencil (or a
  * click on the name) turns it into a field; Enter or leaving the field saves through `rename`,
- * Escape cancels. A refused name keeps the field open with the server's message.
+ * Escape cancels. A refused name keeps the field open with the message; focus returns to the
+ * field only after Enter, never when it was left, and to the pencil once editing ends.
  */
 function renamableName(account, rename) {
   const holder = h('span', { class: 'account-name-edit' });
-  const show = () => {
+  const show = (focus = false) => {
     const name = account.label || account.id;
+    const pencil = iconButton('pencil', `Rename ${name}`, edit, { class: 'account-rename' });
+    // The name is a second, pointer-only way in: the pencil is the keyboard's one tab stop.
     setChildren(holder,
-      h('button', { type: 'button', class: 'account-name-text', title: `Rename ${name}`, onClick: edit }, h('strong', { class: 'ellipsis' }, name)),
-      iconButton('pencil', `Rename ${name}`, edit, { class: 'account-rename' }));
+      h('button', { type: 'button', class: 'account-name-text', title: `Rename ${name}`, tabindex: '-1', 'aria-hidden': 'true', onClick: edit }, h('strong', { class: 'ellipsis' }, name)),
+      pencil);
+    if (focus) pencil.focus();
   };
   function edit() {
     const input = h('input', { class: 'input account-rename-input', type: 'text', value: account.label || '', maxlength: 80, 'aria-label': `New name for ${account.label || account.id}` });
     const error = h('span', { class: 'field-error xs', role: 'alert' });
+    // `closed` once the field is gone: removing a focused field fires its blur, which must not
+    // save what Escape cancelled.
     let busy = false;
-    const finish = async (save) => {
-      if (busy) return;
+    let closed = false;
+    const close = () => { closed = true; show(true); };
+    const finish = async (save, fromKey) => {
+      if (busy || closed) return;
       const name = input.value.trim();
-      if (!save || name === account.label) { show(); return; }
-      if (!name) { error.textContent = 'Give the subscription a name.'; input.focus(); return; }
+      if (!save || name === account.label) { close(); return; }
+      const refuse = (message) => {
+        error.textContent = message;
+        if (fromKey) input.focus();
+      };
+      if (!name) { refuse('Give the subscription a name.'); return; }
       busy = true;
       try {
         await rename(name);
-        show();
-      } catch (err) {
-        error.textContent = (err && err.message) || 'Couldn’t rename the subscription.';
-        input.focus();
-      } finally {
         busy = false;
+        close();
+      } catch (err) {
+        busy = false;
+        refuse((err && err.message) || 'Couldn’t rename the subscription.');
       }
     };
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-      else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+      if (event.key === 'Enter') { event.preventDefault(); finish(true, true); }
+      else if (event.key === 'Escape') { event.preventDefault(); finish(false, true); }
     });
-    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('blur', () => finish(true, false));
     setChildren(holder, input, error);
     setTimeout(() => { input.focus(); input.select(); }, 0);
   }
