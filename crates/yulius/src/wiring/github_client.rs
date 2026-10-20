@@ -91,6 +91,18 @@ fn map_refusal(err: GitHubError) -> AppError {
     }
 }
 
+/// [`map_err`] for creating a repository: a 403 is a permission the App lacks, and carries what
+/// GitHub accepts instead (the `create_repo` port contract, SPEC-241 CRT-001).
+fn map_creation(err: GitHubError) -> AppError {
+    match err {
+        GitHubError::Forbidden {
+            accepted_permissions,
+            ..
+        } => AppError::Forbidden(accepted_permissions.unwrap_or_default()),
+        other => map_err(other),
+    }
+}
+
 fn gh(secret: &Secret) -> GhSecret {
     GhSecret::new(secret.expose().to_owned())
 }
@@ -303,7 +315,7 @@ impl GitHubPort for GitHubAdapter {
         } else {
             self.plain.create_user_repo(&gh(token), &spec).await
         };
-        Ok(repo(created.map_err(map_err)?))
+        Ok(repo(created.map_err(map_creation)?))
     }
 
     async fn branch_guard(
@@ -596,7 +608,7 @@ impl GitHubPort for GitHubAdapter {
             .await
         {
             Ok(()) => Ok(()),
-            Err(GitHubError::Forbidden { message })
+            Err(GitHubError::Forbidden { message, .. })
                 if message
                     .to_ascii_lowercase()
                     .contains("not accessible by integration") =>
@@ -657,6 +669,28 @@ impl GitHubPort for GitHubAdapter {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_refused_creation_carries_the_permissions_github_accepts() {
+        let refused = |accepted: Option<&str>| GitHubError::Forbidden {
+            message: "Resource not accessible by integration".into(),
+            accepted_permissions: accepted.map(str::to_owned),
+        };
+        assert!(matches!(
+            map_creation(refused(Some("administration=write"))),
+            AppError::Forbidden(accepted) if accepted == "administration=write"
+        ));
+        assert!(matches!(
+            map_creation(refused(None)),
+            AppError::Forbidden(accepted) if accepted.is_empty()
+        ));
+        assert!(matches!(
+            map_creation(GitHubError::Invalid {
+                message: "name already exists on this account".into()
+            }),
+            AppError::Upstream(_)
+        ));
+    }
+
     /// SPEC-069 BPL-008: only failures that may pass by themselves stay `Upstream`, so a title
     /// GitHub refused stops the merge and a rate limit or an outage only delays it.
     #[test]
@@ -664,7 +698,10 @@ mod tests {
         let message = || "Validation Failed".to_owned();
         for refused in [
             GitHubError::Invalid { message: message() },
-            GitHubError::Forbidden { message: message() },
+            GitHubError::Forbidden {
+                message: message(),
+                accepted_permissions: None,
+            },
             GitHubError::Upstream(400),
             GitHubError::NotFound,
             GitHubError::Unauthorized,
