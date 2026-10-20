@@ -1568,3 +1568,35 @@ async fn refused_changes_are_audited_against_the_token() -> TestResult {
     }
     Ok(())
 }
+
+/// RMT-010 (round-2 review): the public `/mcp` checks the token before it reads a body, so
+/// nobody without a token makes the server hold a large one.
+#[tokio::test]
+async fn the_token_is_checked_before_the_body_is_read() -> TestResult {
+    let w = World::new("org").await?;
+    let huge = "x".repeat(33 << 20);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"pad": huge}})),
+        &bearer("yul_unknown"),
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    let (alice, _) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let operate = bearer(text(
+        &make_token(&w, &browser, "laptop", "operate").await?["token"],
+    ));
+    let large = call(
+        &w.h.router,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"pad": huge}})),
+        &operate,
+    )
+    .await?;
+    assert_eq!(large.status, StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}

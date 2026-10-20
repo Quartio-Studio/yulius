@@ -45,11 +45,13 @@ pub async fn get() -> StatusCode {
 }
 
 /// Public `POST /mcp` (SPEC-247 RMT-010): MCP streamable HTTP with JSON answers, for personal
-/// API tokens only. A cookie is never read here, so no browser session can be ridden.
+/// API tokens only. A cookie is never read here, so no browser session can be ridden. The token
+/// is checked before the body is read, so nobody without one makes the server hold up to
+/// [`yulius_app::remote::MAX_REMOTE_BODY_BYTES`].
 pub async fn remote_post(
     State(app): State<AppState>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Response {
     let Some(token) = bearer(&headers) else {
         return (
@@ -57,12 +59,6 @@ pub async fn remote_post(
             [(header::WWW_AUTHENTICATE, "Bearer")],
         )
             .into_response();
-    };
-    let request: RpcRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            return Json(serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})).into_response();
-        }
     };
     let caller = match app.remote_caller(token).await {
         Ok(caller) => caller,
@@ -74,7 +70,7 @@ pub async fn remote_post(
                 AppError::Unauthenticated => StatusCode::UNAUTHORIZED,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            let body = serde_json::json!({"jsonrpc": "2.0", "id": request.id, "error": {"code": -32001, "message": err.public_message()}});
+            let body = serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32001, "message": err.public_message()}});
             let mut response = (status, Json(body)).into_response();
             if status == StatusCode::UNAUTHORIZED {
                 response
@@ -86,6 +82,16 @@ pub async fn remote_post(
                     .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
             }
             return response;
+        }
+    };
+    let Ok(body) = axum::body::to_bytes(body, yulius_app::remote::MAX_REMOTE_BODY_BYTES).await
+    else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    let request: RpcRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return Json(serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})).into_response();
         }
     };
     match app.remote_mcp_handle(&caller, request).await {
