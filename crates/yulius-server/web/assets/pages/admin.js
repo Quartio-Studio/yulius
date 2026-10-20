@@ -293,7 +293,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
       onFatal: (error) => {
         if (terminal !== view || phase !== 'running') return;
         phase = 'lost';
-        if (error && error.code === 'unauthenticated') ended('You are signed out of Yulius', 'Sign in again, then sign the subscription in from its card.', false);
+        if (error && error.code === 'unauthenticated') ended(`You are signed out of ${BRAND.name}`, 'Sign in again, then sign the subscription in from its card.', false);
         else ended('This sign-in is no longer available', 'It ended or expired.');
       },
       // The socket gave up: closed for good by the server (4003, the sign-in is gone; it may
