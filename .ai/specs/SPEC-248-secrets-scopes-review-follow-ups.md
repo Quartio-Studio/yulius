@@ -109,8 +109,8 @@ code does.
 
 Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
 
-- `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest 2316
-  passed, 17 skipped (on 345a14ff, the head with the review round 1 fixes). The first run, before the dev merge, failed only
+- `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest 2317
+  passed, 17 skipped (on 10dea5ee, with the review round 2 fixes; 2316 on 345a14ff). The first run, before the dev merge, failed only
   `supervision::a_usage_limit_moves_the_session_to_the_next_account` (60 s timeout under the full
   suite's load): the open flaky issue #539, outside this change; it passed 3/3 alone.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 13
