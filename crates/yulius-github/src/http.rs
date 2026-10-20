@@ -293,7 +293,12 @@ pub(crate) fn status_error(reply: &Reply, known: &[&str], now: Timestamp) -> Git
         403 | 429 if is_rate_limited(reply.status, &reply.headers) => GitHubError::RateLimited {
             retry_after: server_wait(&reply.headers, now),
         },
-        403 => GitHubError::Forbidden { message: message() },
+        403 => GitHubError::Forbidden {
+            message: message(),
+            accepted_permissions: header(&reply.headers, "x-accepted-github-permissions")
+                .map(|value| scrub(value, known))
+                .filter(|value| !value.trim().is_empty()),
+        },
         404 => GitHubError::NotFound,
         409 => GitHubError::Conflict { message: message() },
         422 => GitHubError::Invalid { message: message() },

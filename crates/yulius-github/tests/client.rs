@@ -389,6 +389,52 @@ async fn repository_creation_for_organizations_and_users() -> TestResult {
     Ok(())
 }
 
+// SPEC-241 CRT-001: an App without Administration is refused with the permissions GitHub
+// accepts, read from `X-Accepted-GitHub-Permissions`.
+#[tokio::test]
+async fn a_refused_repository_creation_names_the_accepted_permissions() -> TestResult {
+    let (fake, client) = setup().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    let token = client.create_installation_token(installation).await?;
+    fake.withhold_permission("administration");
+    fake.add_user("ada", None);
+    let user_token = fake.issue_user_token("ada");
+    for refused in [
+        client
+            .create_org_repo(&token.token, "acme", &CreateRepo::private("new-app"))
+            .await,
+        client
+            .create_user_repo(&user_token, &CreateRepo::private("notes"))
+            .await,
+    ] {
+        let Err(GitHubError::Forbidden {
+            message,
+            accepted_permissions,
+        }) = refused
+        else {
+            return Err(format!("expected a 403, got {refused:?}").into());
+        };
+        assert_eq!(message, "Resource not accessible by integration");
+        assert_eq!(
+            accepted_permissions.as_deref(),
+            Some("administration=write; repository_creation=write")
+        );
+    }
+    assert!(!fake.has_repo("acme", "new-app") && !fake.has_repo("ada", "notes"));
+    // Another 403 carries none.
+    let Err(GitHubError::Forbidden {
+        accepted_permissions,
+        ..
+    }) = client
+        .create_org_repo(&token.token, "other-org", &CreateRepo::private("x"))
+        .await
+    else {
+        return Err("expected a 403".into());
+    };
+    assert_eq!(accepted_permissions, None);
+    Ok(())
+}
+
 #[tokio::test]
 async fn rulesets_protect_branches() -> TestResult {
     let (fake, client) = setup().await?;

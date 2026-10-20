@@ -293,7 +293,11 @@ impl App {
     ///
     /// # Errors
     /// Installation lookup or GitHub failures.
-    async fn installation_repo(&self, owner: &str, name: &str) -> AppResult<Option<GhRepo>> {
+    pub(crate) async fn installation_repo(
+        &self,
+        owner: &str,
+        name: &str,
+    ) -> AppResult<Option<GhRepo>> {
         let (app, installation) = self.installation().await?;
         Ok(self
             .deps
@@ -580,10 +584,12 @@ impl App {
                 return Err(err);
             }
         };
-        let default_branch = if default_branch.is_empty() {
-            repo.default_branch.clone()
-        } else {
+        let default_branch = if !default_branch.is_empty() {
             default_branch
+        } else if repo.default_branch.is_empty() {
+            "main".to_owned()
+        } else {
+            repo.default_branch.clone()
         };
         let profile = import_profile(&owner, &name, yulius_toml.as_deref());
         // Every imported repository is onboarded: the full preparation when its docs do not follow
@@ -644,11 +650,17 @@ impl App {
             .git
             .sync_clone(&clone_url(owner, name), repo_dir, token)
             .await?;
-        let default_branch = match self.deps.git.default_branch(repo_dir).await {
-            Ok(branch) => branch,
-            Err(err) => {
-                tracing::warn!(error = %err, "default branch detection failed");
-                String::new()
+        // An empty clone's HEAD names this host's own default (`master` when unset), not GitHub's:
+        // the caller then takes the branch GitHub reports (SPEC-241 EMP-001).
+        let default_branch = if self.remote_is_empty(repo_dir).await {
+            String::new()
+        } else {
+            match self.deps.git.default_branch(repo_dir).await {
+                Ok(branch) => branch,
+                Err(err) => {
+                    tracing::warn!(error = %err, "default branch detection failed");
+                    String::new()
+                }
             }
         };
         let root = repo_dir.to_path_buf();
@@ -765,11 +777,18 @@ impl App {
             })?;
             self.user_github_token(&owner_user).await?
         };
-        let repo = self
+        let repo = match self
             .deps
             .github
             .create_repo(&admin_token, &owner, is_org, name, &description)
-            .await?;
+            .await
+        {
+            Ok(repo) => repo,
+            Err(AppError::Forbidden(accepted)) => {
+                return Err(self.creation_refused(&owner, name, &accepted).await);
+            }
+            Err(err) => return Err(err),
+        };
         let repo_owner = if repo.owner.is_empty() {
             owner.clone()
         } else {
@@ -799,7 +818,9 @@ impl App {
             .await;
         if let Err(err) = pushed {
             remove_tree(dir).await;
-            return Err(err);
+            return Err(self
+                .created_but_unreachable(&repo_owner, &repo_name, err)
+                .await);
         }
         // Rulesets on private repositories need a paid GitHub plan. They are a second line of
         // defence only: Yulius's own merge gate enforces the delivery rules (SPEC-002 ADR-21),

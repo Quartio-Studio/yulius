@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-20
 
+- A new GitHub repository with no commits can be onboarded (SPEC-241, ADR-0187, task #227). Starting
+  its onboarding failed with "git: revision not found: origin/master": the empty clone named the
+  server's own default branch, and there was no branch for the onboarding task to start from. Import
+  now records GitHub's default branch, and starting onboarding pushes one commit adding `README.md`
+  to it first; a repository with commits is never written to, and a sandbox already recorded with
+  `master` is corrected to GitHub's branch. Creating a project now says what
+  GitHub refused: the App permission it lacks, in GitHub's words, with the App's permission and
+  installation pages, or, for an installation on only selected repositories, that the repository was
+  created and where to add it before importing it.
+
 - Subscriptions can be renamed, and administrators see the email of the Claude account behind each
   one (SPEC-244, ADR-0185, task #230, feedback from an early user). On the Subscriptions page, the
   pencil or a click on the name edits it in place; Enter saves and Escape cancels. The email is

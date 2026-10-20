@@ -357,6 +357,12 @@ pub trait GitHubPort: Send + Sync {
         installation_id: u64,
     ) -> AppResult<Vec<GhRepo>>;
     /// Creates a private repository (org: installation token; user: owner's user token).
+    ///
+    /// # Errors
+    /// `Forbidden(accepted)` when GitHub refuses it for a permission the App lacks (403): the
+    /// text is GitHub's `X-Accepted-GitHub-Permissions` (e.g. `administration=write;
+    /// repository_creation=write`), empty when GitHub sent none (SPEC-241 CRT-001). Other
+    /// GitHub failures as usual.
     async fn create_repo(
         &self,
         token: &Secret,
