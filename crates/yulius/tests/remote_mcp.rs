@@ -929,3 +929,95 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
     );
     Ok(())
 }
+
+/// RMT-027: agent secrets are named, bound and answered remotely; no value goes either way.
+#[tokio::test]
+async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
+    const VALUE: &str = "sk_live_remote_0123456789abcdef";
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    let (_, _, bob) = person(&w, "bob").await?;
+    w.grant("alice", "acme/shop", "admin");
+    w.grant("bob", "acme/shop", "pull");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "STRIPE_KEY", "description": "Stripe live key", "value": VALUE})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let shop = |extra: Value| {
+        let mut args = json!({"project": "acme/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+
+    let (error, said, listed) = remote(&w, &bob, "secrets_list", shop(json!({}))).await?;
+    assert!(!error, "{said}");
+    assert!(
+        said.contains("STRIPE_KEY") && !said.contains(VALUE) && !listed.to_string().contains(VALUE),
+        "{said}"
+    );
+    let (error, said, _) = remote(
+        &w,
+        &bob,
+        "secret_update",
+        shop(json!({"secret": "STRIPE_KEY", "hosts": ["api.stripe.com"], "expect_hosts": []})),
+    )
+    .await?;
+    assert!(error && said.contains("write access"), "{said}");
+
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "STRIPE_KEY", "hosts": ["api.stripe.com"]})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("expect_hosts"),
+        "hosts change against what was seen: {said}"
+    );
+    let (error, said, updated) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "STRIPE_KEY", "hosts": ["api.stripe.com"], "expect_hosts": [], "description": "Stripe key for the shop"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(updated["secret"]["hosts"], json!(["api.stripe.com"]));
+    assert_eq!(updated["secret"]["description"], "Stripe key for the shop");
+    assert!(!updated.to_string().contains(VALUE));
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "STRIPE_KEY", "value": "other"})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("never goes through an agent"),
+        "{said}"
+    );
+    let (error, said, _) =
+        remote(&w, &alice, "secret_update", shop(json!({"secret": "NOPE"}))).await?;
+    assert!(error && said.contains("no agent secret NOPE"), "{said}");
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_hosts_answer",
+        shop(json!({"secret": "STRIPE_KEY", "allow": true, "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(
+        error && !said.contains("unknown tool"),
+        "nothing was requested: {said}"
+    );
+    Ok(())
+}

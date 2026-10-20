@@ -760,6 +760,11 @@ impl App {
                     .await
             }
             "secret_update" | "secret_hosts_answer" => {
+                if args.get("value").is_some() {
+                    return Err(AppError::Invalid(
+                        "a secret's value never goes through an agent: set it on the Secrets page or with `yulius secrets import`".into(),
+                    ));
+                }
                 let secret = str_arg(args, "secret")?;
                 let id = self
                     .agent_secrets(ctx, sid)
