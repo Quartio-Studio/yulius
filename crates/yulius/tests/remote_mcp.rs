@@ -1152,3 +1152,160 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     assert_eq!(code, Some(0), "{out}");
     Ok(())
 }
+
+/// The acceptance flow of SPEC-247: with only the instance's URL and a token made in Settings, a
+/// person's agent imports a repository, starts its onboarding, sets up Yulius CI through a change
+/// pull request merged on green, and creates, messages, stops and archives a task, all through
+/// the remote MCP.
+#[tokio::test]
+async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::RunState;
+    let w = World::new("org").await?;
+    // The person's one visit to the web UI: making the token.
+    let (_, _, agent) = person(&w, "alice").await?;
+    let origin = w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/main.rs", "fn main() {}\n")],
+        &["dev"],
+    )?;
+    w.h.github
+        .set_remote(std::sync::Arc::new(Origin(origin.clone())));
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let shop = |extra: Value| {
+        let mut args = json!({"project": "Quartio-Studio/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+    let ok = |(error, said, record): (bool, String, Value)| -> Result<Value, Error> {
+        if error {
+            return Err(said.into());
+        }
+        Ok(record)
+    };
+
+    // Import and onboard.
+    let repos = ok(remote(&w, &agent, "repositories_list", json!({})).await?)?;
+    assert!(repos.to_string().contains("\"shop\""), "{repos}");
+    let imported = ok(remote(
+        &w,
+        &agent,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?)?;
+    assert_eq!(imported["onboarding"], "pending");
+    let project = ok(remote(&w, &agent, "project_get", shop(json!({}))).await?)?;
+    assert_eq!(project["onboarding"]["state"], "pending", "{project}");
+    let started = ok(remote(&w, &agent, "onboarding_start", shop(json!({}))).await?)?;
+    assert_eq!(started["onboarding"], "preparing");
+    let tasks = ok(remote(&w, &agent, "tasks_list", shop(json!({}))).await?)?;
+    assert!(
+        tasks.to_string().contains("Prepare"),
+        "the onboarding task is listed: {tasks}"
+    );
+
+    // CI: read the repository, add [[ci.jobs]] in a change pull request, merge it on green.
+    let files = ok(remote(&w, &agent, "project_files", shop(json!({}))).await?)?;
+    assert!(
+        !files["entries"].to_string().contains("yulius.toml"),
+        "{files}"
+    );
+    let toml = "[[ci.jobs]]\nname = \"test\"\ncommand = \"cargo test\"\n";
+    let change = ok(remote(
+        &w,
+        &agent,
+        "project_change",
+        shop(json!({"title": "ci: run cargo test in Yulius CI", "files": [{"path": "yulius.toml", "content": toml}]})),
+    )
+    .await?)?;
+    let number = change["pull_request"]["number"].as_u64().ok_or("number")?;
+    let record =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    w.h.app.ci_sync_sandbox(&record).await?; // Yulius CI's poll
+    let ci = ok(remote(&w, &agent, "ci_runs", shop(json!({}))).await?)?;
+    let run = ci["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|r| r["sha"] == change["commit"]))
+        .cloned()
+        .ok_or_else(|| format!("the change is tested: {ci}"))?;
+    let detail = ok(remote(&w, &agent, "ci_run", shop(json!({"run_id": run["id"]}))).await?)?;
+    assert!(
+        detail.to_string().contains("cargo test"),
+        "the pull request's own job: {detail}"
+    );
+    let (error, said, _) =
+        remote(&w, &agent, "change_merge", shop(json!({"number": number}))).await?;
+    assert!(error && said.contains("pending"), "{said}");
+    // The runner's verdict (CI execution itself: local_ci.rs).
+    w.h.store
+        .transition_ci_run(
+            text(&run["id"]),
+            &[RunState::Queued],
+            RunState::Passed,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
+    ok(remote(&w, &agent, "change_merge", shop(json!({"number": number}))).await?)?;
+    assert_eq!(
+        origin_file(&origin, "dev", "yulius.toml").as_deref(),
+        Some(toml)
+    );
+    w.h.app.ci_sync_sandbox(&record).await?;
+    let ci = ok(remote(&w, &agent, "ci_runs", shop(json!({}))).await?)?;
+    assert!(
+        ci["gate"].to_string().contains("cargo test"),
+        "dev's CI is in force: {ci}"
+    );
+    let read = ok(remote(
+        &w,
+        &agent,
+        "project_file_read",
+        shop(json!({"path": "yulius.toml"})),
+    )
+    .await?)?;
+    assert_eq!(read["content"], toml);
+
+    // A task: created, told something, stopped and archived.
+    let created = ok(remote(
+        &w,
+        &agent,
+        "task_create",
+        shop(json!({"prompt": "Add a /health endpoint that answers 200 with the version", "title": "Health endpoint"})),
+    )
+    .await?)?;
+    let number = created["task"]["number"]
+        .as_u64()
+        .ok_or_else(|| format!("{created}"))?;
+    let listed = ok(remote(&w, &agent, "tasks_list", shop(json!({}))).await?)?;
+    assert!(listed.to_string().contains("Health endpoint"), "{listed}");
+    let got = ok(remote(&w, &agent, "task_get", shop(json!({"number": number}))).await?)?;
+    assert!(got.to_string().contains("/health"), "{got}");
+    let told = ok(remote(
+        &w,
+        &agent,
+        "task_message",
+        shop(json!({"number": number, "text": "Use the existing router"})),
+    )
+    .await?)?;
+    assert!(
+        told.to_string().contains("queued"),
+        "it has not started (onboarding runs): {told}"
+    );
+    ok(remote(&w, &agent, "task_stop", shop(json!({"number": number}))).await?)?;
+    ok(remote(&w, &agent, "task_archive", shop(json!({"number": number}))).await?)?;
+    let archived = ok(remote(&w, &agent, "tasks_list", shop(json!({"scope": "archived"}))).await?)?;
+    assert!(
+        archived.to_string().contains("Health endpoint"),
+        "{archived}"
+    );
+    Ok(())
+}
