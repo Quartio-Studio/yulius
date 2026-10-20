@@ -46,7 +46,6 @@ impl EgressPolicy for Policy {
                 task_number: 1,
             },
             sandbox_id: SandboxId::parse("s1").ok()?,
-            person: None,
         })
     }
 

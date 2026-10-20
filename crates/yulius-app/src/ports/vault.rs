@@ -204,14 +204,16 @@ pub struct VaultAuditEntry {
 pub trait VaultStore: Send + Sync {
     /// Inserts a secret; `Conflict` for an agent name taken in the same scope (SPEC-245 SCP-002).
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
-    /// Inserts a global or personal secret switched on for `sandbox`, in one transaction (SPEC-245
-    /// SCP-003); `Conflict` as [`Self::vault_insert`].
-    async fn vault_insert_on(
+    /// Inserts an agent secret of `sandbox`, or a global or personal one switched on for it (by
+    /// whom, when), in one transaction (SPEC-245 SCP-003); `Capacity` when `cap` secrets already
+    /// reach `sandbox`, counted in that transaction (SPEC-248 FUP-003); `Conflict` as
+    /// [`Self::vault_insert`].
+    async fn vault_insert_agent(
         &self,
         record: &VaultSecretRecord,
         sandbox: &SandboxId,
-        by: &str,
-        at: Timestamp,
+        by_at: (&str, Timestamp),
+        cap: usize,
     ) -> AppResult<()>;
     /// Replaces every mutable column of the secret `record.id` but its host request, only while
     /// its hosts and `auto_allow` still are those of `seen` (the row the change was read from:
@@ -237,14 +239,16 @@ pub trait VaultStore: Send + Sync {
     /// The ids of the global and personal agent secrets switched on for `sandbox`.
     async fn vault_switched_on(&self, sandbox: &SandboxId) -> AppResult<Vec<String>>;
     /// Switches the global or personal agent secret `id` on or off for `sandbox` (SPEC-245
-    /// MAN-004); `false` when it already was so, or when `id` is no such secret.
+    /// MAN-004, by whom, when); `false` when it already was so, or when `id` is no such secret;
+    /// `Capacity` when switching on finds `cap` secrets reaching `sandbox`, counted in the same
+    /// transaction (SPEC-248 FUP-003).
     async fn vault_switch(
         &self,
         id: &str,
         sandbox: &SandboxId,
         on: bool,
-        by: &str,
-        at: Timestamp,
+        by_at: (&str, Timestamp),
+        cap: usize,
     ) -> AppResult<bool>;
     /// Replaces an agent secret's host request when it still is `from` (compare and set, so an
     /// answer never drops a newer request); `false` when it changed or the secret is gone.

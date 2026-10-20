@@ -26,6 +26,9 @@ const AUTOMATED_TASK: &str = "scopes-task-token-automation-0123456789";
 const BOB_WEB_TASK: &str = "scopes-task-token-bob-web-0123456789abcd";
 const MINE: &str = "alice-personal-token-5150a1ce";
 const HOST: &str = "api.mine.test";
+/// Bob's personal value and its host.
+const BOBS: &str = "bob-personal-token-0b0b5ec7";
+const BOB_HOST: &str = "api.bob.test";
 
 struct World {
     h: support::Harness,
@@ -621,14 +624,19 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
     // Alice's running task t1 (no live session in this harness: a message that passes the checks
     // ends "no live session").
     let args = json!({"task_id": "t1", "text": "use $MY_TOKEN on api.mine.test"});
-    // Past every check, a message to t1 ends at its missing session.
-    let forbidden = |result: &Result<Value, yulius_app::error::AppError>| !matches!(result, Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session"));
+    // Whether a message to t1 passed every check: it ends at its missing session.
+    let reached_session = |result: &Result<Value, yulius_app::error::AppError>| {
+        matches!(
+            result,
+            Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session")
+        )
+    };
     // Without a personal secret, bob's Superagent may type into alice's task (SPEC-230).
     let before =
         w.h.app
             .tool_task_message(&caller("u-bob", "bob")?, &args)
             .await;
-    assert!(!forbidden(&before), "{before:?}");
+    assert!(reached_session(&before), "{before:?}");
     add(
         &w,
         &w.alice,
@@ -650,12 +658,12 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
         w.h.app
             .tool_task_message(&caller("u-alice", "alice")?, &args)
             .await;
-    assert!(!forbidden(&own), "{own:?}");
+    assert!(reached_session(&own), "{own:?}");
     Ok(())
 }
 
 /// Review of SPEC-245, M2: control passed to bob ends alice's personal secrets in the run at once,
-/// not when the proxy's credential cache expires.
+/// not when the proxy's credential cache expires, and starts bob's (SPEC-248 FUP-004).
 #[tokio::test]
 async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     let w = world().await?;
@@ -666,8 +674,16 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
         secret("personal", "MY_TOKEN", MINE, HOST),
     )
     .await?;
+    add(
+        &w,
+        &w.bob,
+        "s1",
+        secret("personal", "BOB_TOKEN", BOBS, BOB_HOST),
+    )
+    .await?;
     let before = client(&w, ALICE_TASK).await?;
     assert!(w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(!w.h.app.egress_intercepts(&before, BOB_HOST, 443).await);
     let asked = call(
         &w.h.router,
         Method::POST,
@@ -689,9 +705,203 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     // A connection opened before the hand-over keeps its client: it no longer carries alice's.
     assert!(!w.h.app.egress_intercepts(&before, HOST, 443).await);
     assert!(!leaks(&w, &before, HOST).await);
+    // It carries bob's own instead, on his host.
+    assert!(w.h.app.egress_intercepts(&before, BOB_HOST, 443).await);
+    let bobs = forwarded(&w, &before, BOB_HOST).await.unwrap_or_default();
+    assert!(
+        bobs.iter()
+            .any(|(n, v)| n == "authorization" && v == &format!("Bearer {BOBS}")),
+        "{bobs:?}"
+    );
     let after = client(&w, ALICE_TASK).await?;
     assert!(!w.h.app.egress_intercepts(&after, HOST, 443).await);
     assert!(!leaks(&w, &after, HOST).await);
+    assert!(w.h.app.egress_intercepts(&after, BOB_HOST, 443).await);
+    Ok(())
+}
+
+/// SPEC-248 FUP-004: a deleted task's proxy client, resolved before the deletion, resolves to no
+/// person: its owner's personal secret no longer applies, the project's still does.
+#[tokio::test]
+async fn a_deleted_tasks_client_resolves_to_no_person() -> TestResult {
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret(
+            "sandbox",
+            "SHARED_TOKEN",
+            "project-token-5ha7ed",
+            "api.shared.test",
+        ),
+    )
+    .await?;
+    let before = client(&w, ALICE_TASK).await?;
+    assert!(w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(w.h.store.delete_task(&TaskId::parse("t1")?).await?);
+    assert!(!w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(!leaks(&w, &before, HOST).await);
+    assert!(
+        w.h.app
+            .egress_intercepts(&before, "api.shared.test", 443)
+            .await
+    );
+    Ok(())
+}
+
+/// SPEC-248 FUP-002: a hand-over rewrites the run's fingerprint file (the Bash wrapper's fallback)
+/// for the new owner, in place, so the run holds no hashes of the previous owner's values.
+#[tokio::test]
+async fn a_hand_over_rewrites_the_runs_fingerprint_file() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    add(
+        &w,
+        &w.bob,
+        "s1",
+        secret("personal", "BOB_TOKEN", BOBS, BOB_HOST),
+    )
+    .await?;
+    let run = tempfile::tempdir()?;
+    seed_task(&w.h, "t5", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt_at(
+        &w.h,
+        "t5",
+        "scopes-task-token-alice-run-0123456789ab",
+        &run.path().to_string_lossy(),
+    )
+    .await?;
+    // The file as the launch wrote it, for alice.
+    let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
+    let alice_id = UserId::parse("u-alice")?;
+    let s1 = SandboxId::parse("s1")?;
+    let launched =
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Person(&alice_id))
+            .await?;
+    assert!(launched.names.iter().any(|n| n == "MY_TOKEN"));
+    std::fs::write(&file, serde_json::to_vec(&launched)?)?;
+    let inode = std::fs::metadata(&file)?.ino();
+
+    let asked = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t5/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert!(asked.status.is_success(), "{}", asked.body);
+    let passed = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t5/control-request/accept",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert!(passed.status.is_success(), "{}", passed.body);
+
+    let rewritten: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert!(
+        !rewritten.names.iter().any(|n| n == "MY_TOKEN"),
+        "{:?}",
+        rewritten.names
+    );
+    assert!(
+        rewritten.names.iter().any(|n| n == "BOB_TOKEN"),
+        "{:?}",
+        rewritten.names
+    );
+    // In place: a contained session binds the file read-only by inode.
+    assert_eq!(std::fs::metadata(&file)?.ino(), inode);
+    Ok(())
+}
+
+/// SPEC-248 FUP-002 (review round 2): a rewrite that comes after control passed again — the
+/// first of two quick hand-overs' — writes the fingerprints of the task's current owner, never
+/// the middle owner's.
+#[tokio::test]
+async fn a_rewrite_follows_the_tasks_current_owner() -> TestResult {
+    let w = world().await?;
+    let carol = seed_github_user(&w.h, "u-carol", "carol").await?;
+    w.h.github.set_perm("carol", "acme/app", perms("write"));
+    add(
+        &w,
+        &w.bob,
+        "s1",
+        secret("personal", "BOB_TOKEN", BOBS, BOB_HOST),
+    )
+    .await?;
+    add(
+        &w,
+        &carol,
+        "s1",
+        secret(
+            "personal",
+            "CAROL_TOKEN",
+            "carol-personal-token-ca401",
+            "api.carol.test",
+        ),
+    )
+    .await?;
+    let run = tempfile::tempdir()?;
+    seed_task(&w.h, "t5", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt_at(
+        &w.h,
+        "t5",
+        "scopes-task-token-alice-run-0123456789ab",
+        &run.path().to_string_lossy(),
+    )
+    .await?;
+    let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
+    std::fs::write(&file, b"{}")?;
+    let t5 = TaskId::parse("t5")?;
+    let (alice, bob, carol_id) = (
+        UserId::parse("u-alice")?,
+        UserId::parse("u-bob")?,
+        UserId::parse("u-carol")?,
+    );
+    assert!(
+        w.h.store
+            .take_control(&t5, &alice, &bob, w.h.app.now())
+            .await?
+    );
+    assert!(
+        w.h.store
+            .take_control(&t5, &bob, &carol_id, w.h.app.now())
+            .await?
+    );
+    // The first hand-over's rewrite comes last.
+    w.h.app.rewrite_run_fingerprints(&t5).await?;
+    let set: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert!(
+        set.names.iter().any(|n| n == "CAROL_TOKEN"),
+        "{:?}",
+        set.names
+    );
+    assert!(
+        !set.names.iter().any(|n| n == "BOB_TOKEN"),
+        "{:?}",
+        set.names
+    );
     Ok(())
 }
 
@@ -723,5 +933,58 @@ async fn switching_on_respects_the_projects_limit() -> TestResult {
         "{}",
         refused.body
     );
+    Ok(())
+}
+
+/// SPEC-248 FUP-003: concurrent switch-ons cannot pass the limit: the store counts the secrets
+/// reaching the project in the transaction that switches one on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_switch_ons_stop_at_the_projects_limit() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = world().await?;
+    let mut ids = Vec::new();
+    for n in 0..20 {
+        let body = secret("personal", &format!("MINE_{n}"), MINE, HOST);
+        ids.push(add(&w, &w.alice, "s1", body).await?);
+    }
+    let template = w.h.store.vault_get(&ids[0]).await?.ok_or("secret")?;
+    let s2 = SandboxId::parse("s2")?;
+    for n in 0..199 {
+        let mut filler = template.clone();
+        filler.id = format!("filler-{n}");
+        filler.owner_id = None;
+        filler.sandbox_id = Some(s2.clone());
+        filler.name = format!("FILLER_{n}");
+        w.h.store.vault_insert(&filler).await?;
+    }
+    // Each switch-on on its own worker, all at once.
+    let switches = ids.iter().map(|id| {
+        let (router, alice) = (w.h.router.clone(), w.alice.clone());
+        let path = format!("/api/sandboxes/s2/agent-secrets/{id}/enabled");
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::PUT,
+                &path,
+                Some(json!({"enabled": true})),
+                &alice,
+            )
+            .await
+            .map(|r| (r.status, r.body))
+            .map_err(|e| e.to_string())
+        })
+    });
+    let switched = futures::future::join_all(switches).await;
+    let mut on = 0;
+    for result in switched {
+        let (status, body) = result??;
+        if status.is_success() {
+            on += 1;
+        } else {
+            assert!(body.to_string().contains("at most"), "{body}");
+        }
+    }
+    assert_eq!(on, 1);
+    assert_eq!(w.h.store.vault_agent_in(&s2).await?.len(), 200);
     Ok(())
 }

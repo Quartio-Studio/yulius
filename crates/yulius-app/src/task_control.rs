@@ -216,8 +216,8 @@ impl App {
     }
 
     /// Passes control of `task` from its owner to `to` (R6): whose request waits, or anyone
-    /// when the owner is absent. One conditional update, then the worktree's commit identity, the terminal notice, the audit
-    /// entry and the published summary.
+    /// when the owner is absent. One conditional update, then the worktree's commit identity, the
+    /// run's fingerprint file, the terminal notice, the audit entry and the published summary.
     async fn pass_task_control(
         &self,
         task: &TaskRecord,
@@ -252,6 +252,10 @@ impl App {
             {
                 tracing::warn!(task = %task.id, error = %err, "new owner's commit identity not set");
             }
+        }
+        // The run's fallback fingerprints are the new owner's (SPEC-248 FUP-002).
+        if let Err(err) = self.rewrite_run_fingerprints(&task.id).await {
+            tracing::warn!(task = %task.id, error = %err, "run's fingerprint file not rewritten");
         }
         let (from, to) = (
             self.login_of(&task.owner).await,
