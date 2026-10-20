@@ -88,6 +88,9 @@ pub struct AccountView {
     pub usage: AccountUsageView,
     /// Last error (no secrets).
     pub last_error: Option<String>,
+    /// Email of the Claude account behind it, read at sign-in; `null` while unknown (SPEC-244).
+    #[serde(default)]
+    pub email: Option<String>,
     /// Live tasks using it, except Done ones (SPEC-057).
     pub in_use_by: u32,
     /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).
@@ -146,12 +149,15 @@ pub struct UpdateAccount {
     pub label: String,
 }
 
-/// One account in [`CapacityView`]. Everyone sees label, status and usage; `id` and
+/// One account in [`CapacityView`]. Everyone sees label, email, status and usage; `id` and
 /// `in_use_by` are for instance administrators only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapacityAccount {
     /// Label.
     pub label: String,
+    /// Email of the Claude account behind it; `null` while unknown (SPEC-244 SUB-005).
+    #[serde(default)]
+    pub email: Option<String>,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,
     /// Usage snapshot (unknown windows are `null`).

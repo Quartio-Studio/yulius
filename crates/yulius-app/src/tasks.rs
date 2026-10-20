@@ -118,13 +118,15 @@ impl App {
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
-        let account_label = match store.live_attempt(&task.id).await? {
+        let account = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
-                Some(id) => store.account(&id).await?.map(|a| a.label),
+                Some(id) => store.account(&id).await?,
                 None => None,
             },
             None => None,
         };
+        let (account_label, account_email) =
+            account.map_or((None, None), |a| (Some(a.label), a.email));
         let (after, next) = self.chain_links(task).await;
         let times = store.task_times(&task.id).await?;
         let not_started =
@@ -171,6 +173,7 @@ impl App {
             steps: progress(&steps),
             archived: task.archived_at.is_some(),
             account_label,
+            account_email,
             mode: task.mode.as_str().to_owned(),
             resumes_at: self.capacity_returns_at(task).await.map(rfc3339),
             after,
@@ -331,14 +334,17 @@ impl App {
         for a in store.attempts(&task.id).await? {
             wall_ms =
                 wall_ms.saturating_add(a.ended_at.unwrap_or(now).millis_since(a.started_at).max(0));
-            let label = match &a.account_id {
-                Some(id) => store.account(id).await?.map(|acc| acc.label),
+            let account = match &a.account_id {
+                Some(id) => store.account(id).await?,
                 None => None,
             };
+            let (account_label, account_email) =
+                account.map_or((None, None), |acc| (Some(acc.label), acc.email));
             attempts.push(AttemptView {
                 seq: a.seq,
                 harness: a.harness.as_str().to_owned(),
-                account_label: label,
+                account_label,
+                account_email,
                 launch_kind: a.launch_kind.as_str().to_owned(),
                 state: a.state.as_str().to_owned(),
                 started_at: rfc3339(a.started_at),

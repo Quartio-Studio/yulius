@@ -98,6 +98,9 @@ pub struct CapacityState {
     /// When each subscription's usage may be asked for again (ROT-009 back-off), shared by the
     /// background round and on-demand reads so neither hammers the provider (F 2026-10-11).
     pub(crate) usage_not_before: tokio::sync::Mutex<HashMap<AccountId, Timestamp>>,
+    /// When each subscription's email may be asked for again after a temporary failure
+    /// (SPEC-244 SUB-004).
+    pub(crate) email_not_before: tokio::sync::Mutex<HashMap<AccountId, Timestamp>>,
     /// The last usage round asked for by opening the subscriptions list (debounced).
     pub(crate) usage_asked: Mutex<Option<Timestamp>>,
 }
@@ -743,6 +746,7 @@ impl App {
             }
             accounts.push(CapacityAccount {
                 label: record.label.clone(),
+                email: record.email.clone(),
                 status: record.status.as_str().to_owned(),
                 usage: usage_view(&usage),
                 available: is_available,

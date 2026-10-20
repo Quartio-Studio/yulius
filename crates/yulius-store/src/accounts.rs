@@ -11,8 +11,8 @@ use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
-const COLS: &str =
-    "id, provider, label, credential, status, usage, last_error, created_at, updated_at";
+const COLS: &str = "id, provider, label, credential, status, usage, last_error, email, \
+                    email_checked_at, created_at, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
     let id: String = row.get("id")?;
@@ -26,6 +26,10 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
         status: AccountStatus::parse(&status),
         usage_json: row.get("usage")?,
         last_error: row.get("last_error")?,
+        email: row.get("email")?,
+        email_checked_at: row
+            .get::<_, Option<i64>>("email_checked_at")?
+            .map(Timestamp),
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
     })
@@ -38,7 +42,7 @@ impl AccountStore for SqliteStore {
         self.call(move |c| {
             c.execute(
                 &format!(
-                    "INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+                    "INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
                 ),
                 params![
                     a.id.as_str(),
@@ -48,6 +52,8 @@ impl AccountStore for SqliteStore {
                     a.status.as_str(),
                     a.usage_json,
                     a.last_error,
+                    a.email,
+                    a.email_checked_at.map(|t| t.0),
                     a.created_at.0,
                     a.updated_at.0
                 ],
@@ -98,6 +104,25 @@ impl AccountStore for SqliteStore {
         .await
     }
 
+    async fn set_account_email(
+        &self,
+        id: &AccountId,
+        email: Option<&str>,
+        checked_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (id, email) = (id.as_str().to_owned(), email.map(str::to_owned));
+        self.call(move |c| {
+            c.execute(
+                "UPDATE accounts SET email = ?1, email_checked_at = ?2, updated_at = ?3 WHERE id = ?4",
+                params![email, checked_at.map(|t| t.0), at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn set_account_credential(
         &self,
         id: &AccountId,
@@ -108,7 +133,8 @@ impl AccountStore for SqliteStore {
         let (id, cred) = (id.as_str().to_owned(), credential.0.clone());
         self.call(move |c| {
             c.execute(
-                "UPDATE accounts SET credential = ?1, status = ?2, last_error = NULL, updated_at = ?3 WHERE id = ?4",
+                "UPDATE accounts SET credential = ?1, status = ?2, last_error = NULL, email = NULL, \
+                 email_checked_at = NULL, updated_at = ?3 WHERE id = ?4",
                 params![cred, status.as_str(), at.0, id],
             )
             .map_err(db)?;

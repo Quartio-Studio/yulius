@@ -72,6 +72,9 @@ pub struct TaskSummary {
     pub archived: bool,
     /// Label of the account in use.
     pub account_label: Option<String>,
+    /// Email of the Claude account in use; `null` while unknown or without one (SPEC-244).
+    #[serde(default)]
+    pub account_email: Option<String>,
     /// `goal` or `prompt` (TSK-010).
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -326,6 +329,9 @@ pub struct AttemptView {
     pub harness: String,
     /// Account label.
     pub account_label: Option<String>,
+    /// Email of the account's Claude account; `null` while unknown (SPEC-244).
+    #[serde(default)]
+    pub account_email: Option<String>,
     /// `new` or `resume`.
     pub launch_kind: String,
     /// Attempt state wire name.

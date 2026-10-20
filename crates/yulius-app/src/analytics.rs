@@ -94,6 +94,8 @@ pub struct AnalyticsRun {
     pub account_id: Option<AccountId>,
     /// Account label (`None` when deleted).
     pub account_label: Option<String>,
+    /// Email of the account's Claude account (`None` when unknown or deleted, SPEC-244).
+    pub account_email: Option<String>,
     /// Started.
     pub started_at: Timestamp,
     /// Ended (`None` while live).
@@ -332,7 +334,9 @@ pub fn summarize(
     let mut all = Acc::default();
     let mut by_model: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
-    let mut by_account: BTreeMap<Option<String>, (Option<String>, Acc)> = BTreeMap::new();
+    #[allow(clippy::type_complexity)]
+    let mut by_account: BTreeMap<Option<String>, (Option<String>, Option<String>, Acc)> =
+        BTreeMap::new();
     let mut wall_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut active_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut total_wall: u64 = 0;
@@ -351,8 +355,14 @@ pub fn summarize(
             .add(run);
         let account = by_account
             .entry(run.account_id.as_ref().map(ToString::to_string))
-            .or_insert_with(|| (run.account_label.clone(), Acc::default()));
-        account.1.add(run);
+            .or_insert_with(|| {
+                (
+                    run.account_label.clone(),
+                    run.account_email.clone(),
+                    Acc::default(),
+                )
+            });
+        account.2.add(run);
         let wall = run_wall_ms(run, now);
         total_wall = total_wall.saturating_add(wall);
         let task_wall = wall_by_task.entry(run.task_id.clone()).or_default();
@@ -438,9 +448,10 @@ pub fn summarize(
             .collect(),
         tokens_by_account: by_account
             .into_iter()
-            .map(|(id, (label, acc))| AccountTokens {
+            .map(|(id, (label, email, acc))| AccountTokens {
                 account_id: id,
                 account_label: label,
+                account_email: email,
                 tokens: acc.totals(),
             })
             .collect(),
@@ -735,6 +746,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             account_id: None,
             account_label: None,
+            account_email: None,
             started_at: Timestamp(0),
             ended_at: Some(Timestamp(1_000)),
             metrics,
@@ -780,6 +792,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 account_id: None,
                 account_label: None,
+                account_email: None,
                 started_at: Timestamp(0),
                 ended_at: Some(Timestamp(open_ms)),
                 metrics: Some(MetricsRecord {
@@ -849,6 +862,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 account_id: None,
                 account_label: None,
+                account_email: None,
                 started_at: Timestamp(day * DAY_MS + 10),
                 ended_at: Some(Timestamp(day * DAY_MS + 20)),
                 metrics: Some(MetricsRecord {

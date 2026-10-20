@@ -136,6 +136,8 @@ async fn account(
             last_error: last_error.map(str::to_owned),
             created_at: Timestamp(0),
             updated_at: Timestamp(0),
+            email: (label == "Claude A").then(|| "a@example.com".to_owned()),
+            email_checked_at: None,
         })
         .await?;
     Ok(())
@@ -461,8 +463,10 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
         (&a["account_id"], &a["runs"], &a["input"]),
         (&json!("acc-a"), &json!(2), &json!(100))
     );
+    assert_eq!(a["account_email"], "a@example.com", "SPEC-244 SUB-005");
     let b = by(&s["tokens_by_account"], "account_label", "Claude B")?;
     assert!(b["output"].is_null());
+    assert!(b["account_email"].is_null(), "unknown stays null");
 
     // Durations from attempts: t1 = 30 + 10 min, t2 = 20 min; active time from metrics: only
     // t1's first run reported it (SPEC-087 MET-005).

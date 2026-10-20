@@ -159,6 +159,8 @@ async fn intake_with(h: Harness) -> Result<Intake, Box<dyn std::error::Error>> {
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let jev = Arc::new(FakeJev::default());
