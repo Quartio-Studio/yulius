@@ -43,8 +43,9 @@ the project can change the automation's prompt.
   direct an agent holding someone else's credential; the tasks such a task creates are automation
   tasks too. CI jobs and CD runs belong to no person and get none; their names resolve among the
   project's and the switched-on global secrets. For the same reason only its owner messages a task
-  holding personal secrets (`task_message`), and a hand-over drops the run's cached proxy
-  credential, so the new owner's secrets apply from the next request.
+  holding personal secrets (`task_message`), and the proxy reads an agent run's task's current
+  owner on every request, so after a hand-over the new owner's secrets apply from the next
+  request, also on connections opened before it.
 - **A personal value stays in the proxy.** `.env` copies, `${secret:NAME}` MCP references and
   `browser_fill_secret` refuse personal secrets: the first two write the value where every task of
   the sandbox can read it, and the third signs the shared project browser in as the person. The
@@ -86,6 +87,14 @@ the project can change the automation's prompt.
   and the per-run fingerprints keep this the known online oracle.
 - A new project gets no global secret until an administrator switches it on.
 - Personal secrets cannot sign agents into websites; a per-person browser would be its own change.
+- Personal secrets keep values unseen and unlisted, but do not protect against co-writers who can
+  get code run inside the owner's runs: tasks of a sandbox share its writable home and
+  repository (worktrees isolate changes, not capabilities), so a co-writer's agent or pushed code
+  can plant hooks or scripts that run in the owner's run and use its proxy credential while it
+  lives. A person keeps a personal secret switched on only in projects whose writers they trust
+  that far; a contained per-person home would be its own change.
+- The 200-secret cap per project is checked before the switch, not in its transaction: concurrent
+  switch-ons may pass it by a few.
 - An agent's `secret_create_from_file` cannot see other people's personal secrets, so a project
   secret it adds may shadow one of theirs; the owner's card says so. Refusing would tell the agent
   that the secret exists.

@@ -864,8 +864,9 @@ them for a `Holder`: one per name, project > personal > global, then the instanc
 never another person's. A task's holder is its owner unless an automation started it
 (`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
 nobody, and a task an automation's task creates is an automation task too.
-`EgressClient::person` carries the holder to the proxy; a hand-over drops the task's cached
-credentials (`forget_egress_clients`), and `task_message` from anyone but the owner refuses a task
+`EgressClient::person` carries the holder of CI jobs and the Superagent to the proxy; for an agent
+run the proxy reads its task's current holder on every request, so a hand-over applies also to
+connections opened before it, and `task_message` from anyone but the owner refuses a task
 holding personal secrets. A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run

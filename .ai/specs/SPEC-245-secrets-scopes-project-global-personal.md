@@ -78,7 +78,8 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   unless the task was started by an automation (`origin = automation`): those get none, and so do
   the tasks such a task creates (they are automation tasks too). The Superagent gets its person's.
   After a hand-over (SPEC-070) the run's next request resolves the new owner's, not the previous
-  owner's (cached proxy credentials of the task are dropped).
+  owner's (the proxy reads an agent run's task's current owner on every request, also on a
+  connection opened before the hand-over).
 - RES-007. Only its owner messages a task that holds personal secrets (`task_message`): another
   person's Superagent would steer an agent holding their credential.
 - RES-003. Other people's personal secrets never reach a run: not in its environment, its proxy
@@ -144,6 +145,7 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 - [x] Secrets page: Project, Global and Personal tabs with switches
 - [x] Documents, gates and delivery
 - [x] Review round 1 fixed: automation children, task messages, hand-over cache, switch limit
+- [x] Review round 2 fixed: the proxy reads an agent run's current holder per request
 - [x] Gates green and an independent review of the delivered head
 
 ## Acceptance criteria
@@ -184,7 +186,8 @@ team-wide secrets become globals switched on everywhere instead of copies per pr
 
 ## Evidence
 
-Observed on the branch (2026-10-20), head `8ab9c910` plus this spec's own text:
+Observed on the branch (2026-10-20); the gate figures below are re-run on the final code head
+named in the pull request:
 
 - `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest
   2283 passed, 17 skipped. Earlier runs on the way stopped at `cargo fmt --check` and at a
@@ -199,7 +202,8 @@ Observed on the branch (2026-10-20), head `8ab9c910` plus this spec's own text:
   copies, browser filling, MCP references and production refuse personal secrets; readers cannot
   add or switch one on. Review round 1 added: a task an automation's task creates holds no
   personal secret; only its owner messages a task holding them; a hand-over ends the previous
-  owner's secrets at once; switching on respects the 200-secret limit. A mutation of the owner
+  owner's secrets at once; switching on respects the 200-secret limit. Review round 2 added: a client resolved before
+  a hand-over (an open keep-alive connection) no longer carries the previous owner's secret. A mutation of the owner
   rule (`Holder::may_hold` returning true for personal secrets) turned 3 of the first 5 red.
 - Store tests (`yulius-store` `vault::tests`): migration from version 37 (team-wide agent secret
   switched on for live sandboxes only, project and team secrets untouched), names unique per

@@ -65,7 +65,7 @@ const CLIENT_CACHE_MAX: usize = 1024;
 
 /// Recently authenticated proxy clients: (token digest, client, when).
 #[derive(Default)]
-pub(crate) struct ClientCache(pub(super) Mutex<Vec<(Vec<u8>, EgressClient, Instant)>>);
+pub(crate) struct ClientCache(Mutex<Vec<(Vec<u8>, EgressClient, Instant)>>);
 
 /// Most CI jobs holding a proxy credential at once (far above the CI's job slots).
 const CI_CLIENTS_MAX: usize = 256;
@@ -241,6 +241,30 @@ impl App {
         Ok(Some(zeroize::Zeroizing::new(payload.value.clone())))
     }
 
+    /// Whose personal secrets apply to `client` now: an agent run's task's current holder (read
+    /// per request, so a hand-over or an automation's origin applies also to connections and
+    /// cached credentials from before it), else the person its credential names.
+    async fn client_person(&self, client: &EgressClient) -> AppResult<Option<UserId>> {
+        match &client.caller {
+            EgressCaller::Agent { task_id, .. } => Ok(self
+                .deps
+                .store
+                .task(task_id)
+                .await?
+                .and_then(|task| super::Holder::of_task(&task).person().cloned())),
+            EgressCaller::Ci { .. } | EgressCaller::Superagent { .. } => Ok(client.person.clone()),
+        }
+    }
+
+    /// The agent secrets that apply to `client` now, by its current holder.
+    async fn client_secrets(&self, client: &EgressClient) -> AppResult<Vec<VaultSecretRecord>> {
+        let person = self.client_person(client).await?;
+        let holder = person
+            .as_ref()
+            .map_or(super::Holder::Nobody, super::Holder::Person);
+        self.applied_agent_secrets(&client.sandbox_id, holder).await
+    }
+
     /// The agent secrets that apply to `client` and are bound to `host:port`, with their
     /// payloads.
     async fn bound_secrets(
@@ -250,10 +274,7 @@ impl App {
         port: u16,
     ) -> AppResult<Vec<(VaultSecretRecord, AgentPayload)>> {
         let mut out = Vec::new();
-        for record in self
-            .applied_agent_secrets(&client.sandbox_id, client.holder())
-            .await?
-        {
+        for record in self.client_secrets(client).await? {
             if client.may_use(&record.name, record.cd_prod)
                 && bound_to(&record, host, port)
                 && let Some(payload) = self.agent_payload(&record)?
@@ -834,10 +855,7 @@ impl EgressPolicy for App {
     }
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
-        match self
-            .applied_agent_secrets(&client.sandbox_id, client.holder())
-            .await
-        {
+        match self.client_secrets(client).await {
             Ok(records) => records
                 .iter()
                 .any(|r| client.may_use(&r.name, r.cd_prod) && bound_to(r, host, port)),

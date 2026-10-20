@@ -244,9 +244,6 @@ impl App {
                 "the task changed meanwhile; look again".into(),
             ));
         }
-        // The run's proxy credential now acts for the new owner: their personal secrets, never
-        // the previous owner's (SPEC-245).
-        self.forget_egress_clients(&task.id);
         let passed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         if let Some(worktree) = passed.worktree_path.as_deref() {
             let worktree = std::path::Path::new(worktree);

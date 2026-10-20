@@ -230,7 +230,8 @@ watching, steering and unblocking.
   **Global** (defined once by instance administrators, who switch each on per project — e.g. a
   token for private packages many repositories need) and **Personal** (one person's own, switched
   on per project by them, used only by tasks they start: never by other people's tasks,
-  automations, CI or deploys, never seen by anyone else, and sent only by the proxy). A name
+  automations, CI or deploys, never seen by anyone else, and sent only by the proxy; co-writers
+  who can get code run in the person's tasks are trusted, ADR-0186). A name
   resolves to the project's secret, else the person's, else the global one; a card says when
   another wins. A project's keys live in a git-ignored
   `.env` beside a tracked `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it

@@ -16,8 +16,8 @@ pub struct EgressClient {
     /// Its sandbox: the sandbox's secrets and the global ones switched on for it apply.
     pub sandbox_id: SandboxId,
     /// The person whose personal secrets switched on for the sandbox apply (SPEC-245 RES-002):
-    /// a task's owner (not for an automation's task) or the Superagent's person; `None` for a
-    /// CI job.
+    /// the Superagent's person; `None` for a CI job. For an agent run, its task's holder when the
+    /// credential was resolved; the policy reads the task's current holder per request instead.
     pub person: Option<UserId>,
 }
 

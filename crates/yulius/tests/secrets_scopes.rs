@@ -621,9 +621,8 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
     // Alice's running task t1 (no live session in this harness: a message that passes the checks
     // ends "no live session").
     let args = json!({"task_id": "t1", "text": "use $MY_TOKEN on api.mine.test"});
-    let forbidden = |result: &Result<Value, yulius_app::error::AppError>| {
-        matches!(result, Err(yulius_app::error::AppError::Forbidden(_)))
-    };
+    // Past every check, a message to t1 ends at its missing session.
+    let forbidden = |result: &Result<Value, yulius_app::error::AppError>| !matches!(result, Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session"));
     // Without a personal secret, bob's Superagent may type into alice's task (SPEC-230).
     let before =
         w.h.app
@@ -687,8 +686,10 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     )
     .await?;
     assert!(passed.status.is_success(), "{}", passed.body);
+    // A connection opened before the hand-over keeps its client: it no longer carries alice's.
+    assert!(!w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(!leaks(&w, &before, HOST).await);
     let after = client(&w, ALICE_TASK).await?;
-    assert_eq!(after.person, Some(UserId::parse("u-bob")?));
     assert!(!w.h.app.egress_intercepts(&after, HOST, 443).await);
     assert!(!leaks(&w, &after, HOST).await);
     Ok(())
