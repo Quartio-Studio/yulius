@@ -97,9 +97,15 @@ mod tests {
     use yulius_domain::ids::AccountId;
     use yulius_domain::time::Timestamp;
 
-    fn account(id: &str, credential: bool, status: AccountStatus) -> AccountRecord {
-        AccountRecord {
-            id: AccountId::parse(id).expect("id"),
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn account(
+        id: &str,
+        credential: bool,
+        status: AccountStatus,
+    ) -> Result<AccountRecord, Box<dyn std::error::Error>> {
+        Ok(AccountRecord {
+            id: AccountId::parse(id)?,
             provider: Provider::Anthropic,
             label: id.into(),
             credential: credential.then(|| Sealed(vec![1])),
@@ -110,61 +116,64 @@ mod tests {
             email_checked_at: None,
             created_at: Timestamp(0),
             updated_at: Timestamp(0),
-        }
+        })
     }
 
     #[test]
-    fn an_account_with_a_credential_and_health_is_usable() {
-        let ok = [account("a", true, AccountStatus::Ok)];
+    fn an_account_with_a_credential_and_health_is_usable() -> TestResult {
+        let ok = [account("a", true, AccountStatus::Ok)?];
         assert_eq!(
             agent_accounts(&ok, Provider::Anthropic),
             AgentAccounts::Usable
         );
         let limited = [
-            account("a", true, AccountStatus::Relogin),
-            account("b", true, AccountStatus::Limited),
+            account("a", true, AccountStatus::Relogin)?,
+            account("b", true, AccountStatus::Limited)?,
         ];
         assert_eq!(
             agent_accounts(&limited, Provider::Anthropic),
             AgentAccounts::Usable,
             "a limited account waits for capacity, it is not missing"
         );
+        Ok(())
     }
 
     #[test]
-    fn no_signed_in_account_is_none_and_unhealthy_ones_need_a_sign_in() {
+    fn no_signed_in_account_is_none_and_unhealthy_ones_need_a_sign_in() -> TestResult {
         assert_eq!(
             agent_accounts(&[], Provider::Anthropic),
             AgentAccounts::None
         );
-        let pending = [account("a", false, AccountStatus::PendingLogin)];
+        let pending = [account("a", false, AccountStatus::PendingLogin)?];
         assert_eq!(
             agent_accounts(&pending, Provider::Anthropic),
             AgentAccounts::None,
             "a sign-in never finished connects nothing"
         );
         let stale = [
-            account("a", true, AccountStatus::Relogin),
-            account("b", true, AccountStatus::Error),
+            account("a", true, AccountStatus::Relogin)?,
+            account("b", true, AccountStatus::Error)?,
         ];
         assert_eq!(
             agent_accounts(&stale, Provider::Anthropic),
             AgentAccounts::NeedSignIn
         );
+        Ok(())
     }
 
     #[test]
-    fn the_refusal_names_the_reason_and_where_to_connect() {
+    fn the_refusal_names_the_reason_and_where_to_connect() -> TestResult {
         assert_eq!(refusal(AgentAccounts::Usable), None);
-        let none = refusal(AgentAccounts::None).expect("refused");
+        let none = refusal(AgentAccounts::None).ok_or("refused")?;
         assert_eq!(none.code(), "claude_account_required");
         let text = none.public_message();
         assert!(text.contains("no Claude account is connected"), "{text}");
         assert!(text.contains(CONNECT_PATH), "{text}");
         let stale = refusal(AgentAccounts::NeedSignIn)
-            .expect("refused")
+            .ok_or("refused")?
             .public_message();
         assert!(stale.contains("must sign in again"), "{stale}");
         assert!(WAITING_NOTICE.contains(CONNECT_PATH));
+        Ok(())
     }
 }
