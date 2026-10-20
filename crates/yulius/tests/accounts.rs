@@ -661,6 +661,63 @@ async fn a_partial_token_does_not_end_the_sign_in() -> TestResult {
     Ok(())
 }
 
+/// SPEC-243 LGN-002: closing a running sign-in cancels it on the server; the account keeps its
+/// state, a second cancel of the ended sign-in changes nothing, and only administrators may.
+#[tokio::test]
+async fn a_running_sign_in_can_be_cancelled() -> TestResult {
+    let s = setup().await?;
+    configure_github_app(&s.h).await?;
+    s.host.push(Script {
+        chunks: vec!["Waiting for the browser...\r\n".into()],
+        exit: None,
+        ..Script::default()
+    });
+    let (account_id, login_id) = create(&s, "anthropic", "Claude closed").await?;
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let mut sub = s.h.app.login_terminal(&ctx, &login_id)?.subscribe();
+    let path = format!("/api/admin/accounts/login/{login_id}/cancel");
+
+    let alice = admit_and_sign_in(&s.h, &s.admin, "alice", 11, false).await?;
+    let refused = call(&s.h.router, Method::POST, &path, None, &alice).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    let r = call(&s.h.router, Method::POST, &path, None, &s.admin).await?;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.body);
+    let (_, status, _) = viewer_output(&mut sub).await?;
+    assert_eq!(status, "cancelled");
+    let log = s.host.log();
+    assert!(log.iter().any(|l| l == "signal:Terminate"), "{log:?}");
+    assert!(!login_dir(&s, &login_id).exists());
+    let id = AccountId::parse(&account_id)?;
+    assert_eq!(
+        s.h.store
+            .account(&id)
+            .await?
+            .ok_or("account")?
+            .status
+            .as_str(),
+        "pending_login",
+        "a cancelled sign-in does not touch the account"
+    );
+
+    let again = call(&s.h.router, Method::POST, &path, None, &s.admin).await?;
+    assert_eq!(
+        again.status,
+        StatusCode::NO_CONTENT,
+        "an ended sign-in: nothing to do"
+    );
+    let unknown = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts/login/nope/cancel",
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
 #[tokio::test]
 async fn one_login_per_account_bounded_logins_and_delete_cancels() -> TestResult {
     let s = setup().await?;

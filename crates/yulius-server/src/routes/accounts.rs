@@ -64,6 +64,16 @@ pub async fn relogin(
     Ok(Json(app.relogin_account(&ctx, &id).await?))
 }
 
+/// `POST /api/admin/accounts/login/{login_id}/cancel`: stops a running sign-in (SPEC-243).
+pub async fn cancel_login(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(login_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    app.cancel_login(&ctx, &login_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `WS /api/admin/accounts/login/{login_id}/terminal` (terminal protocol, docs/api.md).
 pub async fn login_terminal(
     State(app): State<AppState>,

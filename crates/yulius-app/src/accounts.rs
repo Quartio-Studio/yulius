@@ -932,6 +932,29 @@ impl App {
         Ok(LoginTerminal { session })
     }
 
+    /// Cancels a running login (SPEC-243 LGN-002): its process is stopped and its temporary
+    /// directory removed; the account keeps its state. A login that has already ended is left
+    /// as it is.
+    ///
+    /// # Errors
+    /// `Forbidden` for non-administrators, `NotFound` for unknown or expired logins.
+    pub fn cancel_login(&self, ctx: &AuthContext, login_id: &str) -> AppResult<()> {
+        self.require_instance_admin(ctx)?;
+        self.prune_logins();
+        let session = self
+            .logins
+            .sessions
+            .lock()
+            .map_err(AppError::internal)?
+            .get(login_id)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if session.is_running() {
+            session.request_cancel();
+        }
+        Ok(())
+    }
+
     /// Removes login directories left by a previous server process (their hosts are stopped
     /// first). Call once at startup, before serving requests.
     pub async fn cleanup_stale_logins(&self) {
