@@ -33,7 +33,8 @@ task #233. Amends SPEC-051 OBD-002 (onboarding starts only in the browser) for `
   for them: they cannot start onboarding.
 - **A token never grants more than its person.** Per project, the person's access level (from
   GitHub) decides as everywhere else; the scope can only narrow it. A `read` token is refused
-  (403) by every REST request other than GET and HEAD, and by every remote tool needing more than
+  (403) by every REST request other than GET and HEAD, by every WebSocket (a terminal's GET
+  opens a channel that types into a task), and by every remote tool needing more than
   view access; `tools/list` serves it only the tools that read.
 - **An `operate` token acts for the person**, so it may start onboarding through the REST API and
   the remote MCP (`AuthContext::acts_for_person`): the person made it on purpose for their agent,

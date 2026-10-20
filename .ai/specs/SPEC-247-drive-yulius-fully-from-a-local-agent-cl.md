@@ -72,7 +72,7 @@ Confirmed against `dev` at 06b58375.
 - **RMT-002** Tokens from `yulius login` (device approval) and all existing tokens have the scope
   `cli`: the REST API as before (`yulius onboard`, `yulius secrets import`), refused by the remote
   MCP with a message naming the Settings page. A `read` token is refused (403) by every REST
-  request other than GET/HEAD. A disabled person's tokens are refused.
+  request other than GET/HEAD and by every WebSocket. A disabled person's tokens are refused.
 - **RMT-003** Creating and revoking a token is audited (`api_token.create`, `api_token.revoke`,
   label and scope, never the token). `last_used_at` is written at most once a minute per token.
 

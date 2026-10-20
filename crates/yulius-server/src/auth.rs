@@ -66,8 +66,9 @@ impl FromRequestParts<AppState> for Auth {
                 .authenticate_bearer(token.trim())
                 .await?
                 .ok_or(AppError::Unauthenticated)?;
-            // A read-only token reads (SPEC-247 RMT-002).
-            if ctx.read_only() && !is_safe(&parts.method) {
+            // A read-only token reads (SPEC-247 RMT-002): no state-changing method, and no
+            // WebSocket, whose GET opens a channel that writes (a terminal types into a task).
+            if ctx.read_only() && (!is_safe(&parts.method) || is_upgrade(parts)) {
                 return Err(AppError::Forbidden(
                     "this API token is read-only; make an operate token on Settings to change things"
                         .into(),
@@ -95,6 +96,11 @@ impl FromRequestParts<AppState> for Auth {
         }
         Ok(Self(ctx))
     }
+}
+
+/// Whether a request asks to switch protocols (a WebSocket).
+fn is_upgrade(parts: &Parts) -> bool {
+    parts.headers.contains_key(header::UPGRADE)
 }
 
 /// Whether a request only reads.

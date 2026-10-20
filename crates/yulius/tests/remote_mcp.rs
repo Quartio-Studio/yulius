@@ -1309,3 +1309,32 @@ async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
     );
     Ok(())
 }
+
+/// RMT-002: a read-only token opens no WebSocket. A terminal's socket is a GET that types into a
+/// task, so the safe-method rule alone would let a read token write through it.
+#[tokio::test]
+async fn a_read_token_opens_no_websocket() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let read = bearer(text(
+        &make_token(&w, &browser, "watch", "read").await?["token"],
+    ));
+    let operate = bearer(text(
+        &make_token(&w, &browser, "laptop", "operate").await?["token"],
+    ));
+    let served = support::serve(w.h.router.clone()).await?;
+    let refused = support::ws_connect(served.addr, "/api/events", &read, "https://yulius.test")
+        .await
+        .err()
+        .ok_or("a read token opened a WebSocket")?;
+    assert_eq!(support::ws_refusal_status(&refused), Some(403), "{refused}");
+    let opened =
+        support::ws_connect(served.addr, "/api/events", &operate, "https://yulius.test").await;
+    assert!(
+        opened.is_ok(),
+        "an operate token is not refused: {:?}",
+        opened.err()
+    );
+    Ok(())
+}

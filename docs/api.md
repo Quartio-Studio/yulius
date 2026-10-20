@@ -10,7 +10,8 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   are raw bodies with their own limits. Timestamps are RFC 3339 UTC strings.
 - Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (personal API
   tokens: `cli` from `yulius login`, `operate` or `read` from Settings, SPEC-247; a `read` token
-  gets 403 for anything but GET and HEAD). The cookie is `__Host-yulius_session` when the public URL is HTTPS (host-only and
+  gets 403 for anything but GET and HEAD, and for every WebSocket). The cookie is
+  `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
   State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
   `GET /api/me`. A cookie session is refused (403) for a request that announces an `Origin` other
