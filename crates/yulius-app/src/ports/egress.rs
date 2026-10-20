@@ -15,13 +15,11 @@ pub struct EgressClient {
     pub caller: EgressCaller,
     /// Its sandbox: the sandbox's secrets and the global ones switched on for it apply.
     pub sandbox_id: SandboxId,
-    /// The person whose personal secrets switched on for the sandbox apply (SPEC-245 RES-002):
-    /// the Superagent's person; `None` for a CI job. For an agent run, its task's holder when the
-    /// credential was resolved; the policy reads the task's current holder per request instead.
-    pub person: Option<UserId>,
 }
 
-/// Who holds a proxy credential.
+/// Who holds a proxy credential. Whose personal secrets apply (SPEC-245 RES-002) is no field of
+/// an agent run's: the policy reads its task's current holder per request, so a hand-over or a
+/// deleted task applies also to credentials resolved before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressCaller {
     /// An agent run: every agent secret of its sandbox applies.
@@ -50,6 +48,8 @@ pub enum EgressCaller {
         shell_id: String,
         /// Audit actor `cockpit:<login>`.
         actor: String,
+        /// Its person, whose personal secrets switched on for the sandbox apply.
+        person: UserId,
     },
 }
 
@@ -72,14 +72,6 @@ impl EgressClient {
             EgressCaller::Ci { job_id, .. } => job_id,
             EgressCaller::Superagent { shell_id, .. } => shell_id,
         }
-    }
-
-    /// For whom its sandbox's secrets are resolved (SPEC-245).
-    #[must_use]
-    pub fn holder(&self) -> crate::vault::Holder<'_> {
-        self.person
-            .as_ref()
-            .map_or(crate::vault::Holder::Nobody, crate::vault::Holder::Person)
     }
 
     /// Whether agent secret `name` (`cd_prod`: allowed for production deploys) applies to it.

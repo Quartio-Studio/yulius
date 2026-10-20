@@ -242,8 +242,8 @@ impl App {
     }
 
     /// Whose personal secrets apply to `client` now: an agent run's task's current holder (read
-    /// per request, so a hand-over or an automation's origin applies also to connections and
-    /// cached credentials from before it), else the person its credential names.
+    /// per request, so a hand-over, a deleted task or an automation's origin applies also to
+    /// connections and cached credentials from before it), a Superagent's person, no CI job's.
     async fn client_person(&self, client: &EgressClient) -> AppResult<Option<UserId>> {
         match &client.caller {
             EgressCaller::Agent { task_id, .. } => Ok(self
@@ -252,7 +252,8 @@ impl App {
                 .task(task_id)
                 .await?
                 .and_then(|task| super::Holder::of_task(&task).person().cloned())),
-            EgressCaller::Ci { .. } | EgressCaller::Superagent { .. } => Ok(client.person.clone()),
+            EgressCaller::Ci { .. } => Ok(None),
+            EgressCaller::Superagent { person, .. } => Ok(Some(person.clone())),
         }
     }
 
@@ -764,7 +765,6 @@ impl App {
                 secrets: secrets.to_vec(),
             },
             sandbox_id: sandbox.clone(),
-            person: None,
         };
         let mut clients = self.vault.ci_clients.0.lock().ok()?;
         if clients.len() >= CI_CLIENTS_MAX {
@@ -821,9 +821,9 @@ impl App {
                 caller: EgressCaller::Superagent {
                     shell_id: caller.detail["shell"].as_str()?.to_owned(),
                     actor: caller.actor,
+                    person: caller.user,
                 },
                 sandbox_id: caller.sandbox,
-                person: Some(caller.user),
             }
         } else {
             let ctx = self.agent_context(token).await.ok()?;
@@ -834,7 +834,6 @@ impl App {
                     task_number: ctx.task.number,
                 },
                 sandbox_id: ctx.task.sandbox_id.clone(),
-                person: super::Holder::of_task(&ctx.task).person().cloned(),
             }
         };
         if let Ok(mut cache) = self.vault.clients.0.lock() {
