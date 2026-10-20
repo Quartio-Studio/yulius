@@ -771,11 +771,18 @@ impl App {
             })?;
             self.user_github_token(&owner_user).await?
         };
-        let repo = self
+        let repo = match self
             .deps
             .github
             .create_repo(&admin_token, &owner, is_org, name, &description)
-            .await?;
+            .await
+        {
+            Ok(repo) => repo,
+            Err(AppError::Forbidden(accepted)) => {
+                return Err(self.creation_refused(&owner, name, &accepted).await);
+            }
+            Err(err) => return Err(err),
+        };
         let repo_owner = if repo.owner.is_empty() {
             owner.clone()
         } else {
@@ -805,7 +812,9 @@ impl App {
             .await;
         if let Err(err) = pushed {
             remove_tree(dir).await;
-            return Err(err);
+            return Err(self
+                .created_but_unreachable(&repo_owner, &repo_name, err)
+                .await);
         }
         // Rulesets on private repositories need a paid GitHub plan. They are a second line of
         // defence only: Yulius's own merge gate enforces the delivery rules (SPEC-002 ADR-21),

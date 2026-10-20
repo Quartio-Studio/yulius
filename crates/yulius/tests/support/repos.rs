@@ -429,6 +429,12 @@ pub struct RepoGitHub {
     pub installation_lookups: AtomicU32,
     /// GitHub refuses every new ruleset (a private repository on a free plan).
     pub refuse_rulesets: AtomicBool,
+    /// GitHub refuses to create repositories for a missing App permission, accepting these
+    /// (`X-Accepted-GitHub-Permissions`, the `create_repo` contract).
+    pub refuse_creation: Mutex<Option<String>>,
+    /// The App's installation covers only selected repositories, and a created repository is
+    /// not among them: it is neither listed nor reachable over Git.
+    pub selected_only: AtomicBool,
 }
 
 impl RepoGitHub {
@@ -519,11 +525,17 @@ impl GitHubPort for RepoGitHub {
         name: &str,
         _description: &str,
     ) -> AppResult<GhRepo> {
+        if let Some(accepted) = self.refuse_creation.lock().map_err(AppError::internal)?.clone() {
+            return Err(AppError::Forbidden(accepted));
+        }
         let path = self.remotes_dir.join(owner).join(format!("{name}.git"));
         std::fs::create_dir_all(&path).map_err(AppError::internal)?;
         git(&path, &["init", "--quiet", "--bare"]).map_err(AppError::Upstream)?;
         let repo = gh_repo(owner, name, true);
-        self.git.add_remote(&repo.clone_url, &path);
+        if !self.selected_only.load(Ordering::SeqCst) {
+            self.git.add_remote(&repo.clone_url, &path);
+            self.add_installation_repo(owner, name, true);
+        }
         if let Ok(mut created) = self.created.lock() {
             created.push(CreatedRepo {
                 owner: owner.to_owned(),
@@ -685,6 +697,8 @@ impl World {
             rulesets: Mutex::new(Vec::new()),
             installation_lookups: AtomicU32::new(0),
             refuse_rulesets: AtomicBool::new(false),
+            refuse_creation: Mutex::new(None),
+            selected_only: AtomicBool::new(false),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

@@ -1491,3 +1491,88 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     assert_eq!(remote_heads(&remote)?.trim(), "main");
     Ok(())
 }
+
+// SPEC-241 CRT-001: "some permissions" error when creating a repository from Yulius: GitHub's
+// 403 names what the App lacks, and the message says it with the pages that grant it.
+#[tokio::test]
+async fn a_create_github_refuses_names_the_missing_app_permission() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, admin) = w.user("alice", true).await?;
+    *w.github.refuse_creation.lock().map_err(|e| e.to_string())? =
+        Some("administration=write; repository_creation=write".into());
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "new-shop", "template": "web"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
+    for part in [
+        "GitHub refused to create Quartio-Studio/new-shop",
+        "Administration: Read and write (or Repository creation: Read and write)",
+        "Nothing was created",
+        "https://github.com/organizations/Quartio-Studio/settings/apps/yulius-test/permissions",
+        "https://github.com/organizations/Quartio-Studio/settings/installations/7",
+    ] {
+        assert!(message.contains(part), "{part:?} missing from {message}");
+    }
+    assert!(w.h.store.sandboxes().await?.is_empty());
+    assert!(!w.git.calls().iter().any(|c| c.starts_with("clone")));
+    Ok(())
+}
+
+// SPEC-241 CRT-002 with EMP-002: the App's installation covers only selected repositories, so the
+// repository it created is out of its reach. The message says where to add it; once added, Import
+// and onboarding set the empty repository up.
+#[tokio::test]
+async fn a_created_repository_out_of_the_installations_reach_is_explained() -> TestResult {
+    let w = World::new("user").await?;
+    let (admin_user, admin) = w.user("alice", true).await?;
+    let admin_browser = w.browser(&admin_user).await?;
+    w.user(OWNER, false).await?;
+    w.github.selected_only.store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "tool", "template": "empty"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
+    for part in [
+        "Quartio-Studio/tool was created on GitHub",
+        "only selected repositories",
+        "https://github.com/settings/installations/7",
+        "Import repository",
+    ] {
+        assert!(message.contains(part), "{part:?} missing from {message}");
+    }
+    assert!(w.h.store.sandboxes().await?.is_empty());
+    let sandboxes = w.data_dir().join("sandboxes");
+    assert!(
+        !sandboxes.exists() || std::fs::read_dir(&sandboxes)?.next().is_none(),
+        "nothing left on disk"
+    );
+
+    // The owner adds it to the installation; Import and onboarding take it from there.
+    let remote = w
+        .scratch
+        .path()
+        .join("remotes")
+        .join(OWNER)
+        .join("tool.git");
+    w.git
+        .add_remote(&format!("https://github.com/{OWNER}/tool.git"), &remote);
+    w.github.add_installation_repo(OWNER, "tool", true);
+    w.grant("alice", "tool", "admin");
+    let imported = import(&w, &admin_browser, "Quartio-Studio/tool").await?;
+    assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
+    assert_eq!(imported.body["onboarding"], "preparing", "{}", imported.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
