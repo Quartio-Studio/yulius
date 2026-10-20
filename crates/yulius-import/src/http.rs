@@ -132,7 +132,7 @@ static INSTALL_PROVIDER: Once = Once::new();
 
 /// Installs the ring crypto provider as the process default (shared TLS decision); an already
 /// installed provider is kept.
-fn install_crypto_provider() {
+pub(crate) fn install_crypto_provider() {
     INSTALL_PROVIDER.call_once(|| {
         // Err means another provider is already installed, which is acceptable.
         let _ = rustls::crypto::ring::default_provider().install_default();

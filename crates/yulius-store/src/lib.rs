@@ -95,6 +95,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0038_account_email.sql"),
     // Schema version 39 (SPEC-245).
     include_str!("migrations/0039_agent_secret_scopes.sql"),
+    // Schema version 40 (SPEC-247).
+    include_str!("migrations/0040_api_token_scopes.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -183,6 +185,17 @@ impl SqliteStore {
             .map_err(|_| AppError::Internal("database thread stopped".into()))?;
         rx.await
             .map_err(|_| AppError::Internal("database job dropped".into()))?
+    }
+
+    /// Runs `sql` on the store's connection (tests only: e.g. a trigger that makes a write
+    /// fail).
+    ///
+    /// # Errors
+    /// SQLite failures.
+    #[cfg(feature = "test-support")]
+    pub async fn execute_for_tests(&self, sql: &str) -> AppResult<()> {
+        let sql = sql.to_owned();
+        self.call(move |c| c.execute_batch(&sql).map_err(db)).await
     }
 
     /// [`Self::call`] for a write that can change who may type into a terminal: the access epoch

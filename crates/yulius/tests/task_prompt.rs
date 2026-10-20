@@ -312,6 +312,7 @@ async fn twelve_images_are_served_together_while_every_upload_slot_is_taken() ->
         user,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     let mut uploads = Vec::new();
     for n in 0..MAX_CONCURRENT_UPLOADS {

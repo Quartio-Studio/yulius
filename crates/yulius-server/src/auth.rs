@@ -66,6 +66,15 @@ impl FromRequestParts<AppState> for Auth {
                 .authenticate_bearer(token.trim())
                 .await?
                 .ok_or(AppError::Unauthenticated)?;
+            // A read-only token reads (SPEC-247 RMT-002): no state-changing method, and no
+            // WebSocket, whose GET opens a channel that writes (a terminal types into a task).
+            if ctx.read_only() && (!is_safe(&parts.method) || is_upgrade(parts)) {
+                return Err(AppError::Forbidden(
+                    "this API token is read-only; make an operate token on Settings to change things"
+                        .into(),
+                )
+                .into());
+            }
             return Ok(Self(ctx));
         }
         let cookie = cookie_value(parts, session_cookie_name(app.config.secure_cookies))
@@ -75,8 +84,7 @@ impl FromRequestParts<AppState> for Auth {
             .authenticate_cookie(&cookie)
             .await?
             .ok_or(AppError::Unauthenticated)?;
-        let safe = matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS);
-        if !safe {
+        if !is_safe(&parts.method) {
             let sent = parts
                 .headers
                 .get(CSRF_HEADER)
@@ -88,6 +96,16 @@ impl FromRequestParts<AppState> for Auth {
         }
         Ok(Self(ctx))
     }
+}
+
+/// Whether a request asks to switch protocols (a WebSocket).
+fn is_upgrade(parts: &Parts) -> bool {
+    parts.headers.contains_key(header::UPGRADE)
+}
+
+/// Whether a request only reads.
+fn is_safe(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
 /// A cookie session may be used only by Yulius's own pages (SPEC-002 ADR-14, §8): a request

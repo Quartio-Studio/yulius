@@ -480,10 +480,11 @@ pub(crate) fn production_ruleset_fix(repo: &str, branch: &str) -> String {
     )
 }
 
-/// Refuses a caller that is not a person in the browser: onboarding starts only from the sandbox
-/// page (SPEC-051 OBD-002, ADR-0038).
+/// Refuses a caller that is not a person: onboarding starts from the sandbox page (SPEC-051
+/// OBD-002, ADR-0038) or through an `operate` token the person made for their own agent
+/// (SPEC-247 RMT-021, ADR-0188); never with a `yulius login` token.
 fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
-    if ctx.is_browser() {
+    if ctx.acts_for_person() {
         Ok(())
     } else {
         Err(AppError::Forbidden(
@@ -503,7 +504,7 @@ impl App {
         ctx: &AuthContext,
         task: &TaskRecord,
     ) -> AppResult<()> {
-        if task.origin != TaskOrigin::Onboarding || ctx.is_browser() {
+        if task.origin != TaskOrigin::Onboarding || ctx.acts_for_person() {
             return Ok(());
         }
         let record = self

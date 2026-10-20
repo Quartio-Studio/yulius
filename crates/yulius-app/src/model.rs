@@ -120,7 +120,7 @@ pub struct WebSessionRecord {
     pub revoked_at: Option<Timestamp>,
 }
 
-/// A CLI API token.
+/// A personal API token (`yul_…`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiTokenRecord {
     /// Id.
@@ -131,8 +131,12 @@ pub struct ApiTokenRecord {
     pub token_hash: String,
     /// Label.
     pub label: String,
+    /// What it may do (SPEC-247, ADR-0188).
+    pub scope: yulius_domain::permission::TokenScope,
     /// Created.
     pub created_at: Timestamp,
+    /// Last authenticated request, written at most once a minute.
+    pub last_used_at: Option<Timestamp>,
     /// Revoked.
     pub revoked_at: Option<Timestamp>,
 }

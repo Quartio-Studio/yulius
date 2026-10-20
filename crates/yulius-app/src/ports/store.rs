@@ -110,6 +110,12 @@ pub trait SessionStore: Send + Sync {
     async fn insert_api_token(&self, token: &ApiTokenRecord) -> AppResult<()>;
     /// API token by hash (not revoked).
     async fn api_token(&self, token_hash: &str) -> AppResult<Option<ApiTokenRecord>>;
+    /// A user's live (not revoked) API tokens, newest first.
+    async fn api_tokens_of(&self, user: &UserId) -> AppResult<Vec<ApiTokenRecord>>;
+    /// Revokes the user's token `id`; `false` when they have no such live token.
+    async fn revoke_api_token(&self, user: &UserId, id: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records a token's last use.
+    async fn touch_api_token(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Inserts a device grant unless its client or the instance already holds `bounds` live
     /// grants (not expired at `grant.created_at`, not consumed); deletes expired and consumed
     /// grants first, in the same transaction.
@@ -605,6 +611,9 @@ pub trait AuditStore: Send + Sync {
         target: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()>;
+    /// The details of the newest `limit` entries of `action` about `target`, newest first.
+    async fn audit_details(&self, target: &str, action: &str, limit: u32)
+    -> AppResult<Vec<String>>;
 }
 
 /// Every store area; the SQLite adapter implements this.

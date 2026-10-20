@@ -44,6 +44,7 @@ async fn agent_secret(
         user: user.clone(),
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     app.create_agent_secret(
         &ctx,

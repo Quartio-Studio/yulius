@@ -111,6 +111,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.switch_task(
             &ctx,

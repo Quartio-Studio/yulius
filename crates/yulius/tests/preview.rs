@@ -1057,3 +1057,94 @@ async fn yulius_is_never_shown_inside_itself() -> TestResult {
     }
     Ok(())
 }
+
+/// SPEC-247 (review): a read-only API token gets no preview, whose proxy forwards every method;
+/// a preview granted to an operate token ends at the next check once the token is revoked.
+#[tokio::test]
+async fn previews_follow_the_api_token_they_were_granted_to() -> TestResult {
+    use yulius_app::ports::store::{SessionStore as _, UserStore as _};
+    use yulius_domain::ids::UserId;
+    use yulius_domain::permission::TokenScope;
+    let f = fixture().await?;
+    let host = f.host(f.port);
+    let alice =
+        f.h.store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let read =
+        f.h.app
+            .issue_api_token(&alice, "watch", TokenScope::Read)
+            .await?;
+    let refused = fetch(
+        &f.h,
+        "yulius.test",
+        &format!("/api/previews/authorize?host={host}&to=/"),
+        &[("authorization", &format!("Bearer {}", read.expose()))],
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::SEE_OTHER, "{}", refused.body);
+    let to = refused.header("location").unwrap_or_default();
+    assert!(to.ends_with("/__yulius/denied?why=access"), "refused: {to}");
+
+    let operate =
+        f.h.app
+            .issue_api_token(&alice, "laptop", TokenScope::Operate)
+            .await?;
+    let authorize = fetch(
+        &f.h,
+        "yulius.test",
+        &format!("/api/previews/authorize?host={host}&to=/"),
+        &[("authorization", &format!("Bearer {}", operate.expose()))],
+    )
+    .await?;
+    assert_eq!(
+        authorize.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        authorize.body
+    );
+    let location = authorize.header("location").ok_or("location")?;
+    let path = location
+        .strip_prefix(&f.origin(f.port))
+        .ok_or("handshake origin")?;
+    let handshake = fetch(&f.h, &host, path, &[]).await?;
+    let set = handshake.header("set-cookie").ok_or("no grant cookie")?;
+    let grant = set.split(';').next().ok_or("cookie")?.to_owned();
+    let open = fetch(
+        &f.h,
+        &host,
+        "/",
+        &[("cookie", &grant), ("sec-fetch-mode", "navigate")],
+    )
+    .await?;
+    assert_eq!(open.status, StatusCode::OK);
+
+    let id =
+        f.h.store
+            .api_tokens_of(&alice.id)
+            .await?
+            .into_iter()
+            .find(|t| t.label == "laptop")
+            .ok_or("token")?
+            .id;
+    assert!(
+        f.h.store
+            .revoke_api_token(&alice.id, &id, f.h.app.now())
+            .await?
+    );
+    f.h.clock.0.fetch_add(31_000, Ordering::SeqCst);
+    let after = fetch(
+        &f.h,
+        &host,
+        "/",
+        &[("cookie", &grant), ("sec-fetch-mode", "navigate")],
+    )
+    .await?;
+    assert_eq!(
+        after.status,
+        StatusCode::FOUND,
+        "back through Yulius, which now refuses"
+    );
+    Ok(())
+}

@@ -2225,7 +2225,7 @@ async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
     let bearer = Creds {
         bearer: Some(
             h.app
-                .issue_api_token(&user, "tests")
+                .issue_api_token(&user, "tests", yulius_domain::permission::TokenScope::Cli)
                 .await?
                 .expose()
                 .to_owned(),
@@ -2534,7 +2534,7 @@ async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later(
     let bearer = Creds {
         bearer: Some(
             h.app
-                .issue_api_token(&user, "tests")
+                .issue_api_token(&user, "tests", yulius_domain::permission::TokenScope::Cli)
                 .await?
                 .expose()
                 .to_owned(),

@@ -1253,7 +1253,10 @@ async fn only_the_superadmin_sees_sandboxes_without_github() -> TestResult {
         disabled_at: None,
     };
     h.store.insert_user(&other).await?;
-    let token = h.app.issue_api_token(&other, "tests").await?;
+    let token = h
+        .app
+        .issue_api_token(&other, "tests", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     let other = Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()

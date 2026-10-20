@@ -335,6 +335,7 @@ async fn support_ctx(
         user,
         csrf_token: None,
         session_hash: None,
+        token: None,
     })
 }
 

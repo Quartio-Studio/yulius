@@ -9,8 +9,9 @@ Anthropic. The detailed contracts are in
 ```mermaid
 flowchart LR
   UI["Web UI (xterm.js, Monaco)"] <--> RP["Reverse proxy (TLS)"] <--> API
+  LA["A person's local agent or the yulius CLI"] -->|"remote MCP, API token"| RP
   subgraph Server["yulius serve"]
-    API["Public HTTP + WS API"]
+    API["Public HTTP + WS API, remote MCP"]
     INT["Internal loopback: MCP, hooks, git and gh credentials"]
     APP["Application services"]
     SUP["Session supervisor"]
@@ -712,6 +713,40 @@ flowchart LR
     W -->|PUT start: Start now / Supertask| Q[queued]
     C -->|evaluation of the same chain| Q
     X[queued, running, ended] -->|PUT start| N[409: keeps its start]
+```
+
+## Remote control
+
+A person drives the instance from their own computer ([guide](remote-control.md), SPEC-247,
+[ADR-0188](decisions/0188-remote-control-uses-scoped-personal-api-tokens.md),
+[ADR-0189](decisions/0189-remote-file-changes-are-commits-on-a-change-branch-with-a-pull-request.md)).
+On Settings they make a personal API token (`operate` or `read`, stored hashed). Their local
+Claude Code adds `https://<instance>/mcp` with it; the `yulius` CLI (`yulius remote login`, then
+`yulius project|task|ci …`) calls the same endpoint. `App::remote_mcp_handle`
+(`crates/yulius-app/src/remote.rs`) checks the token's scope, counts 120 requests a minute, and
+checks each project tool's action against the person's access to the project named in
+`project`. It then runs the Superagent's own tool (as `remote:<login>`) or the function the web
+UI's route calls, audits changes as `remote.tool` and redacts results as every MCP result. File
+changes never touch a sandbox: `project_change` commits in a fresh clone of GitHub, in a private
+directory outside every sandbox, and opens a
+pull request that Yulius CI tests, and `change_merge` merges it once green
+(`crates/yulius-app/src/remote_files.rs`).
+
+```mermaid
+sequenceDiagram
+  participant L as Local agent / yulius CLI
+  participant M as POST /mcp (public)
+  participant A as App (remote.rs)
+  participant G as GitHub
+  participant C as Yulius CI
+  L->>M: tools/call project_change {project, files}
+  M->>A: remote_caller(token): scope, 120/min
+  A->>A: require(person, project, Work)
+  A->>G: fresh clone, commit as the person, push yulius/change-…, open PR
+  C->>G: tests the pull request (its own [[ci.jobs]])
+  L->>M: tools/call change_merge {number}
+  A->>C: run at the exact head passed?
+  A->>G: merge, delete the branch
 ```
 
 ## Superagent (the Cockpit)

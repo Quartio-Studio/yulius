@@ -15,6 +15,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   import then adds the sandbox and waits for Start onboarding; an onboarding start that failed for
   want of an account is offered as Retry onboarding once one is connected. Tasks started by a chain,
   a rule or an automation still wait and now say no account is connected.
+- Yulius can be driven from a laptop by a local agent or the CLI (SPEC-247, ADR-0188, ADR-0189,
+  task #233; an early external user's most important point: "make a task, restart it" from their
+  own agent). Settings → Connect your local agent makes a personal API token, `operate` or
+  `read`. It is shown once with its `claude mcp add` and `yulius remote login` commands, stored
+  hashed, listed with its last use and revocable. The instance serves a remote MCP at `/mcp`. A
+  person's Claude Code imports a repository with it, starts its onboarding, reads files, sets up CI
+  through a change pull request merged once Yulius CI passed, and manages tasks, CI, CD (dev),
+  automations and secret bindings, within the person's own access to each project. Requests are
+  limited to 120 a minute per token, and changes are audited as `remote:<login>`. The new `yulius
+  remote|project|task|ci` commands call the same tools. `yulius login` tokens keep working as
+  before and cannot start onboarding. [Guide](remote-control.md).
 
 - Secrets scopes, review follow-ups (SPEC-248, task #234): a hand-over rewrites the run's
   fingerprint file for the new owner, so no run keeps hashes of the previous owner's personal
