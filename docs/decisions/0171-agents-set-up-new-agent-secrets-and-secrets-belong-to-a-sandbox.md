@@ -6,7 +6,7 @@ Accepted. Specified in [SPEC-216](../../.ai/specs/SPEC-216-agent-s-secrets-for-d
 task #203. Amends [0098](0098-agents-propose-secret-hosts-people-allow-them.md) ("an agent never
 binds a host itself") and [0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md)
 ("production runs get only those a person allowed for production deploys") for secrets whose
-creator lets agents set them up; leaves both as they are for the others.
+creator lets agents set them up; leaves both as they are for the others. Amended by [0186](0186-agent-secrets-are-project-global-or-personal.md): a team-wide agent secret is now a global one, reaching only the projects it is switched on for.
 
 ## Context
 

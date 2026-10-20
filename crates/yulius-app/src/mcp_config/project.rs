@@ -262,9 +262,7 @@ impl App {
     /// Never fails: what cannot be read or added is logged and skipped (PMC-003).
     pub(crate) async fn import_project_mcp(&self, sandbox: &SandboxRecord) -> Vec<String> {
         let agent_secrets: BTreeSet<String> = match self
-            .deps
-            .store
-            .vault_agent(Some(&sandbox.id))
+            .resolved_agent_secrets(&sandbox.id, crate::vault::Holder::Nobody)
             .await
         {
             Ok(records) => records.into_iter().map(|r| r.name).collect(),

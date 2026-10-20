@@ -147,8 +147,18 @@ pub struct AgentSecretView {
     pub name: String,
     /// What it is for (agents read it).
     pub description: String,
-    /// `sandbox` or `instance` (every sandbox).
+    /// `sandbox` (the project's), `instance` (global) or `personal` (the caller's own; nobody
+    /// else is ever shown one) (SPEC-245).
     pub scope: String,
+    /// It reaches the project's runs: always for a project secret, for a global or personal one
+    /// while it is switched on for the project (in a project's list and when added; elsewhere a
+    /// global or personal one reads `false`). Absent from older servers.
+    #[serde(default)]
+    pub enabled: bool,
+    /// When a secret of the same name and another scope wins in the project: that scope
+    /// (`sandbox` or `personal`; precedence project > personal > global).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadowed_by: Option<String>,
     /// The hosts it is sent to (proxy) or typed into (browser); empty until a person binds or
     /// allows some (SPEC-121).
     pub hosts: Vec<String>,
@@ -204,7 +214,9 @@ pub struct AgentSecretView {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSecretInput {
-    /// `sandbox` (default) or `instance` (instance administrators).
+    /// `sandbox` (default), `instance` (global: instance administrators) or `personal` (the
+    /// caller's own). A global or personal secret starts switched on for the sandbox it is added
+    /// in.
     #[serde(default)]
     pub scope: Option<String>,
     /// NAME.
@@ -300,6 +312,15 @@ pub struct EnvFilesAnswer {
 pub struct CdProdAnswer {
     /// Allow (`true`) or revoke.
     pub allow: bool,
+}
+
+/// `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`: switches a global or personal secret on
+/// or off for the sandbox (SPEC-245 MAN-004).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSecretSwitch {
+    /// On (`true`) or off.
+    pub enabled: bool,
 }
 
 /// One vault audit entry.

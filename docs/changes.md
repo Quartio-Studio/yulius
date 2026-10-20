@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-20
 
+- Agent secrets have three scopes: Project, Global and Personal (SPEC-245, ADR-0186, task #231),
+  after an external user found the old scopes pointless. Global secrets are defined once by
+  instance administrators and switched on per project; personal ones belong to one person, are
+  switched on by them per project and reach only tasks they start (not other people's, not
+  automations, CI or deploys), only through the egress proxy. A name resolves project, then
+  personal, then global. Team-wide agent secrets became global ones switched on for every
+  project, so no run lost a secret. The Secrets page opens on Project; Team secrets is the fourth
+  tab (`?section=team`).
 - A new GitHub repository with no commits can be onboarded (SPEC-241, ADR-0187, task #227). Starting
   its onboarding failed with "git: revision not found: origin/master": the empty clone named the
   server's own default branch, and there was no branch for the onboarding task to start from. Import

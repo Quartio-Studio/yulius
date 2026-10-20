@@ -886,6 +886,7 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             id: "old-gmail".into(),
             section: VaultSection::Team,
             sandbox_id: None,
+            owner_id: None,
             name: "Shared Gmail".into(),
             description: String::new(),
             hosts: Vec::new(),
@@ -1272,6 +1273,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             id: "old-docs".into(),
             section: VaultSection::Agent,
             sandbox_id: Some(yulius_domain::ids::SandboxId::parse("s1")?),
+            owner_id: None,
             name: "DOCS_LOGIN".into(),
             description: "Docs admin login".into(),
             hosts: vec!["docs.example".into()],
@@ -1384,6 +1386,7 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
             id: "old-key".into(),
             section: VaultSection::Agent,
             sandbox_id: Some(yulius_domain::ids::SandboxId::parse("s1")?),
+            owner_id: None,
             name: "OLD_DEPLOY_KEY".into(),
             description: "Deploy key".into(),
             hosts: Vec::new(),
@@ -1543,18 +1546,16 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
         &w.writer,
     )
     .await?;
-    let names: Vec<&str> = other
+    let listed: Vec<(&str, bool)> = other
         .body
         .as_array()
         .ok_or("list")?
         .iter()
-        .filter_map(|s| s["name"].as_str())
+        .filter_map(|s| Some((s["name"].as_str()?, s["enabled"].as_bool()?)))
         .collect();
-    assert_eq!(
-        names,
-        vec!["GLOBAL_KEY"],
-        "instance-wide ones apply to every sandbox"
-    );
+    // SPEC-245 SCP-003: a global secret shows in every sandbox, switched on only where it was
+    // added until an administrator switches it on elsewhere.
+    assert_eq!(listed, vec![("GLOBAL_KEY", false)], "listed, but off in s2");
 
     // Validation: short values, reserved names, duplicates, Basic without a user name.
     for (body, status) in [
@@ -1584,14 +1585,47 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (stripe, StatusCode::CONFLICT),
-        (
-            json!({"name": "GLOBAL_KEY", "hosts": ["a.test"], "value": "12345678"}),
-            StatusCode::CONFLICT,
-        ),
     ] {
         let response = add_agent_secret(&w, &w.writer, "s1", body.clone()).await?;
         assert_eq!(response.status, status, "{body}: {}", response.body);
     }
+    // SPEC-245 RES-001: a project secret may take a global secret's name; it wins in its project.
+    let mine = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "GLOBAL_KEY", "hosts": ["a.test"], "value": "12345678"}),
+    )
+    .await?;
+    assert_eq!(mine.status, StatusCode::CREATED, "{}", mine.body);
+    let s1 = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    let global = s1
+        .body
+        .as_array()
+        .ok_or("list")?
+        .iter()
+        .find(|s| s["id"] == global_id.as_str())
+        .ok_or("global listed")?;
+    assert_eq!(global["shadowed_by"], "sandbox", "{global}");
+    let gone = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!(
+            "/api/agent-secrets/{}",
+            mine.body["id"].as_str().ok_or("id")?
+        ),
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.body);
 
     // People who manage it read it back after a two-factor unlock (SPEC-040 R7); readers
     // cannot, outsiders do not see it, API tokens never reveal.

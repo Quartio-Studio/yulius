@@ -3627,7 +3627,7 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
     }
     assert!(home.join(".ssh/operator").exists(), "kept unless asked");
 
-    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    let records = f.h.store.vault_agent_in(&sid()).await?;
     let record = records
         .iter()
         .find(|r| r.name == "DO_SSH_PRIVATE_KEY")
@@ -3677,7 +3677,7 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
         !refused.to_string().contains("outside-synthetic"),
         "{refused}"
     );
-    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    let records = f.h.store.vault_agent_in(&sid()).await?;
     assert!(!records.iter().any(|r| r.name == "OUTSIDE_KEY"));
     f.h.app.end_all_shells().await;
     Ok(())

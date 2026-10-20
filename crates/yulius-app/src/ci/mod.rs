@@ -475,7 +475,7 @@ impl App {
     pub(crate) async fn ci_scans(&self, sandbox: &SandboxRecord) -> bool {
         !sandbox.is_playground()
             && self
-                .applied_agent_secrets(&sandbox.id)
+                .applied_agent_secrets(&sandbox.id, crate::vault::Holder::Nobody)
                 .await
                 .is_ok_and(|records| records.iter().any(|r| r.name == dom::VIDOC_SECRET))
     }

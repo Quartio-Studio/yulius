@@ -265,7 +265,8 @@ enum SecretsAction {
         /// repository).
         #[arg(long)]
         sandbox: Option<String>,
-        /// Team-wide secrets, for every sandbox (agent secrets: instance administrators).
+        /// Team-wide team secrets; global agent secrets (instance administrators), switched on for
+        /// the sandbox.
         #[arg(long)]
         instance: bool,
         /// Agent secrets: you allow each host and production deploys on the Secrets page,
