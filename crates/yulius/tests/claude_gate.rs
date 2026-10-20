@@ -312,3 +312,29 @@ async fn a_start_by_machinery_waits_for_an_account_and_says_why() -> TestResult 
     assert!(!summary.waits_for_account, "only out of capacity");
     Ok(())
 }
+
+/// CLA-004 (review round 2): a paused task's `waits_for_account` follows the accounts: once one is
+/// connected (here one with no capacity left, so it keeps waiting) the next resume pass shows the
+/// task again as waiting for capacity, without the task itself changing.
+#[tokio::test]
+async fn a_waiting_task_is_shown_again_when_an_account_is_connected() -> TestResult {
+    let (h, _) = world().await?;
+    seed_task(&h, "t-wait", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let id = TaskId::parse("t-wait")?;
+    h.app.pause_task(&id, PauseKind::Start, None, None).await?;
+    h.app.resume_round().await;
+    let mut events = h.app.events.subscribe();
+    support::exhausted_subscription(&h).await?;
+    h.app.resume_round().await;
+    let mut shown = None;
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+            && task.id == "t-wait"
+        {
+            shown = Some(task.waits_for_account);
+        }
+    }
+    assert_eq!(shown, Some(false), "shown again, waiting for capacity now");
+    assert_eq!(status(&h, "t-wait").await?, TaskStatus::WaitingCapacity);
+    Ok(())
+}

@@ -103,6 +103,9 @@ pub struct CapacityState {
     pub(crate) email_not_before: tokio::sync::Mutex<HashMap<AccountId, Timestamp>>,
     /// The last usage round asked for by opening the subscriptions list (debounced).
     pub(crate) usage_asked: Mutex<Option<Timestamp>>,
+    /// Whether a Claude account was usable at the last resume pass: when it changes, the paused
+    /// tasks are shown again, so their `waits_for_account` follows (SPEC-246 CLA-004).
+    accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -466,6 +469,7 @@ impl App {
         let Ok(pauses) = self.deps.store.open_pauses().await else {
             return RECHECK;
         };
+        self.republish_when_accounts_change(&pauses).await;
         let mut earliest: Option<Timestamp> = None;
         let mut resumed = 0_u32;
         let mut holding = false;
@@ -490,6 +494,28 @@ impl App {
             Duration::from_millis(ms.saturating_add(1_000)).clamp(MIN_RECHECK, RECHECK)
         });
         if holding { wait.min(HOLD_CHECK) } else { wait }
+    }
+
+    /// Shows the paused tasks again when a Claude account became usable or stopped being usable
+    /// since the last pass: whether each waits for an account or for capacity changed with it.
+    async fn republish_when_accounts_change(&self, pauses: &[PauseRecord]) {
+        let Ok(now) = self
+            .agent_accounts(yulius_domain::harness::Provider::Anthropic)
+            .await
+        else {
+            return;
+        };
+        let changed = self
+            .capacity
+            .accounts_seen
+            .lock()
+            .map(|mut seen| seen.replace(now).is_some_and(|before| before != now))
+            .unwrap_or(false);
+        if changed {
+            for pause in pauses {
+                self.publish_task(&pause.task_id).await;
+            }
+        }
     }
 
     /// Whether `pause` holds an agent at a hook of a run that reports through hooks (a `turn`

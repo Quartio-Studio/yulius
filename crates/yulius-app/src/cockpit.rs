@@ -257,9 +257,9 @@ impl App {
     /// conversation) when it is not running.
     ///
     /// # Errors
-    /// `NotFound`/`Forbidden` without write access, `Conflict` before the repository is cloned
-    /// or without a Claude subscription, `Capacity` while none has capacity, `Upstream` when the
-    /// session cannot start.
+    /// `NotFound`/`Forbidden` without write access, `Conflict` before the repository is cloned,
+    /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity,
+    /// `Upstream` when the session cannot start.
     pub async fn cockpit_open(
         self: &Arc<Self>,
         ctx: &AuthContext,
