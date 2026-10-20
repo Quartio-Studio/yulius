@@ -1,11 +1,11 @@
 ---
 yulius-task: 8ff0e8ce-10f1-41f4-9f80-3f90e00917e6
-status: in-progress
+status: done
 ---
 
 # SPEC-248: Secrets scopes: review follow-ups
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: Yulius task #234
 Scope authorization: task #234, the minor items the independent review of task #231
@@ -69,7 +69,7 @@ code does.
 - [x] Documents corrected and the ADR index ordered
 - [x] Gates green and review round 1 fixed
 - [x] Review round 2 fixed and gates green
-- [ ] Review round 3 approved and merged on green
+- [x] Review round 3 approved
 
 ## Acceptance criteria
 
@@ -135,6 +135,10 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
   rewrite) failed before the fix (no `CAROL_TOKEN`) and passes now that rewrites are serialized
   and read the task afresh; the launch test now waits for bob's own secret too, and a mutation
   computing the rewrite for nobody turned it red.
+- Review round 3 (fresh session) approved 363cb83b and, for this spec-only change, 1e2f39ec;
+  its two nits stay as they are: one global lock for rewrites is enough at hand-over frequency,
+  and the serialization is argued from the code (one lock, a fresh read under it) rather than
+  tested with two concurrent rewrites.
 - FUP-001 has no red test: it removes a field and a method without callers; the compiler and the
   hand-over tests (which read the current holder) are its evidence.
 - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used its
