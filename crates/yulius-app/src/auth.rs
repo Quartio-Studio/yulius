@@ -480,6 +480,7 @@ impl App {
                 github_configured: instance.as_ref().is_some_and(|i| i.github_app.is_some()),
                 contained: self.config.contained,
                 upload_max_bytes: self.config.upload_max_bytes,
+                claude_connected: self.claude_connected().await?,
             },
         })
     }

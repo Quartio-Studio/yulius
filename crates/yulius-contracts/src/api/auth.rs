@@ -75,6 +75,9 @@ pub struct InstanceInfo {
     /// Largest file one upload may carry, in bytes (EDT-006, UI-048; `YULIUS_UPLOAD_MAX_MB`).
     #[serde(default)]
     pub upload_max_bytes: u64,
+    /// Whether a Claude account is usable, so agents can start (SPEC-246 CLA-001).
+    #[serde(default)]
+    pub claude_connected: bool,
 }
 
 /// `POST /api/device/start` response.

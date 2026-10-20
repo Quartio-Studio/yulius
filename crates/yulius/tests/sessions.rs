@@ -18,7 +18,7 @@ use yulius_app::model::{
     TaskRecord, UserRecord,
 };
 use yulius_app::ports::session_docs::{SessionDocRecord, SessionDocStore, SessionKind};
-use yulius_app::ports::store::{SandboxStore, TaskStore, UserStore};
+use yulius_app::ports::store::{AccountStore, SandboxStore, TaskStore, UserStore};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::spec_format::{TemplateKind, scaffold_files};
@@ -424,6 +424,28 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
     }
     let anonymous = get(&w, &Creds::default(), "/api/sessions/doc-queue").await?;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+
+    // Continuing an imported session starts an agent: without a usable Claude account it is
+    // refused and creates no task (SPEC-246 CLA-002).
+    w.h.store
+        .delete_account(&yulius_domain::ids::AccountId::parse("a-exhausted")?)
+        .await?;
+    let tasks_before = w.h.store.tasks(&sid, true).await?.len();
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sessions/doc-queue/continue",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert_eq!(refused.body["error"]["code"], "claude_account_required");
+    assert_eq!(w.h.store.tasks(&sid, true).await?.len(), tasks_before);
+    assert_eq!(
+        get(&w, &alice, "/api/sessions/doc-queue").await?.body["continued_in"],
+        Value::Null
+    );
 
     // The uploader deletes an imported session (files and index); a task session stays.
     let not_task = call(

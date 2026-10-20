@@ -103,6 +103,10 @@ pub struct CapacityState {
     pub(crate) email_not_before: tokio::sync::Mutex<HashMap<AccountId, Timestamp>>,
     /// The last usage round asked for by opening the subscriptions list (debounced).
     pub(crate) usage_asked: Mutex<Option<Timestamp>>,
+    /// The Claude accounts' state at the last resume pass (usable, every one to sign in again,
+    /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
+    /// follows (SPEC-246 CLA-004).
+    accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -206,18 +210,15 @@ impl App {
     /// placement of the pool for a run of `family`, whose weekly cap binds too.
     ///
     /// # Errors
-    /// `Conflict` without any Claude subscription, `Capacity` while none has capacity.
+    /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
     pub(crate) async fn pool_account(
         &self,
         provider: yulius_domain::harness::Provider,
         family: ModelFamily,
     ) -> AppResult<crate::model::AccountRecord> {
+        // No usable account is a refusal with where to connect one (SPEC-246 CLA-002).
+        self.ensure_agent_account(provider).await?;
         let accounts = self.account_views().await?;
-        if !accounts.iter().any(|a| a.provider == provider) {
-            return Err(crate::error::AppError::Conflict(
-                "no Claude account is connected; an instance administrator can add one".into(),
-            ));
-        }
         let input = RotationInput {
             current: None,
             task_provider: provider,
@@ -290,10 +291,21 @@ impl App {
                     Some(kind.as_str()),
                 )
                 .await?;
-            self.runtime(task_id)
-                .hub
-                .notice(
-                "Yulius paused this task: no subscription has capacity left. It continues by itself.",
+            // A start with no account to run on waits for one to be connected, and says so
+            // (SPEC-246 CLA-004); otherwise (or when the accounts cannot be read) the pool is only
+            // out of capacity.
+            let accounts = if kind == PauseKind::Start {
+                self.agent_accounts(task.harness.provider())
+                    .await
+                    .unwrap_or(crate::account_gate::AgentAccounts::Usable)
+            } else {
+                crate::account_gate::AgentAccounts::Usable
+            };
+            self.runtime(task_id).hub.notice(
+                crate::account_gate::waiting_notice(accounts).unwrap_or(
+                    "Yulius paused this task: no subscription has capacity left. It continues by \
+                     itself.",
+                ),
             );
         }
         self.publish_task(task_id).await;
@@ -458,6 +470,7 @@ impl App {
         let Ok(pauses) = self.deps.store.open_pauses().await else {
             return RECHECK;
         };
+        self.republish_when_accounts_change(&pauses).await;
         let mut earliest: Option<Timestamp> = None;
         let mut resumed = 0_u32;
         let mut holding = false;
@@ -482,6 +495,28 @@ impl App {
             Duration::from_millis(ms.saturating_add(1_000)).clamp(MIN_RECHECK, RECHECK)
         });
         if holding { wait.min(HOLD_CHECK) } else { wait }
+    }
+
+    /// Shows the paused tasks again when a Claude account became usable or stopped being usable
+    /// since the last pass: whether each waits for an account or for capacity changed with it.
+    async fn republish_when_accounts_change(&self, pauses: &[PauseRecord]) {
+        let Ok(now) = self
+            .agent_accounts(yulius_domain::harness::Provider::Anthropic)
+            .await
+        else {
+            return;
+        };
+        let changed = self
+            .capacity
+            .accounts_seen
+            .lock()
+            .map(|mut seen| seen.replace(now).is_some_and(|before| before != now))
+            .unwrap_or(false);
+        if changed {
+            for pause in pauses {
+                self.publish_task(&pause.task_id).await;
+            }
+        }
     }
 
     /// Whether `pause` holds an agent at a hook of a run that reports through hooks (a `turn`

@@ -21,7 +21,7 @@ use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
-    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
+    Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
@@ -1021,12 +1021,7 @@ impl App {
             let result = self.launch_attempt(&task, start, account).await;
             drop(guard);
             if let Err(err) = &result {
-                let reason = match err {
-                    AppError::Conflict(_) | AppError::Capacity(_) | AppError::Invalid(_) => {
-                        FailReason::Precondition
-                    }
-                    _ => FailReason::SpawnError,
-                };
+                let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
                     && matches!(current.status, TaskStatus::Starting | TaskStatus::Queued)
                 {
@@ -1911,8 +1906,14 @@ impl App {
     }
 
     pub(crate) fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
+        // Signed out since it was chosen: the start needs a connected account (SPEC-246 CLA-005).
         let sealed = account.credential.as_ref().ok_or_else(|| {
-            AppError::Conflict(format!("account {} has no credential", account.label))
+            AppError::AccountRequired(format!(
+                "Connect a Claude account first: {} is not signed in. An instance administrator \
+                 signs it in again in Subscriptions ({}).",
+                account.label,
+                crate::account_gate::CONNECT_PATH
+            ))
         })?;
         String::from_utf8(self.deps.crypto.open(sealed)?)
             .map(Secret)

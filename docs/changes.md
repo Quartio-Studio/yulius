@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-20
 
+- Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,
+  task #232, feedback from an early user whose first job failed without one). With no usable Claude
+  account, Home shows Connect Claude in place of the playground and Import, the composer and the
+  onboarding gate say so, and every start a person asks for (New task, Continue, Start now, Start
+  onboarding, the Superagent) is refused at once with `claude_account_required` and a link to
+  Subscriptions, instead of a task that waited as "no subscription has capacity left". A browser
+  import then adds the sandbox and waits for Start onboarding; an onboarding start that failed for
+  want of an account is offered as Retry onboarding once one is connected. Tasks started by a chain,
+  a rule or an automation still wait and now say no account is connected.
 - Yulius can be driven from a laptop by a local agent or the CLI (SPEC-247, ADR-0188, ADR-0189,
   task #233; an early external user's most important point: "make a task, restart it" from their
   own agent). Settings → Connect your local agent makes a personal API token, `operate` or

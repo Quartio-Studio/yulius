@@ -32,6 +32,8 @@ pub enum FailReason {
     StartTimeout,
     /// Preconditions failed (worktree, credentials, capacity rejection).
     Precondition,
+    /// No Claude account was usable to run it (SPEC-246 CLA-005).
+    NoAccount,
 }
 
 /// Durable task status.
@@ -277,6 +279,7 @@ impl TaskStatus {
             Self::Failed(FailReason::SpawnError) => "failed_spawn_error",
             Self::Failed(FailReason::StartTimeout) => "failed_start_timeout",
             Self::Failed(FailReason::Precondition) => "failed_precondition",
+            Self::Failed(FailReason::NoAccount) => "failed_no_account",
             Self::Chained => "chained",
             Self::Prepared => "prepared",
         }
@@ -293,7 +296,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 19] = [
+pub const ALL_STATUSES: [TaskStatus; 20] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -311,6 +314,7 @@ pub const ALL_STATUSES: [TaskStatus; 19] = [
     TaskStatus::Failed(FailReason::SpawnError),
     TaskStatus::Failed(FailReason::StartTimeout),
     TaskStatus::Failed(FailReason::Precondition),
+    TaskStatus::Failed(FailReason::NoAccount),
     TaskStatus::Chained,
     TaskStatus::Prepared,
 ];

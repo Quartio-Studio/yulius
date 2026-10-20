@@ -33,6 +33,7 @@ const BASE: i64 = 1_791_331_200_000;
 /// task `t-foreign`.
 async fn world() -> Result<(Harness, Creds), Error> {
     let h = harness_configured(|c| c.max_live_sessions = 0)?;
+    support::exhausted_subscription(&h).await?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     add_sandbox(&h, "s2", "other", 20010).await?;
     let alice = user_with_token(&h, "u-alice", "alice", false).await?;

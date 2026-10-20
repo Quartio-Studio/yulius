@@ -83,6 +83,10 @@ pub struct TaskSummary {
     /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
     #[serde(default)]
     pub resumes_at: Option<String>,
+    /// While `waiting_capacity`: no Claude account is usable, so it waits for one to be connected
+    /// rather than for capacity (SPEC-246 CLA-004).
+    #[serde(default)]
+    pub waits_for_account: bool,
     /// While the agent is idle (`waiting` or `done`): background work it left running: shells, as
     /// last probed (TSK-014), and the background agents Claude Code still waited for at its last
     /// turn end (SPEC-032), whichever is more. Null when not known or not idle.

@@ -969,7 +969,8 @@ impl App {
     /// paused, for one (ROT-010) and the sandbox is still `preparing`. Returns whether it started.
     ///
     /// # Errors
-    /// Store failures; the task's start failures (the sandbox then stays `pending`).
+    /// `AccountRequired` without a usable Claude account; store failures; the task's start
+    /// failures (the sandbox then stays `pending`).
     pub(crate) async fn start_onboarding(
         self: &Arc<Self>,
         sandbox: &SandboxId,
@@ -980,6 +981,10 @@ impl App {
         if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
             return Ok(false);
         }
+        // Onboarding is an agent's task: without a usable account it is refused before anything
+        // is created or pushed, and the sandbox stays `pending` (SPEC-246 CLA-002, CLA-003).
+        self.ensure_agent_account(Harness::ClaudeCode.provider())
+            .await?;
         // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
         self.prepare_default_branch(&record, actor).await?;
         let Some(task) = self.onboarding_task(sandbox).await? else {

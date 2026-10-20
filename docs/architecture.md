@@ -623,10 +623,18 @@ branch of origin fetches it again and, when origin still has none, pushes `READM
 lacks (an empty clone's `master`) is corrected to GitHub's when someone pushed it since
 ([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md),
 [decision 0187](decisions/0187-an-empty-repository-gets-its-first-commit-when-onboarding-starts.md)).
+Onboarding runs an agent, so it waits for a Claude account first: without a usable one (signed in,
+`ok` or `limited`) Start onboarding and a browser import's start are refused before anything is
+created or pushed and the sandbox stays `pending`; the same gate (`account_gate`, 409
+`claude_account_required`) refuses every other start a person asks for, while a start by a chain, a
+rule, an automation or a time waits `waiting_capacity` saying no account is connected
+([SPEC-246](../.ai/specs/SPEC-246-onboarding-requires-a-connected-claude-a.md),
+[decision 0190](decisions/0190-a-person-starts-no-agent-without-a-connected-claude-account.md)).
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending: import
+    pending --> pending: Start onboarding without a Claude account (refused, nothing created)
     pending --> preparing: Start onboarding (creates the task, after a first commit for an empty repository)
     preparing --> ready: task finished, format check passes
     preparing --> pending: onboarding task deleted (repair, also at server start)

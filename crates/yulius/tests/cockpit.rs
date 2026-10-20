@@ -678,6 +678,8 @@ async fn without_a_subscription_the_cockpit_says_so_and_nothing_runs() -> TestRe
     let f = fixture_with(false, None).await?;
     let resp = open_cockpit(&f, &f.alice).await?;
     assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
+    // The account gate's refusal, with where to connect one (SPEC-246 CLA-002).
+    assert_eq!(resp.body["error"]["code"], "claude_account_required");
     assert!(
         resp.body.to_string().contains("no Claude account"),
         "{:?}",
@@ -1216,6 +1218,7 @@ async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResul
 #[tokio::test]
 async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;
+    // Signed out: no usable account, so it asks for one to be signed in (SPEC-246 CLA-002).
     f.h.store
         .insert_account(&AccountRecord {
             id: AccountId::parse("acc-1")?,
@@ -1231,6 +1234,16 @@ async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
             email_checked_at: None,
         })
         .await?;
+    let resp = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
+    assert_eq!(resp.body["error"]["code"], "claude_account_required");
+    assert!(
+        resp.body.to_string().contains("must sign in again"),
+        "{:?}",
+        resp.body
+    );
+    // Connected but out of capacity: it waits for capacity.
+    support::exhausted_subscription(&f.h).await?;
     let resp = open_cockpit(&f, &f.alice).await?;
     assert_eq!(
         resp.status,

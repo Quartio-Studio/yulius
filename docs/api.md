@@ -21,7 +21,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 - WebSockets require a valid session and an `Origin` equal to the public URL.
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
   `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
-  `conflict` (409; racing state changes), `invalid` (422), `capacity` (429), `upstream` (502,
+  `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
+  agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
+  SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
   GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
   is missing or disabled, the message says which), `internal` (500).
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
@@ -53,9 +55,13 @@ Me = {
   "csrf_token": "…",
   "instance": {"owner_login": "Quartio-Studio", "owner_kind": "org|user|null",
                "public_url": "https://yulius.quartio.ai", "github_configured": true,
-               "contained": true}
+               "contained": true, "claude_connected": true}
 }
 ```
+
+`instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
+while false the UI shows Connect Claude first and a person's start of an agent answers `409`
+`claude_account_required` (SPEC-246).
 
 CLI device approval: `POST /api/device/start` → `{"device_code","user_code","verification_url",
 "interval_s","expires_in_s"}`; `POST /api/device/poll {"device_code"}` →
@@ -272,7 +278,7 @@ limited to the agent's sandbox.
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
 | POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false,"prepared?":false,"start_at?":"<RFC 3339>"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). With `"prepared": true` the task waits as `prepared` until Start now, and with `start_at` (implies prepared; at most 60 s past and 366 days ahead, else 422) until that time, shown as `start_at` (TSK-019, SPEC-105; 422 together with `after_task_id`, `start_rule` or `supertask`, 429 beyond 32 prepared tasks in the sandbox). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool,"supertask":bool}`: whether a new task mixes separate workstreams (TSK-011; prompts of 40 words or more), and whether to propose it as a supertask (SPEC-188, ADR-0152): Jev is sure it is broad work and the verdict is not `several`. Both questions are asked at once, each within 2.5 s. `checked` says whether Jev answered either; it is false — the verdict `one`, `supertask` false — for prompts under 3 words, without a Jev key and when Jev fails or is slow |
-| POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
+| POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured, or `claude_account_required` when no Claude account is usable (none connected, or every one must sign in again; SPEC-246), 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does, a `prepared` one whatever its time (409 otherwise, also while onboarding blocks the sandbox's tasks). Cancel it with `/stop` |
 | PUT | `/api/tasks/{tid}/schedule` | write | `{"start_at":"<RFC 3339>"|null}` → `TaskSummary`; when a `prepared` task starts by itself, or null: when a person starts it (SPEC-105; 422 outside the window of `CreateTask.start_at`, 409 when the task is not prepared). A time already due starts it at once |
 | PUT | `/api/tasks/{tid}/start` | write | `ChangeStart` (`after_task_id`, `start_rule`, `supertask`, `prepared`, `start_at`, as `CreateTask`; none: Start now) → `TaskSummary`; how a task waiting to start (`chained` or `prepared`) starts instead (SPEC-126). 409 once the task has started (also `queued`), 422 for a choice `CreateTask` refuses or a wait on itself, 429 beyond the sandbox's bound of chained or prepared tasks; the owner only (SPEC-070) |
@@ -316,6 +322,7 @@ TaskSummary = {
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
+  "waits_for_account": false,
   "supertask": false, "held_by": [3, 5],
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
@@ -337,7 +344,10 @@ the harness holds the agent at its turn boundary (or the task waits to start); n
 the agent, and the task continues by itself. `resumes_at` is set only then: the earliest known
 time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
-task paused, not an error.
+task paused, not an error. A task started by itself (a chain, a rule, an automation, a time) while
+no Claude account is usable waits the same way with `waits_for_account: true` (no reset to wait
+for; the UI says "Waiting for a Claude account"); a person's start then answers `409`
+`claude_account_required` instead (SPEC-246).
 
 `steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
@@ -385,7 +395,7 @@ turn records. A restart or a resume reads the run's own lines again, so they nev
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
 `stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
-`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `chained`, `prepared`.
+`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `failed_no_account`, `chained`, `prepared`.
 
 How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
 Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)

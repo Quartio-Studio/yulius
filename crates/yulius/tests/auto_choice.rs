@@ -116,6 +116,7 @@ async fn auto(with_jev: bool) -> Result<Auto, Box<dyn std::error::Error>> {
         configure: Some(Box::new(|c| c.max_live_sessions = 0)),
         ..HarnessOptions::default()
     })?;
+    support::exhausted_subscription(&h).await?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
     h.github.set_perm("alice", "acme/fixture", perms("write"));
