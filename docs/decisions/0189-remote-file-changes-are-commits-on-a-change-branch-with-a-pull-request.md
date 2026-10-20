@@ -28,7 +28,11 @@ and ADR-0175 (environment runs read a mirror of origin, never the sandbox's clon
 - **Changes** (`project_change`) are whole files or deletions, at most 50, 256 KiB each, at plain
   repository-relative paths (no `..`, no absolute path, nothing in `.git`, no backslash or control
   character). Yulius clones the repository from GitHub afresh with the person's token into
-  `<sandbox>/changes/<id>/`, adds a worktree on a new branch `yulius/change-<id>-<slug>` from
+  `<data>/changes/<id>/`, a directory only the server's user reads (0700) and outside every
+  sandbox: agents can write anywhere under their sandbox, so a clone there could have its
+  configuration changed between the clone and the push (sending the person's token through a
+  proxy) or its files changed before the commit. At most 2 changes are made at once. Yulius adds a
+  worktree on a new branch `yulius/change-<id>-<slug>` from
   `origin/<integration>`, writes the files (refusing any path through a symbolic link of the
   repository), commits them as one commit authored by the person, pushes the branch and opens a
   pull request into the integration branch as the person. The scratch directory is removed on
@@ -62,6 +66,9 @@ and ADR-0175 (environment runs read a mirror of origin, never the sandbox's clon
 - A person's agent sets up CI from a laptop: read `yulius.toml`, `project_change` it, follow
   `ci_runs`, `change_merge` once green.
 - Each change costs a fresh clone; large repositories take longer, bounded by the request's time.
+- A server killed in the middle of a change leaves its scratch clone in `<data>/changes/`, which
+  the next change does not reuse; it is removed by hand (it holds no credential once the clone's
+  configuration is scrubbed, as it is before every push).
 - Change branches are ordinary branches: `repo_hygiene` reports one left unmerged like any other.
 - Reads can be stale by a fetch and can be influenced by an agent writing into the sandbox's
   clone; they are informational, and every change starts from GitHub's own branch.

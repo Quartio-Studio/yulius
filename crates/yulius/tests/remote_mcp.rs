@@ -841,13 +841,22 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
             .sandbox_by_repo("Quartio-Studio", "shop")
             .await?
             .ok_or("sandbox")?;
-    let changes = w
-        .data_dir()
-        .join("sandboxes")
-        .join(sid.id.as_str())
-        .join("changes");
+    // The commit was made in a private directory outside the sandbox, which its agents can
+    // write (review finding 1), and nothing of it is left.
     assert!(
-        std::fs::read_dir(&changes).map(|d| d.count()).unwrap_or(0) == 0,
+        !w.data_dir()
+            .join("sandboxes")
+            .join(sid.id.as_str())
+            .join("changes")
+            .exists(),
+        "nothing of a change is under the sandbox"
+    );
+    let changes = w.data_dir().join("changes");
+    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&changes)?.permissions());
+    assert_eq!(mode & 0o077, 0, "only the server reads the scratch clones");
+    assert_eq!(
+        std::fs::read_dir(&changes)?.count(),
+        0,
         "the scratch clone is gone"
     );
 

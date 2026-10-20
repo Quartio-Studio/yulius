@@ -33,6 +33,8 @@ const MAX_PATH_CHARS: usize = 512;
 const MAX_TITLE_CHARS: usize = 200;
 /// Most characters of a change's description.
 const MAX_BODY_CHARS: usize = 20_000;
+/// Change commits made at once on this instance (each is a full clone).
+pub const MAX_CONCURRENT_CHANGES: usize = 2;
 
 /// One file a change writes (`Some` content) or deletes (`None`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +119,18 @@ pub fn parse_changes(args: &Value) -> AppResult<Vec<FileChange>> {
         out.push(FileChange { path, content });
     }
     Ok(out)
+}
+
+/// Makes `dir` (and its parents) and leaves it readable by the server's user only.
+fn private_dir(dir: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(dir).map_err(AppError::internal)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(AppError::internal)?;
+    }
+    Ok(())
 }
 
 /// The branch name part made of a change's title.
@@ -334,10 +348,21 @@ impl App {
             s if s.is_empty() => format!("{CHANGE_BRANCH_PREFIX}{id}"),
             s => format!("{CHANGE_BRANCH_PREFIX}{id}-{s}"),
         };
-        let scratch = self.sandbox_dir(&sandbox.id).join("changes").join(&id);
+        // A private directory of the server, outside every sandbox: agents can write anywhere
+        // under their sandbox, which would let them change the clone's configuration (where the
+        // push sends the person's token) or the files between writing and committing.
+        let root = self.config.data_dir.join("changes");
+        let scratch = root.join(&id);
         let (clone, work) = (scratch.join("repo"), scratch.join("work"));
         let (name, email) = commit_identity(Some(&ctx.user));
         let token = self.dlv_author_token(&ctx.user, sandbox).await?;
+        // A few at once: each is a full clone inside a request.
+        let _slot = self
+            .change_slots
+            .acquire()
+            .await
+            .map_err(AppError::internal)?;
+        blocking(move || private_dir(&root)).await?;
         let made = async {
             self.deps
                 .git
@@ -347,6 +372,12 @@ impl App {
                     &token,
                 )
                 .await?;
+            if self.deps.git.resolve_commit(&clone, &base).await?.is_none() {
+                return Err(AppError::Conflict(format!(
+                    "the repository has no {} branch yet (onboarding makes it)",
+                    profile.integration_branch
+                )));
+            }
             self.deps
                 .git
                 .add_worktree(&clone, &work, &branch, &base)
@@ -374,6 +405,9 @@ impl App {
                 .resolve_commit(&work, "HEAD")
                 .await?
                 .unwrap_or_default();
+            if let Err(err) = self.deps.git.scrub_transport_config(&clone).await {
+                tracing::debug!(error = %err, "scrubbing a change clone's configuration");
+            }
             self.deps.git.push(&work, &branch, &branch, &token).await?;
             Ok(sha)
         }

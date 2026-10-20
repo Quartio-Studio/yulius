@@ -189,6 +189,8 @@ pub struct App {
     pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
     /// Remote MCP requests per API token in the last minute (SPEC-247 RMT-014).
     pub(crate) remote_calls: Mutex<HashMap<String, Vec<i64>>>,
+    /// Remote file changes being committed at once (SPEC-247 RMT-025).
+    pub(crate) change_slots: tokio::sync::Semaphore,
     /// Notepad presence updates per person and notepad (rate limiting, SPEC-112 NOT-019).
     pub(crate) note_presence: Mutex<HashMap<String, Vec<i64>>>,
     /// Session supervisor runtime state.
@@ -263,6 +265,7 @@ impl App {
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
+            change_slots: tokio::sync::Semaphore::new(crate::remote_files::MAX_CONCURRENT_CHANGES),
             note_presence: Mutex::new(HashMap::new()),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),

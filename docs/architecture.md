@@ -719,7 +719,8 @@ Claude Code adds `https://<instance>/mcp` with it; the `yulius` CLI (`yulius rem
 checks each project tool's action against the person's access to the project named in
 `project`. It then runs the Superagent's own tool (as `remote:<login>`) or the function the web
 UI's route calls, audits changes as `remote.tool` and redacts results as every MCP result. File
-changes never touch a sandbox: `project_change` commits in a fresh clone of GitHub and opens a
+changes never touch a sandbox: `project_change` commits in a fresh clone of GitHub, in a private
+directory outside every sandbox, and opens a
 pull request that Yulius CI tests, and `change_merge` merges it once green
 (`crates/yulius-app/src/remote_files.rs`).
 
