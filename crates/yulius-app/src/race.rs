@@ -18,6 +18,9 @@ pub enum Point {
     UploadReceived,
     /// `finish_upload`: the folder was checked again; the file has no name yet.
     UploadPlace,
+    /// `project_change` (SPEC-247): the files are written in the scratch worktree, nothing is
+    /// committed yet.
+    ChangeWritten,
 }
 
 #[cfg(feature = "test-support")]

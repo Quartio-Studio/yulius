@@ -191,6 +191,7 @@ fn apply(root: &Path, changes: &[FileChange]) -> AppResult<()> {
             },
         }
     }
+    crate::race::reached(crate::race::Point::ChangeWritten, root);
     Ok(())
 }
 
@@ -416,7 +417,7 @@ impl App {
         .await;
         remove_tree(scratch).await;
         let sha = made?;
-        let pull = self
+        let opened = self
             .deps
             .github
             .create_pull(
@@ -433,7 +434,22 @@ impl App {
                     ),
                 },
             )
-            .await?;
+            .await;
+        let pull = match opened {
+            Ok(pull) => pull,
+            Err(err) => {
+                // No change branch without its pull request: a retry would push another.
+                if let Err(gone) = self
+                    .deps
+                    .github
+                    .delete_branch(&token, &sandbox.repo_owner, &sandbox.repo_name, &branch)
+                    .await
+                {
+                    tracing::warn!(error = %gone, branch, "deleting a change branch without a pull request failed");
+                }
+                return Err(err);
+            }
+        };
         let detail =
             json!({"branch": branch, "pull": pull.number, "commit": sha, "files": changes.len()})
                 .to_string();

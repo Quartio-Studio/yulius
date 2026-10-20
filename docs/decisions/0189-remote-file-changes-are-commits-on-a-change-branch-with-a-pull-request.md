@@ -70,7 +70,9 @@ and ADR-0175 (environment runs read a mirror of origin, never the sandbox's clon
 
 - A person's agent sets up CI from a laptop: read `yulius.toml`, `project_change` it, follow
   `ci_runs`, `change_merge` once green.
-- Each change costs a fresh clone; large repositories take longer, bounded by the request's time.
+- Each change costs a fresh clone; large repositories take longer. A change runs to its end even
+  when its caller gave up waiting, and is audited then. A pull request GitHub refuses leaves no
+  branch behind.
 - The `project.change` audit entry is the record `change_merge` trusts; when it cannot be
   written, the result says so and the pull request is merged on GitHub instead.
 - A server killed in the middle of a change leaves its scratch clone in `<data>/changes/`, which

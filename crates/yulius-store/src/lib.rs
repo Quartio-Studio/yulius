@@ -189,6 +189,17 @@ impl SqliteStore {
 
     /// [`Self::call`] for a write that can change who may type into a terminal: the access epoch
     /// grows on the database thread as soon as the write is done, before the caller resumes.
+    /// Runs `sql` on the store's connection (tests only: e.g. a trigger that makes a write
+    /// fail).
+    ///
+    /// # Errors
+    /// SQLite failures.
+    #[cfg(feature = "test-support")]
+    pub async fn execute_for_tests(&self, sql: &str) -> AppResult<()> {
+        let sql = sql.to_owned();
+        self.call(move |c| c.execute_batch(&sql).map_err(db)).await
+    }
+
     pub(crate) async fn call_access<R, F>(&self, f: F) -> AppResult<R>
     where
         R: Send + 'static,

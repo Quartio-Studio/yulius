@@ -16,6 +16,7 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
+use tracing::Instrument as _;
 use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::sandboxes::CreateSandbox;
 use yulius_contracts::api::secrets::{AgentSecretPatch, HostRequestAnswer};
@@ -100,6 +101,10 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("secret_update", Reach::Project, Action::Configure),
     ("secret_hosts_answer", Reach::Project, Action::Configure),
 ];
+
+/// Tools that run in a task of their own, to their end and their audit, even when the caller goes
+/// away.
+const SPAWNED_TOOLS: &[&str] = &["project_change", "change_merge"];
 
 /// The Superagent's tools the remote MCP serves as they are, with `project` added.
 const SHARED_TOOLS: &[&str] = &[
@@ -574,7 +579,8 @@ impl App {
                 let outcome = self
                     .remote_project_tool(caller, &project, &sandbox, name, &args)
                     .await;
-                if action != Action::View {
+                // The spawned change tools audit themselves (they outlive their caller).
+                if action != Action::View && !SPAWNED_TOOLS.contains(&name) {
                     self.audit_remote(caller, name, Some(&sandbox.id), outcome.is_ok())
                         .await;
                 }
@@ -806,23 +812,31 @@ impl App {
             "project_files" => self.remote_files(sandbox, args).await,
             "project_file_read" => self.remote_file_read(sandbox, args).await,
             // Run to their end even when the caller goes away (a client timeout): a change
-            // removes its scratch clone and records its pull request, a merge records itself.
+            // removes its scratch clone and records its pull request, a merge records itself, and
+            // either is audited with its token (RMT-015) in the same task.
             "project_change" | "change_merge" => {
-                let (app, ctx, actor, sandbox, args, name) = (
+                let (app, caller, ctx, sandbox, args, name) = (
                     Arc::clone(self),
+                    caller.clone(),
                     ctx.clone(),
-                    caller.actor(),
                     sandbox.clone(),
                     args.clone(),
                     name.to_owned(),
                 );
-                tokio::spawn(async move {
-                    if name == "project_change" {
-                        app.remote_change(&ctx, &actor, &sandbox, &args).await
-                    } else {
-                        app.remote_change_merge(&ctx, &actor, &sandbox, &args).await
+                tokio::spawn(
+                    async move {
+                        let actor = caller.actor();
+                        let outcome = if name == "project_change" {
+                            app.remote_change(&ctx, &actor, &sandbox, &args).await
+                        } else {
+                            app.remote_change_merge(&ctx, &actor, &sandbox, &args).await
+                        };
+                        app.audit_remote(&caller, &name, Some(&sandbox.id), outcome.is_ok())
+                            .await;
+                        outcome
                     }
-                })
+                    .in_current_span(),
+                )
                 .await
                 .map_err(AppError::internal)?
             }

@@ -1669,3 +1669,203 @@ async fn a_broken_integration_ci_is_named_when_merging() -> TestResult {
     assert!(error && said.contains("tests nothing"), "{said}");
     Ok(())
 }
+
+/// Holds the next change at the moment its files are written (before the commit) until `release`
+/// gets a message; `entered` gets one when it is held there.
+fn hold_next_change(
+    w: &World,
+) -> Result<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>), Error> {
+    let changes = w.data_dir().join("changes");
+    std::fs::create_dir_all(&changes)?;
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(
+        yulius_app::race::Point::ChangeWritten,
+        &changes,
+        move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(60));
+        },
+    );
+    Ok((entered, release))
+}
+
+/// Waits (at most 60 s) until a change held by [`hold_next_change`] is held.
+async fn held(entered: std::sync::mpsc::Receiver<()>) -> TestResult {
+    tokio::task::spawn_blocking(move || entered.recv_timeout(std::time::Duration::from_secs(60)))
+        .await??;
+    Ok(())
+}
+
+/// A `project_change` call over the public `/mcp`, as its own task (which a test may abort, as a
+/// client that goes away).
+fn change_call(
+    w: &World,
+    creds: &Creds,
+    path: &str,
+) -> tokio::task::JoinHandle<Result<support::Resp, String>> {
+    let (router, creds) = (w.h.router.clone(), creds.clone());
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "project_change", "arguments": {
+        "project": "Quartio-Studio/shop", "title": path, "files": [{"path": path, "content": "x\n"}]}}});
+    tokio::spawn(async move {
+        call(&router, Method::POST, "/mcp", Some(body), &creds)
+            .await
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Waits (at most 60 s) until `done` holds.
+async fn eventually<F, Fut>(what: &str, mut done: F) -> TestResult
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<bool, Error>>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done().await? {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("never: {what}").into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+/// RMT-015, RMT-025 (round-3 review): a change whose caller goes away mid-way still finishes:
+/// its pull request is opened and recorded, its scratch clone removed, and the call audited with
+/// its token.
+#[tokio::test]
+async fn a_change_finishes_and_is_audited_when_its_caller_goes_away() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = imported_shop(&w, &[("README.md", "# Shop\n")]).await?;
+    let (entered, release) = hold_next_change(&w)?;
+    let request = change_call(&w, &alice, "gone.txt");
+    held(entered).await?;
+    request.abort();
+    assert!(request.await.is_err(), "the caller went away");
+    release.send(())?;
+    let sid =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?
+            .id;
+    eventually("the call is audited", || async {
+        Ok(audits(&w, sid.as_str())
+            .await?
+            .iter()
+            .any(|(action, _, detail)| {
+                action == "remote.tool"
+                    && detail.contains("\"tool\":\"project_change\"")
+                    && detail.contains("\"ok\":true")
+            }))
+    })
+    .await?;
+    assert!(
+        w.h.github
+            .pull(1)
+            .is_some_and(|p| p.head.starts_with("yulius/change-")),
+        "the pull request is open"
+    );
+    assert!(
+        audits(&w, sid.as_str())
+            .await?
+            .iter()
+            .any(|(action, _, _)| action == "project.change")
+    );
+    assert_eq!(
+        std::fs::read_dir(w.data_dir().join("changes"))?.count(),
+        0,
+        "the scratch clone is gone"
+    );
+    Ok(())
+}
+
+/// RMT-025 (round-3 review): two changes are made at once; a third is refused at once rather
+/// than queued.
+#[tokio::test]
+async fn a_third_change_at_once_is_refused_not_queued() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = imported_shop(&w, &[("README.md", "# Shop\n")]).await?;
+    let (first_in, first_out) = hold_next_change(&w)?;
+    let (second_in, second_out) = hold_next_change(&w)?;
+    let first = change_call(&w, &alice, "one.txt");
+    let second = change_call(&w, &alice, "two.txt");
+    held(first_in).await?;
+    held(second_in).await?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "three", "files": [{"path": "three.txt", "content": "x\n"}]}),
+    )
+    .await?;
+    assert!(error && said.contains("try again"), "{said}");
+    first_out.send(())?;
+    second_out.send(())?;
+    for done in [first.await?, second.await?] {
+        let done = done?;
+        assert_eq!(done.body["result"]["isError"], false, "{}", done.body);
+    }
+    Ok(())
+}
+
+/// RMT-026 (round-3 review): a change Yulius could not record says so, and change_merge does not
+/// merge it.
+#[tokio::test]
+async fn an_unrecorded_change_says_so_and_does_not_merge() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = imported_shop(&w, &[("README.md", "# Shop\n")]).await?;
+    w.h.store
+        .execute_for_tests(
+            "CREATE TRIGGER no_change_record BEFORE INSERT ON audit_log WHEN NEW.action = 'project.change' \
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .await?;
+    let (error, said, made) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "docs", "files": [{"path": "a.md", "content": "a\n"}]}),
+    )
+    .await?;
+    assert!(!error, "the pull request exists: {said}");
+    assert!(
+        text(&made["warning"]).contains("will not merge it"),
+        "{made}"
+    );
+    let number = made["pull_request"]["number"].as_u64().ok_or("number")?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "change_merge",
+        json!({"project": "Quartio-Studio/shop", "number": number}),
+    )
+    .await?;
+    assert!(
+        error && said.contains("only pull requests project_change opened"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// RMT-025 (round-3 review): when GitHub refuses the pull request, the pushed branch is deleted,
+/// so no change branch is left without a pull request.
+#[tokio::test]
+async fn a_refused_pull_request_leaves_no_branch() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, origin) = imported_shop(&w, &[("README.md", "# Shop\n")]).await?;
+    if let Ok(mut refusal) = w.h.github.create_pull_error.lock() {
+        *refusal = Some("GitHub refused the request (HTTP 422)".into());
+    }
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "docs", "files": [{"path": "a.md", "content": "a\n"}]}),
+    )
+    .await?;
+    assert!(error && said.contains("422"), "{said}");
+    let branches = support::repos::git(&origin, &["branch", "--list", "yulius/change-*"])?;
+    assert_eq!(branches.trim(), "", "no change branch is left");
+    Ok(())
+}
