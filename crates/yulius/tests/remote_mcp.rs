@@ -449,3 +449,81 @@ async fn a_token_is_limited_to_120_requests_a_minute() -> TestResult {
     assert_eq!(later.status, StatusCode::OK);
     Ok(())
 }
+
+/// RMT-020, RMT-021: a repository is listed, imported, described and its onboarding started with
+/// an operate token alone; a `yulius login` token still cannot start it (SPEC-051 OBD-002).
+#[tokio::test]
+async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, cli) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let operate = bearer(text(&make_token(&w, &browser, "laptop", "operate").await?["token"]));
+    w.remote(support::repos::OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.github.add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+
+    let (error, said, repos) = remote(&w, &operate, "repositories_list", json!({})).await?;
+    assert!(!error, "{said}");
+    assert_eq!(repos["repositories"][0]["name"], "shop", "{repos}");
+
+    let (error, said, imported) = remote(
+        &w,
+        &operate,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(imported["project"], "Quartio-Studio/shop");
+    assert_eq!(imported["onboarding"], "pending", "an import waits for onboarding_start");
+    let (error, said, _) = remote(
+        &w,
+        &operate,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(error && said.contains("already"), "{said}");
+
+    let (error, said, project) = remote(
+        &w,
+        &operate,
+        "project_get",
+        json!({"project": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(project["onboarding"]["state"], "pending");
+    assert!(project["onboarding_plan"]["steps"].as_array().is_some_and(|s| !s.is_empty()), "{project}");
+    assert!(text(&project["next"]).contains("onboarding_start"));
+
+    // The CLI's device token is refused, as before; the operate token starts it.
+    let sid = text(&imported["id"]).to_owned();
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/onboarding/approve"),
+        None,
+        &cli,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let (error, said, started) = remote(
+        &w,
+        &operate,
+        "onboarding_start",
+        json!({"project": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(started["onboarding"], "preparing", "{started}");
+    let (_, _, project) = remote(
+        &w,
+        &operate,
+        "project_get",
+        json!({"project": "shop"}),
+    )
+    .await?;
+    assert!(project["onboarding_plan"]["task_number"].is_number(), "{project}");
+    Ok(())
+}
