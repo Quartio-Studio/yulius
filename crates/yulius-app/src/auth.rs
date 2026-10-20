@@ -15,8 +15,9 @@ use crate::model::{
 };
 use crate::ports::github::{GhUserToken, GitHubAppConfig};
 
-/// Minimum superadmin password length.
-pub const MIN_PASSWORD_LEN: usize = 12;
+/// Minimum superadmin password length in Unicode code points: NIST SP 800-63B's minimum for a
+/// chosen secret (SPEC-242, ADR-0183). The web UI recommends 12 without requiring it.
+pub const MIN_PASSWORD_LEN: usize = 8;
 /// Password-login attempts allowed per client key per minute (SPEC-001 ACC-013).
 pub const LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
 /// Clients the sign-in limiter tracks at once. Clients without an attempt in the last minute are
@@ -34,6 +35,24 @@ pub const MAX_DEVICE_GRANTS: usize = 1000;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
+
+/// Checks a new superadmin password (setup, recovery) and its repeat: they match and the password
+/// has at least [`MIN_PASSWORD_LEN`] code points. No composition or blocklist rules (SPEC-242
+/// PWM-002).
+///
+/// # Errors
+/// `Invalid` when the two differ or the password is too short.
+pub fn validate_new_password(password: &Secret, confirm: &Secret) -> AppResult<()> {
+    if password.expose() != confirm.expose() {
+        return Err(AppError::Invalid("passwords do not match".into()));
+    }
+    if password.expose().chars().count() < MIN_PASSWORD_LEN {
+        return Err(AppError::Invalid(format!(
+            "the password needs at least {MIN_PASSWORD_LEN} characters"
+        )));
+    }
+    Ok(())
+}
 
 /// An authenticated caller.
 #[derive(Debug, Clone)]
@@ -222,14 +241,7 @@ impl App {
                 "confirm that you stored the password safely".into(),
             ));
         }
-        if password.expose() != confirm.expose() {
-            return Err(AppError::Invalid("passwords do not match".into()));
-        }
-        if password.expose().chars().count() < MIN_PASSWORD_LEN {
-            return Err(AppError::Invalid(format!(
-                "use at least {MIN_PASSWORD_LEN} characters"
-            )));
-        }
+        validate_new_password(password, confirm)?;
         let now = self.now();
         let user = UserRecord {
             id: UserId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
@@ -815,6 +827,21 @@ mod tests {
             rfc3339(Timestamp(1_791_331_200_000)),
             "2026-10-07T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn a_new_password_needs_eight_code_points_after_matching() {
+        let check = |p: &str, c: &str| {
+            validate_new_password(&Secret(p.into()), &Secret(c.into())).map_err(|e| e.to_string())
+        };
+        assert!(check("zaq1@WSX", "zaq1@WSX").is_ok());
+        assert!(check("zaq1@WS", "zaq1@WS").is_err_and(|e| e.contains("at least 8 characters")));
+        // Code points, not bytes or UTF-16 units: 8 emoji are 32 bytes and 16 units.
+        assert!(check(&"🔑".repeat(8), &"🔑".repeat(8)).is_ok());
+        assert!(check(&"🔑".repeat(7), &"🔑".repeat(7)).is_err());
+        // No composition or pattern rules (PWM-002).
+        assert!(check("12345678", "12345678").is_ok());
+        assert!(check("short", "other").is_err_and(|e| e.contains("do not match")));
     }
 
     #[test]

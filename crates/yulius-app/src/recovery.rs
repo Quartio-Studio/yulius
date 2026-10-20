@@ -10,7 +10,7 @@
 //! - a successful recovery sets the new password, revokes every superadmin session and token,
 //!   and returns a new code (the used one is gone).
 
-use crate::auth::{AuthContext, MIN_PASSWORD_LEN};
+use crate::auth::{AuthContext, validate_new_password};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
@@ -96,14 +96,7 @@ impl App {
         password: &Secret,
         confirm: &Secret,
     ) -> AppResult<Secret> {
-        if password.expose() != confirm.expose() {
-            return Err(AppError::Invalid("passwords do not match".into()));
-        }
-        if password.expose().chars().count() < MIN_PASSWORD_LEN {
-            return Err(AppError::Invalid(format!(
-                "use at least {MIN_PASSWORD_LEN} characters"
-            )));
-        }
+        validate_new_password(password, confirm)?;
         let _guard = self.recovery_lock.lock().await;
         let now = self.now();
         let instance = self
