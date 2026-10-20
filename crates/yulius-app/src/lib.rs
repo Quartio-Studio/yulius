@@ -62,6 +62,7 @@ pub mod queued_messages;
 pub mod race;
 pub mod record_numbers;
 pub mod recovery;
+pub mod remote;
 pub mod resources;
 pub mod sandbox_docker;
 pub mod sandboxes;

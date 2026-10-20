@@ -204,3 +204,248 @@ async fn a_read_token_only_reads_the_rest_api() -> TestResult {
     assert!(text(&write.body["error"]["message"]).contains("read-only"));
     Ok(())
 }
+
+/// A JSON-RPC request to the public `/mcp`.
+async fn rpc(
+    w: &World,
+    creds: &Creds,
+    method: &str,
+    params: Value,
+) -> Result<support::Resp, Error> {
+    call(
+        &w.h.router,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
+        creds,
+    )
+    .await
+}
+
+/// A remote tool's result: `(is_error, text, record)`.
+async fn remote(
+    w: &World,
+    creds: &Creds,
+    name: &str,
+    args: Value,
+) -> Result<(bool, String, Value), Error> {
+    let r = rpc(
+        w,
+        creds,
+        "tools/call",
+        json!({"name": name, "arguments": args, "_meta": {"yulius/structured": true}}),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{name}: {}", r.body);
+    let result = &r.body["result"];
+    Ok((
+        result["isError"] == true,
+        text(&result["content"][0]["text"]).to_owned(),
+        result["structuredContent"].clone(),
+    ))
+}
+
+/// The tool names `tools/list` serves.
+async fn served(w: &World, creds: &Creds) -> Result<Vec<String>, Error> {
+    let r = rpc(w, creds, "tools/list", json!({})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body["result"]["tools"]
+        .as_array()
+        .ok_or("tools")?
+        .iter()
+        .map(|t| text(&t["name"]).to_owned())
+        .collect())
+}
+
+/// RMT-010, RMT-011: the public `/mcp` serves personal `read` and `operate` tokens only; a read
+/// token is served and runs only what reads.
+#[tokio::test]
+async fn the_public_mcp_takes_only_personal_agent_tokens() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, cli) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let operate = bearer(text(
+        &make_token(&w, &browser, "laptop", "operate").await?["token"],
+    ));
+    let read = bearer(text(
+        &make_token(&w, &browser, "watch", "read").await?["token"],
+    ));
+
+    let none = rpc(&w, &Creds::default(), "initialize", json!({})).await?;
+    assert_eq!(none.status, StatusCode::UNAUTHORIZED);
+    let cookie = rpc(&w, &browser, "initialize", json!({})).await?;
+    assert_eq!(
+        cookie.status,
+        StatusCode::UNAUTHORIZED,
+        "a browser session is not read here"
+    );
+    for foreign in ["ck_0123456789abcdef", "a-task-token", "yul_unknown"] {
+        let refused = rpc(&w, &bearer(foreign), "initialize", json!({})).await?;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{foreign}");
+    }
+    let device = rpc(&w, &cli, "initialize", json!({})).await?;
+    assert_eq!(device.status, StatusCode::FORBIDDEN, "{}", device.body);
+    assert!(text(&device.body["error"]["message"]).contains("Connect your local agent"));
+
+    let init = rpc(
+        &w,
+        &operate,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18"}),
+    )
+    .await?;
+    assert_eq!(init.status, StatusCode::OK, "{}", init.body);
+    assert_eq!(init.body["result"]["serverInfo"]["name"], "yulius");
+    assert!(text(&init.body["result"]["instructions"]).contains("project_import"));
+    let notification = call(
+        &w.h.router,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+        &operate,
+    )
+    .await?;
+    assert_eq!(notification.status, StatusCode::ACCEPTED);
+    let stream = call(&w.h.router, Method::GET, "/mcp", None, &operate).await?;
+    assert_eq!(stream.status, StatusCode::METHOD_NOT_ALLOWED);
+
+    let all = served(&w, &operate).await?;
+    for name in [
+        "projects_list",
+        "project_import",
+        "task_create",
+        "task_restart",
+        "ci_runs",
+    ] {
+        assert!(all.iter().any(|n| n == name), "{name} in {all:?}");
+    }
+    let reading = served(&w, &read).await?;
+    assert!(reading.iter().any(|n| n == "tasks_list"));
+    assert!(
+        !reading
+            .iter()
+            .any(|n| n == "task_create" || n == "project_import")
+    );
+    let (error, said, _) = remote(
+        &w,
+        &read,
+        "project_import",
+        json!({"repo": "Quartio-Studio/x"}),
+    )
+    .await?;
+    assert!(error && said.contains("read-only"), "{said}");
+    let (error, said, _) = remote(&w, &operate, "no_such_tool", json!({})).await?;
+    assert!(error && said.contains("unknown tool"), "{said}");
+    Ok(())
+}
+
+/// RMT-012, RMT-013, RMT-015: a project tool runs only with the person's access to that project
+/// for its action; a project they cannot see is not found; changes are audited as the remote
+/// caller without their arguments.
+#[tokio::test]
+async fn project_tools_follow_the_persons_access_and_are_audited() -> TestResult {
+    let w = World::new("org").await?;
+    let shop = support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    let (_, _, bob) = person(&w, "bob").await?;
+    let (_, _, carol) = person(&w, "carol").await?;
+    w.grant("alice", "acme/shop", "admin");
+    w.grant("bob", "acme/shop", "pull");
+
+    let (error, said, listed) = remote(&w, &alice, "projects_list", json!({})).await?;
+    assert!(!error, "{said}");
+    assert_eq!(listed["projects"][0]["project"], "acme/shop", "{listed}");
+    assert_eq!(listed["projects"][0]["access"], "admin");
+    let (_, _, none) = remote(&w, &carol, "projects_list", json!({})).await?;
+    assert_eq!(none["projects"], json!([]));
+
+    // Every way of naming the project works; a missing one is asked for.
+    for name in ["acme/shop", "shop", "s1"] {
+        let (error, said, _) = remote(&w, &bob, "tasks_list", json!({"project": name})).await?;
+        assert!(!error, "{name}: {said}");
+    }
+    let (error, said, _) = remote(&w, &bob, "tasks_list", json!({})).await?;
+    assert!(error && said.contains("`project`"), "{said}");
+
+    // Read access reads and changes nothing; no access is the same as no project.
+    let automation = json!({"project": "acme/shop", "name": "Nightly docs", "cron": "0 3 * * *", "prompt": "Bring the docs up to date"});
+    let (error, said, _) = remote(&w, &bob, "automation_create", automation.clone()).await?;
+    assert!(error && said.contains("write access"), "{said}");
+    let (error, hidden, _) =
+        remote(&w, &carol, "tasks_list", json!({"project": "acme/shop"})).await?;
+    let (_, missing, _) =
+        remote(&w, &carol, "tasks_list", json!({"project": "acme/ghost"})).await?;
+    assert!(error && hidden == missing, "{hidden} / {missing}");
+
+    // The Superagent's tools run as the remote caller.
+    let (error, said, created) = remote(&w, &alice, "automation_create", automation).await?;
+    assert!(!error, "{said}");
+    let (_, _, listed) = remote(
+        &w,
+        &alice,
+        "automations_list",
+        json!({"project": "acme/shop"}),
+    )
+    .await?;
+    assert!(listed.to_string().contains("Nightly docs"), "{listed}");
+    let automation_id = text(&created["automation"]["id"]).to_owned();
+    assert!(!automation_id.is_empty(), "{created}");
+    let entries = audits(&w, &automation_id).await?;
+    assert!(
+        entries.iter().any(|(_, actor, _)| actor == "remote:alice"),
+        "{entries:?}"
+    );
+
+    let entries = audits(&w, shop.id.as_str()).await?;
+    let remote_calls: Vec<&(String, String, String)> = entries
+        .iter()
+        .filter(|(a, _, _)| a == "remote.tool")
+        .collect();
+    assert_eq!(
+        remote_calls.len(),
+        2,
+        "the refused and the created automation: {entries:?}"
+    );
+    for (_, actor, detail) in &remote_calls {
+        let detail: Value = serde_json::from_str(detail)?;
+        assert_eq!(detail["tool"], "automation_create");
+        assert!(detail["token"].is_string());
+        assert!(!detail.to_string().contains("Bring the docs"), "{detail}");
+        assert!(actor == "remote:alice" || actor == "remote:bob");
+    }
+    assert!(
+        remote_calls
+            .iter()
+            .any(|(_, actor, detail)| actor == "remote:bob" && detail.contains("\"ok\":false"))
+    );
+    Ok(())
+}
+
+/// RMT-014: one token makes at most 120 requests a minute; another token is not slowed.
+#[tokio::test]
+async fn a_token_is_limited_to_120_requests_a_minute() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let busy = bearer(text(
+        &make_token(&w, &browser, "busy", "operate").await?["token"],
+    ));
+    let calm = bearer(text(
+        &make_token(&w, &browser, "calm", "read").await?["token"],
+    ));
+    for n in 0..120 {
+        let r = rpc(&w, &busy, "ping", json!({})).await?;
+        assert_eq!(r.status, StatusCode::OK, "request {n}");
+    }
+    let limited = rpc(&w, &busy, "ping", json!({})).await?;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(text(&limited.body["error"]["message"]).contains("120 requests a minute"));
+    let other = rpc(&w, &calm, "ping", json!({})).await?;
+    assert_eq!(other.status, StatusCode::OK);
+    w.h.clock
+        .0
+        .fetch_add(61_000, std::sync::atomic::Ordering::SeqCst);
+    let later = rpc(&w, &busy, "ping", json!({})).await?;
+    assert_eq!(later.status, StatusCode::OK);
+    Ok(())
+}
