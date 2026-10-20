@@ -301,10 +301,14 @@ worktrees, and instance directories no record owns. It deletes one item at a tim
 **guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
 `still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
 `holder_live` is false, and a CI claim is held while checkouts go. Trees whose files belong to a
-sandbox's mapped ids go through the isolation's `remove_owned_tree` (`base::remove_tree` as root
-of a mapped namespace). No link is followed: an item reached through one is never listed, and the
+sandbox's mapped ids go through the isolation's `remove_owned_tree`: the system trees by
+`base::remove_tree` as root of a mapped namespace, and every path below `sandboxes/` (its CI jobs
+and agents write there as sub-uids) by `sandbox-host remove-tree --below <data dir>`, the same
+link-safe walk as root of the mapped namespace
+([decision 0176](decisions/0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md)); a
+failure names the entry that stayed. No link is followed: an item reached through one is never listed, and the
 removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
-the opened directory, so a link a sandbox swaps in after the check fails the removal. The automatic round runs at every start and hourly. People reach the
+the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
 loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
 
@@ -317,7 +321,7 @@ flowchart LR
   SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, runs/, transcripts/, system/"]
   SC --> L["items: kind, path, size, owner, reason, safe?"]
   L -->|"safe only (round) or chosen (person)"| G{"guard again: removed 10 min, nothing runs, no deploy, holder stopped, CI claimed"}
-  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then through the opened directory; or isolation remove_owned_tree"]
+  G -->|"holds"| D["delete: O_NOFOLLOW down to it, then handle by handle; below sandboxes/ and system trees: isolation remove_owned_tree (mapped root)"]
   G -->|"no longer holds"| K["kept, reported"]
   D --> A[("audit: leftovers.delete / leftovers.failed")]
 ```
@@ -693,6 +697,18 @@ and `automation_template_enable` call the UI's own functions with that person an
 the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
+`task_message`, the Superagent's only, passes on what its person says to a task
+(`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
+through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
+one bracketed paste labelled with the person, then a separate Enter, refused before Claude Code's
+session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
+reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
+while a person typed
+in the last minute (`typed_recently`), while Claude Code's folder-trust dialog shows
+(`trust_prompt_shown`), while Yulius types the first message or while another
+message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
+([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
+[decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
 Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
@@ -715,6 +731,12 @@ server as a task's terminal is. The wrapper and hook load their fingerprints wit
 token the person's environment holds, answered while the person may work in the sandbox (by an
 access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+
+Every terminal people watch (a task's, the Superagent's, a Cockpit shell's) replaces a value with
+its label fitted to the value's display width (`fitted_label`): `[secret:NAME]` followed by `*` padding, or cut short. A full-screen
+program's cursor-addressed redraws then land in the cells it meant. Text channels keep the full
+label ([SPEC-239](../.ai/specs/SPEC-239-termial-gets-bugged-often-fix.md),
+[decision 0181](decisions/0181-a-terminal-masks-a-secret-as-wide-as-its-value.md)).
 
 The Superagent uses the agent vault as a task's agent does
 ([SPEC-186](../.ai/specs/SPEC-186-the-superagent-uses-the-agent-vault-like.md),
@@ -798,6 +820,7 @@ flowchart LR
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management and vault tools"]
+  MCP -->|"task_message: not started → request (queued); running → paste + Enter (send_input)"| TASK["A task of the project"]
   MCP -->|"secret_copy_to_env (SecretUser::Superagent)"| ENV[".env in the sandbox repository"]
   MCP -->|"secret_create_from_file: reads a work-folder or ~/ file, no links"| VA[("Agent vault: new secret, no hosts")]
   AG["Task agent"] -->|"Bearer task token"| MCP
@@ -940,6 +963,9 @@ CD runs a project's deploy and verify scripts like CI runs its checks
 ([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
 ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
 tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
+A CI run or a deploy is a view of its tab at its own address (`?run=<id>`, `runview.js`), with a
+sticky live summary, and the Now summary above both tabs (`pages/cinow.js`) lists what runs and
+links to it ([decision 0180](decisions/0180-ci-and-cd-runs-are-views-of-the-ci-cd-page.md)).
 `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
 protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
 changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
@@ -1226,7 +1252,10 @@ Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the edit
 the background keeps its files' text without Monaco models. Sign-out and an expired session forget
 the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
 run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
-and an editor made earlier lacks them (decision 0122).
+and an editor made earlier lacks them (decision 0122). Monaco ends a worker it no longer needs (the
+editor worker once the last file closes), also while the worker still loads its script; each worker
+of `MonacoEnvironment.getWorker` cancels its errors once it is ended, so that cut load is no
+uncaught error, while a worker in use still reports its errors (SPEC-235).
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
@@ -1304,6 +1333,27 @@ flowchart LR
     work["assistant work after the stop"] --> working
     notice["notice that asks a person"] --> attention["needs_attention"]
     attention -.->|"agent works on"| working
+```
+
+A task is Done through an achieved goal or a tested pull request with a complete plan, so a task
+without a goal that opens no pull request would wait at "Your turn" for good. For that reason the
+tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
+preparation. Only the continuation of an imported session is a prompt task, because the person
+whose conversation it continues decides when it is finished
+([SPEC-240](../.ai/specs/SPEC-240-fix-they-seem-to-be-wrong-because-tasks.md),
+[decision 0182](decisions/0182-an-automation-runs-its-task-as-a-goal.md)).
+
+A reboot (or any lost run) ends a task by what it was doing
+([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
+the run's screen to its `final-screen`, so the terminal of a run lost later is not blank:
+
+```mermaid
+flowchart LR
+    settled["activity becomes waiting / done,\nor an idle run reattached"] -->|"writes (hub with output)"| screen["runs/&lt;attempt&gt;/final-screen"]
+    lost["run lost: reconcile found it dead or missing,\na lost connection, a stop that timed out"] --> which{"task running\nwith activity done?"}
+    which -->|"yes: nothing was lost"| closed["closed"]
+    which -->|"no"| stopped["stopped(server_lost / lost)\nContinue offered"]
+    screen -.->|"no live run: the terminal shows it"| view["task terminal"]
 ```
 
 ## Run metrics
@@ -1399,7 +1449,7 @@ the job's end and the end trigger adds them to its span
 ([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
-the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
+the run views (decision 0180), the task overview and the Dashboard's Overview draw them. Spans older than 180
 days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's spans on a time
 axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
 job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
@@ -1419,7 +1469,8 @@ flowchart LR
   SC -->|"Yulius's clock"| S
   APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
   S --> API["GET …/stages/timeline, summary, spans"]
-  API --> UI["Dashboard (Overview, Pipeline tab), run dialogs, task overview"]
+  API --> UI["Dashboard (Overview, Pipeline tab), run views, task overview"]
+  UI -->|"stages running now"| NOW["run view's live summary"]
 ```
 
 ## Notes

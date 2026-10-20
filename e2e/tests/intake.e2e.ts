@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -158,6 +158,27 @@ test('changing the start choice closes the supertask proposal, so it never names
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await expect(browser.locator('.supertask-chip')).toHaveText('Supertask');
+});
+
+test('the supertask proposal closes when its "Run after" task leaves the list (SPEC-234, #587)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill(BROAD);
+  await screen.getByRole('button', 'Start task').click();
+  const card = screen.getByRole('region', 'Supertask proposal');
+  await expect(card).toHaveText(/It replaces “After #12”\./);
+  await expect(card.getByRole('button', 'Run as a supertask')).toBeFocused();
+  // Someone archives #12: the server announces it and the sandbox's list drops it.
+  await touchTask(browser, 'sb_studio', 12, { archived: true });
+  await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
+  await expect(card).toHaveCount(0);
+  // The keyboard was in the card: it lands in the prompt, as after a changed start choice.
+  await expect(prompt).toBeFocused();
+  await expect(prompt).toHaveText(BROAD);
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
 });
 
 test('a broad task prepared "When I decide" is never stopped (SPEC-188)', async ({ app, browser, screen }) => {

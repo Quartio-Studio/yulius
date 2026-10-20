@@ -1551,6 +1551,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_create",
             "task_delete",
             "task_get",
+            "task_message",
             "task_stop",
             "tasks_list",
             "workflows_list",
@@ -1629,6 +1630,20 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     // Its start fails in the background, after `task_create` answered (#460: under load the
     // archive came first and was refused while the task was still queued).
     task_rests(&f, &task.id).await?;
+    // A task that ended takes no message, and the Superagent is told what to do instead
+    // (SPEC-230 TMS-004).
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_message",
+        json!({"number": task.number, "text": "Use the DO budget"}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("takes no message now"),
+        "{refused}"
+    );
     let (archived, is_error) =
         cockpit_tool(&f, &token, "task_archive", json!({"number": task.number})).await?;
     assert!(!is_error, "{archived}");
@@ -1730,6 +1745,14 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
 /// An agent secret's value, referenced by the sandbox's `apify` MCP server (SPEC-147).
 const SECRET_VALUE: &str = "apify_synthetic_9f3Qz7LmWc2Rk8Tn";
 const SECRET_LABEL: &str = "[secret:APIFY_KEY]";
+
+/// The label as a terminal screen shows it: as wide as the value (SPEC-239 TRM-002).
+fn screen_label() -> String {
+    format!(
+        "{SECRET_LABEL}{}",
+        "*".repeat(SECRET_VALUE.len() - SECRET_LABEL.len())
+    )
+}
 /// A literal bearer typed into an MCP server's form (not an agent secret).
 const LITERAL_BEARER: &str = "quartio-literal-bearer-5521";
 
@@ -1871,7 +1894,12 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
             "echo \"raw=<$YULIUS_MCP_APIFY_APIFY_TOKEN>\"\r".into(),
         )))
         .await?;
-    read_until(&mut socket, &mut screen, &format!("raw=<{SECRET_LABEL}>")).await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("raw=<{}>", screen_label()),
+    )
+    .await?;
     // Without its fingerprints (Yulius unreachable) a command does not run.
     socket
         .send(Message::text(typed(
@@ -1908,7 +1936,7 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     read_until(
         &mut socket,
         &mut screen,
-        &format!("shown-{SECRET_LABEL}-end\r\n"),
+        &format!("shown-{}-end\r\n", screen_label()),
     )
     .await?;
     assert!(!screen.contains(SECRET_VALUE), "{screen}");
@@ -1925,7 +1953,7 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     read_until(
         &mut socket,
         &mut screen,
-        &format!("shown-{SECRET_LABEL}-end"),
+        &format!("shown-{}-end", screen_label()),
     )
     .await?;
     assert!(!screen.contains(SECRET_VALUE), "{screen}");

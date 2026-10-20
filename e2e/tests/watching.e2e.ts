@@ -262,6 +262,35 @@ test('the view says whose task it is and that you watch it, above the transcript
   await expect(mark).toBeHidden();
 });
 
+// #576: a watcher has no terminal and cannot type; the reply is the owner's, so the bar says the
+// agent waits for them. The owner keeps "your reply" and the terminal below.
+test('a watcher of a waiting task is told it waits for the owner, not to type in a terminal', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
+  const bar = browser.locator('.attention-bar');
+
+  await touchTask(browser, 'sb_studio', 12, { status: 'running', activity: 'waiting', background_shells: 0 });
+  await expect(browser.locator(".attention-bar .attention-text:has-text(\"The agent is waiting for @anna-q's reply.\")")).toBeVisible();
+  await expect(bar).not.toHaveText(/terminal below|your reply/);
+  await expect(screen.getByRole('button', 'Reply')).toBeHidden();
+
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(browser.locator(".attention-bar .attention-text:has-text(\"The agent needs @anna-q's attention.\")")).toBeVisible();
+  await expect(bar).not.toHaveText(/terminal below|your attention/);
+  await expect(screen.getByRole('button', 'Reply')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Handed back, the owner reads their texts as before.
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'mkarp' } });
+  await terminalShown(browser);
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText('The agent needs your attention. Its question is in the terminal below.');
+  await touchTask(browser, 'sb_studio', 12, { activity: 'waiting' });
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText('The agent is waiting for your reply. Type it in the terminal below.');
+  await expect(screen.getByRole('button', 'Reply')).toBeVisible();
+});
+
 // Task #170: "also reduce horizontal padding in this view". The watched transcript is inset as the
 // control card above it (16 px), not as a past session's page (32 px); phones keep their 12 px.
 test('a watched transcript has 16 px at its sides, as the card above it; a past session keeps 32 px', async ({ app, browser }) => {

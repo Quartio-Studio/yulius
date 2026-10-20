@@ -115,7 +115,8 @@ Runs (CDR):
   someone who manages the secret, `POST /api/agent-secrets/{id}/cd-prod`; exclusive: not while
   agents can use it through `.env` copies or proxy hosts, and dev never gets it). A missing or not-allowed
   secret refuses the run before anything starts (before a promotion) and says what a person must
-  do.
+  do. For production, a secret agents use is `agents_use`, not `not_allowed`: nobody can allow it,
+  so the refusal says production names a separate secret (SPEC-237).
 - CDR-003. Stored output is the run's tail with every agent secret's value replaced by
   `[secret:NAME]`.
 - CDR-004. One active run per environment and project; a second request is refused while one runs.
@@ -145,7 +146,8 @@ Who deploys (CDA):
 Agents and people (CDT):
 
 - CDT-001. MCP `cd_status`: each environment's state, commands, secrets (ready, missing, waiting for
-  a person's allowance), the branch head, the last run and the page link.
+  a person's allowance, or for production one agents use, which it never gets, SPEC-237), the
+  branch head, the last run and the page link.
 - CDT-002. MCP `cd_deploy {environment: "dev"}`: starts a dev run and returns its id; refuses
   production (CDA-002), an empty or undefined environment, missing secrets (asking a person to
   allow the ones that exist, like `secret_copy_to_env`) and a running run.

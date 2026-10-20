@@ -722,7 +722,7 @@ CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": 
 CdEnvironment = {"name": "dev|prod", "label": "dev|production", "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
                  "promote", "promotes_from": "<integration head>"|null,
-                 "secrets": [{"name", "state": "ready|not_allowed|missing"}],
+                 "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
 CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
@@ -734,7 +734,9 @@ CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|er
 promotion the integration commit promoted; the deploy refuses (`conflict`) when the branch moved
 since. `confirm_ms` (optional, production) is how long the person kept the confirmation open, as the
 page measured it; up to an hour it is recorded as the run's confirmation wait (SPEC-137). A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
-copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it.
+copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it. For
+production, such a secret (agents use it) has the state `agents_use`: production never gets it, a
+run naming it is refused, and production names a separate secret instead (SPEC-237).
 
 Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or
@@ -890,6 +892,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
+| `task_message` (the Cockpit only, SPEC-230) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -1108,7 +1111,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
     `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
-    `task_create`, `task_stop`, `task_archive`, `task_delete`, `automation_create`,
+    `task_create`, `task_message` (SPEC-230), `task_stop`, `task_archive`, `task_delete`, `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every

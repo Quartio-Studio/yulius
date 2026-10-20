@@ -463,9 +463,12 @@ async fn guarded(iso: &Iso, body: impl Future<Output = TestResult>) -> TestResul
         uid: config.uid,
         gid: config.gid,
     };
-    if let Err(error) =
-        yulius_sandbox::base::remove_tree(&mapper, &config.exe, &iso.data.join("sysroots"))
-    {
+    if let Err(error) = yulius_sandbox::base::remove_tree(
+        &mapper,
+        &config.exe,
+        &iso.data,
+        &iso.data.join("sysroots"),
+    ) {
         eprintln!("cleanup: {error}");
     }
     match outcome {

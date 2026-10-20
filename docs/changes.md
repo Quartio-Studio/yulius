@@ -4,8 +4,94 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-20
+
+- A finished automation run is Done instead of waiting under Needs you (SPEC-240, ADR-0182, task
+  #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run
+  that opens no pull request, such as "Work through open issues", could never meet the Done rule
+  (an achieved goal, or a tested pull request) and read "Your turn" until a person archived it.
+  Every run's task is now a goal task, like every other new task: it is Done once Claude Code
+  records its goal as achieved. The ready-made "Work through open issues" now says in its first
+  paragraph, which its goal keeps, that the run ends with its summary without waiting for the tasks
+  it starts. Tasks that are already finished in prompt mode (#217) stay as they are: archive them.
+
+## 2026-10-19
+
+- The CI/CD page no longer tells a person to allow a production secret that cannot be allowed
+  (SPEC-237, task #223, fixes #704). A secret that agents use, through `.env` copies or proxy
+  hosts, never goes to production (SPEC-134), and the Secrets page offers no Allow for it. The CD
+  page still listed it as "waiting for a person to allow it". Its production state is now
+  `agents_use`: the page reads "agents use it: production never gets it" and explains that
+  production needs a separate secret, and a refused production run gives the same reason. The
+  redaction of a secret whose value is an ordinary word ("production"), seen in the same report,
+  is #705.
+- A CI run and a deploy open on the CI/CD page itself instead of in a dialog over it (SPEC-238,
+  ADR-0180, task #224). The run replaces its tab's list at its own address, with "All runs" to go
+  back, so Back, Forward and the sidebar's CI/CD link return to it. Its summary stays at the top
+  while the log scrolls and shows the time so far, ticking, the stages running now and a CI run's
+  jobs. Above the tabs, on both, a Now summary lists every CI run and deploy that is running, with
+  its time, and links to it; when nothing runs it says how the latest CI run and deploy ended.
+- The task terminal no longer garbles when an agent prints a secret's value (SPEC-239, ADR-0181,
+  task #225, part of #705). The terminal used to replace the value with `[secret:NAME]`, which is
+  usually wider than the value. Claude Code redraws its screen by moving the cursor to rows and
+  columns it computed from what it wrote, so the extra width sent every later redraw to the wrong
+  cells. In the reported project this happened on most answers, because a secret's value was the
+  word "production". The terminals (task, Superagent, Cockpit shell) now show the label fitted to
+  the value's width: padded with `*`, or cut (`[secret:P]`). Transcripts and tool output keep the
+  full label. Whether an ordinary word should count as a secret at all stays on #705.
+- Closing the last file, switching folder or leaving the Editor while Monaco's editor worker still
+  loads its script no longer reports an uncaught NetworkError on the page (SPEC-235, task #221,
+  fixes #509). Monaco ends that worker as its last file goes; the cut `importScripts` threw an
+  error nobody cancelled, which failed `editor.e2e.ts` under load. A worker the Editor has ended
+  now cancels its errors; one in use still reports them, and `failOnPageErrors()` has no allowlist.
+- The Notes tab grip's hover check in `notes.e2e.ts` hovers the tab itself, not a point read
+  before (SPEC-236, task #222, fixes #503). The failure was the sandbox browser's sign-in toast
+  over the Notes tabs, which pauses while pointed at. #523 had already turned that toast off for
+  every notes test. The case now hovers only once nothing covers the tab, and opens the mock with
+  `ambient=0` (no ambient activity).
+- The supertask proposal no longer says "It replaces “After #12”" once #12 has left the task list
+  (SPEC-234, task #220, fixes #587). If the task chosen in "Run after" is deleted or archived while
+  the card is open, the start chip falls back to "Start now" and the card now closes, leaving the
+  keyboard in the prompt. Before this fix the card stayed open, and "Start as chosen" started the
+  task right away, which the card did not say. The split card cannot get into this state, because
+  it never opens with a "Run after" task or a rule.
+- A watcher of someone else's waiting task reads "The agent is waiting for @owner's reply." or
+  "The agent needs @owner's attention." instead of being told to type in a terminal they do not
+  have (SPEC-233, task #219, fixes #576). The owner's texts are unchanged.
+- A leftover tree holding a directory its owner cannot read (mode `0o000` or `0o300`) is removed
+  instead of failing with "Permission denied" every round (SPEC-232, ADR-0179, task #218, fixes
+  #680). It mattered without an isolation and for the service user's own trees outside
+  `sandboxes/`. Such a directory is now opened as an `O_PATH` handle, given `0o700` through it and
+  walked, still never following a link.
+- The Superagent can message tasks (SPEC-230, ADR-0178, task #216). Asked to "tell #5 it may use
+  the DO budget", it calls `task_message`. A task that has not started gets the message in its
+  request, as a person's queued message. A running task gets it typed into its session, labelled
+  "Message from alice (through their Superagent)", and its agent reads it even mid-turn. The
+  tool never types over a person who typed there in the last minute, before Claude Code's
+  session started or into its folder-trust question, and a task in any other state is refused
+  with what to do instead. Task agents are not given the tool.
+- A reboot no longer turns finished tasks into "Stopped (server restarted)" warnings with a blank
+  terminal (SPEC-229, ADR-0177, task #215, fixes #685). After the host rebooted on 2026-10-18, every task with
+  a session read that way, including #213 and #214, whose goals were achieved and pull requests
+  merged. A run lost while its task was Done now closes the task; every settled turn saves its
+  screen, so a lost run's terminal shows how its last turn ended; and the message for a session a
+  restart ended no longer says the agent was working.
+
 ## 2026-10-18
 
+- The automatic leftovers round deletes a removed sandbox's `ci`, worktrees and browser profile,
+  and a live sandbox's stale CI checkout, even when CI jobs wrote files there as the sandbox's
+  sub-uids (SPEC-228, ADR-0176, task #214, fixes #675). Settings → Instance → Leftovers showed
+  "Failed: …/ci: Permission denied" after every round. Every leftover below `sandboxes/` is now
+  removed as root of the sandbox's mapped namespace, walking down from the data directory without
+  following a link, and a removal that fails names the file that stayed.
+- Settings → Instance no longer says "sandboxes may have lost Docker" twice when they have not
+  (SPEC-227, task #213, fixes #674). An update helper unit from before SPEC-203 keeps `/etc`
+  read-only, so the re-check failed its needrestart rule, modules list and drop-in items while
+  its own "sandbox Docker" verdict held. The headline now follows that verdict ("Sandboxes get
+  Docker; run `sudo yulius host setup` on the server"), the update's outcome is one line pointing
+  to the Sandbox Docker card instead of repeating its list, and a failed host write names its
+  file once.
 - One Start onboarding shows one toast again (SPEC-224, task #210, fixes #581). A sandbox page the
   person had already left (it had opened the onboarding task) still rendered once the
   superadmin's recovery state answered, and took back the opened task's "Onboarding started:

@@ -74,6 +74,7 @@ mod supertask;
 mod supervision;
 mod task_delete;
 mod task_done;
+mod task_message;
 mod task_ownership;
 mod task_pause;
 mod task_prompt;

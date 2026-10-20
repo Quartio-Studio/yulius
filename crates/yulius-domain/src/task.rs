@@ -238,6 +238,24 @@ impl TaskStatus {
         Ok(next)
     }
 
+    /// The status after the run of a task whose activity was `activity` was lost for `reason`
+    /// (SPEC-229 RBT-001): a running task whose goal was achieved and whose turn ended (`Done`)
+    /// lost nothing with its idle session and is Closed, as a person's close leaves it; any other
+    /// takes [`TaskEvent::Lost`].
+    ///
+    /// # Errors
+    /// As [`TaskStatus::apply`] for [`TaskEvent::Lost`].
+    pub fn after_loss(
+        self,
+        activity: Option<Activity>,
+        reason: StopReason,
+    ) -> Result<Self, TransitionError> {
+        if self == Self::Running && activity == Some(Activity::Done) {
+            return Ok(Self::Closed);
+        }
+        self.apply(TaskEvent::Lost(reason))
+    }
+
     /// Stable wire name.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -606,6 +624,41 @@ mod tests {
         assert!(
             TaskStatus::Closed
                 .apply(TaskEvent::CapacityReturned)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    /// SPEC-229 RBT-001: a lost run closes a finished task and stops any other.
+    #[test]
+    fn a_lost_run_closes_a_finished_task_and_stops_the_others() -> Result<(), TransitionError> {
+        let lost = StopReason::ServerLost;
+        assert_eq!(
+            TaskStatus::Running.after_loss(Some(Activity::Done), lost)?,
+            TaskStatus::Closed
+        );
+        for activity in [
+            None,
+            Some(Activity::Working),
+            Some(Activity::Waiting),
+            Some(Activity::NeedsAttention),
+        ] {
+            assert_eq!(
+                TaskStatus::Running.after_loss(activity, lost)?,
+                TaskStatus::Stopped(lost),
+                "{activity:?}"
+            );
+        }
+        // Only a running task is finished: a switch or a stop in flight was cut.
+        for status in [TaskStatus::Switching, TaskStatus::Stopping] {
+            assert_eq!(
+                status.after_loss(Some(Activity::Done), StopReason::Lost)?,
+                TaskStatus::Stopped(StopReason::Lost)
+            );
+        }
+        assert!(
+            TaskStatus::Closed
+                .after_loss(Some(Activity::Done), lost)
                 .is_err()
         );
         Ok(())

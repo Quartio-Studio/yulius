@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock } from './support.ts';
+import { axeViolations, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock, pageErrors } from './support.ts';
 
 failOnPageErrors();
 
@@ -643,6 +643,76 @@ test('a file closed, a folder switched or a page gone says the person left, even
   await browser.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
   await expect.poll(async () => (await last('README.md'))?.selection).toBe(null);
   expect(await browser.evaluate(() => (window as unknown as HoldMock).__yuliusMock.keepaliveRequests.some((url) => url.includes('/files/presence')))).toBe(true);
+});
+
+type WorkerLog = { __workers: { errors: string[]; ready: number } };
+
+// #509: Monaco ends its editor worker once the last file is closed, also while the worker still
+// loads its script; the cut load threw an uncaught NetworkError on the page (the test above, under
+// load). The worker script is held here so that the close always lands mid-load.
+test('an editor worker ended while its script loads raises no error, and the next file starts a new one (#509)', async ({ app, browser, screen }) => {
+  // Each worker's own events as the page's `Worker` object gets them (only listened to).
+  await browser.addInitScript(() => {
+    const log = { errors: [] as string[], ready: 0 };
+    (window as unknown as WorkerLog).__workers = log;
+    window.Worker = class extends Worker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        this.addEventListener('error', (event) => log.errors.push(event.message));
+        this.addEventListener('message', (event) => { if (event.data?.type === 'vscode-worker-ready') log.ready += 1; });
+      }
+    };
+  });
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let requests = 0;
+  // If a Monaco update renames the worker script, `requests` stays 0 and the test says so.
+  await browser.route(/\/vendor\/monaco\/vs\/assets\/editor\.worker-[^/]*\.js$/, async (route) => {
+    requests += 1;
+    if (requests === 1) await held;
+    await route.continue();
+  });
+  const workers = () => browser.evaluate(() => (window as unknown as WorkerLog).__workers);
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect.poll(() => requests, { message: 'the editor worker asked for its script' }).toBe(1);
+
+  // The last file closed: Monaco ends the worker while its script is held.
+  await screen.getByRole('tab', /^README\.md/).focus();
+  await browser.keyboard.press('Delete');
+  await expect.poll(() => editorTabs(browser)).toEqual([]);
+  await expect.poll(async () => (await workers()).errors.map((e) => (e.includes('NetworkError') ? 'NetworkError' : e))).toEqual(['NetworkError']);
+  release();
+
+  // The next file gets a new worker, which loads.
+  await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect.poll(async () => (await workers()).ready, { timeout: MONACO_LOAD_MS }).toBe(1);
+  expect(requests).toBe(2);
+});
+
+// #509, the other side: only an ended worker is quiet. A worker in use whose script fails to load
+// is an error the page still reports.
+test('an editor worker in use whose script fails to load is still an uncaught error (#509)', async ({ app, browser, screen }) => {
+  let requests = 0;
+  await browser.route(/\/vendor\/monaco\/vs\/assets\/editor\.worker-[^/]*\.js$/, async (route) => { requests += 1; await route.abort(); });
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect.poll(() => requests, { message: 'the editor worker asked for its script' }).toBe(1);
+  // The browser's report of the worker's error, then Monaco's own (`onUnexpectedError`).
+  await expect.poll(() => pageErrors(browser)).toEqual([
+    expect.stringContaining("uncaught: Uncaught NetworkError: Failed to execute 'importScripts'"),
+    'uncaught: Uncaught [object ErrorEvent]',
+  ]);
+  // Expected here: these two are taken off the list `failOnPageErrors()` checks after the test.
+  await browser.evaluate(() => { (window as unknown as { __e2eErrors: string[] }).__e2eErrors.splice(0, 2); });
 });
 
 // Review round 1: the strip drawn again during a drag (a save ending, a tab closed) must not leave

@@ -578,6 +578,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "automation_run_now",
         "automation_template_enable",
         "secret_create_from_file",
+        "task_message",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),
@@ -600,4 +601,36 @@ fn the_cockpits_read_only_tools_are_served_to_it() {
             "`{tool}` is allowed but not served"
         );
     }
+}
+
+/// SPEC-230 TMS-001: `task_message` is the Superagent's only: a task's agent is not served it
+/// and cannot call it.
+#[tokio::test]
+async fn a_task_agent_cannot_message_other_tasks() -> TestResult {
+    let h = world().await?;
+    assert!(
+        !yulius_app::mcp::tool_descriptors()
+            .iter()
+            .any(|tool| tool.name == "task_message")
+    );
+    seed_task(&h, "t-side", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let result = mcp_tool(
+        &h,
+        "tok-agent",
+        "task_message",
+        json!({"task_id": "t-side", "text": "Stop what you do"}),
+    )
+    .await?;
+    assert_eq!(result["isError"], json!(true), "{result}");
+    assert!(
+        tool_text(&result).to_string().contains("unknown tool"),
+        "{result}"
+    );
+    let side = h
+        .store
+        .task(&TaskId::parse("t-side")?)
+        .await?
+        .ok_or("side")?;
+    assert_eq!(side.prompt, "do things");
+    Ok(())
 }

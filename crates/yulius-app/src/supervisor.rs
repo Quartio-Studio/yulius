@@ -130,6 +130,12 @@ pub struct TaskRuntime {
     pub(crate) typing_opening: AtomicBool,
     /// A person was told their keys wait for the first message (once per first message).
     pub(crate) typing_opening_said: AtomicBool,
+    /// Yulius types a Superagent's message into the run (SPEC-230): one at a time.
+    pub(crate) typing_message: AtomicBool,
+    /// When the current run was spawned (ms; a reattached run's attempt start): without a
+    /// SessionStart, its prompt box is taken to read input half
+    /// [`crate::context::AppConfig::goal_ready_ms`] later, as the goal typist does (SPEC-230).
+    pub(crate) spawned_ms: AtomicI64,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
@@ -258,6 +264,8 @@ impl TaskRuntime {
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
+            typing_message: AtomicBool::new(false),
+            spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -430,6 +438,22 @@ fn launch_goal_settled(run_dir: &Path) {
     }
 }
 
+/// File in a run directory once its Claude Code session started (its SessionStart hook reached
+/// Yulius): a restarted server knows the reattached run's prompt box reads input (SPEC-230).
+const SESSION_STARTED_FILE: &str = "session-started";
+
+/// Whether the session of the run in `run_dir` started.
+fn session_started_marked(run_dir: &Path) -> bool {
+    run_dir.join(SESSION_STARTED_FILE).exists()
+}
+
+/// Records that the session of the run in `run_dir` started.
+pub(crate) fn mark_session_started(run_dir: &Path) {
+    if let Err(err) = write_private_file(&run_dir.join(SESSION_STARTED_FILE), b"") {
+        tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not record the session start");
+    }
+}
+
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -441,6 +465,32 @@ pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<(
         .mode(0o600)
         .open(path)?;
     file.write_all(bytes)
+}
+
+/// Saves the run's current screen as its final screen: at its end, at every settled turn and
+/// after a reattach, so a run lost later (a reboot) still shows how its last turn ended (SPEC-229
+/// RBT-002). A hub without output (a runtime made before its run was reattached) keeps the saved
+/// screen. The file is replaced whole (a temporary file renamed over it): a reset or a concurrent
+/// save never leaves a torn one.
+pub(crate) fn save_screen(hub: &crate::hub::Hub, run_dir: &Path) {
+    static SAVES: AtomicU64 = AtomicU64::new(0);
+    if !hub.has_output() {
+        return;
+    }
+    let (screen, (cols, rows)) = hub.formatted_screen();
+    let mut record = format!("{cols} {rows}\n").into_bytes();
+    record.extend_from_slice(&screen);
+    let temporary = run_dir.join(format!(
+        ".{FINAL_SCREEN_FILE}.{}.{}",
+        std::process::id(),
+        SAVES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let saved = write_private_file(&temporary, &record)
+        .and_then(|()| std::fs::rename(&temporary, run_dir.join(FINAL_SCREEN_FILE)));
+    if let Err(err) = saved {
+        let _ = std::fs::remove_file(&temporary);
+        tracing::debug!(error = %err, "cannot save the final screen");
+    }
 }
 
 /// Reads a saved final screen: (cols, rows, redraw bytes).
@@ -544,7 +594,7 @@ const TRUST_UNANSWERED: &str = "Claude Code still asks whether to trust this fol
      the terminal";
 
 /// Whether `screen` shows Claude Code's folder-trust dialog.
-fn trust_prompt_shown(screen: &str) -> bool {
+pub(crate) fn trust_prompt_shown(screen: &str) -> bool {
     TRUST_PROMPT_TEXTS.iter().any(|text| screen.contains(text))
 }
 
@@ -1293,6 +1343,7 @@ impl App {
         // So is the new session's SessionStart: its hook can be answered before the run is
         // attached and watched, and must not be forgotten then (#243).
         runtime.session_started.store(false, Ordering::SeqCst);
+        runtime.spawned_ms.store(self.now().0, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -2165,8 +2216,9 @@ impl App {
             // No exit will consume it: the next run must not inherit it.
             *intent = None;
         }
+        // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Ok(next) = task.status.apply(TaskEvent::Lost(reason))
+            && let Ok(next) = task.status.after_loss(task.activity, reason)
         {
             let _ = self
                 .deps
@@ -2178,7 +2230,12 @@ impl App {
         if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
-            rt.hub.exit(TaskStatus::Stopped(reason).as_str(), None);
+            // What the store recorded, whoever won the transition.
+            let ended = match self.deps.store.task(task_id).await {
+                Ok(Some(task)) if task.status.is_resting() => task.status,
+                _ => TaskStatus::Stopped(reason),
+            };
+            rt.hub.exit(ended.as_str(), None);
         }
         self.publish_task(task_id).await;
         self.advance_chains(task_id).await;
@@ -2200,13 +2257,7 @@ impl App {
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
         if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
-            let (screen, (cols, rows)) = runtime.hub.formatted_screen();
-            let mut record = format!("{cols} {rows}\n").into_bytes();
-            record.extend_from_slice(&screen);
-            let path = PathBuf::from(&attempt.run_dir).join(FINAL_SCREEN_FILE);
-            if let Err(err) = crate::supervisor::write_private_file(&path, &record) {
-                tracing::debug!(error = %err, "cannot save the final screen");
-            }
+            save_screen(&runtime.hub, Path::new(&attempt.run_dir));
         }
         let state = if intent.is_some() {
             AttemptState::Killed
@@ -3094,9 +3145,18 @@ impl App {
                 .ok()
                 .and_then(|b| b.try_into().ok());
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
-            self.runtime(&attempt.task_id)
-                .replay_transcript
-                .store(true, Ordering::SeqCst);
+            let runtime = self.runtime(&attempt.task_id);
+            runtime.replay_transcript.store(true, Ordering::SeqCst);
+            // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
+            // was spawned, and whether its session started (a SessionStart this server did not
+            // see left its marker).
+            runtime
+                .spawned_ms
+                .store(attempt.started_at.0, Ordering::SeqCst);
+            // Only ever set here: a SessionStart hook served meanwhile is not undone.
+            if session_started_marked(Path::new(&attempt.run_dir)) {
+                runtime.session_started.store(true, Ordering::SeqCst);
+            }
             let reattached = match host_token {
                 Some(token) => self
                     .attach_run(&attempt.task_id, &attempt, &token)
@@ -3111,6 +3171,17 @@ impl App {
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
+                // An idle run's screen is kept now, from the host's snapshot: its next settled
+                // turn may never come before a reboot (SPEC-229 RBT-002).
+                if let Ok(Some(task)) = store.task(&attempt.task_id).await
+                    && task.status == TaskStatus::Running
+                    && task.activity.is_some_and(Activity::is_idle)
+                {
+                    save_screen(
+                        &self.runtime(&attempt.task_id).hub,
+                        Path::new(&attempt.run_dir),
+                    );
+                }
                 if let Ok(Some(task)) = store.task(&attempt.task_id).await
                     && matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
                 {
@@ -3195,14 +3266,12 @@ impl App {
             .await?
         {
             if store.live_attempt(&task.id).await?.is_none() {
+                let next = task
+                    .status
+                    .after_loss(task.activity, StopReason::ServerLost)
+                    .unwrap_or(TaskStatus::Stopped(StopReason::ServerLost));
                 let _ = store
-                    .transition_task(
-                        &task.id,
-                        Some(task.status),
-                        TaskStatus::Stopped(StopReason::ServerLost),
-                        None,
-                        self.now(),
-                    )
+                    .transition_task(&task.id, Some(task.status), next, None, self.now())
                     .await;
             }
         }
@@ -3727,6 +3796,30 @@ mod tests {
             (120, 40, b"\x1b[1mbye".as_slice())
         );
         assert!(super::read_final_screen(&dir.path().join("missing")).is_none());
+        Ok(())
+    }
+
+    /// SPEC-229 RBT-002 (review): a hub with no output yet (a runtime made fresh by a hook that
+    /// came before reattach) never replaces a saved screen with a blank one; one with output
+    /// replaces it whole, leaving no temporary file behind.
+    #[test]
+    fn a_screen_is_saved_only_from_a_hub_with_output() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(super::FINAL_SCREEN_FILE);
+        super::write_private_file(&path, b"80 24\nthe last turn")?;
+        let hub = crate::hub::Hub::new(120, 40);
+        super::save_screen(&hub, dir.path());
+        assert_eq!(std::fs::read(&path)?, b"80 24\nthe last turn");
+
+        hub.output(1, b"a newer turn");
+        super::save_screen(&hub, dir.path());
+        let (cols, rows, bytes) = super::read_final_screen(dir.path()).ok_or("unreadable")?;
+        assert_eq!((cols, rows), (120, 40));
+        assert!(String::from_utf8_lossy(&bytes).contains("a newer turn"));
+        let names: Vec<_> = std::fs::read_dir(dir.path())?
+            .map(|e| e.map(|e| e.file_name()))
+            .collect::<Result<_, _>>()?;
+        assert_eq!(names, [std::ffi::OsString::from(super::FINAL_SCREEN_FILE)]);
         Ok(())
     }
 

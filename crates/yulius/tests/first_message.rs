@@ -42,7 +42,7 @@ type BoxError = Box<dyn std::error::Error>;
 
 /// A server: the app and its internal listener on `port` (0 = any free port), as `yulius serve`
 /// would start it, with `probe` reading the subscriptions' usage.
-async fn start(
+pub(crate) async fn start(
     data: &Path,
     fake: &Path,
     agent: FakeAgentOptions,
@@ -53,7 +53,7 @@ async fn start(
 }
 
 /// [`start`] with `configure` applied to the app's configuration.
-async fn start_with(
+pub(crate) async fn start_with(
     data: &Path,
     fake: &Path,
     agent: FakeAgentOptions,
@@ -95,7 +95,7 @@ async fn start_with(
     Ok((app, port))
 }
 
-fn hooked() -> FakeAgentOptions {
+pub(crate) fn hooked() -> FakeAgentOptions {
     FakeAgentOptions {
         transcript: true,
         hooks: true,
@@ -103,7 +103,7 @@ fn hooked() -> FakeAgentOptions {
     }
 }
 
-async fn new_task(
+pub(crate) async fn new_task(
     app: &Arc<App>,
     sandbox: &SandboxId,
     user: &UserId,
@@ -131,7 +131,7 @@ async fn new_task(
         .id)
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
+pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -146,7 +146,7 @@ where
     Err(format!("timed out waiting for {what}").into())
 }
 
-fn screen(app: &App, id: &TaskId) -> String {
+pub(crate) fn screen(app: &App, id: &TaskId) -> String {
     app.runtime(id).hub.screen_text()
 }
 
@@ -171,7 +171,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String
     out
 }
 
-async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
+pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     app.stop_task_now(id).await?;
     wait_for("the stop", Duration::from_secs(30), || async {
         TaskStore::task(app.deps.store.as_ref(), id)
@@ -183,14 +183,14 @@ async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     .await
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
 }
 
-fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
+pub(crate) fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
     // A short base: run sockets live at <data>/runs/<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yf").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;

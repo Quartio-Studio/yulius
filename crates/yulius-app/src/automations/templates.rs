@@ -183,6 +183,40 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-240 AGM-003: a run's task is a goal task, and a prompt past the goal's cap is cut, so
+    /// each template's first paragraph (what the run does and how it ends) stays in the goal.
+    #[test]
+    fn every_goal_keeps_how_its_run_ends() {
+        use yulius_domain::request::{DoneDefinition, Request, goal_condition};
+        let done = DoneDefinition {
+            integration_branch: "dev".into(),
+            production_branch: "main".into(),
+            integration_environments: vec!["dev".into()],
+            playground: false,
+        };
+        let path = format!(
+            "/var/lib/yulius/sandboxes/{}/home/.yulius/tasks/999.md",
+            "x".repeat(36)
+        );
+        let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for t in templates() {
+            let goal = one_line(&goal_condition(&Request::parse(&t.prompt), &path, &done));
+            let first = one_line(t.prompt.trim().split("\n\n").next().unwrap_or_default());
+            assert!(goal.contains(&first), "{}: {goal}", t.id);
+        }
+        // Its last step comes after the cut: the goal must say the run ends with its summary.
+        let issues = template("open-issues")
+            .map(|t| one_line(&t.prompt))
+            .unwrap_or_default();
+        let first = issues.split(" 1. Collect.").next().unwrap_or_default();
+        for wording in [
+            "opens no pull request",
+            "does not wait for the tasks it starts",
+        ] {
+            assert!(first.contains(wording), "{wording}");
+        }
+    }
+
     #[test]
     fn order_then_name_bad_files_skipped_and_names_match_loosely() {
         let file = |name: &str, order: &str| {
