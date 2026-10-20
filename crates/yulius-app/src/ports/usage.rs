@@ -5,6 +5,9 @@
 //! one Yulius stores — has only `user:inference`, so the endpoint refuses it with HTTP 403
 //! ([`UsageFailureKind::NotShared`]); its usage comes from the running sessions instead (Claude
 //! Code's status line, SPEC-002 ADR-17).
+//!
+//! The same adapter reads the email of the Claude account behind a credential
+//! (`/api/oauth/profile`, SPEC-244 SUB-003), which may be refused for the same reason.
 
 use std::time::Duration;
 
@@ -90,6 +93,40 @@ pub trait UsageProbe: Send + Sync {
         provider: Provider,
         credential: &Secret,
     ) -> Result<AccountUsage, UsageFailure>;
+
+    /// The email of the account behind `credential` (Claude: `account.email` of
+    /// `/api/oauth/profile`). `Ok(None)`: the provider answered without a usable address. A
+    /// failure is classified as for usage: [`UsageFailureKind::NotShared`] (the sign-in may not
+    /// read the profile) and [`UsageFailureKind::Rejected`] are definite answers,
+    /// [`UsageFailureKind::Throttled`] and [`UsageFailureKind::Unavailable`] temporary.
+    async fn account_email(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+    ) -> Result<Option<String>, UsageFailure> {
+        let _ = (provider, credential);
+        Err(UsageFailure::new(
+            "the account email is not available in this build",
+        ))
+    }
+}
+
+/// Longest email address stored (RFC 5321 path limit).
+pub const EMAIL_MAX: usize = 254;
+
+/// `raw` trimmed when it looks like an email address: one `@` with text on both sides, no
+/// whitespace or control characters, at most [`EMAIL_MAX`] characters (SPEC-244 SUB-006).
+#[must_use]
+pub fn plausible_email(raw: &str) -> Option<String> {
+    let email = raw.trim();
+    let (local, domain) = email.split_once('@')?;
+    let printable = email.chars().all(|c| !c.is_whitespace() && !c.is_control());
+    (printable
+        && !local.is_empty()
+        && !domain.is_empty()
+        && !domain.contains('@')
+        && email.chars().count() <= EMAIL_MAX)
+        .then(|| email.to_owned())
 }
 
 /// A probe that never reaches a provider (tests and offline builds).
@@ -101,5 +138,31 @@ impl UsageProbe for NoUsageProbe {
         Err(UsageFailure::new(
             "provider usage is not available in this build",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_addresses_are_emails() {
+        assert_eq!(
+            plausible_email("  pawel@example.com ").as_deref(),
+            Some("pawel@example.com")
+        );
+        for bad in [
+            "",
+            "pawel",
+            "@example.com",
+            "pawel@",
+            "a@b@c",
+            "pa wel@example.com",
+            "pawel@exa\nmple.com",
+        ] {
+            assert_eq!(plausible_email(bad), None, "{bad:?}");
+        }
+        let long = format!("{}@example.com", "a".repeat(EMAIL_MAX));
+        assert_eq!(plausible_email(&long), None);
     }
 }

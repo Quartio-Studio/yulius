@@ -15,11 +15,19 @@ async fn recover(
     h: &support::Harness,
     code: &str,
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    recover_with(h, code, NEW_PASSWORD).await
+}
+
+async fn recover_with(
+    h: &support::Harness,
+    code: &str,
+    password: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
     call(
         &h.router,
         Method::POST,
         "/api/auth/recover",
-        Some(json!({"code": code, "password": NEW_PASSWORD, "password_confirm": NEW_PASSWORD})),
+        Some(json!({"code": code, "password": password, "password_confirm": password})),
         &Creds::default(),
     )
     .await
@@ -44,6 +52,55 @@ fn wrong_code(code: &str) -> String {
         .and_then(|c| c.to_digit(10))
         .unwrap_or(0);
     format!("{}{}", (first + 1) % 10, &code[1..])
+}
+
+/// SPEC-242 PWM-001: recovery takes an 8-character password; 7 are refused with the minimum,
+/// before the code is checked, so the refusal spends no attempt.
+#[tokio::test]
+async fn recovery_accepts_eight_characters_and_refuses_seven_without_spending_an_attempt()
+-> TestResult {
+    let h = harness()?;
+    let token = h.app.prepare_setup().await?.ok_or("setup token")?;
+    let setup = call(
+        &h.router,
+        Method::POST,
+        "/api/setup",
+        Some(json!({"token": token.expose(), "password": PASSWORD, "password_confirm": PASSWORD, "confirm_saved": true})),
+        &Creds::default(),
+    )
+    .await?;
+    let code = setup.body["recovery_code"]
+        .as_str()
+        .ok_or("code at setup")?
+        .to_owned();
+    let seven = recover_with(&h, &code, "zaq1@WS").await?;
+    assert_eq!(seven.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        seven.body["error"]["message"],
+        "the password needs at least 8 characters"
+    );
+    assert_eq!(
+        status(&h).await?["attempts_left"],
+        json!(3),
+        "no attempt spent"
+    );
+
+    let eight = recover_with(&h, &code, "zaq1@WSX").await?;
+    assert_eq!(eight.status, StatusCode::OK, "{:?}", eight.body);
+    let login = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/password",
+        Some(json!({"password": "zaq1@WSX"})),
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(
+        login.status,
+        StatusCode::OK,
+        "the new 8-character password works"
+    );
+    Ok(())
 }
 
 #[tokio::test]

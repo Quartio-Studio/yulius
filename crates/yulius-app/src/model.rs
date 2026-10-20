@@ -534,6 +534,12 @@ pub struct AccountRecord {
     pub usage_json: Option<String>,
     /// Last error.
     pub last_error: Option<String>,
+    /// Email of the Claude account behind the credential, read from Claude's profile at sign-in
+    /// (SPEC-244 SUB-003); `None` while unknown.
+    pub email: Option<String>,
+    /// When Claude last answered the email request definitely (an email or a refusal) for the
+    /// current sign-in; `None` while it was never answered, so the background round asks.
+    pub email_checked_at: Option<Timestamp>,
     /// Created.
     pub created_at: Timestamp,
     /// Updated.

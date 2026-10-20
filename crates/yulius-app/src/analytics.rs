@@ -94,6 +94,8 @@ pub struct AnalyticsRun {
     pub account_id: Option<AccountId>,
     /// Account label (`None` when deleted).
     pub account_label: Option<String>,
+    /// Email of the account's Claude account (`None` when unknown or deleted, SPEC-244).
+    pub account_email: Option<String>,
     /// Started.
     pub started_at: Timestamp,
     /// Ended (`None` while live).
@@ -294,6 +296,9 @@ fn bump(map: &mut BTreeMap<String, u32>, key: &str) {
     *map.entry(key.to_owned()).or_default() += 1;
 }
 
+/// One account's label, email and token totals while summarizing.
+type AccountAcc = (Option<String>, Option<String>, Acc);
+
 /// Aggregates a cohort.
 #[must_use]
 pub fn summarize(
@@ -332,7 +337,7 @@ pub fn summarize(
     let mut all = Acc::default();
     let mut by_model: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
-    let mut by_account: BTreeMap<Option<String>, (Option<String>, Acc)> = BTreeMap::new();
+    let mut by_account: BTreeMap<Option<String>, AccountAcc> = BTreeMap::new();
     let mut wall_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut active_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut total_wall: u64 = 0;
@@ -351,8 +356,14 @@ pub fn summarize(
             .add(run);
         let account = by_account
             .entry(run.account_id.as_ref().map(ToString::to_string))
-            .or_insert_with(|| (run.account_label.clone(), Acc::default()));
-        account.1.add(run);
+            .or_insert_with(|| {
+                (
+                    run.account_label.clone(),
+                    run.account_email.clone(),
+                    Acc::default(),
+                )
+            });
+        account.2.add(run);
         let wall = run_wall_ms(run, now);
         total_wall = total_wall.saturating_add(wall);
         let task_wall = wall_by_task.entry(run.task_id.clone()).or_default();
@@ -438,9 +449,10 @@ pub fn summarize(
             .collect(),
         tokens_by_account: by_account
             .into_iter()
-            .map(|(id, (label, acc))| AccountTokens {
+            .map(|(id, (label, email, acc))| AccountTokens {
                 account_id: id,
                 account_label: label,
+                account_email: email,
                 tokens: acc.totals(),
             })
             .collect(),
@@ -662,7 +674,14 @@ impl App {
         to: Option<&str>,
     ) -> AppResult<AnalyticsSummary> {
         let (data, range, days) = self.analytics_cohort(ctx, sandbox, from, to).await?;
-        Ok(summarize(&data, range, days, self.now()))
+        let mut summary = summarize(&data, range, days, self.now());
+        // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
+        if !(ctx.user.is_superadmin || ctx.user.is_instance_admin) {
+            for account in &mut summary.tokens_by_account {
+                account.account_email = None;
+            }
+        }
+        Ok(summary)
     }
 
     /// `GET /api/analytics/tasks` rows (read access; only visible sandboxes).
@@ -735,6 +754,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             account_id: None,
             account_label: None,
+            account_email: None,
             started_at: Timestamp(0),
             ended_at: Some(Timestamp(1_000)),
             metrics,
@@ -780,6 +800,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 account_id: None,
                 account_label: None,
+                account_email: None,
                 started_at: Timestamp(0),
                 ended_at: Some(Timestamp(open_ms)),
                 metrics: Some(MetricsRecord {
@@ -849,6 +870,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 account_id: None,
                 account_label: None,
+                account_email: None,
                 started_at: Timestamp(day * DAY_MS + 10),
                 ended_at: Some(Timestamp(day * DAY_MS + 20)),
                 metrics: Some(MetricsRecord {

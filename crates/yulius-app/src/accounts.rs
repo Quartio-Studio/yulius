@@ -304,6 +304,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         status: account.status.as_str().to_owned(),
         usage: usage_view(&account_usage(account)),
         last_error: account.last_error.clone(),
+        email: account.email.clone(),
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
@@ -503,7 +504,7 @@ impl App {
             .publish(None, true, UiEvent::AccountUpdated { account: view });
     }
 
-    async fn publish_account_id(&self, id: &AccountId) {
+    pub(crate) async fn publish_account_id(&self, id: &AccountId) {
         let store = &self.deps.store;
         if let (Ok(Some(account)), Ok(live)) =
             (store.account(id).await, self.working_attempts().await)
@@ -732,6 +733,10 @@ impl App {
                 }
             }
         }
+        // Emails never answered for the current sign-in (SPEC-244 SUB-004), after the usage reads
+        // so a slow profile request never delays them.
+        self.backfill_account_emails(&mut *self.capacity.email_not_before.lock().await)
+            .await;
     }
 
     /// Creates an account in `pending_login` and starts its login terminal (ROT-001/002).
@@ -762,6 +767,8 @@ impl App {
             last_error: None,
             created_at: now,
             updated_at: now,
+            email: None,
+            email_checked_at: None,
         };
         store.insert_account(&account).await?;
         let session = match self.start_login(&account).await {
@@ -1241,6 +1248,9 @@ impl App {
             // and its usage is read right away (after viewers got the exit frame).
             self.capacity_changed();
             if let Ok(Some(account)) = self.deps.store.account(&session.account_id).await {
+                // The email of the Claude account just signed in (SPEC-244 SUB-003); a
+                // temporary failure is left to the background round.
+                self.record_account_email(&account).await;
                 let _ = self.fetch_and_record_usage(&account).await;
             }
         }

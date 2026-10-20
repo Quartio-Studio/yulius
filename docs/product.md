@@ -126,7 +126,8 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
-  prices, with a 7-day chart for each.
+  prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
+  Max", "personal") and see the email of its Claude account wherever it is named.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in

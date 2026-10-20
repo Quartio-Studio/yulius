@@ -34,10 +34,10 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. 422 when the repeat differs or the password has fewer than 8 characters (`the password needs at least 8 characters`; SPEC-242). Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
-| POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
+| POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left), and, before the code is checked (no attempt spent), for a repeat that differs or a password under 8 characters; 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
 | GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account) |
 | GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
@@ -334,8 +334,9 @@ otherwise), and applies the same shell condition to Done by a tested pull reques
 
 ```json
 TaskDetail = TaskSummary + {
+  "account_email?": "…",
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
-  "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
+  "worktree": "…", "attempts": [{"seq","harness","account_label","account_email?","account_id (proposed)","launch_kind","state",
                                   "started_at","ended_at","exit_code","exit_reason"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
@@ -1160,7 +1161,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
-| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (1–80 chars) → `Account`; the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
+| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (trimmed, 1–80 printable chars) → `Account`: renames the subscription (the Subscriptions page edits the name in place, SPEC-244; audited `account.updated`); the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a task that is not Done uses it; Done tasks' idle sessions on it are closed first (`closed`, as archiving does; 409 if one is still closing), SPEC-057; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
@@ -1203,11 +1204,18 @@ Account = {"id","provider","label",
 
 `primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
 per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
-never returned. `email` (the provider sign-in,
-administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
-them when present, but **the server does not report them yet** (and the mock does not either, so
-it looks like production), so today they are absent and the UI shows the label and provider. A
-task's overview names each session's subscription by its label (`TaskDetail.attempts[].account_label`).
+never returned. `email` is the email of the Claude account behind the subscription (SPEC-244,
+ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's profile
+(`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round
+reads it once for subscriptions signed in before. It is `null` until Claude gives one: Claude may
+refuse the profile to a `setup-token` sign-in, and the page then reads "email unknown" until the
+next sign-in. A new sign-in drops the previous email. Emails are for administrators (UI-022).
+`StatusAccount.email`, `CapacityAccount.email`, `TaskDetail.account_email`,
+`attempts[].account_email` and `tokens_by_account[].account_email` are present only for an
+instance administrator or the superadmin, and only when known. A task summary (lists, events)
+never carries one. `plan` (the subscription tier) is planned for UI-022: the server does not
+report it yet. A task's overview names each session's subscription by its label, with the email
+for administrators (`TaskDetail.attempts[].account_label`, `account_email`).
 `in_use_by` counts the live tasks on the subscription except Done ones by the session limit's
 rule (SES-101: goal achieved, or plan complete with the change merged; SPEC-057): a Done task
 keeps its idle session but no longer holds the subscription.
@@ -1253,7 +1261,7 @@ AnalyticsSummary = {
   "tokens": Tokens,
   "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
   "tokens_by_harness": [{"harness": "claude", …Tokens}],
-  "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", …Tokens}],
+  "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", "account_email?": "…", …Tokens}],
   "switches": {"total": 2},
   "feedback": {"correct": 1, "incorrect": 1},
   "truncated": false
@@ -1283,15 +1291,15 @@ Status = {
   "sessions": {"live": 2, "limit": 8, "queued": 1},
   "sandboxes": [{"id", "slug", "name", "live_sessions": 1}],
   "accounts": [{"label", "provider", "status", "usage",
-                "id?", "last_error?", "in_use_by?"}],
+                "id?", "email?", "last_error?", "in_use_by?"}],
   "contained": true
 }
 ```
 
 VM fields are `null` when unknown (CPU needs two readings). Disk figures describe the volume
 holding the data directory. `sandboxes` lists only sandboxes the caller can see; `sessions` is
-instance-wide. Account `id`, `last_error` and `in_use_by` are present only for instance
-administrators.
+instance-wide. Account `id`, `email` (when known, SPEC-244), `last_error` and `in_use_by` are
+present only for instance administrators.
 
 ```json
 CapacityView = {
@@ -1302,7 +1310,7 @@ CapacityView = {
   "paused_hours_7d": 8.0, "active_hours_7d": 32.0,
   "needed": 4, "add": 1, "recommendation": "Add about 1 subscription to stop pausing",
   "paused_tasks": 0, "resumes_at": "…|null",
-  "accounts": [{"label", "status", "usage", "available", "id?", "in_use_by?"}],
+  "accounts": [{"label", "status", "usage", "available", "id?", "email?", "in_use_by?"}],
   "burn_per_day": [null, 1.2, …, 2.0], "paused_hours_per_day": [0.0, …, 8.0],
   "tokens": {"last_24h": Spend, "last_7d": Spend, "per_day": [Spend, …],
              "unknown_usage_runs": 0, "unpriced_runs": 0}
