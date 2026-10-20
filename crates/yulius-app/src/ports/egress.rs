@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::vault::redact::PlainMatcher;
 
 /// The run behind a proxy credential.
@@ -13,8 +13,12 @@ use yulius_domain::vault::redact::PlainMatcher;
 pub struct EgressClient {
     /// An agent run, a CI job or a person's Superagent.
     pub caller: EgressCaller,
-    /// Its sandbox: the sandbox's secrets and the instance-wide ones apply.
+    /// Its sandbox: the sandbox's secrets and the global ones switched on for it apply.
     pub sandbox_id: SandboxId,
+    /// The person whose personal secrets switched on for the sandbox apply (SPEC-245 RES-002):
+    /// the Superagent's person; `None` for a CI job. For an agent run, its task's holder when the
+    /// credential was resolved; the policy reads the task's current holder per request instead.
+    pub person: Option<UserId>,
 }
 
 /// Who holds a proxy credential.
@@ -68,6 +72,14 @@ impl EgressClient {
             EgressCaller::Ci { job_id, .. } => job_id,
             EgressCaller::Superagent { shell_id, .. } => shell_id,
         }
+    }
+
+    /// For whom its sandbox's secrets are resolved (SPEC-245).
+    #[must_use]
+    pub fn holder(&self) -> crate::vault::Holder<'_> {
+        self.person
+            .as_ref()
+            .map_or(crate::vault::Holder::Nobody, crate::vault::Holder::Person)
     }
 
     /// Whether agent secret `name` (`cd_prod`: allowed for production deploys) applies to it.

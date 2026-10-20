@@ -198,6 +198,31 @@ flowchart LR
   L -->|job refused for disk| Q
 ```
 
+## Connecting a subscription
+
+An administrator connects a Claude subscription with Claude's own sign-in, `claude setup-token`.
+It runs in a server-owned PTY, and the web UI shows it in a dialog over the login terminal
+(SPEC-001 ROT-002, SPEC-002 ADR-05). The CLI stores no credential file. It prints the long-lived
+token once, so the server reads the token from the raw PTY stream and masks it for viewers. On
+the CLI's exit it seals the token into the account. A CLI that runs on more than 5 s after a
+complete token appeared is stopped and the token sealed (SPEC-243,
+[decision 0184](decisions/0184-a-captured-token-ends-the-sign-in-and-a-closed-dialog-cancels-it.md)).
+The dialog follows the terminal's ending. On `ok` it closes by itself and a toast names the
+subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
+sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
+waits for the end and keeps a token already printed, so a sign-in that succeeded is never lost.
+
+```mermaid
+stateDiagram-v2
+  [*] --> running: Add subscription / Sign in again
+  running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> error: no token at exit, or 15 min timeout
+  running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
+  ok --> [*]: dialog closes, toast "… is connected"
+  error --> running: Try again
+  cancelled --> running: Try again
+```
+
 ## Usage limits
 
 When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
@@ -913,6 +938,39 @@ the team secrets (none had a sandbox) in `vault_scope_pending`; at the next star
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets an administrator made team-wide stay team-wide.
+
+## Agent secret scopes
+
+Since SPEC-245 ([decision 0186](decisions/0186-agent-secrets-are-project-global-or-personal.md))
+an agent secret is a project's (`sandbox_id`), global (no sandbox, no owner) or personal
+(`owner_id`, removed with the user's row). `vault_enabled (secret_id, sandbox_id)` switches a global or
+personal secret on for a project; a new one is on for the project it was added from. Names are
+unique within a scope. `VaultStore::vault_agent_in(sandbox)` lists the candidates (the project's,
+and the global and personal ones, of every owner, switched on there); `vault/reach.rs` resolves
+them for a `Holder`: one per name, project > personal > global, then the instance Vidoc key, and
+never another person's. A task's holder is its owner unless an automation started it
+(`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
+nobody, and a task an automation's task creates is an automation task too.
+`EgressClient::person` carries the holder of CI jobs and the Superagent to the proxy; for an agent
+run the proxy reads its task's current holder on every request, so a hand-over applies also to
+connections opened before it, and `task_message` from anyone but the owner refuses a task
+holding personal secrets. A personal secret is never copied
+into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
+production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
+gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by
+instance administrators, personal ones only by their owner (404 to everyone else), through
+`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`. Schema version 39 switched every team-wide
+agent secret on for every live sandbox.
+
+```mermaid
+flowchart LR
+  C["vault_agent_in(project): project + switched-on global + switched-on personal (all owners)"] --> H{"run's holder"}
+  H -->|"task (not automation) or Superagent: its person"| P["per name: project > own personal > global"]
+  H -->|"CI job, CD run, automation's task, MCP refs"| N["per name: project > global"]
+  P --> X["egress proxy, placeholders, tools"]
+  N --> X
+  C --> R["Yulius' redaction of the project (every candidate)"]
+```
 
 Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
 secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its

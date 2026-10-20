@@ -411,3 +411,16 @@ reason = "uncontained is the development mode: agents and shells already run on 
 path = ".config/vidoc.toml"
 title = "Unauthenticated browser adapter endpoint suppressed"
 reason = "the reviewed entry for the browser adapter's trust model, tracked in open issue #626"
+
+# Every instance administrator may watch any Claude sign-in by design (SPEC-002 §7.2 "Login",
+# docs/api.md "Login terminal"): the subscription pool is the instance's, `App::login_terminal`
+# calls `require_instance_admin` before it looks the sign-in up, and every output chunk passes the
+# masker first, so no viewer ever sees the token
+# (accounts::claude_login_masks_the_token_for_viewers_and_seals_it,
+# accounts::login_terminal_websocket_streams_masked_output_and_accepts_input). Reported on task
+# #229's CI change scan (SPEC-243), which touched the handler to answer an unknown sign-in in band.
+# The independent reviewer of #229 agreed it is a false positive.
+[[ignore]]
+path = "crates/yulius-server/src/routes/accounts.rs"
+title = "Login terminal WebSocket may lack ownership verification"
+reason = "by design every instance administrator may watch any sign-in (SPEC-002 §7.2); require_instance_admin first; output is masked so no viewer sees the token (claude_login_masks_the_token_for_viewers_and_seals_it)"

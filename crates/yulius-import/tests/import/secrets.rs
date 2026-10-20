@@ -373,7 +373,11 @@ fn instance_scope_is_sent_and_checked_against_instance_secrets() -> TestResult {
     assert_eq!(created.len(), 1);
     assert_eq!(created[0].0, "sb-2");
     assert_eq!(created[0].1.scope.as_deref(), Some("instance"));
-    assert!(terminal.said.contains("every sandbox (instance)"));
+    assert!(
+        terminal
+            .said
+            .contains("global, switched on for this sandbox")
+    );
     Ok(())
 }
 
