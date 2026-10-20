@@ -58,12 +58,12 @@ code does.
 
 ## Plan
 
-- [ ] Spec and plan for the follow-ups
-- [ ] Agent egress clients carry no frozen person
-- [ ] A hand-over rewrites the run's fingerprint file
-- [ ] Hand-over and deleted-task tests, message test tidied
-- [ ] The 200-secret cap is checked in the store transaction
-- [ ] Documents corrected and the ADR index ordered
+- [x] Spec and plan for the follow-ups
+- [x] Agent egress clients carry no frozen person
+- [x] A hand-over rewrites the run's fingerprint file
+- [x] Hand-over and deleted-task tests, message test tidied
+- [x] The 200-secret cap is checked in the store transaction
+- [x] Documents corrected and the ADR index ordered
 - [ ] Gates, independent review and delivery
 
 ## Acceptance criteria
@@ -97,3 +97,32 @@ code does.
 - Fold the cap into the store (`cap` argument) rather than keep the soft cap: the database thread
   serializes jobs, so one count query per write closes the race at no measurable cost. No new ADR;
   ADR-0186's consequence is amended.
+
+## Evidence
+
+Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
+
+- `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest 2315
+  passed, 17 skipped. The first run, before the dev merge, failed only
+  `supervision::a_usage_limit_moves_the_session_to_the_next_account` (60 s timeout under the full
+  suite's load): the open flaky issue #539, outside this change; it passed 3/3 alone.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 13
+  passed. Red first: `a_hand_over_rewrites_the_runs_fingerprint_file` failed before the fix
+  (the file still listed `MY_TOKEN`); `concurrent_switch_ons_stop_at_the_projects_limit` (20
+  switch-ons on 4 workers into a project with 199) let 5, 7 and 4 through in three runs before the
+  fix, and passed 5/5 after. The new hand-over assertions (bob's secret on the client resolved
+  before) and `a_deleted_tasks_client_resolves_to_no_person` pin behavior already right since
+  SPEC-245 review round 2; they passed on first run.
+- Store tests (`cargo nextest run -p yulius-store vault::`): 14 passed, with
+  `adding_and_switching_on_stop_at_the_cap` (insert and switch-on refused at the cap, an
+  already-on switch not refused, switching off then on fits).
+- FUP-001 has no red test: it removes a field and a method without callers; the compiler and the
+  hand-over tests (which read the current holder) are its evidence.
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used its
+  50,000,000 tokens". Unrun, not passed; a person was asked to restore the quota (`needs_you`).
+  The PR's CI `security` job is the live scan once it has quota.
+- e2e: not run, no web UI change.
+- Not tested: a contained session reading the rewritten file through its read-only bind (the test
+  checks the inode stays the same); a fingerprint fallback read racing the rewrite (it would read
+  invalid JSON and withhold output, failing closed).
+- Size: about 210 changed lines outside tests and docs.
