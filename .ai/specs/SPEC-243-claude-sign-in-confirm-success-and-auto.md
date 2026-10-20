@@ -1,11 +1,11 @@
 ---
 yulius-task: 76c9a44e-2a03-4eab-8bca-95164aa83cd2
-status: in-progress
+status: done
 ---
 
 # SPEC-243: Claude sign-in confirms success and closes by itself
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: task #229
 Scope authorization: task #229, feedback from an early external user: "Login works great, I'd only
@@ -74,8 +74,8 @@ Confirmed against `dev` at 33410359.
 - [x] Docs, ADR-0184 and changes entry match the flow
 - [x] Review round 1 findings fixed test-first
 - [x] Gates green on the fixed head
-- [ ] Review round 2 approves the head
-- [ ] Merge into dev on green CI
+- [x] Review round 2 approves the head
+- [x] Merge into dev on green CI
 
 ## Acceptance criteria
 
@@ -133,3 +133,55 @@ Confirmed against `dev` at 33410359.
 - **The email comes from #230.** The success message uses the account view's `email` when it
   is there. It does not read the email itself: a `setup-token` credential cannot read Claude's
   profile, and storing the email belongs to #230's migration.
+
+## Evidence
+
+- Regression tests failed before their fixes:
+  - `accounts::a_sign_in_ends_once_its_token_is_captured` failed with `Elapsed(())`: the sign-in
+    stayed `running` (setter added first, behaviour after).
+  - `accounts::a_running_sign_in_can_be_cancelled` failed with `left: 404, right: 403` (no route).
+  - `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts` failed on
+    "exit code Some(2)" once it expected "(exit code 2)".
+  - The `not_found` part of `accounts::login_terminal_websocket_streams_masked_output_and_accepts_input`
+    failed with a handshake `Http(404)`.
+  - Of the four first e2e tests, the four SPEC-243 ones failed on the old dialog (no
+    "closes by itself" text, no banner).
+  - `accounts::a_cancel_after_the_token_keeps_it` answers `ok` with the token sealed. On the
+    round-1 code it answered 204 and discarded the token (the reviewer's analysis).
+  - `accounts::a_partial_token_does_not_end_the_sign_in` also passes on `dev`. It is a guard on
+    the new grace end, not a regression test.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^accounts::/) | test(/^ui_contract::/))'`:
+  19 passed.
+- `scripts/dev ci` (check, lint, macOS, test, doc, deps): exit 0 on the final head. Earlier runs
+  failed and were fixed: a product name in a string (use `BRAND.name`), and a doc link to a
+  private constant.
+- e2e:
+  - `npx e2e run tests/subscriptions.e2e.ts tests/consistency.e2e.ts`: 25 passed.
+  - The full suite (`npx e2e run`): 638 passed, 1 skipped, 1 failed. The failure was
+    `secrets.e2e.ts` "a failed copy shows no check…", an axe target-size check on a Close
+    button: the known flake #640, outside this change. It passed 3 of 3 runs on its own.
+- Browser check on the mock (`?mock=1&ambient=0`, served on port 20107, Yulius browser), on
+  Claude #3's "Sign in again":
+  - The code `fail` showed the "Sign-in failed" banner with the reason and Try again.
+  - Try again opened a new sign-in with "Cancel sign-in".
+  - A code then closed the dialog. The toast read "Claude #3 is connected. Tasks can use it now."
+    and the card turned signed in.
+- `scripts/dev security` (Vidoc vidoc-1): exit 0, with no critical, high or medium finding in the
+  change. One medium finding is outside it (`routes/mod.rs:410`, internal router authentication):
+  CI files it as an issue.
+- Independent review (fresh session, `om-code-review`):
+  - Round 1 requested changes with 2 major and 5 minor findings, all own code. All were fixed,
+    with tests where the behaviour is observable: the lost terminal is refused in band, a removed
+    subscription gets no Try again, a Try again started while the dialog closes is cancelled,
+    the cancel toast follows the server's answer, a token already captured is kept on cancel,
+    and the token scan is incremental.
+  - Round 2 approved `a96ea5db`. Its three nits were fixed in `910b931f`: a dialog closed after
+    a lost connection cancels the sign-in, a `running` answer says the sign-in is still stopping,
+    and a failed audit of a cancel is logged.
+- Not tested against a real Claude sign-in. That needs a person's Claude account in the
+  browser. The success detection relies on `claude setup-token` 2.1.292 exiting 500 ms after
+  printing the token, read from its bundled source. The 5-second grace end covers a version that
+  does not exit.
+- Pre-existing, outside this change: on the real server a signed-out viewer is refused at the
+  handshake (401), so the dialog says "connection lost" rather than "signed out" (only the mock
+  sends the in-band frame).
