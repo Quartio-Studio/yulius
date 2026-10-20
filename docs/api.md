@@ -288,6 +288,7 @@ TaskSummary = {
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
+  "waits_for_account": false,
   "supertask": false, "held_by": [3, 5],
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
@@ -309,7 +310,10 @@ the harness holds the agent at its turn boundary (or the task waits to start); n
 the agent, and the task continues by itself. `resumes_at` is set only then: the earliest known
 time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
-task paused, not an error.
+task paused, not an error. A task started by itself (a chain, a rule, an automation, a time) while
+no Claude account is usable waits the same way with `waits_for_account: true` (no reset to wait
+for; the UI says "Waiting for a Claude account"); a person's start then answers `409`
+`claude_account_required` instead (SPEC-246).
 
 `steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the

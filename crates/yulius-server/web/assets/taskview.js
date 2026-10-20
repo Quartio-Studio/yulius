@@ -60,7 +60,9 @@ function emptyTerminalMessage(task) {
     case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
     case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
-    case 'waiting_capacity': return { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
+    case 'waiting_capacity': return task.waits_for_account
+      ? { title: 'Waiting for Claude', text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one.` }
+      : { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
     case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.', busy: true };
     case 'chained': {
       const after = task.after;
@@ -628,7 +630,8 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.setAttribute('aria-label', `${done} of ${total} steps done, ${pct}% of the plan${active ? `, ${active}% in progress` : ''}`);
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
-    const reset = current.status === 'waiting_capacity' ? resetAround(current.resumes_at) : '';
+    // Waiting for a Claude account to be connected has no reset to wait for (SPEC-246).
+    const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? 'waits for a Claude account' : resetAround(current.resumes_at);
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),

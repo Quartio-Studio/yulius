@@ -111,9 +111,11 @@ export function mountHomePage(ctx) {
   function emptyView(needsGithub, user, needsClaude) {
     const github = [];
     if (needsGithub) {
+      // Playgrounds need no GitHub, but they too wait for Claude (SPEC-246).
+      const playgrounds = needsClaude ? 'Playgrounds need no GitHub.' : 'Playgrounds keep working.';
       github.push(h('p', { class: 'text-2' }, user.is_superadmin
-        ? 'When your team is ready, connect GitHub to import or create your organisation’s repositories. Playgrounds keep working.'
-        : 'When your team is ready, a superadmin connects GitHub to bring in your organisation’s repositories. Playgrounds keep working.'));
+        ? `When your team is ready, connect GitHub to import or create your organisation’s repositories. ${playgrounds}`
+        : `When your team is ready, a superadmin connects GitHub to bring in your organisation’s repositories. ${playgrounds}`));
       if (user.is_superadmin) github.push(h('div', { class: 'row-wrap' }, h('a', { class: 'btn', href: href('/admin/github'), dataset: { route: '/admin/github' } }, icon('github', { size: 14 }), 'Connect GitHub')));
     } else if (needsClaude) {
       github.push(h('p', { class: 'text-2' }, 'Once Claude is connected, import or create your organisation’s repositories here: each becomes a sandbox with its own tasks, browser and editor.'));

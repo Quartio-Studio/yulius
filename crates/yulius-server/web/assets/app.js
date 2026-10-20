@@ -311,14 +311,19 @@ function createApp(root, transport) {
     document.addEventListener('visibilitychange', onVisible);
 
     // A start refused for want of a Claude account offers to connect one (SPEC-246 CLA-007).
-    setErrorAction((error) => (error && error.code === ACCOUNT_REQUIRED ? connectAction(store.state.me, navigate) : null));
     // Whether a Claude account is usable changes as one signs in or is removed, and is read again
-    // when the page comes back into view (a non-administrator gets no account events).
+    // when the page comes back into view (a non-administrator gets no account events) and when a
+    // start was refused for want of one (an account removed or signed out sends no event).
     const refreshMe = () => api.get('/api/me').then((me) => {
       if (!store.state.me || !me || !me.user || me.user.id !== store.state.me.user.id) return;
       store.state.me = me;
       store.emit('me', me);
     }).catch(() => {});
+    setErrorAction((error) => {
+      if (!error || error.code !== ACCOUNT_REQUIRED) return null;
+      refreshMe();
+      return connectAction(store.state.me, navigate);
+    });
     const onShown = () => { if (!document.hidden) refreshMe(); };
     document.addEventListener('visibilitychange', onShown);
     unsubscribers.push(

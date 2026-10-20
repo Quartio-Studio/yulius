@@ -64,7 +64,9 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
 - **CLA-004** A task started by machinery (a chain, a rule, an automation, a scheduled time) while
   no account is usable keeps waiting `waiting_capacity`, as today, but its notice says that no Claude
   account is connected, where to connect one, and that it starts by itself once one is connected;
-  it does not fail.
+  it does not fail. Its summary carries `waits_for_account: true`, so wherever it is shown later
+  (the task strip, the sidebar, its time label, the Paused card) it reads as waiting for a Claude
+  account (or for one to sign in again), never "no subscription has capacity left".
 - **CLA-005** A start that fails because its account has no credential ends `failed_no_account`
   (not `failed_precondition`); the UI says the task could not start because no Claude account was
   connected, links to Subscriptions and offers Try again.
@@ -76,10 +78,13 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
 - **CLA-007** The UI shows the step first: Home (with or without sandboxes) and the onboarding gate
   show "Connect Claude" as a required step while `claude_connected` is false — a button to
   Subscriptions for an instance administrator, else that an administrator connects one — and the
-  actions that would start an agent (the playground drop and template, Start onboarding) are
-  disabled with "Connect Claude first". A `claude_account_required` error toast carries a Connect
-  Claude link. The page learns about a newly connected account without a reload (an
-  `account.updated` event re-reads `/api/me`; a non-administrator's page re-reads it when shown).
+  actions that would lead to an agent are not offered: the playground drop and template (hidden),
+  New playground, Import repository and Create from template (disabled with "Connect Claude
+  first"), Start onboarding (disabled). A browser import is therefore reached without an account
+  only from a page opened before an account was removed, or through the API; CLA-003 covers it. A
+  `claude_account_required` error toast carries a Connect Claude link and re-reads `/api/me`. The
+  page learns about a newly connected account without a reload (an `account.updated` event
+  re-reads `/api/me`; a non-administrator's page re-reads it when shown).
 
 ## Plan
 
@@ -121,7 +126,8 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   onboarding retried (CLA-006). `cockpit.rs`: the Superagent's refusal code.
 - Unit tests for the usable-account rule and the `failed_no_account` wire name.
 - Existing tests that start tasks with no account seed one where they relied on the pause.
-- e2e `onboarding.e2e.ts` and `home.e2e.ts` with the mock's no-account state.
+- e2e `claude-connect.e2e.ts` with the mock's no-account state (`claude=0`, `onboarding=failed`,
+  `connectClaude()`).
 - Gates: `scripts/dev ci`, e2e suite, `scripts/dev security`.
 
 ## Decisions

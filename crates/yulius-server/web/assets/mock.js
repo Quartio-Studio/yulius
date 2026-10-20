@@ -409,6 +409,8 @@ function summary(task) {
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
+    // No Claude account usable (SPEC-246): it waits for one, not for capacity.
+    waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !claudeUsable(seededDb),
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
     next: (task.nextLinks || []).map((link) => ({ ...link })),
@@ -1232,6 +1234,7 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain or prepared`);
+  needClaude(db);
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
@@ -1272,6 +1275,7 @@ route('PUT', `/api/tasks/${ID}/start`, ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  if (!prepared) needClaude(db);
   const tasks = db.tasks.filter((x) => x.sandbox_id === task.sandbox_id);
   const numbersOf = (text) => [...text.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
   let before = null;
@@ -2736,6 +2740,7 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
 // another subscription (SPEC-074).
 route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
+  needClaude(db);
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
   if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
@@ -3895,6 +3900,7 @@ route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'this project is being prepared; tasks can start once the preparation task has made it ready (or an admin skips it)');
   const existing = doc.continued_in ? db.tasks.find((t) => t.id === doc.continued_in) : null;
   if (existing) return summary(existing);
+  needClaude(db);
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {

@@ -30,8 +30,9 @@ task #232. Refines SPEC-001 ROT-010 (a start without capacity waits) and SPEC-05
 - `start_onboarding` checks first, so a browser import without an account adds the sandbox and
   leaves onboarding `pending`, with no task and no first commit; the sandbox page shows the step.
 - A start by machinery still waits `waiting_capacity` (ROT-010) and starts by itself once an
-  account is connected; its notice now says that no Claude account is connected and where to
-  connect one.
+  account is connected; its notice says that no Claude account is connected (or that every one
+  must sign in again) and where to connect one, and its summary carries `waits_for_account`, so
+  the task strip, sidebar and time label say it waits for a Claude account, not for capacity.
 - A start whose chosen account has lost its credential ends `failed_no_account` (new
   `FailReason::NoAccount`), not `failed_precondition`.
 - The web UI shows "Connect Claude" as the first, required step while `claude_connected` is false:

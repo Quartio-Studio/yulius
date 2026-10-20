@@ -72,3 +72,12 @@ test('onboarding waits for Claude and a start that failed for it is offered agai
   // It started: the page opens the onboarding task, where its session runs (SPEC-111).
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
 });
+
+// The review of SPEC-246 (CLA-004): a task started by itself while no account is connected waits
+// for one, and says so wherever it is shown, not "no subscription has capacity left".
+test('a task waiting with no Claude account says it waits for one, not for capacity', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/7', '&claude=0'));
+  await expect(screen.getByRole('link', /Search indexing\s*, Waiting for a Claude account: none is connected/)).toBeVisible();
+  await expect(browser.locator('.strip-status')).toHaveText('Paused · waits for a Claude account');
+  await expect(screen.getByText(/no subscription has capacity left|resets ~/)).toHaveCount(0);
+});
