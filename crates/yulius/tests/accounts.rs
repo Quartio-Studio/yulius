@@ -561,7 +561,7 @@ async fn failed_logins_record_errors_and_relogin_failures_keep_working_accounts(
     assert_eq!(kept["status"], "ok");
     let message = kept["last_error"].as_str().ok_or("last_error")?;
     assert!(message.starts_with("re-login failed"), "{message}");
-    assert!(message.contains("exit code Some(2)"), "{message}");
+    assert!(message.ends_with("(exit code 2)"), "{message}");
     let record = s.h.store.account(&id).await?.ok_or("account")?;
     assert_eq!(
         s.h.app
@@ -594,6 +594,184 @@ async fn logins_time_out_and_their_process_is_stopped() -> TestResult {
     let ctx = ctx_of(&s.h, &s.admin).await?;
     let exit = serde_json::to_value(s.h.app.login_terminal(&ctx, &login_id)?.exit())?;
     assert_eq!(exit["status"], "error");
+    Ok(())
+}
+
+/// SPEC-243 LGN-001: a CLI that prints the token and keeps running is stopped after the grace
+/// period, and the sign-in ends `ok` with the token sealed (not `running` until the timeout).
+#[tokio::test]
+async fn a_sign_in_ends_once_its_token_is_captured() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_millis(50));
+    s.host.push(Script {
+        chunks: vec![
+            "Your OAuth token (valid for 1 year):\r\n\r\n".into(),
+            format!("{TOKEN}\r\n\r\nStore this token securely.\r\n"),
+        ],
+        exit: None,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "anthropic", "Claude lingering").await?;
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let mut sub = s.h.app.login_terminal(&ctx, &login_id)?.subscribe();
+    let (_, status, _) = viewer_output(&mut sub).await?;
+    assert_eq!(status, "ok");
+    let account = account_settled(&mut events, &account_id).await?;
+    assert_eq!(account["status"], "ok");
+    let log = s.host.log();
+    assert!(log.iter().any(|l| l == "signal:Terminate"), "{log:?}");
+    let record =
+        s.h.store
+            .account(&AccountId::parse(&account_id)?)
+            .await?
+            .ok_or("account")?;
+    assert_eq!(
+        s.h.app
+            .deps
+            .crypto
+            .open(&record.credential.ok_or("credential")?)?,
+        TOKEN.as_bytes()
+    );
+    assert!(!login_dir(&s, &login_id).exists());
+    Ok(())
+}
+
+/// SPEC-243 LGN-002: a cancel that comes after the token was printed (in the grace before the
+/// CLI exits) keeps the token: the sign-in had succeeded.
+#[tokio::test]
+async fn a_cancel_after_the_token_keeps_it() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_secs(600));
+    s.host.push(Script {
+        chunks: vec![format!("{TOKEN}\r\nStore this token securely.\r\n")],
+        exit: None,
+        ..Script::default()
+    });
+    let (account_id, login_id) = create(&s, "anthropic", "Claude unsure").await?;
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    // Wait until the token was seen: its output reached the viewers (snapshot or live).
+    let mut sub = s.h.app.login_terminal(&ctx, &login_id)?.subscribe();
+    let seen = async {
+        let mut out = String::from_utf8_lossy(&sub.snapshot).into_owned();
+        while !out.contains("Store this token") {
+            if let HubFrame::Output { bytes, .. } = sub.rx.recv().await? {
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    };
+    tokio::time::timeout(Duration::from_secs(10), seen).await??;
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/login/{login_id}/cancel"),
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.body, json!({"status": "ok"}), "{}", r.body);
+    let record =
+        s.h.store
+            .account(&AccountId::parse(&account_id)?)
+            .await?
+            .ok_or("account")?;
+    assert_eq!(record.status.as_str(), "ok");
+    assert_eq!(
+        s.h.app
+            .deps
+            .crypto
+            .open(&record.credential.ok_or("credential")?)?,
+        TOKEN.as_bytes()
+    );
+    Ok(())
+}
+
+/// SPEC-243 LGN-001: an incomplete token (fewer than 20 characters after the prefix) does not
+/// end the sign-in; it runs on until it really ends.
+#[tokio::test]
+async fn a_partial_token_does_not_end_the_sign_in() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_millis(20));
+    s.h.app
+        .set_account_login_timeout(Duration::from_millis(400));
+    s.host.push(Script {
+        chunks: vec!["Waiting: sk-ant-oat01-short\r\n".into()],
+        exit: None,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, _) = create(&s, "anthropic", "Claude partial").await?;
+    let account = account_settled(&mut events, &account_id).await?;
+    assert_eq!(account["status"], "error");
+    let message = account["last_error"].as_str().ok_or("last_error")?;
+    assert!(message.contains("timed out"), "{message}");
+    Ok(())
+}
+
+/// SPEC-243 LGN-002: closing a running sign-in cancels it on the server; the account keeps its
+/// state, a second cancel of the ended sign-in changes nothing, and only administrators may.
+#[tokio::test]
+async fn a_running_sign_in_can_be_cancelled() -> TestResult {
+    let s = setup().await?;
+    configure_github_app(&s.h).await?;
+    s.host.push(Script {
+        chunks: vec!["Waiting for the browser...\r\n".into()],
+        exit: None,
+        ..Script::default()
+    });
+    let (account_id, login_id) = create(&s, "anthropic", "Claude closed").await?;
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let mut sub = s.h.app.login_terminal(&ctx, &login_id)?.subscribe();
+    let path = format!("/api/admin/accounts/login/{login_id}/cancel");
+
+    let alice = admit_and_sign_in(&s.h, &s.admin, "alice", 11, false).await?;
+    let refused = call(&s.h.router, Method::POST, &path, None, &alice).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    let r = call(&s.h.router, Method::POST, &path, None, &s.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(
+        r.body,
+        json!({"status": "cancelled"}),
+        "it waited for the end"
+    );
+    let (_, status, _) = viewer_output(&mut sub).await?;
+    assert_eq!(status, "cancelled");
+    let log = s.host.log();
+    assert!(log.iter().any(|l| l == "signal:Terminate"), "{log:?}");
+    assert!(!login_dir(&s, &login_id).exists());
+    let id = AccountId::parse(&account_id)?;
+    assert_eq!(
+        s.h.store
+            .account(&id)
+            .await?
+            .ok_or("account")?
+            .status
+            .as_str(),
+        "pending_login",
+        "a cancelled sign-in does not touch the account"
+    );
+
+    let again = call(&s.h.router, Method::POST, &path, None, &s.admin).await?;
+    assert_eq!(
+        again.status,
+        StatusCode::OK,
+        "an ended sign-in: nothing to do"
+    );
+    assert_eq!(again.body, json!({"status": "cancelled"}));
+    let unknown = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts/login/nope/cancel",
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     Ok(())
 }
 
@@ -968,6 +1146,35 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
     };
     tokio::time::timeout(Duration::from_secs(10), run).await??;
     let _ = ws.close(None).await;
+
+    // SPEC-243 LGN-007: an unknown or expired sign-in is said in band, with a close the browser
+    // does not retry (4003), instead of a handshake 404 it would retry for minutes.
+    let mut gone = url.replace(&login_id, "expired").into_client_request()?;
+    let cookie = support::cookie_header(s.admin.cookie.as_deref().ok_or("cookie")?);
+    gone.headers_mut().insert("cookie", cookie.parse()?);
+    gone.headers_mut()
+        .insert("origin", "https://yulius.test".parse()?);
+    let (mut ws, _) = tokio_tungstenite::connect_async(gone).await?;
+    let refusal = async {
+        let mut error = Value::Null;
+        let mut close = None;
+        while let Some(message) = ws.next().await {
+            match message? {
+                tungstenite::Message::Text(text) => error = serde_json::from_str(&text)?,
+                tungstenite::Message::Close(frame) => {
+                    close = frame.map(|f| u16::from(f.code));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>((error, close))
+    };
+    let (error, close) = tokio::time::timeout(Duration::from_secs(10), refusal).await??;
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["code"], "not_found");
+    assert_eq!(close, Some(4003));
+
     let _ = stop_tx.send(());
     let _ = server.await;
 

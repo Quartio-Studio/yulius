@@ -12,6 +12,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   switch-ons cannot pass it; an agent run's egress client no longer carries a frozen person
   (`EgressClient::holder()` removed); tests for the new owner's secret after a hand-over and a
   deleted task's client; SPEC-245 and the ADR index corrected.
+- Claude's sign-in confirms itself (SPEC-243, ADR-0184, task #229). After a successful sign-in
+  the dialog stayed open over the terminal, so it was unclear whether it had worked. Now the
+  dialog closes by itself and a toast says "Claude #3 is connected as …", with the email of the
+  Claude account read right after the sign-in (SPEC-244) when Claude shares it. A failed, cancelled or lost sign-in shows why, with Try again in the same
+  dialog. Closing a sign-in that still runs cancels it on the server
+  (`POST /api/admin/accounts/login/{lid}/cancel`) instead of leaving it running for 15 minutes.
+  A token Claude already printed is kept even then. A CLI that runs on after printing its token
+  is stopped after 5 seconds and the token is kept. A sign-in the server no longer has is said at
+  once instead of being reconnected to for minutes.
+  Failure reasons read "exit code 1" instead of "Some(1)".
 - Agent secrets have three scopes: Project, Global and Personal (SPEC-245, ADR-0186, task #231),
   after an external user found the old scopes pointless. Global secrets are defined once by
   instance administrators and switched on per project; personal ones belong to one person, are

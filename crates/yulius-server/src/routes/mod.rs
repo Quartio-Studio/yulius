@@ -192,6 +192,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/admin/accounts/login/{lid}/terminal",
             get(accounts::login_terminal),
         )
+        .route(
+            "/api/admin/accounts/login/{lid}/cancel",
+            post(accounts::cancel_login),
+        )
         .route("/api/analytics/summary", get(analytics::summary))
         .route("/api/analytics/tasks", get(analytics::tasks))
         .route("/api/status", get(status::status))
