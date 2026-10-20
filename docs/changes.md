@@ -16,6 +16,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   want of an account is offered as Retry onboarding once one is connected. Tasks started by a chain,
   a rule or an automation still wait and now say no account is connected.
 
+- Secrets scopes, review follow-ups (SPEC-248, task #234): a hand-over rewrites the run's
+  fingerprint file for the new owner, so no run keeps hashes of the previous owner's personal
+  values; the 200-secret limit per project is counted in the store transaction, so concurrent
+  switch-ons cannot pass it; an agent run's egress client no longer carries a frozen person
+  (`EgressClient::holder()` removed); tests for the new owner's secret after a hand-over and a
+  deleted task's client; SPEC-245 and the ADR index corrected.
 - Claude's sign-in confirms itself (SPEC-243, ADR-0184, task #229). After a successful sign-in
   the dialog stayed open over the terminal, so it was unclear whether it had worked. Now the
   dialog closes by itself and a toast says "Claude #3 is connected as …", with the email of the

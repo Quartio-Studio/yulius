@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
-use yulius_domain::ids::{SandboxId, UserId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
 use yulius_domain::vault::{
@@ -242,8 +242,8 @@ impl App {
     }
 
     /// Whose personal secrets apply to `client` now: an agent run's task's current holder (read
-    /// per request, so a hand-over or an automation's origin applies also to connections and
-    /// cached credentials from before it), else the person its credential names.
+    /// per request, so a hand-over, a deleted task or an automation's origin applies also to
+    /// connections and cached credentials from before it), a Superagent's person, no CI job's.
     async fn client_person(&self, client: &EgressClient) -> AppResult<Option<UserId>> {
         match &client.caller {
             EgressCaller::Agent { task_id, .. } => Ok(self
@@ -252,7 +252,8 @@ impl App {
                 .task(task_id)
                 .await?
                 .and_then(|task| super::Holder::of_task(&task).person().cloned())),
-            EgressCaller::Ci { .. } | EgressCaller::Superagent { .. } => Ok(client.person.clone()),
+            EgressCaller::Ci { .. } => Ok(None),
+            EgressCaller::Superagent { person, .. } => Ok(Some(person.clone())),
         }
     }
 
@@ -455,6 +456,48 @@ impl App {
         launch.env.extend(self.scrub_shell_prefix());
         self.egress_env("yulius", task_token, run_dir, launch);
         Ok(())
+    }
+
+    /// Rewrites the fingerprint file of `task`'s live run for the task's holder as it is now
+    /// (SPEC-248 FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no
+    /// hashes of the previous owner's personal values. One rewrite at a time, each reading the
+    /// task afresh, so the last one is always the latest holder's. In place, as a contained
+    /// session binds the file read-only; a run without one, or a task that is gone, is left alone.
+    ///
+    /// # Errors
+    /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
+    /// file (opened without following a link or blocking, checked on the handle).
+    pub async fn rewrite_run_fingerprints(&self, task: &TaskId) -> AppResult<()> {
+        use nix::fcntl::OFlag;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
+        let Some(task) = self.deps.store.task(task).await? else {
+            return Ok(());
+        };
+        let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
+            return Ok(());
+        };
+        let file = Path::new(&attempt.run_dir).join(FINGERPRINTS_FILE);
+        let mut out = match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+            .open(&file)
+        {
+            Ok(out) => out,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(AppError::internal(err)),
+        };
+        if !out.metadata().map_err(AppError::internal)?.is_file() {
+            return Err(AppError::Internal(
+                "the run's fingerprint file is no regular file".into(),
+            ));
+        }
+        let set = self
+            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(&task))
+            .await?;
+        let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
+        out.set_len(0).map_err(AppError::internal)?;
+        std::io::Write::write_all(&mut out, &bytes).map_err(AppError::internal)
     }
 
     /// Puts a Superagent behind the egress proxy as an agent run is, with its own bearer
@@ -764,7 +807,6 @@ impl App {
                 secrets: secrets.to_vec(),
             },
             sandbox_id: sandbox.clone(),
-            person: None,
         };
         let mut clients = self.vault.ci_clients.0.lock().ok()?;
         if clients.len() >= CI_CLIENTS_MAX {
@@ -821,9 +863,9 @@ impl App {
                 caller: EgressCaller::Superagent {
                     shell_id: caller.detail["shell"].as_str()?.to_owned(),
                     actor: caller.actor,
+                    person: caller.user,
                 },
                 sandbox_id: caller.sandbox,
-                person: Some(caller.user),
             }
         } else {
             let ctx = self.agent_context(token).await.ok()?;
@@ -834,7 +876,6 @@ impl App {
                     task_number: ctx.task.number,
                 },
                 sandbox_id: ctx.task.sandbox_id.clone(),
-                person: super::Holder::of_task(&ctx.task).person().cloned(),
             }
         };
         if let Ok(mut cache) = self.vault.clients.0.lock() {

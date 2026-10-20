@@ -79,7 +79,9 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   the tasks such a task creates (they are automation tasks too). The Superagent gets its person's.
   After a hand-over (SPEC-070) the run's next request resolves the new owner's, not the previous
   owner's (the proxy reads an agent run's task's current owner on every request, also on a
-  connection opened before the hand-over).
+  connection opened before the hand-over), and the run's fingerprint file is rewritten for the new
+  owner, also when control passed while the run was launched
+  ([SPEC-248](SPEC-248-secrets-scopes-review-follow-ups.md)).
 - RES-007. Only its owner messages a task that holds personal secrets (`task_message`): another
   person's Superagent would steer an agent holding their credential.
 - RES-003. Other people's personal secrets never reach a run: not in its environment, its proxy
@@ -114,8 +116,9 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   global or personal secret for a project; audited `vault.agent.enable` / `vault.agent.disable`
   (a global secret's switches shown to administrators only, as they name projects). A project
   secret answers `Invalid`; switching on past 200 secrets reaching the project answers
-  `Capacity`. A secret added as global or personal is inserted and switched on in one
-  transaction.
+  `Capacity` (counted in the switch's transaction since
+  [SPEC-248](SPEC-248-secrets-scopes-review-follow-ups.md)). A secret added as global or personal
+  is inserted and switched on in one transaction.
 - MAN-005. The list of a project marks each global or personal secret `enabled`, and every secret
   a run would not get because another scope's secret of the same name wins `shadowed_by`
   (`sandbox` or `personal`).
@@ -167,7 +170,7 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 
 ## Test plan
 
-- Store (`crates/yulius-store/src/vault.rs` tests): the 0039 migration on a version-37 database
+- Store (`crates/yulius-store/src/vault.rs` tests): the 0039 migration on a version-38 database
   (team-wide agent secret → global, on for live sandboxes; project secrets untouched); names
   unique per scope; switches by id and sandbox; removing a user or sandbox removes their
   personal secrets or switches.
@@ -220,7 +223,7 @@ named in the pull request:
   `routes/secrets.rs:226` — the last is already clamped to 500 in `vault_activity`).
 - Not tested: a real browser against a running server (the UI ran against the mock), a real CI
   job's run with a personal-secret grant beyond the in-process proxy client, and an upgrade of a
-  live instance's database (the migration test runs on a synthetic version-37 file).
+  live instance's database (the migration test runs on a synthetic version-38 file).
 - Size: about 1400 changed lines outside tests and docs, above the 400-line guideline, kept as one
   change because the resolution of every call site (proxy, run environment, CI, CD, MCP, tools,
   redaction) must change together: a partial merge would either leak personal secrets or ship an

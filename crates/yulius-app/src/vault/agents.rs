@@ -291,24 +291,16 @@ impl App {
                 self.require(&ctx.user, &sid, Action::Work).await?;
             }
         }
-        if on
-            && !self
-                .deps
-                .store
-                .vault_switched_on(&sid)
-                .await?
-                .iter()
-                .any(|s| s == id)
-            && self.deps.store.vault_agent_in(&sid).await?.len() >= MAX_AGENT_SECRETS
-        {
-            return Err(AppError::Capacity(format!(
-                "at most {MAX_AGENT_SECRETS} agent secrets apply to one sandbox"
-            )));
-        }
         let changed = self
             .deps
             .store
-            .vault_switch(id, &sid, on, ctx.user.id.as_str(), self.now())
+            .vault_switch(
+                id,
+                &sid,
+                on,
+                (ctx.user.id.as_str(), self.now()),
+                MAX_AGENT_SECRETS,
+            )
             .await?;
         if changed {
             self.vault.bump();
@@ -401,7 +393,7 @@ impl App {
     /// Stores a new agent secret and audits it (`vault.agent.create`, `origin` appended to the
     /// detail); a global or personal one is switched on for `sandbox` (SCP-003). At most
     /// [`MAX_AGENT_SECRETS`] may reach a sandbox, and a name taken in its scope is a `Conflict`
-    /// (the store checks it in the same transaction).
+    /// (the store checks both in the same transaction).
     ///
     /// # Errors
     /// `Capacity`, `Conflict`, sealing and store failures.
@@ -420,11 +412,6 @@ impl App {
             origin,
             auto_allow,
         } = new;
-        if self.deps.store.vault_agent_in(sandbox).await?.len() >= MAX_AGENT_SECRETS {
-            return Err(AppError::Capacity(format!(
-                "at most {MAX_AGENT_SECRETS} agent secrets apply to one sandbox"
-            )));
-        }
         let (sandbox_id, owner_id) = match &scope {
             AgentScope::Project(s) => (Some(s.clone()), None),
             AgentScope::Global => (None, None),
@@ -460,14 +447,10 @@ impl App {
             cd_prod: false,
             auto_allow,
         };
-        if matches!(scope, AgentScope::Project(_)) {
-            self.deps.store.vault_insert(&record).await?;
-        } else {
-            self.deps
-                .store
-                .vault_insert_on(&record, sandbox, by, now)
-                .await?;
-        }
+        self.deps
+            .store
+            .vault_insert_agent(&record, sandbox, (by, now), MAX_AGENT_SECRETS)
+            .await?;
         self.vault.bump();
         self.vault_audit(
             actor,
