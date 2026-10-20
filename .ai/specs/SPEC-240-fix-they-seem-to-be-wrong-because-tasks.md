@@ -1,11 +1,11 @@
 ---
 yulius-task: 595b9554-1435-4e81-8494-f81cdbb1d65d
-status: in-progress
+status: done
 ---
 
 # SPEC-240: An automation's task is a goal task, so a finished run is Done
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: task #226
 Scope authorization: task #226: "fix, they seem to be wrong because tasks are finished". It came
@@ -64,8 +64,8 @@ Confirmed against `dev` at 193b8e81.
 - [x] Spec and issue for the automation tasks' Done
 - [x] Automation runs start in goal mode, test-first
 - [x] Docs, ADR and changes entry match the rule
-- [ ] Independent review answered and gates green
-- [ ] Merge into dev on green CI
+- [x] Independent review answered and gates green
+- [x] Merge into dev on green CI
 
 ## Acceptance criteria
 
@@ -111,3 +111,30 @@ Confirmed against `dev` at 193b8e81.
 - **Existing tasks are not migrated.** A prompt-mode task that is already finished (#217) stays
   as it is. A person archives it, or types `/goal` in it. Changing a live session's mode afterwards
   would type a goal into a conversation nobody asked to continue.
+
+## Evidence
+
+- Regression tests failed before their fixes:
+  - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^automations::an_automation_runs/)'`
+    failed with `left: Prompt, right: Goal` at eccc9897 (test only).
+  - `cargo nextest run -p yulius-app -E 'test(/templates::tests::/)'` failed in
+    `every_goal_keeps_how_its_run_ends` on the wording check at 7c1de865 (test only).
+
+  Both pass after their fixes. The automations and automation-start tests passed 23/23, and the
+  templates tests 3/3.
+- `scripts/dev ci` at 8c5a0fc8 exited 0: repository contracts, check, fmt, clippy, macOS
+  compile, deps, and nextest with 2269 passed and 17 skipped, plus the doctests. The run at 988cf149
+  failed on `cargo fmt --check` of the new test only. 8c5a0fc8 formats it.
+- `scripts/dev security` at 8c5a0fc8 exited 0. Vidoc (vidoc-1) change scan of 3 code files: no open
+  critical, high or medium finding in the change, and no low finding listed.
+- The independent review ran in a fresh session, over 3 rounds.
+  - Round 1 at 53f397f9: request changes. The major finding: the open-issues goal was cut before
+    its finish. Fixed test-first in 7c1de865 and 988cf149. A minor (the architecture paragraph's
+    placement) and a nit (the stale plan) were fixed too.
+  - Round 2 at 988cf149: approve. Two doc nits followed, fixed in 8c5a0fc8.
+  - Round 3 at 8c5a0fc8: approve.
+- The e2e suite was not run: no web UI file changed. The mock already gives automation tasks
+  `mode: 'goal'` (`mock.js`).
+- Not tested here: a live automation run through Claude Code's goal evaluator to Done. The goal
+  launch and the Done rule are covered for every goal task, and the change only selects goal mode.
+
