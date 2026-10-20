@@ -197,6 +197,31 @@ flowchart LR
   L -->|job refused for disk| Q
 ```
 
+## Connecting a subscription
+
+An administrator connects a Claude subscription with Claude's own sign-in, `claude setup-token`.
+It runs in a server-owned PTY, and the web UI shows it in a dialog over the login terminal
+(SPEC-001 ROT-002, SPEC-002 ADR-05). The CLI stores no credential file. It prints the long-lived
+token once, so the server reads the token from the raw PTY stream and masks it for viewers. On
+the CLI's exit it seals the token into the account. A CLI that runs on more than 5 s after a
+complete token appeared is stopped and the token sealed (SPEC-243,
+[decision 0184](decisions/0184-a-captured-token-ends-the-sign-in-and-a-closed-dialog-cancels-it.md)).
+The dialog follows the terminal's ending. On `ok` it closes by itself and a toast names the
+subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
+sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
+waits for the end and keeps a token already printed, so a sign-in that succeeded is never lost.
+
+```mermaid
+stateDiagram-v2
+  [*] --> running: Add subscription / Sign in again
+  running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> error: no token at exit, or 15 min timeout
+  running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
+  ok --> [*]: dialog closes, toast "… is connected"
+  error --> running: Try again
+  cancelled --> running: Try again
+```
+
 ## Usage limits
 
 When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
