@@ -139,7 +139,12 @@ impl App {
     }
 
     /// The refusal for creating `owner/name` when GitHub answered 403 accepting `accepted`.
-    pub(crate) async fn creation_refused(&self, owner: &str, name: &str, accepted: &str) -> AppError {
+    pub(crate) async fn creation_refused(
+        &self,
+        owner: &str,
+        name: &str,
+        accepted: &str,
+    ) -> AppError {
         let pages = self.app_pages().await;
         AppError::Forbidden(missing_permission(owner, name, accepted, pages.as_ref()))
     }

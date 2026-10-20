@@ -293,7 +293,11 @@ impl App {
     ///
     /// # Errors
     /// Installation lookup or GitHub failures.
-    pub(crate) async fn installation_repo(&self, owner: &str, name: &str) -> AppResult<Option<GhRepo>> {
+    pub(crate) async fn installation_repo(
+        &self,
+        owner: &str,
+        name: &str,
+    ) -> AppResult<Option<GhRepo>> {
         let (app, installation) = self.installation().await?;
         Ok(self
             .deps

@@ -45,6 +45,10 @@ impl App {
         let (owner, name) = (&record.repo_owner, &record.repo_name);
         let url = clone_url(owner, name);
         let repo = self.sandbox_repo(&record.id);
+        // A clone with branches had them from GitHub: nothing to ask GitHub then.
+        if !self.remote_is_empty(&repo).await {
+            return Ok(false);
+        }
         let token = self.installation_token().await?;
         // What GitHub holds now: someone may have pushed since the repository was added.
         self.deps.git.sync_clone(&url, &repo, &token).await?;
@@ -90,7 +94,9 @@ impl App {
                 actor,
                 "sandbox.repository.seeded",
                 Some(record.id.as_str()),
-                Some(&format!("{owner}/{name} had no commits: README.md pushed to {branch}")),
+                Some(&format!(
+                    "{owner}/{name} had no commits: README.md pushed to {branch}"
+                )),
             )
             .await?;
         Ok(true)

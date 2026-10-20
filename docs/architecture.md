@@ -569,8 +569,8 @@ onboarding task writes `pending` under the lock a skip takes, so it needs no con
 the onboarding task reads "Waits for Start onboarding" (or "Not started" after a skip), not Closed
 ([SPEC-153](../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
 [decision 0126](decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
-A repository with no commits has no branch for that task's worktree: every start first fetches
-the clone and, when origin has no branch, pushes `README.md` to the default branch GitHub reports
+A repository with no commits has no branch for that task's worktree: a start whose clone has no
+branch of origin fetches it again and, when origin still has none, pushes `README.md` to the default branch GitHub reports
 (`main` when none), as the App, and records that branch
 ([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md),
 [decision 0187](decisions/0187-an-empty-repository-gets-its-first-commit-when-onboarding-starts.md)).

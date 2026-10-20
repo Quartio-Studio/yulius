@@ -24,7 +24,8 @@ task #227. Extends SPEC-051/SPEC-097 (onboarding) and PRJ-003..005 (create from 
 - Import records GitHub's reported default branch for a clone without branches, never the empty
   clone's `HEAD`.
 - `start_onboarding` (every start: Add repository in the browser, Start onboarding, later starts)
-  first fetches the sandbox's clone. When origin has no branch, Yulius commits `README.md` (`# <name>`)
+  checks the sandbox's clone; when it has no branch of origin, it fetches again (someone may have
+  pushed since). When origin still has no branch, Yulius commits `README.md` (`# <name>`)
   on GitHub's reported default branch (`main` when it reports none or a name Git refuses), authored
   by the person starting onboarding (else the sandbox's creator), pushes it with the installation
   token as a created project's scaffold is, fetches again and corrects the recorded branch. It is

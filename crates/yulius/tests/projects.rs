@@ -11,8 +11,8 @@ use yulius_app::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord,
 };
 use yulius_app::ports::store::{AccountStore, CoordinationStore};
-use yulius_app::supervisor::RunStart;
 use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskFieldUpdate, TaskStore};
+use yulius_app::supervisor::RunStart;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::spec_format::{TemplateKind, scaffold_files};
@@ -1402,17 +1402,18 @@ async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> Te
     let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
     let task_id = record.onboarding_task_id.ok_or("onboarding task")?;
     subscription(&w).await?;
-    let run = w
-        .h
-        .app
-        .start_run(&task_id, RunStart::Fresh { prompt: None }, None)
-        .await;
+    let run =
+        w.h.app
+            .start_run(&task_id, RunStart::Fresh { prompt: None }, None)
+            .await;
     let Err(err) = run else {
         return Err("this harness has no process host".into());
     };
     assert!(err.to_string().contains("process host"), "{err}");
     let task = w.h.store.task(&task_id).await?.ok_or("task")?;
-    let worktree = task.worktree_path.ok_or("the onboarding task has a worktree")?;
+    let worktree = task
+        .worktree_path
+        .ok_or("the onboarding task has a worktree")?;
     assert_eq!(
         git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
         git(&remote, &["rev-parse", "main"])?
@@ -1456,7 +1457,11 @@ async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commi
     let shop_box = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
     assert_eq!(shop_box.status, StatusCode::CREATED, "{:?}", shop_box.body);
     assert_eq!(shop_box.body["onboarding"], "preparing");
-    assert_eq!(git(&shop, &["for-each-ref"])?, shop_before, "nothing pushed");
+    assert_eq!(
+        git(&shop, &["for-each-ref"])?,
+        shop_before,
+        "nothing pushed"
+    );
     assert_eq!(pushes(w.git.calls()), pushed_before, "{:?}", w.git.calls());
     Ok(())
 }
@@ -1474,9 +1479,17 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
     assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
     assert_eq!(fresh.body["onboarding"], "pending", "{}", fresh.body);
-    let approve = format!("/api/sandboxes/{}/onboarding/approve", text(&fresh.body["id"]));
+    let approve = format!(
+        "/api/sandboxes/{}/onboarding/approve",
+        text(&fresh.body["id"])
+    );
     let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
-    assert_eq!(refused.status, StatusCode::BAD_GATEWAY, "{:?}", refused.body);
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_GATEWAY,
+        "{:?}",
+        refused.body
+    );
     assert!(
         text(&refused.body["error"]["message"]).contains("maximum allowed size"),
         "{:?}",
@@ -1533,7 +1546,9 @@ async fn a_created_repository_out_of_the_installations_reach_is_explained() -> T
     let (admin_user, admin) = w.user("alice", true).await?;
     let admin_browser = w.browser(&admin_user).await?;
     w.user(OWNER, false).await?;
-    w.github.selected_only.store(true, std::sync::atomic::Ordering::SeqCst);
+    w.github
+        .selected_only
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let refused = call(
         &w.h.router,
         Method::POST,
@@ -1572,7 +1587,11 @@ async fn a_created_repository_out_of_the_installations_reach_is_explained() -> T
     w.grant("alice", "tool", "admin");
     let imported = import(&w, &admin_browser, "Quartio-Studio/tool").await?;
     assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
-    assert_eq!(imported.body["onboarding"], "preparing", "{}", imported.body);
+    assert_eq!(
+        imported.body["onboarding"], "preparing",
+        "{}",
+        imported.body
+    );
     assert_eq!(remote_heads(&remote)?.trim(), "main");
     Ok(())
 }

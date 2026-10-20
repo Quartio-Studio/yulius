@@ -525,7 +525,12 @@ impl GitHubPort for RepoGitHub {
         name: &str,
         _description: &str,
     ) -> AppResult<GhRepo> {
-        if let Some(accepted) = self.refuse_creation.lock().map_err(AppError::internal)?.clone() {
+        if let Some(accepted) = self
+            .refuse_creation
+            .lock()
+            .map_err(AppError::internal)?
+            .clone()
+        {
             return Err(AppError::Forbidden(accepted));
         }
         let path = self.remotes_dir.join(owner).join(format!("{name}.git"));
@@ -856,7 +861,12 @@ impl World {
         std::fs::create_dir_all(&bare)?;
         git(
             &bare,
-            &["init", "--quiet", "--bare", &format!("--initial-branch={head}")],
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                &format!("--initial-branch={head}"),
+            ],
         )?;
         self.git
             .add_remote(&format!("https://github.com/{owner}/{name}.git"), &bare);
