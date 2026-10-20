@@ -728,12 +728,17 @@ const R = [];
 const route = (method, pattern, handler) => R.push([method, new RegExp(`^${pattern}$`), handler]);
 const ID = '([^/]+)';
 
+// The server's validate_new_password (SPEC-242 PWM-001): the repeat matches, 8 code points.
+function checkNewPassword(body) {
+  if (body.password !== body.password_confirm) fail(422, 'invalid', 'passwords do not match');
+  if ([...(body.password || '')].length < 8) fail(422, 'invalid', 'the password needs at least 8 characters');
+}
 route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired }));
 route('POST', '/api/setup', ({ db, body }) => {
   if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
   if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
-  if (body.password !== body.password_confirm) fail(422, 'invalid', 'Passwords do not match.');
   if (!body.confirm_saved) fail(422, 'invalid', 'Confirm that the password is stored safely.');
+  checkNewPassword(body);
   db.setupRequired = false;
   db.signedIn = true;
   db.me.user = { id: 'usr_root', login: 'superadmin', display_name: 'Superadmin', avatar_url: null, is_superadmin: true, is_instance_admin: true, github_linked: false };
@@ -761,6 +766,7 @@ route('GET', '/api/auth/recovery', async ({ db }) => {
   return clone(db.recovery);
 });
 route('POST', '/api/auth/recover', ({ db, body }) => {
+  checkNewPassword(body || {});
   if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
   if (!body || body.code !== '123456') {
     db.recovery.attempts_left = Math.max(0, db.recovery.attempts_left - 1);
@@ -3896,7 +3902,7 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 
 // ------------------------------------------------------------------ fetch
 
-const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];
+const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github', '/api/auth/recovery', '/api/auth/recover'];
 
 async function handleFetch(db, url, init = {}) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every

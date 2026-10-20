@@ -169,7 +169,7 @@ defaults that implementation may refine without changing user-visible intent.
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| ACC-001 | Exactly one superadmin per instance, created at installation with a password chosen then. | T 30:22, P(3) | E | AC-ACC-1 |
+| ACC-001 | Exactly one superadmin per instance, created at installation with a password chosen then. A new superadmin password (setup, recovery) needs at least 8 characters (NIST SP 800-63B); the forms recommend 12 without requiring them, and no composition rule or list of common passwords refuses one (SPEC-242, ADR-0183). | T 30:22, P(3), F 2026-10-20 | E | AC-ACC-1 |
 | ACC-002 | The superadmin password can be recovered only with the instance's 6-digit recovery code (ACC-011); there is no email reset. Setup shows the password warning and the recovery code once, and requires explicit confirmation that both are stored safely. | T 30:22–30:38, P(3) "recovery code is given", F 2026-10-07 (recovery code; supersedes "no recovery code") | C | AC-ACC-1, AC-ACC-7 |
 | ACC-003 | Setup is reachable only with a one-time setup token available on the VM, so a public instance cannot be claimed by a stranger. | — | A | AC-ACC-2 |
 | ACC-004 | The superadmin admits users (by GitHub login); only admitted users may sign in; the superadmin can disable a user, which ends their sessions. A refused GitHub sign-in returns to the sign-in page in the same window, never to a raw error: it names the GitHub account that was refused and offers GitHub's account picker to continue with another account; reloading the page after a refusal shows the sign-in page again. | T 30:46, F 2026-10-09 | E | AC-ACC-3 |
@@ -965,6 +965,10 @@ Pending. Evidence is recorded per checkpoint in GitHub issues and in SPEC-002 §
 observed. Live provider compatibility and deployment are reported separately from synthetic tests.
 
 ## 12. Changelog
+
+- 2026-10-20 (task #228, feedback from an early external user who wanted an 8-character
+  password): a new superadmin password needs 8 characters instead of 12, and the forms recommend
+  12 without blocking (ACC-001 amended; SPEC-242, ADR-0183).
 
 - 2026-10-20 (task #226, #719, "they seem to be wrong because tasks are finished"): an automation
   run's task is a goal task, so a run without a pull request is Done once its goal is achieved
