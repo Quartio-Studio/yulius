@@ -23,7 +23,7 @@ use super::AgentPayload;
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::{AppError, AppResult};
-use crate::model::SandboxRecord;
+use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::egress::{
     EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
 };
@@ -456,6 +456,40 @@ impl App {
         launch.env.extend(self.scrub_shell_prefix());
         self.egress_env("yulius", task_token, run_dir, launch);
         Ok(())
+    }
+
+    /// Rewrites the fingerprint file of `task`'s live run for its current holder (SPEC-248
+    /// FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no hashes of the
+    /// previous owner's personal values. In place, as a contained session binds the file
+    /// read-only; a run without one is left alone.
+    ///
+    /// # Errors
+    /// Store, decryption and file failures; `Internal` for a path that is no regular file.
+    pub(crate) async fn rewrite_run_fingerprints(&self, task: &TaskRecord) -> AppResult<()> {
+        let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
+            return Ok(());
+        };
+        let file = Path::new(&attempt.run_dir).join(FINGERPRINTS_FILE);
+        match std::fs::symlink_metadata(&file) {
+            Ok(meta) if meta.file_type().is_file() => {}
+            Ok(_) => {
+                return Err(AppError::Internal(
+                    "the run's fingerprint file is no regular file".into(),
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(AppError::internal(err)),
+        }
+        let set = self
+            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(task))
+            .await?;
+        let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&file)
+            .map_err(AppError::internal)?;
+        std::io::Write::write_all(&mut out, &bytes).map_err(AppError::internal)
     }
 
     /// Puts a Superagent behind the egress proxy as an agent run is, with its own bearer

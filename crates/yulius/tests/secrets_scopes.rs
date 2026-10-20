@@ -695,6 +695,83 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     Ok(())
 }
 
+/// SPEC-248 FUP-002: a hand-over rewrites the run's fingerprint file (the Bash wrapper's fallback)
+/// for the new owner, in place, so the run holds no hashes of the previous owner's values.
+#[tokio::test]
+async fn a_hand_over_rewrites_the_runs_fingerprint_file() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    add(
+        &w,
+        &w.bob,
+        "s1",
+        secret("personal", "BOB_TOKEN", "bob-personal-token-0b0b", "api.bob.test"),
+    )
+    .await?;
+    let run = tempfile::tempdir()?;
+    seed_task(&w.h, "t5", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt_at(
+        &w.h,
+        "t5",
+        "scopes-task-token-alice-run-0123456789ab",
+        &run.path().to_string_lossy(),
+    )
+    .await?;
+    // The file as the launch wrote it, for alice.
+    let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
+    let alice_id = UserId::parse("u-alice")?;
+    let s1 = SandboxId::parse("s1")?;
+    let launched =
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Person(&alice_id))
+            .await?;
+    assert!(launched.names.iter().any(|n| n == "MY_TOKEN"));
+    std::fs::write(&file, serde_json::to_vec(&launched)?)?;
+    let inode = std::fs::metadata(&file)?.ino();
+
+    let asked = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t5/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert!(asked.status.is_success(), "{}", asked.body);
+    let passed = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t5/control-request/accept",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert!(passed.status.is_success(), "{}", passed.body);
+
+    let rewritten: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert!(
+        !rewritten.names.iter().any(|n| n == "MY_TOKEN"),
+        "{:?}",
+        rewritten.names
+    );
+    assert!(
+        rewritten.names.iter().any(|n| n == "BOB_TOKEN"),
+        "{:?}",
+        rewritten.names
+    );
+    // In place: a contained session binds the file read-only by inode.
+    assert_eq!(std::fs::metadata(&file)?.ino(), inode);
+    Ok(())
+}
+
 /// Review of SPEC-245, M3: switching a secret on respects the limit of secrets reaching a project.
 #[tokio::test]
 async fn switching_on_respects_the_projects_limit() -> TestResult {
