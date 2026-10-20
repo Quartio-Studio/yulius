@@ -1235,7 +1235,10 @@ impl App {
                     origin: TaskOrigin::Automation,
                     automation_run: Some(key.to_owned()),
                     start: true,
-                    mode: crate::model::TaskMode::Prompt,
+                    // A goal task is Done once its goal is achieved, also a run that changes
+                    // no repository file; in prompt mode a finished run without a pull request
+                    // sat at "Your turn" for good (SPEC-240 AGM-001, #719).
+                    mode: crate::model::TaskMode::Goal,
                     supertask,
                 },
                 after.as_ref(),

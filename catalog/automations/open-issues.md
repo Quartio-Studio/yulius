@@ -10,6 +10,8 @@ Get the 5 most important actionable open GitHub issues of this repository solved
 written by the core team or their agents that no running task owns. Do not work through the
 others: they wait, untouched, for a later run. Never create a new issue (no `issue_create`, no
 `gh issue create`), and tell every task you start the same: this automation must not feed itself.
+The run ends with the summary of step 7, once the tasks are started: it does not wait for the tasks
+it starts to finish, changes no repository file itself and opens no pull request.
 
 1. Collect. List open issues with their author's association:
    `gh api "repos/{owner}/{repo}/issues?state=open&per_page=100" --paginate --jq '.[] | select(.pull_request == null) | {number, title, association: .author_association, bot: (.user.type == "Bot"), body_end: (.body // "" | .[-80:]), labels: [.labels[].name], reactions: .reactions.total_count, created_at}'`.
@@ -69,5 +71,4 @@ others: they wait, untouched, for a later run. Never create a new issue (no `iss
    `issue_create`. Then comment `Taken by task #<task number>.` on the issue.
 7. End with a summary: issues in scope, dropped as owned by a running task (and by which), the
    ranking you used for the top of the list and why, verified and their verdicts, the tasks
-   started, and how many issues wait for a later run. This run changes no repository file itself,
-   so it opens no pull request.
+   started, and how many issues wait for a later run.

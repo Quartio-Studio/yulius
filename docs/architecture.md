@@ -1335,6 +1335,14 @@ flowchart LR
     attention -.->|"agent works on"| working
 ```
 
+A task is Done through an achieved goal or a tested pull request with a complete plan, so a task
+without a goal that opens no pull request would wait at "Your turn" for good. For that reason the
+tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
+preparation. Only the continuation of an imported session is a prompt task, because the person
+whose conversation it continues decides when it is finished
+([SPEC-240](../.ai/specs/SPEC-240-fix-they-seem-to-be-wrong-because-tasks.md),
+[decision 0182](decisions/0182-an-automation-runs-its-task-as-a-goal.md)).
+
 A reboot (or any lost run) ends a task by what it was doing
 ([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
 the run's screen to its `final-screen`, so the terminal of a run lost later is not blank:
