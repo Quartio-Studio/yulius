@@ -34,6 +34,9 @@ use crate::manage::TaskChange;
 use crate::mcp::{STRUCTURED_META, cockpit_tool_descriptors};
 use crate::model::SandboxRecord;
 
+/// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.
+pub const MAX_REMOTE_BODY_BYTES: usize = 32 << 20;
+
 /// Requests one token may make in a minute (RMT-014).
 pub const REMOTE_REQUESTS_PER_MINUTE: usize = 120;
 

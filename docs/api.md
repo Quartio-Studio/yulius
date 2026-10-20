@@ -71,7 +71,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | GET | `/api/me/tokens` | → `[ApiTokenView]`: the caller's live tokens, newest first |
 | POST | `/api/me/tokens` | browser session only (a bearer request is 403), `{"label": "1-80 chars", "scope": "operate|read"}` → 201 `{"token": "yul_…" (shown once), "view": ApiTokenView, "mcp_url", "claude_command", "cli_command"}`; 422 for another scope or label, 429 past 50 live tokens |
 | DELETE | `/api/me/tokens/{id}` | → 204; 404 for an id that is not a live token of the caller. Revoked tokens are refused at once |
-| POST | `/mcp` | the remote MCP: JSON-RPC 2.0 (`initialize`, `ping`, `tools/list`, `tools/call`; notifications → 202), MCP streamable HTTP with JSON answers (`GET`/`DELETE` → 405). `Authorization: Bearer yul_…` of scope `operate` or `read` only: none or an unknown, revoked, task or `ck_` token → 401 (`WWW-Authenticate: Bearer`), a `cli` token → 403, past 120 requests a minute per token → 429 (`Retry-After: 60`); the body of a refusal is a JSON-RPC error. Cookies are not read |
+| POST | `/mcp` | the remote MCP: JSON-RPC 2.0 (`initialize`, `ping`, `tools/list`, `tools/call`; notifications → 202), MCP streamable HTTP with JSON answers (`GET`/`DELETE` → 405); bodies up to 32 MiB (a `project_change` of 50 files of 256 KiB), larger → 413. `Authorization: Bearer yul_…` of scope `operate` or `read` only: none or an unknown, revoked, task or `ck_` token → 401 (`WWW-Authenticate: Bearer`), a `cli` token → 403, past 120 requests a minute per token → 429 (`Retry-After: 60`); the body of a refusal is a JSON-RPC error. Cookies are not read |
 
 ```json
 ApiTokenView = {"id": "…", "label": "laptop Claude Code", "scope": "cli|read|operate",

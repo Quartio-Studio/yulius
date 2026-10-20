@@ -1452,3 +1452,29 @@ async fn only_the_browser_approves_a_cli_sign_in() -> TestResult {
     assert_eq!(approved.status, StatusCode::NO_CONTENT, "{}", approved.body);
     Ok(())
 }
+
+/// RMT-025: a change carries what it promises (files of 256 KiB, several of them), past the API's
+/// 1 MiB body limit for other requests (review finding 5).
+#[tokio::test]
+async fn a_change_of_several_large_files_fits_in_one_request() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, origin) = imported_shop(&w, &[("README.md", "# Shop\n")]).await?;
+    let big = "x".repeat(255 * 1024);
+    let files: Vec<Value> = (0..6)
+        .map(|n| json!({"path": format!("data/{n}.txt"), "content": big}))
+        .collect();
+    let (error, said, changed) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "data", "files": files}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let branch = text(&changed["branch"]).to_owned();
+    assert_eq!(
+        origin_file(&origin, &branch, "data/5.txt").map(|t| t.len()),
+        Some(big.len())
+    );
+    Ok(())
+}

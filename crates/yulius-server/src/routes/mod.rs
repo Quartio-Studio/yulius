@@ -63,10 +63,16 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/auth/logout", post(setup_auth::logout))
         .route("/api/me", get(setup_auth::me))
-        // The remote MCP for a person's own agent (SPEC-247); no server-sent stream.
+        // The remote MCP for a person's own agent (SPEC-247); no server-sent stream. A
+        // `project_change` carries up to 50 files of 256 KiB, JSON-escaped.
         .route(
             "/mcp",
-            post(mcp::remote_post).get(mcp::get).delete(mcp::get),
+            post(mcp::remote_post)
+                .get(mcp::get)
+                .delete(mcp::get)
+                .layer(DefaultBodyLimit::max(
+                    yulius_app::remote::MAX_REMOTE_BODY_BYTES,
+                )),
         )
         // Personal API tokens for local agents and scripts (SPEC-247).
         .route(
