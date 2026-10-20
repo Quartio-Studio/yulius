@@ -1411,7 +1411,7 @@ export function mountComposer(ctx, sandbox) {
       h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
       connected ? null : connectClaudeStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
       failed ? h('p', { class: 'onboarding-gate-failed' }, prep.status === 'failed_no_account'
-        ? `Onboarding couldn’t start because no Claude account was connected.${connected ? ' One is connected now.' : ''}`
+        ? `Onboarding couldn’t start because no Claude account was usable.${connected ? ' One is usable now.' : ''}`
         : 'Onboarding couldn’t start last time.') : null,
       allows(sb.access, 'write')
         ? h('button', { type: 'button', class: 'btn btn-primary', disabled: !connected, title: connected ? null : 'Connect Claude first', onClick: () => approveOnboarding() }, start)

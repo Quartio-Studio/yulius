@@ -171,7 +171,7 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   `sessions.rs` — an imported session's Continue refused with no task created; `cockpit.rs` — the
   Superagent's `claude_account_required`, and an exhausted pool still 429; unit tests in
   `account_gate.rs` (usable rule, refusal and notice wording, the failure mapping). e2e
-  `claude-connect.e2e.ts` (5 tests).
+  `claude-connect.e2e.ts` (7 tests).
 - **Fixtures.** Tests that started agents with no account now seed
   `support::exhausted_subscription` (connected, no capacity for days), so their starts take the same
   pause as before; `World::new` seeds it, `World::without_claude` does not.
@@ -198,10 +198,15 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   (the step's trailing sentences say "once one is usable", and Home's no longer tells a
   non-administrator to connect one; the e2e pins the whole sentence). Dev merged at b92a2bd6,
   which brings dev's `rustls-webpki` 0.103.16 / `webpki-root-certs` 1.0.10 (RUSTSEC-2026-0382,
-  -0383 failed `cargo deny` on 65714ca0 before it). Round 5 reviewed the head carrying this.
+  -0383 failed `cargo deny` on 65714ca0 before it). Round 5 (31e772df): approve; its low fixed after
+  it, test-first: a failed start says no account was "usable" (it may need to sign in again) and
+  that an instance administrator connects one, since a member reading it cannot (e2e `a task that
+  failed for want of Claude says who connects one` and the onboarding retry's text, which failed
+  before the change). Round 6 reviewed the head carrying this.
 - **Gates** on e5ea247f (dev merged at b06db25c): `scripts/dev ci` exit 0 (2324 tests passed, 17
   skipped; lint, macOS compile, deps, doctests); e2e `npx e2e run` 656 passed, 1 skipped. On
-  eba5c0b6: `scripts/dev ci` exit 0 (2325 passed), e2e 657 passed. The final head is gated again
+  eba5c0b6: `scripts/dev ci` exit 0 (2325 passed), e2e 657 passed. On 31e772df: `scripts/dev ci`
+  exit 0 (2331 passed), e2e 657 passed. The final head is gated again
   before delivery (see the pull request's Yulius CI).
 - **Security scan not run.** `scripts/dev security` exit 2: "Vidoc cannot be reached … HTTP 429:
   This API key has used its 50,000,000 tokens." Unrun, not passed; the change was reviewed by hand

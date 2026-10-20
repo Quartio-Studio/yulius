@@ -37,7 +37,7 @@ const ENDED_MESSAGES = {
   failed_spawn_error: { tone: 'error', text: 'Claude Code couldn’t start — usually a subscription must sign in again, or no slot is free.', accounts: true, retry: true },
   failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually a subscription must sign in again, or the machine is busy.', accounts: true, retry: true },
   failed_precondition: { tone: 'error', text: 'The task couldn’t start because the sandbox is not ready yet.', retry: true },
-  failed_no_account: { tone: 'error', text: 'The task couldn’t start because no Claude account was connected. Connect one in Subscriptions, then try again.', accounts: true, retry: true },
+  failed_no_account: { tone: 'error', text: 'The task couldn’t start because no Claude account was usable. An instance administrator connects one, or signs one in again, in Subscriptions; then try again.', accounts: true, retry: true },
 };
 
 /**

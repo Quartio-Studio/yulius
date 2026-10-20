@@ -61,16 +61,25 @@ test('onboarding waits for Claude and a start that failed for it is offered agai
   await app.open(mock('/s/product', '&claude=0&onboarding=failed'));
   const gate = screen.getByRole('region', 'Onboard product first');
   await expect(browser.locator('.onboarding-gate .claude-connect')).toContainText('Onboarding starts once one is usable.');
-  await expect(gate).toContainText('Onboarding couldn’t start because no Claude account was connected.');
+  await expect(gate).toContainText('Onboarding couldn’t start because no Claude account was usable.');
   await expect(gate.getByRole('button', 'Retry onboarding')).toBeDisabled();
   expect(await axeViolations(browser)).toEqual([]);
 
   await connectClaude(browser);
-  await expect(gate).toContainText('One is connected now.');
+  await expect(gate).toContainText('One is usable now.');
   await expect(browser.locator('.onboarding-gate .claude-connect')).toHaveCount(0);
   await gate.getByRole('button', 'Retry onboarding').click();
   // It started: the page opens the onboarding task, where its session runs (SPEC-111).
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
+});
+
+// The review of SPEC-246 (round 5): the failed task says no account was usable and who connects
+// one, since a member reading it cannot connect one and a connected one may need to sign in again.
+test('a task that failed for want of Claude says who connects one', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product', '&claude=0&onboarding=failed'));
+  await screen.getByRole('region', 'Onboard product first').getByRole('link', /^#\d+ /).click();
+  await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
+  await expect(browser.locator('main')).toContainText('The task couldn’t start because no Claude account was usable. An instance administrator connects one, or signs one in again, in Subscriptions; then try again.');
 });
 
 // The review of SPEC-246 (CLA-004): a task started by itself while no account is connected waits
