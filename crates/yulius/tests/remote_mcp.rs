@@ -457,9 +457,17 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     let w = World::new("org").await?;
     let (alice, cli) = w.user("alice", false).await?;
     let browser = w.browser(&alice).await?;
-    let operate = bearer(text(&make_token(&w, &browser, "laptop", "operate").await?["token"]));
-    w.remote(support::repos::OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
-    w.github.add_installation_repo(support::repos::OWNER, "shop", true);
+    let operate = bearer(text(
+        &make_token(&w, &browser, "laptop", "operate").await?["token"],
+    ));
+    w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[("README.md", "# Shop\n")],
+        &[],
+    )?;
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
     w.grant("alice", "shop", "admin");
 
     let (error, said, repos) = remote(&w, &operate, "repositories_list", json!({})).await?;
@@ -475,7 +483,10 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     .await?;
     assert!(!error, "{said}");
     assert_eq!(imported["project"], "Quartio-Studio/shop");
-    assert_eq!(imported["onboarding"], "pending", "an import waits for onboarding_start");
+    assert_eq!(
+        imported["onboarding"], "pending",
+        "an import waits for onboarding_start"
+    );
     let (error, said, _) = remote(
         &w,
         &operate,
@@ -494,7 +505,12 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     .await?;
     assert!(!error, "{said}");
     assert_eq!(project["onboarding"]["state"], "pending");
-    assert!(project["onboarding_plan"]["steps"].as_array().is_some_and(|s| !s.is_empty()), "{project}");
+    assert!(
+        project["onboarding_plan"]["steps"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty()),
+        "{project}"
+    );
     assert!(text(&project["next"]).contains("onboarding_start"));
 
     // The CLI's device token is refused, as before; the operate token starts it.
@@ -517,13 +533,109 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     .await?;
     assert!(!error, "{said}");
     assert_eq!(started["onboarding"], "preparing", "{started}");
-    let (_, _, project) = remote(
-        &w,
-        &operate,
-        "project_get",
-        json!({"project": "shop"}),
+    let (_, _, project) = remote(&w, &operate, "project_get", json!({"project": "shop"})).await?;
+    assert!(
+        project["onboarding_plan"]["task_number"].is_number(),
+        "{project}"
+    );
+    Ok(())
+}
+
+/// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
+/// through the functions of the web UI for the person.
+#[tokio::test]
+async fn tasks_ci_and_cd_are_driven_remotely() -> TestResult {
+    use yulius_domain::task::{StopReason, TaskStatus};
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let running =
+        support::seed_task(&w.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let stopped = support::seed_task(
+        &w.h,
+        "t-stop",
+        "s1",
+        "u-alice",
+        TaskStatus::Stopped(StopReason::Cancelled),
+        None,
     )
     .await?;
-    assert!(project["onboarding_plan"]["task_number"].is_number(), "{project}");
+    let project = |extra: Value| {
+        let mut args = json!({"project": "acme/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_restart",
+        project(json!({"task_id": running.id.as_str()})),
+    )
+    .await?;
+    assert!(error && said.contains("stop it first"), "{said}");
+    let (error, said, _) =
+        remote(&w, &alice, "task_restart", project(json!({"number": 999}))).await?;
+    assert!(error && said.to_lowercase().contains("not found"), "{said}");
+    // A resting task goes through Continue: here it reaches the start, which needs a clone.
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_restart",
+        project(json!({"task_id": stopped.id.as_str()})),
+    )
+    .await?;
+    assert!(error && said.contains("not cloned"), "{said}");
+    let (error, said, delivery) = remote(
+        &w,
+        &alice,
+        "task_delivery",
+        project(json!({"task_id": stopped.id.as_str()})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(delivery["next_actions"], json!(["open_pr"]), "{delivery}");
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_pause",
+        project(json!({"task_id": stopped.id.as_str()})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("Only a running task can be paused"),
+        "{said}"
+    );
+
+    let (error, said, ci) = remote(&w, &alice, "ci_runs", project(json!({}))).await?;
+    assert!(!error, "{said}");
+    assert_eq!(ci["runs"], json!([]), "{ci}");
+    let (error, said, _) = remote(&w, &alice, "ci_run", project(json!({"run_id": "nope"}))).await?;
+    assert!(error && said.contains("not found"), "{said}");
+    let (error, said, cd) = remote(&w, &alice, "cd_status", project(json!({}))).await?;
+    assert!(!error, "{said}");
+    assert!(cd["environments"].is_array(), "{cd}");
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "cd_deploy",
+        project(json!({"environment": "prod"})),
+    )
+    .await?;
+    assert!(error && said.contains("only a person"), "{said}");
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "cd_deploy",
+        project(json!({"environment": "dev"})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("not cloned"),
+        "dev goes to the deploy: {said}"
+    );
     Ok(())
 }
