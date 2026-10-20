@@ -1,11 +1,11 @@
 ---
 yulius-task: 42df7ea0-21bd-415b-8841-ceb7894a63f2
-status: in-progress
+status: done
 ---
 
 # SPEC-242: The superadmin password needs 8 characters, and 12 are recommended
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: task #228
 Scope authorization: task #228. An early external user wanted the superadmin password `zaq1@WSX`
@@ -62,9 +62,9 @@ Confirmed against `dev` at 33410359.
 
 ## Plan
 
-- [ ] The server accepts an 8-character password at setup and recovery and refuses 7 with a clear message
-- [ ] The setup and recovery forms accept 8 characters and recommend 12 without blocking
-- [ ] SPEC-001, the API and operations docs, ADR-0183 and the changelog state the new minimum
+- [x] The server accepts an 8-character password at setup and recovery and refuses 7 with a clear message
+- [x] The setup and recovery forms accept 8 characters and recommend 12 without blocking
+- [x] SPEC-001, the API and operations docs, ADR-0183 and the changelog state the new minimum
 
 ## Acceptance criteria
 
@@ -104,3 +104,32 @@ Confirmed against `dev` at 33410359.
   recovery cannot drift.
 - **Code points in the UI.** The UI counts `[...value].length`, as the server counts `chars()`,
   so the form never sends a password the server refuses for length.
+
+## Evidence
+
+- Red first: `http_auth::setup_accepts_eight_characters_and_refuses_seven_saying_the_minimum` and
+  `recovery::recovery_accepts_eight_characters_and_refuses_seven_without_spending_an_attempt`
+  failed with `left: "use at least 12 characters"`; `password-setup.e2e.ts` failed on the hint
+  ("At least 12 characters.") and on "Couldn’t check recovery." (the mock's public routes).
+  All pass after the change; the unit test
+  `auth::tests::a_new_password_needs_eight_code_points_after_matching` passes.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^http_auth::/) |
+  test(/^recovery::/) | test(/^accounts::/))'`: 27 passed, including the unchanged
+  `password_login_rate_limit_and_csrf` and the recovery lockout test (PWM-006).
+- `scripts/dev ci` (at d14e307e; later commits touch only the spec, docs and the e2e test): exit
+  0; nextest 2272 passed, 17 skipped; lint, deps, docs and macOS stages green.
+- `scripts/dev security` (at 6a72ded9): exit 0, "no open critical or high finding, and no open
+  medium one in the change". One medium finding outside the change (`auth.rs:380`, revoked API
+  tokens in `authenticate_bearer`): code this branch did not touch; Yulius CI files it as an issue.
+- `cd e2e && npx e2e run` (full suite): 635 passed, 1 skipped, 1 failed:
+  `secrets.e2e.ts` "a failed copy shows no check…" (axe target-size on a Close button), the known
+  flake tracked by open issue #640 (about 1 run in 5, unrelated to the password forms); the file
+  rerun alone passed 20/20. `password-setup.e2e.ts` 3/3, including an axe check with the advice
+  shown.
+- Independent review (fresh session, read-only, om-code-review): APPROVE at d14e307e, no blocker
+  or major; its minors and nits on own code fixed in 6a72ded9 (spec amends ACC-001 only,
+  operations step wording and wrap, axe check, recovery not-invalid assertion). Not changed: the
+  notes inside the wrapping `<label>` join the input's name (pre-existing pattern of every field
+  error; WCAG 3.3.1 applies to errors and is met).
+- Not tested: a real browser against `yulius serve` (the e2e suite runs the UI on the mock; the
+  server rule is covered by the integration tests).
