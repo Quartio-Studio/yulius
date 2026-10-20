@@ -14,6 +14,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   email next to the name on the Subscriptions page, in the Status panel, on the Dashboard, in Task
   details and in the analytics. Everyone else sees the name only. Claude may refuse the profile to
   `setup-token` sign-ins; such a subscription reads "email unknown", and the name tells it apart.
+
 - The superadmin password needs 8 characters instead of 12 (SPEC-242, ADR-0183, task #228). An
   early external user could not set up an instance with the 8-character password they wanted.
   Setup and recovery now accept 8 characters or more (NIST SP 800-63B) and refuse a 7-character

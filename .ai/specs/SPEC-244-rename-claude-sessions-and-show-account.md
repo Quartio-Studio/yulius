@@ -166,9 +166,10 @@ Confirmed against `dev` at 33410359.
   - Removing `.filter(|_| admin)` from the run view made
     `account_email::only_administrators_rename_and_every_view_shows_name_and_email` fail on the
     member's task detail (review round 1, H1).
-  - Against the previous `layout.js`, the e2e `subscription-names` spec failed: in round 1 on
-    the focus pulled back after a refused name (H2, M1), and in round 2 on the second card's field
-    losing focus. It passes on 5904e3e6.
+  - Against the round-1 `layout.js`, the e2e `subscription-names` spec failed on its new steps:
+    leaving a refused name must not pull focus back (M1); Escape after a typed name must not save
+    it (H2). Against the round-2 `layout.js`, it failed on the second card's field losing focus.
+    It passes on 5904e3e6.
 - **Targeted runs.**
   - `cargo nextest run -p yulius-store -p yulius` over the store tests and the integration files
     `account_email`, `analytics`, `accounts` and `account_usage`: 92 passed.
@@ -188,10 +189,16 @@ Confirmed against `dev` at 33410359.
   - the sign-in inherits the host PATH;
   - `taskview.js` renders an agent-supplied link as an href;
   - a test master key is hardcoded in `task_done.rs`.
-- **Independent review**, in a fresh read-only session, took three rounds:
+- **Merged head.** The gate on the merged head (`dev` with #723 merged in, 8f98b275 and after)
+  is Yulius CI's run at the pull request head, which the merge requires. Locally, after the
+  merge, the e2e `subscription-names` (5/5) and `dev`'s new `password-setup` (3/3) passed. The
+  ticked "Merge into dev" item is done by `delivery_merge` on that green run.
+- **Independent review**, in a fresh read-only session, took four rounds:
   - Round 1 at b85e06e3 requested changes: 2 high, 3 medium, 6 low.
   - Round 2 at 944a9254 approved, with one medium and one low left.
   - Round 3 at 5904e3e6 approved.
+  - Round 4 at 8f98b275 (the evidence and the `dev` merge) approved. It asked for this SPEC-001
+    changelog entry and for the wording fixes here.
 
   Every finding in this change's own code is fixed in it. The one pre-existing finding (the
   event stream decides admin rights only at connect) is #722.
