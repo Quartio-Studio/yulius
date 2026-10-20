@@ -144,7 +144,7 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 - [x] Secrets page: Project, Global and Personal tabs with switches
 - [x] Documents, gates and delivery
 - [x] Review round 1 fixed: automation children, task messages, hand-over cache, switch limit
-- [ ] Re-review approves the head; evidence; merge on green
+- [x] Gates green and an independent review of the delivered head
 
 ## Acceptance criteria
 
