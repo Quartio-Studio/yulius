@@ -139,7 +139,12 @@ async fn start_on(
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
         clock: Arc::new(SystemClock),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
+        github: Arc::new({
+            let github = support::FakeGitHub::default();
+            // Bob writes the fixture's repository (a hand-over during a launch, SPEC-248).
+            github.set_perm("bob", "acme/done", support::perms("write"));
+            github
+        }),
         session_host: if let Some(host) = host {
             host
         } else if attach_late {
@@ -3114,6 +3119,203 @@ fn a_close_whose_shutdown_blocks_still_ends_the_run_and_its_successor_sees_one_o
         );
         assert_eq!(task(&app, &waiting.id).await?.status, TaskStatus::Chained);
         Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The real session host whose spawns wait, their launch plan computed, until the test lets them
+/// go ahead.
+struct HeldSpawn {
+    inner: PtySessionHost,
+    reached: tokio::sync::watch::Sender<bool>,
+    released: tokio::sync::watch::Sender<bool>,
+}
+
+#[async_trait::async_trait]
+impl SessionHost for HeldSpawn {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        self.reached.send_replace(true);
+        let mut released = self.released.subscribe();
+        let _ = tokio::time::timeout(Duration::from_secs(60), released.wait_for(|go| *go)).await;
+        self.inner
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+
+    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        self.inner.attach(run_dir, token).await
+    }
+
+    fn inspect(&self, run_dir: &Path) -> RunInspection {
+        self.inner.inspect(run_dir)
+    }
+
+    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
+        self.inner.terminate(run_dir)
+    }
+
+    fn background_shells(&self, child_pid: u32) -> Option<u32> {
+        self.inner.background_shells(child_pid)
+    }
+}
+
+/// SPEC-248 FUP-002 (review round 1): control passing while a run is launched — its fingerprint
+/// file computed for the previous owner, not yet written — still leaves the run the new owner's
+/// fingerprints once it is live.
+#[test]
+fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+        let host = Arc::new(HeldSpawn {
+            inner: PtySessionHost::new(exe),
+            reached: tokio::sync::watch::channel(false).0,
+            released: tokio::sync::watch::channel(false).0,
+        });
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            agent,
+            0,
+            Some(host.clone()),
+            None,
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let bob = UserRecord {
+            id: UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: Timestamp(1),
+            disabled_at: None,
+        };
+        app.deps.store.insert_user(&bob).await?;
+        app.deps
+            .store
+            .save_github_token(
+                &yulius_app::model::GitHubTokenRecord {
+                    user_id: bob.id.clone(),
+                    access: app.deps.crypto.seal(b"token-bob")?,
+                    refresh: None,
+                    expires_at: None,
+                    refresh_expires_at: None,
+                },
+                app.now(),
+            )
+            .await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.create_agent_secret(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                scope: Some("personal".into()),
+                name: "MY_TOKEN".into(),
+                value: "admin-personal-token-0123456".into(),
+                hosts: vec!["api.mine.test".into()],
+                injection: Some("bearer".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let bobs = yulius_app::auth::AuthContext {
+            user: bob.clone(),
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.create_agent_secret(
+            &bobs,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                scope: Some("personal".into()),
+                name: "BOB_TOKEN".into(),
+                value: "bob-personal-token-0b0b5ec7".into(),
+                hosts: vec!["api.bob.test".into()],
+                injection: Some("bearer".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let launch = goal_task(&app, &sandbox, &user, "Hand over");
+        let hand_over = async {
+            let mut reached = host.reached.subscribe();
+            tokio::time::timeout(Duration::from_secs(60), reached.wait_for(|r| *r)).await??;
+            let attempt = app
+                .deps
+                .store
+                .live_attempts()
+                .await?
+                .pop()
+                .ok_or("no launching run")?;
+            // Control passes now: the launch already computed the previous owner's file.
+            assert!(
+                app.deps
+                    .store
+                    .take_control(&attempt.task_id, &user, &bob.id, app.now())
+                    .await?
+            );
+            host.released.send_replace(true);
+            let file = Path::new(&attempt.run_dir).join(yulius_app::vault::FINGERPRINTS_FILE);
+            let names = || {
+                std::fs::read(&file)
+                    .ok()
+                    .and_then(|b| {
+                        serde_json::from_slice::<yulius_contracts::scrub::FingerprintSet>(&b).ok()
+                    })
+                    .map(|set| set.names)
+            };
+            let live = || async {
+                app.deps
+                    .store
+                    .live_attempt(&attempt.task_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|a| a.state == AttemptState::Live)
+            };
+            wait_for("the live run", Duration::from_secs(30), live).await?;
+            wait_for(
+                "the new owner's fingerprints",
+                Duration::from_secs(10),
+                || async {
+                    names().is_some_and(|n| {
+                        n.iter().any(|n| n == "BOB_TOKEN") && !n.iter().any(|n| n == "MY_TOKEN")
+                    })
+                },
+            )
+            .await
+            .map_err(|e| format!("{e}: {:?}", names()))?;
+            Ok::<_, BoxError>(attempt.task_id)
+        };
+        let (launched, handed) = tokio::join!(launch, hand_over);
+        let id = handed?;
+        assert_eq!(launched?, id);
+        stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())

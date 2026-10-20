@@ -146,6 +146,27 @@ fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
     Ok(())
 }
 
+/// `Capacity` when `cap` agent secrets already reach `sandbox`: its project secrets and the
+/// global and personal ones switched on for it (SPEC-248 FUP-003). Called in the transaction that
+/// adds one, so concurrent writes cannot pass it.
+fn ensure_room(c: &rusqlite::Connection, sandbox: &str, cap: usize) -> AppResult<()> {
+    let reaching: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM vault_secrets WHERE section = 'agent' \
+             AND (sandbox_id = ?1 OR (sandbox_id IS NULL AND id IN \
+             (SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1)))",
+            [sandbox],
+            |r| r.get(0),
+        )
+        .map_err(db)?;
+    if usize::try_from(reaching).unwrap_or(usize::MAX) >= cap {
+        return Err(AppError::Capacity(format!(
+            "at most {cap} agent secrets apply to one sandbox"
+        )));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl VaultStore for SqliteStore {
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()> {
@@ -159,23 +180,26 @@ impl VaultStore for SqliteStore {
         .await
     }
 
-    async fn vault_insert_on(
+    async fn vault_insert_agent(
         &self,
         record: &VaultSecretRecord,
         sandbox: &SandboxId,
-        by: &str,
-        at: Timestamp,
+        (by, at): (&str, Timestamp),
+        cap: usize,
     ) -> AppResult<()> {
         let (r, sandbox, by) = (record.clone(), sandbox.as_str().to_owned(), by.to_owned());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
+            ensure_room(&tx, &sandbox, cap)?;
             insert_row(&tx, &r)?;
-            tx.execute(
-                "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![r.id, sandbox, by, at.0],
-            )
-            .map_err(db)?;
+            if r.sandbox_id.is_none() {
+                tx.execute(
+                    "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![r.id, sandbox, by, at.0],
+                )
+                .map_err(db)?;
+            }
             tx.commit().map_err(db)?;
             Ok(())
         })
@@ -316,26 +340,42 @@ impl VaultStore for SqliteStore {
         id: &str,
         sandbox: &SandboxId,
         on: bool,
-        by: &str,
-        at: Timestamp,
+        (by, at): (&str, Timestamp),
+        cap: usize,
     ) -> AppResult<bool> {
         let (id, sandbox, by) = (id.to_owned(), sandbox.as_str().to_owned(), by.to_owned());
         self.call(move |c| {
-            let changed = if on {
-                c.execute(
-                    "INSERT OR IGNORE INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
-                     SELECT id, ?2, ?3, ?4 FROM vault_secrets \
-                     WHERE id = ?1 AND section = 'agent' AND sandbox_id IS NULL",
-                    params![id, sandbox, by, at.0],
-                )
-            } else {
-                c.execute(
-                    "DELETE FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2",
-                    params![id, sandbox],
-                )
+            if !on {
+                let n = c
+                    .execute(
+                        "DELETE FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2",
+                        params![id, sandbox],
+                    )
+                    .map_err(db)?;
+                return Ok(n == 1);
             }
+            let tx = c.transaction().map_err(db)?;
+            let switchable: bool = tx
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM vault_secrets WHERE id = ?1 \
+                     AND section = 'agent' AND sandbox_id IS NULL) AND NOT EXISTS \
+                     (SELECT 1 FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2)",
+                    params![id, sandbox],
+                    |r| r.get(0),
+                )
+                .map_err(db)?;
+            if !switchable {
+                return Ok(false);
+            }
+            ensure_room(&tx, &sandbox, cap)?;
+            tx.execute(
+                "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, sandbox, by, at.0],
+            )
             .map_err(db)?;
-            Ok(changed == 1)
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -788,6 +828,9 @@ mod tests {
     use super::*;
     use yulius_app::ports::store::AuditStore as _;
 
+    /// The application's limit of agent secrets reaching a sandbox.
+    const CAP: usize = 200;
+
     fn record(
         id: &str,
         section: VaultSection,
@@ -1094,6 +1137,56 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-248 FUP-003: adding or switching on a secret counts those reaching the sandbox in its
+    /// own transaction; one already on is never refused.
+    #[tokio::test]
+    async fn adding_and_switching_on_stop_at_the_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let s1 = SandboxId::parse("s1")?;
+        let at = ("u1", Timestamp(2));
+        store
+            .vault_insert_agent(
+                &record("own", VaultSection::Agent, Some("s1"), "OWN"),
+                &s1,
+                at,
+                2,
+            )
+            .await?;
+        store
+            .vault_insert(&record("g", VaultSection::Agent, None, "GLOBAL"))
+            .await?;
+        store
+            .vault_insert_agent(&personal("p", "u1", "MINE"), &s1, at, 2)
+            .await?;
+        // A project secret is no switch; the personal one is switched on with its insert.
+        assert_eq!(store.vault_switched_on(&s1).await?, ["p"]);
+        // Two reach s1: neither a project secret nor a switch-on fits a cap of two.
+        assert!(matches!(
+            store
+                .vault_insert_agent(
+                    &record("more", VaultSection::Agent, Some("s1"), "MORE"),
+                    &s1,
+                    at,
+                    2
+                )
+                .await,
+            Err(AppError::Capacity(_))
+        ));
+        assert!(matches!(
+            store.vault_switch("g", &s1, true, at, 2).await,
+            Err(AppError::Capacity(_))
+        ));
+        assert!(store.vault_get("more").await?.is_none());
+        assert!(
+            !store.vault_switch("p", &s1, true, at, 2).await?,
+            "already on"
+        );
+        assert!(store.vault_switch("p", &s1, false, at, 2).await?);
+        assert!(store.vault_switch("g", &s1, true, at, 2).await?);
+        assert_eq!(store.vault_agent_in(&s1).await?.len(), 2);
+        Ok(())
+    }
+
     /// SPEC-245 SCP-003, MAN-004: global and personal secrets reach a project only while switched
     /// on there; project secrets cannot be switched; removing the person, the sandbox or the
     /// secret removes the switch.
@@ -1118,12 +1211,22 @@ mod tests {
         assert_eq!(ids(store.vault_agent_in(&s1).await?), ["own"]);
         // Added switched on, in one step; a clash adds neither the row nor the switch.
         store
-            .vault_insert_on(&personal("on", "u1", "ON_HERE"), &s2, "u1", Timestamp(2))
+            .vault_insert_agent(
+                &personal("on", "u1", "ON_HERE"),
+                &s2,
+                ("u1", Timestamp(2)),
+                CAP,
+            )
             .await?;
         assert_eq!(ids(store.vault_agent_in(&s2).await?), ["on", "other"]);
         assert!(matches!(
             store
-                .vault_insert_on(&personal("again", "u1", "ON_HERE"), &s1, "u1", Timestamp(2))
+                .vault_insert_agent(
+                    &personal("again", "u1", "ON_HERE"),
+                    &s1,
+                    ("u1", Timestamp(2)),
+                    CAP
+                )
                 .await,
             Err(AppError::Conflict(_))
         ));
@@ -1131,35 +1234,35 @@ mod tests {
         assert!(store.vault_delete("on").await?);
         assert!(
             store
-                .vault_switch("g", &s1, true, "u1", Timestamp(2))
+                .vault_switch("g", &s1, true, ("u1", Timestamp(2)), CAP)
                 .await?
         );
         assert!(
             !store
-                .vault_switch("g", &s1, true, "u1", Timestamp(3))
+                .vault_switch("g", &s1, true, ("u1", Timestamp(3)), CAP)
                 .await?,
             "already on"
         );
         assert!(
             store
-                .vault_switch("p", &s1, true, "u2", Timestamp(2))
+                .vault_switch("p", &s1, true, ("u2", Timestamp(2)), CAP)
                 .await?
         );
         assert!(
             !store
-                .vault_switch("own", &s2, true, "u1", Timestamp(2))
+                .vault_switch("own", &s2, true, ("u1", Timestamp(2)), CAP)
                 .await?,
             "a project's"
         );
         assert!(
             !store
-                .vault_switch("t", &s1, true, "u1", Timestamp(2))
+                .vault_switch("t", &s1, true, ("u1", Timestamp(2)), CAP)
                 .await?,
             "a team secret"
         );
         assert!(
             !store
-                .vault_switch("missing", &s1, true, "u1", Timestamp(2))
+                .vault_switch("missing", &s1, true, ("u1", Timestamp(2)), CAP)
                 .await?
         );
         assert_eq!(ids(store.vault_agent_in(&s1).await?), ["g", "p", "own"]);
@@ -1167,12 +1270,12 @@ mod tests {
         assert_eq!(store.vault_switched_on(&s1).await?, ["g", "p"]);
         assert!(
             store
-                .vault_switch("g", &s1, false, "u1", Timestamp(4))
+                .vault_switch("g", &s1, false, ("u1", Timestamp(4)), CAP)
                 .await?
         );
         assert!(
             !store
-                .vault_switch("g", &s1, false, "u1", Timestamp(4))
+                .vault_switch("g", &s1, false, ("u1", Timestamp(4)), CAP)
                 .await?
         );
         assert_eq!(ids(store.vault_agent_in(&s1).await?), ["p", "own"]);
@@ -1189,7 +1292,7 @@ mod tests {
         assert!(store.vault_switched_on(&s1).await?.is_empty());
         assert!(
             store
-                .vault_switch("g", &s2, true, "u1", Timestamp(5))
+                .vault_switch("g", &s2, true, ("u1", Timestamp(5)), CAP)
                 .await?
         );
         store

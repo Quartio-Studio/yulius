@@ -917,15 +917,17 @@ them for a `Holder`: one per name, project > personal > global, then the instanc
 never another person's. A task's holder is its owner unless an automation started it
 (`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
 nobody, and a task an automation's task creates is an automation task too.
-`EgressClient::person` carries the holder of CI jobs and the Superagent to the proxy; for an agent
-run the proxy reads its task's current holder on every request, so a hand-over applies also to
-connections opened before it, and `task_message` from anyone but the owner refuses a task
-holding personal secrets. A personal secret is never copied
+The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
+its task's current holder on every request, so a hand-over or a deleted task applies also to
+connections opened before it, a hand-over (also one during a launch) rewrites the run's
+fingerprint file in place for the new owner (SPEC-248), and `task_message` from anyone but the
+owner refuses a task holding personal secrets. A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
 gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by
 instance administrators, personal ones only by their owner (404 to everyone else), through
-`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`. Schema version 39 switched every team-wide
+`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`; the store counts the 200 secrets a project
+may get in the transaction that adds or switches one on. Schema version 39 switched every team-wide
 agent secret on for every live sandbox.
 
 ```mermaid

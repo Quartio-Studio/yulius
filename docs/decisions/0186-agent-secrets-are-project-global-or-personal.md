@@ -93,11 +93,13 @@ the project can change the automation's prompt.
   can plant hooks or scripts that run in the owner's run and use its proxy credential while it
   lives. A person keeps a personal secret switched on only in projects whose writers they trust
   that far; a contained per-person home would be its own change.
-- The 200-secret cap per project is checked before the switch, not in its transaction: concurrent
-  switch-ons may pass it by a few.
+- The 200-secret cap per project is counted in the transaction that adds or switches on a secret
+  (amended by SPEC-248), so concurrent switch-ons cannot pass it.
 - An agent's `secret_create_from_file` cannot see other people's personal secrets, so a project
   secret it adds may shadow one of theirs; the owner's card says so. Refusing would tell the agent
   that the secret exists.
 - After a hand-over the run keeps its environment: the placeholders of the previous owner's
-  personal secrets stay as literal text (the proxy no longer replaces them), and its fingerprint
-  file is the one it started with (the Bash wrapper asks Yulius for current fingerprints first).
+  personal secrets stay as literal text (the proxy no longer replaces them). Its fingerprint file
+  (the Bash wrapper's fallback when Yulius cannot be reached) is rewritten in place for the new
+  owner at the hand-over, or once the run is live when control passed during its launch (amended
+  by SPEC-248); a copy the run made of it before cannot be recalled.
