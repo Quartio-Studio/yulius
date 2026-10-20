@@ -26,14 +26,24 @@ watching, steering and unblocking.
   browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
   layer, a done task's build cache) are deleted by themselves after every start and hourly, and
   the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
-  `yulius leftovers` (SPEC-215). The CLI
+  `yulius leftovers` (SPEC-215). `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
-  and started when someone clicks Start onboarding on the sandbox page. It also lays the
+  and started when someone clicks Start onboarding on the sandbox page, or when the person's own
+  agent calls `onboarding_start` with an operate token (SPEC-247). It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and
   unused-dependency check, and a Yulius CI job for every project, with existing findings
   baselined. The first task therefore starts in the discipline. Onboarding is mandatory:
   until it has finished, the sandbox's new-task page shows only what it will do and its button,
   no task input. A playground needs none.
+- **Remote control from a laptop** (SPEC-247, [guide](remote-control.md)): a person makes an API
+  token on Settings → Connect your local agent (operate or read only, shown once, revocable, last
+  use shown) and adds Yulius to their own Claude Code with one `claude mcp add` command, or signs
+  the `yulius` CLI in with `yulius remote login`. From there, without the web UI, they import a
+  repository, start its onboarding, read its files, set up its CI with a change pull request
+  merged once Yulius CI passed, create, message, restart, pause, stop, archive and delete tasks,
+  follow their transcripts, pull requests and CI, run dev deploys and manage automations and
+  agent secrets' bindings, always within their own access to each project. Production deploys
+  and secret values stay with the web UI (and `yulius secrets import`).
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server

@@ -156,16 +156,16 @@ Confirmed against `dev` at 06b58375.
 
 ## Plan
 
-- [ ] Scoped personal API tokens with list, create, revoke and last use
-- [ ] Remote MCP endpoint with token scopes, project permissions, rate limit and audit
-- [ ] Remote project import and onboarding tools
-- [ ] Remote task lifecycle, CI and CD tools
-- [ ] Remote file reads and change pull requests with merge on green
-- [ ] Remote secret names and bindings tools
-- [ ] yulius remote CLI client and shortcuts
-- [ ] Connect your local agent section in Settings
-- [ ] Laptop-only onboarding end-to-end test over the remote surface
-- [ ] Remote control guide, ADRs, API, architecture and product docs
+- [x] Scoped personal API tokens with list, create, revoke and last use
+- [x] Remote MCP endpoint with token scopes, project permissions, rate limit and audit
+- [x] Remote project import and onboarding tools
+- [x] Remote task lifecycle, CI and CD tools
+- [x] Remote file reads and change pull requests with merge on green
+- [x] Remote secret names and bindings tools
+- [x] yulius remote CLI client and shortcuts
+- [x] Connect your local agent section in Settings
+- [x] Laptop-only onboarding end-to-end test over the remote surface
+- [x] Remote control guide, ADRs, API, architecture and product docs
 - [ ] Independent review approved and findings fixed
 - [ ] Repository gate and security scan pass
 

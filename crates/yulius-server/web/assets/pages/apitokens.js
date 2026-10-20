@@ -7,6 +7,7 @@ import { enc } from '../api.js';
 import { h, icon, badge, toast, confirmDialog, errorToast, setChildren, field } from '../dom.js';
 import { relLong } from '../format.js';
 import { copyButton } from './secrets.js';
+import { BRAND } from '../brand.js';
 
 const SCOPES = [
   { id: 'operate', name: 'Operate', hint: 'Everything you may do: import, onboard, tasks, CI, files, automations, secrets' },
@@ -95,7 +96,7 @@ export function agentTokensBody(ctx) {
       setChildren(created, h('div', { class: 'agent-created-box', role: 'status' },
         h('p', { class: 'small' }, h('strong', null, 'Copy it now: '), 'the token is shown only this once.'),
         commandBox('token', made.token),
-        h('p', { class: 'small' }, 'Add Yulius to Claude Code on your computer:'),
+        h('p', { class: 'small' }, `Add ${BRAND.name} to Claude Code on your computer:`),
         commandBox('Claude Code command', made.claude_command),
         h('p', { class: 'small' }, 'Or sign the yulius CLI in, then paste the token when it asks:'),
         commandBox('CLI command', made.cli_command)));
