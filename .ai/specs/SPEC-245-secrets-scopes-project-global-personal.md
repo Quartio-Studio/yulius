@@ -1,11 +1,11 @@
 ---
 yulius-task: 052449aa-0f5f-4c85-8429-61fe063ba484
-status: in-progress
+status: done
 ---
 
 # SPEC-245: Agent secrets have three scopes: project, global, personal
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: Yulius task #231
 Scope authorization: task #231, from the feedback of an early external user who forked Yulius
@@ -137,12 +137,14 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
 ## Plan
 
 - [x] Spec and ADR-0186 for the three scopes
-- [ ] Schema 38: owners, project switches, names unique per scope; team-wide agent secrets become globals switched on everywhere
-- [ ] A run's secrets resolve by scope and precedence, personal ones only for their owner's tasks
-- [ ] Personal secrets stay in the proxy; redaction and fingerprints cover each scope
-- [ ] Management API: scopes, permissions, switches and visibility
-- [ ] Secrets page: Project, Global and Personal tabs with switches
-- [ ] Documents, gates and delivery
+- [x] Schema 38: owners, project switches, names unique per scope; team-wide agent secrets become globals switched on everywhere
+- [x] A run's secrets resolve by scope and precedence, personal ones only for their owner's tasks
+- [x] Personal secrets stay in the proxy; redaction and fingerprints cover each scope
+- [x] Management API: scopes, permissions, switches and visibility
+- [x] Secrets page: Project, Global and Personal tabs with switches
+- [x] Documents, gates and delivery
+- [x] Review round 1 fixed: automation children, task messages, hand-over cache, switch limit
+- [ ] Re-review approves the head; evidence; merge on green
 
 ## Acceptance criteria
 
@@ -179,3 +181,42 @@ See [ADR-0186](../../docs/decisions/0186-agent-secrets-are-project-global-or-per
 precedence project > personal > global instead of an error; administrators switch global
 secrets; personal secrets stay in the proxy; automations' tasks get no personal secrets;
 team-wide secrets become globals switched on everywhere instead of copies per project.
+
+## Evidence
+
+Observed on the branch (2026-10-20), head `8ab9c910` plus this spec's own text:
+
+- `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest
+  2283 passed, 17 skipped. Earlier runs on the way stopped at `cargo fmt --check` and at a
+  private intra-doc link (`cargo doc`), both fixed.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 9
+  passed — personal secrets reach only their owner's task through the proxy (not another
+  person's task, an automation's task, a CI job; no forwarded header or path carries the value),
+  are listed and reachable by id for no one else (404, administrators included), are absent from
+  others' activity and fingerprint files but redacted from the project's text; global secrets
+  reach only projects an administrator switched them on for (403 for a writer, 422 for a project
+  secret); precedence project > personal > global through the proxy and `shadowed_by`; `.env`
+  copies, browser filling, MCP references and production refuse personal secrets; readers cannot
+  add or switch one on. Review round 1 added: a task an automation's task creates holds no
+  personal secret; only its owner messages a task holding them; a hand-over ends the previous
+  owner's secrets at once; switching on respects the 200-secret limit. A mutation of the owner
+  rule (`Holder::may_hold` returning true for personal secrets) turned 3 of the first 5 red.
+- Store tests (`yulius-store` `vault::tests`): migration from version 37 (team-wide agent secret
+  switched on for live sandboxes only, project and team secrets untouched), names unique per
+  scope, switches, insert-and-switch in one transaction, cascades. App unit tests
+  (`vault::reach`): precedence, shadowing, owner-only, automation holder.
+- e2e (`npx e2e run tests/secrets.e2e.ts tests/quality.e2e.ts tests/phone.e2e.ts`): 45 passed;
+  also `cd`, `responsive` suites passed (67). One full run of `secrets.e2e.ts` failed "a failed
+  copy shows no check…" on axe target-size of a Close button; it passed alone 3/3 and on the next
+  full run: the known flake #640, outside this change.
+- `scripts/dev security` (Vidoc vidoc-1): exit 0, no critical, high or in-change medium finding.
+  Five medium/low findings in lines this branch did not change are left to CI's issue filing
+  (`ci/exec.rs:219`, `vault/verify.rs:186`, `layout.js:149`, `ci/mod.rs:1255`,
+  `routes/secrets.rs:226` — the last is already clamped to 500 in `vault_activity`).
+- Not tested: a real browser against a running server (the UI ran against the mock), a real CI
+  job's run with a personal-secret grant beyond the in-process proxy client, and an upgrade of a
+  live instance's database (the migration test runs on a synthetic version-37 file).
+- Size: about 1400 changed lines outside tests and docs, above the 400-line guideline, kept as one
+  change because the resolution of every call site (proxy, run environment, CI, CD, MCP, tools,
+  redaction) must change together: a partial merge would either leak personal secrets or ship an
+  API without its page.
