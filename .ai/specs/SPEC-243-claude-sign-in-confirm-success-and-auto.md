@@ -180,6 +180,15 @@ Confirmed against `dev` at 33410359.
   - Round 2 approved `a96ea5db`. Its three nits were fixed in `910b931f`: a dialog closed after
     a lost connection cancels the sign-in, a `running` answer says the sign-in is still stopping,
     and a failed audit of a cancel is logged.
+- After `origin/dev` was merged (task #230's email, SPEC-244, and #228), the success toast waits
+  at most 5 s for the account update carrying the email: the server reads it after the exit
+  frame. The mock now delivers it 300 ms later the same way.
+  - `scripts/dev ci`: exit 0, 2284 tests passed and 17 skipped.
+  - `subscriptions`, `subscription-names` and `consistency` e2e: 30 passed. The first test
+    checks the toast "Claude #9 is connected as signed-in@example.com".
+  - Full e2e suite on the merged head, run in two parts because the machine's load average was
+    about 165: the first run finished 41 files with no failure before my 30-minute timeout cut
+    it off; the 20 remaining files then gave 174 passed and 1 skipped (exit 0).
 - Not tested against a real Claude sign-in. That needs a person's Claude account in the
   browser. The success detection relies on `claude setup-token` 2.1.292 exiting 500 ms after
   printing the token, read from its bundled source. The 5-second grace end covers a version that
