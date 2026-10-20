@@ -63,6 +63,7 @@ pub mod race;
 pub mod record_numbers;
 pub mod recovery;
 pub mod remote;
+pub mod remote_files;
 pub mod resources;
 pub mod sandbox_docker;
 pub mod sandboxes;

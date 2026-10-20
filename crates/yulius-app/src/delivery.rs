@@ -377,7 +377,7 @@ fn refusal(err: &DeliveryError) -> AppError {
     }
 }
 
-fn domain_checks(state: gh::ChecksState) -> ChecksState {
+pub(crate) fn domain_checks(state: gh::ChecksState) -> ChecksState {
     match state {
         gh::ChecksState::None => ChecksState::None,
         gh::ChecksState::Pending => ChecksState::Pending,
@@ -1108,7 +1108,7 @@ impl App {
     /// Token that authors a pull request a person opens: their own GitHub token; the
     /// superadmin without a GitHub identity opens it through the App, as Yulius does for a ready
     /// task (ACC-012).
-    async fn dlv_author_token(
+    pub(crate) async fn dlv_author_token(
         &self,
         user: &UserRecord,
         sandbox: &SandboxRecord,

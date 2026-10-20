@@ -310,6 +310,37 @@ impl GitPort for LocalGit {
         Err(AppError::Upstream("log is not used by these tests".into()))
     }
 
+    async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        Ok(git(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{rev}^{{commit}}"),
+            ],
+        )
+        .ok()
+        .map(|sha| sha.trim().to_owned()))
+    }
+
+    async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
+        Ok(git(repo, &["show", &format!("{rev}:{path}")]).ok())
+    }
+
+    async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
+        let mut args = vec!["ls-tree", "--name-only", rev];
+        let filter = format!("{dir}/");
+        if !dir.is_empty() {
+            args.extend(["--", filter.as_str()]);
+        }
+        Ok(git(repo, &args)
+            .map_err(upstream)?
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    }
+
     async fn commit_all(
         &self,
         worktree: &Path,
@@ -688,6 +719,9 @@ impl GitHubPort for RepoGitHub {
         sha: &str,
     ) -> AppResult<()> {
         self.base.fast_forward(t, o, r, b, sha).await
+    }
+    async fn delete_branch(&self, t: &Secret, o: &str, r: &str, b: &str) -> AppResult<bool> {
+        self.base.delete_branch(t, o, r, b).await
     }
     async fn branch_sha(&self, t: &Secret, o: &str, r: &str, b: &str) -> AppResult<Option<String>> {
         self.base.branch_sha(t, o, r, b).await

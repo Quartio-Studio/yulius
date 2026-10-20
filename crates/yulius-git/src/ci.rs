@@ -78,20 +78,27 @@ impl Git {
         Ok(Some(output.stdout_text()))
     }
 
-    /// Names of the files directly in directory `dir` (repository-relative) at `rev`.
+    /// Names of the files directly in directory `dir` (repository-relative; empty: the root) at
+    /// `rev`.
     ///
     /// # Errors
     /// Invalid input, an unknown revision, or Git failures.
     pub fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> Result<Vec<String>, GitError> {
-        let relative = validate_relative_path(dir)?;
+        let relative = if dir.is_empty() {
+            None
+        } else {
+            Some(validate_relative_path(dir)?)
+        };
         let sha = self.rev_parse(repo, rev)?;
-        let output = self.run_ok(
-            Invocation::new(self, "ls-tree", Some(repo))
-                .args(["ls-tree", "--name-only", "-z", "--end-of-options"])
-                .arg(&sha)
+        let mut invocation = Invocation::new(self, "ls-tree", Some(repo))
+            .args(["ls-tree", "--name-only", "-z", "--end-of-options"])
+            .arg(&sha);
+        if let Some(relative) = relative {
+            invocation = invocation
                 .arg("--")
-                .arg(format!("{}/", relative.to_string_lossy())),
-        )?;
+                .arg(format!("{}/", relative.to_string_lossy()));
+        }
+        let output = self.run_ok(invocation)?;
         Ok(output
             .stdout
             .split(|b| *b == 0)

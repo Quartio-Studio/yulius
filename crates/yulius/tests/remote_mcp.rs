@@ -5,9 +5,11 @@ use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
+use support::FakeRemote as _;
 use support::repos::World;
 use support::{Creds, TestResult, call};
 use yulius_app::model::UserRecord;
+use yulius_app::ports::store::SandboxStore as _;
 use yulius_app::ports::store_ext::AutomationStore;
 
 type Error = Box<dyn std::error::Error>;
@@ -636,6 +638,294 @@ async fn tasks_ci_and_cd_are_driven_remotely() -> TestResult {
     assert!(
         error && said.contains("not cloned"),
         "dev goes to the deploy: {said}"
+    );
+    Ok(())
+}
+
+/// GitHub's side of a repository for the fake GitHub: its bare remote, where merges land as
+/// GitHub lands them.
+struct Origin(std::path::PathBuf);
+
+impl support::FakeRemote for Origin {
+    fn branch_sha(&self, branch: &str) -> Option<String> {
+        support::repos::git(
+            &self.0,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .ok()
+        .map(|sha| sha.trim().to_owned())
+    }
+    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
+        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
+        let tree = support::repos::git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])?;
+        let tree = tree.trim().to_owned();
+        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
+        if method == "merge" {
+            args.extend(["-p", head]);
+        }
+        args.extend(["-m", message]);
+        let commit = support::repos::git(&self.0, &args)?.trim().to_owned();
+        support::repos::git(
+            &self.0,
+            &[
+                "update-ref",
+                &format!("refs/heads/{base}"),
+                &commit,
+                &base_sha,
+            ],
+        )?;
+        Ok(commit)
+    }
+    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
+        Err("not used".into())
+    }
+    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
+        if self.branch_sha(branch).is_none() {
+            return Ok(false);
+        }
+        support::repos::git(
+            &self.0,
+            &["update-ref", "-d", &format!("refs/heads/{branch}")],
+        )
+        .map(|_| true)
+    }
+}
+
+/// `files` at `rev` of the bare `origin`, or `None`.
+fn origin_file(origin: &std::path::Path, rev: &str, path: &str) -> Option<String> {
+    support::repos::git(origin, &["show", &format!("{rev}:{path}")]).ok()
+}
+
+/// A project `Quartio-Studio/shop` imported remotely by alice (admin) with an operate token;
+/// returns the token's credentials and the bare origin.
+async fn imported_shop(
+    w: &World,
+    files: &[(&str, &str)],
+) -> Result<(Creds, std::path::PathBuf), Error> {
+    let (_, _, alice) = person(w, "alice").await?;
+    let origin = w.remote(support::repos::OWNER, "shop", files, &["dev"])?;
+    w.h.github
+        .set_remote(std::sync::Arc::new(Origin(origin.clone())));
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let (error, said, _) = remote(
+        w,
+        &alice,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    Ok((alice, origin))
+}
+
+/// RMT-024..026 (ADR-0189): files are read at the integration branch; a change is one commit of
+/// the person on a new change branch with a pull request, made away from the sandbox's clone; it
+/// merges only once Yulius CI passed at its head, and only change pull requests merge so.
+#[tokio::test]
+async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::RunState;
+    let w = World::new("org").await?;
+    let (alice, origin) = imported_shop(
+        &w,
+        &[
+            ("README.md", "# Shop\n"),
+            ("yulius.toml", "[project]\nname = \"shop\"\n"),
+            ("docs/old.md", "old\n"),
+        ],
+    )
+    .await?;
+    let shop = json!({"project": "Quartio-Studio/shop"});
+    let with = |extra: Value| {
+        let mut args = shop.clone();
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+
+    let (error, said, root) = remote(&w, &alice, "project_files", with(json!({}))).await?;
+    assert!(!error, "{said}");
+    let entries = root["entries"].to_string();
+    assert!(
+        entries.contains("README.md")
+            && entries.contains("yulius.toml")
+            && entries.contains("docs"),
+        "{root}"
+    );
+    let (_, _, docs) = remote(&w, &alice, "project_files", with(json!({"path": "docs"}))).await?;
+    assert_eq!(docs["entries"], json!(["docs/old.md"]), "{docs}");
+    let (error, said, file) = remote(
+        &w,
+        &alice,
+        "project_file_read",
+        with(json!({"path": "yulius.toml"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(file["content"], "[project]\nname = \"shop\"\n");
+    for (path, why) in [
+        (".git/config", ".git"),
+        ("../etc/passwd", ".."),
+        ("missing.txt", "does not exist"),
+    ] {
+        let (error, said, _) =
+            remote(&w, &alice, "project_file_read", with(json!({"path": path}))).await?;
+        assert!(error && said.contains(why), "{path}: {said}");
+    }
+
+    // Nothing changes: refused, and nothing is pushed.
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "project_change",
+        with(json!({"title": "noop", "files": [{"path": "README.md", "content": "# Shop\n"}]})),
+    )
+    .await?;
+    assert!(error && said.contains("nothing to change"), "{said}");
+
+    let toml = "[project]\nname = \"shop\"\n\n[[ci.jobs]]\nname = \"test\"\ncommand = \"true\"\n";
+    let (error, said, changed) = remote(
+        &w,
+        &alice,
+        "project_change",
+        with(json!({
+            "title": "ci: run the tests in Yulius CI",
+            "body": "Sets up Yulius CI.",
+            "files": [{"path": "yulius.toml", "content": toml}, {"path": "docs/old.md", "delete": true}],
+        })),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let branch = text(&changed["branch"]).to_owned();
+    assert!(
+        branch.starts_with("yulius/change-") && branch.ends_with("-ci-run-the-tests-in-yulius-ci"),
+        "{branch}"
+    );
+    let number = changed["pull_request"]["number"].as_u64().ok_or("number")?;
+    assert_eq!(
+        origin_file(&origin, &branch, "yulius.toml").as_deref(),
+        Some(toml)
+    );
+    assert_eq!(origin_file(&origin, &branch, "docs/old.md"), None);
+    assert_eq!(
+        origin_file(&origin, "dev", "docs/old.md").as_deref(),
+        Some("old\n"),
+        "dev is untouched"
+    );
+    let author = support::repos::git(&origin, &["log", "-1", "--format=%an <%ae>|%s", &branch])?;
+    assert!(
+        author.starts_with("ALICE <")
+            && author.contains("alice@users.noreply.github.com>|ci: run the tests"),
+        "{author}"
+    );
+    let pull = w.h.github.pull(number).ok_or("pull")?;
+    assert_eq!(
+        (pull.base.as_str(), pull.head.as_str()),
+        ("dev", branch.as_str())
+    );
+    assert_eq!(
+        w.h.github.pull_author(number).as_deref(),
+        Some("alice"),
+        "opened as the person"
+    );
+    let sid =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    let changes = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.id.as_str())
+        .join("changes");
+    assert!(
+        std::fs::read_dir(&changes).map(|d| d.count()).unwrap_or(0) == 0,
+        "the scratch clone is gone"
+    );
+
+    // Yulius CI tests the pull request with the jobs it adds; it merges once that run passed.
+    w.h.app.ci_sync_sandbox(&sid).await?;
+    let (_, _, ci) = remote(&w, &alice, "ci_runs", shop.clone()).await?;
+    let run = ci["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|r| r["sha"] == pull.head_sha.as_str()))
+        .cloned()
+        .ok_or_else(|| format!("no run of the pull request: {ci}"))?;
+    let (error, said, _) =
+        remote(&w, &alice, "change_merge", with(json!({"number": number}))).await?;
+    assert!(error && said.contains("pending"), "{said}");
+    w.h.store
+        .transition_ci_run(
+            text(&run["id"]),
+            &[RunState::Queued],
+            RunState::Passed,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
+    let (error, said, merged) =
+        remote(&w, &alice, "change_merge", with(json!({"number": number}))).await?;
+    assert!(!error, "{said}");
+    assert_eq!(merged["merged"]["into"], "dev");
+    assert_eq!(
+        origin_file(&origin, "dev", "yulius.toml").as_deref(),
+        Some(toml)
+    );
+    assert!(
+        Origin(origin.clone()).branch_sha(&branch).is_none(),
+        "the change branch is deleted"
+    );
+
+    // Only change pull requests merge this way.
+    let seed = w
+        .scratch
+        .path()
+        .join("seed")
+        .join(support::repos::OWNER)
+        .join("shop");
+    support::repos::git(&seed, &["checkout", "--quiet", "-b", "feat/other"])?;
+    std::fs::write(seed.join("other.txt"), "x\n")?;
+    support::repos::git(&seed, &["add", "-A"])?;
+    support::repos::git(&seed, &["commit", "--quiet", "-m", "other"])?;
+    support::repos::git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            origin.to_str().ok_or("path")?,
+            "feat/other",
+        ],
+    )?;
+    let other = yulius_app::ports::github::GitHubPort::create_pull(
+        w.h.github.as_ref(),
+        &yulius_app::model::Secret("t".into()),
+        "Quartio-Studio",
+        "shop",
+        &yulius_app::ports::github::NewPull {
+            head: "feat/other".into(),
+            base: "dev".into(),
+            title: "other".into(),
+            body: String::new(),
+        },
+    )
+    .await?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "change_merge",
+        with(json!({"number": other.number})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("only pull requests project_change opened"),
+        "{said}"
     );
     Ok(())
 }

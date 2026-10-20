@@ -78,6 +78,10 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("ci_cancel", Reach::Project, Action::Work),
     ("cd_status", Reach::Project, Action::View),
     ("cd_deploy", Reach::Project, Action::Work),
+    ("project_files", Reach::Project, Action::View),
+    ("project_file_read", Reach::Project, Action::View),
+    ("project_change", Reach::Project, Action::Work),
+    ("change_merge", Reach::Project, Action::Work),
     ("automations_list", Reach::Project, Action::View),
     ("automation_create", Reach::Project, Action::Configure),
     ("automation_update", Reach::Project, Action::Configure),
@@ -744,6 +748,16 @@ impl App {
                     confirm_ms: None,
                 };
                 record(&self.cd_deploy(ctx, sid, "dev", &req).await?)
+            }
+            "project_files" => self.remote_files(sandbox, args).await,
+            "project_file_read" => self.remote_file_read(sandbox, args).await,
+            "project_change" => {
+                self.remote_change(ctx, &caller.actor(), sandbox, args)
+                    .await
+            }
+            "change_merge" => {
+                self.remote_change_merge(ctx, &caller.actor(), sandbox, args)
+                    .await
             }
             "secret_update" | "secret_hosts_answer" => {
                 let secret = str_arg(args, "secret")?;

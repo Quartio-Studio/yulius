@@ -1716,3 +1716,20 @@ fn a_redirected_clone_git_directory_is_refused() -> TestResult {
     assert_eq!(fs::read_to_string(&outside)?, before);
     Ok(())
 }
+
+/// SPEC-247 RMT-024: an empty directory names the repository's root.
+#[test]
+fn list_dir_lists_the_root_when_no_directory_is_named() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::create_dir_all(repo.join("docs"))?;
+    fs::write(repo.join("docs/a.md"), "a\n")?;
+    fx.git.commit_all(&repo, "docs", &author())?;
+    let root = fx.git.list_dir(&repo, "HEAD", "")?;
+    assert!(root.iter().any(|name| name == "docs"), "{root:?}");
+    assert_eq!(
+        fx.git.list_dir(&repo, "HEAD", "docs")?,
+        vec!["docs/a.md".to_owned()]
+    );
+    Ok(())
+}
