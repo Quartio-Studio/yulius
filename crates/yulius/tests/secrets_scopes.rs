@@ -26,6 +26,9 @@ const AUTOMATED_TASK: &str = "scopes-task-token-automation-0123456789";
 const BOB_WEB_TASK: &str = "scopes-task-token-bob-web-0123456789abcd";
 const MINE: &str = "alice-personal-token-5150a1ce";
 const HOST: &str = "api.mine.test";
+/// Bob's personal value and its host.
+const BOBS: &str = "bob-personal-token-0b0b5ec7";
+const BOB_HOST: &str = "api.bob.test";
 
 struct World {
     h: support::Harness,
@@ -621,14 +624,19 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
     // Alice's running task t1 (no live session in this harness: a message that passes the checks
     // ends "no live session").
     let args = json!({"task_id": "t1", "text": "use $MY_TOKEN on api.mine.test"});
-    // Past every check, a message to t1 ends at its missing session.
-    let forbidden = |result: &Result<Value, yulius_app::error::AppError>| !matches!(result, Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session"));
+    // Whether a message to t1 passed every check: it ends at its missing session.
+    let reached_session = |result: &Result<Value, yulius_app::error::AppError>| {
+        matches!(
+            result,
+            Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session")
+        )
+    };
     // Without a personal secret, bob's Superagent may type into alice's task (SPEC-230).
     let before =
         w.h.app
             .tool_task_message(&caller("u-bob", "bob")?, &args)
             .await;
-    assert!(!forbidden(&before), "{before:?}");
+    assert!(reached_session(&before), "{before:?}");
     add(
         &w,
         &w.alice,
@@ -650,12 +658,12 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
         w.h.app
             .tool_task_message(&caller("u-alice", "alice")?, &args)
             .await;
-    assert!(!forbidden(&own), "{own:?}");
+    assert!(reached_session(&own), "{own:?}");
     Ok(())
 }
 
 /// Review of SPEC-245, M2: control passed to bob ends alice's personal secrets in the run at once,
-/// not when the proxy's credential cache expires.
+/// not when the proxy's credential cache expires, and starts bob's (SPEC-248 FUP-004).
 #[tokio::test]
 async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     let w = world().await?;
@@ -666,8 +674,16 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
         secret("personal", "MY_TOKEN", MINE, HOST),
     )
     .await?;
+    add(
+        &w,
+        &w.bob,
+        "s1",
+        secret("personal", "BOB_TOKEN", BOBS, BOB_HOST),
+    )
+    .await?;
     let before = client(&w, ALICE_TASK).await?;
     assert!(w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(!w.h.app.egress_intercepts(&before, BOB_HOST, 443).await);
     let asked = call(
         &w.h.router,
         Method::POST,
@@ -689,9 +705,55 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     // A connection opened before the hand-over keeps its client: it no longer carries alice's.
     assert!(!w.h.app.egress_intercepts(&before, HOST, 443).await);
     assert!(!leaks(&w, &before, HOST).await);
+    // It carries bob's own instead, on his host.
+    assert!(w.h.app.egress_intercepts(&before, BOB_HOST, 443).await);
+    let bobs = forwarded(&w, &before, BOB_HOST).await.unwrap_or_default();
+    assert!(
+        bobs.iter()
+            .any(|(n, v)| n == "authorization" && v == &format!("Bearer {BOBS}")),
+        "{bobs:?}"
+    );
     let after = client(&w, ALICE_TASK).await?;
     assert!(!w.h.app.egress_intercepts(&after, HOST, 443).await);
     assert!(!leaks(&w, &after, HOST).await);
+    assert!(w.h.app.egress_intercepts(&after, BOB_HOST, 443).await);
+    Ok(())
+}
+
+/// SPEC-248 FUP-004: a deleted task's proxy client, resolved before the deletion, resolves to no
+/// person: its owner's personal secret no longer applies, the project's still does.
+#[tokio::test]
+async fn a_deleted_tasks_client_resolves_to_no_person() -> TestResult {
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret(
+            "sandbox",
+            "SHARED_TOKEN",
+            "project-token-5ha7ed",
+            "api.shared.test",
+        ),
+    )
+    .await?;
+    let before = client(&w, ALICE_TASK).await?;
+    assert!(w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(w.h.store.delete_task(&TaskId::parse("t1")?).await?);
+    assert!(!w.h.app.egress_intercepts(&before, HOST, 443).await);
+    assert!(!leaks(&w, &before, HOST).await);
+    assert!(
+        w.h.app
+            .egress_intercepts(&before, "api.shared.test", 443)
+            .await
+    );
     Ok(())
 }
 
@@ -712,7 +774,7 @@ async fn a_hand_over_rewrites_the_runs_fingerprint_file() -> TestResult {
         &w,
         &w.bob,
         "s1",
-        secret("personal", "BOB_TOKEN", "bob-personal-token-0b0b", "api.bob.test"),
+        secret("personal", "BOB_TOKEN", BOBS, BOB_HOST),
     )
     .await?;
     let run = tempfile::tempdir()?;
