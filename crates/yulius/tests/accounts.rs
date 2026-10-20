@@ -597,6 +597,70 @@ async fn logins_time_out_and_their_process_is_stopped() -> TestResult {
     Ok(())
 }
 
+/// SPEC-243 LGN-001: a CLI that prints the token and keeps running is stopped after the grace
+/// period, and the sign-in ends `ok` with the token sealed (not `running` until the timeout).
+#[tokio::test]
+async fn a_sign_in_ends_once_its_token_is_captured() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_millis(50));
+    s.host.push(Script {
+        chunks: vec![
+            "Your OAuth token (valid for 1 year):\r\n\r\n".into(),
+            format!("{TOKEN}\r\n\r\nStore this token securely.\r\n"),
+        ],
+        exit: None,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "anthropic", "Claude lingering").await?;
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let mut sub = s.h.app.login_terminal(&ctx, &login_id)?.subscribe();
+    let (_, status, _) = viewer_output(&mut sub).await?;
+    assert_eq!(status, "ok");
+    let account = account_settled(&mut events, &account_id).await?;
+    assert_eq!(account["status"], "ok");
+    let log = s.host.log();
+    assert!(log.iter().any(|l| l == "signal:Terminate"), "{log:?}");
+    let record =
+        s.h.store
+            .account(&AccountId::parse(&account_id)?)
+            .await?
+            .ok_or("account")?;
+    assert_eq!(
+        s.h.app
+            .deps
+            .crypto
+            .open(&record.credential.ok_or("credential")?)?,
+        TOKEN.as_bytes()
+    );
+    assert!(!login_dir(&s, &login_id).exists());
+    Ok(())
+}
+
+/// SPEC-243 LGN-001: an incomplete token (fewer than 20 characters after the prefix) does not
+/// end the sign-in; it runs on until it really ends.
+#[tokio::test]
+async fn a_partial_token_does_not_end_the_sign_in() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_millis(20));
+    s.h.app
+        .set_account_login_timeout(Duration::from_millis(400));
+    s.host.push(Script {
+        chunks: vec!["Waiting: sk-ant-oat01-short\r\n".into()],
+        exit: None,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, _) = create(&s, "anthropic", "Claude partial").await?;
+    let account = account_settled(&mut events, &account_id).await?;
+    assert_eq!(account["status"], "error");
+    let message = account["last_error"].as_str().ok_or("last_error")?;
+    assert!(message.contains("timed out"), "{message}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn one_login_per_account_bounded_logins_and_delete_cancels() -> TestResult {
     let s = setup().await?;

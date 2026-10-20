@@ -13,6 +13,7 @@
 //! [`MAX_ACTIVE_LOGINS`] at once, [`LOGIN_RAW_MAX`] bytes of raw output, [`LOGIN_TIMEOUT`] per
 //! login, [`LOGIN_VIEWERS_MAX`] viewers per login.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -45,6 +46,10 @@ use crate::usage_json;
 
 /// Maximum duration of one login before its process is stopped.
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long a sign-in may run on after its output first held a complete token before it is
+/// stopped and the token sealed (SPEC-243 LGN-001). `claude setup-token` exits by itself 500 ms
+/// after printing the token.
+pub const TOKEN_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// PTY width of login terminals: wide enough that tokens and URLs never wrap.
 pub const LOGIN_COLS: u16 = 500;
 /// PTY height of login terminals.
@@ -158,6 +163,7 @@ pub struct LoginRegistry {
     /// Serializes login starts so the per-account and global bounds hold under races.
     start: tokio::sync::Mutex<()>,
     timeout_ms: AtomicU64,
+    token_grace_ms: AtomicU64,
 }
 
 /// A viewer's handle on a login terminal (used by the WebSocket route).
@@ -221,9 +227,19 @@ impl LoginTerminal {
     }
 }
 
+/// Best-effort zeroing of a plaintext copy before it is freed.
+fn scrub(bytes: Option<Vec<u8>>) {
+    if let Some(mut bytes) = bytes {
+        bytes.fill(0);
+        std::hint::black_box(&bytes);
+    }
+}
+
 /// How the login process ended.
 enum Ending {
     Exited(RunExit),
+    /// A complete token was in the output and the CLI ran on past [`TOKEN_EXIT_GRACE`].
+    Captured,
     TimedOut,
     Cancelled,
     Lost,
@@ -456,6 +472,19 @@ impl App {
             .unwrap_or(u64::MAX)
             .max(1);
         self.logins.timeout_ms.store(ms, Ordering::SeqCst);
+    }
+
+    fn token_grace(&self) -> Duration {
+        match self.logins.token_grace_ms.load(Ordering::SeqCst) {
+            0 => TOKEN_EXIT_GRACE,
+            ms => Duration::from_millis(ms),
+        }
+    }
+
+    /// Overrides [`TOKEN_EXIT_GRACE`] for this instance (tests).
+    pub fn set_account_login_token_grace(&self, grace: Duration) {
+        let ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX).max(1);
+        self.logins.token_grace_ms.store(ms, Ordering::SeqCst);
     }
 
     fn logins_dir(&self) -> PathBuf {
@@ -1096,27 +1125,43 @@ impl App {
     ) {
         let mut masker = self.deps.harness.masker();
         let deadline = tokio::time::Instant::now() + self.login_timeout();
+        // Once the output holds a complete token, the CLI gets a short grace to exit by itself.
+        let mut captured: Option<tokio::time::Instant> = None;
         let ending = loop {
+            let grace = async {
+                match captured {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 () = session.cancel.notified() => break Ending::Cancelled,
+                () = grace => break Ending::Captured,
                 event = tokio::time::timeout_at(deadline, reader.next()) => match event {
                     Err(_) => break Ending::TimedOut,
                     Ok(Ok(Some(event))) => {
                         if let Some(exit) = self.login_event(&session, masker.as_mut(), &mut seq, event) {
                             break Ending::Exited(exit);
                         }
+                        if captured.is_none() && self.holds_credential(&session) {
+                            captured = Some(tokio::time::Instant::now() + self.token_grace());
+                        }
                     }
                     Ok(Ok(None) | Err(_)) => break Ending::Lost,
                 },
             }
         };
-        if matches!(ending, Ending::TimedOut | Ending::Cancelled) {
+        if matches!(
+            ending,
+            Ending::Captured | Ending::TimedOut | Ending::Cancelled
+        ) {
             let stopped = self
                 .stop_login(&session, masker.as_mut(), &mut seq, reader.as_mut())
                 .await;
             tracing::info!(
                 exited = stopped.is_some(),
                 timed_out = matches!(ending, Ending::TimedOut),
+                captured = matches!(ending, Ending::Captured),
                 "login process stopped"
             );
         }
@@ -1180,6 +1225,26 @@ impl App {
                 None
             }
             RunEvent::Exit(exit) => Some(exit),
+        }
+    }
+
+    /// Whether the raw output already holds a complete credential (SPEC-243 LGN-001). The
+    /// temporary plaintext copies are scrubbed before they are freed.
+    fn holds_credential(&self, session: &LoginSession) -> bool {
+        let Ok(raw) = session.raw.lock() else {
+            return false;
+        };
+        match session.provider {
+            Provider::Anthropic => {
+                let text = String::from_utf8_lossy(&raw.bytes);
+                let found = self.deps.harness.extract_claude_token(&text);
+                let held = found.is_some();
+                scrub(found.map(String::into_bytes));
+                if let Cow::Owned(copy) = text {
+                    scrub(Some(copy.into_bytes()));
+                }
+                held
+            }
         }
     }
 
