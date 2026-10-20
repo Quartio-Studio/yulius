@@ -114,8 +114,8 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
   `supervision::a_usage_limit_moves_the_session_to_the_next_account` (60 s timeout under the full
   suite's load): the open flaky issue #539, outside this change; it passed 3/3 alone.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 13
-  passed (12 before review round 2). Red first: `a_hand_over_rewrites_the_runs_fingerprint_file` failed before the fix
-  (the file still listed `MY_TOKEN`); `concurrent_switch_ons_stop_at_the_projects_limit` (20
+  passed (12 before review round 2). Red first: `a_hand_over_rewrites_the_runs_fingerprint_file`
+  failed before the fix (the file still listed `MY_TOKEN`); `concurrent_switch_ons_stop_at_the_projects_limit` (20
   switch-ons on 4 workers into a project with 199) let 5, 7 and 4 through in three runs before the
   fix, and passed 5/5 after. The new hand-over assertions (bob's secret on the client resolved
   before) and `a_deleted_tasks_client_resolves_to_no_person` pin behavior already right since
