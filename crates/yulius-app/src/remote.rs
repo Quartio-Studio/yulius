@@ -805,13 +805,26 @@ impl App {
             }
             "project_files" => self.remote_files(sandbox, args).await,
             "project_file_read" => self.remote_file_read(sandbox, args).await,
-            "project_change" => {
-                self.remote_change(ctx, &caller.actor(), sandbox, args)
-                    .await
-            }
-            "change_merge" => {
-                self.remote_change_merge(ctx, &caller.actor(), sandbox, args)
-                    .await
+            // Run to their end even when the caller goes away (a client timeout): a change
+            // removes its scratch clone and records its pull request, a merge records itself.
+            "project_change" | "change_merge" => {
+                let (app, ctx, actor, sandbox, args, name) = (
+                    Arc::clone(self),
+                    ctx.clone(),
+                    caller.actor(),
+                    sandbox.clone(),
+                    args.clone(),
+                    name.to_owned(),
+                );
+                tokio::spawn(async move {
+                    if name == "project_change" {
+                        app.remote_change(&ctx, &actor, &sandbox, &args).await
+                    } else {
+                        app.remote_change_merge(&ctx, &actor, &sandbox, &args).await
+                    }
+                })
+                .await
+                .map_err(AppError::internal)?
             }
             "secret_update" | "secret_hosts_answer" => {
                 if args.get("value").is_some() {

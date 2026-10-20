@@ -31,7 +31,9 @@ and ADR-0175 (environment runs read a mirror of origin, never the sandbox's clon
   `<data>/changes/<id>/`, a directory only the server's user reads (0700) and outside every
   sandbox: agents can write anywhere under their sandbox, so a clone there could have its
   configuration changed between the clone and the push (sending the person's token through a
-  proxy) or its files changed before the commit. At most 2 changes are made at once. Yulius adds a
+  proxy) or its files changed before the commit. At most 2 changes are made at once; a third is
+  refused with "try again" rather than queued. A change runs to its end even when its caller goes
+  away (it is spawned), so its scratch clone is removed and its pull request recorded. Yulius adds a
   worktree on a new branch `yulius/change-<id>-<slug>` from
   `origin/<integration>`, writes the files (refusing any path through a symbolic link of the
   repository), commits them as one commit authored by the person, pushes the branch and opens a
@@ -69,6 +71,8 @@ and ADR-0175 (environment runs read a mirror of origin, never the sandbox's clon
 - A person's agent sets up CI from a laptop: read `yulius.toml`, `project_change` it, follow
   `ci_runs`, `change_merge` once green.
 - Each change costs a fresh clone; large repositories take longer, bounded by the request's time.
+- The `project.change` audit entry is the record `change_merge` trusts; when it cannot be
+  written, the result says so and the pull request is merged on GitHub instead.
 - A server killed in the middle of a change leaves its scratch clone in `<data>/changes/`, which
   the next change does not reuse; it is removed by hand (it holds no credential once the clone's
   configuration is scrubbed, as it is before every push).

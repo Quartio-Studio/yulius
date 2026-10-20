@@ -358,12 +358,12 @@ impl App {
         let (clone, work) = (scratch.join("repo"), scratch.join("work"));
         let (name, email) = commit_identity(Some(&ctx.user));
         let token = self.dlv_author_token(&ctx.user, sandbox).await?;
-        // A few at once: each is a full clone inside a request.
-        let _slot = self
-            .change_slots
-            .acquire()
-            .await
-            .map_err(AppError::internal)?;
+        // A few at once: each is a full clone. Nothing queues for a slot.
+        let _slot = self.change_slots.try_acquire().map_err(|_| {
+            AppError::Capacity(format!(
+                "{MAX_CONCURRENT_CHANGES} changes are being made right now; try again in a moment"
+            ))
+        })?;
         blocking(move || private_dir(&root)).await?;
         let made = async {
             self.deps
@@ -449,7 +449,15 @@ impl App {
             )
             .await
         {
+            // The record is what change_merge trusts: without it the pull request is merged on
+            // GitHub. The pull request exists, so this is no failed call (which invites a retry).
             tracing::warn!(error = %err, "change audit failed");
+            return Ok(json!({
+                "pull_request": {"number": pull.number, "url": pull.html_url},
+                "branch": branch,
+                "commit": sha,
+                "warning": "Yulius could not record this change, so change_merge will not merge it: review and merge it on GitHub",
+            }));
         }
         Ok(json!({
             "pull_request": {"number": pull.number, "url": pull.html_url},
