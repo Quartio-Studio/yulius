@@ -239,6 +239,8 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     Ok(account)

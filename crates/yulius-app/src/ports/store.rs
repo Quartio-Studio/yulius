@@ -477,7 +477,20 @@ pub trait AccountStore: Send + Sync {
     async fn accounts(&self) -> AppResult<Vec<AccountRecord>>;
     /// Renames an account.
     async fn update_account(&self, id: &AccountId, label: &str, at: Timestamp) -> AppResult<()>;
-    /// Stores the sealed credential and status.
+    /// Stores the email of the account's Claude account (`None`: unknown) and when Claude answered
+    /// for it definitely (`None`: never, the background round asks again) (SPEC-244), only while
+    /// the account still holds `credential`, the one the answer is for. `false` when it does not
+    /// (signed in again meanwhile) and nothing was written.
+    async fn set_account_email(
+        &self,
+        id: &AccountId,
+        credential: &Sealed,
+        email: Option<&str>,
+        checked_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Stores the sealed credential and status. A new credential is a new sign-in, perhaps of
+    /// another Claude account: the email and its check are cleared.
     async fn set_account_credential(
         &self,
         id: &AccountId,

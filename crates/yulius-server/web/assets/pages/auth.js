@@ -11,7 +11,26 @@ function brandLockup() {
   return h('div', { class: 'auth-logo' }, h('span', { class: 'brand-logo', 'aria-hidden': 'true' }, icon('logo', { size: 34 })), BRAND.name);
 }
 
-const MIN_PASSWORD = 12;
+// A new superadmin password needs 8 characters (the server's MIN_PASSWORD_LEN, NIST SP 800-63B);
+// 12 are advised, not required (SPEC-242, ADR-0183).
+const MIN_PASSWORD = 8;
+const RECOMMENDED_PASSWORD = 12;
+const PASSWORD_HINT = `At least ${MIN_PASSWORD} characters; ${RECOMMENDED_PASSWORD} or more recommended.`;
+
+/** Length in code points, as the server counts (`chars()`), not UTF-16 units. */
+const passwordLength = (value) => [...value].length;
+
+/**
+ * Advice for a password long enough to be accepted but easy to guess, or '' (SPEC-242 PWM-004).
+ * It never blocks: no composition rules and no list of common passwords (PWM-002).
+ */
+function passwordAdvice(value) {
+  const length = passwordLength(value);
+  if (length < MIN_PASSWORD) return '';
+  if (length < RECOMMENDED_PASSWORD) return `Short passwords are easier to guess: at least ${RECOMMENDED_PASSWORD} characters recommended.`;
+  if (new Set(value).size < 5) return 'Repeated characters are easy to guess: a phrase of several words is stronger.';
+  return '';
+}
 
 /**
  * The recovery code, shown once with the warnings; Continue needs the acknowledgement.
@@ -40,25 +59,30 @@ export function recoveryCodeCard(code, { title = 'Your recovery code', continueL
 
 /**
  * Says a too-short password and a mismatched repeat under their own fields (aria-invalid +
- * aria-describedby, WCAG 3.3.1) instead of in one line elsewhere on the card.
+ * aria-describedby, WCAG 3.3.1) instead of in one line elsewhere on the card, and advice for a
+ * weak but accepted password under it (described by it, not invalid; SPEC-242 PWM-004).
  */
 function passwordChecks(password, confirm, prefix) {
   const passwordNote = h('span', { class: 'field-error', id: `${prefix}-password-error` });
+  const adviceNote = h('span', { class: 'field-advice', id: `${prefix}-password-advice` });
   const confirmNote = h('span', { class: 'field-error', id: `${prefix}-confirm-error` });
   const check = () => {
-    const short = Boolean(password.value) && password.value.length < MIN_PASSWORD;
+    const short = Boolean(password.value) && passwordLength(password.value) < MIN_PASSWORD;
     const mismatch = Boolean(confirm.value) && confirm.value !== password.value;
+    const advice = passwordAdvice(password.value);
     passwordNote.textContent = short ? `Use at least ${MIN_PASSWORD} characters.` : '';
-    // The error replaces the hint that says the same thing.
+    adviceNote.textContent = advice;
+    // The error or the advice replaces the hint that says the same thing.
     const hint = password.closest('.field')?.querySelector('.field-hint');
-    if (hint) hint.hidden = short;
+    if (hint) hint.hidden = short || Boolean(advice);
     confirmNote.textContent = mismatch ? 'The passwords do not match.' : '';
     for (const [input, bad, note] of [[password, short, passwordNote], [confirm, mismatch, confirmNote]]) {
       if (bad) { input.setAttribute('aria-invalid', 'true'); input.setAttribute('aria-describedby', note.id); } else { input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
     }
-    return !short && !mismatch && password.value.length >= MIN_PASSWORD && confirm.value === password.value;
+    if (advice) password.setAttribute('aria-describedby', adviceNote.id);
+    return !short && !mismatch && passwordLength(password.value) >= MIN_PASSWORD && confirm.value === password.value;
   };
-  return { passwordNote, confirmNote, check };
+  return { passwordNote, adviceNote, confirmNote, check };
 }
 
 /**
@@ -94,7 +118,7 @@ export function mountSetup(ctx, { onDone }) {
     h('h1', { class: 'auth-title' }, 'Set up this instance'),
     h('p', { class: 'text-2' }, 'Create the single superadmin. You need the one-time setup token printed on the server console.'),
     field('Setup token', token),
-    field('Superadmin password', password, `At least ${MIN_PASSWORD} characters.`, checks.passwordNote),
+    field('Superadmin password', password, PASSWORD_HINT, [checks.passwordNote, checks.adviceNote]),
     field('Repeat password', confirm, null, checks.confirmNote),
     h('label', { class: 'check small' }, show, h('span', null, 'Show passwords')),
     h('div', { class: 'warning-box', role: 'note' }, icon('warn', { size: 18 }),
@@ -165,7 +189,7 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
     h('h1', { class: 'auth-title' }, 'Reset the superadmin password'),
     status,
     field('Recovery code', code, 'The 6 digits shown when the instance was set up.'),
-    field('New password', password, `At least ${MIN_PASSWORD} characters.`, checks.passwordNote),
+    field('New password', password, PASSWORD_HINT, [checks.passwordNote, checks.adviceNote]),
     field('Repeat new password', confirm, null, checks.confirmNote),
     problems,
     h('div', { class: 'row' }, submit, h('button', { type: 'button', class: 'btn btn-ghost', onClick: onBack }, 'Back to sign-in')));

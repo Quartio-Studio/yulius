@@ -242,6 +242,8 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserId), BoxError> {
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let origin = data.join("origin.git");
@@ -1094,6 +1096,8 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
         let id = app
@@ -1670,6 +1674,8 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
@@ -2429,6 +2435,8 @@ async fn a_chain_starts_when_its_predecessor_achieves_its_goal() -> TestResult {
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let pred = support::seed_task(&h, "t-pred", "s1", "u-alice", TaskStatus::Running, None).await?;

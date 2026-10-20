@@ -197,6 +197,8 @@ async fn fixture_with_workflow(
             last_error: None,
             created_at: now,
             updated_at: now,
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let hash = h.app.deps.crypto.sha256_hex(TOKEN.as_bytes());

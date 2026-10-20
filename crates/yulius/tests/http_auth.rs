@@ -101,6 +101,41 @@ async fn setup_requires_token_confirmation_and_happens_once() -> TestResult {
     Ok(())
 }
 
+/// SPEC-242 PWM-001/002: 8 characters are enough (a keyboard pattern too, `zaq1@WSX` from the
+/// user feedback); 7 are refused with a message that says the minimum.
+#[tokio::test]
+async fn setup_accepts_eight_characters_and_refuses_seven_saying_the_minimum() -> TestResult {
+    let h = harness()?;
+    let token = h.app.prepare_setup().await?.ok_or("token")?;
+    let seven = call(&h.router, Method::POST, "/api/setup", Some(json!({
+        "token": token.expose(), "password": "zaq1@WS", "password_confirm": "zaq1@WS", "confirm_saved": true
+    })), &Creds::default()).await?;
+    assert_eq!(seven.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        seven.body["error"]["message"],
+        "the password needs at least 8 characters"
+    );
+
+    let eight = call(&h.router, Method::POST, "/api/setup", Some(json!({
+        "token": token.expose(), "password": "zaq1@WSX", "password_confirm": "zaq1@WSX", "confirm_saved": true
+    })), &Creds::default()).await?;
+    assert_eq!(eight.status, StatusCode::CREATED, "{:?}", eight.body);
+    let login = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/password",
+        Some(json!({"password": "zaq1@WSX"})),
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(
+        login.status,
+        StatusCode::OK,
+        "the 8-character password signs in"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn password_login_rate_limit_and_csrf() -> TestResult {
     let h = harness()?;
