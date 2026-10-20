@@ -1,11 +1,11 @@
 ---
 yulius-task: 9b8eb28a-59c9-4e81-a7e1-f20628c741b2
-status: in-progress
+status: done
 ---
 
 # SPEC-246: Onboarding requires a connected Claude account first
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: task #232
 Scope authorization: task #232, feedback from an early external user on a fresh install: "probably
@@ -94,9 +94,10 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
 - [x] Failed-for-no-account reason and onboarding retry
 - [x] Connect Claude step on Home, the onboarding gate and error toasts
 - [x] ADR, architecture, product, API and changes record the gate
-- [ ] Independent review approved
-- [ ] Repository gate, e2e suite and security scan pass
-- [ ] Merged into dev on green CI
+- [x] First review round answered
+- [x] Independent review approved
+- [x] Repository gate, e2e suite and security scan pass
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -146,3 +147,47 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   its first task is refused by CLA-002 anyway.
 - **Retry is the existing Start onboarding.** A failed start leaves the sandbox `pending`, so
   `approve_onboarding` already restarts the same task; only the gate's words and button change.
+
+## Evidence
+
+- **Before.** On `dev` (06b58375) a start with no account paused `waiting_capacity` with "no
+  subscription has capacity left" (`launch_attempt` → `choose_account` `None` → `pause_task`), and
+  a browser import moved onboarding to `preparing` the same way; only the Superagent answered a
+  plain `conflict`. With the gate in place and no fixture changed, 48 existing integration tests
+  failed exactly where they started an agent with no account (New task, `task_create`, Start now,
+  start changes, supertasks, automations' manual starts, imports and Start onboarding), which shows
+  every such path now meets the gate.
+- **Tests added** (each asserts behavior that only exists with the change):
+  `claude_gate.rs` — `a_new_task_without_a_claude_account_is_refused_and_creates_nothing` (UI create
+  now / after a task / supertask, `task_create`, a prepared task written, Start now and a start
+  change refused, then all work with an account), `accounts_that_must_sign_in_again_refuse_the_start_saying_so`,
+  `continuing_without_a_claude_account_is_refused_and_changes_nothing` (also `failed_no_account` on
+  the wire), `me_says_whether_a_claude_account_is_connected`,
+  `a_start_by_machinery_waits_for_an_account_and_says_why` (both notices and `waits_for_account`);
+  `projects.rs` — `a_browser_import_without_claude_waits_for_the_connection` (CLA-003: 201,
+  `pending`, no task, no first commit; Start onboarding 409, then `preparing` once connected),
+  `a_failed_onboarding_start_is_retried_once_claude_is_connected` (CLA-006),
+  `a_scheduled_start_without_claude_waits_and_says_why` (CLA-004 through a real scheduled release);
+  `sessions.rs` — an imported session's Continue refused with no task created; `cockpit.rs` — the
+  Superagent's `claude_account_required`, and an exhausted pool still 429; unit tests in
+  `account_gate.rs` (usable rule, refusal and notice wording, the failure mapping). e2e
+  `claude-connect.e2e.ts` (5 tests).
+- **Fixtures.** Tests that started agents with no account now seed
+  `support::exhausted_subscription` (connected, no capacity for days), so their starts take the same
+  pause as before; `World::new` seeds it, `World::without_claude` does not.
+- **Review.** Round 1 (independent session, head 003bfe34): request changes — the CLA-004 reason
+  reached only a live notice (major), the notice did not tell a needed sign-in apart, missing tests
+  (imported session, real machinery path, the failure mapping), and nits (a failed read skipping
+  the pause's publish, error order, mock coverage, docs drift, fixture reset). All fixed in
+  2a140666, 60967e66 (`waits_for_account` in the summary and the UI's strip, sidebar and time
+  label; `waiting_notice`; `fail_reason`; the tests above). The account-removal UI refresh is
+  covered by re-reading `/api/me` on a refused start; no event is published on removal (unchanged).
+  Round 2 reviewed the head carrying this Evidence.
+- **Gates** on e5ea247f (dev merged at b06db25c): `scripts/dev ci` exit 0 (2324 tests passed, 17
+  skipped; lint, macOS compile, deps, doctests); e2e `npx e2e run` 656 passed, 1 skipped.
+- **Security scan not run.** `scripts/dev security` exit 2: "Vidoc cannot be reached … HTTP 429:
+  This API key has used its 50,000,000 tokens." Unrun, not passed; the change was reviewed by hand
+  for security (every gate check runs after the access check; UI text goes through `h()`).
+- **Not tested.** A real Claude sign-in and a real agent run (the harness has no process host); the
+  race where an account loses its credential between being chosen and opened (`failed_no_account`)
+  is covered by the mapping's unit test only.
