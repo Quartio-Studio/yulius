@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-20
 
+- Secrets scopes, review follow-ups (SPEC-248, task #234): a hand-over rewrites the run's
+  fingerprint file for the new owner, so no run keeps hashes of the previous owner's personal
+  values; the 200-secret limit per project is counted in the store transaction, so concurrent
+  switch-ons cannot pass it; an agent run's egress client no longer carries a frozen person
+  (`EgressClient::holder()` removed); tests for the new owner's secret after a hand-over and a
+  deleted task's client; SPEC-245 and the ADR index corrected.
 - Agent secrets have three scopes: Project, Global and Personal (SPEC-245, ADR-0186, task #231),
   after an external user found the old scopes pointless. Global secrets are defined once by
   instance administrators and switched on per project; personal ones belong to one person, are
