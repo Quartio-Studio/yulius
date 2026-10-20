@@ -939,7 +939,7 @@ impl App {
         Ok(LoginTerminal { session })
     }
 
-    /// Cancels a running login (SPEC-243 LGN-002) and waits (bounded by [`CANCEL_WAIT`]) until
+    /// Cancels a running login (SPEC-243 LGN-002) and waits (at most 15 s) until
     /// it has ended: its process is stopped, its temporary directory removed, and the account
     /// keeps its state, unless a complete token had already been captured, which is sealed
     /// (`ok`). A login that has already ended is left as it is. Returns how it ended.
