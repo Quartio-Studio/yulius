@@ -181,10 +181,45 @@ enum Command {
         action: LeftoversAction,
     },
     /// Manage the vault from this computer.
+    #[command(visible_alias = "secret")]
     Secrets {
         /// What to do.
         #[command(subcommand)]
         action: SecretsAction,
+    },
+    /// Drive a Yulius instance from this computer with a personal API token (SPEC-247): log in,
+    /// then call any tool its remote MCP serves.
+    Remote {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::RemoteAction,
+    },
+    /// A project of the instance `yulius remote login` stored: import, onboard, read and change
+    /// its files.
+    Project {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::ProjectAction,
+    },
+    /// The project's tasks: create, list, message, restart, stop, archive, delete.
+    Task {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::TaskAction,
+    },
+    /// The project's Yulius CI runs.
+    Ci {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::CiAction,
     },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
@@ -278,6 +313,12 @@ enum SecretsAction {
         /// No colours (also NO_COLOR=1).
         #[arg(long)]
         no_color: bool,
+    },
+    /// The project's agent secrets through the remote MCP: names, descriptions and bound hosts,
+    /// never values (SPEC-247).
+    List {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
     },
 }
 
@@ -519,6 +560,13 @@ fn main() -> ExitCode {
             server,
             no_color,
         }),
+        Command::Secrets {
+            action: SecretsAction::List { opts },
+        } => yulius::remote_cli::secrets_list(&opts),
+        Command::Remote { opts, action } => yulius::remote_cli::remote(action, &opts),
+        Command::Project { opts, action } => yulius::remote_cli::project_cmd(action, &opts),
+        Command::Task { opts, action } => yulius::remote_cli::task_cmd(action, &opts),
+        Command::Ci { opts, action } => yulius::remote_cli::ci_cmd(action, &opts),
         Command::Doctor {
             docker_smoke: true,
             data,

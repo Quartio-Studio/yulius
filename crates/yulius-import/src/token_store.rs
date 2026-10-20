@@ -79,6 +79,13 @@ impl TokenStore {
         Ok(Self::new(config.join("yulius").join("credentials.json")))
     }
 
+    /// The store of remote-control tokens (`yulius remote login`, SPEC-247) beside this one:
+    /// kept apart from `yulius login`'s, so neither replaces the other.
+    #[must_use]
+    pub fn remote(&self) -> Self {
+        Self::new(self.path.with_file_name("remote-credentials.json"))
+    }
+
     /// The backing file path.
     #[must_use]
     pub fn path(&self) -> &Path {

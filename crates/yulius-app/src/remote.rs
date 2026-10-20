@@ -288,6 +288,44 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
             &["environment"],
         ),
         tool(
+            "project_files",
+            "List a directory of the project's repository at the integration branch head (or `ref`: a branch or commit), after fetching it.",
+            json!({
+                "path": {"type": "string", "description": "Directory, relative to the repository root (default: the root)"},
+                "ref": {"type": "string", "description": "Branch or commit (default: the integration branch)"}
+            }),
+            &[],
+        ),
+        tool(
+            "project_file_read",
+            "Read one file of the project's repository at the integration branch head (or `ref`), at most 256 KiB of text.",
+            json!({
+                "path": {"type": "string", "description": "File path relative to the repository root, e.g. yulius.toml"},
+                "ref": {"type": "string", "description": "Branch or commit (default: the integration branch)"}
+            }),
+            &["path"],
+        ),
+        tool(
+            "project_change",
+            "Change files of the project the safe way: the given whole files (or deletions) become one commit, authored by the person, on a new branch yulius/change-… from the integration branch head, pushed with a pull request into it. Yulius CI tests it like any pull request; follow it with ci_runs and merge it with change_merge once it passed. For exact edits such as yulius.toml's [[ci.jobs]]; work that needs judgment is a task (task_create). Never touches a running task's files.",
+            json!({
+                "title": {"type": "string", "description": "The commit and pull request title, e.g. \"ci: run cargo test in Yulius CI\""},
+                "body": {"type": "string", "description": "Why, for the pull request"},
+                "files": {"type": "array", "maxItems": 50, "items": {"type": "object", "properties": {
+                    "path": {"type": "string", "description": "Repository-relative path"},
+                    "content": {"type": "string", "description": "The file's whole new content (at most 256 KiB)"},
+                    "delete": {"type": "boolean", "description": "true deletes the file (no content)"}
+                }, "required": ["path"]}}
+            }),
+            &["title", "files"],
+        ),
+        tool(
+            "change_merge",
+            "Merge a pull request project_change opened, once its checks (Yulius CI) passed at its exact head, with the project's merge method, and delete its branch. Refused while they run or failed, and for any other pull request.",
+            json!({"number": {"type": "integer", "description": "The pull request's number"}}),
+            &["number"],
+        ),
+        tool(
             "secret_update",
             "Change an agent secret's bound hosts or description (never its value: values are set on the Secrets page or with `yulius secrets import`). Changing hosts of a secret agents set up needs expect_hosts, the hosts secrets_list showed.",
             json!({
@@ -402,6 +440,8 @@ impl App {
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": REMOTE_INSTRUCTIONS,
+                    // Who the token acts for, for `yulius remote status`.
+                    "_meta": {"yulius/person": caller.login, "yulius/scope": caller.scope.as_str()},
                 })
             }
             "ping" => json!({}),

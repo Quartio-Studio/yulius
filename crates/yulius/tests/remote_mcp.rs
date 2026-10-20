@@ -1021,3 +1021,134 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
     );
     Ok(())
 }
+
+/// Runs the `yulius` binary with `args` (configuration under `home`, `stdin` piped); returns its
+/// exit code, stdout and stderr.
+async fn yulius_cli(
+    home: &std::path::Path,
+    args: &[&str],
+    stdin: &str,
+) -> Result<(Option<i32>, String, String), Error> {
+    let (home, stdin) = (home.to_path_buf(), stdin.to_owned());
+    let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    let out = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yulius"))
+            .args(&args)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env_remove("YULIUS_SERVER")
+            .env_remove("YULIUS_PROJECT")
+            .current_dir(&home)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut input) = child.stdin.take() {
+            input.write_all(stdin.as_bytes())?;
+        }
+        child.wait_with_output()
+    })
+    .await??;
+    Ok((
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// RMT-030, RMT-031: the CLI stores a checked token apart from `yulius login`'s and calls the
+/// same tools; a tool's refusal exits 1, a request that reached no tool exits 2.
+#[tokio::test]
+async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let made = make_token(&w, &browser, "laptop", "operate").await?;
+    let token = text(&made["token"]).to_owned();
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+
+    let (code, _, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("yulius remote login"), "{err}");
+    let (code, _, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        "yul_wrong\n",
+    )
+    .await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("refused the token"), "{err}");
+
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("as alice (operate token)"), "{out}");
+    let stored = home.join(".config/yulius/remote-credentials.json");
+    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&stored)?.permissions());
+    assert_eq!(mode & 0o077, 0, "only its owner reads it");
+    assert!(
+        !home.join(".config/yulius/credentials.json").exists(),
+        "yulius login's store is untouched"
+    );
+
+    let (code, out, _) = yulius_cli(home, &["remote", "status"], "").await?;
+    assert_eq!(code, Some(0));
+    assert!(out.contains("signed in as alice (operate token)"), "{out}");
+    let (code, out, err) = yulius_cli(home, &["project", "list", "--json"], "").await?;
+    assert_eq!(code, Some(0), "{err}");
+    let listed: Value = serde_json::from_str(&out)?;
+    assert_eq!(listed["projects"][0]["project"], "acme/shop", "{out}");
+    let (code, _, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(0), "{err}");
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "remote",
+            "call",
+            "tasks_list",
+            "{\"scope\": \"active\"}",
+            "-p",
+            "acme/shop",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let (code, out, _) = yulius_cli(home, &["remote", "tools"], "").await?;
+    assert_eq!(code, Some(0));
+    assert!(
+        out.contains("task_restart") && out.contains("project_change"),
+        "{out}"
+    );
+    let (code, _, err) =
+        yulius_cli(home, &["task", "restart", "999", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.to_lowercase().contains("not found"), "{err}");
+
+    // Revoked on Settings: the next command says so and reaches no tool.
+    let revoked = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/me/tokens/{}", text(&made["view"]["id"])),
+        None,
+        &browser,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let (code, _, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("wrong or revoked"), "{err}");
+    let (code, out, _) = yulius_cli(home, &["remote", "logout"], "").await?;
+    assert_eq!(code, Some(0), "{out}");
+    Ok(())
+}
