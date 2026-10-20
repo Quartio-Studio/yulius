@@ -254,7 +254,7 @@ impl App {
             }
         }
         // The run's fallback fingerprints are the new owner's (SPEC-248 FUP-002).
-        if let Err(err) = self.rewrite_run_fingerprints(&passed).await {
+        if let Err(err) = self.rewrite_run_fingerprints(&task.id).await {
             tracing::warn!(task = %task.id, error = %err, "run's fingerprint file not rewritten");
         }
         let (from, to) = (

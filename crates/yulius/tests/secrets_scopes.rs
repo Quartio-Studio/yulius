@@ -834,6 +834,77 @@ async fn a_hand_over_rewrites_the_runs_fingerprint_file() -> TestResult {
     Ok(())
 }
 
+/// SPEC-248 FUP-002 (review round 2): a rewrite that comes after control passed again — the
+/// first of two quick hand-overs' — writes the fingerprints of the task's current owner, never
+/// the middle owner's.
+#[tokio::test]
+async fn a_rewrite_follows_the_tasks_current_owner() -> TestResult {
+    let w = world().await?;
+    let carol = seed_github_user(&w.h, "u-carol", "carol").await?;
+    w.h.github.set_perm("carol", "acme/app", perms("write"));
+    add(
+        &w,
+        &w.bob,
+        "s1",
+        secret("personal", "BOB_TOKEN", BOBS, BOB_HOST),
+    )
+    .await?;
+    add(
+        &w,
+        &carol,
+        "s1",
+        secret(
+            "personal",
+            "CAROL_TOKEN",
+            "carol-personal-token-ca401",
+            "api.carol.test",
+        ),
+    )
+    .await?;
+    let run = tempfile::tempdir()?;
+    seed_task(&w.h, "t5", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt_at(
+        &w.h,
+        "t5",
+        "scopes-task-token-alice-run-0123456789ab",
+        &run.path().to_string_lossy(),
+    )
+    .await?;
+    let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
+    std::fs::write(&file, b"{}")?;
+    let t5 = TaskId::parse("t5")?;
+    let (alice, bob, carol_id) = (
+        UserId::parse("u-alice")?,
+        UserId::parse("u-bob")?,
+        UserId::parse("u-carol")?,
+    );
+    assert!(
+        w.h.store
+            .take_control(&t5, &alice, &bob, w.h.app.now())
+            .await?
+    );
+    assert!(
+        w.h.store
+            .take_control(&t5, &bob, &carol_id, w.h.app.now())
+            .await?
+    );
+    // The first hand-over's rewrite comes last.
+    w.h.app.rewrite_run_fingerprints(&t5).await?;
+    let set: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert!(
+        set.names.iter().any(|n| n == "CAROL_TOKEN"),
+        "{:?}",
+        set.names
+    );
+    assert!(
+        !set.names.iter().any(|n| n == "BOB_TOKEN"),
+        "{:?}",
+        set.names
+    );
+    Ok(())
+}
+
 /// Review of SPEC-245, M3: switching a secret on respects the limit of secrets reaching a project.
 #[tokio::test]
 async fn switching_on_respects_the_projects_limit() -> TestResult {

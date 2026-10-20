@@ -68,6 +68,8 @@ pub struct VaultState {
     clients: runtime::ClientCache,
     /// Proxy credentials of running CI jobs (SPEC-142).
     ci_clients: runtime::CiClients,
+    /// Held while a run's fingerprint file is rewritten: two never overlap (SPEC-248 FUP-002).
+    fingerprint_rewrites: tokio::sync::Mutex<()>,
 }
 
 impl VaultState {

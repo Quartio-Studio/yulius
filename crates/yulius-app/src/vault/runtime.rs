@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
-use yulius_domain::ids::{SandboxId, UserId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
 use yulius_domain::vault::{
@@ -23,7 +23,7 @@ use super::AgentPayload;
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::{AppError, AppResult};
-use crate::model::{SandboxRecord, TaskRecord};
+use crate::model::SandboxRecord;
 use crate::ports::egress::{
     EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
 };
@@ -458,17 +458,22 @@ impl App {
         Ok(())
     }
 
-    /// Rewrites the fingerprint file of `task`'s live run for its current holder (SPEC-248
-    /// FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no hashes of the
-    /// previous owner's personal values. In place, as a contained session binds the file
-    /// read-only; a run without one is left alone.
+    /// Rewrites the fingerprint file of `task`'s live run for the task's holder as it is now
+    /// (SPEC-248 FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no
+    /// hashes of the previous owner's personal values. One rewrite at a time, each reading the
+    /// task afresh, so the last one is always the latest holder's. In place, as a contained
+    /// session binds the file read-only; a run without one, or a task that is gone, is left alone.
     ///
     /// # Errors
     /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
     /// file (opened without following a link or blocking, checked on the handle).
-    pub(crate) async fn rewrite_run_fingerprints(&self, task: &TaskRecord) -> AppResult<()> {
+    pub async fn rewrite_run_fingerprints(&self, task: &TaskId) -> AppResult<()> {
         use nix::fcntl::OFlag;
         use std::os::unix::fs::OpenOptionsExt as _;
+        let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
+        let Some(task) = self.deps.store.task(task).await? else {
+            return Ok(());
+        };
         let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
             return Ok(());
         };
@@ -488,7 +493,7 @@ impl App {
             ));
         }
         let set = self
-            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(task))
+            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(&task))
             .await?;
         let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
         out.set_len(0).map_err(AppError::internal)?;

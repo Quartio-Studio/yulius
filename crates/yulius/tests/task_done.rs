@@ -139,7 +139,12 @@ async fn start_on(
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
         clock: Arc::new(SystemClock),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
+        github: Arc::new({
+            let github = support::FakeGitHub::default();
+            // Bob writes the fixture's repository (a hand-over during a launch, SPEC-248).
+            github.set_perm("bob", "acme/done", support::perms("write"));
+            github
+        }),
         session_host: if let Some(host) = host {
             host
         } else if attach_late {
@@ -3207,6 +3212,19 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             disabled_at: None,
         };
         app.deps.store.insert_user(&bob).await?;
+        app.deps
+            .store
+            .save_github_token(
+                &yulius_app::model::GitHubTokenRecord {
+                    user_id: bob.id.clone(),
+                    access: app.deps.crypto.seal(b"token-bob")?,
+                    refresh: None,
+                    expires_at: None,
+                    refresh_expires_at: None,
+                },
+                app.now(),
+            )
+            .await?;
         let ctx = yulius_app::auth::AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
@@ -3220,6 +3238,24 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
                 name: "MY_TOKEN".into(),
                 value: "admin-personal-token-0123456".into(),
                 hosts: vec!["api.mine.test".into()],
+                injection: Some("bearer".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let bobs = yulius_app::auth::AuthContext {
+            user: bob.clone(),
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.create_agent_secret(
+            &bobs,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                scope: Some("personal".into()),
+                name: "BOB_TOKEN".into(),
+                value: "bob-personal-token-0b0b5ec7".into(),
+                hosts: vec!["api.bob.test".into()],
                 injection: Some("bearer".into()),
                 ..Default::default()
             },
@@ -3266,7 +3302,11 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             wait_for(
                 "the new owner's fingerprints",
                 Duration::from_secs(10),
-                || async { names().is_some_and(|n| !n.iter().any(|n| n == "MY_TOKEN")) },
+                || async {
+                    names().is_some_and(|n| {
+                        n.iter().any(|n| n == "BOB_TOKEN") && !n.iter().any(|n| n == "MY_TOKEN")
+                    })
+                },
             )
             .await
             .map_err(|e| format!("{e}: {:?}", names()))?;

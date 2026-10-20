@@ -45,7 +45,8 @@ code does.
 - FUP-002. When control of a task passes (SPEC-070), Yulius rewrites its live run's fingerprint
   file for the new holder, in place (a read-only bind into a contained session keeps seeing it),
   never following a link. A run whose launch computed its file before control passed gets it
-  rewritten once it is live. A file that cannot be rewritten is logged; nothing else of the
+  rewritten once it is live. Rewrites run one at a time, each for the task's holder as it is
+  then, so two quick hand-overs end with the latest owner's file. A file that cannot be rewritten is logged; nothing else of the
   hand-over or the launch fails.
 - FUP-003. Creating an agent secret and switching a global or personal one on count the secrets
   reaching the project in the same store transaction as the write and answer `Capacity` at 200;
@@ -109,11 +110,11 @@ code does.
 Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
 
 - `scripts/dev ci`: exit 0 (check, fmt, clippy, tests, docs, deps, macOS targets); nextest 2316
-  passed, 17 skipped (on the review round 1 head). The first run, before the dev merge, failed only
+  passed, 17 skipped (on 345a14ff, the head with the review round 1 fixes). The first run, before the dev merge, failed only
   `supervision::a_usage_limit_moves_the_session_to_the_next_account` (60 s timeout under the full
   suite's load): the open flaky issue #539, outside this change; it passed 3/3 alone.
-- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 12
-  passed. Red first: `a_hand_over_rewrites_the_runs_fingerprint_file` failed before the fix
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 13
+  passed (12 before review round 2). Red first: `a_hand_over_rewrites_the_runs_fingerprint_file` failed before the fix
   (the file still listed `MY_TOKEN`); `concurrent_switch_ons_stop_at_the_projects_limit` (20
   switch-ons on 4 workers into a project with 199) let 5, 7 and 4 through in three runs before the
   fix, and passed 5/5 after. The new hand-over assertions (bob's secret on the client resolved
@@ -128,6 +129,11 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
   owner's fingerprints: Some([\"MY_TOKEN\"])") and passed 3/3 after; the rewrite opens with
   `O_NOFOLLOW | O_NONBLOCK` and checks the handle is a regular file; the store test asserts a
   project secret gets no switch row; SPEC-245 RES-002 names the rewritten file.
+- Review round 2 (fresh session; two minor findings, fixed): `secrets_scopes::
+  a_rewrite_follows_the_tasks_current_owner` (alice → bob → carol, then the first hand-over's
+  rewrite) failed before the fix (no `CAROL_TOKEN`) and passes now that rewrites are serialized
+  and read the task afresh; the launch test now waits for bob's own secret too, and a mutation
+  computing the rewrite for nobody turned it red.
 - FUP-001 has no red test: it removes a field and a method without callers; the compiler and the
   hand-over tests (which read the current holder) are its evidence.
 - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used its

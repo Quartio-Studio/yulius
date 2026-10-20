@@ -1392,7 +1392,7 @@ impl App {
         // Control passed during the launch, after its fingerprint file was computed: the file a
         // hand-over found nothing of yet becomes the new holder's (SPEC-248 FUP-002).
         if crate::vault::Holder::of_task(&current) != crate::vault::Holder::of_task(&task)
-            && let Err(err) = self.rewrite_run_fingerprints(&current).await
+            && let Err(err) = self.rewrite_run_fingerprints(&task.id).await
         {
             tracing::warn!(task = %task.id, error = %err, "run's fingerprint file not rewritten");
         }
