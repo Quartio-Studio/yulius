@@ -2386,7 +2386,11 @@ function vaultOf(db) {
         { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null },
         // SPEC-204: a production secret (SPEC-134) an agent asked to send to a host and copy into
         // .env before it became one; for every sandbox, so a member sees it without managing it.
-        { id: 'as_prodtoken', sandbox: null, scope: 'instance', name: 'PROD_API_TOKEN', description: 'Token production deploys use', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-4', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: ['api.prod.test'], requested_by: '#112', env_files: 'asked', env_requested_by: '#112', cd_prod: true },
+        { id: 'as_prodtoken', sandbox: null, scope: 'instance', name: 'PROD_API_TOKEN', description: 'Token production deploys use', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-4', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: ['api.prod.test'], requested_by: '#112', env_files: 'asked', env_requested_by: '#112', cd_prod: true, on: ['sb_studio'] },
+        // SPEC-245: a global secret no project has switched on yet.
+        { id: 'as_argo', sandbox: null, scope: 'instance', name: 'ARGO_TOKEN', description: 'Pulls private packages from Argo', hosts: ['pkg.argo.test'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-5', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, on: [] },
+        // SPEC-245 MAN-003: another person's personal secret, which nobody else ever sees.
+        { id: 'as_annas', sandbox: null, scope: 'personal', owner: 'anna', name: 'ANNAS_TOKEN', description: 'Anna’s own token', hosts: ['api.anna.test'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-6', created_by: 'anna', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, on: ['sb_studio'] },
         // SPEC-193 MLK-003: a key pasted before #591 was fixed, its line breaks turned into spaces.
         { id: 'as_olddeploy', sandbox: 'sb_studio', scope: 'sandbox', name: 'OLD_DEPLOY_KEY', description: 'Deploy key for the staging server', hosts: [], injection: 'none', header_name: null, username: null, value: '-----BEGIN MOCK OPENSSH PRIVATE KEY----- bW9jay1mbGF0LTAx bW9jay1mbGF0LTAy -----END MOCK OPENSSH PRIVATE KEY-----', created_by: 'mkarp', updated_at: iso(2 * DAY), value_updated_at: iso(2 * DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
@@ -2403,9 +2407,36 @@ function teamView(s) {
   return { id: s.id, title: s.title, scope: s.sandbox ? 'sandbox' : 'instance', has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
 }
 
+/** Whether `s` is shown to the caller at all: another person's personal secret never is (SPEC-245). */
+function agentVisible(db, s) {
+  return s.scope !== 'personal' || s.owner === db.me.user.login;
+}
+
+/** The agent secret `id`, as the caller may see it (another person's answers 404). */
+function agentSecret(db, id) {
+  const secret = vaultOf(db).agent.find((s) => s.id === id && agentVisible(db, s));
+  return secret || fail(404, 'not_found', 'not found');
+}
+
+/** Whether `s` reaches `sandbox`'s runs: its own, or switched on there. */
+function agentOn(s, sandbox) {
+  return s.scope === 'sandbox' ? s.sandbox === sandbox.id : (s.on || []).includes(sandbox.id);
+}
+
+/** The scope of the secret of `s`'s name that wins in `sandbox` for the caller, when not `s` (project > personal > global). */
+function agentShadow(db, s, sandbox) {
+  if (!agentOn(s, sandbox)) return null;
+  const rank = { sandbox: 0, personal: 1, instance: 2 };
+  const winner = vaultOf(db).agent
+    .filter((o) => o.name === s.name && agentVisible(db, o) && agentOn(o, sandbox))
+    .sort((a, b) => rank[a.scope] - rank[b.scope])[0];
+  return winner && winner !== s ? winner.scope : null;
+}
+
 function agentView(db, s, sandbox) {
-  const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
+  const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
+  const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2525,22 +2556,40 @@ route('POST', '/api/auth/unlock', ({ db, body }) => {
 route('GET', '/api/secrets/activity', ({ db }) => vaultOf(db).activity.slice(0, 100));
 route('GET', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
-  return vaultOf(db).agent.filter((s) => s.scope === 'instance' || s.sandbox === sandbox.id).map((s) => agentView(db, s, sandbox));
+  return vaultOf(db).agent.filter((s) => (s.scope === 'sandbox' ? s.sandbox === sandbox.id : agentVisible(db, s))).map((s) => agentView(db, s, sandbox));
+});
+route('PUT', `/api/sandboxes/${ID}/agent-secrets/${ID}/enabled`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const secret = agentSecret(db, p[1]);
+  if (secret.scope === 'sandbox') fail(422, 'invalid', 'a project secret always applies to its project; only global and personal secrets are switched on or off');
+  if (secret.scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'global secrets are managed by instance administrators');
+  if (secret.scope === 'personal') need(sandbox, 'write');
+  const on = new Set(secret.on || []);
+  if (body.enabled !== on.has(sandbox.id)) {
+    if (body.enabled) on.add(sandbox.id);
+    else on.delete(sandbox.id);
+    secret.on = [...on];
+    audit(db, body.enabled ? 'vault.agent.enable' : 'vault.agent.disable', secret.id, `${secret.name} → ${sandbox.slug}`);
+  }
+  return agentView(db, secret, sandbox);
 });
 route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const scope = body.scope || 'sandbox';
-  if (scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'secrets for every sandbox are managed by instance administrators');
-  if (scope === 'sandbox') need(sandbox, 'write');
+  if (!['sandbox', 'instance', 'personal'].includes(scope)) fail(422, 'invalid', 'scope must be sandbox, instance or personal');
+  if (scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'global secrets are managed by instance administrators');
+  if (scope !== 'instance') need(sandbox, 'write');
   validateAgent(body, true);
-  if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
+  const me = db.me.user.login;
+  const sameScope = (s) => s.scope === scope && (scope === 'sandbox' ? s.sandbox === sandbox.id : scope === 'personal' ? s.owner === me : true);
+  if (vaultOf(db).agent.some((s) => s.name === body.name && sameScope(s))) fail(409, 'conflict', `an agent secret named ${body.name} already exists in this scope`);
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, owner: scope === 'personal' ? me : undefined, on: scope === 'sandbox' ? undefined : [sandbox.id], name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
 });
 route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, false);
@@ -2556,7 +2605,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret read it');
   const refused = needFresh(db);
@@ -2565,7 +2614,7 @@ route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
   return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
 });
 route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   if (!secret.requested_hosts.length) fail(409, 'conflict', 'no hosts wait to be allowed for this secret');
@@ -2583,7 +2632,7 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   const state = secret.env_files || 'no';
@@ -2597,7 +2646,7 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret allow it for production deploys');
   if (body.allow && secret.auto_allow) fail(409, 'conflict', 'agents set this secret up, so production deploys already get it: turn that off in Edit first to keep it for production deploys only');
@@ -2610,7 +2659,7 @@ route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   if (secret.scope === 'sandbox') need(sandboxOf(db, secret.sandbox), 'write');
   vaultOf(db).agent = vaultOf(db).agent.filter((s) => s !== secret);
   audit(db, 'vault.agent.delete', secret.id, secret.name);
