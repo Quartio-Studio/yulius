@@ -6,7 +6,7 @@
 //! use them without seeing them: the egress proxy adds them to requests for their bound hosts,
 //! `browser_fill_secret` types them into pages of those hosts, and every channel through which an
 //! agent reads is redacted of their values and encodings), each a project's, global or one
-//! person's (SPEC-245, [`reach`]).
+//! person's (SPEC-245, [`Holder`]).
 //!
 //! Every value is stored under envelope encryption ([`crate::ports::Crypto::envelope_seal`])
 //! with the row's id and section as associated data; plaintexts are zeroed when dropped.
