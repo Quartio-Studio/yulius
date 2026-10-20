@@ -83,12 +83,12 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
 
 ## Plan
 
-- [ ] Usable-account check and the claude_account_required error
-- [ ] Person-triggered task starts refuse without a usable account
-- [ ] Onboarding waits for a connected account and machinery waits clearly
-- [ ] Failed-for-no-account reason and onboarding retry
-- [ ] Connect Claude step on Home, the onboarding gate and error toasts
-- [ ] ADR, architecture, product, API and changes record the gate
+- [x] Usable-account check and the claude_account_required error
+- [x] Person-triggered task starts refuse without a usable account
+- [x] Onboarding waits for a connected account and machinery waits clearly
+- [x] Failed-for-no-account reason and onboarding retry
+- [x] Connect Claude step on Home, the onboarding gate and error toasts
+- [x] ADR, architecture, product, API and changes record the gate
 - [ ] Independent review approved
 - [ ] Repository gate, e2e suite and security scan pass
 - [ ] Merged into dev on green CI
@@ -101,8 +101,9 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
 - With an account in `relogin` only, the same refusal says the account must sign in again.
 - A browser import with no account answers 201, the sandbox is `pending` with no onboarding task and
   its remote got no commit; after an account is added, Start onboarding starts the task.
-- A chained task whose predecessor finishes while no account is connected is `waiting_capacity`
-  with the no-account notice, not failed.
+- A start by machinery that finds no account (the `start` pause every such start takes) leaves the
+  task `waiting_capacity` with the no-account notice, not failed; with a connected account out of
+  capacity the notice stays "no subscription has capacity left".
 - An onboarding task that failed `failed_no_account` is started again by Start onboarding once an
   account exists, and the sandbox goes `preparing`.
 - `GET /api/me` says `claude_connected` false, then true after an account with a credential is
@@ -115,8 +116,9 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
 
 - `crates/yulius/tests/claude_gate.rs` (new): each refusal (CLA-002) with its code, message and no
   state change; the relogin wording; the prepared task allowed; `me.claude_connected` (CLA-001);
-  the browser import left pending (CLA-003); the chained task's notice (CLA-004); the failed
-  onboarding retried (CLA-005, CLA-006).
+  the machinery pause's notice (CLA-004); `failed_no_account` on the wire (CLA-005).
+- `crates/yulius/tests/projects.rs`: the browser import left pending (CLA-003); the failed
+  onboarding retried (CLA-006). `cockpit.rs`: the Superagent's refusal code.
 - Unit tests for the usable-account rule and the `failed_no_account` wire name.
 - Existing tests that start tasks with no account seed one where they relied on the pause.
 - e2e `onboarding.e2e.ts` and `home.e2e.ts` with the mock's no-account state.
