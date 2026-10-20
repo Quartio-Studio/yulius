@@ -236,6 +236,7 @@ impl App {
             id: id.clone(),
             section: VaultSection::Team,
             sandbox_id: scope.clone(),
+            owner_id: None,
             name: title(&input.title)?,
             description: String::new(),
             hosts: Vec::new(),
@@ -515,8 +516,9 @@ impl App {
 
     /// `GET /api/secrets/activity`: the vault's audit trail, newest first. Re-authentications
     /// and team-wide secrets' entries are shown to every member; a sandbox's secret's entries
-    /// (team or agent) only to members who can view that sandbox; an instance-wide agent
-    /// secret's to every member, and a deleted secret's only to instance administrators.
+    /// (team or agent) only to members who can view that sandbox; a global agent secret's to
+    /// every member, a personal one's to its owner only (SPEC-245 MAN-003), and a deleted
+    /// secret's only to instance administrators.
     ///
     /// # Errors
     /// Store failures.
@@ -528,19 +530,20 @@ impl App {
         use std::collections::HashMap;
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         let store = &self.deps.store;
-        let secrets: HashMap<String, Option<SandboxId>> = store
-            .vault_agent(None)
-            .await?
-            .into_iter()
-            .chain(store.vault_team(None).await?)
-            .map(|r| (r.id, r.sandbox_id))
-            .collect();
+        let secrets: HashMap<String, (Option<SandboxId>, Option<yulius_domain::ids::UserId>)> =
+            store
+                .vault_agent_all()
+                .await?
+                .into_iter()
+                .chain(store.vault_team(None).await?)
+                .map(|r| (r.id, (r.sandbox_id, r.owner_id)))
+                .collect();
         let mut visible: HashMap<String, bool> = HashMap::new();
         let mut out = Vec::new();
         for entry in self.deps.store.vault_audit(limit.clamp(1, 500)).await? {
             if entry.action.starts_with("vault.agent.") || entry.action.starts_with("vault.team.") {
                 let allowed = match entry.target.as_ref().map(|t| secrets.get(t)) {
-                    Some(Some(Some(sandbox))) => match visible.get(sandbox.as_str()) {
+                    Some(Some((Some(sandbox), _))) => match visible.get(sandbox.as_str()) {
                         Some(known) => *known,
                         None => {
                             let can = self.can_view(&ctx.user, sandbox).await;
@@ -548,7 +551,8 @@ impl App {
                             can
                         }
                     },
-                    Some(Some(None)) => true,
+                    Some(Some((None, Some(owner)))) => *owner == ctx.user.id,
+                    Some(Some((None, None))) => true,
                     _ => admin,
                 };
                 if !allowed {

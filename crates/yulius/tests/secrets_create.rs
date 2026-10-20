@@ -106,7 +106,7 @@ async fn create(w: &World, token: &str, args: Value) -> Result<Value, Box<dyn st
 async fn names(w: &World) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(w.h
         .store
-        .vault_agent(Some(&sid()?))
+        .vault_agent_in(&sid()?)
         .await?
         .into_iter()
         .map(|r| r.name)
@@ -117,7 +117,7 @@ async fn names(w: &World) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 async fn allow_env(w: &World, name: &str) -> TestResult {
     let record =
         w.h.store
-            .vault_agent(Some(&sid()?))
+            .vault_agent_in(&sid()?)
             .await?
             .into_iter()
             .find(|r| r.name == name)
@@ -193,7 +193,7 @@ async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResul
             .task(&yulius_domain::ids::TaskId::parse("t1")?)
             .await?
             .ok_or("task")?;
-    let records = w.h.store.vault_agent(Some(&sid()?)).await?;
+    let records = w.h.store.vault_agent_in(&sid()?).await?;
     for name in ["DEPLOY_SSH_KEY", "API_TOKEN"] {
         let record = records.iter().find(|r| r.name == name).ok_or(name)?;
         assert_eq!(record.sandbox_id, Some(sid()?), "{name}");
@@ -359,7 +359,7 @@ async fn names_in_use_and_readers_are_refused() -> TestResult {
     let stored = |name: &'static str| {
         let w = &w;
         async move {
-            let records = w.h.store.vault_agent(Some(&sid()?)).await?;
+            let records = w.h.store.vault_agent_in(&sid()?).await?;
             let record = records.into_iter().find(|r| r.name == name).ok_or(name)?;
             Ok::<_, Box<dyn std::error::Error>>((record.id, record.value_updated_at))
         }

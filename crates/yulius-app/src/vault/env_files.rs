@@ -270,8 +270,7 @@ impl App {
         answer: &EnvFilesAnswer,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
         let seen = EnvFiles::parse(&answer.env_files)
             .ok_or_else(|| AppError::Invalid("env_files is no, asked or allowed".into()))?;
         let seen_by = answer.env_requested_by.as_deref();
@@ -282,6 +281,9 @@ impl App {
         }
         if answer.allow && record.cd_prod {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
+        if answer.allow && matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+            return Err(AppError::Conflict(super::PERSONAL_SECRET_ENV.into()));
         }
         let action = match (seen, answer.allow) {
             (EnvFiles::Asked, true) => "vault.agent.env_allow",
@@ -340,8 +342,14 @@ impl App {
         allow: bool,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
+        // CD runs belong to no person (SPEC-245 RES-005).
+        if allow && matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+            return Err(AppError::Conflict(
+                "production deploys never get a personal secret: add a project secret for them"
+                    .into(),
+            ));
+        }
         // Agents set it up: production already gets it (SPEC-216 SSA-004).
         if allow && record.auto_allow {
             return Err(AppError::Conflict(AUTO_PRODUCTION.into()));
@@ -410,7 +418,9 @@ impl App {
             )));
         }
         let store = &self.deps.store;
-        let all = store.vault_agent(Some(user.sandbox())).await?;
+        let all = self
+            .resolved_agent_secrets(user.sandbox(), user.holder())
+            .await?;
         let mut records: Vec<VaultSecretRecord> = Vec::with_capacity(names.len());
         for name in &names {
             let record = all.iter().find(|r| &r.name == name).ok_or_else(|| {
@@ -418,6 +428,12 @@ impl App {
                     "no agent secret named {name:?} applies to this project (see secrets_list)"
                 ))
             })?;
+            if matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+                return Err(AppError::Forbidden(format!(
+                    "{name}: {}",
+                    super::PERSONAL_SECRET_ENV
+                )));
+            }
             if record.cd_prod {
                 return Err(AppError::Forbidden(format!(
                     "{name}: {}",
@@ -772,7 +788,9 @@ impl App {
         env: yulius_domain::cd::CdEnv,
         names: &[String],
     ) -> AppResult<Vec<(String, CdSecretState)>> {
-        let all = self.deps.store.vault_agent(Some(sandbox)).await?;
+        let all = self
+            .resolved_agent_secrets(sandbox, super::Holder::Nobody)
+            .await?;
         Ok(names
             .iter()
             .map(|name| {
@@ -807,7 +825,10 @@ impl App {
         asker: Option<&AgentContext>,
         why: &str,
     ) -> AppResult<Vec<(String, String)>> {
-        let all = self.deps.store.vault_agent(Some(&sandbox.id)).await?;
+        // CD runs belong to no person: never a personal secret (SPEC-245 RES-004).
+        let all = self
+            .resolved_agent_secrets(&sandbox.id, super::Holder::Nobody)
+            .await?;
         let link = self.agent_secrets_link(&sandbox.slug);
         let missing: Vec<&str> = names
             .iter()

@@ -97,7 +97,10 @@ async fn fingerprint_file(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Err
     let sandbox = sandbox_record(&user)?;
     h.store.insert_sandbox(&sandbox).await?;
     add_stripe_key(&h.app, &user, &sandbox.id).await?;
-    let set = h.app.scrub_fingerprints_for(&sandbox.id).await?;
+    let set = h
+        .app
+        .scrub_fingerprints_for(&sandbox.id, yulius_app::vault::Holder::Person(&user.id))
+        .await?;
     let path = dir.join("scrub.json");
     let text = serde_json::to_string(&set)?;
     assert!(!text.contains(VALUE), "fingerprints hold no value");

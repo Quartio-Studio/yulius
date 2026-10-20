@@ -755,7 +755,7 @@ impl App {
         plan.env = env;
         plan.containment = space.containment.clone();
         // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
-        self.vault_superagent_setup(record, &runtime.run_dir, &bearer, &mut plan)
+        self.vault_superagent_setup(record, &user.id, &runtime.run_dir, &bearer, &mut plan)
             .await?;
         let reader = self.spawn_shell(runtime, &plan).await;
         drop(lease);

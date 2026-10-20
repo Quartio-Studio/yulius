@@ -2,7 +2,7 @@
 //! vault key material and the vault's audit trail. Records hold envelopes, never plaintext.
 
 use async_trait::async_trait;
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
 use crate::error::AppResult;
@@ -45,8 +45,11 @@ pub struct VaultSecretRecord {
     pub id: String,
     /// Section.
     pub section: VaultSection,
-    /// Agent secrets: the sandbox, or `None` for every sandbox. Always `None` for team secrets.
+    /// The sandbox of a project secret (team secrets: theirs, or `None` for every sandbox);
+    /// `None` for global and personal agent secrets (SPEC-245).
     pub sandbox_id: Option<SandboxId>,
+    /// Agent: the person a personal secret belongs to (SPEC-245); `None` otherwise.
+    pub owner_id: Option<UserId>,
     /// Team: title. Agent: NAME.
     pub name: String,
     /// Agent: what it is for.
@@ -89,6 +92,41 @@ pub struct VaultSecretRecord {
     /// Agent: agents set it up themselves (SPEC-216): the hosts they ask for are bound at once
     /// and production CD runs get its value. Never together with `cd_prod`.
     pub auto_allow: bool,
+}
+
+/// Where an agent secret belongs (SPEC-245 SCP-001).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentScope {
+    /// One project (sandbox).
+    Project(SandboxId),
+    /// The instance; reaches the projects it is switched on for.
+    Global,
+    /// One person; reaches their tasks in the projects they switched it on for.
+    Personal(UserId),
+}
+
+impl AgentScope {
+    /// The API name: `sandbox`, `instance` or `personal`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Project(_) => "sandbox",
+            Self::Global => "instance",
+            Self::Personal(_) => "personal",
+        }
+    }
+}
+
+impl VaultSecretRecord {
+    /// The agent secret's scope (a team secret's reads as its sandbox or global).
+    #[must_use]
+    pub fn scope(&self) -> AgentScope {
+        match (&self.sandbox_id, &self.owner_id) {
+            (Some(sandbox), _) => AgentScope::Project(sandbox.clone()),
+            (None, Some(owner)) => AgentScope::Personal(owner.clone()),
+            (None, None) => AgentScope::Global,
+        }
+    }
 }
 
 /// Whether agents may copy an agent secret's value into the project's git-ignored `.env` files
@@ -164,7 +202,7 @@ pub struct VaultAuditEntry {
 /// Vault storage.
 #[async_trait]
 pub trait VaultStore: Send + Sync {
-    /// Inserts a secret; `Conflict` for an agent name taken in the same scope.
+    /// Inserts a secret; `Conflict` for an agent name taken in the same scope (SPEC-245 SCP-002).
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
     /// Replaces every mutable column of the secret `record.id` but its host request, only while
     /// its hosts and `auto_allow` still are those of `seen` (the row the change was read from:
@@ -181,9 +219,24 @@ pub trait VaultStore: Send + Sync {
     async fn vault_get(&self, id: &str) -> AppResult<Option<VaultSecretRecord>>;
     /// Team secrets by name: those of `sandbox` and the team-wide ones, or every one (`None`).
     async fn vault_team(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
-    /// Agent secrets that apply to `sandbox` (its own and the instance-wide ones), or every
-    /// agent secret when `None`.
-    async fn vault_agent(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Every agent secret that can reach a run of `sandbox` (SPEC-245): its project secrets and
+    /// the global and personal ones (of every owner) switched on for it, by name. Which of them a
+    /// run gets is the application's resolution (`vault::reach`), never this list as it is.
+    async fn vault_agent_in(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Every agent secret, by name.
+    async fn vault_agent_all(&self) -> AppResult<Vec<VaultSecretRecord>>;
+    /// The ids of the global and personal agent secrets switched on for `sandbox`.
+    async fn vault_switched_on(&self, sandbox: &SandboxId) -> AppResult<Vec<String>>;
+    /// Switches the global or personal agent secret `id` on or off for `sandbox` (SPEC-245
+    /// MAN-004); `false` when it already was so, or when `id` is no such secret.
+    async fn vault_switch(
+        &self,
+        id: &str,
+        sandbox: &SandboxId,
+        on: bool,
+        by: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Replaces an agent secret's host request when it still is `from` (compare and set, so an
     /// answer never drops a newer request); `false` when it changed or the secret is gone.
     async fn vault_set_request(

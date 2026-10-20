@@ -1,7 +1,9 @@
-//! Managing agent secrets (VLT-004, VLT-009, SPEC-040): sandbox secrets by members with write
-//! access, instance-wide ones by instance administrators; members who can view a sandbox list
-//! names and bindings; the people who manage a secret read its value back after a two-factor
-//! unlock. Agents never do.
+//! Managing agent secrets (VLT-004, VLT-009, SPEC-040, SPEC-245 MAN): project secrets by members
+//! with write access, global ones by instance administrators (who also switch them on per
+//! project), personal ones by their owner alone (who switches them on for projects they work in;
+//! to everyone else they do not exist); members who can view a project list its project and
+//! global secrets' names and bindings; the people who manage a secret read its value back after a
+//! two-factor unlock. Agents never do.
 
 use yulius_contracts::api::secrets::{
     AgentSecretInput, AgentSecretPatch, AgentSecretView, RevealRequest, SecretReveal,
@@ -19,12 +21,12 @@ use super::{AgentPayload, Revealed, field, invalid};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::ports::vault::{VaultSecretRecord, VaultSection};
+use crate::ports::vault::{AgentScope, VaultSecretRecord, VaultSection};
 use zeroize::Zeroizing;
 
 /// Longest description.
 const MAX_DESCRIPTION: usize = 1000;
-/// Agent secrets per sandbox plus instance-wide ones.
+/// Agent secrets that may reach one sandbox (its own, and global and personal ones switched on).
 const MAX_AGENT_SECRETS: usize = 200;
 
 pub(super) fn description(text: Option<&str>) -> AppResult<String> {
@@ -75,10 +77,11 @@ pub(super) struct Meta {
 
 /// An agent secret to store ([`App::insert_agent_secret`]).
 pub(super) struct NewAgentSecret<'a> {
-    /// The sandbox it is created from (its capacity is checked).
+    /// The sandbox it is created from (its capacity is checked; a global or personal secret is
+    /// switched on there).
     pub(super) sandbox: &'a SandboxId,
-    /// That sandbox, or `None` for every sandbox.
-    pub(super) scope: Option<SandboxId>,
+    /// Its scope.
+    pub(super) scope: AgentScope,
     pub(super) meta: Meta,
     pub(super) description: String,
     pub(super) payload: &'a AgentPayload,
@@ -90,6 +93,20 @@ pub(super) struct NewAgentSecret<'a> {
     pub(super) origin: Option<&'a str>,
     /// Agents set it up themselves (SPEC-216): a person's choice, never an agent's.
     pub(super) auto_allow: bool,
+}
+
+/// Whether the caller administers the instance.
+fn is_admin(ctx: &AuthContext) -> bool {
+    ctx.user.is_superadmin || ctx.user.is_instance_admin
+}
+
+/// What a project's list says about a secret there (MAN-005).
+#[derive(Default)]
+pub(super) struct Here {
+    /// It reaches the project's runs (a project secret always does).
+    pub(super) enabled: bool,
+    /// The scope of the secret of its name that wins there, when not itself.
+    pub(super) shadowed_by: Option<&'static str>,
 }
 
 fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) -> AppResult<Meta> {
@@ -104,25 +121,29 @@ fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) 
 }
 
 impl App {
+    /// Whether `ctx` may change, delete, reveal and answer for a secret of `scope` (MAN-001..003).
     pub(super) async fn require_manage_agent(
         &self,
         ctx: &AuthContext,
-        sandbox: Option<&SandboxId>,
+        scope: &AgentScope,
     ) -> AppResult<()> {
-        match sandbox {
-            Some(sandbox) => self
+        match scope {
+            AgentScope::Project(sandbox) => self
                 .require(&ctx.user, sandbox, Action::Configure)
                 .await
                 .map(|_| ()),
-            None => {
-                if ctx.user.is_superadmin || ctx.user.is_instance_admin {
+            AgentScope::Global => {
+                if is_admin(ctx) {
                     Ok(())
                 } else {
                     Err(AppError::Forbidden(
-                        "secrets for every sandbox are managed by instance administrators".into(),
+                        "global secrets are managed by instance administrators".into(),
                     ))
                 }
             }
+            // Another person's answers like a missing secret (MAN-003).
+            AgentScope::Personal(owner) if *owner == ctx.user.id => Ok(()),
+            AgentScope::Personal(_) => Err(AppError::NotFound),
         }
     }
 
@@ -130,6 +151,17 @@ impl App {
         &self,
         record: &VaultSecretRecord,
         manage: bool,
+    ) -> AppResult<AgentSecretView> {
+        self.agent_view_in(record, manage, Here::default()).await
+    }
+
+    /// [`Self::agent_view`] in a project's list: whether it is switched on there and what
+    /// shadows it (MAN-005).
+    pub(super) async fn agent_view_in(
+        &self,
+        record: &VaultSecretRecord,
+        manage: bool,
+        here: Here,
     ) -> AppResult<AgentSecretView> {
         let injection = Injection::parse(&record.injection, record.header_name.as_deref())
             .unwrap_or(Injection::None);
@@ -144,11 +176,9 @@ impl App {
             id: record.id.clone(),
             name: record.name.clone(),
             description: record.description.clone(),
-            scope: if record.sandbox_id.is_some() {
-                "sandbox".into()
-            } else {
-                "instance".into()
-            },
+            scope: record.scope().as_str().into(),
+            enabled: here.enabled,
+            shadowed_by: here.shadowed_by.map(Into::into),
             hosts: record.hosts.clone(),
             requested_hosts: record.requested_hosts.clone(),
             requested_by: record.requested_by.clone(),
@@ -172,8 +202,10 @@ impl App {
         })
     }
 
-    /// `GET /api/sandboxes/{sid}/agent-secrets`: the sandbox's agent secrets and the
-    /// instance-wide ones (metadata only). Needs read access to the sandbox.
+    /// `GET /api/sandboxes/{sid}/agent-secrets`: the sandbox's project secrets, every global
+    /// secret and the caller's own personal secrets (metadata only), each saying whether it is
+    /// switched on for the sandbox and what shadows it (MAN-002, MAN-003, MAN-005). Needs read
+    /// access to the sandbox.
     ///
     /// # Errors
     /// `NotFound` for invisible sandboxes; store failures.
@@ -184,17 +216,105 @@ impl App {
     ) -> AppResult<Vec<AgentSecretView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let (_, level) = self.require(&ctx.user, &sid, Action::View).await?;
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
-        let mut out = Vec::new();
-        for record in self.deps.store.vault_agent(Some(&sid)).await? {
-            let manage = if record.sandbox_id.is_some() {
-                level >= AccessLevel::Write
-            } else {
-                admin
+        let admin = is_admin(ctx);
+        let me = &ctx.user.id;
+        let store = &self.deps.store;
+        let on: std::collections::HashSet<String> =
+            store.vault_switched_on(&sid).await?.into_iter().collect();
+        let listed: Vec<VaultSecretRecord> = store
+            .vault_agent_all()
+            .await?
+            .into_iter()
+            .filter(|r| match r.scope() {
+                AgentScope::Project(s) => s == sid,
+                AgentScope::Global => true,
+                AgentScope::Personal(owner) => owner == *me,
+            })
+            .collect();
+        let reaching: Vec<VaultSecretRecord> = listed
+            .iter()
+            .filter(|r| r.sandbox_id.is_some() || on.contains(&r.id))
+            .cloned()
+            .collect();
+        let shadows = super::reach::shadowed(&reaching, super::Holder::Person(me));
+        let mut out = Vec::with_capacity(listed.len());
+        for record in &listed {
+            let manage = match record.scope() {
+                AgentScope::Project(_) => level >= AccessLevel::Write,
+                AgentScope::Global => admin,
+                AgentScope::Personal(_) => true,
             };
-            out.push(self.agent_view(&record, manage).await?);
+            let here = Here {
+                enabled: record.sandbox_id.is_some() || on.contains(&record.id),
+                shadowed_by: shadows.get(&record.id).copied(),
+            };
+            out.push(self.agent_view_in(record, manage, here).await?);
         }
         Ok(out)
+    }
+
+    /// `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`: switches a global secret (instance
+    /// administrators) or the caller's personal secret (in a sandbox they may work in) on or off
+    /// for the sandbox; audited `vault.agent.enable` / `vault.agent.disable` (MAN-004).
+    ///
+    /// # Errors
+    /// `NotFound` for invisible sandboxes and secrets, `Forbidden` for people who may not switch
+    /// it, `Invalid` for a project secret.
+    pub async fn switch_agent_secret(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        id: &str,
+        on: bool,
+    ) -> AppResult<AgentSecretView> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        let (record_sandbox, _) = self.require(&ctx.user, &sid, Action::View).await?;
+        let record = self.agent_record(ctx, id).await?;
+        match record.scope() {
+            AgentScope::Project(_) => {
+                return Err(AppError::Invalid(
+                    "a project secret always applies to its project; only global and personal \
+                     secrets are switched on or off"
+                        .into(),
+                ));
+            }
+            AgentScope::Global => self.require_manage_agent(ctx, &AgentScope::Global).await?,
+            AgentScope::Personal(owner) => {
+                self.require_manage_agent(ctx, &AgentScope::Personal(owner))
+                    .await?;
+                self.require(&ctx.user, &sid, Action::Work).await?;
+            }
+        }
+        let changed = self
+            .deps
+            .store
+            .vault_switch(id, &sid, on, ctx.user.id.as_str(), self.now())
+            .await?;
+        if changed {
+            self.vault.bump();
+            self.vault_audit(
+                &Self::vault_actor(ctx),
+                if on {
+                    "vault.agent.enable"
+                } else {
+                    "vault.agent.disable"
+                },
+                Some(id),
+                &format!("{} → {}", record.name, record_sandbox.slug),
+            )
+            .await?;
+            self.announce_request(&record);
+            if !on {
+                self.settle_secret_waits(Some(&sid)).await;
+            }
+        }
+        let view = self
+            .agent_secrets(ctx, sandbox)
+            .await?
+            .into_iter()
+            .find(|v| v.id == id)
+            .ok_or(AppError::NotFound)?;
+        Ok(view)
     }
 
     /// `POST /api/sandboxes/{sid}/agent-secrets`.
@@ -210,15 +330,20 @@ impl App {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sid, Action::View).await?;
         let scope = match input.scope.as_deref().unwrap_or("sandbox") {
-            "sandbox" => Some(sid.clone()),
-            "instance" => None,
+            "sandbox" => AgentScope::Project(sid.clone()),
+            "instance" => AgentScope::Global,
+            "personal" => {
+                // Switched on here at once: only where its person works (MAN-003).
+                self.require(&ctx.user, &sid, Action::Work).await?;
+                AgentScope::Personal(ctx.user.id.clone())
+            }
             _ => {
                 return Err(AppError::Invalid(
-                    "scope must be sandbox or instance".into(),
+                    "scope must be sandbox, instance or personal".into(),
                 ));
             }
         };
-        self.require_manage_agent(ctx, scope.as_ref()).await?;
+        self.require_manage_agent(ctx, &scope).await?;
         let meta = meta(
             &input.name,
             &input.hosts,
@@ -249,8 +374,9 @@ impl App {
     }
 
     /// Stores a new agent secret and audits it (`vault.agent.create`, `origin` appended to the
-    /// detail): at most [`MAX_AGENT_SECRETS`] apply to a sandbox, and a name that already applies
-    /// is a `Conflict` (the store checks it in the same transaction).
+    /// detail); a global or personal one is switched on for `sandbox` (SCP-003). At most
+    /// [`MAX_AGENT_SECRETS`] may reach a sandbox, and a name taken in its scope is a `Conflict`
+    /// (the store checks it in the same transaction).
     ///
     /// # Errors
     /// `Capacity`, `Conflict`, sealing and store failures.
@@ -269,17 +395,23 @@ impl App {
             origin,
             auto_allow,
         } = new;
-        if self.deps.store.vault_agent(Some(sandbox)).await?.len() >= MAX_AGENT_SECRETS {
+        if self.deps.store.vault_agent_in(sandbox).await?.len() >= MAX_AGENT_SECRETS {
             return Err(AppError::Capacity(format!(
                 "at most {MAX_AGENT_SECRETS} agent secrets apply to one sandbox"
             )));
         }
+        let (sandbox_id, owner_id) = match &scope {
+            AgentScope::Project(s) => (Some(s.clone()), None),
+            AgentScope::Global => (None, None),
+            AgentScope::Personal(owner) => (None, Some(owner.clone())),
+        };
         let id = self.deps.crypto.new_id();
         let now = self.now();
         let record = VaultSecretRecord {
             id: id.clone(),
             section: VaultSection::Agent,
-            sandbox_id: scope.clone(),
+            sandbox_id,
+            owner_id,
             name: meta.name,
             description,
             hosts: meta.hosts,
@@ -304,6 +436,12 @@ impl App {
             auto_allow,
         };
         self.deps.store.vault_insert(&record).await?;
+        if !matches!(scope, AgentScope::Project(_)) {
+            self.deps
+                .store
+                .vault_switch(&id, sandbox, true, by, now)
+                .await?;
+        }
         self.vault.bump();
         self.vault_audit(
             actor,
@@ -312,10 +450,10 @@ impl App {
             &format!(
                 "{} ({}) → {}{}{}",
                 record.name,
-                if scope.is_some() {
-                    "this sandbox"
-                } else {
-                    "every sandbox"
+                match scope {
+                    AgentScope::Project(_) => "this sandbox",
+                    AgentScope::Global => "global",
+                    AgentScope::Personal(_) => "personal",
                 },
                 if record.hosts.is_empty() {
                     "no hosts yet".to_owned()
@@ -346,9 +484,18 @@ impl App {
             .await?
             .filter(|r| r.section == VaultSection::Agent)
             .ok_or(AppError::NotFound)?;
-        if let Some(sandbox) = &record.sandbox_id {
+        match record.scope() {
             // Invisible sandboxes answer like a missing secret.
-            self.require(&ctx.user, sandbox, Action::View).await?;
+            AgentScope::Project(sandbox) => {
+                self.require(&ctx.user, &sandbox, Action::View).await?;
+            }
+            AgentScope::Global => {}
+            // So does another person's secret (MAN-003).
+            AgentScope::Personal(owner) => {
+                if owner != ctx.user.id {
+                    return Err(AppError::NotFound);
+                }
+            }
         }
         Ok(record)
     }
@@ -364,8 +511,7 @@ impl App {
         patch: &AgentSecretPatch,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
         if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
         }
@@ -508,8 +654,7 @@ impl App {
     /// Access errors, `NotFound`.
     pub async fn delete_agent_secret(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
         let record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
         if !self.deps.store.vault_delete(id).await? {
             return Err(AppError::NotFound);
         }
@@ -541,8 +686,7 @@ impl App {
     ) -> AppResult<Revealed<SecretReveal>> {
         let (purpose, wanted) = reveal_request(request)?;
         let record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
         if let Some(status) = self.fresh_or_status(ctx).await? {
             return Ok(Revealed::ReauthRequired(status));
         }

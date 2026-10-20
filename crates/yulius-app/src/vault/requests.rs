@@ -137,8 +137,8 @@ impl App {
             ));
         }
         let store = &self.deps.store;
-        let record = store
-            .vault_agent(Some(user.sandbox()))
+        let record = self
+            .resolved_agent_secrets(user.sandbox(), user.holder())
             .await?
             .into_iter()
             .find(|r| r.name == args.secret.trim())
@@ -325,8 +325,7 @@ impl App {
         answer: &HostRequestAnswer,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
         if record.requested_hosts.is_empty() {
             return Err(AppError::Conflict(
                 "no hosts wait to be allowed for this secret".into(),

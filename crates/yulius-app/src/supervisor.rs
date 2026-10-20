@@ -1252,8 +1252,14 @@ impl App {
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
         // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
         // redaction.
-        self.vault_run_setup(&sandbox, &run_dir, &task_token, &mut launch)
-            .await?;
+        self.vault_run_setup(
+            &sandbox,
+            crate::vault::Holder::of_task(&task),
+            &run_dir,
+            &task_token,
+            &mut launch,
+        )
+        .await?;
         let (join, _lease) = self.isolation_join(&sandbox).await?.unzip();
         if join.is_some() {
             // Root of its sandbox (ADR-22): Claude Code accepts --dangerously-skip-permissions as

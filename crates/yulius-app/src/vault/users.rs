@@ -29,6 +29,14 @@ pub(crate) enum SecretUser<'a> {
 }
 
 impl SecretUser<'_> {
+    /// For whom it resolves its project's secrets (SPEC-245 RES-002).
+    pub(crate) fn holder(&self) -> super::Holder<'_> {
+        match self {
+            Self::Task(ctx) => super::Holder::of_task(&ctx.task),
+            Self::Superagent(caller) => super::Holder::Person(&caller.user),
+        }
+    }
+
     /// Its project's sandbox.
     pub(crate) fn sandbox(&self) -> &SandboxId {
         match self {
@@ -231,7 +239,7 @@ impl App {
     /// among its askers (`#N`, `#N in <slug>` for a secret of every sandbox).
     async fn secret_waits_for(&self, task: &TaskRecord) -> AppResult<bool> {
         let store = &self.deps.store;
-        let records = store.vault_agent(Some(&task.sandbox_id)).await?;
+        let records = store.vault_agent_in(&task.sandbox_id).await?;
         let me = SecretUser::task_asker(task.number);
         // A secret of every sandbox names its askers with their sandbox.
         let everywhere = if records.iter().any(|r| r.sandbox_id.is_none()) {
