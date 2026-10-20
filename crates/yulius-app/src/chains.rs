@@ -527,6 +527,8 @@ impl App {
         id: &str,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
+        // A person starts it: refused at once without a usable account (SPEC-246 CLA-002).
+        self.ensure_agent_account(task.harness.provider()).await?;
         if task.status == TaskStatus::Prepared {
             self.start_prepared_now(&task).await?;
         } else if task.status != TaskStatus::Chained {

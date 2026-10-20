@@ -3,6 +3,7 @@
 
 pub mod access;
 mod account_email;
+pub mod account_gate;
 pub mod accounts;
 pub mod admin;
 pub mod agent_delivery;

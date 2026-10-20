@@ -1680,3 +1680,110 @@ async fn an_unreadable_default_branch_falls_back_to_main() -> TestResult {
     assert_eq!(remote_heads(&remote)?.trim(), "main");
     Ok(())
 }
+
+/// Onboarding of `sid` has not started: `pending`, with no onboarding task.
+async fn unstarted(w: &World, sid: &SandboxId) -> TestResult {
+    let record = w.h.store.sandbox(sid).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "pending");
+    assert_eq!(record.onboarding_task_id, None, "no onboarding task");
+    Ok(())
+}
+
+// SPEC-246 CLA-003 (an early user: "probably because I didn't connect Claude and the first job
+// failed"): a browser import with no Claude account adds the sandbox but starts nothing and writes
+// nothing to the repository; Start onboarding asks to connect Claude first and starts once one is.
+#[tokio::test]
+async fn a_browser_import_without_claude_waits_for_the_connection() -> TestResult {
+    let w = World::without_claude("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "pending", "{}", fresh.body);
+    let sid = SandboxId::parse(text(&fresh.body["id"]))?;
+    unstarted(&w, &sid).await?;
+    assert_eq!(remote_heads(&remote)?, "", "no first commit");
+
+    let approve = format!("/api/sandboxes/{sid}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert_eq!(refused.body["error"]["code"], "claude_account_required");
+    assert!(
+        text(&refused.body["error"]["message"]).contains("/admin/accounts"),
+        "{:?}",
+        refused.body
+    );
+    unstarted(&w, &sid).await?;
+    assert_eq!(remote_heads(&remote)?, "", "still no first commit");
+
+    support::exhausted_subscription(&w.h).await?;
+    let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing", "{}", started.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
+
+// SPEC-246 CLA-006: an onboarding whose task failed to start for want of an account stays
+// `pending`; Start onboarding (the gate's Retry onboarding) is refused until an account is
+// connected, then starts the same task again.
+#[tokio::test]
+async fn a_failed_onboarding_start_is_retried_once_claude_is_connected() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    // A token import leaves onboarding pending; a new task creates its (resting) task.
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    assert_eq!(shop.body["onboarding"], "pending", "{:?}", shop.body);
+    let sid = SandboxId::parse(text(&shop.body["id"]))?;
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "add a cart"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let prep = record.onboarding_task_id.ok_or("onboarding task")?;
+    let task = w.h.store.task(&prep).await?.ok_or("task")?;
+    // As a start that found its account signed out ends it (CLA-005).
+    let failed = TaskStatus::Failed(yulius_domain::task::FailReason::NoAccount);
+    assert!(
+        w.h.store
+            .transition_task(&prep, Some(task.status), failed, None, w.h.app.now())
+            .await?
+    );
+    // Signed out meanwhile: the retry is refused and changes nothing.
+    w.h.store
+        .delete_account(&yulius_domain::ids::AccountId::parse("a-exhausted")?)
+        .await?;
+    let approve = format!("/api/sandboxes/{sid}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert_eq!(refused.body["error"]["code"], "claude_account_required");
+    assert_eq!(w.h.store.task(&prep).await?.ok_or("task")?.status, failed);
+
+    support::exhausted_subscription(&w.h).await?;
+    let retried = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(retried.status, StatusCode::OK, "{:?}", retried.body);
+    assert_eq!(retried.body["onboarding"], "preparing", "{}", retried.body);
+    let again = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    assert_eq!(
+        again.onboarding_task_id.as_ref(),
+        Some(&prep),
+        "the same task"
+    );
+    // It started again and waits for capacity on the connected subscription.
+    assert_eq!(
+        w.h.store.task(&prep).await?.ok_or("task")?.status,
+        TaskStatus::WaitingCapacity
+    );
+    Ok(())
+}

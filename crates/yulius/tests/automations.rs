@@ -45,6 +45,7 @@ struct World {
 /// Created tasks stay queued (no live-session capacity), which counts as active.
 async fn world() -> Result<World, Error> {
     let h = harness_configured(|c| c.max_live_sessions = 0)?;
+    support::exhausted_subscription(&h).await?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     let alice = user_with_token(&h, "u-alice", "alice", false).await?;
     let bob = user_with_token(&h, "u-bob", "bob", false).await?;

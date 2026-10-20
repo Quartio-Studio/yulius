@@ -361,6 +361,11 @@ impl App {
                 },
             )
             .await?;
+        // A task that starts (now, after a task, by a rule) needs an agent: refused at once without
+        // a usable account (SPEC-246 CLA-002); a prepared one starts only when a person says so.
+        if prepared.is_none() {
+            self.ensure_agent_account(harness.provider()).await?;
+        }
         if after.is_some() {
             self.ensure_chain_room(&sid).await?;
         }
@@ -468,6 +473,7 @@ impl App {
         // Continuing is starting a task: refused while the sandbox is being prepared (U-08).
         self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
             .await?;
+        self.ensure_agent_account(task.harness.provider()).await?;
         let account = parse_account(req)?;
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
         self.end_needs_you(&task.id).await;

@@ -24,6 +24,7 @@ const HOUR: i64 = 60 * 60 * 1000;
 /// the task token `tok-agent`. Created tasks stay queued (no live-session capacity).
 async fn world() -> Result<support::Harness, Error> {
     let h = harness_configured(|c| c.max_live_sessions = 0)?;
+    support::exhausted_subscription(&h).await?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     user_with_token(&h, "u-alice", "alice", false).await?;
     user_with_token(&h, "u-bob", "bob", false).await?;

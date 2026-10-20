@@ -206,18 +206,15 @@ impl App {
     /// placement of the pool for a run of `family`, whose weekly cap binds too.
     ///
     /// # Errors
-    /// `Conflict` without any Claude subscription, `Capacity` while none has capacity.
+    /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
     pub(crate) async fn pool_account(
         &self,
         provider: yulius_domain::harness::Provider,
         family: ModelFamily,
     ) -> AppResult<crate::model::AccountRecord> {
+        // No usable account is a refusal with where to connect one (SPEC-246 CLA-002).
+        self.ensure_agent_account(provider).await?;
         let accounts = self.account_views().await?;
-        if !accounts.iter().any(|a| a.provider == provider) {
-            return Err(crate::error::AppError::Conflict(
-                "no Claude account is connected; an instance administrator can add one".into(),
-            ));
-        }
         let input = RotationInput {
             current: None,
             task_provider: provider,
@@ -290,11 +287,16 @@ impl App {
                     Some(kind.as_str()),
                 )
                 .await?;
-            self.runtime(task_id)
-                .hub
-                .notice(
-                "Yulius paused this task: no subscription has capacity left. It continues by itself.",
-            );
+            // A start with no account to run on waits for one to be connected, and says so
+            // (SPEC-246 CLA-004); otherwise the pool is only out of capacity.
+            let unconnected = kind == PauseKind::Start
+                && self.agent_accounts(task.harness.provider()).await?
+                    != crate::account_gate::AgentAccounts::Usable;
+            self.runtime(task_id).hub.notice(if unconnected {
+                crate::account_gate::WAITING_NOTICE
+            } else {
+                "Yulius paused this task: no subscription has capacity left. It continues by itself."
+            });
         }
         self.publish_task(task_id).await;
         self.capacity_changed();

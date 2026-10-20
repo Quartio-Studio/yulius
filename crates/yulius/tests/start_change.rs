@@ -27,6 +27,7 @@ const HOUR: i64 = 3_600_000;
 /// write but owns none of alice's tasks (SPEC-070).
 async fn world() -> Result<(Harness, Creds, Creds, Creds, TaskRecord), Error> {
     let h = harness_configured(|c| c.max_live_sessions = 0)?;
+    support::exhausted_subscription(&h).await?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     let alice = user_with_token(&h, "u-alice", "alice", false).await?;
     let bob = user_with_token(&h, "u-bob", "bob", false).await?;

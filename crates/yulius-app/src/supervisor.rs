@@ -1022,6 +1022,7 @@ impl App {
             drop(guard);
             if let Err(err) = &result {
                 let reason = match err {
+                    AppError::AccountRequired(_) => FailReason::NoAccount,
                     AppError::Conflict(_) | AppError::Capacity(_) | AppError::Invalid(_) => {
                         FailReason::Precondition
                     }
@@ -1898,8 +1899,14 @@ impl App {
     }
 
     pub(crate) fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
+        // Signed out since it was chosen: the start needs a connected account (SPEC-246 CLA-005).
         let sealed = account.credential.as_ref().ok_or_else(|| {
-            AppError::Conflict(format!("account {} has no credential", account.label))
+            AppError::AccountRequired(format!(
+                "Connect a Claude account first: {} is not signed in. An instance administrator \
+                 signs it in again in Subscriptions ({}).",
+                account.label,
+                crate::account_gate::CONNECT_PATH
+            ))
         })?;
         String::from_utf8(self.deps.crypto.open(sealed)?)
             .map(Secret)

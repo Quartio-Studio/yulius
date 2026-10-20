@@ -918,6 +918,7 @@ impl App {
         }
         self.ensure_tasks_may_start(&doc.sandbox_id, TaskOrigin::Import)
             .await?;
+        self.ensure_agent_account(doc.harness.provider()).await?;
         if store
             .provider_session_exists(&doc.sandbox_id, doc.harness.as_str(), &doc.session_id)
             .await?
