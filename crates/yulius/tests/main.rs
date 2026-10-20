@@ -63,6 +63,7 @@ mod secrets;
 mod secrets_create;
 mod secrets_env;
 mod secrets_redaction;
+mod secrets_scopes;
 mod self_update;
 mod session_sync;
 mod sessions;

@@ -224,9 +224,17 @@ watching, steering and unblocking.
   notes do (SPEC-207). An agent secret is added with a name, a value
   and a description: agents find the service's host and bind it themselves, and production deploys
   get the secret, unless the person turns "Let agents set it up" off when adding it; then a person
-  allows each host with one click and production separately (SPEC-121, SPEC-216). Every secret
-  belongs to the sandbox it was added in, or is team-wide when the person picks that; team secrets
-  from before were copied into each sandbox (SPEC-216). A project's keys live in a git-ignored
+  allows each host with one click and production separately (SPEC-121, SPEC-216). Team secrets
+  belong to the sandbox they were added in, or are team-wide when the person picks that; team
+  secrets from before were copied into each sandbox (SPEC-216). Agent secrets ("keys and logins
+  agents use without seeing them") are on three tabs (SPEC-245): **Project** (this project's),
+  **Global** (defined once by instance administrators, who switch each on per project — e.g. a
+  token for private packages many repositories need) and **Personal** (one person's own, switched
+  on per project by them, used only by tasks they start: never by other people's tasks,
+  automations, CI or deploys, never seen by anyone else, and sent only by the proxy; co-writers
+  who can get code run in the person's tasks are trusted, ADR-0186). A name
+  resolves to the project's secret, else the person's, else the global one; a card says when
+  another wins. A project's keys live in a git-ignored
   `.env` beside a tracked `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
   there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
   pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands

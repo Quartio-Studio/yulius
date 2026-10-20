@@ -4,15 +4,15 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use yulius_app::model::Secret;
 use yulius_app::vault::Revealed;
 use yulius_contracts::api::secrets::{
-    AgentSecretInput, AgentSecretPatch, AgentSecretView, CdProdAnswer, EnvFilesAnswer,
-    HostRequestAnswer, ReauthPassword, ReauthStatus, RevealRequest, TeamSecretInput,
-    TeamSecretPatch, TeamSecretView, UnlockRequest, VaultActivity,
+    AgentSecretInput, AgentSecretPatch, AgentSecretSwitch, AgentSecretView, CdProdAnswer,
+    EnvFilesAnswer, HostRequestAnswer, ReauthPassword, ReauthStatus, RevealRequest,
+    TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest, VaultActivity,
 };
 use yulius_contracts::scrub::{FingerprintSet, RedactionReport};
 
@@ -41,6 +41,10 @@ pub fn public() -> Router<AppState> {
         .route(
             "/api/sandboxes/{sid}/agent-secrets",
             get(agent_list).post(agent_create),
+        )
+        .route(
+            "/api/sandboxes/{sid}/agent-secrets/{id}/enabled",
+            put(agent_switch),
         )
         .route(
             "/api/agent-secrets/{id}",
@@ -250,6 +254,18 @@ async fn agent_create(
     Ok((
         StatusCode::CREATED,
         Json(app.create_agent_secret(&ctx, &sid, &input).await?),
+    ))
+}
+
+async fn agent_switch(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, id)): Path<(String, String)>,
+    Json(input): Json<AgentSecretSwitch>,
+) -> ApiResult<Json<AgentSecretView>> {
+    Ok(Json(
+        app.switch_agent_secret(&ctx, &sid, &id, input.enabled)
+            .await?,
     ))
 }
 
