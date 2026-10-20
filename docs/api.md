@@ -1171,6 +1171,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a task that is not Done uses it; Done tasks' idle sessions on it are closed first (`closed`, as archiving does; 409 if one is still closing), SPEC-057; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
+| POST | `/api/admin/accounts/login/{login_id}/cancel` | instance admin | → `{"status":"cancelled|ok|error|running"}`: stops a running login and waits (at most 15 s) for its end. Its process is stopped and its temporary directory removed; the account keeps its state (`cancelled`), unless the output already held a complete token, which is sealed (`ok`). `running` when it had not ended within the wait. Audited `account.login_cancelled`. Once ended, nothing changes and the answer is how it ended; 404 for an unknown or expired login (SPEC-243) |
 | POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null","cost_usd|null"}` observed by Yulius (ROT-009; runs started in the window; `cost_usd` is their estimate at Claude API list prices, SPEC-110) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
 | GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
@@ -1237,6 +1238,12 @@ is overwritten and removed. A login that ends without a credential sets `error` 
 an account that still holds a working credential keeps its status and records
 `re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
 login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
+Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
+(`claude setup-token` does after 500 ms); one still running then is stopped and the token sealed,
+so the login ends `ok` (SPEC-243). The web UI closes the login dialog on `ok`, and cancels a
+login that is still running when its dialog is closed. A terminal for an unknown or expired login
+is refused in band: an `error` frame `not_found`, then close code 4003, which the browser does not
+retry (non-administrators and other origins are still refused at the handshake).
 
 **Analytics.** `sandbox` is optional (default: every sandbox the caller can see; an invisible
 one is `not_found`); `from`/`to` are inclusive UTC days `YYYY-MM-DD` that select tasks by

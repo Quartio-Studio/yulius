@@ -34,7 +34,7 @@ async function setUpTwoFactor(screen: any, browser: any) {
 // should be mandatory." A team secret is a title, a value and notes; reading one needs your own
 // two-factor code.
 test('team secrets are a title, a value and notes, shown after a two-factor code', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets'));
+  await app.open(mock('/s/studio/secrets?section=team'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Secrets');
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
@@ -75,7 +75,7 @@ test('team secrets are a title, a value and notes, shown after a two-factor code
 // and description. Agent will find by itself the type, the adres etc" (SPEC-121).
 test('an agent secret is a name, a value and a description, readable by its managers after a code', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
-  await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('radio', 'Project')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
   await expect(screen.getByText('api.stripe.com')).toBeVisible();
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), AGENT_VALUE)).toBe(false);
@@ -84,10 +84,9 @@ test('an agent secret is a name, a value and a description, readable by its mana
   await screen.getByRole('button', 'Add agent secret').first().click();
   const dialog = screen.getByRole('dialog', 'Add agent secret');
   const visibleLabels = () => browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => (l as HTMLElement).checkVisibility()).map((l) => l.textContent!.trim()));
+  // The tab is the scope (SPEC-245): no scope to pick, not even for an instance administrator.
   expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description']);
-  // An instance administrator finds the scope under More options, closed.
-  await dialog.getByText('More options').click();
-  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Scope']);
+  await expect(dialog.getByText('More options')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByLabel('Name').fill('RESEND_KEY');
   await screen.getByLabel('Value').fill('short');
@@ -126,7 +125,7 @@ test('an agent secret is a name, a value and a description, readable by its mana
 
   // The section survives a reload; the Team section is one click away.
   await browser.reload();
-  await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('radio', 'Project')).toHaveAttribute('aria-checked', 'true');
   await screen.getByRole('radio', 'Team secrets').click();
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
 });
@@ -274,6 +273,8 @@ test('an agent’s host request shows its Allow on the open page at once', async
 
   // A secret of every sandbox is announced to every sandbox's page.
   expect(await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.request('POST', '/api/sandboxes/sb_studio/agent-secrets', { scope: 'instance', name: 'SHARED_KEY', description: 'Shared', value: 'mock-shared-value-1' }))).toBe(201);
+  // It is a global secret (SPEC-245): on the Global tab, switched on here.
+  await screen.getByRole('radio', 'Global').click();
   const shared = browser.locator('.item-card:has-text("SHARED_KEY")');
   await expect(shared).toBeVisible();
   await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askHosts('SHARED_KEY', ['api.shared.test'], '#121 in product'));
@@ -389,6 +390,16 @@ test('a secret agents use offers no production allowance, and a production secre
   await expect(stripe.getByText(/^Not for production$/)).toBeVisible();
   await expect(screen.getByRole('button', 'Let production deploys (CD) get STRIPE_KEY')).toBeHidden();
   await expect(browser.locator('.item-card:has-text("STRIPE_KEY") .badge-warn:has-text("Production")')).toBeHidden();
+  // VIDOC_API_KEY has no hosts yet, so it can become one; then its waiting host request is Dismiss only.
+  const vidoc = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
+  await screen.getByRole('button', 'Let production deploys (CD) get VIDOC_API_KEY').click();
+  await expect(vidoc.getByText('Production deploys (CD) get its value; agents never do.')).toBeVisible();
+  await expect(vidoc.getByText(/production secret: agents never get it/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeHidden();
+  await screen.getByRole('button', 'Dismiss the hosts asked for VIDOC_API_KEY').click();
+  await expect(vidoc.getByText(/asks to send it to/)).toBeHidden();
+  // PROD_API_TOKEN is a global secret (SPEC-245), on the Global tab.
+  await screen.getByRole('radio', 'Global').click();
   // PROD_API_TOKEN is a production secret an agent asked to send to a host and copy into .env:
   // Dismiss only, said once, and nothing about what allowing would do.
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
@@ -401,20 +412,12 @@ test('a secret agents use offers no production allowance, and a production secre
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files').click();
   await expect(prod.getByText(/asks to copy/)).toBeHidden();
-  // VIDOC_API_KEY has no hosts yet, so it can become one; then its waiting host request is Dismiss only.
-  const vidoc = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
-  await screen.getByRole('button', 'Let production deploys (CD) get VIDOC_API_KEY').click();
-  await expect(vidoc.getByText('Production deploys (CD) get its value; agents never do.')).toBeVisible();
-  await expect(vidoc.getByText(/production secret: agents never get it/)).toBeVisible();
-  await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeHidden();
-  await screen.getByRole('button', 'Dismiss the hosts asked for VIDOC_API_KEY').click();
-  await expect(vidoc.getByText(/asks to send it to/)).toBeHidden();
 });
 
 // SPEC-204 review: someone who cannot manage a production secret learns why its requests wait,
 // without being told to dismiss them.
 test('a member sees why a production secret’s requests wait, without a Dismiss to press', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets?section=agents', '&role=member'));
+  await app.open(mock('/s/studio/secrets?section=global', '&role=member'));
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
   await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
   await expect(prod.getByText(/Dismiss the request/)).toBeHidden();
@@ -426,7 +429,7 @@ test('a member sees why a production secret’s requests wait, without a Dismiss
 // fix. For example copy icon is missing and overall": the value, its eye and its one copy icon sit
 // in one box, always visible, and the notes get the same box and a copy (SPEC-207).
 test('a shown value stays masked until the eye is pressed, and its box always offers the copy', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets'));
+  await app.open(mock('/s/studio/secrets?section=team'));
   // What the page puts on the clipboard, without a clipboard permission.
   await browser.evaluate(() => {
     (window as any).__copied = [];
@@ -523,7 +526,7 @@ test('a shown value stays masked until the eye is pressed, and its box always of
 // SPEC-207 review: a failed copy says so and never shows the check, even right after a copy that
 // worked; long notes wrap inside their box and scroll past 240 px, also at 390 px.
 test('a failed copy shows no check, and long notes wrap and scroll in their box', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets'));
+  await app.open(mock('/s/studio/secrets?section=team'));
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
   const notes = `${'x'.repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n')}`;
   await browser.evaluate((text: string) => {
@@ -574,7 +577,7 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
 // notes are edited from their current text, never replaced blindly.
 test('editing a team secret loads its current notes after a two-factor code', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets'));
+  await app.open(mock('/s/studio/secrets?section=team'));
   await screen.getByRole('button', 'Edit Shared Gmail').click();
   const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
   // The stored notes cannot be overwritten blindly: the box opens read-only until they are loaded.
@@ -604,9 +607,6 @@ test('a new agent secret lets agents set it up unless turned off, and secrets be
   await screen.getByRole('button', 'Add agent secret').first().click();
   const dialog = screen.getByRole('dialog', 'Add agent secret');
   await expect(dialog.getByRole('switch', 'Let agents set it up')).toBeChecked();
-  await dialog.getByText('More options').click();
-  expect(await scope()).toBe('sandbox');
-  expect(await browser.evaluate(() => [...document.querySelectorAll('dialog.modal option')].map((o) => o.textContent))).toEqual(['This sandbox', 'Team-wide (every sandbox)']);
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByLabel('Name').fill('AUTO_KEY');
   await screen.getByLabel('Value').fill('auto-mock-value-1');
@@ -655,7 +655,7 @@ test('a new agent secret lets agents set it up unless turned off, and secrets be
   expect(await axeViolations(browser)).toEqual([]);
   // Another sandbox has the team-wide one, not this sandbox's; someone who only reads it adds
   // none of its own.
-  await app.open(mock('/s/sandbox-3/secrets'));
+  await app.open(mock('/s/sandbox-3/secrets?section=team'));
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
   await expect(screen.getByText('Studio deploy box')).toBeHidden();
   await expect(screen.getByRole('button', 'Add team secret')).toBeDisabled();
@@ -683,7 +683,7 @@ test('each section adds from the page header and its parts keep their spacing', 
 
 // Founder feedback 2026-10-11: "when i click outside any popup i want it to close".
 test('a click outside a dialog closes it; a click or a selection inside does not', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets'));
+  await app.open(mock('/s/studio/secrets?section=team'));
   await screen.getByRole('button', 'Add team secret').first().click();
   const add = screen.getByRole('dialog', 'Add team secret');
   await expect(add).toBeVisible();
@@ -733,6 +733,59 @@ test('an administrator resets a lost two-factor from the Users page after their 
   await expect(screen.getByRole('button', 'Reset two-factor of @anna-q')).toBeHidden();
 
   // In the same page (the mock keeps its state): the Secrets activity names whom.
-  await browser.evaluate(() => { window.location.hash = '#/s/studio/secrets'; });
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/secrets?section=team'; });
   await expect(screen.getByText(/reset the two-factor of/).first()).toBeVisible();
+});
+
+// SPEC-245 (feedback of an early external user): "Secrets — keys and logins agents use without
+// seeing them", with the tabs Project / Global / Personal. Global secrets are defined once and
+// switched on per project by an administrator; personal ones are the person's alone.
+test('the Project, Global and Personal tabs hold each scope, with a switch for this project', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  await expect(screen.getByText('keys and logins agents use without seeing them', { exact: false })).toBeVisible();
+  await expect(screen.getByRole('radio', 'Project')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
+  await expect(screen.getByText('PROD_API_TOKEN')).toBeHidden();
+  await expect(screen.getByText('ANNAS_TOKEN')).toBeHidden();
+
+  // Global: each with its switch; off ones are dimmed until an administrator switches them on.
+  await screen.getByRole('radio', 'Global').click();
+  await expect(screen.getByRole('switch', 'PROD_API_TOKEN on for studio')).toBeChecked();
+  const argo = screen.getByRole('switch', 'ARGO_TOKEN on for studio');
+  await expect(argo).not.toBeChecked();
+  await expect(browser.locator('.item-card.off:has-text("ARGO_TOKEN")')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await argo.click();
+  await expect(screen.getByText('ARGO_TOKEN is on for studio', { exact: false })).toBeVisible();
+  await expect(argo).toBeChecked();
+  await expect(browser.locator('.item-card.off:has-text("ARGO_TOKEN")')).toBeHidden();
+
+  // Personal: nobody else's shows; one added here is the person's and on for this project.
+  await screen.getByRole('radio', 'Personal').click();
+  await expect(screen.getByText('No personal secrets yet')).toBeVisible();
+  await expect(screen.getByText('ANNAS_TOKEN')).toBeHidden();
+  await screen.getByRole('button', 'Add personal secret').first().click();
+  const dialog = screen.getByRole('dialog', 'Add personal secret');
+  await screen.getByLabel('Name').fill('STRIPE_KEY');
+  await screen.getByLabel('Value').fill('mock-personal-value-1');
+  await dialog.getByRole('button', 'Add').click();
+  await expect(dialog).toBeHidden();
+  await expect(screen.getByRole('switch', 'STRIPE_KEY on for studio')).toBeChecked();
+  // The project's own of that name wins here, and the card says so.
+  await expect(screen.getByText('Not used here: this project’s own STRIPE_KEY wins.')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('switch', 'STRIPE_KEY on for studio').click();
+  await expect(screen.getByRole('switch', 'STRIPE_KEY on for studio')).not.toBeChecked();
+
+  // The four tabs fit a phone.
+  await browser.setViewport({ width: 390, height: 844 });
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('a member sees the global secrets but cannot switch or add them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=global', '&role=member'));
+  await expect(screen.getByRole('switch', 'ARGO_TOKEN on for studio')).toBeDisabled();
+  await expect(screen.getByText('Instance administrators switch it.').first()).toBeVisible();
+  await expect(screen.getByRole('button', 'Add global secret').first()).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
 });

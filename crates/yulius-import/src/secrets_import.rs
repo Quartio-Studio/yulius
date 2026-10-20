@@ -38,7 +38,8 @@ pub enum SecretsTarget {
     Agent {
         /// `--sandbox`: an id, slug or `owner/name` (`None`: the checkout's GitHub repository).
         sandbox: Option<String>,
-        /// `--instance`: they apply to every sandbox.
+        /// `--instance`: global secrets, switched on for this sandbox (SPEC-245); an administrator
+        /// switches them on for others.
         instance: bool,
         /// `--confirm-hosts`: a person allows each host and production deploys; otherwise agents
         /// set them up (the server's default, SPEC-216).
@@ -308,7 +309,7 @@ pub fn prepare_target(
         } => {
             let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout)?;
             let reach = if *instance {
-                "every sandbox (instance)"
+                "global, switched on for this sandbox"
             } else {
                 "this sandbox only"
             };

@@ -16,6 +16,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   want of an account is offered as Retry onboarding once one is connected. Tasks started by a chain,
   a rule or an automation still wait and now say no account is connected.
 
+- Claude's sign-in confirms itself (SPEC-243, ADR-0184, task #229). After a successful sign-in
+  the dialog stayed open over the terminal, so it was unclear whether it had worked. Now the
+  dialog closes by itself and a toast says "Claude #3 is connected as …", with the email of the
+  Claude account read right after the sign-in (SPEC-244) when Claude shares it. A failed, cancelled or lost sign-in shows why, with Try again in the same
+  dialog. Closing a sign-in that still runs cancels it on the server
+  (`POST /api/admin/accounts/login/{lid}/cancel`) instead of leaving it running for 15 minutes.
+  A token Claude already printed is kept even then. A CLI that runs on after printing its token
+  is stopped after 5 seconds and the token is kept. A sign-in the server no longer has is said at
+  once instead of being reconnected to for minutes.
+  Failure reasons read "exit code 1" instead of "Some(1)".
+- Agent secrets have three scopes: Project, Global and Personal (SPEC-245, ADR-0186, task #231),
+  after an external user found the old scopes pointless. Global secrets are defined once by
+  instance administrators and switched on per project; personal ones belong to one person, are
+  switched on by them per project and reach only tasks they start (not other people's, not
+  automations, CI or deploys), only through the egress proxy. A name resolves project, then
+  personal, then global. Team-wide agent secrets became global ones switched on for every
+  project, so no run lost a secret. The Secrets page opens on Project; Team secrets is the fourth
+  tab (`?section=team`).
 - A new GitHub repository with no commits can be onboarded (SPEC-241, ADR-0187, task #227). Starting
   its onboarding failed with "git: revision not found: origin/master": the empty clone named the
   server's own default branch, and there was no branch for the onboarding task to start from. Import
