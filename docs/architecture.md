@@ -1317,14 +1317,6 @@ line (a server started as `(server &)`)
 that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
-A task is Done through an achieved goal or a tested pull request with a complete plan, so a task
-without a goal that opens no pull request would wait at "Your turn" for good. For that reason the
-tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
-preparation. Only the continuation of an imported session is a prompt task, because the person
-whose conversation it continues decides when it is finished
-([SPEC-240](../.ai/specs/SPEC-240-fix-they-seem-to-be-wrong-because-tasks.md),
-[decision 0182](decisions/0182-an-automation-runs-its-task-as-a-goal.md)).
-
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
 ([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)):
@@ -1342,6 +1334,14 @@ flowchart LR
     notice["notice that asks a person"] --> attention["needs_attention"]
     attention -.->|"agent works on"| working
 ```
+
+A task is Done through an achieved goal or a tested pull request with a complete plan, so a task
+without a goal that opens no pull request would wait at "Your turn" for good. For that reason the
+tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
+preparation. Only the continuation of an imported session is a prompt task, because the person
+whose conversation it continues decides when it is finished
+([SPEC-240](../.ai/specs/SPEC-240-fix-they-seem-to-be-wrong-because-tasks.md),
+[decision 0182](decisions/0182-an-automation-runs-its-task-as-a-goal.md)).
 
 A reboot (or any lost run) ends a task by what it was doing
 ([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves

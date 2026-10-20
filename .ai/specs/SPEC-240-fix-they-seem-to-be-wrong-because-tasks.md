@@ -56,13 +56,14 @@ Confirmed against `dev` at 193b8e81.
 | --- | --- |
 | AGM-001 | Every run of an automation (scheduled, catch-up, Run now; any start choice) creates its task in goal mode. The session gets the task's request file and its `/goal` as TSK-010 describes. The definition of done (SPEC-011) covers a run that changes nothing in the repository: "its result reported". |
 | AGM-002 | Nothing else about an automation's task changes: its origin, title, prompt, workflow steps, start choice and the previous-active rule. |
+| AGM-003 | A goal longer than Claude Code's cap (4,000 UTF-16 units) is cut, so the goal must still say how the run ends. Each ready-made automation's first paragraph, which says what the run does and how it ends, stays inside its goal. "Work through open issues" (5.6k characters) says in that paragraph that the run ends with its summary once the tasks are started, does not wait for them, and opens no pull request. Before this change that sentence was its last line, which the cut dropped. |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec and issue for the automation tasks' Done
-- [ ] Automation runs start in goal mode, test-first
-- [ ] Docs, ADR and changes entry match the rule
+- [x] Automation runs start in goal mode, test-first
+- [x] Docs, ADR and changes entry match the rule
 - [ ] Independent review answered and gates green
 - [ ] Merge into dev on green CI
 
@@ -70,6 +71,9 @@ Confirmed against `dev` at 193b8e81.
 
 - A scheduled run's task and a Run now task are `TaskMode::Goal`
   (`automations::an_automation_runs_its_task_as_a_goal`). This test fails on `dev`.
+- Every ready-made automation's goal holds its first paragraph, and the open-issues one states its
+  finish there (`templates::tests::every_goal_keeps_how_its_run_ends`). This test fails on the
+  old template.
 - SPEC-001 TSK-010, the architecture document and `docs/changes.md` say that automation tasks are
   goal tasks.
 
@@ -78,6 +82,10 @@ Confirmed against `dev` at 193b8e81.
 - Regression: `crates/yulius/tests/automations.rs` `an_automation_runs_its_task_as_a_goal`. It runs
   one scheduled automation through `automation_tick` and one through `POST /api/automations/{id}/run`,
   and asserts both tasks are goal tasks. Before the fix it failed with `left: Prompt, right: Goal`.
+- Regression: `crates/yulius-app/src/automations/templates.rs` `every_goal_keeps_how_its_run_ends`.
+  It builds each template's launch goal with `goal_condition` and a long request path, and checks
+  that the first paragraph is inside it. Before the template change it failed on "opens no pull
+  request".
 - That a goal task's session gets its `/goal` and becomes Done once the goal is achieved is already
   covered for every goal task: supervision tests of the launch goal, and `finish.rs` and
   `AttentionFacts::group` tests of the Done rule. It is not duplicated here.
@@ -95,6 +103,11 @@ Confirmed against `dev` at 193b8e81.
   Goal mode reuses the one Done rule: Claude Code's goal evaluator judges that the work is
   finished, as it already does for every other task. It matches the API's default (TSK-010) and
   the earlier fix for preparation tasks. Recorded as ADR-0182.
+- **The finish goes into the template's first paragraph, rather than lifting the goal's cap or
+  pointing the goal at the request file.** The cap is Claude Code's own (SPEC-212). The goal's
+  judge reads the condition, so a sentence the cut drops reaches only the agent. Found by the
+  independent review. Automations that are already enabled keep their own copy of the prompt
+  (AUT-007), so they get the new wording only when it is applied to them.
 - **Existing tasks are not migrated.** A prompt-mode task that is already finished (#217) stays
   as it is. A person archives it, or types `/goal` in it. Changing a live session's mode afterwards
   would type a goal into a conversation nobody asked to continue.

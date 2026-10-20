@@ -48,5 +48,8 @@ task #226, fixes #719. Changes SPEC-001 TSK-010, which modes new tasks get. Goal
 - The goal's Stop hook keeps the agent working until its evaluator finds the request met, as for
   every other goal task. An automation prompt that is impossible to meet makes its goal fail
   rather than wait silently.
+- A goal is cut at Claude Code's cap, so how a run ends belongs in its prompt's first paragraph.
+  "Work through open issues" says there that the run ends with its summary, without waiting for the
+  tasks it starts. A unit test keeps every ready-made automation's first paragraph inside its goal.
 - The previous-active rule (AUT-016) is unchanged. A Done run's task is still active until it is
   closed.

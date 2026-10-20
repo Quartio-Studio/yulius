@@ -11,8 +11,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   that opens no pull request, such as "Work through open issues", could never meet the Done rule
   (an achieved goal, or a tested pull request) and read "Your turn" until a person archived it.
   Every run's task is now a goal task, like every other new task: it is Done once Claude Code
-  records its goal as achieved. Tasks that are already finished in prompt mode (#217) stay as they
-  are: archive them.
+  records its goal as achieved. The ready-made "Work through open issues" now says in its first
+  paragraph, which its goal keeps, that the run ends with its summary without waiting for the tasks
+  it starts. Tasks that are already finished in prompt mode (#217) stay as they are: archive them.
 
 ## 2026-10-19
 
