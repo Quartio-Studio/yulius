@@ -21,6 +21,10 @@ pub enum GitHubError {
     Forbidden {
         /// Scrubbed upstream message.
         message: String,
+        /// GitHub's `X-Accepted-GitHub-Permissions` when it sent one: the App permissions the
+        /// endpoint accepts, e.g. `administration=write; repository_creation=write` (sets
+        /// separated by `;`, any one set suffices).
+        accepted_permissions: Option<String>,
     },
     /// 404: missing, or invisible to these credentials.
     #[error("GitHub resource not found (HTTP 404)")]

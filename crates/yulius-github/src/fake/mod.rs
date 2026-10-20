@@ -582,10 +582,11 @@ impl FakeGitHub {
         }
     }
 
-    /// Takes App permission `permission` (`checks`, `statuses` or `actions`) away from the App:
-    /// its read endpoints (check runs, the combined status, workflow runs) then answer 403
-    /// "Resource not accessible by integration", as GitHub does for installation and
-    /// user-to-server tokens of an App without it.
+    /// Takes App permission `permission` (`checks`, `statuses`, `actions` or `administration`)
+    /// away from the App: its endpoints (check runs, the combined status, workflow runs,
+    /// repository creation) then answer 403 "Resource not accessible by integration", as GitHub
+    /// does for installation and user-to-server tokens of an App without it; repository
+    /// creation also names the accepted permissions in `X-Accepted-GitHub-Permissions`.
     pub fn withhold_permission(&self, permission: &str) {
         lock(&self.state).withheld.insert(permission.to_owned());
     }
@@ -717,6 +718,21 @@ fn pct_decode(text: &str) -> String {
 fn reply(status: u16, body: Value) -> Response {
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (code, axum::Json(body)).into_response()
+}
+
+/// What GitHub accepts for creating a repository (either permission suffices).
+const CREATE_REPO_PERMISSIONS: &str = "administration=write; repository_creation=write";
+
+/// GitHub's 403 for an App token without the permission an endpoint needs, naming the accepted
+/// permissions in `X-Accepted-GitHub-Permissions`.
+fn refused_permission(accepted: &str) -> Response {
+    let mut response = error(403, "Resource not accessible by integration");
+    if let Ok(value) = axum::http::HeaderValue::from_str(accepted) {
+        response
+            .headers_mut()
+            .insert("x-accepted-github-permissions", value);
+    }
+    response
 }
 
 fn error(status: u16, message: &str) -> Response {
@@ -1103,6 +1119,9 @@ async fn handle(
             if !installation_covers(state, id, org) {
                 return error(403, "Resource not accessible by integration");
             }
+            if state.withheld.contains("administration") {
+                return refused_permission(CREATE_REPO_PERMISSIONS);
+            }
             create_repo(state, org, &json_body, None)
         }
         ("POST", ["user", "repos"]) => {
@@ -1112,6 +1131,9 @@ async fn handle(
             let Some(owner) = state.users.get(&login).map(|u| u.login.clone()) else {
                 return error(401, "Bad credentials");
             };
+            if state.withheld.contains("administration") {
+                return refused_permission(CREATE_REPO_PERMISSIONS);
+            }
             create_repo(state, &owner, &json_body, Some(login))
         }
         (_, ["repos", owner, name, tail @ ..]) => {

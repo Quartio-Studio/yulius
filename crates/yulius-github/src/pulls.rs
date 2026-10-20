@@ -22,7 +22,7 @@ const MAX_CHECK_PAGES: u32 = 5;
 /// Whether a 403 means the App lacks the permission for the endpoint (GitHub's wording for App
 /// installation and user-to-server tokens), as opposed to another refusal.
 fn missing_permission(err: &GitHubError) -> bool {
-    matches!(err, GitHubError::Forbidden { message }
+    matches!(err, GitHubError::Forbidden { message, .. }
         if message.to_ascii_lowercase().contains("not accessible by integration"))
 }
 
