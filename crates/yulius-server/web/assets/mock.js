@@ -261,13 +261,14 @@ function seed(params) {
     }
   }
   db.accounts = [
-    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
-    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
-    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
-    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_c1', provider: 'anthropic', email: 'mkarp@quartio.dev', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
+    { id: 'acc_c2', provider: 'anthropic', email: 'team@quartio.dev', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
+    { id: 'acc_c3', provider: 'anthropic', email: 'ops@quartio.dev', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
+    { id: 'acc_x1', provider: 'anthropic', email: 'pawel@quartio.dev', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
+    { id: 'acc_x2', provider: 'anthropic', email: 'studio@quartio.dev', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x3', provider: 'anthropic', email: null, label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
+  seededDb = db;
   // The default workflows ship with the server (catalog/workflows/*.md, AUT-006): read-only, first.
   db.workflows = [
     { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'New or changed behaviour, from a spec through review and tests to production.', when_to_use: 'The task adds or changes behaviour that users or other code rely on.', steps: ['Write the spec', 'Implement', 'Review the change', 'Test', 'Deliver to the integration branch', 'Release to production'], instructions: 'Start with the task spec. Implement only what it describes, prove it with tests, review your own diff, then deliver through the delivery profile.', gates: { require_spec: true, require_tests: true }, scope: 'instance', builtin: true },
@@ -378,6 +379,15 @@ function stepsSummary(task) {
   return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
 }
 
+/** The mock's database, for views built without it (a subscription's email by its label). */
+let seededDb = null;
+
+/** The email of the subscription named `label` (SPEC-244), `null` while unknown. */
+function accountEmailOf(label) {
+  const account = label && seededDb ? seededDb.accounts.find((a) => a.label === label) : null;
+  return account ? account.email ?? null : null;
+}
+
 function summary(task) {
   return {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
@@ -389,7 +399,7 @@ function summary(task) {
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
-    steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
+    steps: stepsSummary(task), archived: task.archived, account_label: task.account_label, account_email: accountEmailOf(task.account_label),
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
@@ -547,7 +557,7 @@ function detail(db, task) {
     ...summary(task),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', account_email: accountEmailOf(task.account_label || 'Claude #1'), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
@@ -2917,7 +2927,7 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
   return json(201, { account, login_id: `login_${account.id}` });
 });
@@ -2928,7 +2938,10 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   // Only the name: the pool has no priorities or switches (F 2026-10-10).
   if (Object.keys(body).some((key) => key !== 'label')) fail(422, 'invalid', 'unknown field; only `label` can change');
   if (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
+  // Tasks name their subscription by label here (the server joins by id): a rename follows.
+  const previous = account.label;
   account.label = body.label.trim();
+  for (const task of db.tasks) if (task.account_label === previous) task.account_label = account.label;
   emit(db, { type: 'account.updated', account });
   return account;
 });
@@ -3008,8 +3021,8 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
     ],
     tokens_by_account: [
-      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
-      { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
+      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, account_email: a.email ?? null, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
+      { account_id: 'acc_deleted', account_label: null, account_email: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
     ],
     switches: { total: Math.round(total * 0.15) },
     feedback: { correct: Math.round(total * 0.3), incorrect: Math.round(total * 0.06) },
@@ -3264,8 +3277,8 @@ route('GET', '/api/status', ({ db }) => {
     // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
-      ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
-      : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),
+      ? { label: a.label, email: a.email ?? null, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
+      : { label: a.label, email: a.email ?? null, provider: a.provider, status: a.status, usage: a.usage })),
     contained: db.me.instance.contained,
   };
 });
@@ -3646,7 +3659,7 @@ route('GET', '/api/capacity', ({ db }) => {
     paused_tasks: paused.length,
     resumes_at: null,
     accounts: db.accounts.map((a) => ({
-      label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
+      label: a.label, email: a.email ?? null, status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by } : {}),
     })),
     tokens: poolTokens(),
@@ -4586,7 +4599,7 @@ class LoginSession {
     this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     const account = this.db.accounts.find((a) => a.id === this.accountId);
     if (account) {
-      Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
+      Object.assign(account, { status: 'ok', last_error: null, email: 'signed-in@quartio.dev', usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
       emit(this.db, { type: 'account.updated', account });
     }
     if (this.ws) {

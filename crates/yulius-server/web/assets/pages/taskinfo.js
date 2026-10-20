@@ -6,7 +6,7 @@
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, statusMark, prChip, loadError, bar } from '../dom.js';
 import { href } from '../router.js';
-import { relLong, dateTime, duration, compact, int, plural } from '../format.js';
+import { relLong, dateTime, duration, compact, int, plural, accountRef } from '../format.js';
 import { taskTime } from '../tasktime.js';
 import { taskInfo, activityLine, isLive } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
@@ -105,7 +105,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, ['#', 'Subscription', 'Started', 'Ended', 'Open for', 'State'].map((label) => h('th', { scope: 'col', role: 'columnheader' }, label)))),
       h('tbody', { role: 'rowgroup' }, list.map((a) => h('tr', { role: 'row' },
         cell('#', String(a.seq)),
-        cell('Subscription', [a.account_label || '—', a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${LAUNCH_KIND[a.launch_kind] || a.launch_kind}`) : null]),
+        cell('Subscription', [accountRef(a.account_label, a.account_email) || '—', a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${LAUNCH_KIND[a.launch_kind] || a.launch_kind}`) : null]),
         cell('Started', a.started_at ? relLong(a.started_at) : '—', { title: dateTime(a.started_at) }),
         cell('Ended', a.ended_at ? relLong(a.ended_at) : 'running', { title: a.ended_at ? dateTime(a.ended_at) : null }),
         cell('Open for', a.started_at ? duration(Math.max(0, (a.ended_at ? Date.parse(a.ended_at) : Date.now()) - Date.parse(a.started_at))) : '—'),
@@ -145,7 +145,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Owner', ownerLogin ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(ownerLogin)), ownerLogin) : '—'],
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
-      ['Subscription', current.account_label || '—'],
+      ['Subscription', accountRef(current.account_label, current.account_email) || '—'],
       ['Models', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Subscription switches', String(m.switches ?? (detail.switches || []).length ?? 0)],

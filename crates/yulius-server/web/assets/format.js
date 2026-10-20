@@ -185,6 +185,16 @@ export function describeCron(expr) {
 }
 
 /** Plural helper: plural(3, 'task') → "3 tasks". */
+/** A subscription's email, or "email unknown" until Claude gave one (SPEC-244 SUB-005). */
+export function accountEmail(email) {
+  return email || 'email unknown';
+}
+
+/** A subscription as one line: its name and its Claude account's email (SPEC-244 SUB-005). */
+export function accountRef(label, email) {
+  return label ? `${label} · ${accountEmail(email)}` : null;
+}
+
 export function plural(n, word, many) {
   return `${n} ${n === 1 ? word : many || `${word}s`}`;
 }
