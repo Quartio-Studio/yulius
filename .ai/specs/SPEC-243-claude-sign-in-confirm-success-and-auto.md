@@ -189,6 +189,14 @@ Confirmed against `dev` at 33410359.
   - Full e2e suite on the merged head, run in two parts because the machine's load average was
     about 165: the first run finished 41 files with no failure before my 30-minute timeout cut
     it off; the 20 remaining files then gave 174 passed and 1 skipped (exit 0).
+- The CI security job on `22c39db8` reported a medium finding in the change,
+  `routes/accounts.rs:90` "Login terminal WebSocket may lack ownership verification". The local
+  scans of the same head did not report it. It is a false positive: by design every instance
+  administrator may watch any sign-in (SPEC-002 §7.2), `require_instance_admin` runs first, and
+  the output is masked. The independent reviewer agreed, so it became a narrow `[[ignore]]` in
+  `.config/vidoc.toml` (exact title). Findings outside the change were filed by CI as #749, #750
+  and #751. #751 (low, a prune/lookup race in `login_terminal` and `cancel_login`, reachable by
+  instance administrators only) touches this code and stays tracked there.
 - Not tested against a real Claude sign-in. That needs a person's Claude account in the
   browser. The success detection relies on `claude setup-token` 2.1.292 exiting 500 ms after
   printing the token, read from its bundled source. The 5-second grace end covers a version that
