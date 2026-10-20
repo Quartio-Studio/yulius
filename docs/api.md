@@ -19,7 +19,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 - WebSockets require a valid session and an `Origin` equal to the public URL.
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
   `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
-  `conflict` (409; racing state changes), `invalid` (422), `capacity` (429), `upstream` (502,
+  `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
+  agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
+  SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
   GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
   is missing or disabled, the message says which), `internal` (500).
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
