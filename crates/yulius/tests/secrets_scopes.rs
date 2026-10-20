@@ -39,6 +39,8 @@ struct World {
 /// alice) in s1, bob's in s2.
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let h = harness()?;
+    // Tasks that start need a connected Claude account (SPEC-246).
+    support::exhausted_subscription(&h).await?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     let bob = seed_github_user(&h, "u-bob", "bob").await?;
     seed_sandbox(&h, "s1", "app", "u-alice").await?;
