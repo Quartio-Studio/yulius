@@ -376,6 +376,8 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
         seed_repo(&data, &sandbox.id)?;

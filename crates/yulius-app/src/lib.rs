@@ -2,6 +2,7 @@
 //! adapters (SPEC-002 §3). Use cases are `impl App` blocks grouped by area.
 
 pub mod access;
+mod account_email;
 pub mod accounts;
 pub mod admin;
 pub mod agent_delivery;

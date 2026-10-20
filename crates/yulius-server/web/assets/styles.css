@@ -635,6 +635,13 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .account-who { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .account-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .account-sub { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-email-unknown { font-style: italic; }
+/* A subscription's name edited in place on the Subscriptions page (SPEC-244 SUB-001). */
+.account-name-edit { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; flex-wrap: wrap; }
+.account-name-text { min-width: 0; cursor: text; }
+.account-name-text:hover { text-decoration: underline dotted; }
+.account-rename { width: var(--control-sm); height: var(--control-sm); }
+.account-rename-input { height: var(--control-sm); max-width: 260px; }
 .plan-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent-fg); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; flex: none; }
 .account-state { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; white-space: nowrap; flex: none; }
 .state-ok { background: var(--ok-soft); color: var(--ok-fg); }

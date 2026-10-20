@@ -79,6 +79,7 @@ impl App {
             .iter()
             .map(|a| StatusAccount {
                 label: a.label.clone(),
+                email: if admin { a.email.clone() } else { None },
                 provider: a.provider.as_str().to_owned(),
                 status: a.status.as_str().to_owned(),
                 usage: usage_view(&account_usage(a)),

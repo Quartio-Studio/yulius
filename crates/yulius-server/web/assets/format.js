@@ -184,6 +184,21 @@ export function describeCron(expr) {
   return expr;
 }
 
+/** A subscription's email, or "email unknown" until Claude gave one (SPEC-244 SUB-005). */
+export function accountEmail(email) {
+  return email || 'email unknown';
+}
+
+/**
+ * A subscription as one line: its name and its Claude account's email (SPEC-244 SUB-005). The
+ * server sends emails to administrators only (UI-022); `unknown` says whether a missing one reads
+ * "email unknown" (an administrator's view) or is left out.
+ */
+export function accountRef(label, email, { unknown = true } = {}) {
+  if (!label) return null;
+  return email || unknown ? `${label} · ${accountEmail(email)}` : label;
+}
+
 /** Plural helper: plural(3, 'task') → "3 tasks". */
 export function plural(n, word, many) {
   return `${n} ${n === 1 ? word : many || `${word}s`}`;
