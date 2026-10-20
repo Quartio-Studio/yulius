@@ -139,6 +139,10 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
   its two nits stay as they are: one global lock for rewrites is enough at hand-over frequency,
   and the serialization is argued from the code (one lock, a fresh read under it) rather than
   tested with two concurrent rewrites.
+- CI run 171f9367 (PR #761 at 26026a36) failed only `cargo deny` on two advisories published
+  meanwhile: RUSTSEC-2026-0382 (`rustls-webpki` 0.103.15) and RUSTSEC-2026-0383
+  (`webpki-root-certs` 1.0.9). `cargo update -p rustls-webpki -p webpki-root-certs` moved them to
+  0.103.16 and 1.0.10 (lock only); `scripts/dev deps` then reported advisories ok.
 - FUP-001 has no red test: it removes a field and a method without callers; the compiler and the
   hand-over tests (which read the current holder) are its evidence.
 - `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used its
