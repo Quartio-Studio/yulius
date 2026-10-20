@@ -11,7 +11,8 @@ import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppL
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
-import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
+import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu, setErrorAction } from './dom.js';
+import { ACCOUNT_REQUIRED, connectAction } from './claude.js';
 import { notFound } from './pages/common.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
@@ -309,7 +310,20 @@ function createApp(root, transport) {
     window.addEventListener('offline', onOffline);
     document.addEventListener('visibilitychange', onVisible);
 
+    // A start refused for want of a Claude account offers to connect one (SPEC-246 CLA-007).
+    setErrorAction((error) => (error && error.code === ACCOUNT_REQUIRED ? connectAction(store.state.me, navigate) : null));
+    // Whether a Claude account is usable changes as one signs in or is removed, and is read again
+    // when the page comes back into view (a non-administrator gets no account events).
+    const refreshMe = () => api.get('/api/me').then((me) => {
+      if (!store.state.me || !me || !me.user || me.user.id !== store.state.me.user.id) return;
+      store.state.me = me;
+      store.emit('me', me);
+    }).catch(() => {});
+    const onShown = () => { if (!document.hidden) refreshMe(); };
+    document.addEventListener('visibilitychange', onShown);
     unsubscribers.push(
+      store.on('account', refreshMe),
+      () => document.removeEventListener('visibilitychange', onShown),
       store.on('events-status', onConn),
       () => { clearTimeout(connTimer); window.removeEventListener('online', retryIfDown); window.removeEventListener('offline', onOffline); document.removeEventListener('visibilitychange', onVisible); },
       store.on('task', (task) => {

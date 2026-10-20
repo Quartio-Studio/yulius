@@ -320,6 +320,14 @@ function seed(params) {
   }
   // `onboarding=preparing`: `product` is being onboarded (SPEC-096); its onboarding task is #1.
   if (params.get('onboarding') === 'preparing') db.sandboxes.find((s) => s.id === 'sb_product').onboarding = 'preparing';
+  // `claude=0`: no Claude account is connected (SPEC-246): nothing that runs an agent starts.
+  // `onboarding=failed`: `product` waits for onboarding, whose start failed for want of one.
+  if (params.get('claude') === '0') db.accounts = [];
+  if (params.get('onboarding') === 'failed') {
+    const product = db.sandboxes.find((s) => s.id === 'sb_product');
+    product.onboarding = 'pending';
+    Object.assign(preparationTask(db, product), { status: 'failed_no_account', neverRan: false, awaitsStart: false });
+  }
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
@@ -754,7 +762,13 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 // Mock only: stands in for the GitHub OAuth round trip (/api/auth/github/start → callback).
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
-route('GET', '/api/me', ({ db }) => db.me);
+// Whether agents can start (SPEC-246 CLA-001): an account signed in and `ok` or `limited`.
+const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.status === 'limited');
+// A person's start of an agent without one is refused, with where to connect one (CLA-002).
+const needClaude = (db) => {
+  if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
+};
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db) } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).
@@ -1010,6 +1024,7 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
+  needClaude(db);
   // In the server's order (`start_onboarding`): the task is created and its run started, and only
   // then is the sandbox `preparing`. A test can hold the start in between
   // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
@@ -1104,6 +1119,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  if (!prepared) needClaude(db);
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -1408,6 +1424,7 @@ const continueHandler = ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (LIVE.has(task.status)) fail(409, 'conflict', 'The task is already running.');
+  needClaude(db);
   touch(db, task, { status: 'starting', activity: null });
   const account = db.accounts.find((a) => body && a.id === body.account_id);
   later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' }), 1300);
@@ -5018,6 +5035,13 @@ export function createMockTransport(params) {
     db.appendTranscript(sandboxId, number, items);
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
+  // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.
+  db.connectClaude = () => {
+    db.nextId += 1;
+    const account = { id: `acc_${db.nextId}`, provider: 'anthropic', label: 'Claude', email: 'signed-in@example.com', status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    db.accounts.push(account);
+    emit(db, { type: 'account.updated', account });
+  };
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).
   db.changePull = (sandboxId, number, changes, announce = true) => {

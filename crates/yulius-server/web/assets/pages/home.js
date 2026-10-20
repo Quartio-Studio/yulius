@@ -10,6 +10,7 @@ import { href, placeFor } from '../router.js';
 import { BRAND } from '../brand.js';
 import { openSandboxDialog } from '../actions.js';
 import { folderDropZone } from '../playground.js';
+import { claudeConnected, connectClaudeStep } from '../claude.js';
 
 /** At most this many task lists load at once for the cards' last activity. */
 const LOAD_CONCURRENCY = 3;
@@ -86,12 +87,15 @@ export function mountHomePage(ctx) {
    * The header's ways to add a sandbox, secondary to the cards: a playground needs no GitHub, so it
    * is always offered (SPEC-099); Import and Create need it, with Connect GitHub (superadmin) first.
    */
-  function addActions(needsGithub, user) {
+  function addActions(needsGithub, user, needsClaude) {
+    // Every new sandbox runs an agent (its onboarding or its first task): Claude comes first
+    // (SPEC-246 CLA-007).
+    const blocked = needsClaude ? 'Connect Claude first' : needsGithub ? 'Connect GitHub first' : null;
     return [
-      h('button', { type: 'button', class: 'btn', onClick: () => openSandboxDialog(ctx, 'playground') }, 'New playground'),
+      h('button', { type: 'button', class: 'btn', disabled: needsClaude, title: needsClaude ? blocked : null, onClick: () => openSandboxDialog(ctx, 'playground') }, 'New playground'),
       needsGithub && user.is_superadmin ? h('a', { class: 'btn', href: href('/admin/github'), dataset: { route: '/admin/github' } }, 'Connect GitHub') : null,
-      h('button', { type: 'button', class: 'btn', disabled: needsGithub, title: needsGithub ? 'Connect GitHub first' : null, onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
-      h('button', { type: 'button', class: 'btn', disabled: needsGithub, title: needsGithub ? 'Connect GitHub first' : null, onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template'),
+      h('button', { type: 'button', class: 'btn', disabled: Boolean(blocked), title: blocked, onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
+      h('button', { type: 'button', class: 'btn', disabled: Boolean(blocked), title: blocked, onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template'),
     ];
   }
 
@@ -104,13 +108,15 @@ export function mountHomePage(ctx) {
    * No sandbox yet (UX2-17, SPEC-099): try Yulius on your own code at once, in a playground from a
    * dropped folder or a template; the organisation's GitHub comes second and can wait.
    */
-  function emptyView(needsGithub, user) {
+  function emptyView(needsGithub, user, needsClaude) {
     const github = [];
     if (needsGithub) {
       github.push(h('p', { class: 'text-2' }, user.is_superadmin
         ? 'When your team is ready, connect GitHub to import or create your organisation’s repositories. Playgrounds keep working.'
         : 'When your team is ready, a superadmin connects GitHub to bring in your organisation’s repositories. Playgrounds keep working.'));
       if (user.is_superadmin) github.push(h('div', { class: 'row-wrap' }, h('a', { class: 'btn', href: href('/admin/github'), dataset: { route: '/admin/github' } }, icon('github', { size: 14 }), 'Connect GitHub')));
+    } else if (needsClaude) {
+      github.push(h('p', { class: 'text-2' }, 'Once Claude is connected, import or create your organisation’s repositories here: each becomes a sandbox with its own tasks, browser and editor.'));
     } else {
       // The superadmin owns the instance and sees every sandbox without GitHub (ACC-012).
       if (user.github_linked === false && !user.is_superadmin) {
@@ -123,11 +129,18 @@ export function mountHomePage(ctx) {
     }
     return h('div', { class: 'composer' }, h('div', { class: 'composer-card' },
       h('h1', { class: 'composer-title' }, `Try ${BRAND.name} on your own code`),
-      h('p', { class: 'text-2' }, 'Drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere, so nothing needs to be connected first.'),
-      folderDropZone(ctx, { onCreated: opened }),
-      h('div', { class: 'row-wrap' },
-        h('span', { class: 'muted small' }, 'No code at hand?'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openSandboxDialog(ctx, 'playground') }, 'Start from a template')),
+      // The first step on a fresh instance: tasks need a Claude account (SPEC-246 CLA-007), GitHub
+      // can wait.
+      needsClaude ? [
+        connectClaudeStep(store.state.me, 'Connect one, then drop a project folder or start from a template here.'),
+        h('p', { class: 'text-2' }, 'Then drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere.'),
+      ] : [
+        h('p', { class: 'text-2' }, 'Drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere, so GitHub need not be connected first.'),
+        folderDropZone(ctx, { onCreated: opened }),
+        h('div', { class: 'row-wrap' },
+          h('span', { class: 'muted small' }, 'No code at hand?'),
+          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openSandboxDialog(ctx, 'playground') }, 'Start from a template')),
+      ],
       h('section', { class: 'stack-sm home-github', 'aria-label': 'GitHub' },
         h('h2', { class: 'home-github-title' }, 'Your organisation on GitHub'),
         github)));
@@ -139,9 +152,10 @@ export function mountHomePage(ctx) {
     const user = me.user || {};
     // Without GitHub nothing can be imported or created: that step is the primary action (UX2-17).
     const needsGithub = Boolean(me.instance && me.instance.github_configured === false);
+    const needsClaude = !claudeConnected(me);
     const sandboxes = store.state.sandboxes;
     if (!sandboxes.length) {
-      keepFocus(el, () => setChildren(el, emptyView(needsGithub, user)));
+      keepFocus(el, () => setChildren(el, emptyView(needsGithub, user, needsClaude)));
       return;
     }
     // The subtitle says what the page is for, as on every page (#147); each card has its counts.
@@ -149,7 +163,8 @@ export function mountHomePage(ctx) {
       h('div', { class: 'page-head home-head' },
         h('h1', { class: 'page-title' }, 'Sandboxes'),
         h('span', { class: 'page-sub' }, 'one repository each, with its tasks, browser and editor'),
-        h('div', { class: 'page-actions' }, addActions(needsGithub, user))),
+        h('div', { class: 'page-actions' }, addActions(needsGithub, user, needsClaude))),
+      needsClaude ? connectClaudeStep(me) : null,
       h('div', { class: 'home-grid', 'aria-busy': String(sandboxes.some((s) => store.tasksOf(s.id) === null && !store.tasksError(s.id))) }, sandboxes.map(card))))));
   }
 
@@ -172,6 +187,7 @@ export function mountHomePage(ctx) {
   const offs = [
     store.on('sandboxes', () => { repaint(); loadActivity(); }),
     store.on('tasks', repaint),
+    store.on('me', repaint),
   ];
   // Relative times stay true while the page is open (one bounded timer).
   const timer = setInterval(repaint, 30000);

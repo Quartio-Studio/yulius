@@ -337,12 +337,17 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
   return close;
 }
 
+let errorAction = () => null;
+
+/** What a failed request's toast offers to do about it (`{label, run}` or null), by its error. */
+export function setErrorAction(fn) { errorAction = fn; }
+
 /** Toast for a failed request: shows the server's error message and code. */
 export function errorToast(error, prefix) {
   const message = error && error.message ? error.message : String(error);
   // The server's sentence is shown; its machine code is not (it stays in the console for support).
   if (error && error.code) console.warn(`${prefix || 'Error'}: ${error.code}`, error);
-  toast(prefix ? `${prefix}: ${message}` : message, { kind: 'error', timeout: 8000 });
+  toast(prefix ? `${prefix}: ${message}` : message, { kind: 'error', timeout: 8000, action: errorAction(error) || undefined });
 }
 
 // ---------------------------------------------------------------- dialogs
