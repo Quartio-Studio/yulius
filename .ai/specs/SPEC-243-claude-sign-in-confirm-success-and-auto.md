@@ -76,6 +76,7 @@ Confirmed against `dev` at 33410359.
 - [x] Gates green on the fixed head
 - [x] Review round 2 approves the head
 - [x] Merge into dev on green CI
+- [x] Mock keeps a never-signed-in account's sign-in error, as the server does
 
 ## Acceptance criteria
 
@@ -197,6 +198,16 @@ Confirmed against `dev` at 33410359.
   `.config/vidoc.toml` (exact title). Findings outside the change were filed by CI as #749, #750
   and #751. #751 (low, a prune/lookup race in `login_terminal` and `cancel_login`, reachable by
   instance administrators only) touches this code and stays tracked there.
+- CI e2e on `ccb3d178` (after Yulius merged `dev` into the branch) failed once:
+  - The test was "a failed Claude sign-in says why…". The banner showed the fallback "Claude’s
+    sign-in ended without a credential" instead of the recorded reason.
+  - Cause: the mock's usage refresh. The page reloads its cards on `account.updated` and
+    refreshes the usage of the new `error` account. The mock then cleared `last_error` before the
+    dialog read it.
+  - The real server answers 409 for an account with no credential and clears nothing. The mock
+    now does the same.
+  - Locally, `subscriptions`, `subscription-names` and `consistency` e2e: 30 passed, 3 runs out
+    of 3.
 - Not tested against a real Claude sign-in. That needs a person's Claude account in the
   browser. The success detection relies on `claude setup-token` 2.1.292 exiting 500 ms after
   printing the token, read from its bundled source. The 5-second grace end covers a version that

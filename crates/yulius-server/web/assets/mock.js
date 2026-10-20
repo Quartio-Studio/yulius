@@ -179,6 +179,8 @@ function seed(params) {
     // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
     logins: new Map(),
     loginCancels: [],
+    // Accounts added here that never signed in: they hold no credential.
+    unsignedAccounts: new Set(),
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -2942,6 +2944,7 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
+  db.unsignedAccounts.add(account.id);
   return json(201, { account, login_id: startLogin(db, account.id) });
 });
 route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
@@ -2972,6 +2975,9 @@ route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
+  // Like the server: an account that never signed in has no credential to ask with (409), and
+  // its sign-in error stays.
+  if (db.unsignedAccounts.has(account.id)) fail(409, 'conflict', 'the account is not signed in yet');
   if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
   account.usage = { ...account.usage, observed_at: new Date().toISOString() };
   account.last_error = null;
@@ -4650,6 +4656,7 @@ class LoginSession {
     }
     this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
+      this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
       emit(this.db, { type: 'account.updated', account });
       // Like the server, the email of the Claude account is read right after the sign-in ended
