@@ -1137,9 +1137,6 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-245 SCP-003, MAN-004: global and personal secrets reach a project only while switched
-    /// on there; project secrets cannot be switched; removing the person, the sandbox or the
-    /// secret removes the switch.
     /// SPEC-248 FUP-003: adding or switching on a secret counts those reaching the sandbox in its
     /// own transaction; one already on is never refused.
     #[tokio::test]
@@ -1161,6 +1158,8 @@ mod tests {
         store
             .vault_insert_agent(&personal("p", "u1", "MINE"), &s1, at, 2)
             .await?;
+        // A project secret is no switch; the personal one is switched on with its insert.
+        assert_eq!(store.vault_switched_on(&s1).await?, ["p"]);
         // Two reach s1: neither a project secret nor a switch-on fits a cap of two.
         assert!(matches!(
             store
@@ -1188,6 +1187,9 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-245 SCP-003, MAN-004: global and personal secrets reach a project only while switched
+    /// on there; project secrets cannot be switched; removing the person, the sandbox or the
+    /// secret removes the switch.
     #[tokio::test]
     async fn global_and_personal_secrets_reach_the_projects_they_are_on_for()
     -> Result<(), Box<dyn std::error::Error>> {

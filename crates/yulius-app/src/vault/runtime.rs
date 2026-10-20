@@ -464,31 +464,34 @@ impl App {
     /// read-only; a run without one is left alone.
     ///
     /// # Errors
-    /// Store, decryption and file failures; `Internal` for a path that is no regular file.
+    /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
+    /// file (opened without following a link or blocking, checked on the handle).
     pub(crate) async fn rewrite_run_fingerprints(&self, task: &TaskRecord) -> AppResult<()> {
+        use nix::fcntl::OFlag;
+        use std::os::unix::fs::OpenOptionsExt as _;
         let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
             return Ok(());
         };
         let file = Path::new(&attempt.run_dir).join(FINGERPRINTS_FILE);
-        match std::fs::symlink_metadata(&file) {
-            Ok(meta) if meta.file_type().is_file() => {}
-            Ok(_) => {
-                return Err(AppError::Internal(
-                    "the run's fingerprint file is no regular file".into(),
-                ));
-            }
+        let mut out = match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+            .open(&file)
+        {
+            Ok(out) => out,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(AppError::internal(err)),
+        };
+        if !out.metadata().map_err(AppError::internal)?.is_file() {
+            return Err(AppError::Internal(
+                "the run's fingerprint file is no regular file".into(),
+            ));
         }
         let set = self
             .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(task))
             .await?;
         let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
-        let mut out = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&file)
-            .map_err(AppError::internal)?;
+        out.set_len(0).map_err(AppError::internal)?;
         std::io::Write::write_all(&mut out, &bytes).map_err(AppError::internal)
     }
 

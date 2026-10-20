@@ -919,9 +919,9 @@ never another person's. A task's holder is its owner unless an automation starte
 nobody, and a task an automation's task creates is an automation task too.
 The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
 its task's current holder on every request, so a hand-over or a deleted task applies also to
-connections opened before it, a hand-over rewrites the run's fingerprint file in place for the new
-owner (SPEC-248), and `task_message` from anyone but the owner refuses a task holding personal
-secrets. A personal secret is never copied
+connections opened before it, a hand-over (also one during a launch) rewrites the run's
+fingerprint file in place for the new owner (SPEC-248), and `task_message` from anyone but the
+owner refuses a task holding personal secrets. A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
 gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by

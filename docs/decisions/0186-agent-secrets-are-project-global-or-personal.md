@@ -101,5 +101,5 @@ the project can change the automation's prompt.
 - After a hand-over the run keeps its environment: the placeholders of the previous owner's
   personal secrets stay as literal text (the proxy no longer replaces them). Its fingerprint file
   (the Bash wrapper's fallback when Yulius cannot be reached) is rewritten in place for the new
-  owner at the hand-over (amended by SPEC-248); a copy the run made of it before cannot be
-  recalled.
+  owner at the hand-over, or once the run is live when control passed during its launch (amended
+  by SPEC-248); a copy the run made of it before cannot be recalled.

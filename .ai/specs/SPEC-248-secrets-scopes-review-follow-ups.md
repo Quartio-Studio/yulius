@@ -43,8 +43,10 @@ code does.
   holder per request; a CI job's names none; a Superagent's names its person.
   `EgressClient::holder()` is gone.
 - FUP-002. When control of a task passes (SPEC-070), Yulius rewrites its live run's fingerprint
-  file for the new holder, in place (a read-only bind into a contained session keeps seeing it).
-  A file that cannot be rewritten is logged; nothing else of the hand-over fails.
+  file for the new holder, in place (a read-only bind into a contained session keeps seeing it),
+  never following a link. A run whose launch computed its file before control passed gets it
+  rewritten once it is live. A file that cannot be rewritten is logged; nothing else of the
+  hand-over or the launch fails.
 - FUP-003. Creating an agent secret and switching a global or personal one on count the secrets
   reaching the project in the same store transaction as the write and answer `Capacity` at 200;
   switching on one that already is on is never refused.
@@ -69,7 +71,8 @@ code does.
 ## Acceptance criteria
 
 - After a hand-over from alice to bob, the run's `scrub.json` is a valid fingerprint set that
-  lists bob's personal secret and not alice's.
+  lists bob's personal secret and not alice's; so is it when control passed while the run was
+  being launched.
 - A client resolved before the hand-over gets bob's personal secret on its host; after the task
   is deleted, a client resolved before gets no personal secret but still a project one.
 - Concurrent switch-ons of several personal secrets into a project with 199 leave exactly 200
@@ -79,6 +82,8 @@ code does.
 
 ## Test plan
 
+- Integration (`crates/yulius/tests/task_done.rs`, a real run): control passing while the spawn
+  is held still leaves the new owner's fingerprints.
 - Integration (`crates/yulius/tests/secrets_scopes.rs`): hand-over rewrites the fingerprint file;
   the hand-over test asserts the new owner's secret on the old client; a deleted task's client;
   concurrent switch-ons stop at 200.
@@ -106,7 +111,7 @@ Observed on the branch (2026-10-20), after merging `origin/dev` (b289f81f):
   passed, 17 skipped. The first run, before the dev merge, failed only
   `supervision::a_usage_limit_moves_the_session_to_the_next_account` (60 s timeout under the full
   suite's load): the open flaky issue #539, outside this change; it passed 3/3 alone.
-- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 13
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_scopes::/)'`: 12
   passed. Red first: `a_hand_over_rewrites_the_runs_fingerprint_file` failed before the fix
   (the file still listed `MY_TOKEN`); `concurrent_switch_ons_stop_at_the_projects_limit` (20
   switch-ons on 4 workers into a project with 199) let 5, 7 and 4 through in three runs before the

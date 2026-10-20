@@ -79,7 +79,9 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   the tasks such a task creates (they are automation tasks too). The Superagent gets its person's.
   After a hand-over (SPEC-070) the run's next request resolves the new owner's, not the previous
   owner's (the proxy reads an agent run's task's current owner on every request, also on a
-  connection opened before the hand-over).
+  connection opened before the hand-over), and the run's fingerprint file is rewritten for the new
+  owner, also when control passed while the run was launched
+  ([SPEC-248](SPEC-248-secrets-scopes-review-follow-ups.md)).
 - RES-007. Only its owner messages a task that holds personal secrets (`task_message`): another
   person's Superagent would steer an agent holding their credential.
 - RES-003. Other people's personal secrets never reach a run: not in its environment, its proxy
@@ -115,8 +117,8 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   (a global secret's switches shown to administrators only, as they name projects). A project
   secret answers `Invalid`; switching on past 200 secrets reaching the project answers
   `Capacity` (counted in the switch's transaction since
-  [SPEC-248](SPEC-248-secrets-scopes-review-follow-ups.md)). A secret added as global or personal is inserted and switched on in one
-  transaction.
+  [SPEC-248](SPEC-248-secrets-scopes-review-follow-ups.md)). A secret added as global or personal
+  is inserted and switched on in one transaction.
 - MAN-005. The list of a project marks each global or personal secret `enabled`, and every secret
   a run would not get because another scope's secret of the same name wins `shadowed_by`
   (`sandbox` or `personal`).
