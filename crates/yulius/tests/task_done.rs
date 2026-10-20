@@ -3240,6 +3240,7 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.create_agent_secret(
             &ctx,
@@ -3258,6 +3259,7 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             user: bob.clone(),
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.create_agent_secret(
             &bobs,
