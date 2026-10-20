@@ -2960,7 +2960,8 @@ route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   if (!account) fail(404, 'not_found', 'not found');
   return { account, login_id: startLogin(db, account.id) };
 });
-// Stops a running sign-in (SPEC-243 LGN-002); `loginCancels` records the cancelled ids.
+// Stops a running sign-in and says how it ended (SPEC-243 LGN-002); `loginCancels` records the
+// cancelled ids.
 route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
   adminOnly(db);
   const session = db.logins.get(p[0]);
@@ -2969,7 +2970,7 @@ route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
     db.loginCancels.push(p[0]);
     session.end('cancelled', null);
   }
-  return json(204);
+  return { status: session.status };
 });
 // GET /api/admin/github and POST /api/admin/github/manifest are documented in docs/api.md but
 // not routed by the server yet: like the server, the mock answers 404 (the page falls back
@@ -4916,8 +4917,8 @@ function openSocket(db, path) {
     setTimeout(() => { if (ws.onerror) ws.onerror({}); if (ws.onclose) ws.onclose({ code: 1006, reason: '', wasClean: false }); }, 30);
     return ws;
   }
-  const fatal = (code, message) => {
-    ws.server = { open: () => { ws.push(JSON.stringify({ type: 'error', code, message })); ws.serverClose(1008, code); } };
+  const fatal = (code, message, closeCode = 1008) => {
+    ws.server = { open: () => { ws.push(JSON.stringify({ type: 'error', code, message })); ws.serverClose(closeCode, code); } };
   };
   if (!db.signedIn) { fatal('unauthenticated', 'Sign in first.'); return ws; }
   let m;
@@ -4950,7 +4951,7 @@ function openSocket(db, path) {
     ws.server = shell.session;
   } else if ((m = route_.match(/^\/api\/admin\/accounts\/login\/([^/]+)\/terminal$/))) {
     const session = db.logins.get(decodeURIComponent(m[1]));
-    if (!session) { fatal('not_found', 'This sign-in has ended or expired.'); return ws; }
+    if (!session) { fatal('not_found', 'this sign-in has ended or expired', 4003); return ws; }
     ws.server = session;
   } else if ((m = route_.match(/^\/api\/sandboxes\/([^/]+)\/browser$/))) {
     const sandbox = db.sandboxes.find((s) => s.id === decodeURIComponent(m[1]));
@@ -5133,6 +5134,15 @@ export function createMockTransport(params) {
   db.resyncNow = () => resync(db);
   // Another administrator signs a subscription in again: its running sign-in ends `cancelled`.
   db.startLogin = (accountId) => startLogin(db, accountId);
+  // The server forgets the sign-ins of `accountId` (ended and expired, or a restart) and drops
+  // their viewers, who reconnect to a terminal it no longer has.
+  db.forgetLogins = (accountId) => {
+    for (const [id, session] of db.logins) {
+      if (session.accountId !== accountId) continue;
+      db.logins.delete(id);
+      if (session.ws) session.ws.serverClose(1001, 'going away');
+    }
+  };
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';

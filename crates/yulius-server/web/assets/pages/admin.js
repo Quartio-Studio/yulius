@@ -6,6 +6,7 @@ import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorT
 import { compact } from '../format.js';
 import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
+import { CLOSE_REVOKED } from '../termsocket.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
@@ -180,6 +181,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   let current = loginId;
   // running → ok | error | cancelled | lost (the server no longer has the sign-in).
   let phase = 'running';
+  let closed = false;
   const status = h('span', { class: 'muted small' }, SIGN_IN_RUNNING);
   const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
@@ -188,32 +190,47 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     full: true,
     body: h('div', { class: 'stack fill-column' }, status, outcome, host),
     onClose: () => {
+      closed = true;
       if (terminal) terminal.destroy();
-      if (phase === 'running') cancel();
+      if (phase === 'running') cancel(current);
       onFinish();
     },
   });
-  const runningActions = () => modal.setActions([{ label: 'Cancel sign-in' }]);
 
-  function cancel() {
-    phase = 'cancelled';
-    const working = account.status === 'ok' || account.status === 'limited';
-    ctx.api.post(`/api/admin/accounts/login/${enc(current)}/cancel`).then(() => {
-      toast(working ? `Sign-in cancelled: ${account.label} keeps its current sign-in.` : `Sign-in cancelled: ${account.label} is not signed in. Sign it in again from its card when you are ready.`);
-    }).catch((error) => errorToast(error, 'Couldn’t cancel the sign-in'));
-  }
-
-  /** The account as the server has it now (its email and last error), or null. */
+  /** The account as the server has it now (its email, status and last error), or null. */
   const fresh = () => ctx.api.get('/api/admin/accounts')
     .then((list) => (Array.isArray(list) ? list.find((a) => a.id === account.id) : null) || null)
     .catch(() => null);
 
-  async function succeeded() {
-    phase = 'ok';
-    modal.close();
+  /** The success toast, naming the subscription and its email once reported (LGN-003). */
+  async function connectedToast() {
     const now = await fresh();
     const email = now && now.email ? ` as ${now.email}` : '';
     toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
+  }
+
+  /** Cancels sign-in `id` and says how it ended, from the server's answer (LGN-006). */
+  async function cancel(id) {
+    phase = 'cancelled';
+    let ended = null;
+    try {
+      ended = (await ctx.api.post(`/api/admin/accounts/login/${enc(id)}/cancel`)).status;
+    } catch (error) {
+      // Already gone (ended and expired): the account says where it stands.
+      if (!error || error.code !== 'not_found') { errorToast(error, 'Couldn’t cancel the sign-in'); return; }
+    }
+    if (ended === 'ok') { await connectedToast(); return; }
+    const now = await fresh();
+    if (!now) return;
+    toast(['ok', 'limited'].includes(now.status)
+      ? `Sign-in cancelled: ${account.label} keeps its current sign-in.`
+      : `Sign-in cancelled: ${account.label} is not signed in. Sign it in again from its card when you are ready.`);
+  }
+
+  function succeeded() {
+    phase = 'ok';
+    modal.close();
+    connectedToast();
   }
 
   /** Shows why the sign-in ended without a credential, with Try again (LGN-004, LGN-007). */
@@ -228,14 +245,24 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     phase = 'error';
     ended('Sign-in failed', '');
     const now = await fresh();
-    if (phase !== 'error') return;
+    if (phase !== 'error' || closed) return;
     const reason = now && now.last_error ? sentence(now.last_error.replace(/^re-login failed: /, '')).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
     ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
+  }
+
+  async function cancelledElsewhere() {
+    phase = 'cancelled';
+    ended('This sign-in was cancelled', 'Another sign-in of this subscription replaced it.');
+    const now = await fresh();
+    if (phase !== 'cancelled' || closed || now) return;
+    ended('This sign-in was cancelled', 'The subscription was removed.', false);
   }
 
   /** Try again: a new sign-in of the same subscription in this dialog (LGN-005). */
   async function again() {
     const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
+    // Closed while the new sign-in was starting: nobody watches it, so it is cancelled.
+    if (closed) { cancel(result.login_id); return; }
     current = result.login_id;
     phase = 'running';
     outcome.hidden = true;
@@ -246,7 +273,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   }
 
   function start() {
-    runningActions();
+    modal.setActions([{ label: 'Cancel sign-in' }]);
     // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
     // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
     const view = createTerminalView({
@@ -258,15 +285,24 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
       onExit: (exit) => {
         if (terminal !== view || phase !== 'running') return;
         if (exit.status === 'ok') succeeded();
-        else if (exit.status === 'cancelled') {
-          phase = 'cancelled';
-          ended('This sign-in was cancelled', 'Another sign-in of this subscription replaced it, or the subscription was removed.');
-        } else failed();
+        else if (exit.status === 'cancelled') cancelledElsewhere();
+        else failed();
       },
-      onFatal: (message) => {
+      // The server refused the terminal for good: `not_found` (ended and expired) or
+      // `unauthenticated` (signed out of Yulius).
+      onFatal: (error) => {
         if (terminal !== view || phase !== 'running') return;
         phase = 'lost';
-        ended('This sign-in is no longer available', message ? sentence(message) : 'It ended or expired.');
+        if (error && error.code === 'unauthenticated') ended('You are signed out of Yulius', 'Sign in again, then sign the subscription in from its card.', false);
+        else ended('This sign-in is no longer available', 'It ended or expired.');
+      },
+      // The socket gave up: closed for good by the server (4003, the sign-in is gone; it may
+      // arrive before its error frame), or reconnecting failed and the sign-in is out of reach.
+      onConnection: (state, detail) => {
+        if (state !== 'failed' || terminal !== view || phase !== 'running') return;
+        phase = 'lost';
+        if (detail && detail.code === CLOSE_REVOKED) ended('This sign-in is no longer available', 'It ended or expired.');
+        else ended('The connection to this sign-in was lost', 'Try again to start a new sign-in.');
       },
     });
     terminal = view;

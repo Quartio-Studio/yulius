@@ -12,7 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   account reports one. A failed, cancelled or lost sign-in shows why, with Try again in the same
   dialog. Closing a sign-in that still runs cancels it on the server
   (`POST /api/admin/accounts/login/{lid}/cancel`) instead of leaving it running for 15 minutes.
-  A CLI that runs on after printing its token is stopped after 5 seconds and the token is kept.
+  A token Claude already printed is kept even then. A CLI that runs on after printing its token
+  is stopped after 5 seconds and the token is kept. A sign-in the server no longer has is said at
+  once instead of being reconnected to for minutes.
   Failure reasons read "exit code 1" instead of "Some(1)".
 - A finished automation run is Done instead of waiting under Needs you (SPEC-240, ADR-0182, task
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run

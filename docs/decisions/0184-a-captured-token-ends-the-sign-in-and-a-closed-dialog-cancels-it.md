@@ -34,8 +34,14 @@ flow) and SPEC-001 ROT-002.
   - On `cancelled`, or when the terminal is gone (`not_found`), the banner says so.
   - Try again starts a new sign-in (`relogin`) in the same dialog.
 - **Closing a running sign-in cancels it** through `POST /api/admin/accounts/login/{lid}/cancel`.
-  The account keeps its state, as for a replaced sign-in. The endpoint answers 204 also once the
-  sign-in has ended, and then changes nothing.
+  The endpoint waits (at most 15 s) for the end and answers how the sign-in ended, so the toast
+  says what happened. The account keeps its state, as for a replaced sign-in. A complete token
+  already in the output is still sealed (`ok`): a cancel, a replacing sign-in or the dialog
+  closed during the grace never discards a sign-in that succeeded. An account removed meanwhile
+  ends `cancelled`.
+- **An unknown or expired sign-in's terminal is refused in band** (`not_found`, close 4003). An
+  HTTP 404 at the handshake reads to the browser as a dropped connection, which it retried for
+  minutes.
 - A failure's recorded reason names the exit as "exit code N" or "stopped by signal N", not
   Rust's `Some(N)`, because the banner now shows it.
 
@@ -56,7 +62,7 @@ flow) and SPEC-001 ROT-002.
   and can be retried without leaving the dialog.
 - A reload or a closed tab still leaves the sign-in running until its timeout. Only the dialog's
   own close cancels it.
-- Cancelling within the 5-second grace after the token appeared discards that token. That is the
-  person's explicit choice, and the dialog has normally closed by then.
+- A cancel during the 5-second grace after the token appeared keeps the token, so "Cancel
+  sign-in" then connects the subscription. The toast says so.
 - The email appears in the success toast only once the account view reports it (task #230). A
   `setup-token` credential cannot read Claude's profile itself.

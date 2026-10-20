@@ -71,6 +71,11 @@ pub const LABEL_MAX: usize = 80;
 
 /// Wait for the process to exit after a stop request before killing its host.
 const STOP_WAIT: Duration = Duration::from_secs(10);
+/// How long a cancel request waits for the sign-in to end (stop, seal or wipe included).
+const CANCEL_WAIT: Duration = Duration::from_secs(15);
+/// Raw bytes before a new output chunk that are scanned with it for a token: at least the token
+/// prefix plus its minimum body, so a token split across chunks is found.
+const TOKEN_LOOKBACK: usize = 64;
 /// Grace given to the process on a stop request before the host escalates.
 const STOP_GRACE_MS: u32 = 2_000;
 /// Secure-deletion walk bounds.
@@ -135,6 +140,8 @@ pub struct LoginSession {
     phase: Mutex<(LoginPhase, Option<i32>)>,
     cancelled: AtomicBool,
     cancel: Notify,
+    /// Notified once the sign-in has ended (its phase is final).
+    ended: Notify,
     finished_at: AtomicI64,
 }
 
@@ -932,13 +939,14 @@ impl App {
         Ok(LoginTerminal { session })
     }
 
-    /// Cancels a running login (SPEC-243 LGN-002): its process is stopped and its temporary
-    /// directory removed; the account keeps its state. A login that has already ended is left
-    /// as it is.
+    /// Cancels a running login (SPEC-243 LGN-002) and waits (bounded by [`CANCEL_WAIT`]) until
+    /// it has ended: its process is stopped, its temporary directory removed, and the account
+    /// keeps its state, unless a complete token had already been captured, which is sealed
+    /// (`ok`). A login that has already ended is left as it is. Returns how it ended.
     ///
     /// # Errors
     /// `Forbidden` for non-administrators, `NotFound` for unknown or expired logins.
-    pub fn cancel_login(&self, ctx: &AuthContext, login_id: &str) -> AppResult<()> {
+    pub async fn cancel_login(&self, ctx: &AuthContext, login_id: &str) -> AppResult<LoginPhase> {
         self.require_instance_admin(ctx)?;
         self.prune_logins();
         let session = self
@@ -949,10 +957,24 @@ impl App {
             .get(login_id)
             .cloned()
             .ok_or(AppError::NotFound)?;
+        let ended = session.ended.notified();
+        tokio::pin!(ended);
+        ended.as_mut().enable();
         if session.is_running() {
             session.request_cancel();
+            self.deps
+                .store
+                .audit(
+                    self.now(),
+                    &actor(ctx),
+                    "account.login_cancelled",
+                    Some(session.account_id.as_str()),
+                    None,
+                )
+                .await?;
+            let _ = tokio::time::timeout(CANCEL_WAIT, ended).await;
         }
-        Ok(())
+        Ok(session.phase().0)
     }
 
     /// Removes login directories left by a previous server process (their hosts are stopped
@@ -1087,6 +1109,7 @@ impl App {
             phase: Mutex::new((LoginPhase::Running, None)),
             cancelled: AtomicBool::new(false),
             cancel: Notify::new(),
+            ended: Notify::new(),
             finished_at: AtomicI64::new(0),
         });
         let mut masker = self.deps.harness.masker();
@@ -1163,10 +1186,14 @@ impl App {
                 event = tokio::time::timeout_at(deadline, reader.next()) => match event {
                     Err(_) => break Ending::TimedOut,
                     Ok(Ok(Some(event))) => {
+                        let fresh = match &event {
+                            RunEvent::Output { bytes, .. } => bytes.len(),
+                            _ => 0,
+                        };
                         if let Some(exit) = self.login_event(&session, masker.as_mut(), &mut seq, event) {
                             break Ending::Exited(exit);
                         }
-                        if captured.is_none() && self.holds_credential(&session) {
+                        if fresh > 0 && captured.is_none() && self.holds_credential(&session, fresh) {
                             captured = Some(tokio::time::Instant::now() + self.token_grace());
                         }
                     }
@@ -1251,15 +1278,18 @@ impl App {
         }
     }
 
-    /// Whether the raw output already holds a complete credential (SPEC-243 LGN-001). The
-    /// temporary plaintext copies are scrubbed before they are freed.
-    fn holds_credential(&self, session: &LoginSession) -> bool {
+    /// Whether the newest `fresh` raw bytes, with [`TOKEN_LOOKBACK`] bytes before them, hold a
+    /// complete credential (SPEC-243 LGN-001). Only the new output is scanned, so a long
+    /// sign-in costs no rescans of the whole buffer. The temporary plaintext copies are
+    /// scrubbed before they are freed.
+    fn holds_credential(&self, session: &LoginSession, fresh: usize) -> bool {
         let Ok(raw) = session.raw.lock() else {
             return false;
         };
+        let from = raw.bytes.len().saturating_sub(fresh + TOKEN_LOOKBACK);
         match session.provider {
             Provider::Anthropic => {
-                let text = String::from_utf8_lossy(&raw.bytes);
+                let text = String::from_utf8_lossy(&raw.bytes[from..]);
                 let found = self.deps.harness.extract_claude_token(&text);
                 let held = found.is_some();
                 scrub(found.map(String::into_bytes));
@@ -1306,18 +1336,19 @@ impl App {
         };
         let cancelled =
             matches!(ending, Ending::Cancelled) || session.cancelled.load(Ordering::SeqCst);
-        let result: Option<Result<Secret, String>> = if cancelled {
-            None
-        } else {
-            let credential = match session.provider {
-                Provider::Anthropic => self
-                    .deps
-                    .harness
-                    .extract_claude_token(&String::from_utf8_lossy(&raw))
-                    .map(Secret)
-                    .ok_or_else(|| "the sign-in ended without producing a token".to_owned()),
-            };
-            Some(credential.map_err(|reason| match &ending {
+        let credential = match session.provider {
+            Provider::Anthropic => self
+                .deps
+                .harness
+                .extract_claude_token(&String::from_utf8_lossy(&raw))
+                .map(Secret)
+                .ok_or_else(|| "the sign-in ended without producing a token".to_owned()),
+        };
+        // A cancel that comes after the token was printed still keeps it: the sign-in had
+        // succeeded (SPEC-243 LGN-002).
+        let result: Option<Result<Secret, String>> = match credential {
+            Err(_) if cancelled => None,
+            credential => Some(credential.map_err(|reason| match &ending {
                 Ending::TimedOut => format!(
                     "the sign-in timed out after {}",
                     human_duration(self.login_timeout())
@@ -1329,7 +1360,7 @@ impl App {
                     (None, None) => reason,
                 },
                 _ => reason,
-            }))
+            })),
         };
         // Best-effort scrub of the plaintext copy before the buffer is freed.
         raw.fill(0);
@@ -1339,6 +1370,8 @@ impl App {
             None => LoginPhase::Cancelled,
             Some(Ok(secret)) => match self.store_credential(&session.account_id, &secret).await {
                 Ok(()) => LoginPhase::Succeeded,
+                // The account was removed meanwhile: nothing to sign in.
+                Err(AppError::NotFound) => LoginPhase::Cancelled,
                 Err(err) => {
                     tracing::error!(error = %err, "could not store an account credential");
                     self.record_login_failure(
@@ -1363,6 +1396,7 @@ impl App {
         session.finished_at.store(self.now().0, Ordering::SeqCst);
         session.hub.state_changed();
         session.hub.exit(phase.as_str(), exit_code);
+        session.ended.notify_waiters();
         if phase != LoginPhase::Cancelled {
             let _ = self
                 .deps

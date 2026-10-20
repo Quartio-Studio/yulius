@@ -208,14 +208,15 @@ complete token appeared is stopped and the token sealed (SPEC-243,
 [decision 0184](decisions/0184-a-captured-token-ends-the-sign-in-and-a-closed-dialog-cancels-it.md)).
 The dialog follows the terminal's ending. On `ok` it closes by itself and a toast names the
 subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
-sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in.
+sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
+waits for the end and keeps a token already printed, so a sign-in that succeeded is never lost.
 
 ```mermaid
 stateDiagram-v2
   [*] --> running: Add subscription / Sign in again
   running --> ok: token sealed (CLI exit, or 5 s after the token)
   running --> error: no token at exit, or 15 min timeout
-  running --> cancelled: dialog closed (cancel), replaced, or subscription removed
+  running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
   ok --> [*]: dialog closes, toast "… is connected"
   error --> running: Try again
   cancelled --> running: Try again

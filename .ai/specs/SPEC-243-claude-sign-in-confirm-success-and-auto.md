@@ -56,12 +56,12 @@ Confirmed against `dev` at 33410359.
 | ID | Requirement |
 | --- | --- |
 | LGN-001 | The server ends a Claude sign-in once its output holds a complete token. If the CLI has not exited within `TOKEN_EXIT_GRACE` (5 s) after the token first appeared, the server stops it as it stops a timed-out sign-in, then seals the token, and the sign-in ends `ok`. A CLI that exits on its own (the normal case) is not affected. |
-| LGN-002 | `POST /api/admin/accounts/login/{lid}/cancel` (instance administrators) cancels a running sign-in. The CLI is stopped, its temporary directory removed, and the account keeps its state, as for a sign-in replaced by another one. The endpoint answers 204, also when the sign-in has already ended (nothing changes then), 404 for an unknown or expired sign-in, and 403 for others. |
+| LGN-002 | `POST /api/admin/accounts/login/{lid}/cancel` (instance administrators) cancels a running sign-in and waits (at most 15 s) for its end, answering how it ended: `{"status": "cancelled"}` normally. The CLI is stopped, its temporary directory removed, and the account keeps its state, as for a sign-in replaced by another one. A complete token already captured is sealed instead (`ok`): the sign-in had succeeded. A sign-in that has already ended is left as it is and its ending is answered; 404 for an unknown or expired sign-in, 403 for others. The cancel is audited (`account.login_cancelled`). |
 | LGN-003 | When the login terminal reports `ok`, the dialog closes by itself, the subscriptions reload, and a success toast names the subscription: "Claude #3 is connected" and "as <email>" when the account reports an email. It also says tasks can use it now. |
 | LGN-004 | When the sign-in ends `error`, the dialog stays open with Claude's output. A banner says "Sign-in failed" with the reason Yulius recorded (the account's `last_error`, for example "the sign-in timed out after 15 min"), and offers "Try again" and "Close". |
 | LGN-005 | "Try again" starts a new sign-in for the same subscription (`relogin`) in the same dialog. The banner goes away and the new terminal replaces the old one. |
-| LGN-006 | While the sign-in runs, the dialog's button reads "Cancel sign-in". Closing the dialog by that button, ×, Esc or a click outside cancels the sign-in on the server (LGN-002). A toast then says it was cancelled and that the subscription is not signed in (a new subscription) or keeps its sign-in (a working one signed in again). |
-| LGN-007 | A sign-in that ended `cancelled` on the server's side (replaced by another sign-in, or its subscription removed), or a login terminal the server no longer has (`not_found`), shows a banner that says so, with "Try again" (except for a removed subscription) and "Close". |
+| LGN-006 | While the sign-in runs, the dialog's button reads "Cancel sign-in". Closing the dialog by that button, ×, Esc or a click outside cancels the sign-in on the server (LGN-002). A toast then says how it ended, from the server's answer and the account's state: connected (a token was already captured), or cancelled with the subscription not signed in, or cancelled while it keeps its working sign-in. A sign-in started by Try again while the dialog closes is cancelled too. |
+| LGN-007 | A sign-in that ended `cancelled` on the server's side (replaced by another sign-in, or its subscription removed), or a login terminal the server no longer has, shows a banner that says so, with "Try again" (except for a removed subscription, and for a viewer signed out of Yulius) and "Close". The server refuses a terminal for an unknown or expired sign-in in band (`not_found`, close 4003), so the browser does not retry it. A connection that cannot be re-established says it was lost, with Try again. |
 
 ## Plan
 
@@ -80,12 +80,16 @@ Confirmed against `dev` at 33410359.
 - A scripted CLI that prints a token and keeps running ends `ok` with the token sealed, and its
   process got `Terminate` (`accounts::a_sign_in_ends_once_its_token_is_captured`). Fails on
   `dev`: the sign-in stays `running`.
-- The cancel endpoint stops a running sign-in, answers 204 again once it ended, 404 for an
-  unknown one and 403 for a member (`accounts::a_running_sign_in_can_be_cancelled`).
+- The cancel endpoint stops a running sign-in and answers `cancelled`, again once it ended, 404
+  for an unknown one and 403 for a member (`accounts::a_running_sign_in_can_be_cancelled`). A
+  cancel after the token was printed keeps it (`accounts::a_cancel_after_the_token_keeps_it`).
+- A terminal for an unknown sign-in gets an in-band `not_found` and close 4003
+  (`accounts::login_terminal_websocket_streams_masked_output_and_accepts_input`).
 - e2e (mock): finishing the sign-in closes the dialog and shows "Claude #9 is connected"; the new
   subscription reads as signed in. A failing sign-in shows "Sign-in failed" with the reason,
   "Try again" starts a new one in the same dialog, and that one succeeds. Closing a running
-  sign-in cancels it (the mock records the cancel) and says so.
+  sign-in cancels it (the mock records the cancel) and says so. A sign-in replaced elsewhere, one
+  whose subscription was removed (no Try again) and one the server no longer has each say so.
 - `docs/api.md`, `docs/architecture.md`, ADR-0184 and `docs/changes.md` describe the flow.
 
 ## Test plan
@@ -114,6 +118,9 @@ Confirmed against `dev` at 33410359.
 
   The raw server-side stream is where the token already comes from (ADR-05). The new grace end
   (LGN-001) covers a CLI that lingers after printing it. Recorded as ADR-0184.
+- **A cancel keeps a token already captured.** In the 5-second grace the dialog is still open, and
+  a person unsure whether it worked is most likely to close it then. The token is valid, so it is
+  sealed and the toast says the subscription is connected. Found by the independent review.
 - **Closing a running sign-in cancels it.** The other option was to keep it running for a reload
   to reattach. Nobody can reach an abandoned sign-in from the UI: the page offers "Sign in again",
   which replaces it anyway. Leaving it running kept a PTY and a temporary config directory alive

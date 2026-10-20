@@ -137,6 +137,15 @@ pub struct AccountLoginStarted {
     pub login_id: String,
 }
 
+/// Response to `POST /api/admin/accounts/login/{login_id}/cancel` (SPEC-243 LGN-002): how the
+/// sign-in ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountLoginCancelled {
+    /// `cancelled`, `ok` (a captured token was sealed), `error`, or `running` when the process
+    /// had not ended within the wait.
+    pub status: String,
+}
+
 /// `PATCH /api/admin/accounts/{id}`: only the label. The pool has no priorities or switches
 /// (F 2026-10-10); any other field is refused (422).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

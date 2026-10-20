@@ -166,7 +166,15 @@ test('at phone width the Status panel and the Dashboard keep both percents and d
 
 // ---- Claude's sign-in confirms itself (SPEC-243)
 
-type MockLogins = { __yuliusMock: { loginCancels: string[]; startLogin: (accountId: string) => string } };
+type MockLogins = {
+  __yuliusMock: {
+    loginCancels: string[];
+    startLogin: (accountId: string) => string;
+    forgetLogins: (accountId: string) => void;
+    logins: Map<string, { accountId: string; end: (status: string, code: number | null) => void }>;
+    accounts: { id: string }[];
+  };
+};
 type MockAccounts = { __yuliusMock: { accounts: { label: string; email?: string }[] } };
 
 const loginInput = (browser: Browser) => browser.locator('.login-terminal .xterm-helper-textarea');
@@ -247,4 +255,35 @@ test('a Claude sign-in replaced elsewhere says it was cancelled, with Try again 
   await dialog.getByRole('button', 'Close').last().click();
   await expect(dialog).toBeHidden();
   expect(await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.loginCancels.length)).toBe(0);
+});
+
+test('a Claude sign-in whose subscription was removed says so, without Try again (SPEC-243 LGN-007)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await browser.locator('main .card:has-text("Claude #3") button:has-text("Sign in again")').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Claude #3');
+  await expect(loginInput(browser)).toBeFocused();
+  // Another administrator removes the subscription: the server cancels its sign-in.
+  await browser.evaluate(() => {
+    const db = (window as unknown as MockLogins).__yuliusMock;
+    db.accounts = db.accounts.filter((a) => a.id !== 'acc_c3');
+    for (const session of db.logins.values()) if (session.accountId === 'acc_c3') session.end('cancelled', null);
+  });
+  await expect(dialog.getByRole('alert')).toContainText('The subscription was removed.');
+  await expect(dialog.getByRole('button', 'Try again')).toBeHidden();
+  await expect(dialog.getByRole('button', 'Close').last()).toBeVisible();
+});
+
+test('a Claude sign-in the server no longer has says so instead of reconnecting (SPEC-243 LGN-007)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await browser.locator('main .card:has-text("Claude #3") button:has-text("Sign in again")').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Claude #3');
+  await expect(loginInput(browser)).toBeFocused();
+  await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.forgetLogins('acc_c3'));
+  await expect(dialog.getByRole('alert')).toContainText('This sign-in is no longer available');
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toBeHidden();
+  // Try again starts a new sign-in, which works.
+  await dialog.getByRole('button', 'Try again').click();
+  await enterCode(browser, 'code-again');
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #3 is connected")')).toBeVisible();
 });
