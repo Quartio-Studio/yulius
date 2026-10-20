@@ -1,11 +1,11 @@
 ---
 yulius-task: 9789f9e0-021a-474f-9d62-afc1f0e0837e
-status: in-progress
+status: done
 ---
 
 # SPEC-241: Onboarding works on an empty GitHub repository
 
-Status: in-progress
+Status: done
 Date: 2026-10-20
 Owner: task #227
 Scope authorization: task #227, feedback from an early external user on a fresh install: (1) a new
@@ -86,14 +86,14 @@ Confirmed against `dev` at 33410359.
 
 ## Plan
 
-- [ ] Empty repository records GitHub's default branch on import
-- [ ] Onboarding seeds an empty repository with a first commit and starts
-- [ ] GitHub's accepted permissions reach the create-repository refusal
-- [ ] Create names the missing permission or the installation's repository access
-- [ ] ADR, operations guide, architecture and changes record the empty-repository path
-- [ ] Independent review approved
-- [ ] Repository gate and security scan pass
-- [ ] Merged into dev on green CI
+- [x] Empty repository records GitHub's default branch on import
+- [x] Onboarding seeds an empty repository with a first commit and starts
+- [x] GitHub's accepted permissions reach the create-repository refusal
+- [x] Create names the missing permission or the installation's repository access
+- [x] ADR, operations guide, architecture and changes record the empty-repository path
+- [x] Independent review approved
+- [x] Repository gate and security scan pass
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -132,4 +132,36 @@ Confirmed against `dev` at 33410359.
 
 ## Evidence
 
-Pending.
+- **Reproduction.** On `dev` (33410359) the new tests failed with the user's error: Start
+  onboarding answered 502 `git worktree add ... origin/master failed: fatal: invalid reference:
+  origin/master`, and import recorded `default_branch: "master"` for an empty clone whose GitHub
+  default is `main`.
+- **Tests (`crates/yulius/tests/projects.rs`)**, each failing without the change:
+  `an_empty_repository_records_githubs_default_branch` (EMP-001),
+  `onboarding_an_empty_repository_pushes_a_first_commit_and_starts` (EMP-002: one commit adding
+  `README.md`, by the starting person, pushed with the installation token; the onboarding task's
+  worktree is created at it), `start_onboarding_corrects_the_branch_and_leaves_repositories_with_commits`
+  (record `master` corrected; a repository with commits gets no push),
+  `a_refused_first_commit_leaves_onboarding_pending` (EMP-003),
+  `a_repository_pushed_to_since_import_heals_the_recorded_branch` (EMP-004),
+  `a_create_github_refuses_names_the_missing_app_permission` (CRT-001),
+  `a_created_repository_out_of_the_installations_reach_is_explained` (CRT-002, then Import and
+  onboarding of the left-behind empty repository). Adapter: `yulius-github` client test
+  `a_refused_repository_creation_names_the_accepted_permissions` (header read from the fake
+  GitHub's 403). Units: `creation_refusals` wording and pages; `map_creation` (CRT-003).
+- **Gate.** `scripts/dev ci` at 916bf2b9: exit 0, 2281 tests passed, 17 skipped.
+- **Security.** `scripts/dev security` at 916bf2b9: exit 0, no critical, high or medium finding in
+  the change; the reported findings are in code the branch did not touch (port allocation in
+  `yulius-store`, the fake GitHub's rulesets and fixtures), which Yulius CI files as issues.
+- **Review.** Independent review round 1 at 7de34693: approve with six minor findings and three
+  nits, all fixed in 916bf2b9 (narrower 403 mapping, record healing, a lock around first commits, a
+  single-repository lookup instead of the installation listing, the `main` fallback at import, the
+  spec's evidence; ADR 0187 was reserved with `record_number`). The audit row
+  `sandbox.repository.seeded` is not asserted: the test world's store is in memory and exposes no
+  audit read.
+- **Not tested.** Real GitHub: no throwaway account to create repositories in. The refusals are
+  reproduced with doubles that follow GitHub's documentation (403 with
+  `X-Accepted-GitHub-Permissions`; a created repository the installation token gets 404 for).
+  The onboarding run past its worktree needs a process host, which the projects test world lacks;
+  the run's launch itself is covered elsewhere. Two concurrent starts are serialized by a lock, not
+  exercised by a test.
