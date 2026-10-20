@@ -251,3 +251,36 @@ pub async fn regenerate_recovery(
         recovery_code: code.expose().to_owned(),
     }))
 }
+
+/// The caller's API tokens (SPEC-247 RMT-001).
+pub async fn tokens(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<Vec<yulius_contracts::api::auth::ApiTokenView>>> {
+    Ok(Json(app.api_tokens(&ctx).await?))
+}
+
+/// A new API token of the caller, shown once.
+pub async fn create_token(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<yulius_contracts::api::auth::CreateApiToken>,
+) -> ApiResult<(
+    StatusCode,
+    Json<yulius_contracts::api::auth::CreatedApiToken>,
+)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(app.create_api_token(&ctx, &req).await?),
+    ))
+}
+
+/// Revokes one of the caller's API tokens.
+pub async fn revoke_token(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<StatusCode> {
+    app.revoke_api_token(&ctx, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

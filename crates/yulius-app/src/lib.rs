@@ -8,6 +8,7 @@ pub mod admin;
 pub mod agent_delivery;
 pub mod agent_wait;
 pub mod analytics;
+pub mod api_tokens;
 pub mod auth;
 pub mod auto_choice;
 pub mod automations;

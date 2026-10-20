@@ -824,7 +824,11 @@ impl World {
                 Timestamp(1),
             )
             .await?;
-        let token = self.h.app.issue_api_token(&user, "test").await?;
+        let token = self
+            .h
+            .app
+            .issue_api_token(&user, "test", yulius_domain::permission::TokenScope::Cli)
+            .await?;
         Ok((
             user,
             Creds {

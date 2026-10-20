@@ -797,7 +797,10 @@ pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::e
 pub async fn superadmin_bearer(h: &Harness) -> Result<Creds, Box<dyn std::error::Error>> {
     use yulius_app::ports::store::UserStore;
     let user = h.store.superadmin().await?.ok_or("no superadmin")?;
-    let token = h.app.issue_api_token(&user, "tests").await?;
+    let token = h
+        .app
+        .issue_api_token(&user, "tests", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     Ok(Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()
@@ -1176,7 +1179,9 @@ pub async fn user_with_token(
             user_id,
             token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),
             label: "test".into(),
+            scope: yulius_domain::permission::TokenScope::Cli,
             created_at: Timestamp(1),
+            last_used_at: None,
             revoked_at: None,
         })
         .await?;
@@ -1439,7 +1444,10 @@ pub async fn seed_github_user(
             h.app.now(),
         )
         .await?;
-    let token = h.app.issue_api_token(&user, "tests").await?;
+    let token = h
+        .app
+        .issue_api_token(&user, "tests", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     Ok(Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()

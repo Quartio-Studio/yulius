@@ -425,6 +425,7 @@ async fn uploads_are_bounded_and_leave_nothing_behind() -> TestResult {
         user,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     let mut open = Vec::new();
     for n in 0..MAX_CONCURRENT_UPLOADS {

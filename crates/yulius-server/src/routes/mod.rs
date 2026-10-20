@@ -63,6 +63,15 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/auth/logout", post(setup_auth::logout))
         .route("/api/me", get(setup_auth::me))
+        // Personal API tokens for local agents and scripts (SPEC-247).
+        .route(
+            "/api/me/tokens",
+            get(setup_auth::tokens).post(setup_auth::create_token),
+        )
+        .route(
+            "/api/me/tokens/{id}",
+            axum::routing::delete(setup_auth::revoke_token),
+        )
         .route("/api/device/start", post(setup_auth::device_start))
         .route("/api/device/poll", post(setup_auth::device_poll))
         .route("/api/device/approve", post(setup_auth::device_approve))

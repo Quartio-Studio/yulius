@@ -109,6 +109,7 @@ impl App {
             user,
             csrf_token: None,
             session_hash: None,
+            token: None,
         })
     }
 

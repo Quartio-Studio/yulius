@@ -259,6 +259,7 @@ async fn ready(
         user: user.clone(),
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     let attach = viewer(app, &ctx, &id).await?;
     Ok((id, ctx, attach))

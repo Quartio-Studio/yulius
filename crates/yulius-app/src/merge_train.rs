@@ -730,6 +730,7 @@ impl App {
             user,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         match self
             .merge_task_pr_for_task(&auth, &task.id.to_string())

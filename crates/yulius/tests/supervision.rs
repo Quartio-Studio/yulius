@@ -1238,6 +1238,7 @@ fn a_done_task_lets_its_subscription_go() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let id = new_task(&app, &sandbox, &user, "Finished").await?;
         wait_for("the run", Duration::from_secs(30), || {
@@ -1306,6 +1307,7 @@ fn removing_a_subscription_spares_working_tasks_and_closes_every_done_one() -> T
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
@@ -1457,6 +1459,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.refresh_account_usage(&ctx, "a-claude").await?;
         assert_eq!(

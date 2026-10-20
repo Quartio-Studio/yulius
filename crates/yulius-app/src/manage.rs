@@ -243,6 +243,7 @@ impl App {
             user: self.manage_authority(caller).await?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         })
     }
 
