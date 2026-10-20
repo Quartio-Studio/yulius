@@ -389,15 +389,22 @@ impl App {
         }))
     }
 
-    /// Whether an authenticated context still holds: the user exists and is not disabled, and a
-    /// cookie session is neither revoked nor expired. Open WebSockets re-check it, so logout,
-    /// disabling and session expiry end them as they end new requests (#66).
+    /// Whether an authenticated context still holds: the user exists and is not disabled, a
+    /// cookie session is neither revoked nor expired, and an API token is not revoked. Open
+    /// WebSockets re-check it, so logout, disabling, session expiry and revoking a token end them
+    /// as they end new requests (#66, SPEC-247 RMT-001).
     pub async fn still_signed_in(&self, ctx: &AuthContext) -> bool {
         let Ok(Some(user)) = self.deps.store.user(&ctx.user.id).await else {
             return false;
         };
         if user.disabled_at.is_some() {
             return false;
+        }
+        if let Some(grant) = &ctx.token {
+            return matches!(
+                self.deps.store.api_tokens_of(&user.id).await,
+                Ok(tokens) if tokens.iter().any(|t| t.id == grant.id)
+            );
         }
         match &ctx.session_hash {
             Some(hash) => matches!(
@@ -676,16 +683,24 @@ impl App {
         self.deps.store.purge_device_grants(self.now()).await
     }
 
-    /// Approves or denies a device grant as the signed-in user; approval issues an API token.
+    /// Approves or denies a device grant as the person in the browser; approval issues a `cli`
+    /// API token.
     ///
     /// # Errors
-    /// `NotFound` for unknown/expired codes, `Conflict` when already resolved.
+    /// `Forbidden` for a bearer token, `NotFound` for unknown/expired codes, `Conflict` when
+    /// already resolved.
     pub async fn device_approve(
         &self,
         ctx: &AuthContext,
         user_code: &str,
         approve: bool,
     ) -> AppResult<()> {
+        // A token cannot mint a token that would outlive it (SPEC-247): the person approves.
+        if !ctx.is_browser() {
+            return Err(AppError::Forbidden(
+                "approve a CLI sign-in in the browser, signed in as yourself".into(),
+            ));
+        }
         let now = self.now();
         let grant = self
             .deps

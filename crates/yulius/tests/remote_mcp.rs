@@ -1338,3 +1338,70 @@ async fn a_read_token_opens_no_websocket() -> TestResult {
     );
     Ok(())
 }
+
+/// RMT-001: a revoked token ends at once, also where it was already in use: the open sockets'
+/// recheck refuses it (review finding 3).
+#[tokio::test]
+async fn a_revoked_token_no_longer_holds_its_open_connections() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    let browser = w.browser(&alice).await?;
+    let made = make_token(&w, &browser, "laptop", "operate").await?;
+    let ctx =
+        w.h.app
+            .authenticate_bearer(text(&made["token"]))
+            .await?
+            .ok_or("the token authenticates")?;
+    assert!(w.h.app.still_signed_in(&ctx).await);
+    let revoked = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/me/tokens/{}", text(&made["view"]["id"])),
+        None,
+        &browser,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    assert!(
+        !w.h.app.still_signed_in(&ctx).await,
+        "a socket opened with it closes at its next check"
+    );
+    Ok(())
+}
+
+/// A token cannot mint tokens: `yulius login`'s device approval needs the person in the browser,
+/// so an agent's token cannot approve a CLI token that outlives it (review finding 4).
+#[tokio::test]
+async fn only_the_browser_approves_a_cli_sign_in() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, browser, operate) = person(&w, "alice").await?;
+    let start = call(
+        &w.h.router,
+        Method::POST,
+        "/api/device/start",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+    let code = json!({"user_code": start.body["user_code"], "approve": true});
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/device/approve",
+        Some(code.clone()),
+        &operate,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let approved = call(
+        &w.h.router,
+        Method::POST,
+        "/api/device/approve",
+        Some(code),
+        &browser,
+    )
+    .await?;
+    assert_eq!(approved.status, StatusCode::NO_CONTENT, "{}", approved.body);
+    Ok(())
+}
