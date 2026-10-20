@@ -39,7 +39,9 @@ Confirmed against `dev` at 33410359.
   password invalid under its field and keeps the submit button disabled; the field hint says "At
   least 12 characters." for setup and for recovery. It counts `value.length` (UTF-16 units), so a
   password of astral characters (emoji) passes the UI's count but not the server's.
-- **Mock.** `mock.js` `POST /api/setup` and `/api/auth/recover` check no length at all.
+- **Mock.** `mock.js` `POST /api/setup` and `/api/auth/recover` check no length at all, and its
+  list of public routes lacks `/api/auth/recovery` and `/api/auth/recover`, so "Forgot password?"
+  signed out says "Couldn’t check recovery." in the mock (the server serves both signed out).
 - **Docs.** No document, spec or ADR states the number 12. SPEC-001 ACC-001 and ACC-011 say a
   password is chosen without saying how long; `docs/api.md` lists the endpoints without their 422
   for a short password.
@@ -55,7 +57,7 @@ Confirmed against `dev` at 33410359.
 | PWM-002 | No other rule refuses a password: no composition rules, no blocklist of common or keyboard-pattern passwords. |
 | PWM-003 | The setup and recovery forms say "At least 8 characters; 12 or more recommended." under the password field. Below 8 characters (counted as code points, as the server does) the field is invalid with "Use at least 8 characters." and the form cannot be sent. |
 | PWM-004 | At 8 characters or more the form can be sent, and a non-blocking advice note replaces the field hint while the password is weak: shorter than 12 characters ("Short passwords are easier to guess: at least 12 characters recommended.") or, at 12 or more, made of fewer than 5 distinct characters ("Repeated characters are easy to guess: a phrase of several words is stronger."). The note is not an error: the field is not marked invalid. |
-| PWM-005 | The mock refuses a password under 8 characters at setup and recovery with the server's message, so the UI is tested against the same rule. |
+| PWM-005 | The mock refuses a password under 8 characters at setup and recovery with the server's message, and serves the recovery routes signed out as the server does, so the UI is tested against the same rule. |
 | PWM-006 | Login rate limiting (ACC-013), the recovery-code lockout (ACC-011) and the password hashing are unchanged. |
 
 ## Plan

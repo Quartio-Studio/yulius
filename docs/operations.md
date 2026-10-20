@@ -728,8 +728,8 @@ YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
 
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
-2. Open the public URL, enter the token, choose the superadmin password (twice) and confirm both
-   warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
+2. Open the public URL, enter the token, choose the superadmin password (twice; at least 8
+   characters, 12 or more recommended) and confirm both warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
    shown next. The last two steps ask for the Jev API key and the Vidoc API key (both optional;
    skip them to add them later in Settings → Instance).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
