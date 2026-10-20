@@ -194,7 +194,10 @@ mod tests {
             integration_environments: vec!["dev".into()],
             playground: false,
         };
-        let path = format!("/var/lib/yulius/sandboxes/{}/home/.yulius/tasks/999.md", "x".repeat(36));
+        let path = format!(
+            "/var/lib/yulius/sandboxes/{}/home/.yulius/tasks/999.md",
+            "x".repeat(36)
+        );
         let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
         for t in templates() {
             let goal = one_line(&goal_condition(&Request::parse(&t.prompt), &path, &done));
@@ -202,9 +205,14 @@ mod tests {
             assert!(goal.contains(&first), "{}: {goal}", t.id);
         }
         // Its last step comes after the cut: the goal must say the run ends with its summary.
-        let issues = template("open-issues").map(|t| one_line(&t.prompt)).unwrap_or_default();
+        let issues = template("open-issues")
+            .map(|t| one_line(&t.prompt))
+            .unwrap_or_default();
         let first = issues.split(" 1. Collect.").next().unwrap_or_default();
-        for wording in ["opens no pull request", "does not wait for the tasks it starts"] {
+        for wording in [
+            "opens no pull request",
+            "does not wait for the tasks it starts",
+        ] {
             assert!(first.contains(wording), "{wording}");
         }
     }

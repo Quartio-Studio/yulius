@@ -55,7 +55,7 @@ Confirmed against `dev` at 193b8e81.
 | ID | Requirement |
 | --- | --- |
 | AGM-001 | Every run of an automation (scheduled, catch-up, Run now; any start choice) creates its task in goal mode. The session gets the task's request file and its `/goal` as TSK-010 describes. The definition of done (SPEC-011) covers a run that changes nothing in the repository: "its result reported". |
-| AGM-002 | Nothing else about an automation's task changes: its origin, title, prompt, workflow steps, start choice and the previous-active rule. |
+| AGM-002 | Nothing else about an automation's task changes: its origin, title, the prompt it is given, workflow steps, start choice and the previous-active rule. |
 | AGM-003 | A goal longer than Claude Code's cap (4,000 UTF-16 units) is cut, so the goal must still say how the run ends. Each ready-made automation's first paragraph, which says what the run does and how it ends, stays inside its goal. "Work through open issues" (5.6k characters) says in that paragraph that the run ends with its summary once the tasks are started, does not wait for them, and opens no pull request. Before this change that sentence was its last line, which the cut dropped. |
 
 ## Plan
