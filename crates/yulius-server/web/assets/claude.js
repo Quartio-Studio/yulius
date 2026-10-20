@@ -22,7 +22,7 @@ const isAdmin = (me) => Boolean(me && me.user && (me.user.is_superadmin || me.us
  * The required step while no Claude account is usable: a Connect Claude button for an instance
  * administrator, else who connects one. `what` says what waits for it.
  */
-export function connectClaudeStep(me, what = 'Tasks and onboarding start once one is connected.') {
+export function connectClaudeStep(me, what = 'Tasks and onboarding start once one is usable.') {
   return h('div', { class: 'banner banner-warn claude-connect', role: 'status' },
     icon('warn'),
     h('span', { class: 'banner-text' },

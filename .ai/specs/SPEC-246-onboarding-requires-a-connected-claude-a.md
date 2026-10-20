@@ -194,7 +194,11 @@ Confirmed against `dev` at 06b58375 (SPEC-241 merged).
   refuses after the hold; it asserts the toasts exactly and now fails without the intake fix
   ("Created as one task." first) and passes with it (3 runs). Also: the Connect Claude step reads
   "none is usable yet: connect one, or sign one in again"; `intake_proposal` and the proposal's API
-  row name `claude_account_required`. Round 4 reviewed the head carrying this.
+  row name `claude_account_required`. Round 4 (65714ca0): approve; its wording nit fixed after it
+  (the step's trailing sentences say "once one is usable", and Home's no longer tells a
+  non-administrator to connect one; the e2e pins the whole sentence). Dev merged at b92a2bd6,
+  which brings dev's `rustls-webpki` 0.103.16 / `webpki-root-certs` 1.0.10 (RUSTSEC-2026-0382,
+  -0383 failed `cargo deny` on 65714ca0 before it). Round 5 reviewed the head carrying this.
 - **Gates** on e5ea247f (dev merged at b06db25c): `scripts/dev ci` exit 0 (2324 tests passed, 17
   skipped; lint, macOS compile, deps, doctests); e2e `npx e2e run` 656 passed, 1 skipped. On
   eba5c0b6: `scripts/dev ci` exit 0 (2325 passed), e2e 657 passed. The final head is gated again

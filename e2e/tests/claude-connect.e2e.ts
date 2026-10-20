@@ -16,7 +16,7 @@ test('a fresh instance asks to connect Claude before anything that runs an agent
 
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Try Yulius on your own code');
   const step = browser.locator('.claude-connect');
-  await expect(step).toContainText('Connect Claude first.');
+  await expect(step).toHaveText('Connect Claude first. Agents run on a Claude subscription, and none is usable yet: connect one, or sign one in again. Playgrounds and tasks start once one is usable. Connect Claude');
   await expect(step.getByRole('link', { name: 'Connect Claude' })).toHaveAttribute('href', /\/admin\/accounts\?add=1$/);
   // Nothing that would start an agent is offered before it.
   await expect(screen.getByRole('group', 'Project folder')).toHaveCount(0);
@@ -47,7 +47,7 @@ test('with sandboxes, Home and the composer say so first and a refused start lin
   await expect(screen.getByRole('button', 'Import repository')).toBeDisabled();
 
   await app.open(mock('/s/studio', '&claude=0'));
-  await expect(browser.locator('.claude-connect')).toContainText('Tasks start once one is connected.');
+  await expect(browser.locator('.claude-connect')).toContainText('Tasks start once one is usable.');
   await screen.getByRole('textbox', 'Task prompt').fill('Write the checkout UI tests');
   await screen.getByRole('button', 'Start task').click();
   // The server refuses before anything exists (CLA-002); the toast offers the way out.
@@ -60,7 +60,7 @@ test('with sandboxes, Home and the composer say so first and a refused start lin
 test('onboarding waits for Claude and a start that failed for it is offered again', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product', '&claude=0&onboarding=failed'));
   const gate = screen.getByRole('region', 'Onboard product first');
-  await expect(browser.locator('.onboarding-gate .claude-connect')).toContainText('Onboarding starts once one is connected.');
+  await expect(browser.locator('.onboarding-gate .claude-connect')).toContainText('Onboarding starts once one is usable.');
   await expect(gate).toContainText('Onboarding couldn’t start because no Claude account was connected.');
   await expect(gate.getByRole('button', 'Retry onboarding')).toBeDisabled();
   expect(await axeViolations(browser)).toEqual([]);

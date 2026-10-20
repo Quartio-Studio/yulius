@@ -1307,7 +1307,7 @@ export function mountComposer(ctx, sandbox) {
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
     // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
-    else if (!connected && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is connected.'));
+    else if (!connected && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
@@ -1409,7 +1409,7 @@ export function mountComposer(ctx, sandbox) {
       plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.steps.map((step) => h('li', null, step)))
         : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
       h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
-      connected ? null : connectClaudeStep(ctx.store.state.me, 'Onboarding starts once one is connected.'),
+      connected ? null : connectClaudeStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
       failed ? h('p', { class: 'onboarding-gate-failed' }, prep.status === 'failed_no_account'
         ? `Onboarding couldn’t start because no Claude account was connected.${connected ? ' One is connected now.' : ''}`
         : 'Onboarding couldn’t start last time.') : null,

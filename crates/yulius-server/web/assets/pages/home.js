@@ -134,7 +134,7 @@ export function mountHomePage(ctx) {
       // The first step on a fresh instance: tasks need a Claude account (SPEC-246 CLA-007), GitHub
       // can wait.
       needsClaude ? [
-        connectClaudeStep(store.state.me, 'Connect one, then drop a project folder or start from a template here.'),
+        connectClaudeStep(store.state.me, 'Playgrounds and tasks start once one is usable.'),
         h('p', { class: 'text-2' }, 'Then drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere.'),
       ] : [
         h('p', { class: 'text-2' }, 'Drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere, so GitHub need not be connected first.'),
