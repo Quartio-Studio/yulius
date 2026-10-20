@@ -176,6 +176,9 @@ function seed(params) {
     failedPosts: 0,
 
     nextId: 100,
+    // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
+    logins: new Map(),
+    loginCancels: [],
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -2919,7 +2922,7 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
-  return json(201, { account, login_id: `login_${account.id}` });
+  return json(201, { account, login_id: startLogin(db, account.id) });
 });
 route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   adminOnly(db);
@@ -2937,6 +2940,7 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
   if (account.in_use_by > 0) fail(409, 'conflict', `${account.label} is used by ${account.in_use_by} live task(s)`);
+  for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
   db.accounts = db.accounts.filter((a) => a.id !== p[0]);
   return json(204);
 });
@@ -2954,7 +2958,18 @@ route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
-  return { account, login_id: `login_${account.id}` };
+  return { account, login_id: startLogin(db, account.id) };
+});
+// Stops a running sign-in (SPEC-243 LGN-002); `loginCancels` records the cancelled ids.
+route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
+  adminOnly(db);
+  const session = db.logins.get(p[0]);
+  if (!session) fail(404, 'not_found', 'not found');
+  if (!session.done) {
+    db.loginCancels.push(p[0]);
+    session.end('cancelled', null);
+  }
+  return json(204);
 });
 // GET /api/admin/github and POST /api/admin/github/manifest are documented in docs/api.md but
 // not routed by the server yet: like the server, the mock answers 404 (the page falls back
@@ -4532,18 +4547,30 @@ class ShellSession {
   closed(ws) { this.viewers.delete(ws); }
 }
 
+/** Starts a sign-in for `accountId`, replacing (cancelling) one still running, as the server does. */
+function startLogin(db, accountId) {
+  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) session.end('cancelled', null);
+  db.nextId += 1;
+  const loginId = `login_${accountId}_${db.nextId}`;
+  db.logins.set(loginId, new LoginSession(db, accountId));
+  return loginId;
+}
+
 /**
  * Fake provider login for the account login terminal: a fixed 500×40 PTY; `state.status`
- * goes running → ok and the exit frame carries the same status. Tokens are masked.
+ * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
+ * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
  */
 class LoginSession {
-  constructor(db, loginId) {
+  constructor(db, accountId) {
     this.db = db;
-    this.accountId = loginId.replace(/^login_/, '');
+    this.accountId = accountId;
     this.seq = 0;
     this.input = '';
     this.ws = null;
     this.done = false;
+    this.status = 'running';
+    this.code = null;
   }
 
   out(text) {
@@ -4566,9 +4593,10 @@ class LoginSession {
         'Open this URL in your browser and approve access:',
         c(39, 'https://claude.ai/oauth/authorize?code=true&client_id=mock&state=xyz'),
         '',
-        'Paste the authorization code here (any text in mock mode), then press Enter:',
+        'Paste the authorization code here (any text in mock mode; "fail" fails), then press Enter:',
         '> ',
       ].join('\r\n')));
+      if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code }));
     } else if (msg.type === 'input' && !this.done) {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') { this.finish(); return; }
@@ -4578,20 +4606,41 @@ class LoginSession {
   }
 
   state() {
-    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
+    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.status };
   }
 
   finish() {
-    this.done = true;
-    this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     const account = this.db.accounts.find((a) => a.id === this.accountId);
+    if (this.input === 'fail') {
+      this.out(`\r\n${c(203, 'OAuth error: the authorization code was not accepted.')}\r\n`);
+      if (account) {
+        // Like the server: a working account keeps its state and notes the failed re-login.
+        const working = account.status === 'ok' || account.status === 'limited';
+        Object.assign(account, working
+          ? { last_error: 're-login failed: the sign-in ended without producing a token (exit code 1)' }
+          : { status: 'error', last_error: 'the sign-in ended without producing a token (exit code 1)' });
+        emit(this.db, { type: 'account.updated', account });
+      }
+      this.end('error', 1);
+      return;
+    }
+    this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
       emit(this.db, { type: 'account.updated', account });
     }
+    this.end('ok', 0);
+  }
+
+  /** Ends the sign-in with `status` (ok | error | cancelled) and tells the viewer. */
+  end(status, code) {
+    if (this.done) return;
+    this.done = true;
+    this.status = status;
+    this.code = code;
     if (this.ws) {
       this.ws.push(JSON.stringify(this.state()));
-      this.ws.push(JSON.stringify({ type: 'exit', status: 'ok', code: 0 }));
+      this.ws.push(JSON.stringify({ type: 'exit', status, code }));
     }
   }
 
@@ -4900,7 +4949,9 @@ function openSocket(db, path) {
     }
     ws.server = shell.session;
   } else if ((m = route_.match(/^\/api\/admin\/accounts\/login\/([^/]+)\/terminal$/))) {
-    ws.server = new LoginSession(db, decodeURIComponent(m[1]));
+    const session = db.logins.get(decodeURIComponent(m[1]));
+    if (!session) { fatal('not_found', 'This sign-in has ended or expired.'); return ws; }
+    ws.server = session;
   } else if ((m = route_.match(/^\/api\/sandboxes\/([^/]+)\/browser$/))) {
     const sandbox = db.sandboxes.find((s) => s.id === decodeURIComponent(m[1]));
     if (!sandbox) { fatal('not_found', 'No such sandbox.'); return ws; }
@@ -5080,6 +5131,8 @@ export function createMockTransport(params) {
   // A file's text in the mock repository (`repoFile('sb_studio', 'long.md', text)`), before it is opened.
   db.repoFile = (sandboxId, path, text, root = 'sandbox') => { repoTree(db, sandboxId, root).files.set(path, text); };
   db.resyncNow = () => resync(db);
+  // Another administrator signs a subscription in again: its running sign-in ends `cancelled`.
+  db.startLogin = (accountId) => startLogin(db, accountId);
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';

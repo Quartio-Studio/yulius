@@ -1323,9 +1323,11 @@ impl App {
                     human_duration(self.login_timeout())
                 ),
                 Ending::Lost => format!("the sign-in process was lost; {reason}"),
-                Ending::Exited(exit) if !exit.is_clean() => {
-                    format!("{reason} (exit code {:?})", exit.code)
-                }
+                Ending::Exited(exit) if !exit.is_clean() => match (exit.code, exit.signal) {
+                    (Some(code), _) => format!("{reason} (exit code {code})"),
+                    (None, Some(signal)) => format!("{reason} (stopped by signal {signal})"),
+                    (None, None) => reason,
+                },
                 _ => reason,
             }))
         };

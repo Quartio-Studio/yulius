@@ -1,4 +1,4 @@
-import { type Browser, test } from '@e2e-dev/web';
+import { type Browser, type Screen, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
@@ -162,4 +162,89 @@ test('at phone width the Status panel and the Dashboard keep both percents and d
   }
 
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+// ---- Claude's sign-in confirms itself (SPEC-243)
+
+type MockLogins = { __yuliusMock: { loginCancels: string[]; startLogin: (accountId: string) => string } };
+type MockAccounts = { __yuliusMock: { accounts: { label: string; email?: string }[] } };
+
+const loginInput = (browser: Browser) => browser.locator('.login-terminal .xterm-helper-textarea');
+
+/** Opens "Add subscription", names it and continues to Claude's sign-in, ready for keys. */
+async function addSubscription(browser: Browser, screen: Screen, label: string) {
+  await screen.getByRole('button', 'Add subscription').first().click();
+  const add = screen.getByRole('dialog', 'Add a Claude subscription');
+  await add.getByRole('textbox', /^Name/).fill(label);
+  await add.getByRole('button', 'Continue to sign-in').click();
+  const dialog = screen.getByRole('dialog', `Sign in · ${label}`);
+  await expect(dialog.getByText(/This window closes by itself once the subscription is connected/)).toBeVisible();
+  await expect(loginInput(browser)).toBeFocused();
+  return dialog;
+}
+
+/** Types the authorization code into the sign-in terminal and submits it. */
+async function enterCode(browser: Browser, code: string) {
+  await expect(loginInput(browser)).toBeFocused();
+  await browser.keyboard.type(code);
+  await browser.keyboard.press('Enter');
+}
+
+test('a finished Claude sign-in closes its dialog by itself and says the subscription is connected (SPEC-243 LGN-003)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const dialog = await addSubscription(browser, screen, 'Claude #9');
+  await enterCode(browser, 'code-from-claude');
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #9 is connected")')).toBeVisible();
+  // The new subscription's card reads as signed in: no "Sign in again" on it.
+  await expect(browser.locator('main .card:has-text("Claude #9")')).toBeVisible();
+  await expect(browser.locator('main .card:has-text("Claude #9") button:has-text("Sign in again")')).toHaveCount(0);
+});
+
+test('a failed Claude sign-in says why and Try again signs in in the same dialog (SPEC-243 LGN-004, LGN-005)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const dialog = await addSubscription(browser, screen, 'Claude #10');
+  await enterCode(browser, 'fail');
+  const outcome = dialog.getByRole('alert');
+  await expect(outcome).toContainText('Sign-in failed');
+  await expect(outcome).toContainText('The sign-in ended without producing a token');
+  await expect(dialog.getByRole('button', 'Try again')).toBeVisible();
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await dialog.getByRole('button', 'Try again').click();
+  await expect(outcome).toBeHidden();
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toBeVisible();
+  // Once the account view reports the sign-in's email (UI-022, task #230), the toast names it.
+  await browser.evaluate(() => {
+    const account = (window as unknown as MockAccounts).__yuliusMock.accounts.find((a) => a.label === 'Claude #10');
+    if (account) account.email = 'pawel@example.com';
+  });
+  await enterCode(browser, 'second-code');
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #10 is connected as pawel@example.com")')).toBeVisible();
+});
+
+test('closing a running Claude sign-in cancels it and says the subscription is not signed in (SPEC-243 LGN-006)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const dialog = await addSubscription(browser, screen, 'Claude #11');
+  await dialog.getByRole('button', 'Cancel sign-in').click();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-msg:has-text("Sign-in cancelled: Claude #11 is not signed in")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.loginCancels.length)).toBe(1);
+  await expect(browser.locator('main .card:has-text("Claude #11") button:has-text("Sign in again")')).toBeVisible();
+});
+
+test('a Claude sign-in replaced elsewhere says it was cancelled, with Try again (SPEC-243 LGN-007)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await browser.locator('main .card:has-text("Claude #3") button:has-text("Sign in again")').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Claude #3');
+  await expect(loginInput(browser)).toBeFocused();
+  await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.startLogin('acc_c3'));
+  await expect(dialog.getByRole('alert')).toContainText('This sign-in was cancelled');
+  await expect(dialog.getByRole('button', 'Try again')).toBeVisible();
+  // Closed after it ended, nothing is cancelled again.
+  await dialog.getByRole('button', 'Close').last().click();
+  await expect(dialog).toBeHidden();
+  expect(await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.loginCancels.length)).toBe(0);
 });

@@ -561,7 +561,7 @@ async fn failed_logins_record_errors_and_relogin_failures_keep_working_accounts(
     assert_eq!(kept["status"], "ok");
     let message = kept["last_error"].as_str().ok_or("last_error")?;
     assert!(message.starts_with("re-login failed"), "{message}");
-    assert!(message.contains("exit code Some(2)"), "{message}");
+    assert!(message.ends_with("(exit code 2)"), "{message}");
     let record = s.h.store.account(&id).await?.ok_or("account")?;
     assert_eq!(
         s.h.app

@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar } from '../dom.js';
+import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar } from '../dom.js';
 import { compact } from '../format.js';
 import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
@@ -163,39 +163,118 @@ export function recoveryCard(ctx) {
 
 // ---------------------------------------------------------------- accounts
 
-/** Account login terminal modal (ROT-002): the provider's own sign-in over the terminal protocol. */
-export function openLoginTerminal(ctx, loginId, label, onFinish) {
+/** What the sign-in dialog says while Claude's sign-in runs. */
+const SIGN_IN_RUNNING = 'Finish Claude’s sign-in in the terminal below: open the link, approve, and paste the code if Claude asks for it. This window closes by itself once the subscription is connected. Secrets are masked for other viewers.';
+
+/** A server sentence as the start of a sentence. */
+const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * Account login terminal modal (ROT-002, SPEC-243): Claude's own sign-in over the terminal
+ * protocol. Success closes the dialog by itself and a toast names the subscription (with its
+ * email once the account reports one); a failed, cancelled or lost sign-in says so with Try
+ * again; closing a sign-in that still runs cancels it on the server.
+ */
+export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   let terminal = null;
-  const status = h('span', { class: 'muted small' }, 'Complete the provider sign-in in the terminal below. Secrets are masked for other viewers.');
+  let current = loginId;
+  // running → ok | error | cancelled | lost (the server no longer has the sign-in).
+  let phase = 'running';
+  const status = h('span', { class: 'muted small' }, SIGN_IN_RUNNING);
+  const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
-    title: `Sign in · ${label}`,
+    title: `Sign in · ${account.label}`,
     full: true,
-    body: h('div', { class: 'stack fill-column' }, status, host),
-    actions: [{ label: 'Close' }],
-    onClose: () => { if (terminal) terminal.destroy(); onFinish(); },
-  });
-  // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
-  // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
-  terminal = createTerminalView({
-    transport: ctx.transport,
-    path: `/api/admin/accounts/login/${enc(loginId)}/terminal`,
-    onLink: (uri, event) => ctx.openLink(uri, event),
-    readOnlyLabel: () => 'The login has finished.',
-    followServerSize: true,
-    onExit: (exit) => {
-      const ok = exit.status === 'ok';
-      const code = exit.code !== undefined && exit.code !== null ? `, exit code ${exit.code}` : '';
-      status.textContent = ok
-        ? 'Signed in: the credential is stored encrypted for this subscription. You can close this window.'
-        : exit.status === 'cancelled'
-          ? `The login was cancelled${code}.`
-          : `The login ended without a credential (${exit.status}${code}). See the subscription's last error.`;
-      status.className = ok ? 'small' : 'field-error';
+    body: h('div', { class: 'stack fill-column' }, status, outcome, host),
+    onClose: () => {
+      if (terminal) terminal.destroy();
+      if (phase === 'running') cancel();
+      onFinish();
     },
   });
-  host.append(terminal.el);
-  requestAnimationFrame(() => { terminal.start(); terminal.focus(); });
+  const runningActions = () => modal.setActions([{ label: 'Cancel sign-in' }]);
+
+  function cancel() {
+    phase = 'cancelled';
+    const working = account.status === 'ok' || account.status === 'limited';
+    ctx.api.post(`/api/admin/accounts/login/${enc(current)}/cancel`).then(() => {
+      toast(working ? `Sign-in cancelled: ${account.label} keeps its current sign-in.` : `Sign-in cancelled: ${account.label} is not signed in. Sign it in again from its card when you are ready.`);
+    }).catch((error) => errorToast(error, 'Couldn’t cancel the sign-in'));
+  }
+
+  /** The account as the server has it now (its email and last error), or null. */
+  const fresh = () => ctx.api.get('/api/admin/accounts')
+    .then((list) => (Array.isArray(list) ? list.find((a) => a.id === account.id) : null) || null)
+    .catch(() => null);
+
+  async function succeeded() {
+    phase = 'ok';
+    modal.close();
+    const now = await fresh();
+    const email = now && now.email ? ` as ${now.email}` : '';
+    toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
+  }
+
+  /** Shows why the sign-in ended without a credential, with Try again (LGN-004, LGN-007). */
+  function ended(title, text, retry = true) {
+    status.hidden = true;
+    setChildren(outcome, icon('warn', { size: 16 }), h('div', { class: 'banner-text' }, h('strong', null, title), text ? h('div', { class: 'small' }, text) : null));
+    outcome.hidden = false;
+    modal.setActions([{ label: 'Close' }, ...(retry ? [{ label: 'Try again', kind: 'primary', run: async () => { await again(); return false; } }] : [])]);
+  }
+
+  async function failed() {
+    phase = 'error';
+    ended('Sign-in failed', '');
+    const now = await fresh();
+    if (phase !== 'error') return;
+    const reason = now && now.last_error ? sentence(now.last_error.replace(/^re-login failed: /, '')).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
+    ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
+  }
+
+  /** Try again: a new sign-in of the same subscription in this dialog (LGN-005). */
+  async function again() {
+    const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
+    current = result.login_id;
+    phase = 'running';
+    outcome.hidden = true;
+    status.hidden = false;
+    if (terminal) terminal.destroy();
+    host.replaceChildren();
+    start();
+  }
+
+  function start() {
+    runningActions();
+    // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
+    // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
+    const view = createTerminalView({
+      transport: ctx.transport,
+      path: `/api/admin/accounts/login/${enc(current)}/terminal`,
+      onLink: (uri, event) => ctx.openLink(uri, event),
+      readOnlyLabel: () => 'The sign-in has ended.',
+      followServerSize: true,
+      onExit: (exit) => {
+        if (terminal !== view || phase !== 'running') return;
+        if (exit.status === 'ok') succeeded();
+        else if (exit.status === 'cancelled') {
+          phase = 'cancelled';
+          ended('This sign-in was cancelled', 'Another sign-in of this subscription replaced it, or the subscription was removed.');
+        } else failed();
+      },
+      onFatal: (message) => {
+        if (terminal !== view || phase !== 'running') return;
+        phase = 'lost';
+        ended('This sign-in is no longer available', message ? sentence(message) : 'It ended or expired.');
+      },
+    });
+    terminal = view;
+    host.append(view.el);
+    requestAnimationFrame(() => { if (terminal === view) { view.start(); view.focus(); } });
+  }
+
+  start();
   return modal;
 }
 
@@ -252,7 +331,7 @@ export function mountAccountsPage(ctx, route) {
           broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: async () => {
             try {
               const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
-              openLoginTerminal(ctx, result.login_id, account.label, reload);
+              openLoginTerminal(ctx, { loginId: result.login_id, account, onFinish: reload });
             } catch (error) {
               errorToast(error, 'Couldn’t start the sign-in');
             }
@@ -282,7 +361,7 @@ export function mountAccountsPage(ctx, route) {
           if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
           const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
           reload();
-          openLoginTerminal(ctx, result.login_id, result.account ? result.account.label : label.value.trim(), reload);
+          openLoginTerminal(ctx, { loginId: result.login_id, account: result.account || { id: null, label: label.value.trim(), status: 'pending_login' }, onFinish: reload });
           return true;
         } },
       ],
