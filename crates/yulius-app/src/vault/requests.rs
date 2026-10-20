@@ -106,6 +106,21 @@ impl App {
         )
     }
 
+    /// The Secrets page of a sandbox at the tab of `record`'s scope (SPEC-245): Project, Global or
+    /// Personal, where its requests wait.
+    pub(super) fn agent_secret_link(&self, slug: &str, record: &VaultSecretRecord) -> String {
+        let section = match record.scope() {
+            crate::ports::vault::AgentScope::Project(_) => "agents",
+            crate::ports::vault::AgentScope::Global => "global",
+            crate::ports::vault::AgentScope::Personal(_) => "personal",
+        };
+        format!(
+            "{}/s/{}/secrets?section={section}",
+            self.config.public_url,
+            percent_encode(slug, false)
+        )
+    }
+
     /// Tells the open Secrets pages that an agent asked for something about `record` (or created
     /// it, SPEC-211), so it shows without a reload (SPEC-209): those of its sandbox, or every
     /// sandbox's for a secret of every sandbox. The event names nothing; the page reads the list
@@ -156,7 +171,7 @@ impl App {
             .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
-        let link = self.agent_secrets_link(&sandbox.slug);
+        let link = self.agent_secret_link(&sandbox.slug, &record);
         if record.auto_allow {
             return self
                 .auto_bind(user, &record, &asked, merged, link, args.reason.as_deref())

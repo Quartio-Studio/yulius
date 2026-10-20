@@ -65,7 +65,7 @@ const CLIENT_CACHE_MAX: usize = 1024;
 
 /// Recently authenticated proxy clients: (token digest, client, when).
 #[derive(Default)]
-pub(crate) struct ClientCache(Mutex<Vec<(Vec<u8>, EgressClient, Instant)>>);
+pub(crate) struct ClientCache(pub(super) Mutex<Vec<(Vec<u8>, EgressClient, Instant)>>);
 
 /// Most CI jobs holding a proxy credential at once (far above the CI's job slots).
 const CI_CLIENTS_MAX: usize = 256;

@@ -152,7 +152,13 @@ impl App {
         record: &VaultSecretRecord,
         manage: bool,
     ) -> AppResult<AgentSecretView> {
-        self.agent_view_in(record, manage, Here::default()).await
+        // Outside a project's list a project secret is on; a global or personal one reads off
+        // (the list says where it is on).
+        let here = Here {
+            enabled: record.sandbox_id.is_some(),
+            shadowed_by: None,
+        };
+        self.agent_view_in(record, manage, here).await
     }
 
     /// [`Self::agent_view`] in a project's list: whether it is switched on there and what
@@ -285,6 +291,20 @@ impl App {
                 self.require(&ctx.user, &sid, Action::Work).await?;
             }
         }
+        if on
+            && !self
+                .deps
+                .store
+                .vault_switched_on(&sid)
+                .await?
+                .iter()
+                .any(|s| s == id)
+            && self.deps.store.vault_agent_in(&sid).await?.len() >= MAX_AGENT_SECRETS
+        {
+            return Err(AppError::Capacity(format!(
+                "at most {MAX_AGENT_SECRETS} agent secrets apply to one sandbox"
+            )));
+        }
         let changed = self
             .deps
             .store
@@ -370,7 +390,12 @@ impl App {
                 auto_allow: input.auto_allow.unwrap_or(true),
             })
             .await?;
-        self.agent_view(&record, true).await
+        // Switched on for the sandbox it was added in (SCP-003).
+        let here = Here {
+            enabled: true,
+            shadowed_by: None,
+        };
+        self.agent_view_in(&record, true, here).await
     }
 
     /// Stores a new agent secret and audits it (`vault.agent.create`, `origin` appended to the
@@ -435,11 +460,12 @@ impl App {
             cd_prod: false,
             auto_allow,
         };
-        self.deps.store.vault_insert(&record).await?;
-        if !matches!(scope, AgentScope::Project(_)) {
+        if matches!(scope, AgentScope::Project(_)) {
+            self.deps.store.vault_insert(&record).await?;
+        } else {
             self.deps
                 .store
-                .vault_switch(&id, sandbox, true, by, now)
+                .vault_insert_on(&record, sandbox, by, now)
                 .await?;
         }
         self.vault.bump();

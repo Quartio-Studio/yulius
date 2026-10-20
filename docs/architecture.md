@@ -856,14 +856,17 @@ secrets an administrator made team-wide stay team-wide.
 
 Since SPEC-245 ([decision 0186](decisions/0186-agent-secrets-are-project-global-or-personal.md))
 an agent secret is a project's (`sandbox_id`), global (no sandbox, no owner) or personal
-(`owner_id`, cascading with the user). `vault_enabled (secret_id, sandbox_id)` switches a global or
+(`owner_id`, removed with the user's row). `vault_enabled (secret_id, sandbox_id)` switches a global or
 personal secret on for a project; a new one is on for the project it was added from. Names are
 unique within a scope. `VaultStore::vault_agent_in(sandbox)` lists the candidates (the project's,
 and the global and personal ones, of every owner, switched on there); `vault/reach.rs` resolves
 them for a `Holder`: one per name, project > personal > global, then the instance Vidoc key, and
 never another person's. A task's holder is its owner unless an automation started it
 (`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
-nobody. `EgressClient::person` carries the holder to the proxy. A personal secret is never copied
+nobody, and a task an automation's task creates is an automation task too.
+`EgressClient::person` carries the holder to the proxy; a hand-over drops the task's cached
+credentials (`forget_egress_clients`), and `task_message` from anyone but the owner refuses a task
+holding personal secrets. A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
 gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by

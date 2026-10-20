@@ -357,6 +357,31 @@ impl App {
         Ok(records)
     }
 
+    /// Whether runs of `task` get a personal secret (its owner's, switched on for its project).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn holds_personal_secrets(
+        &self,
+        task: &crate::model::TaskRecord,
+    ) -> AppResult<bool> {
+        Ok(self
+            .resolved_agent_secrets(&task.sandbox_id, Holder::of_task(task))
+            .await?
+            .iter()
+            .any(|r| matches!(r.scope(), crate::ports::vault::AgentScope::Personal(_))))
+    }
+
+    /// Forgets the cached proxy credentials of `task`'s runs: its owner changed, so the next
+    /// request resolves the new owner's personal secrets (SPEC-245 review M2).
+    pub(crate) fn forget_egress_clients(&self, task: &yulius_domain::ids::TaskId) {
+        if let Ok(mut cache) = self.vault.clients.0.lock() {
+            cache.retain(|(_, client, _)| {
+                !matches!(&client.caller, crate::ports::egress::EgressCaller::Agent { task_id, .. } if task_id == task)
+            });
+        }
+    }
+
     /// Every agent secret that can reach some run of `sandbox` (`holder: None`: every person's
     /// personal ones switched on for it, RES-006), or a run of `holder` (its own personal ones,
     /// never another person's), with the instance Vidoc key: what redaction covers.

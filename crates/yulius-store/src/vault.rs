@@ -159,6 +159,29 @@ impl VaultStore for SqliteStore {
         .await
     }
 
+    async fn vault_insert_on(
+        &self,
+        record: &VaultSecretRecord,
+        sandbox: &SandboxId,
+        by: &str,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (r, sandbox, by) = (record.clone(), sandbox.as_str().to_owned(), by.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            insert_row(&tx, &r)?;
+            tx.execute(
+                "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![r.id, sandbox, by, at.0],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn vault_update(
         &self,
         record: &VaultSecretRecord,
@@ -1044,7 +1067,7 @@ mod tests {
                 store.vault_update(&renamed, &seen).await,
                 Err(AppError::Conflict(_))
             ),
-            "an edit checks the stored scope's names too"
+            "an edit checks the names of the scope it writes"
         );
         assert_eq!(
             store.vault_get("p1").await?.ok_or("p1")?.owner_id,
@@ -1093,6 +1116,19 @@ mod tests {
             records.into_iter().map(|r| r.id).collect()
         };
         assert_eq!(ids(store.vault_agent_in(&s1).await?), ["own"]);
+        // Added switched on, in one step; a clash adds neither the row nor the switch.
+        store
+            .vault_insert_on(&personal("on", "u1", "ON_HERE"), &s2, "u1", Timestamp(2))
+            .await?;
+        assert_eq!(ids(store.vault_agent_in(&s2).await?), ["on", "other"]);
+        assert!(matches!(
+            store
+                .vault_insert_on(&personal("again", "u1", "ON_HERE"), &s1, "u1", Timestamp(2))
+                .await,
+            Err(AppError::Conflict(_))
+        ));
+        assert!(store.vault_switched_on(&s1).await?.is_empty());
+        assert!(store.vault_delete("on").await?);
         assert!(
             store
                 .vault_switch("g", &s1, true, "u1", Timestamp(2))

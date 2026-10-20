@@ -517,7 +517,7 @@ impl App {
     /// `GET /api/secrets/activity`: the vault's audit trail, newest first. Re-authentications
     /// and team-wide secrets' entries are shown to every member; a sandbox's secret's entries
     /// (team or agent) only to members who can view that sandbox; a global agent secret's to
-    /// every member, a personal one's to its owner only (SPEC-245 MAN-003), and a deleted
+    /// every member (its switches per project to administrators), a personal one's to its owner only (SPEC-245 MAN-003), and a deleted
     /// secret's only to instance administrators.
     ///
     /// # Errors
@@ -552,7 +552,15 @@ impl App {
                         }
                     },
                     Some(Some((None, Some(owner)))) => *owner == ctx.user.id,
-                    Some(Some((None, None))) => true,
+                    // Which projects a global secret is switched on for names projects some
+                    // members cannot see.
+                    Some(Some((None, None))) => {
+                        admin
+                            || !matches!(
+                                entry.action.as_str(),
+                                "vault.agent.enable" | "vault.agent.disable"
+                            )
+                    }
                     _ => admin,
                 };
                 if !allowed {

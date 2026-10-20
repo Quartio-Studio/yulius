@@ -75,8 +75,12 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   global**; the instance Vidoc key comes last (SPEC-195). A shadowed secret is not in the run's
   set: no placeholder, no proxy injection, no tool lists it.
 - RES-002. A task's run gets the personal secrets of the task's owner that are on for its project,
-  unless the task was started by an automation (`origin = automation`): those get none. The
-  Superagent gets its person's.
+  unless the task was started by an automation (`origin = automation`): those get none, and so do
+  the tasks such a task creates (they are automation tasks too). The Superagent gets its person's.
+  After a hand-over (SPEC-070) the run's next request resolves the new owner's, not the previous
+  owner's (cached proxy credentials of the task are dropped).
+- RES-007. Only its owner messages a task that holds personal secrets (`task_message`): another
+  person's Superagent would steer an agent holding their credential.
 - RES-003. Other people's personal secrets never reach a run: not in its environment, its proxy
   injection, its tool answers, its `.env` copies, its browser or its fingerprint file.
 - RES-004. A CI job's `secrets = "NAME …"` grant resolves among the project's secrets and the
@@ -86,8 +90,9 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   `browser_fill_secret` refuse it, saying why, and `${secret:NAME}` MCP references resolve, as CI
   does, among the project's and the switched-on global secrets only: each would put its value
   where other people's tasks of the project read it. It is never allowed for production deploys.
-  An agent's `secret_create_from_file` refuses a name that already reaches the project in any
-  scope (SPEC-211: an existing name is never replaced).
+  An agent's `secret_create_from_file` refuses a name that already reaches its own runs in any
+  scope (SPEC-211: an existing name is never replaced). It cannot see other people's personal
+  secrets, so a project secret it adds may shadow one; that person's card says so.
 - RES-006. Redaction of a project's text (transcripts, terminals, MCP results, CI and CD logs,
   proxy responses) covers every secret that can reach any of its runs, personal ones of every
   owner included.
@@ -105,8 +110,11 @@ its bound hosts, `secret_copy_to_env` asks a person once per secret, and the MCP
   vault activity is shown to their owner only (once deleted, like any deleted secret's, to
   instance administrators).
 - MAN-004. `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled` `{ "enabled": bool }` switches a
-  global or personal secret for a project; audited `vault.agent.enable` / `vault.agent.disable`.
-  A project secret answers `Invalid`.
+  global or personal secret for a project; audited `vault.agent.enable` / `vault.agent.disable`
+  (a global secret's switches shown to administrators only, as they name projects). A project
+  secret answers `Invalid`; switching on past 200 secrets reaching the project answers
+  `Capacity`. A secret added as global or personal is inserted and switched on in one
+  transaction.
 - MAN-005. The list of a project marks each global or personal secret `enabled`, and every secret
   a run would not get because another scope's secret of the same name wins `shadowed_by`
   (`sandbox` or `personal`).

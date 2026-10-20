@@ -204,6 +204,15 @@ pub struct VaultAuditEntry {
 pub trait VaultStore: Send + Sync {
     /// Inserts a secret; `Conflict` for an agent name taken in the same scope (SPEC-245 SCP-002).
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
+    /// Inserts a global or personal secret switched on for `sandbox`, in one transaction (SPEC-245
+    /// SCP-003); `Conflict` as [`Self::vault_insert`].
+    async fn vault_insert_on(
+        &self,
+        record: &VaultSecretRecord,
+        sandbox: &SandboxId,
+        by: &str,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// Replaces every mutable column of the secret `record.id` but its host request, only while
     /// its hosts and `auto_allow` still are those of `seen` (the row the change was read from:
     /// an automatic binding or a switch meanwhile is never undone unseen) and agents setting it

@@ -493,11 +493,15 @@ impl App {
                     .await?;
             }
             self.flag_secret_wait(user, "a .env request").await?;
+            let waiting_records = waiting.clone();
             let waiting: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             return Ok(json!({
                 "copied": [],
                 "waiting": waiting,
-                "link": self.agent_secrets_link(&sandbox.slug),
+                "link": match waiting_records.as_slice() {
+                    [only] => self.agent_secret_link(&sandbox.slug, only),
+                    _ => self.agent_secrets_link(&sandbox.slug),
+                },
                 "next": format!(
                     "Nothing was written. A person who manages {} allows copying it into .env files on the Secrets page: print the link so they can, go on with other work, and call secret_copy_to_env again once secrets_list shows env_files allowed.",
                     waiting.join(", ")

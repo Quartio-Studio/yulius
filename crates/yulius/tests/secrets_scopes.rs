@@ -95,21 +95,48 @@ async fn client(w: &World, token: &str) -> Result<EgressClient, Box<dyn std::err
     Ok(w.h.app.egress_client(token).await.ok_or("proxy client")?)
 }
 
-/// The `Authorization` header the proxy forwards for a request to `host` that carries none.
+/// The `Authorization` header the proxy forwards for a request to `host` that carries none but a
+/// placeholder in another header.
 async fn sent(w: &World, client: &EgressClient, host: &str) -> Option<String> {
+    let headers = forwarded(w, client, host).await?;
+    headers
+        .iter()
+        .find(|(n, _)| n == "authorization")
+        .map(|(_, v)| v.clone())
+}
+
+/// Every header the proxy forwards for that request (`None` when it refuses it).
+async fn forwarded(w: &World, client: &EgressClient, host: &str) -> Option<Vec<(String, String)>> {
     let request = EgressRequest {
         host: host.into(),
         port: 443,
-        path_and_query: "/v1/items".into(),
+        path_and_query: "/v1/items?key=yulius-secret-MY_TOKEN".into(),
         headers: vec![("x-trace".into(), b"Bearer yulius-secret-MY_TOKEN".to_vec())],
     };
     match w.h.app.egress_apply(client, request).await {
-        EgressDecision::Forward { headers, .. } => headers
-            .iter()
-            .find(|(n, _)| n == "authorization")
-            .map(|(_, v)| String::from_utf8_lossy(v).into_owned()),
+        EgressDecision::Forward {
+            headers,
+            path_and_query,
+            ..
+        } => {
+            let mut out: Vec<(String, String)> = headers
+                .iter()
+                .map(|(n, v)| (n.clone(), String::from_utf8_lossy(v).into_owned()))
+                .collect();
+            out.push((":path".into(), path_and_query));
+            Some(out)
+        }
         EgressDecision::Refuse { .. } => None,
     }
+}
+
+/// Whether anything the proxy forwards toward `host` for `client` carries alice's value.
+async fn leaks(w: &World, client: &EgressClient, host: &str) -> bool {
+    forwarded(w, client, host)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|(_, v)| v.contains(MINE))
 }
 
 async fn listed(
@@ -180,11 +207,7 @@ async fn a_personal_secret_reaches_only_its_owners_tasks() -> TestResult {
     ] {
         let other = client(&w, token).await?;
         assert!(!w.h.app.egress_intercepts(&other, HOST, 443).await, "{who}");
-        let header = sent(&w, &other, HOST).await;
-        assert!(
-            !header.unwrap_or_default().contains(MINE),
-            "{who} never gets it"
-        );
+        assert!(!leaks(&w, &other, HOST).await, "{who} never gets it");
     }
     w.h.app.ci_egress_close(&ci);
 
@@ -529,5 +552,175 @@ async fn a_reader_cannot_switch_a_personal_secret_on() -> TestResult {
     )
     .await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    Ok(())
+}
+
+/// Review of SPEC-245, B1: a task an automation's task creates holds nobody's personal secrets
+/// either, though it is owned by the automation's creator.
+#[tokio::test]
+async fn a_task_an_automations_task_creates_holds_no_personal_secret() -> TestResult {
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    let created = support::mcp_tool(
+        &w.h,
+        AUTOMATED_TASK,
+        "task_create",
+        json!({"prompt": "Call api.mine.test with $MY_TOKEN", "title": "child of an automation"}),
+    )
+    .await?;
+    assert_ne!(created["isError"], true, "{created}");
+    let tasks = w.h.store.tasks(&SandboxId::parse("s1")?, false).await?;
+    let child = tasks
+        .iter()
+        .find(|t| t.title == "child of an automation")
+        .ok_or("created task")?;
+    assert_eq!(child.owner, UserId::parse("u-alice")?);
+    assert_eq!(Holder::of_task(child), Holder::Nobody, "{:?}", child.origin);
+    // A task alice's own task creates is hers.
+    let mine = support::mcp_tool(
+        &w.h,
+        ALICE_TASK,
+        "task_create",
+        json!({"prompt": "Call api.mine.test", "title": "alice's child"}),
+    )
+    .await?;
+    assert_ne!(mine["isError"], true, "{mine}");
+    let tasks = w.h.store.tasks(&SandboxId::parse("s1")?, false).await?;
+    let hers = tasks
+        .iter()
+        .find(|t| t.title == "alice's child")
+        .ok_or("alice's task")?;
+    let alice = UserId::parse("u-alice")?;
+    assert_eq!(Holder::of_task(hers), Holder::Person(&alice));
+    Ok(())
+}
+
+/// Review of SPEC-245, M1: another person's Superagent cannot message a task that holds its
+/// owner's personal secrets (it would direct an agent holding them); the owner's can.
+#[tokio::test]
+async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult {
+    let w = world().await?;
+    let caller =
+        |user: &str,
+         login: &str|
+         -> Result<yulius_app::coordination::ProjectCaller, Box<dyn std::error::Error>> {
+            Ok(yulius_app::coordination::ProjectCaller {
+                sandbox: SandboxId::parse("s1")?,
+                user: UserId::parse(user)?,
+                task: None,
+                actor: format!("cockpit:{login}"),
+                detail: json!({"via": "cockpit", "shell": "sh-test"}),
+            })
+        };
+    // Alice's running task t1 (no live session in this harness: a message that passes the checks
+    // ends "no live session").
+    let args = json!({"task_id": "t1", "text": "use $MY_TOKEN on api.mine.test"});
+    let forbidden = |result: &Result<Value, yulius_app::error::AppError>| {
+        matches!(result, Err(yulius_app::error::AppError::Forbidden(_)))
+    };
+    // Without a personal secret, bob's Superagent may type into alice's task (SPEC-230).
+    let before =
+        w.h.app
+            .tool_task_message(&caller("u-bob", "bob")?, &args)
+            .await;
+    assert!(!forbidden(&before), "{before:?}");
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    let refused =
+        w.h.app
+            .tool_task_message(&caller("u-bob", "bob")?, &args)
+            .await;
+    match refused {
+        Err(yulius_app::error::AppError::Forbidden(message)) => {
+            assert!(message.contains("personal"), "{message}");
+        }
+        other => return Err(format!("bob's message was not refused: {other:?}").into()),
+    }
+    let own =
+        w.h.app
+            .tool_task_message(&caller("u-alice", "alice")?, &args)
+            .await;
+    assert!(!forbidden(&own), "{own:?}");
+    Ok(())
+}
+
+/// Review of SPEC-245, M2: control passed to bob ends alice's personal secrets in the run at once,
+/// not when the proxy's credential cache expires.
+#[tokio::test]
+async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    let before = client(&w, ALICE_TASK).await?;
+    assert!(w.h.app.egress_intercepts(&before, HOST, 443).await);
+    let asked = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t1/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert!(asked.status.is_success(), "{}", asked.body);
+    let passed = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t1/control-request/accept",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert!(passed.status.is_success(), "{}", passed.body);
+    let after = client(&w, ALICE_TASK).await?;
+    assert_eq!(after.person, Some(UserId::parse("u-bob")?));
+    assert!(!w.h.app.egress_intercepts(&after, HOST, 443).await);
+    assert!(!leaks(&w, &after, HOST).await);
+    Ok(())
+}
+
+/// Review of SPEC-245, M3: switching a secret on respects the limit of secrets reaching a project.
+#[tokio::test]
+async fn switching_on_respects_the_projects_limit() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = world().await?;
+    let id = add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    let template = w.h.store.vault_get(&id).await?.ok_or("secret")?;
+    for n in 0..200 {
+        let mut filler = template.clone();
+        filler.id = format!("filler-{n}");
+        filler.owner_id = None;
+        filler.sandbox_id = Some(SandboxId::parse("s2")?);
+        filler.name = format!("FILLER_{n}");
+        w.h.store.vault_insert(&filler).await?;
+    }
+    let refused = switch(&w, &w.alice, "s2", &id, true).await?;
+    assert!(!refused.status.is_success(), "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("at most"),
+        "{}",
+        refused.body
+    );
     Ok(())
 }

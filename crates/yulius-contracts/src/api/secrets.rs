@@ -151,7 +151,8 @@ pub struct AgentSecretView {
     /// else is ever shown one) (SPEC-245).
     pub scope: String,
     /// It reaches the project's runs: always for a project secret, for a global or personal one
-    /// while it is switched on for the project. Absent from older servers.
+    /// while it is switched on for the project (in a project's list and when added; elsewhere a
+    /// global or personal one reads `false`). Absent from older servers.
     #[serde(default)]
     pub enabled: bool,
     /// When a secret of the same name and another scope wins in the project: that scope

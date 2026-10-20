@@ -40,8 +40,11 @@ the project can change the automation's prompt.
 - **Who gets personal secrets.** A task's run gets its owner's personal secrets switched on for its
   project; the Superagent its person's. A task an automation started gets none, even though its
   owner is the automation's creator: other people may edit the automation's prompt, so they could
-  direct an agent holding someone else's credential. CI jobs and CD runs belong to no person and
-  get none; their names resolve among the project's and the switched-on global secrets.
+  direct an agent holding someone else's credential; the tasks such a task creates are automation
+  tasks too. CI jobs and CD runs belong to no person and get none; their names resolve among the
+  project's and the switched-on global secrets. For the same reason only its owner messages a task
+  holding personal secrets (`task_message`), and a hand-over drops the run's cached proxy
+  credential, so the new owner's secrets apply from the next request.
 - **A personal value stays in the proxy.** `.env` copies, `${secret:NAME}` MCP references and
   `browser_fill_secret` refuse personal secrets: the first two write the value where every task of
   the sandbox can read it, and the third signs the shared project browser in as the person. The
@@ -83,3 +86,9 @@ the project can change the automation's prompt.
   and the per-run fingerprints keep this the known online oracle.
 - A new project gets no global secret until an administrator switches it on.
 - Personal secrets cannot sign agents into websites; a per-person browser would be its own change.
+- An agent's `secret_create_from_file` cannot see other people's personal secrets, so a project
+  secret it adds may shadow one of theirs; the owner's card says so. Refusing would tell the agent
+  that the secret exists.
+- After a hand-over the run keeps its environment: the placeholders of the previous owner's
+  personal secrets stay as literal text (the proxy no longer replaces them), and its fingerprint
+  file is the one it started with (the Bash wrapper asks Yulius for current fingerprints first).
