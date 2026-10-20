@@ -15,6 +15,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   GitHub refused: the App permission it lacks, in GitHub's words, with the App's permission and
   installation pages, or, for an installation on only selected repositories, that the repository was
   created and where to add it before importing it.
+
 - Subscriptions can be renamed, and administrators see the email of the Claude account behind each
   one (SPEC-244, ADR-0185, task #230, feedback from an early user). On the Subscriptions page, the
   pencil or a click on the name edits it in place; Enter saves and Escape cancels. The email is
