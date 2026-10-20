@@ -204,9 +204,26 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     .then((list) => (Array.isArray(list) ? list.find((a) => a.id === account.id) : null) || null)
     .catch(() => null);
 
-  /** The success toast, naming the subscription and its email once reported (LGN-003). */
+  /**
+   * The account once an update reports its email: the server reads it from Claude right after
+   * the sign-in ended (SPEC-244 SUB-003). Resolves null after `ms`.
+   */
+  function emailUpdate(ms) {
+    let off = () => {};
+    let timer = 0;
+    const promise = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+      off = ctx.store.on('account', (a) => { if (a && a.id === account.id && a.email) resolve(a); });
+    });
+    return { promise, stop: () => { clearTimeout(timer); off(); } };
+  }
+
+  /** The success toast, naming the subscription and its email (LGN-003), waiting at most 5 s for it. */
   async function connectedToast() {
-    const now = await fresh();
+    const update = emailUpdate(5000);
+    let now = await fresh();
+    if (!now || !now.email) now = (await update.promise) || now;
+    update.stop();
     const email = now && now.email ? ` as ${now.email}` : '';
     toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
   }
@@ -357,13 +374,20 @@ export function mountAccountsPage(ctx, route) {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
     if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
+      // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
+      const rename = async (label) => {
+        const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { label });
+        Object.assign(account, fresh);
+        toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
+      };
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
-      const usageHost = h('div', null, accountUsage(account), tokenTotals(account));
+      const usageHost = h('div', null, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
       const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
-          setChildren(usageHost, accountUsage(account), tokenTotals(account));
+          if (usageHost.querySelector('.account-rename-input')) pendingReload = true;
+          else setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
@@ -398,7 +422,7 @@ export function mountAccountsPage(ctx, route) {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     openModal({
       title: 'Add a Claude subscription',
-      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
+      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Continue to sign-in', kind: 'primary', run: async () => {
@@ -412,7 +436,19 @@ export function mountAccountsPage(ctx, route) {
     });
   }
 
-  const off = ctx.store.on('account', () => reload({ quiet: true }));
+  // A name being edited is not redrawn away by an update: the reload waits until the field
+  // closes (the reload keeps focus on the same control).
+  let pendingReload = false;
+  const off = ctx.store.on('account', () => {
+    if (host.querySelector('.account-rename-input')) pendingReload = true;
+    else reload({ quiet: true });
+  });
+  host.addEventListener('focusout', () => setTimeout(() => {
+    if (pendingReload && !host.querySelector('.account-rename-input')) {
+      pendingReload = false;
+      reload({ quiet: true });
+    }
+  }, 0));
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);

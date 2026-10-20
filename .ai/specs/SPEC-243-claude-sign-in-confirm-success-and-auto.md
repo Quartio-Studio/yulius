@@ -57,7 +57,7 @@ Confirmed against `dev` at 33410359.
 | --- | --- |
 | LGN-001 | The server ends a Claude sign-in once its output holds a complete token. If the CLI has not exited within `TOKEN_EXIT_GRACE` (5 s) after the token first appeared, the server stops it as it stops a timed-out sign-in, then seals the token, and the sign-in ends `ok`. A CLI that exits on its own (the normal case) is not affected. |
 | LGN-002 | `POST /api/admin/accounts/login/{lid}/cancel` (instance administrators) cancels a running sign-in and waits (at most 15 s) for its end, answering how it ended: `{"status": "cancelled"}` normally. The CLI is stopped, its temporary directory removed, and the account keeps its state, as for a sign-in replaced by another one. A complete token already captured is sealed instead (`ok`): the sign-in had succeeded. A sign-in that has already ended is left as it is and its ending is answered; 404 for an unknown or expired sign-in, 403 for others. The cancel is audited (`account.login_cancelled`). |
-| LGN-003 | When the login terminal reports `ok`, the dialog closes by itself, the subscriptions reload, and a success toast names the subscription: "Claude #3 is connected" and "as <email>" when the account reports an email. It also says tasks can use it now. |
+| LGN-003 | When the login terminal reports `ok`, the dialog closes by itself, the subscriptions reload, and a success toast names the subscription: "Claude #3 is connected" and "as <email>" when the account reports an email. The server reads the email right after the sign-in (SPEC-244), so the toast waits at most 5 s for the `account.updated` that carries it. It also says tasks can use it now. |
 | LGN-004 | When the sign-in ends `error`, the dialog stays open with Claude's output. A banner says "Sign-in failed" with the reason Yulius recorded (the account's `last_error`, for example "the sign-in timed out after 15 min"), and offers "Try again" and "Close". |
 | LGN-005 | "Try again" starts a new sign-in for the same subscription (`relogin`) in the same dialog. The banner goes away and the new terminal replaces the old one. |
 | LGN-006 | While the sign-in runs, the dialog's button reads "Cancel sign-in". Closing the dialog by that button, ×, Esc or a click outside cancels the sign-in on the server (LGN-002). A toast then says how it ended, from the server's answer and the account's state: connected (a token was already captured), or cancelled with the subscription not signed in, or cancelled while it keeps its working sign-in. A sign-in started by Try again while the dialog closes is cancelled too. |
@@ -131,8 +131,10 @@ Confirmed against `dev` at 33410359.
 - **A toast, not a lingering success screen.** The user asked for the dialog to close. The toast
   names the subscription, and its card on the page reads signed in, which is the lasting state.
 - **The email comes from #230.** The success message uses the account view's `email` when it
-  is there. It does not read the email itself: a `setup-token` credential cannot read Claude's
-  profile, and storing the email belongs to #230's migration.
+  is there. Storing the email belongs to #230's migration (SPEC-244, ADR-0185), which merged
+  while this task was in review. It reads the email right after the sign-in's `exit` frame, so the
+  toast waits (at most 5 s) for the account update that carries it, instead of delaying the
+  dialog's close.
 
 ## Evidence
 

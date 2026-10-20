@@ -203,7 +203,8 @@ test('a finished Claude sign-in closes its dialog by itself and says the subscri
   const dialog = await addSubscription(browser, screen, 'Claude #9');
   await enterCode(browser, 'code-from-claude');
   await expect(dialog).toBeHidden();
-  await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #9 is connected")')).toBeVisible();
+  // The email of the Claude account arrives just after the sign-in (SPEC-244) and is named.
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #9 is connected as signed-in@example.com")')).toBeVisible();
   // The new subscription's card reads as signed in: no "Sign in again" on it.
   await expect(browser.locator('main .card:has-text("Claude #9")')).toBeVisible();
   await expect(browser.locator('main .card:has-text("Claude #9") button:has-text("Sign in again")')).toHaveCount(0);
@@ -223,7 +224,7 @@ test('a failed Claude sign-in says why and Try again signs in in the same dialog
   await dialog.getByRole('button', 'Try again').click();
   await expect(outcome).toBeHidden();
   await expect(dialog.getByRole('button', 'Cancel sign-in')).toBeVisible();
-  // Once the account view reports the sign-in's email (UI-022, task #230), the toast names it.
+  // The toast names the email the account view reports (UI-022, SPEC-244).
   await browser.evaluate(() => {
     const account = (window as unknown as MockAccounts).__yuliusMock.accounts.find((a) => a.label === 'Claude #10');
     if (account) account.email = 'pawel@example.com';

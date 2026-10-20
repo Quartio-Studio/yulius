@@ -8,14 +8,31 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Claude's sign-in confirms itself (SPEC-243, ADR-0184, task #229). After a successful sign-in
   the dialog stayed open over the terminal, so it was unclear whether it had worked. Now the
-  dialog closes by itself and a toast says "Claude #3 is connected", with its email once the
-  account reports one. A failed, cancelled or lost sign-in shows why, with Try again in the same
+  dialog closes by itself and a toast says "Claude #3 is connected as …", with the email of the
+  Claude account read right after the sign-in (SPEC-244) when Claude shares it. A failed, cancelled or lost sign-in shows why, with Try again in the same
   dialog. Closing a sign-in that still runs cancels it on the server
   (`POST /api/admin/accounts/login/{lid}/cancel`) instead of leaving it running for 15 minutes.
   A token Claude already printed is kept even then. A CLI that runs on after printing its token
   is stopped after 5 seconds and the token is kept. A sign-in the server no longer has is said at
   once instead of being reconnected to for minutes.
   Failure reasons read "exit code 1" instead of "Some(1)".
+- Subscriptions can be renamed, and administrators see the email of the Claude account behind each
+  one (SPEC-244, ADR-0185, task #230, feedback from an early user). On the Subscriptions page, the
+  pencil or a click on the name edits it in place; Enter saves and Escape cancels. The email is
+  read from Claude's profile with the subscription's own credential when it signs in. The
+  background usage round reads it once for subscriptions signed in before. Administrators see the
+  email next to the name on the Subscriptions page, in the Status panel, on the Dashboard, in Task
+  details and in the analytics. Everyone else sees the name only. Claude may refuse the profile to
+  `setup-token` sign-ins; such a subscription reads "email unknown", and the name tells it apart.
+
+- The superadmin password needs 8 characters instead of 12 (SPEC-242, ADR-0183, task #228). An
+  early external user could not set up an instance with the 8-character password they wanted.
+  Setup and recovery now accept 8 characters or more (NIST SP 800-63B) and refuse a 7-character
+  one with "the password needs at least 8 characters". The forms recommend 12 characters: a
+  shorter or repetitive password gets advice that does not block it. No composition rules or list
+  of common passwords. Login rate limiting and the recovery lockout are unchanged. The mock now
+  also serves "Forgot password?" while signed out.
+
 - A finished automation run is Done instead of waiting under Needs you (SPEC-240, ADR-0182, task
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run
   that opens no pull request, such as "Work through open issues", could never meet the Done rule

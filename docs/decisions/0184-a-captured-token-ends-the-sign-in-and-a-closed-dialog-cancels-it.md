@@ -29,7 +29,8 @@ flow) and SPEC-001 ROT-002.
   to exit. After that the server stops it as it stops a timed-out sign-in and seals the token.
 - **The dialog follows the terminal's ending.**
   - On `ok` it closes by itself, the subscriptions reload, and a toast says "<label> is
-    connected", adding "as <email>" when the account view reports an email (UI-022).
+    connected", adding "as <email>" once the account reports its email (UI-022, ADR-0185; the
+    toast waits at most 5 s for it).
   - On `error` it shows a banner with the account's recorded reason, Try again and Close.
   - On `cancelled`, or when the terminal is gone (`not_found`), the banner says so.
   - Try again starts a new sign-in (`relogin`) in the same dialog.
@@ -64,5 +65,6 @@ flow) and SPEC-001 ROT-002.
   own close cancels it.
 - A cancel during the 5-second grace after the token appeared keeps the token, so "Cancel
   sign-in" then connects the subscription. The toast says so.
-- The email appears in the success toast only once the account view reports it (task #230). A
-  `setup-token` credential cannot read Claude's profile itself.
+- The server reads the account's email right after the sign-in ended (ADR-0185, task #230). The
+  success toast waits up to 5 s for the `account.updated` that carries it. Without one, for
+  example when Claude refuses the profile to the sign-in, the toast names the subscription only.
