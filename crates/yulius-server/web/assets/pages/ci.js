@@ -206,13 +206,16 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
   }
 
-  /** Tests the run's commit again and opens the new run (SPEC-258 RRA-002). */
-  async function rerun(run) {
+  /** Tests the run's commit again and opens the new run (SPEC-258 RRA-002); the button is off
+   * while the request is out, so a second click sends nothing. */
+  async function rerun(run, button) {
+    button.disabled = true;
     try {
       const fresh = await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/rerun`);
       toast(`${run.label} queued again.`, { kind: 'ok' });
       if (!destroyed) ctx.navigate(`${page}?run=${encodeURIComponent(fresh.id)}`);
     } catch (error) {
+      button.disabled = false;
       errorToast(error, 'Couldn’t run it again');
     }
   }
@@ -240,10 +243,13 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     let lastNow = null;
     host.append(view.el);
     let first = true;
+    // Each load supersedes the one before (a Cancel reloads at once): an older one draws nothing.
+    let generation = 0;
     const load = async () => {
+      const mine = ++generation;
       try {
         const run = await ctx.api.get(`${base}/ci/runs/${enc(id)}`);
-        if (destroyed) return;
+        if (destroyed || mine !== generation) return;
         if (first) {
           setChildren(view.body, stages, tabs, output);
           view.ready();
@@ -251,8 +257,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
           selected = failing >= 0 ? failing : 0;
           first = false;
         }
+        drawHead(run);
         render(run);
-        head.append(h('span', { class: 'spacer' }), ...runControls(run), pipeline);
         // The summary (SPEC-238 CRV-003): how long, the stages running now and the jobs; drawn
         // before the stages load, so it keeps its height, and again with what runs now.
         const summarize = (now) => view.summarize({
@@ -262,7 +268,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         });
         summarize(lastNow);
         const timeline = await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
-        if (destroyed) return;
+        if (destroyed || mine !== generation) return;
         lastNow = stageNow(timeline);
         summarize(lastNow);
         if (ACTIVE.has(run.state)) poll = setTimeout(load, POLL_ACTIVE_MS);
@@ -270,9 +276,29 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         if (first && !destroyed) view.loading(placeholder(`Couldn’t load the run: ${error.message}`, 'error'));
       }
     };
+    // The head: what the run is, then its controls and In Pipeline. A job's tab leaves it alone,
+    // and a control is replaced only when the run's state calls for another one, so the keyboard
+    // stays on it across refreshes and goes to its successor (review round 1 of SPEC-258).
+    const spacer = h('span', { class: 'spacer' });
+    let lead = [];
+    let controls = [];
+    let controlsFor = null;
+    const drawHead = (run) => {
+      for (const node of lead) node.remove();
+      lead = [stateBadge(run.state), h('strong', null, run.label), h('code', { class: 'muted' }, shortSha(run.sha)),
+        run.reason ? h('span', { class: 'muted small' }, run.reason) : null].filter(Boolean);
+      if (!spacer.isConnected) head.append(spacer, pipeline);
+      spacer.before(...lead);
+      const wanted = !write ? 'none' : ACTIVE.has(run.state) ? 'cancel' : 'again';
+      if (wanted === controlsFor) return;
+      const focused = controls.some((node) => node.contains(document.activeElement));
+      for (const node of controls) node.remove();
+      controls = runControls(run);
+      controlsFor = wanted;
+      pipeline.before(...controls);
+      if (focused && controls.length) controls[0].focus();
+    };
     const render = (run) => {
-      setChildren(head, stateBadge(run.state), h('strong', null, run.label), h('code', { class: 'muted' }, shortSha(run.sha)),
-        run.reason ? h('span', { class: 'muted small' }, run.reason) : null);
       const jobs = run.jobs || [];
       setChildren(tabs, jobs.map((job, i) => {
         const tab = h('button', { type: 'button', class: ['ci-tab', i === selected && 'active'], role: 'tab', 'aria-selected': String(i === selected), onClick: () => { selected = i; render(run); } },
@@ -290,7 +316,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     const runControls = (run) => {
       if (!write) return [];
       if (ACTIVE.has(run.state)) return [cancelButton(run, () => { if (destroyed) return; clearTimeout(poll); load(); })];
-      return [h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Run again: ${which(run)}`, onClick: () => rerun(run) }, icon('refresh', { size: 14 }), 'Run again')];
+      const again = h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Run again: ${which(run)}`, onClick: () => rerun(run, again) }, icon('refresh', { size: 14 }), 'Run again');
+      return [again];
     };
     load();
     return view;

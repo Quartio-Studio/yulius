@@ -79,6 +79,23 @@ test('Run again lives in the run’s view, not on every card', async ({ app, bro
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
 });
 
+// Review round 1: another job's tab keeps the head's Run again and In Pipeline; a click while the
+// request is out sends no second one.
+test('Run again stays across job tabs and is off while it is being sent', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s2', '&holdpost=/api/sandboxes/sb_studio/ci/runs/ci_s2/rerun'));
+  const run = screen.getByRole('region', 'CI run');
+  await run.getByRole('tab', /lint/).click();
+  await expect(browser.locator('.run-output')).toHaveText(/no warnings/);
+  await expect(run.getByRole('link', 'In Pipeline')).toBeVisible();
+  const again = run.getByRole('button', 'Run again: PR #218 at 0d7e5f3');
+  await again.click();
+  await expect(again).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByText('PR #218 queued again.')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_\d+$/);
+  await expect(screen.getByText(/Couldn’t run it again/)).toBeHidden();
+});
+
 test('a running run is cancelled from its view and can then run again', async ({ app, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   const run = screen.getByRole('region', 'CI run');
@@ -89,7 +106,8 @@ test('a running run is cancelled from its view and can then run again', async ({
   await confirm.getByRole('button', 'Cancel run').click();
   await expect(run.getByText('Cancelled')).toBeVisible();
   await expect(run.getByRole('button', /^Cancel: /)).toBeHidden();
-  await expect(run.getByRole('button', /^Run again: /)).toBeVisible();
+  // Review round 1: the keyboard goes from the Cancel it used to the Run again that replaced it.
+  await expect(run.getByRole('button', /^Run again: /)).toBeFocused();
 });
 
 test('a run opens from the link of its commit status', async ({ app, screen }) => {
