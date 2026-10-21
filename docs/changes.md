@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   its `gitdir:` path alone, read lexically: the host no longer opens or resolves paths the agent
   wrote there. The two Vidoc ignores that pointed at #634 are removed. Still by path: the
   transcript step-back (#661).
+- The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
+  (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
+  worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
+  another folder is refused and an allowed secret's value is written nowhere. Task copies are
+  unchanged.
 
 ## 2026-10-20
 
