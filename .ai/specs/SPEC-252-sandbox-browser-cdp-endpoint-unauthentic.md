@@ -107,6 +107,19 @@ browser has no DevTools listener at all.
 
 ## Evidence
 
+- Independent review (fresh session, `om-code-review`) of `ddc8668b`: APPROVE, with low findings
+  only, all in own code, all fixed: the trust notes overclaimed (Yulius's user or root can open
+  `/proc/<pid>/fd`; sandboxes cannot, having their own PID namespace), so the wording is now
+  precise; R-15, `operations.md` and SPEC-002's ADR-22 text still named raw CDP or DevTools ports
+  (corrected); `ExitedEarly` could lose stderr read before the reader drained it (fixed with a
+  bounded wait for stderr's end; the regression test failed first, commit `98abe348`); tests added
+  for a pipe that closes while Chromium lives (`BrowserError::Cdp(Closed)`, process reaped) and a
+  message of exactly `max_message_bytes`; nits: constant placement, `Lagged` in the projects
+  test, `deny.toml` names `command-fds`. Not changed: the fake's accept loop ending on an accept
+  error (test-only, it never fails on loopback).
+- `scripts/dev ci` on `5cdd53f5` (after the review fixes): passed, `exit=0`, nextest 2368 run,
+  2368 passed, 17 skipped. Merged `origin/dev` (`dbafe015`, secrets only) cleanly; `cargo check
+  --workspace --all-targets --all-features` passed.
 - `scripts/dev ci` (the whole gate) on `aef4c8c6`: passed, `exit=0`, nextest 2367 run, 2367
   passed, 17 skipped. The first run (on `4b5c986f`) failed one test outside this change,
   `projects::a_scheduled_start_without_claude_waits_and_says_why` (added by #760). It failed 1 of
