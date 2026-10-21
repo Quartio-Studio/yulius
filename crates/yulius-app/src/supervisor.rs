@@ -2705,6 +2705,10 @@ impl App {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         if again && task.status.is_resting() {
+            // A run still live is ended all the same: the intent set is this stop's.
+            if store.live_attempt(task_id).await?.is_some() {
+                self.end_stopped_run(task_id).await;
+            }
             return Ok(true);
         }
         if task.status == TaskStatus::Queued
@@ -2780,12 +2784,17 @@ impl App {
         }
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
+        self.end_stopped_run(task_id).await;
+        Ok(true)
+    }
+
+    /// Ends the run of a task a stop decided to end: graceful shutdown, with the escalation armed.
+    async fn end_stopped_run(self: &Arc<Self>, task_id: &TaskId) {
         // The run this stop ends; without it (a store error) nothing is escalated.
         let stopped = self.live_attempt_id(task_id).await;
         self.arm_escalation(task_id, stopped);
         self.end_person_pause(task_id).await;
-        request_shutdown(&runtime).await;
-        Ok(true)
+        request_shutdown(&self.runtime(task_id)).await;
     }
 
     /// Switches a running task to another account (manual or rotation-driven).
@@ -3002,19 +3011,31 @@ impl App {
             let budget = Duration::from_millis(
                 u64::try_from(yulius_domain::task::SWITCH_TIMEOUT_MS / 2).unwrap_or(60_000),
             );
-            if tokio::time::timeout(budget, rx).await.is_err() {
-                let _ = self
-                    .deps
-                    .session_host
-                    .terminate(Path::new(&attempt.run_dir));
-                let update = AttemptUpdate {
-                    ended_at: Some(self.now()),
-                    exit_reason: Some("switch_timeout".into()),
-                    ..AttemptUpdate::default()
-                };
-                let _ = store
-                    .transition_attempt(&attempt.id, AttemptState::Lost, &update)
-                    .await;
+            match tokio::time::timeout(budget, rx).await {
+                Ok(Ok(())) => {}
+                // The switch's intent was replaced: a stop or close took over the old run's end
+                // (or its loss dropped it). No new run starts (SPEC-250 STW-006).
+                Ok(Err(_)) => {
+                    store.set_switch_outcome(&decision_id, "cancelled").await?;
+                    self.publish_task(task_id).await;
+                    return Err(AppError::Conflict(
+                        "the task was stopped during the switch".into(),
+                    ));
+                }
+                Err(_) => {
+                    let _ = self
+                        .deps
+                        .session_host
+                        .terminate(Path::new(&attempt.run_dir));
+                    let update = AttemptUpdate {
+                        ended_at: Some(self.now()),
+                        exit_reason: Some("switch_timeout".into()),
+                        ..AttemptUpdate::default()
+                    };
+                    let _ = store
+                        .transition_attempt(&attempt.id, AttemptState::Lost, &update)
+                        .await;
+                }
             }
         }
         match self.start_run(task_id, start, account).await {
