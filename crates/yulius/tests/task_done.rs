@@ -1796,8 +1796,9 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
 
 /// SPEC-140 STP-002 (review): a stop that ended no run leaves no intent for the next run. Here a
 /// switch's old run has ended and its new run waits for the launch (another task's launch holds
-/// it), the task is stopped then, its launch is refused, and a second stop ends it. Continued, the
-/// task's resumed run is not shut down when it attaches: its goal is typed and it stays live.
+/// it), the task is stopped then, and the switch gives up and rests it (SPEC-250 STW-006: not
+/// stopping with no run until a second stop). Continued, the task's resumed run is not shut down
+/// when it attaches: its goal is typed and it stays live.
 #[test]
 fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1853,11 +1854,12 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
         host.release();
         let refused = tokio::time::timeout(Duration::from_secs(60), switch).await??;
         assert!(refused.is_err(), "{refused:?}");
-        assert_eq!(task(&app, &id).await?.status, TaskStatus::Stopping);
-        app.stop_task_now(&id).await?;
+        // The switch that gives up rests the task its stop left with no run (SPEC-250 STW-006).
         assert_eq!(
             task(&app, &id).await?.status,
-            TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+            TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled),
+            "{}",
+            run_states(&app, &id).await
         );
         let runs = app.deps.store.attempts(&id).await?.len();
         let ctx = yulius_app::auth::AuthContext {
