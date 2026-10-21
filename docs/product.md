@@ -44,6 +44,12 @@ watching, steering and unblocking.
   follow their transcripts, pull requests and CI, run dev deploys and manage automations and
   agent secrets' bindings, always within their own access to each project. Production deploys
   and secret values stay with the web UI (and `yulius secrets import`).
+- **Onboard a laptop project with one request** (SPEC-256): "onboard this into Yulius" to the
+  local agent is enough. With the operate token it uploads the checkout and Claude Code sessions,
+  finds the keys the project builds and deploys with and imports them by file, unattended and
+  already usable by agents in `.env` files (values never pass through the agent), and starts
+  onboarding with its hand-over (which key is which, where deploys run). The onboarding task uses
+  those keys before asking anyone.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server

@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-21
 
+- "Onboard this into Yulius" to a person's local Claude Code is enough (SPEC-256, ADR-0194, task
+  #242). The operate token made for their agent now also signs in `yulius onboard` and `yulius
+  secrets import`, so no browser approval is needed. `yulius secrets import --yes` sends without
+  the typed yes, only with that token. `--from-file NAME=PATH` imports a key file by its path, so
+  the agent never reads the key. `--env-files` creates the secrets already allowed into `.env`
+  files (`env_files` on create), where ssh and deploy scripts read them. `yulius project onboard
+  --notes` (`onboarding_start {notes}`) adds the agent's hand-over, redacted, to the onboarding
+  task's request before it starts. The onboarding task reads `secrets_list` and that hand-over
+  before asking a person for a credential. The remote MCP's instructions and the
+  [guide](remote-control.md) describe the steps.
 - A stop during a switch always ends the task (SPEC-250, task #236, fixes #527). A stop that came
   as a switch completed could leave the task `running` with every run ended, and a stop that came
   as a run ended could leave it `stopping` with no run. Stop changes and run-end status changes

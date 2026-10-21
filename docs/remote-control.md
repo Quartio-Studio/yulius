@@ -45,10 +45,53 @@ yulius remote status                             # who the token acts for, and i
 
 `yulius remote login` checks the token before it stores it, in
 `~/.config/yulius/remote-credentials.json` (readable only by you). This file is separate from
-the token of `yulius login`, which uploads checkouts with `yulius onboard`. Inside a GitHub checkout,
+the token of `yulius login`; `yulius onboard` and `yulius secrets import` use that one when you
+have it, else this one. Inside a GitHub checkout,
 `--project` defaults to its `origin`. Pass `--project owner/name` anywhere else.
 
-## 3. Onboard a new repository, laptop only
+## 3. Onboard this folder: one request, nothing else from you
+
+Your project works from your laptop: a GitHub checkout, its deploy scripts, its GitHub Actions,
+keys in `.env` files and under `~/.ssh`. Sign the CLI in once with the operate token
+(`yulius remote login <url>`), then say to your Claude Code, in that folder:
+
+> Onboard this into Yulius.
+
+The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SPEC-256-user-should-be-able-to-smoothly-onboard.md),
+[ADR-0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)):
+
+1. **Send the folder.** `yulius onboard . --yes --sessions all` adds the project and uploads its
+   unpublished branches, uncommitted work and your Claude Code sessions of it (secrets are
+   redacted on your laptop first). The onboarding task reverse-engineers the docs from the code,
+   its history and these sessions.
+2. **Move the keys.** Your agent finds what the project builds, tests and deploys with:
+   `secrets.*` in `.github/workflows`, deploy scripts and their docs, `.env*` files, the hosts and
+   keys in `~/.ssh/config` its deploys use, cloud CLI credentials. It never reads a value into the
+   conversation: it passes files to the CLI, which shows names only.
+
+   ```sh
+   yulius secrets import --to agent --sandbox acme/shop --yes --env-files \
+     .env --from-file DEPLOY_SSH_KEY=~/.ssh/deploy_ed25519
+   ```
+
+   `--yes` sends without the typed `yes`, and only with the operate token made for your agent
+   (a `yulius login` token or a read token is refused). `--from-file NAME=PATH` takes a whole
+   file (a PEM or OpenSSH key keeps its lines; other values must be one line, so a JSON key is
+   compacted first, `jq -c . key.json > one-line.json`). `--env-files` lets the project's agents
+   copy them into git-ignored `.env` files with `secret_copy_to_env` from the start, as ssh and
+   deploy scripts need; agents already bind the hosts they need themselves. A secret that exists
+   is skipped, never overwritten. Your agent then describes each one (`secret_update`).
+3. **Hand over and start.** Your agent writes what it learned, without values: which secret is
+   which, the hosts and commands deploys use, what only ran on your laptop, what it could not
+   find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to
+   the onboarding task's request and starts it.
+
+The onboarding task then adapts the format, writes the docs, moves CI into Yulius CI and CD into
+`[cd.dev]`/`[cd.prod]` with the imported keys, and merges its pull request on green. It asks you
+(`needs_you`) only for what neither the keys nor the hand-over hold. Production deploys stay
+yours. Follow it with "how is the onboarding doing?" (`tasks_list`, `task_get`).
+
+## 4. Onboard a GitHub repository without a checkout
 
 What to ask your agent, with the tool it calls and the CLI command that does the same:
 
@@ -87,12 +130,13 @@ For anything that needs judgment ("make the tests pass on macOS"), create a task
 
 ### Secrets
 
-Values never pass through an agent. Add them on the Secrets page, or from a dotenv file with
-`yulius secrets import --to agent --sandbox acme/shop .env`. Your agent manages names and
+Values never pass through an agent. Add them on the Secrets page, or from a dotenv file or key
+files with `yulius secrets import --to agent --sandbox acme/shop .env` (section 3 for an agent doing
+it unattended). Your agent manages names and
 bindings: `secrets_list` (`yulius secrets list`), `secret_update` (bound hosts, description)
 and `secret_hosts_answer` (allow or dismiss the hosts a task asked for).
 
-## 4. Day-to-day
+## 5. Day-to-day
 
 | Ask your agent | Tool | CLI |
 | --- | --- | --- |
@@ -119,4 +163,6 @@ no tool (no token, a revoked token, the network).
   ([ADR-0110](decisions/0110-only-a-person-deploys-production.md)).
 - Every change made through a token is in the audit log as `remote:<your login>`, with the tool
   and the token, without its arguments.
+- An operate token can add agent secrets that the project's agents may copy into `.env` files
+  (`yulius secrets import --yes --env-files`); each create and allowance is audited as you.
 - A lost laptop: revoke its token on Settings. Disabling a person refuses all their tokens.

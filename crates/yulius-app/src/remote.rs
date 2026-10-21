@@ -42,7 +42,7 @@ pub const MAX_REMOTE_BODY_BYTES: usize = 32 << 20;
 pub const REMOTE_REQUESTS_PER_MINUTE: usize = 120;
 
 /// The remote MCP's instructions for a person's own agent.
-pub const REMOTE_INSTRUCTIONS: &str = "Yulius runs coding-agent tasks on the person's GitHub repositories, which it calls projects. Every project tool takes `project`: owner/name as projects_list shows it. To bring a repository in: repositories_list, project_import, project_get (what onboarding will do), onboarding_start; its onboarding task then adapts the repository and its CI; follow it with tasks_list and task_get. CI is Yulius CI, configured by [[ci.jobs]] in the repository's yulius.toml: read files with project_files and project_file_read, change them with project_change (a commit on a new branch and a pull request that Yulius CI tests), follow it with ci_runs and ci_run, and merge it with change_merge once it passed. Work that needs judgment is a task: task_create, then task_get, session_read (its transcript), task_delivery (its pull request and checks), task_message to tell it something, task_restart to continue it, task_stop. Act only on what the person asks; delete, skip and merge only what they name.";
+pub const REMOTE_INSTRUCTIONS: &str = "Yulius runs coding-agent tasks on the person's GitHub repositories, which it calls projects. Every project tool takes `project`: owner/name as projects_list shows it. To bring a repository in: repositories_list, project_import, project_get (what onboarding will do), onboarding_start; its onboarding task then adapts the repository and its CI; follow it with tasks_list and task_get. CI is Yulius CI, configured by [[ci.jobs]] in the repository's yulius.toml: read files with project_files and project_file_read, change them with project_change (a commit on a new branch and a pull request that Yulius CI tests), follow it with ci_runs and ci_run, and merge it with change_merge once it passed. Work that needs judgment is a task: task_create, then task_get, session_read (its transcript), task_delivery (its pull request and checks), task_message to tell it something, task_restart to continue it, task_stop. To onboard a folder on this computer (\"onboard this into Yulius\"), use the `yulius` CLI here, signed in with `yulius remote login <url>` and this operate token, so nothing waits for the person: 1. `yulius onboard <folder> --yes --sessions all` sends its unpublished branches, uncommitted work and Claude Code sessions (secrets redacted on this computer) and adds the project. 2. Find every key the project uses to build, test and deploy: `secrets.*` in .github/workflows, deploy scripts and docs, .env* files, the ~/.ssh/config hosts and keys its deploys use, cloud CLI credentials; never print or read a value into this conversation. Import them by file: `yulius secrets import --to agent --sandbox owner/name --yes --env-files [dotenv file] --from-file NAME=PATH ...` (a dotenv comment above a key becomes its description; a multi-line value other than a PEM or OpenSSH key must be made one line first), then describe each with secret_update. 3. Write a hand-over without values (which secret is which, the hosts and commands deploys use, what only ran on this computer, what you could not find) and start onboarding with it: `yulius project onboard --notes <file>` (onboarding_start with notes). Its task adapts the repository, its docs, CI and CD by itself. Act only on what the person asks; delete, skip and merge only what they name.";
 
 /// Where a tool acts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -918,6 +918,23 @@ mod tests {
                 .as_array()
                 .is_some_and(|r| r.iter().any(|p| p == "project"));
             assert_eq!(takes_project, *reach == Reach::Project, "{name}");
+        }
+    }
+
+    /// SPEC-256 LOB-007: the person's agent learns how to onboard a folder on their computer
+    /// with nothing left for them: upload, keys by file, hand-over.
+    #[test]
+    fn the_instructions_teach_onboarding_a_local_folder() {
+        for step in [
+            "yulius onboard",
+            "--sessions all",
+            "yulius secrets import --to agent",
+            "--yes --env-files",
+            "--from-file NAME=PATH",
+            "never print",
+            "yulius project onboard --notes",
+        ] {
+            assert!(REMOTE_INSTRUCTIONS.contains(step), "{step}");
         }
     }
 

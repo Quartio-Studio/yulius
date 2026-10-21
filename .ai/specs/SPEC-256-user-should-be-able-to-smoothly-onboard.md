@@ -1,11 +1,11 @@
 ---
 yulius-task: ccd5afca-7e6e-4cce-897c-52dcef060424
-status: draft
+status: in-progress
 ---
 
 # SPEC-256: Onboard a laptop repository with one request to the local agent
 
-Status: draft
+Status: in-progress
 Date: 2026-10-21
 Owner: task #242
 Scope authorization: task #242. The operator: "User should be able to smoothly onboard their repo
@@ -66,8 +66,7 @@ messages (`append_unstarted_prompt`, SPEC-052), `yulius_domain::redact::redact`.
   names, their classes and every rule of ADR-0163 (no values out, nothing overwritten, invalid
   entries skipped) stay; with `--yes` no terminal is needed.
 - **LOB-003** `--from-file NAME=PATH` (repeatable) imports the whole file at PATH as the secret
-  NAME, with the description "From the file <file name> on <person>'s computer" for agent
-  secrets; a multi-line key is stored with literal `\n` as the dotenv import stores it; at most
+  NAME, described "From the file <file name>" (a leading `~/` is the home); a multi-line key is stored with literal `\n` as the dotenv import stores it; at most
   64 KiB read; a NAME given twice (also in the dotenv file) refuses the run before anything is
   sent. Combinable with the dotenv file.
 - **LOB-004** `--env-files` (agent secrets) creates each secret already allowed into `.env` files:
@@ -81,7 +80,9 @@ messages (`append_unstarted_prompt`, SPEC-052), `yulius_domain::redact::redact`.
   "Hand-over from <login>'s agent on their computer", redacted of secrets
   (`yulius_domain::redact`). At most 24 KiB; empty notes are none. When the onboarding already
   started, notes are refused (409, "tell its task with task_message"); no notes keeps today's
-  answer. The account check comes before anything is created.
+  answer. The account check comes before anything is created. The onboarding task rests
+  `closed` until it starts, so the notes join its request through a conditional update of a
+  task that never ran (`append_resting_prompt`).
 - **LOB-006** The onboarding prompt tells the task to read `secrets_list` and its request's
   hand-over before asking anyone for a credential or machine, and to use `secret_copy_to_env` for
   keys used outside the proxy.
