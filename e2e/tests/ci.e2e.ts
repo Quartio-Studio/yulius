@@ -134,11 +134,14 @@ const summaryInsets = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => bro
   const head = summary?.querySelector('.run-head');
   const facts = summary?.querySelector('.run-facts');
   if (!summary || !head?.firstElementChild || !head.lastElementChild || !facts?.firstElementChild) return null;
-  const band = summary.getBoundingClientRect();
+  // Measured inside its border, if it has one.
+  const box = summary.getBoundingClientRect();
+  const left = box.left + summary.clientLeft;
+  const right = left + summary.clientWidth;
   return {
-    left: Math.round(head.firstElementChild.getBoundingClientRect().left - band.left),
-    right: Math.round(band.right - head.lastElementChild.getBoundingClientRect().right),
-    facts: Math.round(facts.firstElementChild.getBoundingClientRect().left - band.left),
+    left: Math.round(head.firstElementChild.getBoundingClientRect().left - left),
+    right: Math.round(right - head.lastElementChild.getBoundingClientRect().right),
+    facts: Math.round(facts.firstElementChild.getBoundingClientRect().left - left),
   };
 });
 
