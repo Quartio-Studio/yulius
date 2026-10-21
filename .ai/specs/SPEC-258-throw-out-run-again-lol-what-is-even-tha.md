@@ -1,11 +1,11 @@
 ---
 yulius-task: fe5ab035-1780-4403-a5c7-491bfc667106
-status: in-progress
+status: done
 ---
 
 # SPEC-258: Run again leaves the run cards for the run's own view
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #244
 Scope authorization: the person's request (task #244): "throw out run again lol what is even that",
@@ -44,10 +44,10 @@ a commit again, from the run's own view, where they look at what failed.
 - [x] Investigate the code, data or sources and collect evidence
 - [x] Answer with the evidence, the options and a recommendation
 - [x] Spec SPEC-258 written and validated
-- [ ] Run cards show no Run again; the run view offers Run again and Cancel (e2e first)
-- [ ] Docs and changes log updated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green (scripts/dev ci, e2e, security)
+- [x] Run cards show no Run again; the run view offers Run again and Cancel (e2e first)
+- [x] Docs and changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green (scripts/dev ci, e2e, security)
 
 ## Acceptance criteria
 
@@ -77,4 +77,22 @@ the run's view, the reader's view, axe on the view with its buttons. Then `scrip
 
 ## Evidence
 
-To be filled at the end.
+- `npx e2e run tests/ci.e2e.ts`: the two new tests failed before the change (3 "Run again" on the
+  list's cards; no Cancel in the run's view), then 9/9 passed. Review round 1 added two tests that
+  failed on `bfe400dd` (Run again and In Pipeline gone after a job tab; focus not moved to Run
+  again after Cancel), then 10/10 passed.
+- `scripts/dev ci` exit 0: repository contracts, 119 script tests, check, fmt, clippy, deps,
+  macOS targets, 2395 tests passed (17 skipped). `python3 scripts/check_repository.py` passed again
+  on `ed96eef2`, after the review fix.
+- `npx e2e run` (the whole suite) on `ed96eef2`: 663 passed, 1 skipped (65 files).
+- `scripts/dev security` exit 0: Vidoc vidoc-1, change scan of 2 code files, no finding.
+- Independent review (fresh session, `om-code-review`): round 1 asked for changes. Major: a job
+  tab emptied the head (Run again and In Pipeline were gone). Minor: an older load could draw
+  after a Cancel, and the head lost the keyboard's focus. Nit: a double click on Run again sent two
+  requests. All four were fixed test-first in `ed96eef2`, and round 2 approved.
+- Left as they are, with the reasons:
+  - Run again also shows on a merge-train run, which the server refuses with a clear toast. The
+    cards did the same before this change, and the mock has no train run to test it with.
+  - The stages chart can still be drawn by an older load when two of its responses come back out
+    of order after a Cancel. That needs the server to answer out of order, it does not stop the
+    view working, and it clears on the next load. It is noted here, not filed.
