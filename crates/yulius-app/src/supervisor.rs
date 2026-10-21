@@ -57,6 +57,9 @@ const CLOSE_SETTLE_MS: u64 = 5_000;
 /// How long asking a run to shut down may take: one frame on a local socket; a host that takes
 /// longer is stuck, which the escalation handles (SPEC-065 END-005).
 const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
+/// How many times a stop makes its status change: each lost one means another writer changed the
+/// status, and the status machine has no cycle a stop can keep losing to (SPEC-250 STW-001).
+const STOP_ROUNDS: usize = 4;
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
@@ -2333,8 +2336,14 @@ impl App {
                 }
             }
             Some(EndIntent::Cancel) => {
+                // A stop's run ended: its task is stopped, also while still live when the run ended
+                // before the stop's status change was made (SPEC-250 STW-003).
                 if let Ok(Some(task)) = store.task(task_id).await
-                    && let Ok(next) = task.status.apply(TaskEvent::Reaped)
+                    && let Ok(next) = task.status.apply(TaskEvent::Reaped).or_else(|_| {
+                        task.status
+                            .apply(TaskEvent::CancelRequested)
+                            .and_then(|stopping| stopping.apply(TaskEvent::Reaped))
+                    })
                 {
                     let _ = store
                         .transition_task(task_id, Some(task.status), next, None, now)
@@ -2651,19 +2660,38 @@ impl App {
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
+    /// A status change that loses to a concurrent one (a switch or a start completing) is made
+    /// again from the status read anew, so the stop always takes effect (SPEC-250 STW-001).
     ///
     /// # Errors
-    /// `Conflict` when the task is not live.
+    /// `Conflict` when the task is not live, or still changes after [`STOP_ROUNDS`].
     pub async fn stop_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        for round in 0..STOP_ROUNDS {
+            if self.stop_round(task_id, round > 0).await? {
+                return Ok(());
+            }
+        }
+        Err(AppError::Conflict(
+            "the task kept changing while it was stopped; try again".into(),
+        ))
+    }
+
+    /// One round of [`Self::stop_task_now`]: `false` when its status change lost to a concurrent
+    /// one. After a lost round (`again`), a task that rests was ended meanwhile, by this stop's
+    /// intent or by its run's own end: the stop is done (STW-002).
+    async fn stop_round(self: &Arc<Self>, task_id: &TaskId, again: bool) -> AppResult<bool> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        if again && task.status.is_resting() {
+            return Ok(true);
+        }
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
             || task.status == TaskStatus::Prepared
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {
-            store
+            if !store
                 .transition_task(
                     task_id,
                     Some(task.status),
@@ -2671,13 +2699,16 @@ impl App {
                     None,
                     self.now(),
                 )
-                .await?;
+                .await?
+            {
+                return Ok(false);
+            }
             self.end_pause(task_id, "cancelled").await;
             self.publish_task(task_id).await;
             self.advance_chains(task_id).await;
             // A cancelled supertask no longer holds its project (SUP-005).
             self.drain_queue().await;
-            return Ok(());
+            return Ok(true);
         }
         // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One
         // whose run has ended gets no intent (nothing would consume it): it rests by itself while
@@ -2703,7 +2734,7 @@ impl App {
                     self.publish_task(task_id).await;
                     self.advance_chains(task_id).await;
                 }
-                return Ok(());
+                return Ok(true);
             }
             TaskStatus::Stopping
         } else {
@@ -2716,10 +2747,14 @@ impl App {
             *intent = Some(EndIntent::Cancel);
         }
         crate::race::reached(crate::race::Point::StopDecided, Path::new(task_id.as_str()));
-        if task.status != TaskStatus::Stopping {
-            store
+        // Lost to a concurrent change: the task is read again. The intent stays: it is this
+        // stop's, and a run that ends on it meanwhile rests its task (STW-003).
+        if task.status != TaskStatus::Stopping
+            && !store
                 .transition_task(task_id, Some(task.status), next, None, self.now())
-                .await?;
+                .await?
+        {
+            return Ok(false);
         }
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
@@ -2728,7 +2763,7 @@ impl App {
         self.arm_escalation(task_id, stopped);
         self.end_person_pause(task_id).await;
         request_shutdown(&runtime).await;
-        Ok(())
+        Ok(true)
     }
 
     /// Switches a running task to another account (manual or rotation-driven).
