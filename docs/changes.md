@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-21
+
+- The Claude config dir is prepared through handles (SPEC-253, ADR-0193, task #239, fixes #634).
+  Before a launch, Yulius opens `<home>/.claude` from the folder above the home without following
+  links. A home or config dir the agent replaced with a link now refuses the launch and names it,
+  where Yulius used to read and replace `.claude.json` and `settings.json` in the link's target.
+  `plugins/store` linked elsewhere is left alone. A linked worktree's main repository is read
+  lexically from Git's layout, so the host no longer resolves paths the agent wrote. The two Vidoc
+  ignores that pointed at #634 are removed.
+
 ## 2026-10-20
 
 - Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,
