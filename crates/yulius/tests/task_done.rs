@@ -2266,6 +2266,50 @@ fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
     Ok(())
 }
 
+/// SPEC-250 STW-006 (review round 2): a task paused for capacity during its switch (a Stop
+/// hook's wait moves `Switching` to `WaitingCapacity`) is not overtaken: the switch goes on and
+/// launches, as before SPEC-250.
+#[test]
+fn a_switch_paused_for_capacity_goes_on() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::SwitchDecided,
+                Path::new(key.as_str()),
+                move || {
+                    // As `pause_task` makes it for a Stop hook's wait.
+                    let paused = wait_in_hook(
+                        &handle,
+                        app.deps.store.transition_task(
+                            &id,
+                            Some(TaskStatus::Switching),
+                            TaskStatus::WaitingCapacity,
+                            None,
+                            app.now(),
+                        ),
+                    );
+                    if !matches!(paused, Ok(true)) {
+                        eprintln!("the task was not paused: {paused:?}");
+                    }
+                },
+            );
+        }
+        let switched = switch_result(switch_on_worker(&app, &id)).await?;
+        assert_eq!(switched, Ok(()), "{}", run_states(&app, &id).await);
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 2, "{}", run_states(&app, &id).await);
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// Kills the host of `id`'s live run, as a crash would: the run is lost.
 async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
     let run = app.deps.store.live_attempt(id).await?.ok_or("no run")?;
