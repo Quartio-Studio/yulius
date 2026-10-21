@@ -4,6 +4,23 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-22
+
+- The documentation matches what was merged since 2026-10-17 (task #246, documentation only). The
+  API reference lists the agent-secret scopes (`personal`, `enabled`, `shadowed_by`) and the
+  switch route `PUT …/agent-secrets/{id}/enabled`, the leftovers and Sandbox Docker admin routes,
+  the health and `yulius leftovers` internal routes, the composer's draft attachments, the
+  update's Docker re-check, the stop's 409s and how a lost run closes its task. Onboarding started
+  by an `operate` token, `yulius secrets import --yes`, `--from-file` and `--env-files`, the
+  remote CLI and dev-stage `cd_deploy` are described wherever the old rules were (operations,
+  product, architecture, remote control, ADR-0038 and ADR-0163 now link their amendments). The
+  architecture's top diagram puts the sandbox browser outside the holder, on its DevTools pipe;
+  the Superagent's tools, hook and `task_message` reach are corrected; the Vidoc key loses to any
+  agent secret of that name that reaches the run; named CD environments' files, the
+  production secrets rule and upgrade notes for migrations 0035, 0037, 0039, 0040 and 0041 are in
+  operations. Four architecture sequence diagrams that did not render (a `;` in a message ends a
+  Mermaid statement) render again; all 54 diagrams pass Mermaid 11's parser.
+
 ## 2026-10-21
 
 - A CI run's and a deploy's summary keeps its content off its edges (SPEC-259, task #245, fixes
@@ -149,7 +166,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run
   that opens no pull request, such as "Work through open issues", could never meet the Done rule
   (an achieved goal, or a tested pull request) and read "Your turn" until a person archived it.
-  Every run's task is now a goal task, like every other new task: it is Done once Claude Code
+  Every run's task is now a goal task, as the onboarding preparation already was: it is Done once Claude Code
   records its goal as achieved. The ready-made "Work through open issues" now says in its first
   paragraph, which its goal keeps, that the run ends with its summary without waiting for the tasks
   it starts. Tasks that are already finished in prompt mode (#217) stay as they are: archive them.

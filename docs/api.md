@@ -2,7 +2,7 @@
 
 Contract between the web UI (and future desktop shells, SPEC-001 OPS-002) and `yulius serve`.
 It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md). Rust DTOs live in
-`crates/yulius-contracts/src/api.rs`; when they disagree with this page, fix both in one change.
+`crates/yulius-contracts/src/api/` (one module per area); when they disagree with this page, fix both in one change.
 
 ## Conventions
 
@@ -92,7 +92,7 @@ person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `
 `project_file_read`, `automations_list`, `workflows_list`, `secrets_list`), work
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
 `task_unpause`, `task_start_now`, `task_archive`, `task_delete`, `ci_rerun`, `ci_cancel`,
-`cd_deploy` (dev only), `project_change`, `change_merge`), configure (`automation_*`,
+`cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,
 `secret_update`, `secret_hosts_answer`) or administer (`onboarding_skip`). A project the person
 cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
 true}` adds the tool's record as `structuredContent`. `initialize` answers
@@ -112,7 +112,7 @@ true}` adds the tool's record as `structuredContent`. `initialize` answers
 | GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session or `operate` token | Optional body `{notes?}`: the hand-over of the person's agent (≤ 24 KiB, 422 beyond; redacted) added to the onboarding task's request before it starts; 409 with notes once onboarding started (SPEC-256). Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing` without notes; 403 for a `cli` token (`yulius onboard` only uploads, SPEC-051; an `operate` token is the person's own agent, SPEC-247); 409 when nothing awaits preparation or the task cannot start |
-| DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
+| DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live and queued tasks, cancels its CI runs, ends its Superagents, Shells and browser, and retires its holder (stopped a minute later, SPEC-206); GitHub repository, clone and task records kept; disposable files go as [leftovers](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when) |
 | POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
 | POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
 
@@ -133,8 +133,9 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` the sandbox stays `pending`, with no preparation task yet, until someone
-clicks Start onboarding on the sandbox page, SPEC-051, SPEC-097). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending`, with no preparation task yet, until a person
+starts onboarding: Start onboarding on the sandbox page, or `onboarding_start` with an `operate`
+token, SPEC-051, SPEC-097, SPEC-247). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
 preparation task (created then, resting, when the sandbox has none yet), and it starts by itself once the sandbox is `ready` or `skipped`
@@ -185,7 +186,7 @@ browser request.
 
 ## Import (`yulius onboard` / `yulius import`)
 
-Bearer CLI token or cookie session. The full protocol, bounds and snapshot layout are documented
+A `cli` or `operate` bearer token, or a cookie session. The full protocol, bounds and snapshot layout are documented
 in `crates/yulius-contracts/src/import.rs`.
 
 | Method | Path | Body → Response |
@@ -217,8 +218,9 @@ it holds the caller's earlier copy, `taken` = another person uploaded a session 
 branches become `import/<login>/<branch>`; the snapshot is committed on
 `import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each session is
 stored as a read-only session document of the sandbox attributed to the caller (a changed one
-replaces the caller's copy). It never starts onboarding: a `pending` sandbox waits for Start
-onboarding in the browser (SPEC-051). Only Claude Code sessions are imported.
+replaces the caller's copy). It never starts onboarding: a `pending` sandbox waits until a person
+starts it (Start onboarding on the sandbox page, or `onboarding_start` with an `operate` token;
+SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
@@ -290,8 +292,8 @@ limited to the agent's sandbox.
 | GET | `/api/tasks/{tid}/transcript?from=<line>&limit=N&seen=<bytes>&session=<id>` | read | → `TaskTranscript`: the task's latest Claude Code session as the people watching someone else's task read it (SPEC-179). Without `from` the tail: the last `limit` entries (≤ 500, default 200, about 2 MiB of text; `earlier` when entries were left out) and `doc_id`, the session's document; with `from` the entries from that line (`next` when the page is full). `end` is the line after the last complete line (a line still being written waits), `bytes` the transcript's size: a reader continues with `from=end&seen=bytes&session=session_id`, answered without reading the file while that session's size is unchanged. Redacted as session pages are. No session yet: `session_id` null, no entries |
 | POST | `/api/tasks/{tid}/pause` | write | → `TaskSummary`; its owner pauses a `running` task (SPEC-191, ADR-0154): its run is frozen, or held at its turn boundary when it cannot be (`pause.pending` until then); `pause: {"by":"person","user","since","pending"}`; pausing again changes nothing; 409 for any other state; audited `task.paused_by_person`; publishes `task.updated` |
 | POST | `/api/tasks/{tid}/resume` | write | → `TaskSummary`; ends a person's pause and thaws the run (while an update holds the task, the update thaws it); nothing for a task that is not paused; audited `task.resumed_by_person` |
-| POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065) |
-| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
+| POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065); 409 when the task is not live, or when it keeps changing after 4 rounds (SPEC-250) |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a `cli` token on a `pending` sandbox's onboarding task (starting onboarding is a person's action: the browser or an `operate` token, SPEC-051, SPEC-247) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
@@ -402,7 +404,10 @@ Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_in
 or any clean exit → `closed`; ended by a signal from outside Yulius (SIGTERM, SIGKILL, SIGHUP,
 SIGINT, or the exit codes 129/130/137/143 they give) → `stopped_killed`; any other exit →
 `stopped_crashed`; Stop in the UI → `stopping` at once, then `stopped_cancelled`. Interrupting a
-turn (Esc, or Ctrl+C while the agent works) keeps the session: `activity` becomes `waiting`.
+turn (Esc, or Ctrl+C while the agent works) keeps the session: `activity` becomes `waiting`. A
+run lost (a restart, a reboot, a process Yulius can no longer confirm) while its task is `running`
+with `activity` `done` → `closed`; any other lost run → `stopped_lost` or `stopped_server_lost`
+([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)).
 
 ### Task intake
 
@@ -942,7 +947,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
-| `task_message` (the Cockpit only, SPEC-230) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
+| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -1120,7 +1125,10 @@ resolves to nothing, the run gets the server without that variable or token.
     last component with letters, digits, `.`, `_`, `+` (other characters become `-`; no leading
     dot or dash), so the path needs no quoting; an existing name gets `-2`, `-3`, … before its
     extension. At most 500 per task or shell (409). Removed with the task (`DELETE
-    /api/tasks/{tid}`) or when the shell ends.
+    /api/tasks/{tid}`) or when the shell ends. `POST /api/sandboxes/{sid}/attachments?name` (work
+    access) takes a file dropped on the new-task composer the same way: it waits in the caller's
+    drafts folder of the sandbox until the prompt that names its path starts a task; drafts older
+    than a week are removed.
 - Terminals (sandbox shells; UI-015, UI-016): each is private to the user who opened it and to its
   sandbox. `Shell = {"id","name","task_id|null","folder","created_at"}`; `folder` is the absolute
   path it started in (the repository or the task's worktree) as its processes see it: the web
@@ -1156,14 +1164,18 @@ resolves to nothing, the run gets the server without that variable or token.
     (SPEC-023; the bypass with `IS_SANDBOX=1` on a contained server, SPEC-208) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
-    terminal's environment (Git as the caller); no Yulius hooks or settings. It
+    terminal's environment (Git as the caller); no Yulius lifecycle hooks, status line or briefing:
+    its `--settings` hold only the `PostToolUse` redaction hook and `disabledMcpjsonServers`
+    (SPEC-147, SPEC-095). It
     gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
     `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
     `task_create`, `task_message` (SPEC-230), `task_stop`, `task_archive`, `task_delete`, `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
-    `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
+    `automation_template_enable`, `workflows_list`, `sessions_search`, `session_read` and the vault
+    tools `secrets_list`, `secret_verify`, `secret_copy_to_env`, `secret_request_hosts` and
+    `secret_create_from_file` (`COCKPIT_TOOLS`), acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
@@ -1238,6 +1250,11 @@ resolves to nothing, the run gets the server without that variable or token.
 | DELETE | `/api/admin/vidoc` | superadmin | removes the saved key (the `YULIUS_VIDOC_API_KEY_FILE` key is used again, if any), audited `vidoc.key_removed` → `VidocKeyView` |
 | POST | `/api/admin/vidoc/adopt` | superadmin | saves the key of `YULIUS_VIDOC_API_KEY_FILE` in settings → `VidocKeyView`; 409 without a usable file |
 | POST | `/api/admin/vidoc/test` | superadmin | one `GET /v1/models` with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` (`invalid`: no `vidoc-1` in the answer) |
+| GET | `/api/admin/leftovers` | superadmin | → `LeftoversView` `{"items":[{"id","kind","path","bytes|null","sandbox|null","task|null","reason","auto","deletable"}],"scanned_at|null","total_bytes","safe_bytes","disk_used|null","disk_total|null","data_dir","job|null","next_auto_at|null"}`: what is kept and what can go (SPEC-215, [operations](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when)) |
+| POST | `/api/admin/leftovers/scan` | superadmin | rescans in the background → `LeftoversView`; 409 while a scan or deletion runs |
+| POST | `/api/admin/leftovers/delete` | superadmin | `{"ids":[…]}` or `{"all_safe":true}` → `LeftoversView`, deleting in the background (`job`); 409 while a scan or deletion runs, 422 for unknown ids or nothing to delete |
+| GET | `/api/admin/sandbox-docker` | superadmin | → `SandboxDockerView` `{"ok","detail","isolated","base","host_dockerd","rebuild","own_engines","own_engine_fix","host_check","smoke"}`: whether sandboxes get Docker (SPEC-203) |
+| POST | `/api/admin/sandbox-docker/smoke` | superadmin | → 202 `SandboxDockerView`: starts the Docker smoke test; 409 while one runs or when sandboxes are not isolated |
 
 ```json
 AdminUser = {"id","github_login","display_name","is_instance_admin","disabled",
@@ -1401,7 +1418,7 @@ UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
          "step":"fetching|verifying|compiling|built|pausing|stopping|backing_up|installing|starting|checking|rolling_back|resuming|…|null",
          "message|null","progress":{"done","total"}|null,
          "tasks":{"paused","total","waiting":[{"id","number","title","sandbox"}],"deadline|null"}|null,
-         "error|null","log_tail":["…"],"requested_by","started_at","state_since","finished_at|null",
+         "error|null","log_tail":["…"],"docker":{"ok","lines":[…],"error|null","commit|null","checked_at"}|null,"requested_by","started_at","state_since","finished_at|null",
          "can_cancel","can_proceed"}|null}
 JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
               "config_present","config_error|null"}
@@ -1411,9 +1428,13 @@ VidocKeyView = JevKeyView's fields, for the Vidoc key
 `available` lists the commits from the build to the head of `main` without merges and promotions,
 titles without their conventional prefix and pull request number. `run.progress` counts compiled
 crates while building and released tasks while resuming; `run.tasks` counts live tasks at a pause
-point while pausing. `log_tail` is filled only for a failed or rolled-back run. The internal
+point while pausing. `log_tail` is filled only for a failed or rolled-back run. `docker` is the
+new version's re-check of the host for sandboxes' Docker after the install (SPEC-203); `ok: false`
+is a regression, with its reasons. The internal
 listener also serves `GET /internal/version` → `{"commit|null","version"}` for the update
-helper's health check.
+helper's health check, `GET /internal/healthz` (and `GET /healthz` on the public one) → `ok`, and
+`GET /internal/leftovers`, `POST /internal/leftovers/scan` and `…/delete` for `yulius leftovers`,
+with `Authorization: Bearer <the key in <data>/leftovers-cli.key>` (401 otherwise).
 
 ## Secrets vault
 
@@ -1441,7 +1462,7 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that 
 | POST | `/api/auth/two-factor` | → 201 `{secret, uri}`: a new base32 seed and its `otpauth://totp/…` link (replaces a pending one). Needs `identity_fresh` (else 403 `reauth_required`); 409 once confirmed; 429 after 5 a minute. Audited (`vault.2fa.setup`) |
 | POST | `/api/auth/unlock` | `{code}` → the status: unlocks this browser session for 10 minutes; the first code confirms the setup (`vault.2fa.confirm`, later `vault.unlock`). 403 for a wrong or reused code (`vault.unlock.failed`; the 10th wrong code in a row locks codes, `vault.2fa.locked`, until `POST /api/auth/reauth` or a new GitHub sign-in) and while locked, 422 without two-factor, 429 after 5 attempts a minute. A code checked against a seed replaced meanwhile by a new setup is refused (403, not counted as wrong; SPEC-061) |
 | DELETE | `/api/users/{id}/two-factor` | Instance administrators and the superadmin, for a lost authenticator (SPEC-061, ADR-0041) → 204: removes that person's seed and the unlocks of their browser sessions, audited `vault.2fa.reset` (detail: their login) when a seed was removed; 204 also when none was set up. Needs the caller's own unlock (else 403 `reauth_required`); 403 for members, bearer tokens and the caller's own id, 404 for an unknown user. The person sets two-factor up again on their next reveal. The user list does not include the superadmin, so their lost authenticator cannot be reset yet (ADR-0041) |
-| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
+| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); a project secret's entries only for members who can view its project, a global secret's for every member (its switches on and off for administrators only), a personal secret's for its owner only |
 
 A reveal needs the vault **unlocked** in this browser session. Otherwise it answers `403`
 `{"error": {"code": "reauth_required", …}, "reauth": <status>}`; the client sets two-factor up
@@ -1454,12 +1475,13 @@ after an unlock.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
-| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"\|"personal"), enabled, shadowed_by?, hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the project's secrets, every global one and the caller's own personal ones (`enabled`: it reaches this project's runs; `shadowed_by`: the scope whose secret of the same name wins, project > personal > global, [ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md); `has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance"\|"personal", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance (global): instance administrators; personal: the caller's own, which needs work access. A global or personal secret starts switched on for `{sid}`. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name exists in its scope; 429 past 200 secrets reaching the project |
+| PUT | `/api/sandboxes/{sid}/agent-secrets/{id}/enabled` | `{enabled: bool}` → `AgentSecret`: switches a global secret (instance administrators, 403 otherwise) or the caller's own personal one (needs work access on the project) on or off for the project; 422 for a project secret; 429 past 200 secrets reaching the project. Audited `vault.agent.enable` / `vault.agent.disable` |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts or `auto_allow` changed since it was read (reload). Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
-| POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of the sandbox; of every sandbox for an instance-wide secret) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
+| POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 
 ## UI event stream
@@ -1481,8 +1503,9 @@ open in the editor, only to people with write access to that sandbox; SPEC-127),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updated","sandbox_id"|null}`
-(an agent asked for an agent secret's hosts or a `.env` copy; to the secret's sandbox's viewers, or
-everyone for a secret of every sandbox, `null`; open Secrets pages read
+(an agent asked for an agent secret's hosts or a `.env` copy or created one, or a global or
+personal secret was switched on or off for a project; to a project secret's viewers, or everyone,
+`null`, for a global or personal one; open Secrets pages read
 `GET /api/sandboxes/{sid}/agent-secrets` again; SPEC-209), `{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
@@ -1554,7 +1577,10 @@ task; other hooks answer as usual.
   redacted. The Superagent (`ck_` token, SPEC-186) is served `secrets_list`,
   `secret_request_hosts` and `secret_copy_to_env` too (its copies go to the sandbox repository,
   its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), not `browser_fill_secret`;
-  the egress proxy accepts its bearer as `yulius:ck_…`.
+  the egress proxy accepts its bearer as `yulius:ck_…`. A personal secret is sent only by the
+  egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
+  `${secret:NAME}` reference never resolves to it
+  ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)).
 - MCP `secret_create_from_file {name, file, description?, delete_file?}` (SPEC-211, tasks and the
   Superagent, not run without asking where approvals apply) → `{created, file, deleted, hosts: [], link, next, warning?}`:
   Yulius reads `file` (relative to the folder the caller works in, or `~/…` in its home), anchored

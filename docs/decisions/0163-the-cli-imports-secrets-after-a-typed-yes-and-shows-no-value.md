@@ -3,7 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-205](../../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md);
-task #192.
+task #192. Amended by [ADR-0194](0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md):
+`--yes` with an `operate` token sends without the typed yes.
 
 ## Context
 
