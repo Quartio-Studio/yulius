@@ -1,11 +1,11 @@
 ---
 yulius-task: ccd5afca-7e6e-4cce-897c-52dcef060424
-status: in-progress
+status: done
 ---
 
 # SPEC-256: Onboard a laptop repository with one request to the local agent
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: task #242
 Scope authorization: task #242. The operator: "User should be able to smoothly onboard their repo
@@ -94,13 +94,13 @@ messages (`append_unstarted_prompt`, SPEC-052), `yulius_domain::redact::redact`.
 
 ## Plan
 
-- [ ] Spec and ADR: the person's agent token delegates the confirmations
-- [ ] One token: onboard and secrets import use the remote operate token
-- [ ] Unattended secrets import: --yes with an operate token and key files with --from-file
-- [ ] Imported secrets can be allowed into .env files at creation
-- [ ] Hand-over notes reach the onboarding task
-- [ ] Laptop onboarding recipe in the remote MCP instructions and the guide
-- [ ] Independent review, gates and delivery
+- [x] Spec and ADR: the person's agent token delegates the confirmations
+- [x] One token: onboard and secrets import use the remote operate token
+- [x] Unattended secrets import: --yes with an operate token and key files with --from-file
+- [x] Imported secrets can be allowed into .env files at creation
+- [x] Hand-over notes reach the onboarding task
+- [x] Laptop onboarding recipe in the remote MCP instructions and the guide
+- [x] Independent review, gates and delivery
 
 ## Acceptance criteria
 
@@ -144,4 +144,63 @@ messages (`append_unstarted_prompt`, SPEC-052), `yulius_domain::redact::redact`.
 
 ## Evidence
 
-Pending.
+All at the branch head after `origin/dev` at `f19324cc` (no newer dev commits when delivered).
+
+- `scripts/dev ci`: passed (exit 0) at `2e18cb47`, 2393 tests passed / 17 skipped. It covers the
+  repository checks, script tests, `cargo check`, `fmt --check`, Clippy `-D warnings` for Linux and
+  `aarch64-apple-darwin`, nextest, doctests, `cargo deny`, `cargo shear` and `cargo doc`. At
+  `d739fe46` one test failed: `cli::secrets_import_refuses_a_malformed_file_without_showing_values`.
+  The round 1 reorder had moved the token lookup before the file was read; it now comes first
+  only with `--yes`, and the gate was run again at the final head (see the pull request's Yulius
+  CI).
+- `scripts/dev security` (Vidoc vidoc-1, change scan at `877dba10`, 22 files): no critical or
+  high finding, and no medium finding in the change. There were no low findings in the change.
+  Five medium or low findings are in lines this branch did not touch: `run.rs:391`,
+  `sandboxes.rs:118`, `token_store.rs:115`, `cli.rs:20` and `main.rs:72`. Yulius CI files each one
+  as an issue.
+- New tests, each red-checked (a missing method or flag, a 422 for the unknown field, the
+  old message, or the fix disabled):
+  - `remote_mcp::a_laptop_project_is_onboarded_by_its_agent_alone`: the acceptance flow through
+    the real `yulius` binary against a served instance, with only an operate token stored. It runs
+    `yulius onboard --yes` (no device login), then
+    `yulius secrets import --yes --env-files .env --from-file DEPLOY_SSH_KEY=~/.ssh/…` (no
+    terminal, no value printed, both secrets `env_files: allowed` and `auto_allow`, audited), then
+    a re-run that overwrites nothing, then `yulius project onboard --notes` (a hand-over over
+    24 KiB is refused; the task's request holds the hand-over, redacted of a `ghp_` token; a
+    second hand-over once onboarding started is refused).
+  - `remote_mcp::an_unattended_import_needs_an_operate_token`: a `cli` token or a read token is
+    refused. With an operate token the duplicate names, a malformed `NAME=PATH`, a missing file,
+    the flag conflicts and `--yes` without a file are all refused, and nothing is sent.
+  - `remote_mcp::a_hand_over_is_added_once_and_only_where_it_can_be_read`: with no Claude account
+    nothing is created; a retry adds the hand-over once; a task that tried to run is refused; blank
+    notes count as none.
+  - `remote_mcp::a_hand_over_overtaken_by_another_start_is_refused`: uses the test-only pause point
+    `race::Point::OnboardingApproved`.
+  - `secrets_env::a_secret_created_allowed_is_copied_without_a_person`: `secret_copy_to_env`
+    writes `.env` with no person involved. Creation is refused for a personal secret and with
+    `auto_allow` off.
+  - Store `a_resting_task_that_never_ran_takes_an_addition`; token store
+    `the_remote_token_stands_in_for_a_missing_login_token`; import
+    `an_unattended_run_asks_nothing` and `a_key_file_is_imported_by_path`; domain
+    `a_hand_over_follows_the_request_under_whose_agent_wrote_it`; the remote instructions'
+    `the_instructions_teach_onboarding_a_local_folder`; and the onboarding prompt's assertion on
+    `secrets_list`.
+- Independent review in a fresh session, three rounds, all findings in this change's own code:
+  - Round 1: 6 minor findings and 5 nits. Fixed test-first: the hand-over is now added after the
+    branch step and only once, refusals say what happened, the operate token is checked before
+    reading, the missing tests were added, refusal messages are checked, and a failed or
+    oversized read is reported as such. Accepted with the reviewer: a personal `env_files` create
+    answers 422 (the answer endpoint says 409), and a stored remote read token makes
+    `yulius onboard` fail with 403 instead of starting a device login.
+  - Round 2: a start or skip landing between the two reads dropped the hand-over unsaid, and a
+    concurrent duplicate append was possible; both are fixed.
+  - Round 3: APPROVE at `d739fe46`. The one remaining nit is that the `skipped` arm of the race has
+    no test of its own; it shares its code path with the tested `preparing` arm.
+- Not tested:
+  - The real Quartio-Studio/product repository: it is private and this sandbox's GitHub token
+    cannot read it (404). The person runs it from their laptop.
+  - A real Claude Code client following the remote instructions end to end: the steps are
+    covered command by command by the binary tests above.
+  - macOS shells' handling of `NAME=~/…`: the CLI expands a leading `~/` itself.
+  - A real onboarding agent using the imported keys over ssh. `secret_copy_to_env` writing them is
+    tested; the agent's use of them is the onboarding task's own work.

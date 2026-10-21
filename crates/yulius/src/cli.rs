@@ -322,22 +322,15 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
         if args.yes && args.file.is_none() && args.from_files.is_empty() {
             return Err("--yes takes the secrets from a file or --from-file, never typed".into());
         }
-        // The token first: with --yes, nothing is read before the instance confirmed it.
+        // With --yes the token comes first: nothing is read before the instance confirmed it is
+        // an operate token. Otherwise a malformed file is refused before any sign-in is needed.
         let store = TokenStore::default_location().map_err(|e| e.to_string())?;
-        let server = resolve_server(args.server.as_deref(), &store)?;
-        let token = if args.yes {
-            operate_token(&store, &server)?
+        let confirmed = if args.yes {
+            let server = resolve_server(args.server.as_deref(), &store)?;
+            let token = operate_token(&store, &server)?;
+            Some((server, token))
         } else {
-            store
-                .load_or_remote(&server)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| {
-                    format!(
-                        "not signed in to {server}; run `yulius remote login {server}` with a \
-                         token from Settings → Connect your local agent, or `yulius login \
-                         --server {server}`"
-                    )
-                })?
+            None
         };
         let mut parsed = match &args.file {
             Some(file) => {
@@ -358,6 +351,23 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
             }
             parsed = Some(entries);
         }
+        let (server, token) = match confirmed {
+            Some(confirmed) => confirmed,
+            None => {
+                let server = resolve_server(args.server.as_deref(), &store)?;
+                let token = store
+                    .load_or_remote(&server)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "not signed in to {server}; run `yulius remote login {server}` with \
+                             a token from Settings → Connect your local agent, or `yulius login \
+                             --server {server}`"
+                        )
+                    })?;
+                (server, token)
+            }
+        };
         let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
         let options = SecretsImportOptions {
             target: match args.to {
