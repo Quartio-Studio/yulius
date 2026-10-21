@@ -621,7 +621,8 @@ mod tests {
 
     #[test]
     fn a_hand_over_follows_the_request_under_whose_agent_wrote_it() {
-        let added = handover_addition("alice", "  deploy@203.0.113.7 runs it\n").unwrap_or_default();
+        let added =
+            handover_addition("alice", "  deploy@203.0.113.7 runs it\n").unwrap_or_default();
         assert!(
             added.starts_with("\n\n**Hand-over from alice's agent on their computer")
                 && added.ends_with(":**\n\ndeploy@203.0.113.7 runs it"),

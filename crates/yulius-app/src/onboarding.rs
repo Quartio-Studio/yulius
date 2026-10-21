@@ -1360,11 +1360,9 @@ impl App {
             .await?
             .ok_or_else(|| AppError::Conflict(ALREADY_STARTED.into()))?;
         let redacted = yulius_domain::redact::redact(notes).map(|r| r.text);
-        let addition = yulius_domain::request::handover_addition(
-            login,
-            redacted.as_deref().unwrap_or(notes),
-        )
-        .ok_or_else(|| AppError::Invalid("the hand-over is empty".into()))?;
+        let addition =
+            yulius_domain::request::handover_addition(login, redacted.as_deref().unwrap_or(notes))
+                .ok_or_else(|| AppError::Invalid("the hand-over is empty".into()))?;
         if task.prompt.len() + addition.len() > crate::lifecycle::MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(
                 "the hand-over does not fit the onboarding task's request: shorten it".into(),
@@ -1479,7 +1477,10 @@ mod tests {
         assert!(prompt.contains("git-crypt"));
         assert!(prompt.contains("Reverse-engineer"));
         // SPEC-256 LOB-006: the keys and hand-over of the person's agent come before a person.
-        assert!(prompt.contains("read secrets_list and any hand-over"), "{prompt}");
+        assert!(
+            prompt.contains("read secrets_list and any hand-over"),
+            "{prompt}"
+        );
         assert!(prompt.contains("nobody needs to approve"));
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));

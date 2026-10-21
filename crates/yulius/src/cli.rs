@@ -333,10 +333,7 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
             let mut names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
             names.sort_unstable();
             if let Some(twice) = names.windows(2).find(|pair| pair[0] == pair[1]) {
-                return Err(format!(
-                    "{} is given twice; nothing was imported",
-                    twice[0]
-                ));
+                return Err(format!("{} is given twice; nothing was imported", twice[0]));
             }
             parsed = Some(entries);
         }

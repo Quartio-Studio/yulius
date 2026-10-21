@@ -1912,13 +1912,17 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     let origin = w.remote(
         support::repos::OWNER,
         "shop",
-        &[("README.md", "# Shop\n"), ("deploy.sh", "ssh deploy@host\n")],
+        &[
+            ("README.md", "# Shop\n"),
+            ("deploy.sh", "ssh deploy@host\n"),
+        ],
         &[],
     )?;
     w.github
         .add_installation_repo(support::repos::OWNER, "shop", true);
     w.grant("alice", "shop", "admin");
-    let token = text(&make_token(&w, &browser, "laptop agent", "operate").await?["token"]).to_owned();
+    let token =
+        text(&make_token(&w, &browser, "laptop agent", "operate").await?["token"]).to_owned();
     let served = support::serve(w.h.router.clone()).await?;
     let url = format!("http://{}", served.addr);
     let home = tempfile::tempdir()?;
@@ -1932,7 +1936,10 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     assert_eq!(code, Some(0), "{out}{err}");
 
     // The laptop's checkout, cloned from GitHub.
-    support::repos::git(home, &["clone", "--quiet", &origin.to_string_lossy(), "shop"])?;
+    support::repos::git(
+        home,
+        &["clone", "--quiet", &origin.to_string_lossy(), "shop"],
+    )?;
     let checkout = home.join("shop");
     support::repos::git(
         &checkout,
@@ -1947,7 +1954,14 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     // 1. The checkout goes up with the agent's token: no `yulius login`, no browser.
     let (code, out, err) = yulius_cli(
         home,
-        &["onboard", "shop", "--yes", "--sessions", "none", "--no-color"],
+        &[
+            "onboard",
+            "shop",
+            "--yes",
+            "--sessions",
+            "none",
+            "--no-color",
+        ],
         "",
     )
     .await?;
@@ -2090,11 +2104,17 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     assert_eq!(sandbox.onboarding_state, "preparing");
     let task =
         w.h.store
-            .task(sandbox.onboarding_task_id.as_ref().ok_or("onboarding task")?)
+            .task(
+                sandbox
+                    .onboarding_task_id
+                    .as_ref()
+                    .ok_or("onboarding task")?,
+            )
             .await?
             .ok_or("task")?;
     assert!(
-        task.prompt.contains("Hand-over from alice's agent on their computer")
+        task.prompt
+            .contains("Hand-over from alice's agent on their computer")
             && task.prompt.contains("deploy@203.0.113.7"),
         "{}",
         task.prompt

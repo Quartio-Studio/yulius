@@ -965,7 +965,10 @@ async fn a_secret_created_allowed_is_copied_without_a_person() -> TestResult {
     )
     .await?;
     let said = copied.to_string();
-    assert!(said.contains("DEPLOY_TOKEN") && !said.contains("waiting\":[\"DEPLOY_TOKEN"), "{said}");
+    assert!(
+        said.contains("DEPLOY_TOKEN") && !said.contains("waiting\":[\"DEPLOY_TOKEN"),
+        "{said}"
+    );
     assert!(
         read(&w.worktree.join(".env")).contains("DEPLOY_TOKEN=deploy-value-0123456789"),
         "{said}"

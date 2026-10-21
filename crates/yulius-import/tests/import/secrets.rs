@@ -682,9 +682,7 @@ fn a_key_file_is_imported_by_path() -> TestResult {
 
     let binary = dir.path().join("blob");
     std::fs::write(&binary, [0xff_u8, 0xfe, 0x00, 0x62])?;
-    let err = secret_file_entry("BLOB", &binary)
-        .err()
-        .ok_or("not text")?;
+    let err = secret_file_entry("BLOB", &binary).err().ok_or("not text")?;
     assert!(err.contains("not UTF-8 text"), "{err}");
     let large = dir.path().join("large");
     std::fs::write(&large, "x".repeat(65 * 1024))?;

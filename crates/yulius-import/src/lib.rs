@@ -52,8 +52,9 @@ pub use run::{
 };
 pub use secret::Secret;
 pub use secrets_import::{
-    MAX_SECRET_FILE_BYTES, PreparedTarget, SecretsImportError, SecretsImportOptions, SecretsIo, SecretsSummary,
-    SecretsTarget, VaultClient, import_secrets, prepare_target, prompt_secrets, secret_file_entry,
+    MAX_SECRET_FILE_BYTES, PreparedTarget, SecretsImportError, SecretsImportOptions, SecretsIo,
+    SecretsSummary, SecretsTarget, VaultClient, import_secrets, prepare_target, prompt_secrets,
+    secret_file_entry,
 };
 pub use sessions::{DiscoveredSession, SessionFile, discover_claude_sessions};
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};
