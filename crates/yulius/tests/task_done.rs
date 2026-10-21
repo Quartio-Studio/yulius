@@ -2266,6 +2266,83 @@ fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
     Ok(())
 }
 
+/// Moves `id` from `from` to `to` in the store from a pause point's hook, as the server's own
+/// writer of that change would; the watch says whether the change was made.
+fn change_at(
+    app: &Arc<App>,
+    id: &TaskId,
+    point: yulius_app::race::Point,
+    from: TaskStatus,
+    to: TaskStatus,
+) -> tokio::sync::watch::Receiver<Option<bool>> {
+    let (made, result) = tokio::sync::watch::channel(None);
+    let (app, key, id) = (app.clone(), id.clone(), id.clone());
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(point, Path::new(key.as_str()), move || {
+        let changed = wait_in_hook(
+            &handle,
+            app.deps
+                .store
+                .transition_task(&id, Some(from), to, None, app.now()),
+        );
+        made.send_replace(Some(matches!(changed, Ok(true))));
+    });
+    result
+}
+
+/// Pauses `id` for capacity when its switch reaches its decision, as `pause_task` does for a
+/// Stop hook's wait.
+fn pause_at_switch(app: &Arc<App>, id: &TaskId) -> tokio::sync::watch::Receiver<Option<bool>> {
+    change_at(
+        app,
+        id,
+        yulius_app::race::Point::SwitchDecided,
+        TaskStatus::Switching,
+        TaskStatus::WaitingCapacity,
+    )
+}
+
+/// SPEC-250 STW-006 (review round 3): the switch goes on from `WaitingCapacity`, and before its
+/// launch takes the lock, the capacity loop's start runs the task (`Running`). That start won: the
+/// switch is completed, not overtaken.
+#[test]
+fn a_switch_whose_paused_task_another_start_runs_is_completed() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        let paused = pause_at_switch(&app, &id);
+        // The status the capacity loop's start leaves (its run is not simulated).
+        let resumed = change_at(
+            &app,
+            &id,
+            yulius_app::race::Point::SwitchLaunching,
+            TaskStatus::WaitingCapacity,
+            TaskStatus::Running,
+        );
+        let switched = switch_result(switch_on_worker(&app, &id)).await?;
+        assert_eq!(
+            paused.borrow().clone(),
+            Some(true),
+            "the hook paused the task"
+        );
+        assert_eq!(
+            resumed.borrow().clone(),
+            Some(true),
+            "the hook ran the task"
+        );
+        assert_eq!(switched, Ok(()), "{}", run_states(&app, &id).await);
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        // No run is live (the start was simulated): a stop rests it after a second one.
+        app.stop_task_now(&id).await?;
+        app.stop_task_now(&id).await?;
+        expect_stopped(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-250 STW-006 (review round 2): a task paused for capacity during its switch (a Stop
 /// hook's wait moves `Switching` to `WaitingCapacity`) is not overtaken: the switch goes on and
 /// launches, as before SPEC-250.
@@ -2276,31 +2353,13 @@ fn a_switch_paused_for_capacity_goes_on() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let (app, _host, id) = gated_goal_task(&data, &fake).await?;
-        {
-            let (app, key, id) = (app.clone(), id.clone(), id.clone());
-            let handle = tokio::runtime::Handle::current();
-            yulius_app::race::on(
-                yulius_app::race::Point::SwitchDecided,
-                Path::new(key.as_str()),
-                move || {
-                    // As `pause_task` makes it for a Stop hook's wait.
-                    let paused = wait_in_hook(
-                        &handle,
-                        app.deps.store.transition_task(
-                            &id,
-                            Some(TaskStatus::Switching),
-                            TaskStatus::WaitingCapacity,
-                            None,
-                            app.now(),
-                        ),
-                    );
-                    if !matches!(paused, Ok(true)) {
-                        eprintln!("the task was not paused: {paused:?}");
-                    }
-                },
-            );
-        }
+        let paused = pause_at_switch(&app, &id);
         let switched = switch_result(switch_on_worker(&app, &id)).await?;
+        assert_eq!(
+            paused.borrow().clone(),
+            Some(true),
+            "the hook paused the task"
+        );
         assert_eq!(switched, Ok(()), "{}", run_states(&app, &id).await);
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(attempts.len(), 2, "{}", run_states(&app, &id).await);

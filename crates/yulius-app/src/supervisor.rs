@@ -3080,6 +3080,10 @@ impl App {
         let Some(from) = self.switch_goes_on(task_id).await else {
             return self.switch_overtaken(task_id, &decision_id).await;
         };
+        crate::race::reached(
+            crate::race::Point::SwitchLaunching,
+            Path::new(task_id.as_str()),
+        );
         match self.start_run_if(task_id, start, account, Some(from)).await {
             Ok(false) => self.switch_overtaken(task_id, &decision_id).await,
             Ok(true) => {
