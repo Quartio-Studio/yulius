@@ -6,9 +6,11 @@
 //! ([`BrowserSession::frames`]). Only contracts and application types cross this boundary; the
 //! adapter owns the Chrome DevTools Protocol, the display and the encoder.
 //!
-//! Trust model: the adapter's DevTools endpoint listens on loopback without authentication,
-//! so any local process (including other sandboxes' processes, which share loopback) can
-//! drive the browser and its logged-in sessions. See [`BrowserSession::cdp_endpoint`].
+//! Trust model: the browser's DevTools protocol has no authentication, so the adapter opens no
+//! DevTools listener: Yulius speaks to Chromium over a pipe only it holds (ADR-0191). No other
+//! process (another sandbox's, isolated or not, or the host's) can drive the browser or its
+//! logged-in sessions through DevTools; agents use it through Yulius's browser tools. No raw
+//! CDP endpoint is offered to a sandbox's CDP-capable MCP servers (SPEC-001 U-10).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -297,9 +299,6 @@ pub trait BrowserSession: Send + Sync {
         reason: &str,
         task: Option<&TaskId>,
     ) -> Result<ActionRequest, BrowserFailure>;
-    /// The unauthenticated loopback DevTools WebSocket URL (for CDP-capable MCP servers of the
-    /// same sandbox, U-10).
-    fn cdp_endpoint(&self) -> String;
 }
 
 /// Owns at most one browser per sandbox.
@@ -322,9 +321,4 @@ pub trait BrowserPort: Send + Sync {
     async fn stop(&self, sandbox: &SandboxId) -> bool;
     /// Stops every browser (server shutdown); returns sandboxes whose process survived.
     async fn shutdown_all(&self) -> Vec<SandboxId>;
-    /// Loopback ports of the running browsers' DevTools endpoints (never previewed, never
-    /// listed as dev servers).
-    async fn devtools_ports(&self) -> Vec<u16> {
-        Vec::new()
-    }
 }

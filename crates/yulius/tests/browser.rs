@@ -69,7 +69,9 @@ async fn fixture_with(display: Option<FakeDisplay>) -> Result<Fixture, Box<dyn s
     let exe = write_fake_chromium(
         scripts.path(),
         "fake-chromium",
-        FakeChromium::Ready { port: fake.port() },
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
     )?;
     let mut config = browser_config(&exe, &scripts.path().join("unused"));
     if let Some(display) = &display {
