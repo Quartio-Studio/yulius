@@ -70,11 +70,11 @@ production branch stay.
   `cd_deploy {environment}` take any name (`production` still means `prod`).
 - **CDN-008** The CD page shows one card per environment; production-stage cards keep the
   administrator-only deploy with the typed slug. `cd_status` lists them all.
-- **CDN-010** Delivery figures (Dashboard, `GET …/stages` `delivery`) are per stage: every
-  environment of a stage counts as its deployments (a run's span carries `detail.stage`).
 - **CDN-009** Documentation (AGENTS.md, architecture, the `infra-bootstrap` and
   `delivery-pipeline` skills, the briefing and onboarding prompt) describes `[cd.dev]` and
   `[cd.prod]` as the default and named environments as the way to deploy more than one target.
+- **CDN-010** Delivery figures (Dashboard, `GET …/stages` `delivery`) are per stage: every
+  environment of a stage counts as its deployments (a run's span carries `detail.stage`).
 
 ## Plan
 

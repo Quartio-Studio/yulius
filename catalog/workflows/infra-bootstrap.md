@@ -26,7 +26,7 @@ Follow `infra-bootstrap` for the content and `delivery-pipeline` for the deliver
   `.github/workflows/*` job into it (`ci_setup` lists them), run it, then delete the workflows in
   the same pull request. Never add GitHub Actions or anything that needs a paid GitHub plan.
 - CD is `[cd.dev]` and `[cd.prod]` in `yulius.toml`, both explicit (empty with an `about` when
-  nothing deploys yet), plus a `[cd.<name>]` with its `stage` per further target, with idempotent deploy and verify scripts under `scripts/cd/` and secrets
+  nothing deploys yet), with idempotent deploy and verify scripts under `scripts/cd/` and secrets
   named in `secrets`. Move what deploys today there; ask with `needs_you` for what only a person
   gives. A merge deploys nothing; production is a person's. App keys live in an ignored `.env`
   (`secret_copy_to_env`).
