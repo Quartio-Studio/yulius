@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-21
+
+- The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
+  (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
+  worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
+  another folder is refused and an allowed secret's value is written nowhere. Task copies are
+  unchanged.
+
 ## 2026-10-20
 
 - Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,

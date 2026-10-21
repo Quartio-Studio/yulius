@@ -57,9 +57,9 @@ is written anywhere.
 ## Plan
 
 - [x] Spec for the anchored copy root
-- [ ] Regression test: a swapped repo is refused and nothing is written
-- [ ] Superagent copies open from the canonical sandbox folder
-- [ ] Architecture and changes describe the anchored root
+- [x] Regression test: a swapped repo is refused and nothing is written
+- [x] Superagent copies open from the canonical sandbox folder
+- [x] Architecture and changes describe the anchored root
 - [ ] Gates green and independent review approved
 
 ## Acceptance criteria
@@ -75,15 +75,16 @@ is written anywhere.
 
 - Regression: `cockpit::the_superagent_never_copies_into_a_repo_swapped_for_a_link` (fails before
   the fix: the value lands in the link's target).
-- Unit: `open_folder` with hidden anchor folders gives paths relative to the work folder and
-  refuses a folder outside it.
+- Unit: `env_files::tests::hidden_folders_root_the_walk_below_the_anchor`: with hidden anchor
+  folders, paths are relative to the work folder, a folder outside it (but inside the anchor) is
+  refused, and so is a hidden folder swapped for a link.
 - Unchanged behavior: the `secrets_env`, `secrets_scopes`, `secrets_create` and `cockpit` suites.
 - Gates: `scripts/dev ci`, `scripts/dev security`.
 
 ## Decisions
 
-- Reuse `secret_source_root` (moved next to `SecretUser` in `vault/users.rs`, replacing
-  `secret_user_folder`) rather than a second anchoring for copies: one rule for both tools that
+- Reuse `secret_source_root` (`vault/create.rs`, now `pub(super)`; `secret_user_folder` is
+  removed) rather than a second anchoring for copies: one rule for both tools that
   touch the work folder. Anchoring task copies too changes nothing for them (their worktree is
   canonical and checked inside the sandbox) and removes a path-based root.
 - `open_folder` gives `Folder::relative` below the hidden folders (the work folder), so Git paths
