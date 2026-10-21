@@ -303,3 +303,30 @@ async fn call_within_bounds_one_call_by_its_own_timeout() -> TestResult {
     assert_eq!(cdp.pending_requests(), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn pipe_message_of_exactly_the_limit_is_accepted() -> TestResult {
+    let reply = json!({"id": 1, "result": {"p": ""}}).to_string();
+    let limit = reply.len() + 10;
+    let (cdp, mut peer) = PipePeer::connect(limit);
+    let call = tokio::spawn({
+        let cdp = cdp.clone();
+        async move { cdp.call("Browser.getVersion", json!({})).await }
+    });
+    let request = peer.request().await?;
+    let padded = json!({"id": request["id"], "result": {"p": ""}}).to_string();
+    let pad = "x".repeat(limit - padded.len());
+    let mut exact = json!({"id": request["id"], "result": {"p": pad}})
+        .to_string()
+        .into_bytes();
+    assert_eq!(
+        exact.len(),
+        limit,
+        "the message without its NUL is the limit"
+    );
+    exact.push(0);
+    peer.send(&exact).await?;
+    assert_eq!(call.await??["p"].as_str().map(str::len), Some(pad.len()));
+    assert!(!cdp.is_closed());
+    Ok(())
+}

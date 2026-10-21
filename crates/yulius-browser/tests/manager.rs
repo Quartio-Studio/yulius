@@ -13,7 +13,9 @@ use yulius_browser::fake::{
     FAKE_ARGV_FILE, FAKE_CHILD_PID_FILE, FAKE_PID_FILE, FakeCdpServer, FakeChromium,
     write_fake_chromium,
 };
-use yulius_browser::{BrowserConfig, BrowserError, BrowserManager, PIPE_URL, StopTimeouts};
+use yulius_browser::{
+    BrowserConfig, BrowserError, BrowserManager, CdpError, PIPE_URL, StopTimeouts,
+};
 use yulius_domain::ids::SandboxId;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -236,6 +238,7 @@ async fn startup_failures_are_typed_and_leave_no_process() -> TestResult {
     match manager.ensure(&sandbox, &profile).await {
         Err(BrowserError::ExitedEarly { status, stderr }) => {
             assert!(status.contains('1'), "{status}");
+            // Written by a descendant after the exit: the error waits for stderr's end.
             assert!(
                 stderr.contains("cannot open shared object file"),
                 "{stderr}"
@@ -243,6 +246,16 @@ async fn startup_failures_are_typed_and_leave_no_process() -> TestResult {
         }
         other => return Err(format!("expected an early exit, got {other:?}").into()),
     }
+
+    // A browser that closes its DevTools pipe and stays alive is a DevTools failure, reaped.
+    let closing = write_fake_chromium(dir.path(), "closing", FakeChromium::ClosesPipe)?;
+    let manager = BrowserManager::new(config(closing, dir.path()));
+    match manager.ensure(&sandbox, &profile).await {
+        Err(BrowserError::Cdp(CdpError::Closed)) => {}
+        other => return Err(format!("expected a closed pipe, got {other:?}").into()),
+    }
+    let pid = read_pid(&profile, FAKE_PID_FILE)?;
+    assert!(!pid_alive(pid), "a failed start reaps its process");
 
     // A browser that keeps its pipe open but never answers.
     let hanging = write_fake_chromium(dir.path(), "hanging", FakeChromium::NeverReady)?;

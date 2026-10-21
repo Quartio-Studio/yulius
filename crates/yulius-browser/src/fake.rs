@@ -875,8 +875,11 @@ pub enum FakeChromium {
         /// Fake CDP server pipe port.
         port: u16,
     },
-    /// Print to stderr and exit 1 without becoming ready.
+    /// Exit 1 without becoming ready; a descendant prints the error to stderr 300 ms later (a
+    /// stderr reader that is behind the exit).
     ExitsImmediately,
+    /// Close the DevTools pipe and stay alive.
+    ClosesPipe,
     /// Stay alive, keeping the DevTools pipe open, without ever answering on it.
     NeverReady,
 }
@@ -938,8 +941,10 @@ printf '%s' "$$" > "$dir/fake-chromium.pid"
         FakeChromium::Ready { port } => ready(port, ""),
         FakeChromium::IgnoresSigterm { port } => ready(port, "trap '' TERM\n"),
         FakeChromium::ExitsImmediately => {
-            "echo 'fake-chromium: cannot open shared object file' >&2\nexit 1\n".to_owned()
+            "(sleep 0.3; echo 'fake-chromium: cannot open shared object file' >&2) 3<&- 4>&- &\nexit 1\n"
+                .to_owned()
         }
+        FakeChromium::ClosesPipe => format!("{parse_dir}exec sleep 600 3<&- 4>&-\n"),
         FakeChromium::NeverReady => format!("{parse_dir}exec sleep 600\n"),
     };
     let path = dir.join(name);
