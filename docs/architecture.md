@@ -1786,7 +1786,7 @@ flowchart LR
 - A stop always takes effect: its status change, and a run end's, is a compare-and-set that, lost
   to a concurrent change (a switch completing, a stop landing), is made again from the status read
   anew, in bounded rounds. A run that ends on a stop's intent rests its task even before the stop's
-  change lands, and a switch whose intent a stop replaced starts no new run
+  change lands, and a switch overtaken by a stop, a close or its old run's loss starts no new run
   ([SPEC-250](../.ai/specs/SPEC-250-stop-during-a-switch-leaves-the-task-run.md)).
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
