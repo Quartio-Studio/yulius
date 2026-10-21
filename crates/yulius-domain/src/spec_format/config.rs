@@ -205,7 +205,7 @@ pub enum ConfigProblem {
     Ci(CiConfigError),
     /// A `cd` table that cannot name an environment.
     #[error(
-        "'[{0}]' is not a CD environment: use [cd.<name>] with a name of 1-32 lowercase letters, digits and '-', starting with a letter (like [cd.dev], [cd.prod] or [cd.platform])"
+        "'[{0}]' is not a CD environment: use [cd.<name>] with a name of 1-32 lowercase letters, digits and '-', starting with a letter (like [cd.dev], [cd.prod] or [cd.platform]; production is [cd.prod])"
     )]
     UnknownCdEnvironment(String),
     /// More `[cd.<name>]` tables than accepted.
@@ -1388,7 +1388,7 @@ mod tests {
     /// SPEC-134 CDC-001: every invalid form names its line.
     #[test]
     fn cd_tables_refuse_what_cannot_run() {
-        let cases: [(&str, usize, &str); 16] = [
+        let cases: [(&str, usize, &str); 17] = [
             (
                 "[cd.dev]\npromote = true\n",
                 2,
@@ -1426,6 +1426,11 @@ mod tests {
             ("[cd.Staging]\n", 1, "is not a CD environment"),
             ("[cd.a.b]\n", 1, "is not a CD environment"),
             ("[cd]\n", 1, "is not a CD environment"),
+            (
+                "[cd.production]\nstage = \"prod\"\n",
+                1,
+                "is not a CD environment",
+            ),
             ("[[cd.dev]]\n", 1, "[cd.dev] must be a single table"),
             ("[cd.dev]\n[cd.dev]\n", 2, "appears more than once"),
             (

@@ -559,11 +559,13 @@ pub trait CdStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
-    /// The newest passed run of an environment of a sandbox (what is deployed), without output.
+    /// The newest passed run of an environment of a sandbox as an environment of `stage` (what
+    /// is deployed there), without output.
     async fn last_passed_cd_run(
         &self,
         sandbox: &SandboxId,
         environment: &str,
+        stage: yulius_domain::cd::CdStage,
     ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// The newest run a task's agent started, without output.
     async fn latest_cd_run_of_task(

@@ -748,7 +748,7 @@ A run deploys the commit GitHub reports for the branch, taken into a mirror only
 directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
 containment, production on the sandbox's network only and the host's read-only system), for at most the CI job
 timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
-`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment, out of the agents' reach), a
+`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a name relabelled to dev never shares production's; out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
 that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
 allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
@@ -851,7 +851,7 @@ SpanView = {"subject_kind", "subject_id", "key", "parent_key", "kind", "name", "
 TimelineView = {"subject_kind", "subject_id", "spans": [SpanView] (the newest 2,000), "related": [SpanView]
                 (a task of this sandbox: its PR's CI runs), "truncated": bool (it has more)}
 StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "kind", "name",
-                "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
+                "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (per stage: dev, prod; every environment of a stage counts)],
                 "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}
 StageRow = {"subject_kind", "kind", "name", "job", "environment", "count", "failed", "running",
             "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms", "cpu_p50_ms"?, "cpu_p90_ms"?,

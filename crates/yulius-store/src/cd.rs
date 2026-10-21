@@ -138,14 +138,16 @@ impl CdStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         environment: &str,
+        stage: CdStage,
     ) -> AppResult<Option<CdRunRecord>> {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
+        let stage = stage.as_str();
         self.call(move |c| {
             Ok(select(
                 c,
-                "sandbox_id = ?1 AND environment = ?2 AND state = 'passed' \
+                "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND state = 'passed' \
                  ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                &[&sandbox, &environment],
+                &[&sandbox, &environment, &stage],
             )?
             .into_iter()
             .next())
@@ -343,9 +345,23 @@ mod tests {
         );
         store.finish_cd_run("x1", &end(RunState::Passed, 4)).await?;
         let sandbox = SandboxId::parse("s1")?;
-        let deployed = store.last_passed_cd_run(&sandbox, "platform").await?;
+        let deployed = store
+            .last_passed_cd_run(&sandbox, "platform", CdStage::Prod)
+            .await?;
         assert_eq!(deployed.map(|r| r.id), Some("x1".to_owned()));
-        assert!(store.last_passed_cd_run(&sandbox, "prod").await?.is_none());
+        assert!(
+            store
+                .last_passed_cd_run(&sandbox, "platform", CdStage::Dev)
+                .await?
+                .is_none(),
+            "a run of the other stage is not what is deployed there"
+        );
+        assert!(
+            store
+                .last_passed_cd_run(&sandbox, "prod", CdStage::Prod)
+                .await?
+                .is_none()
+        );
         Ok(())
     }
 
@@ -357,10 +373,11 @@ mod tests {
         store
             .call(move |c| {
                 c.execute_batch(
-                    "ALTER TABLE cd_runs DROP COLUMN stage;\
+                    "DROP TRIGGER spans_cd_run_insert; ALTER TABLE cd_runs DROP COLUMN stage;\
                      INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) \
                      VALUES ('d', 's1', 'dev', 'dev', 'a', 'passed', 'x', 1), \
-                            ('p', 's1', 'prod', 'main', 'b', 'passed', 'x', 2);",
+                            ('p', 's1', 'prod', 'main', 'b', 'passed', 'x', 2); \
+                     CREATE TRIGGER spans_cd_run_insert AFTER INSERT ON cd_runs BEGIN SELECT 1; END;",
                 )
                 .map_err(db)?;
                 c.execute_batch(migration).map_err(db)
@@ -369,6 +386,20 @@ mod tests {
         let dev = store.cd_run("d", false).await?.ok_or("d")?;
         let prod = store.cd_run("p", false).await?.ok_or("p")?;
         assert_eq!((dev.stage, prod.stage), (CdStage::Dev, CdStage::Prod));
+        // A run's span carries its stage (review L1: delivery figures per stage).
+        store.insert_cd_run(&run("x1", "platform", 3)?).await?;
+        let stage: String = store
+            .call(|c| {
+                c.query_row(
+                    "SELECT json_extract(detail, '$.stage') FROM spans \
+                     WHERE subject_kind = 'cd_run' AND subject_id = 'x1' AND key = 'run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert_eq!(stage, "prod");
         Ok(())
     }
 

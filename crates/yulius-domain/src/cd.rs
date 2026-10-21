@@ -73,10 +73,11 @@ impl fmt::Display for CdStage {
 }
 
 /// Whether `name` can name an environment: 1-32 lowercase letters, digits and `-`, starting with
-/// a letter.
+/// a letter; not `production`, which is how requests name `prod` (review M1).
 #[must_use]
 pub fn valid_env_name(name: &str) -> bool {
-    name.len() <= MAX_ENV_NAME_CHARS
+    name != "production"
+        && name.len() <= MAX_ENV_NAME_CHARS
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && name
             .chars()
@@ -636,6 +637,8 @@ mod tests {
         for bad in ["", "Prod", "2nd", "-x", "a_b", "a.b", &"a".repeat(33)] {
             assert_eq!(env_name(bad), None, "{bad}");
         }
+        // Review M1: `production` is how requests name `prod`, never a table of its own.
+        assert!(!valid_env_name("production"));
         assert_eq!(env_label("prod"), "production");
         assert_eq!(env_label("platform"), "platform");
         assert!(valid_secret_name("DEV_SSH_KEY"));

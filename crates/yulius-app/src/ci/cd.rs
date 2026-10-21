@@ -386,10 +386,13 @@ impl App {
             let deployed = self
                 .deps
                 .store
-                .last_passed_cd_run(&sandbox.id, &name)
+                .last_passed_cd_run(&sandbox.id, &name, stage)
                 .await?
                 .map(|run| run.sha);
-            let last_run = match runs.iter().find(|run| run.environment == name) {
+            let last_run = match runs
+                .iter()
+                .find(|run| run.environment == name && run.stage == stage)
+            {
                 Some(run) => Some(self.cd_run_view(run, false).await),
                 None => None,
             };
@@ -530,13 +533,16 @@ impl App {
             .await;
             return Err(refusal(&refused));
         }
+        // What the checks resolve the stage to: a production-stage refusal is audited, as
+        // production's always was; a dev-stage failure is not a refused production deploy.
+        let mut resolved = fixed;
         let prepared = match self
-            .cd_prepare(sandbox, env, requester, actor, expected)
+            .cd_prepare(sandbox, env, requester, actor, expected, &mut resolved)
             .await
         {
             Ok(prepared) => prepared,
             Err(err) => {
-                if fixed != Some(CdStage::Dev) {
+                if resolved == Some(CdStage::Prod) {
                     self.dlv_audit(
                         &actor.label(),
                         "cd.refused",
@@ -775,7 +781,10 @@ impl App {
 
     /// Everything a deploy needs, from verified sources (CDC-003): the environment's stage, the
     /// commit, its table, the secrets, and for production with `promote` the promotion, after
-    /// which the new production head is read and authorized again (review M2).
+    /// which the new production head is read and authorized again (review M2). `resolved` gets
+    /// the stage as soon as it is known. A named environment's stage is known only once the
+    /// verified heads are read, so an agent's request for a production-stage one is refused after
+    /// that reading, before any secret or promotion (review L2).
     async fn cd_prepare(
         &self,
         sandbox: &SandboxRecord,
@@ -783,6 +792,7 @@ impl App {
         requester: Requester<'_>,
         actor: &CdActor<'_>,
         expected: Option<&str>,
+        resolved: &mut Option<CdStage>,
     ) -> AppResult<Prepared> {
         // One deploy at a time reads and writes a sandbox's mirror (round 2, L-b).
         let mirror_lock = mirror_lock(&sandbox.id);
@@ -807,6 +817,7 @@ impl App {
         let Some(stage) = stage else {
             return Err(refusal(&CdRefusal::not_defined(env)));
         };
+        *resolved = Some(stage);
         dom::may_deploy(stage, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
         // Production without promotion does not depend on dev's table being valid (round 2, L-a).
         let integration_config = match integration_config {
@@ -1182,7 +1193,7 @@ impl App {
         let cache = self
             .cd_private_dir(&sandbox.id)
             .join("cache")
-            .join(&run.environment);
+            .join(cache_name(&run.environment, run.stage));
         let _ = std::fs::remove_dir_all(run_dir);
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
@@ -1462,6 +1473,17 @@ fn no_promotion(mut config: CdConfig) -> CdConfig {
         target.promote = false;
     }
     config
+}
+
+/// The cache directory of the environment `name` of `stage` (review H1): a name relabelled to
+/// the other stage gets another cache, so what a dev-stage run leaves there never runs with
+/// production's trust. `dev` and `prod` keep theirs (a name has no `.`).
+fn cache_name(name: &str, stage: CdStage) -> String {
+    if dom::fixed_stage(name) == Some(stage) {
+        name.to_owned()
+    } else {
+        format!("{stage}.{name}")
+    }
 }
 
 /// What a request naming no environment is told.

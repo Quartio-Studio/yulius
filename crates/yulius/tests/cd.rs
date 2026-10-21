@@ -1407,7 +1407,7 @@ fn named_cd() -> String {
      verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\n\
      [cd.platform]\n\
      stage = \"prod\"\n\
-     deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+     deploy = \"test ! -e $YULIUS_CD_CACHE/planted && MARKS={marks} sh scripts/cd/deploy.sh\"\n\
      verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\n\
      [cd.selfserve]\n\
      stage = \"prod\"\n\
@@ -1531,6 +1531,38 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
         (&json!("staging"), &json!("dev"))
     );
     f.ended(run["run_id"].as_str().ok_or("id")?).await?;
+    // Refused production-stage deploys are audited as production's are; dev-stage ones are not.
+    use yulius_app::ports::store_ext::AutomationStore as _;
+    let refused = f.h.store.automation_audit("app/platform", 20).await?;
+    assert!(
+        refused
+            .iter()
+            .any(|e| e.action == "cd.refused" && e.actor == "task:1"),
+        "{refused:?}"
+    );
+    let staging = f.h.store.automation_audit("app/staging", 20).await?;
+    assert!(
+        !staging.iter().any(|e| e.action == "cd.refused"),
+        "{staging:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-257 CDN-006: a production-stage run of a named environment is cancelled only with
+/// administrator access, as production's.
+#[tokio::test]
+async fn a_named_production_run_is_cancelled_by_an_administrator() -> TestResult {
+    let f = fixture(&named_cd()).await?;
+    f.push("main", &[("slow", Some("x"))])?;
+    let started = f.deploy(&f.bob, "platform", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let id = started.body["run_id"].as_str().ok_or("id")?.to_owned();
+    let path = format!("/api/sandboxes/s1/cd/runs/{id}/cancel");
+    let refused = call(&f.h.router, Method::POST, &path, None, &f.alice).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let cancelled = call(&f.h.router, Method::POST, &path, None, &f.bob).await?;
+    assert_eq!(cancelled.status, StatusCode::OK, "{}", cancelled.body);
+    assert_eq!(f.ended(&id).await?["state"], "cancelled");
     Ok(())
 }
 
@@ -1564,5 +1596,47 @@ async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestRes
         .and_then(|all| all.iter().find(|e| e["name"] == "platform"))
         .ok_or("platform")?;
     assert_eq!(platform["stage"], "dev", "{overview}");
+
+    // Review H1: what a dev-stage run leaves in its cache never reaches the production-stage
+    // environment of the same name, nor does its commit count as deployed there.
+    let planting = relabelled.replace(
+        "deploy = \"test ! -e",
+        "deploy = \"touch $YULIUS_CD_CACHE/planted && test ! -e",
+    );
+    assert_ne!(planting, relabelled);
+    f.push(
+        "dev",
+        &[("yulius.toml", Some(&planting.replace("{marks}", marks)))],
+    )?;
+    let planted = f.deploy(&f.alice, "platform", None).await?;
+    assert_eq!(planted.status, StatusCode::OK, "{}", planted.body);
+    let planted = f
+        .ended(planted.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(
+        planted["state"], "failed",
+        "it sees its own file: {planted}"
+    );
+    f.push(
+        "dev",
+        &[("yulius.toml", Some(&named_cd().replace("{marks}", marks)))],
+    )?;
+    let sid = SandboxId::parse("s1")?;
+    let deployed = |stage| f.h.store.last_passed_cd_run(&sid, "platform", stage);
+    assert!(
+        deployed(CdStage::Dev).await?.is_some(),
+        "the first, clean run"
+    );
+    assert!(
+        deployed(CdStage::Prod).await?.is_none(),
+        "a dev-stage run is not what production-stage platform has deployed"
+    );
+    let started = f.deploy(&f.bob, "platform", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["stage"], "prod");
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(run["state"], "passed", "a cache of its own: {run}");
     Ok(())
 }

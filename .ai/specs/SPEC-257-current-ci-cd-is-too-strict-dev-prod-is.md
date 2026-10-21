@@ -40,7 +40,7 @@ production branch stay.
 
 - **CDN-001** `yulius.toml` may define any number (at most 16) of CD environments as
   `[cd.<name>]` tables. A name is 1-32 characters of lowercase letters, digits and `-`, starting
-  with a letter. Each table has the keys of SPEC-134 (`deploy`, `verify`, `secrets`, `about`, and
+  with a letter; not `production`, which requests use for `prod`. Each table has the keys of SPEC-134 (`deploy`, `verify`, `secrets`, `about`, and
   `promote` for production) and `stage = "dev" | "prod"`.
 - **CDN-002** `dev` and `prod` are the default environments: their stage is their name (`stage`
   may be omitted, and a contradicting one is an error). Every other table must name its `stage`
@@ -59,7 +59,8 @@ production branch stay.
 - **CDN-005** CD is defined when at least one dev-stage and one production-stage environment are
   defined (empty counts); the briefing's gap and the stop hook use this rule.
 - **CDN-006** A run records its environment's name and stage; one run per environment at a time;
-  each environment has its own cache; the run gets `YULIUS_CD_ENV=<name>` and
+  each environment has its own cache per stage (a relabelled name never shares production's
+  cache), and what is deployed is the last passed run of that name and stage; the run gets `YULIUS_CD_ENV=<name>` and
   `YULIUS_CD_STAGE=<stage>`. Cancelling a production-stage run needs administrator access.
   Existing runs keep their environment (`dev`, `prod`) as their stage.
 - **CDN-007** `GET /api/sandboxes/{sid}/cd` lists every environment with its `stage`: the
@@ -69,6 +70,8 @@ production branch stay.
   `cd_deploy {environment}` take any name (`production` still means `prod`).
 - **CDN-008** The CD page shows one card per environment; production-stage cards keep the
   administrator-only deploy with the typed slug. `cd_status` lists them all.
+- **CDN-010** Delivery figures (Dashboard, `GET …/stages` `delivery`) are per stage: every
+  environment of a stage counts as its deployments (a run's span carries `detail.stage`).
 - **CDN-009** Documentation (AGENTS.md, architecture, the `infra-bootstrap` and
   `delivery-pipeline` skills, the briefing and onboarding prompt) describes `[cd.dev]` and
   `[cd.prod]` as the default and named environments as the way to deploy more than one target.
@@ -76,11 +79,11 @@ production branch stay.
 ## Plan
 
 - [x] Survey CD and CI, write the spec and the ADR
-- [ ] Named environments in the domain and the yulius.toml parser
-- [ ] Runs record their environment and stage
-- [ ] Deploys of a named environment from verified sources
-- [ ] CD page and cd_status show every environment
-- [ ] Docs, skills, briefing and onboarding describe named environments
+- [x] Named environments in the domain and the yulius.toml parser
+- [x] Runs record their environment and stage
+- [x] Deploys of a named environment from verified sources
+- [x] CD page and cd_status show every environment
+- [x] Docs, skills, briefing and onboarding describe named environments
 - [ ] Independent review, gates and delivery
 
 ## Acceptance criteria
@@ -128,3 +131,14 @@ production branch stay.
 - **Secrets stay allowed per stage**: a person allows a secret for production deploys, which any
   production-stage environment, always started by a person, may name.
 - **CI unchanged**: `[[ci.jobs]]` already expresses any set of jobs.
+- **Review H1, a cache per name and stage** (`cache/<name>` for the defaults, `cache/<stage>.<name>`
+  otherwise): a dev-stage run of a relabelled name could otherwise leave files a production-stage
+  run of that name later uses. Existing `cache/dev` and `cache/prod` stay where they are.
+- **Review M1, `production` is reserved**: it is how requests name `prod`, so a table of that
+  name could never be deployed itself and would deploy `[cd.prod]` in its place.
+- **Review L2, the stage of a named environment is known after the verified reads**: an agent's
+  request for a named production-stage environment is refused after Yulius read the verified
+  heads, before any secret or promotion. `dev`/`prod` are still refused before anything is read.
+  Refusals are audited (`cd.refused`) when the resolved stage is production.
+- **Remote MCP `cd_deploy`** refuses an environment the page shows as production-stage, and
+  without a typed slug the deploy refuses any production-stage one anyway.
