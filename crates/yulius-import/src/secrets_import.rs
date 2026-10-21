@@ -295,17 +295,24 @@ pub fn secret_file_entry(name: &str, path: &Path) -> Result<DotenvEntry, String>
     let read = file
         .take(MAX_SECRET_FILE_BYTES as u64 + 1)
         .read_to_end(&mut bytes);
-    let too_large = bytes.len() > MAX_SECRET_FILE_BYTES;
+    // A failed or oversized read is said as such, whatever its bytes decode to.
+    let refused = match read {
+        Err(e) => Some(format!("cannot read {shown}: {e}")),
+        Ok(_) if bytes.len() > MAX_SECRET_FILE_BYTES => {
+            Some(format!("{shown} is larger than 64 KiB"))
+        }
+        Ok(_) => None,
+    };
+    if let Some(refused) = refused {
+        bytes.zeroize();
+        return Err(refused);
+    }
     let text = String::from_utf8(bytes).map_err(|e| {
         let mut bytes = e.into_bytes();
         bytes.zeroize();
         format!("{shown} is not UTF-8 text")
     });
     let value = Secret::new(text?);
-    read.map_err(|e| format!("cannot read {shown}: {e}"))?;
-    if too_large {
-        return Err(format!("{shown} is larger than 64 KiB"));
-    }
     let file_name = path
         .file_name()
         .map_or_else(|| shown.to_string(), |n| n.to_string_lossy().into_owned());

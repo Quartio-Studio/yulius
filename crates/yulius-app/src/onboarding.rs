@@ -980,6 +980,21 @@ impl App {
         sandbox: &SandboxId,
         actor: &str,
     ) -> AppResult<bool> {
+        self.start_onboarding_with(sandbox, actor, None).await
+    }
+
+    /// [`Self::start_onboarding`], with the hand-over of the person's agent (`actor`'s) added to
+    /// the onboarding task's request after the default branch is prepared and before the task
+    /// starts (SPEC-256 LOB-005).
+    ///
+    /// # Errors
+    /// As [`Self::start_onboarding`]; `Conflict` when the hand-over can no longer join the request.
+    async fn start_onboarding_with(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+        actor: &str,
+        notes: Option<&str>,
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
         let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
         if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
@@ -992,8 +1007,16 @@ impl App {
         // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
         self.prepare_default_branch(&record, actor).await?;
         let Some(task) = self.onboarding_task(sandbox).await? else {
+            if notes.is_some() {
+                return Err(AppError::Conflict(
+                    "onboarding was skipped meanwhile; the hand-over was not added".into(),
+                ));
+            }
             return Ok(false);
         };
+        if let Some(notes) = notes {
+            self.add_handover(&task, actor, notes).await?;
+        }
         if task.status.is_resting() {
             self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
                 .await?;
@@ -1318,10 +1341,7 @@ impl App {
             }
         }
         let actor = self.login_of(&ctx.user.id).await;
-        if let Some(notes) = notes {
-            self.add_handover(&id, &actor, notes).await?;
-        }
-        self.start_onboarding(&id, &actor).await?;
+        self.start_onboarding_with(&id, &actor, notes).await?;
         let record = self
             .deps
             .store
@@ -1339,30 +1359,27 @@ pub const MAX_HANDOVER_BYTES: usize = 24 * 1024;
 const ALREADY_STARTED: &str = "onboarding already started, so its request is read: tell its task \
      with task_message instead";
 
+/// Why a hand-over is refused by an onboarding task that already tried to start.
+const TRIED_TO_START: &str = "the onboarding task already tried to start once, so its request no \
+     longer takes a hand-over: start onboarding without notes, then tell its task with \
+     task_message";
+
 impl App {
-    /// Adds the hand-over of the person's agent to the onboarding task's request before it starts
-    /// (SPEC-256 LOB-005), redacted of secrets, as a queued message is (SPEC-052). The account
-    /// check comes first, so nothing is created that could not start.
+    /// Adds the hand-over of the person's agent to the request of the onboarding `task` before it
+    /// starts (SPEC-256 LOB-005), redacted of secrets, as a queued message is (SPEC-052). A
+    /// hand-over the request already holds (a start that failed after adding it) is not added
+    /// again.
     ///
     /// # Errors
-    /// `AccountRequired` without a usable Claude account; `Conflict` once the task started or
-    /// onboarding is no longer pending; `Invalid` past the request's size; store failures.
-    async fn add_handover(
-        self: &Arc<Self>,
-        sandbox: &SandboxId,
-        login: &str,
-        notes: &str,
-    ) -> AppResult<()> {
-        self.ensure_agent_account(Harness::ClaudeCode.provider())
-            .await?;
-        let task = self
-            .onboarding_task(sandbox)
-            .await?
-            .ok_or_else(|| AppError::Conflict(ALREADY_STARTED.into()))?;
+    /// `Conflict` once the task tried to run; `Invalid` past the request's size; store failures.
+    async fn add_handover(&self, task: &TaskRecord, login: &str, notes: &str) -> AppResult<()> {
         let redacted = yulius_domain::redact::redact(notes).map(|r| r.text);
         let addition =
             yulius_domain::request::handover_addition(login, redacted.as_deref().unwrap_or(notes))
                 .ok_or_else(|| AppError::Invalid("the hand-over is empty".into()))?;
+        if task.prompt.contains(&addition) {
+            return Ok(());
+        }
         if task.prompt.len() + addition.len() > crate::lifecycle::MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(
                 "the hand-over does not fit the onboarding task's request: shorten it".into(),
@@ -1379,7 +1396,7 @@ impl App {
             )
             .await?
         {
-            return Err(AppError::Conflict(ALREADY_STARTED.into()));
+            return Err(AppError::Conflict(TRIED_TO_START.into()));
         }
         self.publish_task(&task.id).await;
         Ok(())

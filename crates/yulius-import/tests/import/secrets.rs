@@ -690,6 +690,12 @@ fn a_key_file_is_imported_by_path() -> TestResult {
         .err()
         .ok_or("too large")?;
     assert!(err.contains("64 KiB") && !err.contains("xxxx"), "{err}");
+    // Cut at the bound inside a two-byte character: still too large, not "not text".
+    std::fs::write(&large, "ł".repeat(40 * 1024))?;
+    let err = secret_file_entry("LARGE", &large)
+        .err()
+        .ok_or("too large")?;
+    assert!(err.contains("64 KiB"), "{err}");
     let err = secret_file_entry("GONE", &dir.path().join("gone"))
         .err()
         .ok_or("missing")?;

@@ -297,7 +297,8 @@ fn read_source(file: &std::path::Path) -> Result<Secret, String> {
 }
 
 /// `yulius secrets import --to team|agent [FILE|-] [--from-file NAME=PATH]… [--sandbox
-/// <owner/name>] [--instance] [--confirm-hosts | --env-files] [--yes] [--server <url>] [--no-color]`: exit 0 when every secret was imported or already there.
+/// <owner/name>] [--instance] [--confirm-hosts | --env-files] [--yes] [--server <url>]
+/// [--no-color]`: exit 0 when every secret was imported or already there.
 pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
     install_tls();
     set_colors(args.no_color);
@@ -318,6 +319,26 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
                     .into(),
             );
         }
+        if args.yes && args.file.is_none() && args.from_files.is_empty() {
+            return Err("--yes takes the secrets from a file or --from-file, never typed".into());
+        }
+        // The token first: with --yes, nothing is read before the instance confirmed it.
+        let store = TokenStore::default_location().map_err(|e| e.to_string())?;
+        let server = resolve_server(args.server.as_deref(), &store)?;
+        let token = if args.yes {
+            operate_token(&store, &server)?
+        } else {
+            store
+                .load_or_remote(&server)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    format!(
+                        "not signed in to {server}; run `yulius remote login {server}` with a \
+                         token from Settings → Connect your local agent, or `yulius login \
+                         --server {server}`"
+                    )
+                })?
+        };
         let mut parsed = match &args.file {
             Some(file) => {
                 let text = read_source(file)?;
@@ -337,25 +358,6 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
             }
             parsed = Some(entries);
         }
-        if args.yes && parsed.is_none() {
-            return Err("--yes takes the secrets from a file or --from-file, never typed".into());
-        }
-        let store = TokenStore::default_location().map_err(|e| e.to_string())?;
-        let server = resolve_server(args.server.as_deref(), &store)?;
-        let token = if args.yes {
-            operate_token(&store, &server)?
-        } else {
-            store
-                .load_or_remote(&server)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| {
-                    format!(
-                        "not signed in to {server}; run `yulius remote login {server}` with a \
-                         token from Settings → Connect your local agent, or `yulius login \
-                         --server {server}`"
-                    )
-                })?
-        };
         let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
         let options = SecretsImportOptions {
             target: match args.to {

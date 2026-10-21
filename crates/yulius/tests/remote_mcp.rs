@@ -2000,7 +2000,8 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
         "--no-color",
         "shop/.env",
         "--from-file",
-        "DEPLOY_SSH_KEY=.ssh/deploy_ed25519",
+        // As a shell passes it unexpanded: the CLI reads `~/` as the home.
+        "DEPLOY_SSH_KEY=~/.ssh/deploy_ed25519",
     ];
     let (code, out, err) = yulius_cli(home, &import, "").await?;
     assert_eq!(code, Some(0), "{out}{err}");
@@ -2201,5 +2202,206 @@ async fn an_unattended_import_needs_an_operate_token() -> TestResult {
         secrets.iter().all(|s| s["name"] != "UNSENT_KEY"),
         "nothing was sent: {secrets:?}"
     );
+
+    // With an operate token, what the run was given is checked before anything is sent.
+    let operate = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{operate}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    std::fs::write(home.join("key.pem"), "single-line-key-value-0123\n")?;
+    let refusals: [(&[&str], &str); 5] = [
+        (
+            &["--from-file", "UNSENT_KEY=key.pem"],
+            "UNSENT_KEY is given twice",
+        ),
+        (
+            &[
+                "--from-file",
+                "OTHER_KEY=key.pem",
+                "--from-file",
+                "OTHER_KEY=key.pem",
+            ],
+            "OTHER_KEY is given twice",
+        ),
+        (&["--from-file", "key.pem"], "NAME=PATH"),
+        (&["--from-file", "GONE_KEY=~/gone.pem"], "gone.pem"),
+        (
+            &["--env-files", "--confirm-hosts"],
+            "--env-files is for secrets agents set up",
+        ),
+    ];
+    for (extra, said) in refusals {
+        let mut args: Vec<&str> = vec![
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            "keys.env",
+        ];
+        args.extend_from_slice(extra);
+        let (code, out, err) = yulius_cli(home, &args, "").await?;
+        assert_eq!(code, Some(1), "{extra:?}: {out}{err}");
+        assert!(err.contains(said), "{extra:?}: {err}");
+    }
+    for (args, said) in [
+        (
+            &[
+                "secrets",
+                "import",
+                "--to",
+                "team",
+                "--sandbox",
+                "acme/shop",
+                "--env-files",
+                "keys.env",
+            ][..],
+            "--env-files applies to --to agent",
+        ),
+        (
+            &[
+                "secrets",
+                "import",
+                "--to",
+                "agent",
+                "--sandbox",
+                "acme/shop",
+                "--yes",
+            ][..],
+            "never typed",
+        ),
+    ] {
+        let (code, out, err) = yulius_cli(home, args, "").await?;
+        assert_eq!(code, Some(1), "{args:?}: {out}{err}");
+        assert!(err.contains(said), "{args:?}: {err}");
+    }
+    let secrets = agent_secrets(&w, "s1", &browser).await?;
+    assert!(
+        secrets
+            .iter()
+            .all(|s| s["name"] != "UNSENT_KEY" && s["name"] != "OTHER_KEY"),
+        "nothing was sent: {secrets:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-256 LOB-005, review round 1: the hand-over needs a usable Claude account before anything
+/// is created; a retried start adds it once; a task that already tried to run is refused with
+/// what to do; blank notes on a started onboarding are no notes.
+#[tokio::test]
+async fn a_hand_over_is_added_once_and_only_where_it_can_be_read() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let w = World::without_claude("org").await?;
+    let (_, _, agent) = person(&w, "alice").await?;
+    w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[("README.md", "# Shop\n")],
+        &[],
+    )?;
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let shop = |extra: Value| {
+        let mut args = json!({"project": "Quartio-Studio/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let notes = "Deploys run ./deploy.sh as deploy@203.0.113.7.";
+
+    // No Claude account: refused before the onboarding task exists.
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": notes})),
+    )
+    .await?;
+    assert!(error, "{said}");
+    let sandbox =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    assert_eq!(sandbox.onboarding_task_id, None, "nothing was created");
+
+    // A start that failed after the hand-over joined the request: the retry adds it once.
+    support::exhausted_subscription(&w.h).await?;
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "task_create",
+        shop(json!({"prompt": "Add a /health endpoint"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let sandbox =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    let task_id = sandbox
+        .onboarding_task_id
+        .clone()
+        .ok_or("onboarding task")?;
+    let addition = yulius_domain::request::handover_addition("alice", notes).ok_or("addition")?;
+    assert!(
+        w.h.store
+            .append_resting_prompt(&task_id, &addition, 64 * 1024, w.h.app.now())
+            .await?
+    );
+    // The same task already tried to run once: notes can no longer join what it read.
+    let resting = w.h.store.task(&task_id).await?.ok_or("task")?.status;
+    w.h.store
+        .transition_task(&task_id, None, TaskStatus::Queued, None, w.h.app.now())
+        .await?;
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": "Something new"})),
+    )
+    .await?;
+    assert!(error && said.contains("without notes"), "{said}");
+    w.h.store
+        .transition_task(&task_id, None, resting, None, w.h.app.now())
+        .await?;
+    let (error, said, started) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": notes})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(started["onboarding"], "preparing", "{started}");
+    let prompt = w.h.store.task(&task_id).await?.ok_or("task")?.prompt;
+    assert_eq!(prompt.matches("deploy@203.0.113.7").count(), 1, "{prompt}");
+
+    // Blank notes once it started are no notes.
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": " \n"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
     Ok(())
 }

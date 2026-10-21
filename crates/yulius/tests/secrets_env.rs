@@ -984,9 +984,15 @@ async fn a_secret_created_allowed_is_copied_without_a_person() -> TestResult {
         "{allowed:?}"
     );
 
-    for refused in [
-        json!({"name": "CONFIRMED_KEY", "value": "confirmed-value-0123", "env_files": true, "auto_allow": false}),
-        json!({"name": "MY_KEY", "value": "personal-value-01234", "env_files": true, "scope": "personal"}),
+    for (refused, why) in [
+        (
+            json!({"name": "CONFIRMED_KEY", "value": "confirmed-value-0123", "env_files": true, "auto_allow": false}),
+            "auto_allow off",
+        ),
+        (
+            json!({"name": "MY_KEY", "value": "personal-value-01234", "env_files": true, "scope": "personal"}),
+            "personal secret is never copied into .env",
+        ),
     ] {
         let answer = call(
             &w.h.router,
@@ -999,6 +1005,11 @@ async fn a_secret_created_allowed_is_copied_without_a_person() -> TestResult {
         assert_eq!(
             answer.status,
             StatusCode::UNPROCESSABLE_ENTITY,
+            "{refused}: {}",
+            answer.body
+        );
+        assert!(
+            answer.body.to_string().contains(why),
             "{refused}: {}",
             answer.body
         );
