@@ -16,6 +16,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   out, whatever App they file through. An issue showing exactly 100 comments is read in full.
   Projects that added the automation earlier keep their copy of the prompt; this project's gets
   the new one after the merge.
+- The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
+  (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
+  worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
+  another folder is refused and an allowed secret's value is written nowhere. Task copies are
+  unchanged.
 
 ## 2026-10-20
 
