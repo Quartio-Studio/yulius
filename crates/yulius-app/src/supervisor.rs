@@ -949,18 +949,22 @@ impl App {
         start: RunStart,
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
-        self.start_run_if(task_id, start, account, None)
+        Box::pin(async move {
+            self.start_run_if(task_id, start, account, None)
+                .await
+                .map(|_| ())
+        })
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
-    /// under the launch lock.
+    /// under the launch lock: `false` when it no longer has it, so nothing was done.
     fn start_run_if<'a>(
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
         only: Option<TaskStatus>,
-    ) -> BoxFuture<'a, AppResult<()>> {
+    ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             let guard = self.supervisor.launch.lock().await;
             let task = self
@@ -970,12 +974,12 @@ impl App {
                 .await?
                 .ok_or(AppError::NotFound)?;
             if only.is_some_and(|status| status != task.status) {
-                return Ok(());
+                return Ok(false);
             }
             // Already running: another start won the race (the queue and a direct start).
             if task.status == TaskStatus::Running {
                 tracing::info!(task = %task.id, "start of a running task skipped");
-                return Ok(());
+                return Ok(true);
             }
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
@@ -986,7 +990,7 @@ impl App {
                     status = task.status.as_str(),
                     "fresh start of an ended task skipped"
                 );
-                return Ok(());
+                return Ok(true);
             }
             // A pending supertask of the project, or the running work a supertask waits for,
             // keeps a new run queued (SPEC-071); a live run is never held.
@@ -1019,7 +1023,7 @@ impl App {
                         .await?;
                     self.publish_task(&task.id).await;
                 }
-                return Ok(());
+                return Ok(true);
             }
             let result = self.launch_attempt(&task, start, account).await;
             drop(guard);
@@ -1047,7 +1051,7 @@ impl App {
                 // A supertask that could not start no longer holds its project (SUP-005).
                 self.drain_queue().await;
             }
-            result
+            result.map(|()| true)
         })
     }
 
@@ -2357,8 +2361,19 @@ impl App {
             Some(EndIntent::Close) => {
                 // The task was finished: whatever the exit code of the ended session, it is
                 // closed, like a session the user left.
+                // A switch the close overtook gave up: its task is closed from `Switching` too
+                // (SPEC-250 STW-006).
                 self.settle_ended(task_id, now, |task| {
-                    task.status.apply(TaskEvent::Exited { normal: true }).ok()
+                    task.status
+                        .apply(TaskEvent::Exited { normal: true })
+                        .or_else(|_| {
+                            task.status
+                                .apply(TaskEvent::SwitchCompleted)
+                                .and_then(|running| {
+                                    running.apply(TaskEvent::Exited { normal: true })
+                                })
+                        })
+                        .ok()
                 })
                 .await;
             }
@@ -2544,6 +2559,10 @@ impl App {
                 task.status.as_str()
             )));
         }
+        crate::race::reached(
+            crate::race::Point::CloseDecided,
+            Path::new(task_id.as_str()),
+        );
         let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
@@ -2686,12 +2705,18 @@ impl App {
     /// again from the status read anew, so the stop always takes effect (SPEC-250 STW-001).
     ///
     /// # Errors
-    /// `Conflict` when the task is not live, or still changes after [`STOP_ROUNDS`].
+    /// `Conflict` when the task is not live, or still changes after `STOP_ROUNDS` rounds.
     pub async fn stop_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
         for round in 0..STOP_ROUNDS {
             if self.stop_round(task_id, round > 0).await? {
                 return Ok(());
             }
+        }
+        // The stop failed: its intent goes, so no run ends later as if stopped.
+        if let Ok(mut intent) = self.runtime(task_id).intent.lock()
+            && matches!(*intent, Some(EndIntent::Cancel))
+        {
+            *intent = None;
         }
         Err(AppError::Conflict(
             "the task kept changing while it was stopped; try again".into(),
@@ -2989,8 +3014,26 @@ impl App {
             // A paused run takes the end as it would unpaused (SPEC-191 PER-004).
             self.end_person_pause(task_id).await;
             let (tx, rx) = oneshot::channel();
-            if let Ok(mut intent) = runtime.intent.lock() {
-                *intent = Some(EndIntent::Switch(tx));
+            crate::race::reached(
+                crate::race::Point::SwitchDecided,
+                Path::new(task_id.as_str()),
+            );
+            // A stop or close that came since the status change owns the old run's end: its intent
+            // is kept, and the switch gives up (SPEC-250 STW-006).
+            let installed = runtime.intent.lock().is_ok_and(|mut intent| {
+                let taken = matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close));
+                if !taken {
+                    *intent = Some(EndIntent::Switch(tx));
+                }
+                !taken
+            });
+            if !installed || !self.still_switching(task_id).await {
+                if let Ok(mut intent) = runtime.intent.lock()
+                    && matches!(*intent, Some(EndIntent::Switch(_)))
+                {
+                    *intent = None;
+                }
+                return self.switch_overtaken(task_id, &decision_id).await;
             }
             if let Some(run) = runtime.run.lock().await.as_mut() {
                 // An automatic switch happens at a boundary (or a held hook, or a limit): the
@@ -3015,13 +3058,7 @@ impl App {
                 Ok(Ok(())) => {}
                 // The switch's intent was replaced: a stop or close took over the old run's end
                 // (or its loss dropped it). No new run starts (SPEC-250 STW-006).
-                Ok(Err(_)) => {
-                    store.set_switch_outcome(&decision_id, "cancelled").await?;
-                    self.publish_task(task_id).await;
-                    return Err(AppError::Conflict(
-                        "the task was stopped during the switch".into(),
-                    ));
-                }
+                Ok(Err(_)) => return self.switch_overtaken(task_id, &decision_id).await,
                 Err(_) => {
                     let _ = self
                         .deps
@@ -3038,8 +3075,14 @@ impl App {
                 }
             }
         }
-        match self.start_run(task_id, start, account).await {
-            Ok(()) => {
+        // Only while the task is still switching, checked under the launch lock: one stopped or
+        // closed meanwhile is not started again, nor queued (STW-006).
+        match self
+            .start_run_if(task_id, start, account, Some(TaskStatus::Switching))
+            .await
+        {
+            Ok(false) => self.switch_overtaken(task_id, &decision_id).await,
+            Ok(true) => {
                 // The switch found no subscription with capacity: the task paused instead.
                 let paused = matches!(
                     store.task(task_id).await,
@@ -3082,6 +3125,55 @@ impl App {
                 Err(err)
             }
         }
+    }
+
+    /// Whether the task is still `Switching` (a store error reads as not).
+    async fn still_switching(&self, task_id: &TaskId) -> bool {
+        matches!(
+            self.deps.store.task(task_id).await,
+            Ok(Some(task)) if task.status == TaskStatus::Switching
+        )
+    }
+
+    /// Ends a switch that a stop, a close or the old run's loss overtook (SPEC-250 STW-006): no
+    /// new run starts, the decision is recorded `cancelled` and viewers are told why.
+    ///
+    /// # Errors
+    /// Always `Conflict`, saying what overtook the switch; a store error when recording it.
+    async fn switch_overtaken(&self, task_id: &TaskId, decision_id: &str) -> AppResult<()> {
+        self.deps
+            .store
+            .set_switch_outcome(decision_id, "cancelled")
+            .await?;
+        let status = self
+            .deps
+            .store
+            .task(task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.status);
+        let intent = self
+            .runtime(task_id)
+            .intent
+            .lock()
+            .map(|intent| match *intent {
+                Some(EndIntent::Close) => Some(true),
+                Some(EndIntent::Cancel) => Some(false),
+                _ => None,
+            })
+            .unwrap_or(None);
+        let why = match (status, intent) {
+            (Some(TaskStatus::Closed), _) | (_, Some(true)) => "the task was closed",
+            (Some(TaskStatus::Stopping | TaskStatus::Stopped(StopReason::Cancelled)), _)
+            | (_, Some(false)) => "the task was stopped",
+            _ => "the session ended",
+        };
+        self.runtime(task_id)
+            .hub
+            .notice(format!("↻ The session was not switched: {why}."));
+        self.publish_task(task_id).await;
+        Err(AppError::Conflict(format!("{why} during the switch")))
     }
 
     /// What a launch would need, checked without changing anything: the repository, a usable
