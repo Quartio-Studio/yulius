@@ -177,6 +177,50 @@ test('a running run keeps a live summary on top: its time, its jobs and the stag
   await expect(browser.locator('.run-view .run-summary')).not.toContainText('Now:');
 });
 
+// SPEC-259 (#245): the summary is a card of its own colour over the textured page, so its state,
+// its buttons and its facts keep a padding from its edges, also on a phone, where the head wraps,
+// and while it loads, when its shape wraps as the loaded head does.
+const summaryBox = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const summary = document.querySelector('.run-view .run-summary');
+  const items = [...(summary?.querySelector('.run-head')?.children || [])].filter((item) => !item.classList.contains('spacer'));
+  const fact = summary?.querySelector('.run-facts')?.firstElementChild;
+  if (!summary || items.length === 0 || !fact) return null;
+  // Measured inside its border.
+  const box = summary.getBoundingClientRect();
+  const left = box.left + summary.clientLeft;
+  const right = left + summary.clientWidth;
+  const rects = items.map((item) => item.getBoundingClientRect());
+  return {
+    left: Math.round(Math.min(...rects.map((r) => r.left)) - left),
+    right: Math.round(right - Math.max(...rects.map((r) => r.right))),
+    facts: Math.round(fact.getBoundingClientRect().left - left),
+    height: Math.round(box.height),
+  };
+});
+
+test('a run’s summary keeps its content off the edges of its card', async ({ app, browser }) => {
+  const shape = '.run-view .run-content > .skeleton[role="status"]';
+  // A writer's ended run (Run again and In Pipeline) and a reader's (In Pipeline alone, sandbox-3).
+  const runs = [{ path: '/s/studio/ci?run=ci_s2', read: '/api/sandboxes/sb_studio/ci/runs/ci_s2', buttons: 2 },
+    { path: '/s/sandbox-3/ci?run=ci_t1', read: '/api/sandboxes/sb_three/ci/runs/ci_t1', buttons: 1 }];
+  for (const run of runs) for (const width of [1280, 390]) {
+    await browser.setViewport({ width, height: 800 });
+    // A page load of its own for each width (`w=`), so the run's read is held again.
+    await app.open(mock(run.path, `&w=${width}&hold=${run.read}`));
+    await expect(browser.locator(shape)).toHaveText('Loading the CI run…');
+    await expect(browser.locator(`${shape} .run-head .skeleton-button`)).toHaveCount(run.buttons);
+    const loading = (await summaryBox(browser))!;
+    expect({ ...loading, height: 0 }).toEqual({ left: 12, right: 12, facts: 12, height: 0 });
+    await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+    await expect(browser.locator(shape)).toHaveCount(0);
+    await expect(browser.locator('.run-view .run-head')).toContainText('In Pipeline');
+    await expect(browser.locator('.run-view .run-head .btn')).toHaveCount(run.buttons);
+    await expect(browser.locator('.run-view .run-time')).not.toHaveText('');
+    // Loaded, its content keeps the padding and the card keeps the loading shape's height.
+    await expect.poll(() => summaryBox(browser)).toEqual({ left: 12, right: 12, facts: 12, height: loading.height });
+  }
+});
+
 test('repository hygiene removes only what is safe', async ({ app, screen }) => {
   await app.open(mock('/s/studio/ci'));
   await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();

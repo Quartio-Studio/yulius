@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-21
 
+- A CI run's and a deploy's summary keeps its content off its edges (SPEC-259, task #245, fixes
+  #776). The sticky summary was a flat band with no inline padding, so its state, its facts and
+  "In Pipeline" touched the band's edges; it is now a card like the CI/CD page's Now line (12 px
+  inline padding, border, radius). Its loading shape has the loaded head's buttons (two for
+  writers, one for readers) and no reason bar, so on a phone it wraps as the loaded head does.
 - CD takes more environments than dev and production (SPEC-257, ADR-0195, task #243). A
   repository that ships more than one thing, like a self-hosted release and the hosted platform
   that serves it, or a staging machine next to dev, defines one `[cd.<name>]` table per target

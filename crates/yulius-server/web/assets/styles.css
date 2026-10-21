@@ -2846,8 +2846,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .page:has(.run-summary) { scroll-padding-top: 96px; }
 /* On a phone its head and facts wrap onto more lines. */
 @media (max-width: 600px) { .page:has(.run-summary) { scroll-padding-top: 160px; } }
-/* Its summary stays at the top of the page while the stages and the log scroll under it. */
-.run-summary { position: sticky; top: 0; z-index: var(--z-sticky); display: flex; flex-direction: column; gap: 4px; padding: 8px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+/* Its summary stays at the top of the page while the stages and the log scroll under it: a card
+   like the Now line, its content off its edges (SPEC-259). */
+.run-summary { position: sticky; top: 0; z-index: var(--z-sticky); display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .run-facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-variant-numeric: tabular-nums; }
 .run-facts:empty { display: none; }
 .run-now { color: var(--text-2); }
