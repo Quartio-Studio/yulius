@@ -2078,6 +2078,76 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
     Ok(())
 }
 
+/// SPEC-250 STW-006: a stop lands while a switch waits for its old run to end. The stop takes
+/// over that end, so the switch starts no new run: the task ends stopped with its one run ended,
+/// not stopped (or running) with a new run nobody ends.
+#[test]
+fn a_stop_while_a_switch_ends_its_old_run_starts_no_new_run() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task(&data, &fake).await?;
+        // The old run cannot be ended: the switch waits for it.
+        host.refuse_ends(true);
+        let (switched, mut switch_done) = tokio::sync::watch::channel(None);
+        {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move {
+                let result = app.switch_task_now(&id, None, "manual", None).await;
+                switched.send_replace(Some(result.map_err(|e| e.to_string())));
+            });
+        }
+        wait_for("the switch", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Switching)
+        })
+        .await?;
+        // The stop's decision replaces the switch's: the switch either gives up or starts a run.
+        {
+            let (app, key, id, host) = (app.clone(), id.clone(), id.clone(), host.clone());
+            let mut switch_done = switch_done.clone();
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::StopDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let settled = wait_in_hook(&handle, async {
+                        let new_run = wait_for("a new run", Duration::from_secs(30), || async {
+                            app.deps.store.attempts(&id).await.unwrap_or_default().len() >= 2
+                        });
+                        tokio::select! {
+                            _ = switch_done.wait_for(Option::is_some) => {}
+                            _ = new_run => {}
+                        }
+                    });
+                    let () = settled;
+                    host.refuse_ends(false);
+                },
+            );
+        }
+        stop_on_worker(&app, &id).await?;
+        expect_stopped(&app, &id).await?;
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            switch_done.wait_for(Option::is_some),
+        )
+        .await??;
+        let outcome = switch_done.borrow().clone();
+        assert!(matches!(outcome, Some(Err(_))), "{outcome:?}");
+        assert_eq!(
+            app.deps.store.attempts(&id).await?.len(),
+            1,
+            "{}",
+            run_states(&app, &id).await
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-250 STW-005: a stop lands while the end of the task's run is recorded, between the end's
 /// read of the task and its status change (the agent exited at that moment). The end's change is
 /// made again from the stop's status: the task ends stopped, not stopping with no run.
