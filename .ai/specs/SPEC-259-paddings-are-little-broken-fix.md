@@ -49,12 +49,12 @@ the band it is drawn on.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
-- The new `ci.e2e.ts` test "a run’s summary keeps its content off the edges of its band" fails on
+- The new `ci.e2e.ts` test "a run’s summary keeps its content off the edges of its card" fails on
   `dev` (insets 0) and passes with the fix.
 - `ci.e2e.ts`, `cd.e2e.ts` and `loading-shapes.e2e.ts` pass (sticky summary, deploy view, loading
   shape).
@@ -78,3 +78,24 @@ the band it is drawn on.
 - The loading head drops its reason bar and gets the loaded head's buttons (two for writers, one
   for readers): it then wraps as an ordinary run's head on a phone. Bars cannot predict a reason's
   length, so a run with a reason may still grow when it loads.
+
+## Evidence
+
+- Reproduced in the mock UI (`python3 -I e2e/serve.py 20105 crates/yulius-server/web`,
+  `/?mock=1#/s/studio/ci?run=ci_s2`): badge and In Pipeline flush with the band's edges; after the
+  fix both sit 12 px inside the card.
+- Regression test, `npx e2e run tests/ci.e2e.ts --grep "off the edges"`: with `origin/dev`'s
+  `styles.css` it fails (`{"left":0,"right":0,"facts":0}`); with the card but the old loading head
+  it failed at 390 px (`right: 90`, both skeleton buttons wrapped); with the fix it passes.
+- Measured loading vs loaded summaries at 1280 and 390 px for `ci_s2`, `ci_s3`, `ci_s4` (a
+  Playwright probe in the session scratchpad): 1280 px heights equal (64); at 390 px a running run
+  with a long facts line (`ci_s4`) still grows, as before this change.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py --install-rustup`), at 61a03174: exit 0,
+  nextest 2395 passed, 17 skipped.
+- `npx e2e run` (full suite) at 61a03174: 64 files passed, 1 skipped; 664 tests passed, 1 skipped.
+- `scripts/dev security` at 61a03174: exit 0, no open critical/high finding and no medium one in
+  the change (3 code files sent, 3 prose skipped).
+- Review round 1 (fresh session, request changes): phone loading check never reloaded, loading shape
+  wrapped differently on a phone, phone assertion broke with #775's Run again: all fixed in
+  61a03174 test-first; dev merged (9db87669). Pre-existing focus ring around the run view filed as
+  #777 (outside this change: the global `:focus-visible` box-shadow, not padding).
