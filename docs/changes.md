@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-21
+
+- The sandbox browser has no DevTools port any more (SPEC-252, ADR-0191, task #238, #626).
+  Chromium used to listen for the DevTools protocol on a loopback port without authentication, so
+  any local process, including a run of another sandbox under the fallback containment, could
+  drive a sandbox's browser and its logged-in sessions. It now speaks DevTools only over a pipe
+  that Yulius holds (`--remote-debugging-pipe`). Agents keep using Yulius's browser tools; the
+  unused raw CDP endpoint for a sandbox's MCP servers is gone.
+
 ## 2026-10-20
 
 - Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,

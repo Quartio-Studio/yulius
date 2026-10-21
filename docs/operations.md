@@ -1405,11 +1405,11 @@ up. Queued tasks start when capacity allows.
   installation; an agent could read it and act as them there until it expires), or without one a
   token restricted to their sandbox repository; provider credentials reach the agent process
   only through its environment (SPEC-002 §8, R-08).
-- Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
-  unauthenticated on loopback, which isolated sandboxes cannot reach; R-09, environment commands
-  outside containment, is closed by ADR-0175).
+- Known open risks are listed in SPEC-002 §12 (R-07, Chromium's unauthenticated DevTools port, is
+  closed by ADR-0191: the sandbox browser speaks DevTools over a pipe and listens on no port; R-09,
+  environment commands outside containment, is closed by ADR-0175).
 - Isolated sandboxes cannot reach the host's loopback services (Yulius's public listener, Caddy's
-  admin API, DevTools ports, databases bound to 127.0.0.1). Services bound to the host's public
+  admin API, databases bound to 127.0.0.1). Services bound to the host's public
   addresses remain reachable like any internet host.
 - Password sign-in is limited per client only with the proxy's shared secret configured
   (`YULIUS_PROXY_SECRET_FILE`, §4 "Per-client sign-in limits"); without it every client behind the
