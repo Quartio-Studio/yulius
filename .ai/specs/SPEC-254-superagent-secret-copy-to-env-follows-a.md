@@ -10,7 +10,7 @@ Date: 2026-10-21
 Owner: Yulius task #240
 Scope authorization: task #240, started by task #235 (work through open issues): fix
 [#635](https://github.com/Quartio-Studio/yulius/issues/635), found by the independent review of
-task #198 ([SPEC-211](SPEC-211-agents-create-agent-secrets-from-a-file.md)).
+task #198 ([SPEC-211](SPEC-211-yulius-should-be-able-to-create-secrets.md)).
 
 ## Goal
 
