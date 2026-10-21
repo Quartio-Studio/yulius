@@ -6,7 +6,7 @@ use std::io;
 
 use yulius_import::{
     Secret, SecretsImportError, SecretsImportOptions, SecretsIo, SecretsSummary, SecretsTarget,
-    VaultClient, import_secrets, parse_dotenv, prepare_target, prompt_secrets,
+    VaultClient, import_secrets, parse_dotenv, prepare_target, prompt_secrets, secret_file_entry,
 };
 
 use crate::support::TestResult;
@@ -615,5 +615,90 @@ fn the_target_is_checked_before_secrets_are_typed() -> TestResult {
     let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
     let outcome = prepare_target(&agent("nope/missing", false), &client);
     assert!(matches!(outcome, Err(SecretsImportError::Sandbox(_))));
+    Ok(())
+}
+
+/// SPEC-256 LOB-002: a run its caller made unattended (an operate token, checked by the CLI)
+/// shows the plan, asks nothing and sends; it needs no terminal.
+#[test]
+fn an_unattended_run_asks_nothing() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?
+        .unattended()
+        .env_files_allowed();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(
+        parse_dotenv("NEW_KEY=sk_live_new_value_1\n")?,
+        &target,
+        &client,
+        &mut terminal,
+    )?;
+    assert_eq!(summary.imported, vec!["NEW_KEY"]);
+    // SPEC-256 LOB-004: created already allowed into `.env` files, as said before sending.
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert_eq!(created[0].1.env_files, Some(true));
+    assert!(terminal.said.contains(".env files"), "{}", terminal.said);
+    assert!(terminal.asked.is_empty(), "asked {:?}", terminal.asked);
+    assert!(terminal.said.contains("NEW_KEY"), "{}", terminal.said);
+    assert!(
+        terminal.said.contains("without asking"),
+        "{}",
+        terminal.said
+    );
+    terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-256 LOB-003: a key file is imported by its path, whole, as the Secrets page stores a key,
+/// described by its file name; a file that is no text or too large is refused without its content.
+#[test]
+fn a_key_file_is_imported_by_path() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("deploy_ed25519");
+    std::fs::write(&path, format!("{PEM}\n"))?;
+    let entry = secret_file_entry("DEPLOY_KEY", &path)?;
+    assert_eq!(entry.name, "DEPLOY_KEY");
+    assert_eq!(entry.comment, "From the file deploy_ed25519");
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?;
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = import_secrets(vec![entry], &target, &client, &mut terminal)?;
+    assert_eq!(summary.imported, vec!["DEPLOY_KEY"]);
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert_eq!(created[0].1.value, PEM.replace('\n', "\\n"));
+    assert_eq!(created[0].1.env_files, None, "only when asked for");
+    assert_eq!(
+        created[0].1.description.as_deref(),
+        Some("From the file deploy_ed25519")
+    );
+    terminal.assert_no_value();
+
+    let binary = dir.path().join("blob");
+    std::fs::write(&binary, [0xff_u8, 0xfe, 0x00, 0x62])?;
+    let err = secret_file_entry("BLOB", &binary).err().ok_or("not text")?;
+    assert!(err.contains("not UTF-8 text"), "{err}");
+    let large = dir.path().join("large");
+    std::fs::write(&large, "x".repeat(65 * 1024))?;
+    let err = secret_file_entry("LARGE", &large)
+        .err()
+        .ok_or("too large")?;
+    assert!(err.contains("64 KiB") && !err.contains("xxxx"), "{err}");
+    // Cut at the bound inside a two-byte character: still too large, not "not text".
+    std::fs::write(&large, "ł".repeat(40 * 1024))?;
+    let err = secret_file_entry("LARGE", &large)
+        .err()
+        .ok_or("too large")?;
+    assert!(err.contains("64 KiB"), "{err}");
+    let err = secret_file_entry("GONE", &dir.path().join("gone"))
+        .err()
+        .ok_or("missing")?;
+    assert!(err.contains("gone"), "{err}");
     Ok(())
 }

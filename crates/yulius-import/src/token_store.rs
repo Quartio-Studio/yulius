@@ -145,6 +145,30 @@ impl TokenStore {
         Ok(self.read()?.servers.into_keys().collect())
     }
 
+    /// The token saved here for `server`, else the one `yulius remote login` saved for it
+    /// (SPEC-256 LOB-001): a person's agent signs in once, with the token made for it.
+    ///
+    /// # Errors
+    /// I/O failure or a corrupt file.
+    pub fn load_or_remote(&self, server: &Url) -> Result<Option<Secret>, TokenStoreError> {
+        match self.load(server)? {
+            Some(token) => Ok(Some(token)),
+            None => self.remote().load(server),
+        }
+    }
+
+    /// The servers with a token here or in the remote store, each once, sorted.
+    ///
+    /// # Errors
+    /// I/O failure or a corrupt file.
+    pub fn known_servers(&self) -> Result<Vec<String>, TokenStoreError> {
+        let mut servers = self.servers()?;
+        servers.extend(self.remote().servers()?);
+        servers.sort();
+        servers.dedup();
+        Ok(servers)
+    }
+
     /// Forgets the token for `server`; returns whether one existed.
     ///
     /// # Errors
@@ -321,6 +345,37 @@ mod tests {
             store
                 .save(&Url::parse("https://y.example")?, &Secret::new("t"))
                 .is_err()
+        );
+        Ok(())
+    }
+
+    /// SPEC-256 LOB-001: `yulius login`'s token first, else the one `yulius remote login` stored
+    /// for the same instance; the servers of both are known.
+    #[test]
+    fn the_remote_token_stands_in_for_a_missing_login_token() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let store = TokenStore::new(dir.path().join("credentials.json"));
+        let laptop = Url::parse("https://y.example/")?;
+        let other = Url::parse("https://other.example")?;
+        assert_eq!(store.load_or_remote(&laptop)?, None);
+        assert!(store.known_servers()?.is_empty());
+        store.remote().save(&laptop, &Secret::new("yul_operate"))?;
+        assert_eq!(
+            store.load_or_remote(&laptop)?,
+            Some(Secret::new("yul_operate"))
+        );
+        assert_eq!(store.load(&laptop)?, None, "the login store is untouched");
+        assert_eq!(store.known_servers()?, vec!["https://y.example".to_owned()]);
+        store.save(&laptop, &Secret::new("yul_cli"))?;
+        store.save(&other, &Secret::new("yul_other"))?;
+        assert_eq!(store.load_or_remote(&laptop)?, Some(Secret::new("yul_cli")));
+        assert_eq!(
+            store.known_servers()?,
+            vec![
+                "https://other.example".to_owned(),
+                "https://y.example".to_owned()
+            ],
+            "once each"
         );
         Ok(())
     }

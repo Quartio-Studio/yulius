@@ -997,6 +997,52 @@ async fn a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound
     Ok(())
 }
 
+/// SPEC-256 LOB-005: the hand-over joins the request of a task created resting (`closed`, the
+/// onboarding task before Start onboarding) that never ran; a run, a provider session, another
+/// status or the bound refuses it and leaves the prompt as it was.
+#[tokio::test]
+async fn a_resting_task_that_never_ran_takes_an_addition() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    assert!(
+        !store
+            .append_resting_prompt(&t.id, "+a", 64, Timestamp(20))
+            .await?,
+        "`starting` is no resting task"
+    );
+    store
+        .transition_task(&t.id, None, TaskStatus::Closed, None, Timestamp(21))
+        .await?;
+    assert!(
+        store
+            .append_resting_prompt(&t.id, "+ł", 4, Timestamp(22))
+            .await?
+    );
+    assert!(
+        !store
+            .append_resting_prompt(&t.id, "+", 4, Timestamp(23))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    // An addition the prompt holds already (a concurrent call added it) is not added again.
+    assert!(
+        !store
+            .append_resting_prompt(&t.id, "+ł", 1024, Timestamp(23))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    store.insert_attempt(&attempt("a1", &t.id, 1)?).await?;
+    assert!(
+        !store
+            .append_resting_prompt(&t.id, "+b", 1024, Timestamp(24))
+            .await?,
+        "it ran"
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    Ok(())
+}
+
 /// SPEC-083 NUM-002: a record number is reserved once per sandbox, directory and prefix; the
 /// reservations survive a reopen, oldest first, and go with their task when it is deleted.
 #[tokio::test]

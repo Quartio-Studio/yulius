@@ -125,7 +125,11 @@ under scripts/cd/ (keep working conventions; machines and credentials come from 
 never the repository), and an environment with nothing to deploy yet is an empty table with an \
 `about` line saying so. A production deploy that pushes or promotes the production branch is \
 `promote = true`. Yulius reads them from the protected branches and only a person deploys \
-production. A credential or machine only a person can give: ask with needs_you and go on.";
+production. Before asking anyone for a credential or a machine, read secrets_list and any \
+hand-over in your request: the person's own agent may have imported the keys (described) and said \
+where and how deploys run; a key used outside the proxy (ssh, a deploy script) reaches the ignored \
+.env through secret_copy_to_env. Only a credential or machine nobody gave: ask with needs_you and \
+go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
 /// with an instance Vidoc key, the rule to scan before delivery (Yulius CI runs the built-in
@@ -976,10 +980,32 @@ impl App {
         sandbox: &SandboxId,
         actor: &str,
     ) -> AppResult<bool> {
+        self.start_onboarding_with(sandbox, actor, None).await
+    }
+
+    /// [`Self::start_onboarding`], with the hand-over of the person's agent (`actor`'s) added to
+    /// the onboarding task's request after the default branch is prepared and before the task
+    /// starts (SPEC-256 LOB-005).
+    ///
+    /// # Errors
+    /// As [`Self::start_onboarding`]; `Conflict` when the hand-over can no longer join the request.
+    async fn start_onboarding_with(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+        actor: &str,
+        notes: Option<&str>,
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
         let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
-        if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
-            return Ok(false);
+        match OnboardingState::parse(&record.onboarding_state) {
+            Some(OnboardingState::Pending) => {}
+            // Another start or a skip landed since the caller read `pending`: a hand-over is
+            // refused, never dropped unsaid (SPEC-256 review round 2).
+            Some(OnboardingState::Skipped) if notes.is_some() => {
+                return Err(AppError::Conflict(SKIPPED_MEANWHILE.into()));
+            }
+            _ if notes.is_some() => return Err(AppError::Conflict(ALREADY_STARTED.into())),
+            _ => return Ok(false),
         }
         // Onboarding is an agent's task: without a usable account it is refused before anything
         // is created or pushed, and the sandbox stays `pending` (SPEC-246 CLA-002, CLA-003).
@@ -988,8 +1014,14 @@ impl App {
         // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
         self.prepare_default_branch(&record, actor).await?;
         let Some(task) = self.onboarding_task(sandbox).await? else {
+            if notes.is_some() {
+                return Err(AppError::Conflict(SKIPPED_MEANWHILE.into()));
+            }
             return Ok(false);
         };
+        if let Some(notes) = notes {
+            self.add_handover(&task, actor, notes).await?;
+        }
         if task.status.is_resting() {
             self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
                 .await?;
@@ -1288,12 +1320,23 @@ impl App {
         self: &Arc<Self>,
         ctx: &AuthContext,
         sid: &str,
+        notes: Option<&str>,
     ) -> AppResult<Sandbox> {
         ensure_browser(ctx)?;
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (record, level) = self.require(&ctx.user, &id, Action::Work).await?;
+        let notes = notes.map(str::trim).filter(|n| !n.is_empty());
+        if notes.is_some_and(|n| n.len() > MAX_HANDOVER_BYTES) {
+            return Err(AppError::Invalid(format!(
+                "the hand-over is longer than {} KiB: keep what the onboarding task needs",
+                MAX_HANDOVER_BYTES / 1024
+            )));
+        }
         match OnboardingState::parse(&record.onboarding_state) {
             Some(OnboardingState::Pending) => {}
+            Some(OnboardingState::Preparing) if notes.is_some() => {
+                return Err(AppError::Conflict(ALREADY_STARTED.into()));
+            }
             Some(OnboardingState::Preparing) => return self.sandbox_view(&record, level).await,
             _ => {
                 return Err(AppError::Conflict(format!(
@@ -1303,7 +1346,11 @@ impl App {
             }
         }
         let actor = self.login_of(&ctx.user.id).await;
-        self.start_onboarding(&id, &actor).await?;
+        crate::race::reached(
+            crate::race::Point::OnboardingApproved,
+            Path::new(id.as_str()),
+        );
+        self.start_onboarding_with(&id, &actor, notes).await?;
         let record = self
             .deps
             .store
@@ -1311,6 +1358,76 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.sandbox_view(&record, level).await
+    }
+}
+
+/// Longest hand-over a person's agent gives the onboarding task (SPEC-256 LOB-005).
+pub const MAX_HANDOVER_BYTES: usize = 24 * 1024;
+
+/// Why a hand-over is refused once onboarding started.
+const ALREADY_STARTED: &str = "onboarding already started, so its request is read: tell its task \
+     with task_message instead";
+
+/// Why a hand-over is refused when an admin skipped onboarding meanwhile.
+const SKIPPED_MEANWHILE: &str = "onboarding was skipped meanwhile; the hand-over was not added";
+
+/// Why a hand-over is refused by an onboarding task that already tried to start.
+const TRIED_TO_START: &str = "the onboarding task already tried to start once, so its request no \
+     longer takes a hand-over: start onboarding without notes, then tell its task with \
+     task_message";
+
+impl App {
+    /// Adds the hand-over of the person's agent to the request of the onboarding `task` before it
+    /// starts (SPEC-256 LOB-005), redacted of secrets, as a queued message is (SPEC-052). A
+    /// hand-over the request already holds (a start that failed after adding it) is not added
+    /// again.
+    ///
+    /// # Errors
+    /// `Conflict` once the task tried to run; `Invalid` past the request's size; store failures.
+    async fn add_handover(&self, task: &TaskRecord, login: &str, notes: &str) -> AppResult<()> {
+        let redacted = yulius_domain::redact::redact(notes).map(|r| r.text);
+        let addition =
+            yulius_domain::request::handover_addition(login, redacted.as_deref().unwrap_or(notes))
+                .ok_or_else(|| AppError::Invalid("the hand-over is empty".into()))?;
+        if task.prompt.contains(&addition) {
+            return Ok(());
+        }
+        if task.prompt.len() + addition.len() > crate::lifecycle::MAX_PROMPT_BYTES {
+            return Err(AppError::Invalid(
+                "the hand-over does not fit the onboarding task's request: shorten it".into(),
+            ));
+        }
+        if !self
+            .deps
+            .store
+            .append_resting_prompt(
+                &task.id,
+                &addition,
+                crate::lifecycle::MAX_PROMPT_BYTES,
+                self.now(),
+            )
+            .await?
+        {
+            // Said as it is now: a concurrent call added the same hand-over, the request grew
+            // past its bound, or the task tried to run.
+            let now = self
+                .deps
+                .store
+                .task(&task.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            if now.prompt.contains(&addition) {
+                return Ok(());
+            }
+            if now.prompt.len() + addition.len() > crate::lifecycle::MAX_PROMPT_BYTES {
+                return Err(AppError::Invalid(
+                    "the hand-over does not fit the onboarding task's request: shorten it".into(),
+                ));
+            }
+            return Err(AppError::Conflict(TRIED_TO_START.into()));
+        }
+        self.publish_task(&task.id).await;
+        Ok(())
     }
 }
 
@@ -1404,6 +1521,11 @@ mod tests {
         assert!(prompt.contains("into quartio"));
         assert!(prompt.contains("git-crypt"));
         assert!(prompt.contains("Reverse-engineer"));
+        // SPEC-256 LOB-006: the keys and hand-over of the person's agent come before a person.
+        assert!(
+            prompt.contains("read secrets_list and any hand-over"),
+            "{prompt}"
+        );
         assert!(prompt.contains("nobody needs to approve"));
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));

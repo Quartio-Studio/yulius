@@ -9,7 +9,7 @@ use support::FakeRemote as _;
 use support::repos::World;
 use support::{Creds, TestResult, call};
 use yulius_app::model::UserRecord;
-use yulius_app::ports::store::SandboxStore as _;
+use yulius_app::ports::store::{SandboxStore as _, TaskStore as _};
 use yulius_app::ports::store_ext::AutomationStore;
 
 type Error = Box<dyn std::error::Error>;
@@ -1884,5 +1884,574 @@ async fn a_refused_pull_request_leaves_no_branch() -> TestResult {
         .collect();
     assert_eq!(audited.len(), 1, "{audited:?}");
     assert!(audited[0].contains("\"ok\":false"), "{audited:?}");
+    Ok(())
+}
+
+/// The agent secrets of a sandbox by name, as the Secrets page lists them.
+async fn agent_secrets(w: &World, sid: &str, creds: &Creds) -> Result<Vec<Value>, Error> {
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}/agent-secrets"),
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    Ok(listed.body.as_array().cloned().unwrap_or_default())
+}
+
+/// SPEC-256: with one token made for their agent, a person's laptop agent uploads the checkout,
+/// moves the project's keys (a dotenv file and a key file, read by the CLI, never printed) into
+/// agent secrets already usable in `.env` files, and starts onboarding with its hand-over, which
+/// the onboarding task's request holds, redacted. Nothing waits for the person.
+#[tokio::test]
+async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, browser, _) = person(&w, "alice").await?;
+    let origin = w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[
+            ("README.md", "# Shop\n"),
+            ("deploy.sh", "ssh deploy@host\n"),
+        ],
+        &[],
+    )?;
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let token =
+        text(&make_token(&w, &browser, "laptop agent", "operate").await?["token"]).to_owned();
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    // The laptop's checkout, cloned from GitHub.
+    support::repos::git(
+        home,
+        &["clone", "--quiet", &origin.to_string_lossy(), "shop"],
+    )?;
+    let checkout = home.join("shop");
+    support::repos::git(
+        &checkout,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/Quartio-Studio/shop.git",
+        ],
+    )?;
+
+    // 1. The checkout goes up with the agent's token: no `yulius login`, no browser.
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "onboard",
+            "shop",
+            "--yes",
+            "--sessions",
+            "none",
+            "--no-color",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(!out.contains("approve this computer"), "{out}");
+    let sandbox =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("the project was added")?;
+    assert_eq!(sandbox.onboarding_state, "pending");
+    let sid = sandbox.id.as_str().to_owned();
+
+    // 2. Its keys, with no terminal to type yes at.
+    let api_value = format!("api-{}", "k3y".repeat(6));
+    std::fs::write(
+        checkout.join(".env"),
+        format!("# The shop's payment API\nPAYMENTS_TOKEN={api_value}\n"),
+    )?;
+    let key = format!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
+        "b3BlbnNzaC1rZXktdjEAAAAA".repeat(2),
+        "QyNTUxOQAAACD".repeat(3)
+    );
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::write(home.join(".ssh/deploy_ed25519"), &key)?;
+    let import = [
+        "secrets",
+        "import",
+        "--to",
+        "agent",
+        "--sandbox",
+        "Quartio-Studio/shop",
+        "--yes",
+        "--env-files",
+        "--no-color",
+        "shop/.env",
+        "--from-file",
+        // As a shell passes it unexpanded: the CLI reads `~/` as the home.
+        "DEPLOY_SSH_KEY=~/.ssh/deploy_ed25519",
+    ];
+    let (code, out, err) = yulius_cli(home, &import, "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.contains("PAYMENTS_TOKEN") && out.contains("DEPLOY_SSH_KEY"),
+        "{out}"
+    );
+    for leaked in [api_value.as_str(), "b3BlbnNzaC1rZXktdjEAAAAA"] {
+        assert!(!out.contains(leaked) && !err.contains(leaked), "{out}{err}");
+    }
+    let secrets = agent_secrets(&w, &sid, &browser).await?;
+    for name in ["PAYMENTS_TOKEN", "DEPLOY_SSH_KEY"] {
+        let secret = secrets
+            .iter()
+            .find(|s| s["name"] == name)
+            .ok_or_else(|| format!("{name} in {secrets:?}"))?;
+        assert_eq!(secret["env_files"], "allowed", "{secret}");
+        assert_eq!(secret["auto_allow"], true, "{secret}");
+    }
+    let described = |name: &str| {
+        secrets
+            .iter()
+            .find(|s| s["name"] == name)
+            .map(|s| text(&s["description"]).to_owned())
+            .unwrap_or_default()
+    };
+    assert_eq!(described("PAYMENTS_TOKEN"), "The shop's payment API");
+    assert!(
+        described("DEPLOY_SSH_KEY").contains("deploy_ed25519"),
+        "{secrets:?}"
+    );
+    let key_id = secrets
+        .iter()
+        .find(|s| s["name"] == "DEPLOY_SSH_KEY")
+        .map(|s| text(&s["id"]).to_owned())
+        .unwrap_or_default();
+    let audit = audits(&w, &key_id).await?;
+    assert!(
+        audit
+            .iter()
+            .any(|(action, actor, _)| action == "vault.agent.env_allow" && actor.contains("alice")),
+        "{audit:?}"
+    );
+
+    // Again: everything exists, nothing is overwritten.
+    let (code, out, err) = yulius_cli(home, &import, "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("exists"), "{out}");
+
+    // 3. Onboarding starts with the agent's hand-over, redacted; a hand-over past 24 KiB is
+    // refused and starts nothing.
+    std::fs::write(home.join("long.md"), "x".repeat(25 * 1024))?;
+    let (code, _, err) = yulius_cli(
+        home,
+        &[
+            "project",
+            "onboard",
+            "-p",
+            "Quartio-Studio/shop",
+            "--notes",
+            "long.md",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("24 KiB"), "{err}");
+    let still =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    assert_eq!(still.onboarding_state, "pending");
+    let leaked_token = format!("ghp_{}", &"aB3dE".repeat(8)[..36]);
+    std::fs::write(
+        home.join("handover.md"),
+        format!(
+            "Deploys run ./deploy.sh over ssh as deploy@203.0.113.7 with DEPLOY_SSH_KEY.\n\
+             The old CI used {leaked_token}.\n"
+        ),
+    )?;
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "project",
+            "onboard",
+            "-p",
+            "Quartio-Studio/shop",
+            "--notes",
+            "handover.md",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let sandbox =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    assert_eq!(sandbox.onboarding_state, "preparing");
+    let task =
+        w.h.store
+            .task(
+                sandbox
+                    .onboarding_task_id
+                    .as_ref()
+                    .ok_or("onboarding task")?,
+            )
+            .await?
+            .ok_or("task")?;
+    assert!(
+        task.prompt
+            .contains("Hand-over from alice's agent on their computer")
+            && task.prompt.contains("deploy@203.0.113.7"),
+        "{}",
+        task.prompt
+    );
+    assert!(!task.prompt.contains(&leaked_token), "{}", task.prompt);
+    assert!(task.prompt.contains("secrets_list"), "{}", task.prompt);
+
+    // Once it started, notes go to its task instead.
+    let (code, _, err) = yulius_cli(
+        home,
+        &[
+            "project",
+            "onboard",
+            "-p",
+            "Quartio-Studio/shop",
+            "--notes",
+            "handover.md",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("task_message"), "{err}");
+    drop(alice);
+    Ok(())
+}
+
+/// SPEC-256 LOB-002: `--yes` needs the token made for the person's agent with `operate`: with a
+/// `yulius login` token or a read token nothing is sent.
+#[tokio::test]
+async fn an_unattended_import_needs_an_operate_token() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, cli) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let import = |file: &str| -> Vec<String> {
+        [
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            file,
+        ]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect()
+    };
+
+    // Only `yulius login`'s token.
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    std::fs::create_dir_all(home.join(".config/yulius"))?;
+    std::fs::write(
+        home.join(".config/yulius/credentials.json"),
+        json!({"version": 1, "servers": {url.clone(): {"token": cli.bearer.clone()}}}).to_string(),
+    )?;
+    std::fs::write(home.join("keys.env"), "UNSENT_KEY=abcdefgh12345678\n")?;
+    let args = import("keys.env");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, out, err) = yulius_cli(home, &args, "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("yulius remote login"), "{err}");
+
+    // A read token made for the agent.
+    let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{read}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let (code, out, err) = yulius_cli(home, &args, "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("operate"), "{err}");
+    let secrets = agent_secrets(&w, "s1", &browser).await?;
+    assert!(
+        secrets.iter().all(|s| s["name"] != "UNSENT_KEY"),
+        "nothing was sent: {secrets:?}"
+    );
+
+    // With an operate token, what the run was given is checked before anything is sent.
+    let operate = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{operate}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    std::fs::write(home.join("key.pem"), "single-line-key-value-0123\n")?;
+    let refusals: [(&[&str], &str); 5] = [
+        (
+            &["--from-file", "UNSENT_KEY=key.pem"],
+            "UNSENT_KEY is given twice",
+        ),
+        (
+            &[
+                "--from-file",
+                "OTHER_KEY=key.pem",
+                "--from-file",
+                "OTHER_KEY=key.pem",
+            ],
+            "OTHER_KEY is given twice",
+        ),
+        (&["--from-file", "key.pem"], "NAME=PATH"),
+        (&["--from-file", "GONE_KEY=~/gone.pem"], "gone.pem"),
+        (
+            &["--env-files", "--confirm-hosts"],
+            "--env-files is for secrets agents set up",
+        ),
+    ];
+    for (extra, said) in refusals {
+        let mut args: Vec<&str> = vec![
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            "keys.env",
+        ];
+        args.extend_from_slice(extra);
+        let (code, out, err) = yulius_cli(home, &args, "").await?;
+        assert_eq!(code, Some(1), "{extra:?}: {out}{err}");
+        assert!(err.contains(said), "{extra:?}: {err}");
+    }
+    for (args, said) in [
+        (
+            &[
+                "secrets",
+                "import",
+                "--to",
+                "team",
+                "--sandbox",
+                "acme/shop",
+                "--env-files",
+                "keys.env",
+            ][..],
+            "--env-files applies to --to agent",
+        ),
+        (
+            &[
+                "secrets",
+                "import",
+                "--to",
+                "agent",
+                "--sandbox",
+                "acme/shop",
+                "--yes",
+            ][..],
+            "never typed",
+        ),
+    ] {
+        let (code, out, err) = yulius_cli(home, args, "").await?;
+        assert_eq!(code, Some(1), "{args:?}: {out}{err}");
+        assert!(err.contains(said), "{args:?}: {err}");
+    }
+    let secrets = agent_secrets(&w, "s1", &browser).await?;
+    assert!(
+        secrets
+            .iter()
+            .all(|s| s["name"] != "UNSENT_KEY" && s["name"] != "OTHER_KEY"),
+        "nothing was sent: {secrets:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-256 LOB-005, review round 1: the hand-over needs a usable Claude account before anything
+/// is created; a retried start adds it once; a task that already tried to run is refused with
+/// what to do; blank notes on a started onboarding are no notes.
+#[tokio::test]
+async fn a_hand_over_is_added_once_and_only_where_it_can_be_read() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let w = World::without_claude("org").await?;
+    let (_, _, agent) = person(&w, "alice").await?;
+    w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[("README.md", "# Shop\n")],
+        &[],
+    )?;
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let shop = |extra: Value| {
+        let mut args = json!({"project": "Quartio-Studio/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let notes = "Deploys run ./deploy.sh as deploy@203.0.113.7.";
+
+    // No Claude account: refused before the onboarding task exists.
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": notes})),
+    )
+    .await?;
+    assert!(error, "{said}");
+    let sandbox =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    assert_eq!(sandbox.onboarding_task_id, None, "nothing was created");
+
+    // A start that failed after the hand-over joined the request: the retry adds it once.
+    support::exhausted_subscription(&w.h).await?;
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "task_create",
+        shop(json!({"prompt": "Add a /health endpoint"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let sandbox =
+        w.h.store
+            .sandbox_by_repo("Quartio-Studio", "shop")
+            .await?
+            .ok_or("sandbox")?;
+    let task_id = sandbox
+        .onboarding_task_id
+        .clone()
+        .ok_or("onboarding task")?;
+    let addition = yulius_domain::request::handover_addition("alice", notes).ok_or("addition")?;
+    assert!(
+        w.h.store
+            .append_resting_prompt(&task_id, &addition, 64 * 1024, w.h.app.now())
+            .await?
+    );
+    // The same task already tried to run once: notes can no longer join what it read.
+    let resting = w.h.store.task(&task_id).await?.ok_or("task")?.status;
+    w.h.store
+        .transition_task(&task_id, None, TaskStatus::Queued, None, w.h.app.now())
+        .await?;
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": "Something new"})),
+    )
+    .await?;
+    assert!(error && said.contains("without notes"), "{said}");
+    w.h.store
+        .transition_task(&task_id, None, resting, None, w.h.app.now())
+        .await?;
+    let (error, said, started) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": notes})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(started["onboarding"], "preparing", "{started}");
+    let prompt = w.h.store.task(&task_id).await?.ok_or("task")?.prompt;
+    assert_eq!(prompt.matches("deploy@203.0.113.7").count(), 1, "{prompt}");
+
+    // Blank notes once it started are no notes.
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        shop(json!({"notes": " \n"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    Ok(())
+}
+
+/// SPEC-256 LOB-005, review round 2: a start or skip landing between Start onboarding's read and
+/// its start refuses the hand-over instead of dropping it unsaid.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_over_overtaken_by_another_start_is_refused() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    let w = World::new("org").await?;
+    let (_, _, agent) = person(&w, "alice").await?;
+    w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[("README.md", "# Shop\n")],
+        &[],
+    )?;
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let (error, said, imported) = remote(
+        &w,
+        &agent,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let sid = yulius_domain::ids::SandboxId::parse(text(&imported["id"]))?;
+    {
+        let (store, key, sid) = (w.h.store.clone(), sid.as_str().to_owned(), sid.clone());
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            yulius_app::race::Point::OnboardingApproved,
+            std::path::Path::new(&key),
+            move || {
+                let moved = tokio::task::block_in_place(|| {
+                    handle.block_on(store.transition_onboarding(&sid, "pending", "preparing"))
+                });
+                assert!(matches!(moved, Ok(true)), "{moved:?}");
+            },
+        );
+    }
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        json!({"project": "Quartio-Studio/shop", "notes": "Deploys run ./deploy.sh."}),
+    )
+    .await?;
+    assert!(error && said.contains("already started"), "{said}");
     Ok(())
 }

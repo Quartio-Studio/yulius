@@ -304,6 +304,7 @@ impl App {
                 // An agent's secret waits for a person (SPEC-211), never set up by agents
                 // (SPEC-216).
                 auto_allow: false,
+                env_files: false,
             })
             .await?;
         drop(payload);

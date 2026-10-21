@@ -756,6 +756,24 @@ directory outside every sandbox, and opens a
 pull request that Yulius CI tests, and `change_merge` merges it once green
 (`crates/yulius-app/src/remote_files.rs`).
 
+"Onboard this folder" needs nothing more from the person (SPEC-256,
+[ADR-0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)): the
+local agent signs the CLI in with the same `operate` token, which `yulius onboard` and
+`yulius secrets import` also use when there is no `yulius login` token. `yulius onboard --yes`
+uploads the checkout and sessions; `yulius secrets import --yes --env-files --from-file NAME=PATH`
+creates the keys it found (the CLI reads the files; values never reach the agent) already allowed
+into `.env` files (`AgentSecretInput.env_files`); and `yulius project onboard --notes` starts
+onboarding with the agent's hand-over, which `App::approve_onboarding` adds, redacted, to the
+resting onboarding task's request (`append_resting_prompt`) before the task starts.
+
+```mermaid
+flowchart LR
+  LA["Local agent (laptop)"] -->|"yulius onboard --yes"| UP["Import API: checkout + sessions"]
+  LA -->|"yulius secrets import --yes --env-files --from-file"| VA["Agent secrets (env_files allowed)"]
+  LA -->|"onboarding_start {notes}"| OT["Onboarding task request + hand-over"]
+  OT -->|"secrets_list, secret_copy_to_env"| VA
+```
+
 ```mermaid
 sequenceDiagram
   participant L as Local agent / yulius CLI

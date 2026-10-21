@@ -1211,7 +1211,8 @@ fn show_redactions(
 }
 
 /// [`ImportIo`] for the process's terminal: [`TerminalUi`] when a person is there, plain lines
-/// otherwise; tokens from a [`TokenStore`] (device login when none is saved), session locations
+/// otherwise; tokens from a [`TokenStore`] or its remote store (device login when neither has
+/// one, SPEC-256 LOB-001), session locations
 /// from the environment and the system clock.
 pub struct TerminalIo {
     ui: Box<dyn Ui>,
@@ -1249,7 +1250,7 @@ impl ImportIo for TerminalIo {
     }
 
     fn token(&mut self, server: &Url) -> Result<Secret, ImportError> {
-        if let Some(token) = self.store.load(server)? {
+        if let Some(token) = self.store.load_or_remote(server)? {
             return Ok(token);
         }
         self.ui.fact(

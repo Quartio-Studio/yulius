@@ -390,6 +390,18 @@ pub trait TaskStore: Send + Sync {
         max_bytes: usize,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Appends `addition` to the prompt of a task created resting that never ran (SPEC-256
+    /// LOB-005: the onboarding task before Start onboarding): it is `closed` with no attempt and no
+    /// provider session, the prompt does not hold `addition` already, and it stays within
+    /// `max_bytes`. One statement, as
+    /// [`Self::append_unstarted_prompt`]. Returns whether it appended.
+    async fn append_resting_prompt(
+        &self,
+        id: &TaskId,
+        addition: &str,
+        max_bytes: usize,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Updates fields.
     async fn update_task(
         &self,

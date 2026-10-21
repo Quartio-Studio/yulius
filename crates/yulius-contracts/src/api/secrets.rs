@@ -242,6 +242,11 @@ pub struct AgentSecretInput {
     /// absent, so older servers take the body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_allow: Option<bool>,
+    /// Agents may copy it into the project's `.env` files from the start (SPEC-256 LOB-004),
+    /// instead of a person allowing it when a task asks; only for a project or global secret
+    /// agents set up. Not sent when absent, so older servers take the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_files: Option<bool>,
 }
 
 /// Update body: an absent field stays; an empty `username` clears it; `value` replaces the

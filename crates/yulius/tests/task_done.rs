@@ -3296,7 +3296,8 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
         host.arm();
         let starter = Arc::clone(&app);
         let sid = sandbox.to_string();
-        let start = tokio::spawn(async move { starter.approve_onboarding(&browser, &sid).await });
+        let start =
+            tokio::spawn(async move { starter.approve_onboarding(&browser, &sid, None).await });
         tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
         // The start is inside `start_run`; the admin skips now.
         let skipper = Arc::clone(&app);
@@ -3374,7 +3375,8 @@ fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestR
         host.arm();
         let starter = Arc::clone(&app);
         let sid = sandbox.to_string();
-        let start = tokio::spawn(async move { starter.approve_onboarding(&browser, &sid).await });
+        let start =
+            tokio::spawn(async move { starter.approve_onboarding(&browser, &sid, None).await });
         tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
         // The task runs (its attach is held): a read refreshes onboarding first.
         assert_eq!(app.refresh_onboarding(&sandbox).await?, "preparing");
