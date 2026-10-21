@@ -150,6 +150,9 @@ the stop's read and its compare-and-set is a few awaits wide.
   rests the task when the switch gives up (`Stopped(Cancelled)`, no second stop).
 - `task_done::a_switch_paused_for_capacity_goes_on`: the switch pause point moves the task to
   `WaitingCapacity`; the switch must go on and launch (two runs).
+- `task_done::a_switch_whose_paused_task_another_start_runs_is_completed`: the task is paused at
+  the switch's decision and run (`Running`) before the switch's launch takes the lock; the switch
+  must count as made, not overtaken.
 - `task_done::a_stop_while_a_runs_loss_is_recorded_still_ends_the_task`: the run's host is killed
   and the end pause point stops the task during `mark_lost`; the task must rest `Stopped(Lost)`.
 - The flaky test under probe delays at the stop's pause point and under CPU load, many runs.

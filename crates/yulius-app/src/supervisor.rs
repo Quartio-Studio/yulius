@@ -3085,8 +3085,17 @@ impl App {
             Path::new(task_id.as_str()),
         );
         match self.start_run_if(task_id, start, account, Some(from)).await {
-            Ok(false) => self.switch_overtaken(task_id, &decision_id).await,
-            Ok(true) => {
+            // Another start (the capacity loop's) ran the paused task first: it won, the switch
+            // is made.
+            Ok(false)
+                if !matches!(
+                    store.task(task_id).await,
+                    Ok(Some(t)) if t.status == TaskStatus::Running
+                ) =>
+            {
+                self.switch_overtaken(task_id, &decision_id).await
+            }
+            Ok(_) => {
                 // The switch found no subscription with capacity: the task paused instead.
                 let paused = matches!(
                     store.task(task_id).await,
@@ -3164,12 +3173,13 @@ impl App {
             .set_switch_outcome(decision_id, "cancelled")
             .await?;
         // A stop that came once the old run had ended found no run to end: the task is stopping
-        // with no run, and rests now, as a stop of it would rest it.
+        // with no run, and rests now, as a stop of it would rest it (one that a concurrent stop
+        // rested first is left as it is).
         if matches!(
             self.deps.store.task(task_id).await,
             Ok(Some(task)) if task.status == TaskStatus::Stopping
         ) && matches!(self.deps.store.live_attempt(task_id).await, Ok(None))
-            && let Err(err) = self.stop_round(task_id, false).await
+            && let Err(err) = self.stop_round(task_id, true).await
         {
             tracing::warn!(task = %task_id, error = %err, "the overtaken switch's task was not rested");
         }
