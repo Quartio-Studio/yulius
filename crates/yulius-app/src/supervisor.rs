@@ -2715,6 +2715,7 @@ impl App {
         if let Ok(mut intent) = runtime.intent.lock() {
             *intent = Some(EndIntent::Cancel);
         }
+        crate::race::reached(crate::race::Point::StopDecided, Path::new(task_id.as_str()));
         if task.status != TaskStatus::Stopping {
             store
                 .transition_task(task_id, Some(task.status), next, None, self.now())

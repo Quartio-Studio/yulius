@@ -1896,6 +1896,175 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
     Ok(())
 }
 
+/// Waits for `wait` from a pause point's hook, a plain closure the server calls from its async
+/// code on a runtime worker: the worker is handed off meanwhile, so the server's other work goes on.
+fn wait_in_hook<F: std::future::Future>(handle: &tokio::runtime::Handle, wait: F) -> F::Output {
+    tokio::task::block_in_place(|| handle.block_on(wait))
+}
+
+/// The task's status and its runs' states and end reasons, for a failure message.
+async fn run_states(app: &App, id: &TaskId) -> String {
+    let status = task(app, id)
+        .await
+        .map_or_else(|e| e.to_string(), |t| t.status.as_str().to_owned());
+    let runs: Vec<String> = app
+        .deps
+        .store
+        .attempts(id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|a| format!("{:?} {:?}", a.state, a.exit_reason))
+        .collect();
+    format!("{status} (runs: {})", runs.join(", "))
+}
+
+/// Starts a goal task on the gated host and waits for its goal.
+async fn gated_goal_task(
+    data: &Path,
+    fake: &Path,
+) -> Result<(Arc<App>, Arc<support::gated::GatedHost>, TaskId), BoxError> {
+    let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+        "CARGO_BIN_EXE_yulius"
+    ))));
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    };
+    let (app, _) = start_on(data, fake, agent, 0, Some(host.clone()), None, false, None).await?;
+    let (sandbox, user) = seed(&app, data).await?;
+    let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+    wait_for("the launch goal", Duration::from_secs(60), || {
+        screen_contains(&app, &id, "GOAL SET")
+    })
+    .await?;
+    Ok((app, host, id))
+}
+
+/// Stops `id` (on a runtime worker, so a pause point's hook can wait there) and waits until it
+/// rests: it must be stopped, with no live run.
+async fn stop_and_expect_stopped(app: &Arc<App>, id: &TaskId) -> TestResult {
+    let stop = {
+        let (app, id) = (app.clone(), id.clone());
+        tokio::spawn(async move { app.stop_task_now(&id).await })
+    };
+    tokio::time::timeout(Duration::from_secs(90), stop).await???;
+    let rests = wait_for("the stop", Duration::from_secs(30), || async {
+        task(app, id).await.is_ok_and(|t| !t.status.is_live())
+    })
+    .await;
+    if let Err(err) = rests {
+        return Err(format!("{err}: {}", run_states(app, id).await).into());
+    }
+    assert_eq!(
+        task(app, id).await?.status,
+        TaskStatus::Stopped(StopReason::Cancelled),
+        "{}",
+        run_states(app, id).await
+    );
+    assert!(app.deps.store.live_attempt(id).await?.is_none());
+    Ok(())
+}
+
+/// SPEC-250 STW-001 (#527): a stop reads the task while its switch's new run is launching
+/// (`Switching`), and the switch completes (`Running`) before the stop's status change. The stop
+/// reads the task again and stops it from there: the task ends stopped, not running with no run.
+#[test]
+fn a_stop_that_loses_to_a_completing_switch_still_ends_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task(&data, &fake).await?;
+        // The switch's new run is held at its spawn: the task reads Switching.
+        host.arm_spawn();
+        let switch = {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move { app.switch_task_now(&id, None, "manual", None).await })
+        };
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Switching);
+        // Between the stop's decision and its status change, the switch completes.
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::StopDecided,
+                Path::new(key.as_str()),
+                move || {
+                    host.release();
+                    let completed = wait_in_hook(
+                        &handle,
+                        wait_for(
+                            "the switch's completion",
+                            Duration::from_secs(60),
+                            || async {
+                                task(&app, &id)
+                                    .await
+                                    .is_ok_and(|t| t.status == TaskStatus::Running)
+                            },
+                        ),
+                    );
+                    if let Err(err) = completed {
+                        eprintln!("{err}");
+                    }
+                },
+            );
+        }
+        stop_and_expect_stopped(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(60), switch).await???;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-250 STW-003: the run ends by itself after a stop decided to end it, before the stop's
+/// status change (the agent exited at that moment). Its end rests the task, so the task ends
+/// stopped, not stopping with no run left to end.
+#[test]
+fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::StopDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let ended = wait_in_hook(&handle, async {
+                        app.send_input(&id, b"/exit\r").await?;
+                        wait_for("the run's end", Duration::from_secs(30), || async {
+                            matches!(
+                                app.deps.store.attempt(&run.id).await,
+                                Ok(Some(a)) if a.state.is_terminal()
+                            )
+                        })
+                        .await?;
+                        // Its end is recorded: the task rests (only with the fix).
+                        wait_for("the task at rest", Duration::from_secs(10), || async {
+                            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+                        })
+                        .await
+                    });
+                    if let Err(err) = ended {
+                        eprintln!("{err}");
+                    }
+                },
+            );
+        }
+        stop_and_expect_stopped(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-079 BGW-005 (#264): Yulius's Stop hook runs before the goal evaluator. While the goal is
 /// open the turn waits for the verdict: the verdict "not met" sends the agent on, and the task
 /// never reads Your turn or Done in between; the verdict "met" makes it Done.

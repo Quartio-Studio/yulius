@@ -1,6 +1,8 @@
 //! The real detached ptyhost behind a gate the test controls: the next attach after
 //! [`GatedHost::arm`] waits, its process already spawned, until [`GatedHost::release`], so a test
-//! can drop a request mid-start or hold one start while others run (SPEC-077). With
+//! can drop a request mid-start or hold one start while others run (SPEC-077); after
+//! [`GatedHost::arm_spawn`] the next spawn waits the same way, before its process starts, so a
+//! switch's task stays `Switching` (SPEC-250). With
 //! [`GatedHost::refuse_ends`] its runs cannot be ended: a shutdown request is dropped and
 //! `terminate` fails, as for a process that survives SIGKILL (SPEC-146).
 
@@ -24,6 +26,7 @@ const HOLD_LIMIT: Duration = Duration::from_secs(60);
 pub struct GatedHost {
     inner: PtySessionHost,
     armed: AtomicBool,
+    armed_spawn: AtomicBool,
     reached: watch::Sender<bool>,
     released: watch::Sender<bool>,
     /// Runs cannot be ended: shutdown requests are dropped and `terminate` fails.
@@ -37,6 +40,7 @@ impl GatedHost {
         Self {
             inner: PtySessionHost::new(exe),
             armed: AtomicBool::new(false),
+            armed_spawn: AtomicBool::new(false),
             reached: watch::channel(false).0,
             released: watch::channel(false).0,
             refusing: Arc::new(AtomicBool::new(false)),
@@ -56,7 +60,21 @@ impl GatedHost {
         self.armed.store(true, Ordering::SeqCst);
     }
 
-    /// Returns once the armed attach is held (its process runs, the start is not finished).
+    /// Holds the next spawn until [`Self::release`]: its process is not started yet.
+    pub fn arm_spawn(&self) {
+        self.reached.send_replace(false);
+        self.released.send_replace(false);
+        self.armed_spawn.store(true, Ordering::SeqCst);
+    }
+
+    /// Holds the caller here until [`Self::release`] (or [`HOLD_LIMIT`]), saying it is held.
+    async fn hold(&self) {
+        let mut released = self.released.subscribe();
+        self.reached.send_replace(true);
+        let _ = tokio::time::timeout(HOLD_LIMIT, released.wait_for(|go| *go)).await;
+    }
+
+    /// Returns once the armed attach (or spawn) is held (its process runs, the start is not finished).
     pub async fn reached(&self) {
         let mut reached = self.reached.subscribe();
         let _ = reached.wait_for(|held| *held).await;
@@ -79,6 +97,9 @@ impl SessionHost for GatedHost {
         token: &[u8; 32],
         size: (u16, u16),
     ) -> AppResult<SpawnedRun> {
+        if self.armed_spawn.swap(false, Ordering::SeqCst) {
+            self.hold().await;
+        }
         self.inner
             .spawn(run_dir, attempt_id, task_id, plan, token, size)
             .await
@@ -86,9 +107,7 @@ impl SessionHost for GatedHost {
 
     async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
         if self.armed.swap(false, Ordering::SeqCst) {
-            let mut released = self.released.subscribe();
-            self.reached.send_replace(true);
-            let _ = tokio::time::timeout(HOLD_LIMIT, released.wait_for(|go| *go)).await;
+            self.hold().await;
         }
         let mut attached = self.inner.attach(run_dir, token).await?;
         attached.writer = Box::new(RefusingWriter {
