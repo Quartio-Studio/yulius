@@ -70,7 +70,8 @@ browser has no DevTools listener at all.
 - Another sandbox's process (isolated or not), or a host process of another user, cannot drive a
   sandbox's browser through DevTools: there is no DevTools socket to connect to (CDP-001), and
   contained runs cannot see the browser's process to open its pipe (own PID namespace). Yulius's
-  own user or root still could through `/proc/<pid>/fd` (accepted: it owns the profile).
+  own user (including an agent run without containment, host mode) or root still could through
+  `/proc/<pid>/fd` (accepted: that user owns the profile).
 - The sandbox's own browser tooling keeps working: Yulius's browser MCP tools and viewers run over
   the pipe (the manager, instance and server browser tests pass against the fake through the pipe;
   the opt-in real-Chromium smoke test passes). No sandbox MCP server consumed the raw endpoint, so
@@ -117,6 +118,10 @@ browser has no DevTools listener at all.
   message of exactly `max_message_bytes`; nits: constant placement, `Lagged` in the projects
   test, `deny.toml` names `command-fds`. Not changed: the fake's accept loop ending on an accept
   error (test-only, it never fails on loopback).
+- Confirmation review of `9c38e5fa`: APPROVE. One minor finding, fixed: the wording now names runs
+  without containment (host mode) beside Yulius's user, and the ADR index line no longer
+  overclaims. Nits, fixed: the `NeverReady` case no longer reads `ClosesPipe`'s pid file; SPEC-002's
+  ADR-22 text no longer lists DevTools ports; an awkward line break in `architecture.md`.
 - `scripts/dev ci` on `5cdd53f5` (after the review fixes): passed, `exit=0`, nextest 2368 run,
   2368 passed, 17 skipped. Merged `origin/dev` (`dbafe015`, secrets only) cleanly; `cargo check
   --workspace --all-targets --all-features` passed.

@@ -2276,8 +2276,8 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   capability set and the seccomp filter (no nested user namespaces). The network namespace reaches
   the host only through `slirp4netns` with the host loopback disabled and the explicit relays (the
   internal listener's port into the sandbox, the sandbox's dev-server ports out to the host's
-  loopback); abstract sockets, other sandboxes, Yulius's public listener, Caddy's admin API and
-  DevTools ports are unreachable (R-07's cross-sandbox path closed). A run's mount namespace holds
+  loopback); abstract sockets, other sandboxes, Yulius's public listener and Caddy's admin API
+  are unreachable (sandbox browsers have no DevTools port since ADR-0191, R-07). A run's mount namespace holds
   the system layer, its sandbox directory and read-only the `yulius` binary, the agent CLI's
   package and the run's files; `master.key`, the database, `runtime/`, `system/`, `sysroots/`,
   other sandboxes and other users' homes are absent. Root inside is the service user on host

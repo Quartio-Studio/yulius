@@ -256,6 +256,8 @@ async fn startup_failures_are_typed_and_leave_no_process() -> TestResult {
     }
     let pid = read_pid(&profile, FAKE_PID_FILE)?;
     assert!(!pid_alive(pid), "a failed start reaps its process");
+    // The next case checks its own pid, not this one.
+    std::fs::remove_file(profile.join(FAKE_PID_FILE))?;
 
     // A browser that keeps its pipe open but never answers.
     let hanging = write_fake_chromium(dir.path(), "hanging", FakeChromium::NeverReady)?;

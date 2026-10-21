@@ -7,10 +7,12 @@
 //! adapter owns the Chrome DevTools Protocol, the display and the encoder.
 //!
 //! Trust model: the browser's DevTools protocol has no authentication, so the adapter opens no
-//! DevTools listener: Yulius speaks to Chromium over a pipe only it holds (ADR-0191). No sandbox
-//! process, isolated or not (each has its own PID namespace), and no host process of another
-//! user can drive the browser or its logged-in sessions through DevTools; only Yulius's own user
-//! or root could, through `/proc/<pid>/fd`. Agents use it through Yulius's browser tools. No raw
+//! DevTools listener: Yulius speaks to Chromium over a pipe only it holds (ADR-0191). No
+//! contained process (isolated or the fallback bubblewrap, each with its own PID namespace) and
+//! no host process of another user can drive the browser or its logged-in sessions through
+//! DevTools. A host process running as Yulius's user, including an agent run without containment
+//! (host mode), or root could, through `/proc/<pid>/fd`. Agents use it through Yulius's browser
+//! tools. No raw
 //! CDP endpoint is offered to a sandbox's CDP-capable MCP servers (SPEC-001 U-10).
 
 use std::path::Path;

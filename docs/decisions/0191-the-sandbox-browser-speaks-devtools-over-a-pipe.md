@@ -53,8 +53,9 @@ reaches the browser) and narrows SPEC-001 U-10 (no raw CDP endpoint for now).
 
 - No sandbox process, isolated or under the fallback containment (each has its own PID
   namespace), and no host process of another user can speak CDP to a sandbox browser. A host
-  process running as Yulius's user or root still could, through `/proc/<pid>/fd`; that user
-  already owns the browser's profile and Yulius's data.
+  process running as Yulius's user (an agent run without containment, host mode, is one) or root
+  still could, through `/proc/<pid>/fd`; that user already owns the browser's profile and
+  Yulius's data.
 - A CDP-capable MCP server inside a sandbox cannot attach to its browser (U-10's raw endpoint); none
   did. Offering one needs a per-sandbox authenticated endpoint inside the sandbox (an issue comment
   on #626 records it).

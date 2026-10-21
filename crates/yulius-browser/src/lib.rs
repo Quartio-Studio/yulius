@@ -19,8 +19,8 @@
 //! (ADR-0191). Only Yulius holds the pipe's other ends (close-on-exec), so no sandbox process,
 //! isolated or under the fallback containment (each has its own PID namespace and cannot see the
 //! browser's process), can drive the browser or its logged-in sessions through DevTools. A host
-//! process running as Yulius's user or root could still open the browser's `/proc/<pid>/fd`;
-//! that user already owns the profile. Agents use the browser through Yulius's browser tools.
+//! process running as Yulius's user (an agent run without containment, host mode, is one) or
+//! root could still open the browser's `/proc/<pid>/fd`; that user already owns the profile. Agents use the browser through Yulius's browser tools.
 //! The virtual display is not reachable from containment at all
 //! (no TCP or abstract socket, a private `/tmp`, a cookie outside the sandbox directories).
 //!

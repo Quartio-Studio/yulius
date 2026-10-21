@@ -175,10 +175,11 @@ flowchart LR
 Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the
 pipe pair Yulius gives it at spawn (`--remote-debugging-pipe`, fds 3 and 4, NUL-terminated JSON;
 [ADR-0191](decisions/0191-the-sandbox-browser-speaks-devtools-over-a-pipe.md)). It opens no
-DevTools socket, so no agent or other sandbox (contained runs have their own PID namespace) and no
-host process of another user can drive it (Yulius's own user or root could, through
-`/proc/<pid>/fd`); agents reach it only
-through Yulius's browser tools, viewers through the viewer WebSocket.
+DevTools socket, and a contained run (isolated or the fallback bubblewrap, each with its own PID
+namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
+running as Yulius's user on the host, including an agent run without containment (host mode), or
+root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
+tools, viewers through the viewer WebSocket.
 
 ```mermaid
 flowchart LR
