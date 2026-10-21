@@ -90,8 +90,9 @@ reported, and closes it once its line is gone from `dev`. A false positive becom
 entry in `.config/vidoc.toml`, with its reason, only once the independent reviewer agrees; list it
 in the spec's Evidence. Exit 2 (not run: no key, a refused key, no quota, Vidoc unreachable) is
 unrun, never passed. The key is
-`VIDOC_API_KEY`, a placeholder that the egress proxy replaces: this project's agent secret, else
-the instance's Vidoc key (Settings, Instance). The code goes to Vidoc. `scripts/dev security
+`VIDOC_API_KEY`, a placeholder that the egress proxy replaces: an agent secret of that name that
+reaches the run ([scopes](docs/architecture.md#agent-secret-scopes)), else the instance's Vidoc
+key (Settings, Instance). The code goes to Vidoc. `scripts/dev security
 --all` is the broad scan of the whole repository, for an audit task (`--report FILE` writes JSON).
 Yulius CI runs the change scan as the `security` job on pull request heads
 ([ADR-0116](docs/decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)):

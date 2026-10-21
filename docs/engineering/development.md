@@ -124,8 +124,9 @@ model (prompt injection) could hide a finding.
 **The key.** The scan reads `VIDOC_API_KEY` and sends it in `x-api-key` only.
 
 - In agent sessions and CI jobs that variable holds a placeholder that the egress proxy replaces
-  toward `model.vidocsecurity.com` only. It is this project's agent secret if it has one, else the
-  instance's Vidoc key, which a superadmin sets in Settings, Instance (keys come from
+  toward `model.vidocsecurity.com` only. It is an agent secret of that name that reaches the run (the
+  project's, a global one switched on for it or the person's own,
+  [scopes](../architecture.md#agent-secret-scopes)) if there is one, else the instance's Vidoc key, which a superadmin sets in Settings, Instance (keys come from
   <https://model.vidocsecurity.com/#key>).
 - Elsewhere, set the variable yourself.
 - `VIDOC_API_URL` overrides the address, plain `http://` for loopback tests only.
