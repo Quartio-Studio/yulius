@@ -43,7 +43,9 @@ the band it is drawn on.
   starts its own line at the left).
 - PAD-002. The summary keeps sticking to the top of the page while the stages and the log scroll
   (SPEC-238 CRV-003), and its loading shape keeps the loaded summary's box (SPEC-120), also its
-  height on a phone for a run without a reason (a reason's length is unknown while loading).
+  height on a phone for an ended run without a reason, for writers and readers. A reason's length
+  and a running run's longer facts line ("Now: …") are unknown while loading, so such a run may
+  still grow when it loads.
 
 ## Plan
 
@@ -62,8 +64,8 @@ the band it is drawn on.
 ## Test plan
 
 - Regression: the new e2e test measures, in the page, the leftmost and rightmost head items' and
-  the facts' insets inside the summary's border, at 1280 and 390 px, each width a page load of its
-  own: first while the run's read is held (`hold=`, the loading shape asserted on screen), then
+  the facts' insets inside the summary's border, at 1280 and 390 px, for a writer's run (two
+  buttons) and a reader's (one, `sandbox-3`), each a page load of its own: first while the run's read is held (`hold=`, the loading shape asserted on screen), then
   loaded, with the loaded card's height equal to the loading shape's.
 - Existing: the full e2e suite and `scripts/dev ci`.
 
@@ -99,3 +101,6 @@ the band it is drawn on.
   wrapped differently on a phone, phone assertion broke with #775's Run again: all fixed in
   61a03174 test-first; dev merged (9db87669). Pre-existing focus ring around the run view filed as
   #777 (outside this change: the global `:focus-visible` box-shadow, not padding).
+- Review round 2 (fresh session, approve at b6f67fa9 with minors): PAD-002 narrowed to ended runs;
+  the reader case added to the regression test (a loading head ignoring access fails it:
+  `toHaveCount` failed); `docs/changes.md` wording fixed; dev merged again.

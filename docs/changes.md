@@ -9,7 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A CI run's and a deploy's summary keeps its content off its edges (SPEC-259, task #245, fixes
   #776). The sticky summary was a flat band with no inline padding, so its state, its facts and
   "In Pipeline" touched the band's edges; it is now a card like the CI/CD page's Now line (12 px
-  padding, border, radius), loading shape included.
+  inline padding, border, radius). Its loading shape has the loaded head's buttons (two for
+  writers, one for readers) and no reason bar, so on a phone it wraps as the loaded head does.
 - The CI page's run list no longer shows "Run again" on every card (SPEC-258, task #244, #774).
   A run is tested again from its own view, which opens the new run; the view also has Cancel while
   the run is queued or running, and an active card keeps Cancel. Read access sees neither.

@@ -200,16 +200,21 @@ const summaryBox = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browse
 
 test('a run’s summary keeps its content off the edges of its card', async ({ app, browser }) => {
   const shape = '.run-view .run-content > .skeleton[role="status"]';
-  for (const width of [1280, 390]) {
+  // A writer's ended run (Run again and In Pipeline) and a reader's (In Pipeline alone, sandbox-3).
+  const runs = [{ path: '/s/studio/ci?run=ci_s2', read: '/api/sandboxes/sb_studio/ci/runs/ci_s2', buttons: 2 },
+    { path: '/s/sandbox-3/ci?run=ci_t1', read: '/api/sandboxes/sb_three/ci/runs/ci_t1', buttons: 1 }];
+  for (const run of runs) for (const width of [1280, 390]) {
     await browser.setViewport({ width, height: 800 });
     // A page load of its own for each width (`w=`), so the run's read is held again.
-    await app.open(mock('/s/studio/ci?run=ci_s2', `&w=${width}&hold=/api/sandboxes/sb_studio/ci/runs/ci_s2`));
+    await app.open(mock(run.path, `&w=${width}&hold=${run.read}`));
     await expect(browser.locator(shape)).toHaveText('Loading the CI run…');
+    await expect(browser.locator(`${shape} .run-head .skeleton-button`)).toHaveCount(run.buttons);
     const loading = (await summaryBox(browser))!;
     expect({ ...loading, height: 0 }).toEqual({ left: 12, right: 12, facts: 12, height: 0 });
     await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
     await expect(browser.locator(shape)).toHaveCount(0);
     await expect(browser.locator('.run-view .run-head')).toContainText('In Pipeline');
+    await expect(browser.locator('.run-view .run-head .btn')).toHaveCount(run.buttons);
     await expect(browser.locator('.run-view .run-time')).not.toHaveText('');
     // Loaded, its content keeps the padding and the card keeps the loading shape's height.
     await expect.poll(() => summaryBox(browser)).toEqual({ left: 12, right: 12, facts: 12, height: loading.height });
