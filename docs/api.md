@@ -721,9 +721,13 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 
 ## CD (deployment)
 
-A project's CD (SPEC-134, ADR-0109/0110) is two environments in `yulius.toml`, read only from
-protected branches: `[cd.dev]` at the integration branch head, `[cd.prod]` at the commit it deploys
-(the integration head when that head's `[cd.prod]` promotes, else the production head).
+A project's CD (SPEC-134, SPEC-257, ADR-0109/0110/0195) is its environments in `yulius.toml`, read
+only from protected branches: `[cd.dev]` and `[cd.prod]` by default and up to 16 in all. Each has a
+stage, which carries its rules: a dev-stage environment is read at the integration branch head, a
+production-stage one at the commit it deploys (the integration head when that head's table
+promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
+digits and `-`, starting with a letter) states its `stage`; its stage is the integration head's,
+else a production-stage table at the production head.
 
 ```toml
 [cd.dev]                            # missing: "not defined"; no deploy/verify/promote: "empty"
@@ -734,13 +738,16 @@ secrets = "DEV_SSH_KEY DEV_HOST"    # at most 16 agent secrets, as environment v
 
 [cd.prod]                           # the same keys, and:
 promote = true                      # a person's deploy first promotes the integration branch
+
+[cd.platform]                       # another environment: the same keys, and
+stage = "prod"                      # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
 ```
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own
 directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
 containment, production on the sandbox's network only and the host's read-only system), for at most the CI job
-timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
+timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
 `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment, out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
 that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
@@ -751,21 +758,23 @@ restart is recorded as `error` and never run again by itself.
 | Method and path | Access | Result |
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
-| `POST /api/sandboxes/{sid}/cd/dev/deploy` | write | the running `CdRun` |
-| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
+| `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a dev-stage `env` | write | the running `CdRun` |
+| `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a production-stage `env` (`production` is `prod`) | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
 | `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216) |
 
 ```text
-CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": [CdRun] (newest 20),
+CdOverview = {"slug", "environments": [CdEnvironment (dev stage, then prod stage; the default first,
+              the others in file order; a stage without any lists its default)], "runs": [CdRun] (newest 20),
               "can_deploy_dev": true, "can_deploy_prod": false}
-CdEnvironment = {"name": "dev|prod", "label": "dev|production", "state": "not_defined|empty|ready",
+CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "stage": "dev|prod",
+                 "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
                  "promote", "promotes_from": "<integration head>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
-CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|error|cancelled",
+CdRun = {"run_id", "environment": "<name>", "stage": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
          "note": "promoted 'dev' to 'main' at …"|null, "reason", "exit_code", "started_at", "ended_at",
          "output" (detail only)}
@@ -779,13 +788,13 @@ copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploy
 production, such a secret (agents use it) has the state `agents_use`: production never gets it, a
 run naming it is refused, and production names a separate secret instead (SPEC-237).
 
-Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
+Refusals: `forbidden` for production below administrator access, `invalid` for what cannot name an
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or
 undefined environment, a missing or not-allowed secret ("nothing ran: …"), a running run, or a
 promotion that cannot complete now (its pull request's checks). Every run is audited before it
 starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and refused production
-deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev only; production is
-refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
+deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev-stage environments only;
+production-stage ones are refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
 `cd_detail` in its state).
 
 ## Stages (pipeline measurements)

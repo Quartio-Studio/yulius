@@ -291,8 +291,8 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "cd_deploy",
-            "Deploy dev: Yulius runs [cd.dev]'s deploy and verify commands from the integration branch head. Production is deployed only by a person on the CD page.",
-            json!({"environment": {"type": "string", "enum": ["dev"]}}),
+            "Deploy a dev-stage environment (dev, or another [cd.<name>] cd_status lists with stage dev): Yulius runs its deploy and verify commands from the integration branch head. Production and production-stage environments are deployed only by a person on the CD page.",
+            json!({"environment": {"type": "string", "description": "dev or another dev-stage environment's name"}}),
             &["environment"],
         ),
         tool(
@@ -804,7 +804,17 @@ impl App {
                 None => record(&self.cd_overview(ctx, sid).await?),
             },
             "cd_deploy" => {
-                if str_arg(args, "environment")? != "dev" {
+                let env = yulius_domain::cd::env_name(str_arg(args, "environment")?)
+                    .ok_or_else(|| AppError::Invalid("environment is dev or another [cd.<name>]".into()))?;
+                // A laptop's agent deploys dev-stage environments only (SPEC-257); without a
+                // typed confirmation a production-stage one is refused by the deploy anyway.
+                let production = env == "prod"
+                    || self.cd_overview(ctx, sid).await.is_ok_and(|cd| {
+                        cd.environments
+                            .iter()
+                            .any(|e| e.name == env && e.stage == "prod")
+                    });
+                if production {
                     return Err(AppError::Forbidden(
                         "only a person deploys production, on the project's CD page".into(),
                     ));
@@ -814,7 +824,7 @@ impl App {
                     expect: None,
                     confirm_ms: None,
                 };
-                record(&self.cd_deploy(ctx, sid, "dev", &req).await?)
+                record(&self.cd_deploy(ctx, sid, &env, &req).await?)
             }
             "project_files" => self.remote_files(sandbox, args).await,
             "project_file_read" => self.remote_file_read(sandbox, args).await,

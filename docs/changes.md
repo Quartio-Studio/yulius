@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-21
 
+- CD takes more environments than dev and production (SPEC-257, ADR-0195, task #243). A
+  repository that ships more than one thing, like a self-hosted release and the hosted platform
+  that serves it, or a staging machine next to dev, defines one `[cd.<name>]` table per target
+  with `stage = "dev"` or `stage = "prod"`. The stage carries the rules `[cd.dev]` and `[cd.prod]`
+  had: the branch, who may deploy (production stage: only an administrator who types the slug,
+  never an agent), the containment and the secrets. `[cd.dev]` and `[cd.prod]` stay the defaults
+  and work as before. The CD page, `cd_status`, `cd_deploy` and the API list and deploy every
+  environment with its stage; runs keep it (migration 41). CI was already general
+  (`[[ci.jobs]]`).
 - "Onboard this into Yulius" to a person's local Claude Code is enough (SPEC-256, ADR-0194, task
   #242). The operate token made for their agent now also signs in `yulius onboard` and `yulius
   secrets import`, so no browser approval is needed. `yulius secrets import --yes` sends without
