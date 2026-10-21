@@ -256,6 +256,7 @@ pub struct PreparedTarget {
     existing: Vec<String>,
     source_file: Option<String>,
     unattended: bool,
+    env_files: bool,
 }
 
 impl PreparedTarget {
@@ -265,6 +266,14 @@ impl PreparedTarget {
     #[must_use]
     pub fn unattended(mut self) -> Self {
         self.unattended = true;
+        self
+    }
+
+    /// Agent secrets are created already allowed into the project's `.env` files (SPEC-256
+    /// LOB-004), so code outside the proxy (ssh, deploy scripts) gets them without a person.
+    #[must_use]
+    pub fn env_files_allowed(mut self) -> Self {
+        self.env_files = true;
         self
     }
 }
@@ -405,6 +414,7 @@ pub fn prepare_target(
         existing,
         source_file: options.source_file.clone(),
         unattended: false,
+        env_files: false,
     })
 }
 
@@ -437,6 +447,7 @@ pub fn import_secrets(
         existing,
         source_file,
         unattended,
+        env_files,
     } = target;
     let instance = *instance;
     let classes: Vec<(DotenvEntry, Class)> = entries
@@ -496,6 +507,9 @@ pub fn import_secrets(
             "Agents set them up: they bind the hosts they need and production deploys get them, \
              without asking (--confirm-hosts to allow each yourself)."
         });
+        if *env_files {
+            io.say("They start allowed into the project's .env files (--env-files).");
+        }
     }
     if *unattended {
         io.say("Sending them without asking: --yes with the operate token made for your agent.");
@@ -517,7 +531,13 @@ pub fn import_secrets(
         }
         let sent = match (team, &sandbox) {
             (true, sandbox) => send_team(client, sandbox.as_deref(), &entry, &value),
-            (false, Some(id)) => send_agent(client, id, instance, *confirm_hosts, &entry, &value),
+            (false, Some(id)) => send_agent(
+                client,
+                id,
+                (instance, *confirm_hosts, *env_files),
+                &entry,
+                &value,
+            ),
             (false, None) => Err(ApiError::NotFound("no sandbox".into())),
         };
         match sent {
@@ -661,11 +681,11 @@ fn send_team(
     sent
 }
 
+/// An agent secret of `sandbox`; `(instance, confirm_hosts, env_files)` as the run was asked.
 fn send_agent(
     client: &VaultClient,
     sandbox: &str,
-    instance: bool,
-    confirm_hosts: bool,
+    (instance, confirm_hosts, env_files): (bool, bool, bool),
     entry: &DotenvEntry,
     value: &Secret,
 ) -> Result<(), ApiError> {
@@ -673,6 +693,8 @@ fn send_agent(
         scope: Some(if instance { "instance" } else { "sandbox" }.to_owned()),
         // Absent: the server's default, agents set it up (SPEC-216).
         auto_allow: confirm_hosts.then_some(false),
+        // Absent unless asked for, so older servers take the body (SPEC-256 LOB-004).
+        env_files: env_files.then_some(true),
         name: entry.name.clone(),
         description: (!entry.comment.is_empty()).then(|| entry.comment.clone()),
         value: value.expose().to_owned(),

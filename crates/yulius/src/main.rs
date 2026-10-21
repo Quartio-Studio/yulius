@@ -313,6 +313,10 @@ enum SecretsAction {
         /// repeatable): the file is read here and never shown.
         #[arg(long = "from-file", value_name = "NAME=PATH")]
         from_files: Vec<String>,
+        /// Agent secrets: agents may copy them into the project's git-ignored `.env` files from
+        /// the start (ssh keys, deploy scripts), instead of you allowing it when a task asks.
+        #[arg(long)]
+        env_files: bool,
         /// Send without asking: only with the operate token `yulius remote login` stored, made for
         /// your agent on Settings → Connect your local agent.
         #[arg(long)]
@@ -559,6 +563,7 @@ fn main() -> ExitCode {
                     instance,
                     confirm_hosts,
                     from_files,
+                    env_files,
                     yes,
                     server,
                     no_color,
@@ -572,6 +577,7 @@ fn main() -> ExitCode {
             server,
             yes,
             from_files,
+            env_files,
             no_color,
         }),
         Command::Secrets {

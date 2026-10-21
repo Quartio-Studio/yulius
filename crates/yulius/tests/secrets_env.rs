@@ -939,3 +939,66 @@ async fn multi_line_keys_reach_the_env_byte_identical_to_their_files() -> TestRe
     assert_eq!(text.lines().count(), 2 + (3 + 1) + (7 + 1), "{text}");
     Ok(())
 }
+
+/// SPEC-256 LOB-004: a secret created already allowed into `.env` files (the person's laptop
+/// agent imports a deploy key) is copied by the first `secret_copy_to_env`, with no person;
+/// the allowance is audited at creation. Refused for a secret a person confirms (not
+/// `auto_allow`) and for a personal one.
+#[tokio::test]
+async fn a_secret_created_allowed_is_copied_without_a_person() -> TestResult {
+    let w = world().await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "DEPLOY_TOKEN", "description": "Deploys", "value": "deploy-value-0123456789", "env_files": true})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["env_files"], "allowed", "{}", created.body);
+    let copied = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["DEPLOY_TOKEN"], "reason": "deploy.sh reads it"}),
+    )
+    .await?;
+    let said = copied.to_string();
+    assert!(said.contains("DEPLOY_TOKEN") && !said.contains("waiting\":[\"DEPLOY_TOKEN"), "{said}");
+    assert!(
+        read(&w.worktree.join(".env")).contains("DEPLOY_TOKEN=deploy-value-0123456789"),
+        "{said}"
+    );
+    let allowed: Vec<Value> = activity(&w)
+        .await?
+        .into_iter()
+        .filter(|e| e["action"] == "vault.agent.env_allow")
+        .collect();
+    assert_eq!(allowed.len(), 1, "{allowed:?}");
+    assert!(
+        allowed[0].to_string().contains("at creation"),
+        "{allowed:?}"
+    );
+
+    for refused in [
+        json!({"name": "CONFIRMED_KEY", "value": "confirmed-value-0123", "env_files": true, "auto_allow": false}),
+        json!({"name": "MY_KEY", "value": "personal-value-01234", "env_files": true, "scope": "personal"}),
+    ] {
+        let answer = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(refused.clone()),
+            &w.writer,
+        )
+        .await?;
+        assert_eq!(
+            answer.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{refused}: {}",
+            answer.body
+        );
+    }
+    Ok(())
+}

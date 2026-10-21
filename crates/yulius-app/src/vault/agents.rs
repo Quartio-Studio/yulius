@@ -93,6 +93,9 @@ pub(super) struct NewAgentSecret<'a> {
     pub(super) origin: Option<&'a str>,
     /// Agents set it up themselves (SPEC-216): a person's choice, never an agent's.
     pub(super) auto_allow: bool,
+    /// Agents may copy it into `.env` files from the start (SPEC-256 LOB-004): a person's
+    /// choice, made with the secret.
+    pub(super) env_files: bool,
 }
 
 /// Whether the caller administers the instance.
@@ -356,6 +359,20 @@ impl App {
             }
         };
         self.require_manage_agent(ctx, &scope).await?;
+        let auto_allow = input.auto_allow.unwrap_or(true);
+        let env_files = input.env_files == Some(true);
+        // Allowed at creation only where a person could allow it later, and only for a secret
+        // agents set up: one a person confirms is confirmed use by use (SPEC-256 LOB-004).
+        if env_files && matches!(scope, AgentScope::Personal(_)) {
+            return Err(AppError::Invalid(super::PERSONAL_SECRET_ENV.into()));
+        }
+        if env_files && !auto_allow {
+            return Err(AppError::Invalid(
+                "a secret you allow use by use (auto_allow off) cannot start allowed into .env \
+                 files: let agents set it up, or allow its .env copies when a task asks"
+                    .into(),
+            ));
+        }
         let meta = meta(
             &input.name,
             &input.hosts,
@@ -379,7 +396,8 @@ impl App {
                 by: ctx.user.id.as_str(),
                 actor: &Self::vault_actor(ctx),
                 origin: None,
-                auto_allow: input.auto_allow.unwrap_or(true),
+                auto_allow,
+                env_files,
             })
             .await?;
         // Switched on for the sandbox it was added in (SCP-003).
@@ -411,6 +429,7 @@ impl App {
             actor,
             origin,
             auto_allow,
+            env_files,
         } = new;
         let (sandbox_id, owner_id) = match &scope {
             AgentScope::Project(s) => (Some(s.clone()), None),
@@ -442,7 +461,11 @@ impl App {
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
-            env_files: crate::ports::vault::EnvFiles::No,
+            env_files: if env_files {
+                crate::ports::vault::EnvFiles::Allowed
+            } else {
+                crate::ports::vault::EnvFiles::No
+            },
             env_requested_by: None,
             cd_prod: false,
             auto_allow,
@@ -478,6 +501,15 @@ impl App {
             ),
         )
         .await?;
+        if env_files {
+            self.vault_audit(
+                actor,
+                "vault.agent.env_allow",
+                Some(&id),
+                &format!("{} → .env files (at creation)", record.name),
+            )
+            .await?;
+        }
         Ok(record)
     }
 

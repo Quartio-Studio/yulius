@@ -625,7 +625,9 @@ fn an_unattended_run_asks_nothing() -> TestResult {
     let server = FakeServer::start()?;
     with_sandbox(&server)?;
     let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
-    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?.unattended();
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?
+        .unattended()
+        .env_files_allowed();
     let mut terminal = Terminal {
         no_terminal: true,
         ..Terminal::default()
@@ -637,6 +639,10 @@ fn an_unattended_run_asks_nothing() -> TestResult {
         &mut terminal,
     )?;
     assert_eq!(summary.imported, vec!["NEW_KEY"]);
+    // SPEC-256 LOB-004: created already allowed into `.env` files, as said before sending.
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert_eq!(created[0].1.env_files, Some(true));
+    assert!(terminal.said.contains(".env files"), "{}", terminal.said);
     assert!(terminal.asked.is_empty(), "asked {:?}", terminal.asked);
     assert!(terminal.said.contains("NEW_KEY"), "{}", terminal.said);
     assert!(
@@ -667,6 +673,7 @@ fn a_key_file_is_imported_by_path() -> TestResult {
     assert_eq!(summary.imported, vec!["DEPLOY_KEY"]);
     let created = server.with(|s| s.agent_created.clone())?;
     assert_eq!(created[0].1.value, PEM.replace('\n', "\\n"));
+    assert_eq!(created[0].1.env_files, None, "only when asked for");
     assert_eq!(
         created[0].1.description.as_deref(),
         Some("From the file deploy_ed25519")

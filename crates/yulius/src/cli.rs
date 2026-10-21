@@ -174,6 +174,8 @@ pub struct SecretsImportArgs {
     pub yes: bool,
     /// `NAME=PATH`: the whole file at PATH is the secret NAME (SPEC-256 LOB-003).
     pub from_files: Vec<String>,
+    /// Agent secrets start allowed into `.env` files (SPEC-256 LOB-004).
+    pub env_files: bool,
     /// No colours.
     pub no_color: bool,
 }
@@ -295,7 +297,7 @@ fn read_source(file: &std::path::Path) -> Result<Secret, String> {
 }
 
 /// `yulius secrets import --to team|agent [FILE|-] [--from-file NAME=PATH]… [--sandbox
-/// <owner/name>] [--instance] [--confirm-hosts] [--yes] [--server <url>] [--no-color]`: exit 0 when every secret was imported or already there.
+/// <owner/name>] [--instance] [--confirm-hosts | --env-files] [--yes] [--server <url>] [--no-color]`: exit 0 when every secret was imported or already there.
 pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
     install_tls();
     set_colors(args.no_color);
@@ -305,6 +307,16 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
         }
         if args.confirm_hosts && args.to != VaultChoice::Agent {
             return Err("--confirm-hosts applies to --to agent".into());
+        }
+        if args.env_files && args.to != VaultChoice::Agent {
+            return Err("--env-files applies to --to agent".into());
+        }
+        if args.env_files && args.confirm_hosts {
+            return Err(
+                "--env-files is for secrets agents set up; with --confirm-hosts you allow each \
+                 .env copy when a task asks"
+                    .into(),
+            );
         }
         let mut parsed = match &args.file {
             Some(file) => {
@@ -372,6 +384,9 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
             prepare_target(&options, &client).map_err(|e| format!("{e}; nothing was imported"))?;
         if args.yes {
             target = target.unattended();
+        }
+        if args.env_files {
+            target = target.env_files_allowed();
         }
         let mut io = TtyIo;
         let entries = match parsed {
