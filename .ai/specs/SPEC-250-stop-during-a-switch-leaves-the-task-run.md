@@ -85,7 +85,9 @@ the stop's read and its compare-and-set is a few awaits wide.
   - a task its stop left `Stopping` with no run (the stop came once the old run had ended) rests
     `Stopped(Cancelled)` when the switch gives up, as a second stop would rest it;
   - an overtaken switch records its outcome as `cancelled`, tells the viewers why ("the task was
-    stopped", "the task was closed", "the session ended") and returns `Conflict`;
+    stopped", "the task was closed", "the session ended") and returns `Conflict`; the stop, close or
+    loss that replaces the switch's intent sends that reason through the switch's channel
+    (`SwitchEnd`), so it does not depend on what the run's end has recorded yet;
   - the end of a run closed during a switch closes the task from `Switching`.
 - STW-007: a stop that finds the task resting after a lost round still ends a run that is live; a
   stop that gives up after its rounds drops its intent, so no run ends later as if stopped.
@@ -104,7 +106,7 @@ the stop's read and its compare-and-set is a few awaits wide.
 - [x] Docs updated: architecture, changes, spec decisions
 - [x] Gate green on the merged head
 - [x] Review round 1 findings fixed test-first
-- [x] Review round 2 approves the head
+- [x] Independent review approves the head
 
 ## Acceptance criteria
 
@@ -224,6 +226,7 @@ the stop's read and its compare-and-set is a few awaits wide.
   | `a_stop_that_ended_no_run_does_not_end_the_next_one` (changed) | `stopping (runs: Killed Some("switched"))` |
   | `a_switch_paused_for_capacity_goes_on` | `Err("the session ended during the switch")` |
   | `a_switch_whose_paused_task_another_start_runs_is_completed` | `Err("the session ended during the switch")` |
+  | `a_close_that_overtakes_a_switch_closes_the_task` (reason held) | `Err("the session ended during the switch")` |
 
 - **The originally flaky test under load:** temporary probe delays (0-400 ms before the launch reads
   the task for `SwitchCompleted`, 0-300 ms after the stop's read; removed, `grep PROBE527` finds
@@ -236,18 +239,20 @@ the stop's read and its compare-and-set is a few awaits wide.
   | this change | 24 | 0 (20-22 s each) |
 
 - **Gate:** `scripts/dev ci` exit 0 on the merged head `b9cf86ba` (2383/2383 tests, fmt, clippy for
-  Linux and macOS, doctests, deny, shear, doc). After the round-3 fixes, the stop, switch, close,
-  supervision, rotation, limit and context tests pass (145/145).
+  Linux and macOS, doctests, deny, shear, doc), and again on the final head (see the pull request).
+  After the later fixes, the stop, switch, close, supervision, rotation, limit and context tests
+  pass (145/145).
 - **Security:** `scripts/dev security` exit 2 (Vidoc HTTP 429: the instance key's token quota is
-  used up). The 5 changed code files were not scanned, so the scan is unrun, not passed; a person
-  renews the key.
+  used up). The changed code files (4 against the merge base at the end) were not scanned, so the
+  scan is unrun, not passed; a person renews the key.
 - **Independent review in fresh sessions:**
 
   | Round | Head | Verdict | What happened |
   |---|---|---|---|
   | 1 | `cdc8ec6e` / `05d9318e` | request changes | A `cargo doc` blocker and 3 majors (stop before the switch's intent, close overtaking a switch, a flaky test), fixed test-first |
   | 2 | `5741dada` | request changes | 1 major (stop after the old run ended), fixed test-first |
-  | 3 | `b9cf86ba` | approve | 1 minor and 3 nits in this change's code, fixed (the minor test-first); the delta is reviewed again before the merge |
+  | 3 | `b9cf86ba` | approve | 1 minor and 3 nits in this change's code, fixed (the minor test-first) |
+  | 4 (delta) | `fe398143` | request changes | 1 major: the close-overtakes-a-switch test was flaky (the switch read its reason before the run's end settled). Made deterministic with the `SwitchOvertaken` pause point (`Err("the session ended during the switch")` before the fix), fixed with `SwitchEnd`; 15 of 15 runs pass |
 
 - **Outside this change:** recorded on #527, since this task files no issues.
   - A stale `Switch` intent after a switch timeout: pre-existing, found by reading, not reproduced.
