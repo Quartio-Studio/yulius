@@ -3251,6 +3251,66 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     Ok(())
 }
 
+/// #635 (SPEC-254 ACR-001..ACR-003): the Superagent can write its sandbox folder, so it can swap
+/// its repository for a link to another folder (here another ignoring Git repository). Yulius walks
+/// to the `.env` from the canonical sandbox folder without links, so the copy of an allowed secret
+/// is refused and nothing is written, neither in the link's target nor in the moved repository.
+#[tokio::test]
+async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    let repo = ignoring_repo(&f)?;
+    let id = add_secret(&f, "SWAP_KEY", "swap-synthetic-value-0635").await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let copy = || cockpit_tool(&f, &token, "secret_copy_to_env", json!({"secrets": ["SWAP_KEY"]}));
+    let (asked, is_error) = copy().await?;
+    assert!(!is_error, "{asked}");
+    assert_eq!(asked["waiting"], json!(["SWAP_KEY"]), "{asked}");
+    let allowed = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{id}/env"),
+        Some(
+            json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
+
+    let other = f.data.join("other");
+    std::fs::create_dir_all(&other)?;
+    git(&other, &["init", "-q", "-b", "dev"])?;
+    std::fs::write(other.join(".gitignore"), ".env\n.env.*\n!.env.example\n")?;
+    git(&other, &["add", "."])?;
+    git(&other, &["commit", "-q", "-m", "init"])?;
+    let moved = f.data.join("sandboxes/s1/repo.old");
+    std::fs::rename(&repo, &moved)?;
+    std::os::unix::fs::symlink(&other, &repo)?;
+
+    let (refused, is_error) = copy().await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("the folder you work in is a link or not a folder: Yulius follows no links"),
+        "{refused}"
+    );
+    for dir in [&other, &moved] {
+        for name in [".env", ".env.example"] {
+            assert!(!dir.join(name).exists(), "{} was written", dir.join(name).display());
+        }
+    }
+    assert!(audited(&f, "vault.agent.env").await?.is_empty(), "no copy is recorded");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// An HTTPS request to `host` as the proxy hands it to the egress policy.
 fn egress_request(
     host: &str,
