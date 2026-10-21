@@ -1,5 +1,6 @@
 //! `yulius secrets import` (SPEC-205): team or agent secrets created over the vault API from a
-//! dotenv file or hidden prompts, after the person has read the names and typed `yes`.
+//! dotenv file, key files or hidden prompts, after the person has read the names and typed `yes`,
+//! or unattended with the operate token made for their agent (SPEC-256, ADR-0194).
 //!
 //! Values never reach output: [`SecretsIo::say`] gets names, classes and server messages only,
 //! values stay in [`Secret`] (wiped on drop), and nothing is written to disk. A create is not
@@ -254,6 +255,57 @@ pub struct PreparedTarget {
     confirm_hosts: bool,
     existing: Vec<String>,
     source_file: Option<String>,
+    unattended: bool,
+}
+
+impl PreparedTarget {
+    /// Sends without the typed `yes` (SPEC-256 LOB-002, ADR-0194): only for a run whose token
+    /// the instance confirmed is an `operate` token made for the person's agent, which the
+    /// caller checks. The plan is still shown.
+    #[must_use]
+    pub fn unattended(mut self) -> Self {
+        self.unattended = true;
+        self
+    }
+}
+
+/// Largest key file `--from-file` reads (SPEC-256 LOB-003); the vault's own limits apply after.
+pub const MAX_SECRET_FILE_BYTES: usize = 64 * 1024;
+
+/// The secret `name` holding the whole file at `path` (`--from-file NAME=PATH`, SPEC-256
+/// LOB-003), described by the file's name: the agent that found a key passes its path and never
+/// reads it. Its value stays in a wiping wrapper; errors name the path, never the content.
+///
+/// # Errors
+/// The file cannot be read, is not UTF-8 text or is larger than [`MAX_SECRET_FILE_BYTES`].
+pub fn secret_file_entry(name: &str, path: &Path) -> Result<DotenvEntry, String> {
+    use std::io::Read as _;
+    let shown = path.display();
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot read {shown}: {e}"))?;
+    let mut bytes = Vec::new();
+    let read = file
+        .take(MAX_SECRET_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes);
+    let too_large = bytes.len() > MAX_SECRET_FILE_BYTES;
+    let text = String::from_utf8(bytes).map_err(|e| {
+        let mut bytes = e.into_bytes();
+        bytes.zeroize();
+        format!("{shown} is not UTF-8 text")
+    });
+    let value = Secret::new(text?);
+    read.map_err(|e| format!("cannot read {shown}: {e}"))?;
+    if too_large {
+        return Err(format!("{shown} is larger than 64 KiB"));
+    }
+    let file_name = path
+        .file_name()
+        .map_or_else(|| shown.to_string(), |n| n.to_string_lossy().into_owned());
+    Ok(DotenvEntry {
+        name: name.trim().to_owned(),
+        value,
+        comment: format!("From the file {file_name}"),
+        line: 0,
+    })
 }
 
 /// Resolves the sandbox (agent secrets) and lists the names that exist there.
@@ -352,6 +404,7 @@ pub fn prepare_target(
         confirm_hosts,
         existing,
         source_file: options.source_file.clone(),
+        unattended: false,
     })
 }
 
@@ -383,6 +436,7 @@ pub fn import_secrets(
         confirm_hosts,
         existing,
         source_file,
+        unattended,
     } = target;
     let instance = *instance;
     let classes: Vec<(DotenvEntry, Class)> = entries
@@ -443,11 +497,15 @@ pub fn import_secrets(
              without asking (--confirm-hosts to allow each yourself)."
         });
     }
-    let answer = io
-        .ask("Type yes to import them: ")
-        .map_err(|_| SecretsImportError::Cancelled)?;
-    if !answer.trim().eq_ignore_ascii_case("yes") {
-        return Err(SecretsImportError::Cancelled);
+    if *unattended {
+        io.say("Sending them without asking: --yes with the operate token made for your agent.");
+    } else {
+        let answer = io
+            .ask("Type yes to import them: ")
+            .map_err(|_| SecretsImportError::Cancelled)?;
+        if !answer.trim().eq_ignore_ascii_case("yes") {
+            return Err(SecretsImportError::Cancelled);
+        }
     }
 
     let mut stopped: Option<String> = None;

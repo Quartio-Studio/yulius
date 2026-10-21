@@ -285,10 +285,11 @@ enum LeftoversAction {
 
 #[derive(Debug, Subcommand)]
 enum SecretsAction {
-    /// Import secrets from a dotenv file, stdin or typed prompts (SPEC-205): team secrets for
-    /// people, or agent secrets, of a sandbox or team-wide (SPEC-216). Names are shown, values
-    /// never; a secret that exists is skipped, never overwritten; nothing is sent before you type
-    /// yes at the terminal.
+    /// Import secrets from a dotenv file, key files, stdin or typed prompts (SPEC-205): team
+    /// secrets for people, or agent secrets, of a sandbox or team-wide (SPEC-216). Names are
+    /// shown, values never; a secret that exists is skipped, never overwritten; nothing is sent
+    /// before you type yes at the terminal, or with --yes and your agent's operate token
+    /// (SPEC-256).
     Import {
         /// Team secrets (for people) or agent secrets (for agents, who never see them).
         #[arg(long, value_enum)]
@@ -308,6 +309,14 @@ enum SecretsAction {
         /// instead of agents setting them up (the default).
         #[arg(long)]
         confirm_hosts: bool,
+        /// A whole file as one secret, `NAME=PATH` (a key such as `DEPLOY_SSH_KEY=~/.ssh/id_deploy`;
+        /// repeatable): the file is read here and never shown.
+        #[arg(long = "from-file", value_name = "NAME=PATH")]
+        from_files: Vec<String>,
+        /// Send without asking: only with the operate token `yulius remote login` stored, made for
+        /// your agent on Settings → Connect your local agent.
+        #[arg(long)]
+        yes: bool,
         /// Yulius URL (default: the only server you signed in to).
         #[arg(long, env = "YULIUS_SERVER")]
         server: Option<String>,
@@ -549,6 +558,8 @@ fn main() -> ExitCode {
                     sandbox,
                     instance,
                     confirm_hosts,
+                    from_files,
+                    yes,
                     server,
                     no_color,
                 },
@@ -559,6 +570,8 @@ fn main() -> ExitCode {
             instance,
             confirm_hosts,
             server,
+            yes,
+            from_files,
             no_color,
         }),
         Command::Secrets {
