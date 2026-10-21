@@ -1942,14 +1942,18 @@ async fn gated_goal_task(
     Ok((app, host, id))
 }
 
-/// Stops `id` (on a runtime worker, so a pause point's hook can wait there) and waits until it
-/// rests: it must be stopped, with no live run.
-async fn stop_and_expect_stopped(app: &Arc<App>, id: &TaskId) -> TestResult {
+/// Stops `id` on a runtime worker, so a pause point's hook can wait there.
+async fn stop_on_worker(app: &Arc<App>, id: &TaskId) -> TestResult {
     let stop = {
         let (app, id) = (app.clone(), id.clone());
         tokio::spawn(async move { app.stop_task_now(&id).await })
     };
     tokio::time::timeout(Duration::from_secs(90), stop).await???;
+    Ok(())
+}
+
+/// Waits until `id` rests: it must be stopped, with no live run.
+async fn expect_stopped(app: &Arc<App>, id: &TaskId) -> TestResult {
     let rests = wait_for("the stop", Duration::from_secs(30), || async {
         task(app, id).await.is_ok_and(|t| !t.status.is_live())
     })
@@ -1977,42 +1981,50 @@ fn a_stop_that_loses_to_a_completing_switch_still_ends_the_task() -> TestResult 
     let rt = runtime()?;
     rt.block_on(async {
         let (app, host, id) = gated_goal_task(&data, &fake).await?;
-        // The switch's new run is held at its spawn: the task reads Switching.
+        // The switch's new run is held at its spawn (the task reads Switching), then at its attach
+        // (the switch is completed, the run not attached: nothing ends it yet).
         host.arm_spawn();
+        host.arm();
         let switch = {
             let (app, id) = (app.clone(), id.clone());
             tokio::spawn(async move { app.switch_task_now(&id, None, "manual", None).await })
         };
-        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        tokio::time::timeout(Duration::from_secs(60), host.spawn_reached()).await?;
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Switching);
         // Between the stop's decision and its status change, the switch completes.
         {
-            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let (app, key, id, host) = (app.clone(), id.clone(), id.clone(), host.clone());
             let handle = tokio::runtime::Handle::current();
             yulius_app::race::on(
                 yulius_app::race::Point::StopDecided,
                 Path::new(key.as_str()),
                 move || {
-                    host.release();
-                    let completed = wait_in_hook(
-                        &handle,
-                        wait_for(
-                            "the switch's completion",
-                            Duration::from_secs(60),
-                            || async {
-                                task(&app, &id)
-                                    .await
-                                    .is_ok_and(|t| t.status == TaskStatus::Running)
-                            },
-                        ),
-                    );
+                    host.release_spawn();
+                    let completed = wait_in_hook(&handle, async {
+                        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+                        let status = task(&app, &id).await?.status;
+                        if status == TaskStatus::Running {
+                            Ok(())
+                        } else {
+                            Err(BoxError::from(format!("the switch left {status:?}")))
+                        }
+                    });
                     if let Err(err) = completed {
-                        eprintln!("{err}");
+                        eprintln!("the switch did not complete: {err}");
                     }
                 },
             );
         }
-        stop_and_expect_stopped(&app, &id).await?;
+        stop_on_worker(&app, &id).await?;
+        // The stop made its change from Running: the run is ended once attached.
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopping,
+            "{}",
+            run_states(&app, &id).await
+        );
+        host.release();
+        expect_stopped(&app, &id).await?;
         tokio::time::timeout(Duration::from_secs(60), switch).await???;
         Ok::<(), BoxError>(())
     })?;
@@ -2059,7 +2071,8 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
                 },
             );
         }
-        stop_and_expect_stopped(&app, &id).await
+        stop_on_worker(&app, &id).await?;
+        expect_stopped(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
