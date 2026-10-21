@@ -1,11 +1,11 @@
 ---
 yulius-task: 91b96ef6-4cfd-4eac-98cd-1ee02e019526
-status: in-progress
+status: done
 ---
 
 # SPEC-259: Run summary padding (#776)
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #245
 Scope authorization: task #245 ("paddings are little broken, fix", with a screenshot of a CI run's
@@ -39,8 +39,8 @@ the band it is drawn on.
 
 - PAD-001. The summary's head items and its facts are inset 12 px from the inside of the summary's
   card: the leftmost and rightmost head items and the facts sit exactly 12 px in, loaded and
-  loading, at 1280 and 390 px wide (on a phone the head wraps and the last button, "In Pipeline",
-  starts its own line at the left).
+  loading, at 1280 and 390 px wide (on a phone a writer's head wraps and its last button, "In
+  Pipeline", starts its own line at the left; a reader's shorter head may fit on one line).
 - PAD-002. The summary keeps sticking to the top of the page while the stages and the log scroll
   (SPEC-238 CRV-003), and its loading shape keeps the loaded summary's box (SPEC-120), also its
   height on a phone for an ended run without a reason, for writers and readers. A reason's length
@@ -52,7 +52,7 @@ the band it is drawn on.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -104,3 +104,13 @@ the band it is drawn on.
 - Review round 2 (fresh session, approve at b6f67fa9 with minors): PAD-002 narrowed to ended runs;
   the reader case added to the regression test (a loading head ignoring access fails it:
   `toHaveCount` failed); `docs/changes.md` wording fixed; dev merged again.
+- Review round 3 (fresh session) approved 6b4f74c8 (after the second dev merge, #779) with nits:
+  PAD-001's phone wrap limited to a writer's head and the e2e README row naming both cases (fixed
+  here); the deploy view's "Starting" head is flat and becomes the padded card once the deploy
+  starts (pre-existing design of SPEC-189, left as is).
+- At 6b4f74c8: `scripts/dev ci` exit 0 (its log was lost from the shared scratchpad, only the exit
+  code is kept); `npx e2e run` 664 passed, 1 skipped, 1 failed: `cd.e2e.ts` "named environments
+  show their stage and deploy by its rules" (from #779). It fails 5 of 5 here also with `origin/dev`'s
+  `styles.css` and `pages/ci.js`, so not this change: it reads the sent confirmation once before
+  the deploy POST lands, and passes when it polls. Filed as #785 (dev's CI passed it); left out of
+  this pull request (one concern).
