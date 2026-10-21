@@ -126,6 +126,34 @@ test('a running run keeps a live summary on top: its time, its jobs and the stag
   await expect(browser.locator('.run-view .run-summary')).not.toContainText('Now:');
 });
 
+// SPEC-259 (#245): the summary is a band of its own colour over the textured page, so its state,
+// its "In Pipeline" button and its facts keep a padding from the band's edges, also on a phone
+// and while it loads.
+const summaryInsets = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() => {
+  const summary = document.querySelector('.run-view .run-summary');
+  const head = summary?.querySelector('.run-head');
+  const facts = summary?.querySelector('.run-facts');
+  if (!summary || !head?.firstElementChild || !head.lastElementChild || !facts?.firstElementChild) return null;
+  const band = summary.getBoundingClientRect();
+  return {
+    left: Math.round(head.firstElementChild.getBoundingClientRect().left - band.left),
+    right: Math.round(band.right - head.lastElementChild.getBoundingClientRect().right),
+    facts: Math.round(facts.firstElementChild.getBoundingClientRect().left - band.left),
+  };
+});
+
+test('a run’s summary keeps its content off the edges of its band', async ({ app, browser }) => {
+  for (const width of [1280, 390]) {
+    await browser.setViewport({ width, height: 800 });
+    await app.open(mock('/s/studio/ci?run=ci_s2', '&hold=/api/sandboxes/sb_studio/ci/runs/ci_s2'));
+    // While it loads, its shape (SPEC-120) keeps the same padding.
+    await expect.poll(() => summaryInsets(browser)).toEqual({ left: 12, right: 12, facts: 12 });
+    await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+    await expect(browser.locator('.run-view .run-head')).toContainText('In Pipeline');
+    await expect.poll(() => summaryInsets(browser)).toEqual({ left: 12, right: 12, facts: 12 });
+  }
+});
+
 test('repository hygiene removes only what is safe', async ({ app, screen }) => {
   await app.open(mock('/s/studio/ci'));
   await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
