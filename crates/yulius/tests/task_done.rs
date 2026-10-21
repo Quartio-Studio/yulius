@@ -2098,12 +2098,9 @@ fn a_stop_while_a_switch_ends_its_old_run_starts_no_new_run() -> TestResult {
                 switched.send_replace(Some(result.map_err(|e| e.to_string())));
             });
         }
-        wait_for("the switch", Duration::from_secs(30), || async {
-            task(&app, &id)
-                .await
-                .is_ok_and(|t| t.status == TaskStatus::Switching)
-        })
-        .await?;
+        // The switch set its intent and asked the old run to end (the request was dropped).
+        tokio::time::timeout(Duration::from_secs(30), host.shutdown_refused()).await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Switching);
         // The stop's decision replaces the switch's: the switch either gives up or starts a run.
         {
             let (app, key, id, host) = (app.clone(), id.clone(), id.clone(), host.clone());
@@ -2141,6 +2138,219 @@ fn a_stop_while_a_switch_ends_its_old_run_starts_no_new_run() -> TestResult {
             "{}",
             run_states(&app, &id).await
         );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Switches `id` on a runtime worker; the watch gets the switch's result.
+fn switch_on_worker(
+    app: &Arc<App>,
+    id: &TaskId,
+) -> tokio::sync::watch::Receiver<Option<Result<(), String>>> {
+    let (done, result) = tokio::sync::watch::channel(None);
+    let (app, id) = (app.clone(), id.clone());
+    tokio::spawn(async move {
+        let switched = app.switch_task_now(&id, None, "manual", None).await;
+        done.send_replace(Some(switched.map_err(|e| e.to_string())));
+    });
+    result
+}
+
+/// Waits for the switch's result.
+async fn switch_result(
+    mut result: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+) -> Result<Result<(), String>, BoxError> {
+    tokio::time::timeout(Duration::from_secs(90), result.wait_for(Option::is_some)).await??;
+    let outcome = result.borrow().clone();
+    outcome.ok_or_else(|| "no switch result".into())
+}
+
+/// SPEC-250 STW-006 (review): a stop lands after the switch's status change, before the switch
+/// sets its intent for the old run. The switch keeps the stop's intent and gives up: the task ends
+/// stopped with its one run, not stopping with no run (or queued again).
+#[test]
+fn a_stop_before_a_switch_sets_its_intent_starts_no_new_run() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        let (stopped, mut stop_made) = tokio::sync::watch::channel(None);
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::SwitchDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let result = wait_in_hook(&handle, app.stop_task_now(&id));
+                    stopped.send_replace(Some(result.map_err(|e| e.to_string())));
+                },
+            );
+        }
+        let switched = switch_result(switch_on_worker(&app, &id)).await?;
+        assert!(
+            switched.as_ref().is_err_and(|e| e.contains("stopped")),
+            "{switched:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(30), stop_made.wait_for(Option::is_some))
+            .await??;
+        let made = stop_made.borrow().clone();
+        assert_eq!(made, Some(Ok(())));
+        expect_stopped(&app, &id).await?;
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-250 STW-006 (review): a close reads the task running, a switch starts and asks the old
+/// run to end, then the close sets its intent. The switch gives up and the old run's end closes the
+/// task from `Switching`: it ends closed, not switching with no run.
+#[test]
+fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task(&data, &fake).await?;
+        host.refuse_ends(true);
+        let (started, mut switch) = tokio::sync::watch::channel(None);
+        {
+            let (app, key, id, host) = (app.clone(), id.clone(), id.clone(), host.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::CloseDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let result = switch_on_worker(&app, &id);
+                    started.send_replace(Some(result));
+                    let asked = wait_in_hook(
+                        &handle,
+                        tokio::time::timeout(Duration::from_secs(30), host.shutdown_refused()),
+                    );
+                    if asked.is_err() {
+                        eprintln!("the switch did not ask the old run to end");
+                    }
+                    host.refuse_ends(false);
+                },
+            );
+        }
+        {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move { app.close_task_now(&id).await }).await??;
+        }
+        tokio::time::timeout(Duration::from_secs(5), switch.wait_for(Option::is_some)).await??;
+        let result = switch.borrow().clone().ok_or("no switch")?;
+        let switched = switch_result(result).await?;
+        assert!(
+            switched.as_ref().is_err_and(|e| e.contains("closed")),
+            "{switched:?}"
+        );
+        let rests = wait_for("the close", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await;
+        assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Closed);
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Kills the host of `id`'s live run, as a crash would: the run is lost.
+async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
+    let run = app.deps.store.live_attempt(id).await?.ok_or("no run")?;
+    let pid = run.ptyhost_pid.ok_or("no host pid")?;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(pid)?),
+        nix::sys::signal::Signal::SIGKILL,
+    )?;
+    Ok(())
+}
+
+/// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
+/// gives up and says the session ended: the task rests lost with its one run, and nothing
+/// starts that no one asked for.
+#[test]
+fn a_switch_whose_old_run_is_lost_starts_no_new_run() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task(&data, &fake).await?;
+        host.refuse_ends(true);
+        let result = switch_on_worker(&app, &id);
+        tokio::time::timeout(Duration::from_secs(30), host.shutdown_refused()).await?;
+        host.refuse_ends(false);
+        kill_run_host(&app, &id).await?;
+        let switched = switch_result(result).await?;
+        assert!(
+            switched
+                .as_ref()
+                .is_err_and(|e| e.contains("the session ended")),
+            "{switched:?}"
+        );
+        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await;
+        assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::Lost)
+        );
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-250 STW-005 (review): a stop lands while a lost run's loss is recorded, between its read
+/// of the task and its status change. The loss is recorded again from `Stopping`: the task rests,
+/// not stopping with no run.
+#[test]
+fn a_stop_while_a_runs_loss_is_recorded_still_ends_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        let (stopped, mut stop_made) = tokio::sync::watch::channel(None);
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::EndDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let result = wait_in_hook(&handle, app.stop_task_now(&id));
+                    stopped.send_replace(Some(result.map_err(|e| e.to_string())));
+                },
+            );
+        }
+        kill_run_host(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(30), stop_made.wait_for(Option::is_some))
+            .await??;
+        let made = stop_made.borrow().clone();
+        assert_eq!(made, Some(Ok(())));
+        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await;
+        assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::Lost)
+        );
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

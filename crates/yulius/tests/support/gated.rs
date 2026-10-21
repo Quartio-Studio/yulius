@@ -70,6 +70,8 @@ pub struct GatedHost {
     spawn: Gate,
     /// Runs cannot be ended: shutdown requests are dropped and `terminate` fails.
     refusing: Arc<AtomicBool>,
+    /// Shutdown requests dropped while refusing, so far.
+    refused: Arc<watch::Sender<u32>>,
 }
 
 impl GatedHost {
@@ -81,6 +83,7 @@ impl GatedHost {
             attach: Gate::new(),
             spawn: Gate::new(),
             refusing: Arc::new(AtomicBool::new(false)),
+            refused: Arc::new(watch::channel(0).0),
         }
     }
 
@@ -88,6 +91,12 @@ impl GatedHost {
     /// fails (a process that survives SIGKILL); its own exit is still reported.
     pub fn refuse_ends(&self, refuse: bool) {
         self.refusing.store(refuse, Ordering::SeqCst);
+    }
+
+    /// Returns once a run was asked to shut down while ends were refused (the request dropped).
+    pub async fn shutdown_refused(&self) {
+        let mut refused = self.refused.subscribe();
+        let _ = refused.wait_for(|count| *count > 0).await;
     }
 
     /// Holds the next attach until [`Self::release`].
@@ -145,6 +154,7 @@ impl SessionHost for GatedHost {
         attached.writer = Box::new(RefusingWriter {
             inner: attached.writer,
             refusing: Arc::clone(&self.refusing),
+            refused: Arc::clone(&self.refused),
         });
         Ok(attached)
     }
@@ -171,6 +181,7 @@ impl SessionHost for GatedHost {
 struct RefusingWriter {
     inner: Box<dyn RunWriter>,
     refusing: Arc<AtomicBool>,
+    refused: Arc<watch::Sender<u32>>,
 }
 
 #[async_trait]
@@ -192,6 +203,7 @@ impl RunWriter for RefusingWriter {
 
     async fn shutdown(&mut self, grace_ms: u32) -> AppResult<()> {
         if self.refusing.load(Ordering::SeqCst) {
+            self.refused.send_modify(|count| *count += 1);
             return Ok(());
         }
         self.inner.shutdown(grace_ms).await
