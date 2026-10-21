@@ -17,14 +17,14 @@ it starts to finish, changes no repository file itself and opens no pull request
    `gh api "repos/{owner}/{repo}/issues?state=open&per_page=100" --paginate --jq '.[] | select(.pull_request == null) | {number, title, author: .user.login, association: .author_association, bot: (.user.type == "Bot"), app: .performed_via_github_app.slug, body_end: (.body // "" | .[-80:]), labels: [.labels[].name], reactions: .reactions.total_count, created_at}'`.
    In scope are the issues of the core team and of this project's agents:
    - the association is `OWNER`, `MEMBER` or `COLLABORATOR`;
-   - or the author is a person with write access although the association reads `CONTRIBUTOR` or
-     `NONE` (GitHub says `CONTRIBUTOR` for an admin outside the organization): ask once per author,
+   - or the author is a person with write access although the association reads anything else
+     (GitHub says `CONTRIBUTOR` or `NONE` for an admin outside the organization): ask once per author,
      `gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission`, and count
      `write`, `maintain` or `admin`; an error or any other answer counts as no write access;
    - or this project's Yulius App's bot (author `<slug>[bot]`) opened it and its body ends with
      `Opened by task #<n> in Yulius.`. An issue an agent filed through the App on a person's behalf
-     (`app` is `<slug>`) counts by that person's permission alone: the App's token proves no write
-     access. The App is the one `gh` works through:
+     (`app` is `<slug>`) counts as that person's own issue, by the two rules above: the App's token
+     proves no write access. The App is the one `gh` works through:
      `gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login` names its bot; when it
      names a person, `gh api user/installations --jq '.installations[0].app_slug'` gives the slug.
      When the slug cannot be found, no issue is in scope by this rule.
