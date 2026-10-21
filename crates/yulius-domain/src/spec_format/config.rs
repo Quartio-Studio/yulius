@@ -5,7 +5,7 @@
 //! number for the agent prompt. Supported:
 //!
 //! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]`, `[resources.env]`,
-//!   `[cd.dev]` and `[cd.prod]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
+//!   `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
 //!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
 //!   `environments = []`;
@@ -53,6 +53,10 @@
 //! about = "the instances update themselves from main"
 //! promote = true                         # a person's deploy promotes the integration branch first
 //!
+//! [cd.platform]                         # more environments (SPEC-257): any name with its stage,
+//! stage = "prod"                         # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
+//! deploy = "scripts/cd/deploy.sh platform"
+//!
 //! [[delivery.environments]]
 //! name = "dev-vm"
 //! after = "integration"
@@ -61,7 +65,10 @@
 //! ```
 
 use crate::branch_policy::BranchPolicy;
-use crate::cd::{CdConfig, CdEnv, CdTarget, MAX_ABOUT_CHARS, MAX_CD_SECRETS, valid_secret_name};
+use crate::cd::{
+    CdConfig, CdStage, CdTarget, MAX_ABOUT_CHARS, MAX_CD_ENVIRONMENTS, MAX_CD_SECRETS, fixed_stage,
+    valid_env_name, valid_secret_name,
+};
 use crate::delivery::{
     DeliveryProfile, Environment, MergeMethod, Preset, ProfileError, PromoteMethod, Stage, Verify,
 };
@@ -196,9 +203,19 @@ pub enum ConfigProblem {
     /// Invalid CI jobs (`[[ci.jobs]]`, `[commands] gate`).
     #[error("{0}")]
     Ci(CiConfigError),
-    /// A `[cd.<name>]` table other than dev and prod.
-    #[error("CD has two environments, [cd.dev] and [cd.prod]; '[{0}]' is neither")]
+    /// A `cd` table that cannot name an environment.
+    #[error(
+        "'[{0}]' is not a CD environment: use [cd.<name>] with a name of 1-32 lowercase letters, digits and '-', starting with a letter (like [cd.dev], [cd.prod] or [cd.platform])"
+    )]
     UnknownCdEnvironment(String),
+    /// More `[cd.<name>]` tables than accepted.
+    #[error("CD has at most 16 environments")]
+    TooManyCdEnvironments,
+    /// A named environment without its stage.
+    #[error(
+        "[{0}] needs 'stage = \"dev\"' or 'stage = \"prod\"': what decides who may deploy it is never implied"
+    )]
+    MissingCdStage(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,8 +249,8 @@ struct Document {
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
     resources_env: Option<Table>,
-    cd_dev: Option<Table>,
-    cd_prod: Option<Table>,
+    /// `[cd.<name>]` tables in file order.
+    cd: Vec<(String, Table)>,
 }
 
 enum Target {
@@ -246,7 +263,7 @@ enum Target {
     Environment,
     CiJob,
     ResourcesEnv,
-    Cd(CdEnv),
+    Cd(usize),
 }
 
 const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, agents";
@@ -257,8 +274,8 @@ const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
-const CD_DEV_KEYS: &str = "deploy, verify, secrets, about";
-const CD_PROD_KEYS: &str = "deploy, verify, secrets, about, promote";
+const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, about";
+const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, about, promote";
 const CD_SECRETS: &str = "at most 16 space-separated agent-secret names like DEV_SSH_KEY";
 const CD_ABOUT: &str = "one line of at most 300 characters";
 
@@ -430,23 +447,22 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                 ) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
                 }
-                ("cd.dev" | "cd.prod", true) => {
-                    return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
-                }
-                ("cd.dev" | "cd.prod", false) => {
-                    let (slot, env) = if name == "cd.dev" {
-                        (&mut document.cd_dev, CdEnv::Dev)
-                    } else {
-                        (&mut document.cd_prod, CdEnv::Prod)
+                (other, array) if other == "cd" || other.starts_with("cd.") => {
+                    let env = other.strip_prefix("cd.").filter(|env| valid_env_name(env));
+                    let Some(env) = env else {
+                        return Err(err(line, ConfigProblem::UnknownCdEnvironment(name)));
                     };
-                    if slot.is_some() {
+                    if array {
+                        return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
+                    }
+                    if document.cd.iter().any(|(known, _)| known == env) {
                         return Err(err(line, ConfigProblem::DuplicateTable(name)));
                     }
-                    *slot = Some(fresh);
-                    Target::Cd(env)
-                }
-                (other, _) if other == "cd" || other.starts_with("cd.") => {
-                    return Err(err(line, ConfigProblem::UnknownCdEnvironment(name)));
+                    if document.cd.len() == MAX_CD_ENVIRONMENTS {
+                        return Err(err(line, ConfigProblem::TooManyCdEnvironments));
+                    }
+                    document.cd.push((env.to_owned(), fresh));
+                    Target::Cd(document.cd.len() - 1)
                 }
                 ("resources.env", false) => {
                     if document.resources_env.is_some() {
@@ -497,8 +513,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
             Target::ResourcesEnv => document.resources_env.as_mut(),
-            Target::Cd(CdEnv::Dev) => document.cd_dev.as_mut(),
-            Target::Cd(CdEnv::Prod) => document.cd_prod.as_mut(),
+            Target::Cd(index) => document.cd.get_mut(index).map(|(_, table)| table),
         };
         let Some(table) = table else { continue };
         let entry = parse_entry(trimmed, line)?;
@@ -875,10 +890,47 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     })
 }
 
-fn cd_target(table: &Table, env: CdEnv) -> Result<CdTarget, FormatError> {
-    let (name, known) = match env {
-        CdEnv::Dev => ("cd.dev", CD_DEV_KEYS),
-        CdEnv::Prod => ("cd.prod", CD_PROD_KEYS),
+/// `[cd.<env>]`'s stage (SPEC-257 CDN-002): fixed for `dev` and `prod`, required for the others.
+fn cd_stage(env: &str, table: &Table) -> Result<CdStage, FormatError> {
+    let fixed = fixed_stage(env);
+    let Some(entry) = table.entries.iter().find(|entry| entry.key == "stage") else {
+        return fixed.ok_or_else(|| {
+            err(
+                table.line,
+                ConfigProblem::MissingCdStage(format!("cd.{env}")),
+            )
+        });
+    };
+    let text = string_value(entry)?;
+    let stage = match text {
+        "dev" => Some(CdStage::Dev),
+        "prod" => Some(CdStage::Prod),
+        _ => None,
+    };
+    match (stage, fixed) {
+        (Some(stage), None) => Ok(stage),
+        (Some(stage), Some(fixed)) if stage == fixed => Ok(stage),
+        _ => Err(err(
+            entry.line,
+            ConfigProblem::InvalidValue {
+                key: entry.key.clone(),
+                value: clip(text),
+                allowed: match fixed {
+                    Some(CdStage::Dev) => "\"dev\" (the stage of [cd.dev])",
+                    Some(CdStage::Prod) => "\"prod\" (the stage of [cd.prod])",
+                    None => "\"dev\" or \"prod\"",
+                },
+            },
+        )),
+    }
+}
+
+fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
+    let stage = cd_stage(env, table)?;
+    let name = format!("cd.{env}");
+    let known = match stage {
+        CdStage::Dev => CD_DEV_KEYS,
+        CdStage::Prod => CD_PROD_KEYS,
     };
     let invalid = |entry: &Entry, value: &str, allowed| {
         err(
@@ -890,9 +942,10 @@ fn cd_target(table: &Table, env: CdEnv) -> Result<CdTarget, FormatError> {
             },
         )
     };
-    let mut target = CdTarget::default();
+    let mut target = CdTarget::new(env, stage);
     for entry in &table.entries {
         match entry.key.as_str() {
+            "stage" => {}
             "deploy" => target.deploy = Some(command(entry)?),
             "verify" => target.verify = Some(command(entry)?),
             "secrets" => {
@@ -920,8 +973,8 @@ fn cd_target(table: &Table, env: CdEnv) -> Result<CdTarget, FormatError> {
                 }
                 target.about = (!text.is_empty()).then(|| text.to_owned());
             }
-            "promote" if env == CdEnv::Prod => target.promote = bool_value(entry)?,
-            _ => return Err(unknown(name, entry, known)),
+            "promote" if stage == CdStage::Prod => target.promote = bool_value(entry)?,
+            _ => return Err(unknown(&name, entry, known)),
         }
     }
     Ok(target)
@@ -929,32 +982,28 @@ fn cd_target(table: &Table, env: CdEnv) -> Result<CdTarget, FormatError> {
 
 fn cd_of(document: &Document) -> Result<CdConfig, FormatError> {
     Ok(CdConfig {
-        dev: document
-            .cd_dev
-            .as_ref()
-            .map(|table| cd_target(table, CdEnv::Dev))
-            .transpose()?,
-        prod: document
-            .cd_prod
-            .as_ref()
-            .map(|table| cd_target(table, CdEnv::Prod))
-            .transpose()?,
+        environments: document
+            .cd
+            .iter()
+            .map(|(env, table)| cd_target(env, table))
+            .collect::<Result<_, _>>()?,
     })
 }
 
-/// The project's CD (deployment, SPEC-134): `[cd.dev]` and `[cd.prod]`, each `None` when its
-/// table is missing. Only these tables are checked, so a mistake elsewhere does not hide CD.
+/// The project's CD (deployment, SPEC-134, SPEC-257): its `[cd.<name>]` tables, `[cd.dev]` and
+/// `[cd.prod]` being the defaults. Only these tables are checked, so a mistake elsewhere does not
+/// hide CD.
 ///
 /// # Errors
 /// A syntax error of the file or an invalid CD table.
 ///
 /// # Examples
 /// ```
-/// use yulius_domain::cd::{CdEnv, CdState};
+/// use yulius_domain::cd::{CdStage, CdState};
 /// use yulius_domain::spec_format::parse_yulius_toml_cd;
 /// let cd = parse_yulius_toml_cd("[cd.dev]\n[cd.prod]\npromote = true\n")?;
-/// assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
-/// assert_eq!(cd.state(CdEnv::Prod), CdState::Ready);
+/// assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
+/// assert_eq!(cd.state("prod", CdStage::Prod), CdState::Ready);
 /// # Ok::<(), yulius_domain::spec_format::FormatError>(())
 /// ```
 pub fn parse_yulius_toml_cd(text: &str) -> Result<CdConfig, FormatError> {
@@ -1248,10 +1297,12 @@ mod tests {
              deploy = \"scripts/cd/deploy.sh prod\"\nverify = 'scripts/cd/verify.sh prod'\n\
              secrets = \"PROD_SSH_KEY  PROD_HOST\"\n",
         )?;
-        let dev = cd.dev.as_ref().ok_or("dev")?;
+        let dev = cd.target("dev").ok_or("dev")?;
         assert_eq!(dev.about.as_deref(), Some("no dev machine yet"));
-        assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
-        let prod = cd.prod.as_ref().ok_or("prod")?;
+        assert_eq!(dev.stage, CdStage::Dev);
+        assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
+        let prod = cd.target("prod").ok_or("prod")?;
+        assert_eq!(prod.stage, CdStage::Prod);
         assert!(prod.promote);
         assert_eq!(prod.deploy.as_deref(), Some("scripts/cd/deploy.sh prod"));
         assert_eq!(prod.verify.as_deref(), Some("scripts/cd/verify.sh prod"));
@@ -1259,7 +1310,7 @@ mod tests {
         assert!(cd.is_defined());
         let none = parse_yulius_toml_cd("[commands]\ntest = \"x\"\n")?;
         assert_eq!(none, CdConfig::default());
-        assert_eq!(none.state(CdEnv::Prod), CdState::NotDefined);
+        assert_eq!(none.state("prod", CdStage::Prod), CdState::NotDefined);
         // The whole file is validated with them.
         assert!(parse_yulius_toml("[cd.dev]\n[cd.prod]\n").is_ok());
         Ok(())
@@ -1270,9 +1321,48 @@ mod tests {
     fn the_repositorys_own_cd_is_defined() -> TestResult {
         let cd = parse_yulius_toml_cd(include_str!("../../../../yulius.toml"))?;
         assert!(cd.is_defined());
-        assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
-        let prod = cd.prod.as_ref().ok_or("prod")?;
+        assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
+        let prod = cd.target("prod").ok_or("prod")?;
         assert!(prod.promote && prod.deploy.is_none());
+        assert_eq!(cd.environments.len(), 2, "only the defaults");
+        Ok(())
+    }
+
+    /// SPEC-257 CDN-001/002: named environments with their stage, in file order, next to the
+    /// defaults, whose stage `stage` may repeat.
+    #[test]
+    fn cd_tables_define_named_environments_with_a_stage() -> TestResult {
+        let cd = parse_yulius_toml_cd(
+            "[cd.dev]\nstage = \"dev\"\n\n[cd.selfserve]\nstage = \"prod\"\npromote = true\n\n\
+             [cd.platform]\nstage = 'prod'\ndeploy = \"scripts/cd/deploy.sh platform\"\n\
+             secrets = \"PLATFORM_SSH_KEY\"\n\n[cd.preview-2]\nstage = \"dev\"\n",
+        )?;
+        let names: Vec<(&str, CdStage)> = cd
+            .environments
+            .iter()
+            .map(|t| (t.name.as_str(), t.stage))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("dev", CdStage::Dev),
+                ("selfserve", CdStage::Prod),
+                ("platform", CdStage::Prod),
+                ("preview-2", CdStage::Dev),
+            ]
+        );
+        let platform = cd.target("platform").ok_or("platform")?;
+        assert_eq!(
+            platform.deploy.as_deref(),
+            Some("scripts/cd/deploy.sh platform")
+        );
+        assert_eq!(platform.secrets, ["PLATFORM_SSH_KEY"]);
+        assert!(cd.target("selfserve").is_some_and(|t| t.promote));
+        assert!(
+            cd.is_defined(),
+            "no [cd.prod], but production-stage environments"
+        );
+        assert!(parse_yulius_toml("[cd.staging]\nstage = \"dev\"\n[cd.prod]\n").is_ok());
         Ok(())
     }
 
@@ -1298,7 +1388,7 @@ mod tests {
     /// SPEC-134 CDC-001: every invalid form names its line.
     #[test]
     fn cd_tables_refuse_what_cannot_run() {
-        let cases: [(&str, usize, &str); 9] = [
+        let cases: [(&str, usize, &str); 16] = [
             (
                 "[cd.dev]\npromote = true\n",
                 2,
@@ -1320,7 +1410,22 @@ mod tests {
                 "'deploy' must be a non-empty",
             ),
             ("[cd.dev]\nsecrets = \"ssh_key\"\n", 2, "'secrets'"),
-            ("[cd.staging]\n", 1, "[cd.dev] and [cd.prod]"),
+            ("[cd.staging]\n", 1, "needs 'stage = \"dev\"'"),
+            (
+                "[cd.staging]\nstage = \"production\"\n",
+                2,
+                "expected one of: \"dev\" or",
+            ),
+            ("[cd.dev]\nstage = \"prod\"\n", 2, "the stage of [cd.dev]"),
+            ("[cd.prod]\nstage = \"dev\"\n", 2, "the stage of [cd.prod]"),
+            (
+                "[cd.staging]\nstage = \"dev\"\npromote = true\n",
+                3,
+                "unknown key 'promote' in [cd.staging]",
+            ),
+            ("[cd.Staging]\n", 1, "is not a CD environment"),
+            ("[cd.a.b]\n", 1, "is not a CD environment"),
+            ("[cd]\n", 1, "is not a CD environment"),
             ("[[cd.dev]]\n", 1, "[cd.dev] must be a single table"),
             ("[cd.dev]\n[cd.dev]\n", 2, "appears more than once"),
             (
@@ -1336,6 +1441,12 @@ mod tests {
             assert!(shown.contains(message), "{text}: {shown}");
             assert!(parse_yulius_toml(text).is_err(), "{text}");
         }
+        let environments: String = (0..17)
+            .map(|n| format!("[cd.e{n}]\nstage = \"dev\"\n"))
+            .collect();
+        let error = parse_yulius_toml_cd(&environments).err();
+        assert_eq!(error.as_ref().map(|e| e.line), Some(33), "the 17th table");
+        assert!(error.is_some_and(|e| e.to_string().contains("at most 16 environments")));
         let many: Vec<String> = (0..17).map(|n| format!("KEY_{n}")).collect();
         let text = format!("[cd.dev]\nsecrets = \"{}\"\n", many.join(" "));
         assert!(parse_yulius_toml_cd(&text).is_err_and(|e| e.to_string().contains("'secrets'")));

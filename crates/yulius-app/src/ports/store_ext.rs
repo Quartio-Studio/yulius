@@ -563,7 +563,7 @@ pub trait CdStore: Send + Sync {
     async fn last_passed_cd_run(
         &self,
         sandbox: &SandboxId,
-        environment: yulius_domain::cd::CdEnv,
+        environment: &str,
     ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// The newest run a task's agent started, without output.
     async fn latest_cd_run_of_task(

@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use tokio::sync::watch;
-use yulius_domain::cd::CdEnv;
+use yulius_domain::cd::CdStage;
 use yulius_domain::delivery::Stage;
 use yulius_domain::ids::SandboxId;
 
@@ -114,8 +114,8 @@ impl App {
             .map_err(|err| format!("writing {sha}'s files failed: {}", err.public_message()))?;
         std::fs::File::create(&log).map_err(|e| format!("creating the run log failed: {e}"))?;
         let env = match stage {
-            Stage::Integration => CdEnv::Dev,
-            Stage::Production => CdEnv::Prod,
+            Stage::Integration => CdStage::Dev,
+            Stage::Production => CdStage::Prod,
         };
         let (containment, _lease) = self
             .cd_containment(sandbox, env, &work, &home, &cache)

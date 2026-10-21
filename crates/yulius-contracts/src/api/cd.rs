@@ -1,5 +1,5 @@
-//! CD (deployment): a project's dev and production environments and their runs (SPEC-134;
-//! docs/api.md "CD").
+//! CD (deployment): a project's environments and their runs (SPEC-134, SPEC-257; docs/api.md
+//! "CD").
 
 use serde::{Deserialize, Serialize};
 
@@ -18,10 +18,12 @@ pub struct CdSecret {
 /// One environment as its protected branch defines it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdEnvironment {
-    /// `dev` or `prod`.
+    /// `[cd.<name>]`: `dev`, `prod` or another name.
     pub name: String,
-    /// `dev` or `production`.
+    /// `production` for `prod`, else the name.
     pub label: String,
+    /// `dev` or `prod`: what its rules follow (ADR-0195).
+    pub stage: String,
     /// `not_defined`, `empty` or `ready`.
     pub state: String,
     /// The branch its configuration and scripts are read from.
@@ -61,8 +63,10 @@ pub struct CdEnvironment {
 pub struct CdRun {
     /// Run id.
     pub run_id: String,
-    /// `dev` or `prod`.
+    /// The environment's name.
     pub environment: String,
+    /// Its stage when it ran: `dev` or `prod`.
+    pub stage: String,
     /// `running`, `passed`, `failed`, `error` or `cancelled`.
     pub state: String,
     /// Branch deployed.
@@ -101,13 +105,13 @@ pub struct CdRun {
 pub struct CdOverview {
     /// The project's slug: what a person types to deploy production.
     pub slug: String,
-    /// Dev, then production.
+    /// The dev-stage environments, then the production-stage ones (SPEC-257 CDN-007).
     pub environments: Vec<CdEnvironment>,
     /// Recent runs, newest first.
     pub runs: Vec<CdRun>,
-    /// The caller may deploy dev (write access).
+    /// The caller may deploy dev-stage environments (write access).
     pub can_deploy_dev: bool,
-    /// The caller may deploy production (administrator access).
+    /// The caller may deploy production-stage environments (administrator access).
     pub can_deploy_prod: bool,
 }
 

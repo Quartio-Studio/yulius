@@ -21,7 +21,7 @@ use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::cd::CdRunRecord;
 use yulius_app::ports::store_ext::CdStore as _;
 use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
-use yulius_domain::cd::CdEnv;
+use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
@@ -487,7 +487,11 @@ async fn empty_and_undefined_environments_run_nothing() -> TestResult {
     let prod = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(prod.status, StatusCode::CONFLICT, "{}", prod.body);
     assert!(prod.body.to_string().contains("add [cd.prod]"));
-    let unknown = f.deploy(&f.alice, "staging", None).await?;
+    // SPEC-257: any name may be an environment; one no table defines says what to add.
+    let undefined = f.deploy(&f.alice, "staging", None).await?;
+    assert_eq!(undefined.status, StatusCode::CONFLICT, "{}", undefined.body);
+    assert!(undefined.body.to_string().contains("add [cd.staging]"));
+    let unknown = f.deploy(&f.alice, "Staging", None).await?;
     assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(f.marks.read_dir()?.next().is_none(), "nothing ran");
     Ok(())
@@ -501,7 +505,8 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
         .insert_cd_run(&CdRunRecord {
             id: "lost".into(),
             sandbox_id: SandboxId::parse("s1")?,
-            environment: CdEnv::Dev,
+            environment: "dev".into(),
+            stage: CdStage::Dev,
             branch: "dev".into(),
             sha: f.head("dev")?,
             state: RunState::Running,
@@ -657,7 +662,7 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     assert!(shown.contains("secrets: DEV_TOKEN not allowed"), "{shown}");
     // The CI/CD page's CD tab, its canonical address (SPEC-151).
     assert!(
-        shown.contains("production is deployed by a person on ")
+        shown.contains("production-stage ones are deployed by a person on ")
             && shown.ends_with("/ci?section=cd."),
         "{shown}"
     );
@@ -1242,7 +1247,8 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
         .insert_cd_run(&CdRunRecord {
             id: "lost2".into(),
             sandbox_id: SandboxId::parse("s1")?,
-            environment: CdEnv::Prod,
+            environment: "prod".into(),
+            stage: CdStage::Prod,
             branch: "main".into(),
             sha: f.head("main")?,
             state: RunState::Running,
@@ -1385,5 +1391,178 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
             .all(|s| s.key != "confirm" && s.key != "promote"),
         "{again_spans:?}"
     );
+    Ok(())
+}
+
+/// Dev and production plus a named environment of each stage (SPEC-257): staging next to dev,
+/// the hosted platform and the self-hosted release next to production.
+fn named_cd() -> String {
+    "[cd.dev]\n\
+     about = \"the team's dev machine\"\n\n\
+     [cd.prod]\n\
+     about = \"instances update themselves from main\"\n\n\
+     [cd.staging]\n\
+     stage = \"dev\"\n\
+     deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+     verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\n\
+     [cd.platform]\n\
+     stage = \"prod\"\n\
+     deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+     verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\n\
+     [cd.selfserve]\n\
+     stage = \"prod\"\n\
+     about = \"released from main by its tags\"\n"
+        .to_owned()
+}
+
+/// SPEC-257 AC2, AC5: every environment is listed with its stage, dev-stage first; a named
+/// dev-stage environment deploys the integration head for a person with write access and an
+/// agent; a named production-stage one deploys the production head only for an administrator who
+/// typed the slug, never for an agent, and its run keeps name and stage.
+#[tokio::test]
+async fn named_environments_deploy_by_their_stage() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f = fixture(&named_cd()).await?;
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let listed: Vec<(String, String, String)> = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .map(|e| {
+            (
+                e["name"].as_str().unwrap_or_default().to_owned(),
+                e["stage"].as_str().unwrap_or_default().to_owned(),
+                e["state"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let expected = [
+        ("dev", "dev", "empty"),
+        ("staging", "dev", "ready"),
+        ("prod", "prod", "empty"),
+        ("platform", "prod", "ready"),
+        ("selfserve", "prod", "empty"),
+    ]
+    .map(|(n, s, st)| (n.to_owned(), s.to_owned(), st.to_owned()));
+    assert_eq!(listed, expected, "{overview}");
+    assert_eq!(overview["environments"][3]["branch"], "main");
+    assert_eq!(overview["environments"][1]["branch"], "dev");
+
+    // A dev-stage environment: a person with write access deploys the integration head.
+    let dev = f.head("dev")?;
+    let started = f.deploy(&f.alice, "staging", None).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(
+        (&started.body["environment"], &started.body["stage"]),
+        (&json!("staging"), &json!("dev"))
+    );
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains(&format!("deploying staging dev {dev}")),
+        "{output}"
+    );
+
+    // A production-stage one: not for write access, not without the slug.
+    let refused = f.deploy(&f.alice, "platform", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let refused = f.deploy(&f.bob, "platform", None).await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    let main = f.head("main")?;
+    let started = f.deploy(&f.bob, "platform", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["stage"], "prod");
+    assert_eq!(started.body["branch"], "main");
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains(&format!("deploying platform main {main}")),
+        "{output}"
+    );
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    assert_eq!(overview["environments"][3]["deployed"], main);
+    assert!(
+        overview["environments"][2]["deployed"].is_null(),
+        "prod is another environment"
+    );
+
+    // An agent: the dev-stage one is its own, a production-stage one never.
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let tool = |name: &'static str, args: Value| support::mcp_tool(&f.h, TOKEN, name, args);
+    let shown = support::tool_text(&tool("cd_status", json!({})).await?)["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        shown.contains("staging ([cd.staging] from dev): ready"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("platform ([cd.platform], deploys main): ready"),
+        "{shown}"
+    );
+    for env in ["platform", "selfserve"] {
+        let refused = tool("cd_deploy", json!({"environment": env})).await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("only a person deploys production"),
+            "{refused}"
+        );
+    }
+    let started = tool("cd_deploy", json!({"environment": "staging"})).await?;
+    assert_eq!(started["isError"], false, "{started}");
+    let run = support::tool_text(&started)["run"].clone();
+    assert_eq!(
+        (&run["environment"], &run["stage"]),
+        (&json!("staging"), &json!("dev"))
+    );
+    f.ended(run["run_id"].as_str().ok_or("id")?).await?;
+    Ok(())
+}
+
+/// SPEC-257 CDN-004: relabelling a production environment as dev on the integration branch only
+/// makes a dev environment of that name: it runs the integration head's table as dev, and nothing
+/// of production comes with the name.
+#[tokio::test]
+async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestResult {
+    let f = fixture(&named_cd()).await?;
+    let relabelled = named_cd().replace(
+        "[cd.platform]\nstage = \"prod\"",
+        "[cd.platform]\nstage = \"dev\"",
+    );
+    let marks = f.marks.to_str().ok_or("path")?;
+    f.push(
+        "dev",
+        &[("yulius.toml", Some(&relabelled.replace("{marks}", marks)))],
+    )?;
+    let started = f.deploy(&f.alice, "platform", None).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(
+        (&started.body["stage"], &started.body["branch"]),
+        (&json!("dev"), &json!("dev"))
+    );
+    f.ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    // The page agrees once the clone has the new head (the deploy fetched it).
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let platform = overview["environments"]
+        .as_array()
+        .and_then(|all| all.iter().find(|e| e["name"] == "platform"))
+        .ok_or("platform")?;
+    assert_eq!(platform["stage"], "dev", "{overview}");
     Ok(())
 }
