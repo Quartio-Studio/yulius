@@ -4,6 +4,18 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-21
+
+- "Work through open issues" no longer leaves out most of the core team's issues (SPEC-251,
+  ADR-0192, task #237, #594). GitHub reports `CONTRIBUTOR` for a repository admin outside the
+  organization, and an agent's issue filed with its person's token is not by a bot, so only 2 of
+  109 open issues were in scope here. A person with `write`, `maintain` or `admin` permission
+  (asked once per author) is now in scope, and so is an issue this project's Yulius App opened
+  with the `Opened by task #<n> in Yulius.` footer, as its bot or on a person's behalf;
+  contributors and outsiders without write access stay out. An issue showing exactly 100 comments
+  is read in full. Projects that added the automation earlier keep their copy of the prompt; this
+  project's was updated.
+
 ## 2026-10-20
 
 - Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,
