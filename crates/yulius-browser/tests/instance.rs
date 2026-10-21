@@ -134,11 +134,7 @@ async fn tabs_open_activate_close_and_follow_target_events() -> TestResult {
         instance.close(&opened).await,
         Err(BrowserError::TabNotFound(_))
     ));
-    assert_eq!(instance.cdp_ws_url(), fake.ws_url());
-    assert_eq!(
-        instance.cdp_http_url(),
-        Some(format!("http://127.0.0.1:{}", fake.port()).as_str())
-    );
+    assert_eq!(instance.cdp().url(), fake.ws_url());
     Ok(())
 }
 

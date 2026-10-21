@@ -63,13 +63,11 @@ pub enum BrowserError {
     /// The profile directory could not be prepared.
     #[error("failed to prepare the browser profile directory: {0}")]
     Profile(#[source] std::io::Error),
-    /// Chromium did not write a valid `DevToolsActivePort` in time.
-    #[error("Chromium did not report a DevTools port within {timeout:?}{detail}")]
+    /// Chromium did not answer on its DevTools pipe in time.
+    #[error("Chromium did not answer on its DevTools pipe within {timeout:?}")]
     StartupTimeout {
         /// Applied startup timeout.
         timeout: Duration,
-        /// Last observed problem, if any (prefixed with `: `).
-        detail: String,
     },
     /// Chromium exited before it was ready (e.g. profile locked, missing libraries).
     #[error("Chromium exited during startup ({status}); stderr tail: {stderr}")]

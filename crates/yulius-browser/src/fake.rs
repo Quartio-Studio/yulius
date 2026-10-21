@@ -1,16 +1,17 @@
 //! Test doubles (feature `fake`): an in-process fake CDP server, a fake Chromium launcher and a
 //! fake virtual display.
 //!
-//! [`FakeCdpServer`] speaks JSON-RPC over WebSocket on `127.0.0.1:<OS-assigned port>` and
-//! answers the methods this adapter uses with canned results. It records every request,
+//! [`FakeCdpServer`] speaks JSON-RPC over WebSocket on `127.0.0.1:<OS-assigned port>`, and as
+//! NUL-terminated JSON (the framing of Chromium's `--remote-debugging-pipe`) on a second port,
+//! and answers the methods this adapter uses with canned results. It records every request,
 //! emits target events, emits synthetic `Page.screencastFrame` events gated on acknowledgements
 //! (at most two in flight, like Chromium), and can be told to stay silent on a method (timeout
 //! tests), fail a method, or drop all connections (crash tests).
 //!
 //! [`write_fake_chromium`] writes a POSIX shell script that behaves like Chromium's startup
-//! contract: it reads `--user-data-dir=`, records its argv, writes `DevToolsActivePort`
-//! pointing at a fake server, forks a descendant (to prove process-group cleanup) and stays
-//! alive until killed.
+//! contract: it reads `--user-data-dir=`, records its argv, relays its DevTools pipe (fds 3 and
+//! 4) to the fake server's pipe port through `python3` (a repository prerequisite), forks a
+//! descendant (to prove process-group cleanup) and stays alive until killed.
 //!
 //! [`FakeDisplay`] stands in for Xvfb, XTest and ffmpeg ([`DisplayMode::Fake`]): it records the
 //! input the display would receive and streams synthetic H.264-shaped access units (a
@@ -25,9 +26,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use base64::Engine as _;
+use futures::{Sink, Stream};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicUsize;
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -123,6 +126,7 @@ pub fn default_ax_nodes() -> Value {
 pub struct FakeCdpServer {
     shared: Arc<Shared>,
     port: u16,
+    pipe_port: u16,
     accept: JoinHandle<()>,
 }
 
@@ -149,6 +153,8 @@ impl FakeCdpServer {
     pub async fn start() -> std::io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let port = listener.local_addr()?.port();
+        let pipe_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let pipe_port = pipe_listener.local_addr()?.port();
         let shared = Arc::new(Shared {
             state: Mutex::new(FakeState {
                 targets: vec![FakeTarget {
@@ -178,21 +184,39 @@ impl FakeCdpServer {
         });
         let accept_shared = Arc::clone(&shared);
         let accept = tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(serve_connection(Arc::clone(&accept_shared), stream));
+            loop {
+                let shared = Arc::clone(&accept_shared);
+                tokio::select! {
+                    accepted = listener.accept() => match accepted {
+                        Ok((stream, _)) => { tokio::spawn(serve_websocket(shared, stream)); }
+                        Err(_) => return,
+                    },
+                    accepted = pipe_listener.accept() => match accepted {
+                        Ok((stream, _)) => { tokio::spawn(serve_pipe(shared, stream)); }
+                        Err(_) => return,
+                    },
+                }
             }
         });
         Ok(Self {
             shared,
             port,
+            pipe_port,
             accept,
         })
     }
 
-    /// The listening port.
+    /// The WebSocket listening port.
     #[must_use]
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The port speaking NUL-terminated JSON, which [`FakeChromium::Ready`] relays its DevTools
+    /// pipe to.
+    #[must_use]
+    pub fn pipe_port(&self) -> u16 {
+        self.pipe_port
     }
 
     /// Browser WebSocket URL (`ws://127.0.0.1:<port>/devtools/browser/fake`).
@@ -390,11 +414,52 @@ fn target_event(method: &str, target: &FakeTarget) -> Value {
 /// A tiny valid 1×1 PNG.
 const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-async fn serve_connection(shared: Arc<Shared>, stream: TcpStream) {
+async fn serve_websocket(shared: Arc<Shared>, stream: TcpStream) {
     let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
         return;
     };
-    let (mut sink, mut source) = socket.split();
+    let (sink, source) = socket.split();
+    let sink = sink.with(|text: String| async move {
+        Ok::<_, tokio_tungstenite::tungstenite::Error>(Message::text(text))
+    });
+    let source = futures::stream::unfold(source, |mut source| async move {
+        loop {
+            match source.next().await? {
+                Ok(Message::Text(text)) => return Some((text.as_str().to_owned(), source)),
+                Ok(Message::Close(_)) | Err(_) => return None,
+                Ok(_) => {}
+            }
+        }
+    });
+    serve(shared, source, sink).await;
+}
+
+async fn serve_pipe(shared: Arc<Shared>, stream: TcpStream) {
+    let (read, write) = stream.into_split();
+    let source = futures::stream::unfold(tokio::io::BufReader::new(read), |mut read| async {
+        let mut message = Vec::new();
+        match read.read_until(0, &mut message).await {
+            Ok(n) if n > 0 && message.pop() == Some(0) => {
+                Some((String::from_utf8_lossy(&message).into_owned(), read))
+            }
+            _ => None,
+        }
+    });
+    let sink = futures::sink::unfold(write, |mut write, text: String| async move {
+        write.write_all(text.as_bytes()).await?;
+        write.write_all(&[0]).await?;
+        Ok::<_, std::io::Error>(write)
+    });
+    serve(shared, source, sink).await;
+}
+
+async fn serve<I, K>(shared: Arc<Shared>, source: I, sink: K)
+where
+    I: Stream<Item = String>,
+    K: Sink<String> + Send + 'static,
+{
+    let mut source = std::pin::pin!(source);
+    let mut sink = Box::pin(sink);
     let (outgoing, mut queue) = mpsc::channel::<String>(4096);
     let connection = Arc::new(Connection {
         outgoing,
@@ -407,7 +472,7 @@ async fn serve_connection(shared: Arc<Shared>, stream: TcpStream) {
     disconnect.mark_unchanged();
     let writer = tokio::spawn(async move {
         while let Some(text) = queue.recv().await {
-            if sink.send(Message::text(text)).await.is_err() {
+            if sink.send(text).await.is_err() {
                 break;
             }
         }
@@ -416,9 +481,8 @@ async fn serve_connection(shared: Arc<Shared>, stream: TcpStream) {
     loop {
         tokio::select! {
             message = source.next() => match message {
-                Some(Ok(Message::Text(text))) => handle_request(&shared, &connection, text.as_str()).await,
-                Some(Ok(Message::Close(_)) | Err(_)) | None => break,
-                Some(Ok(_)) => {}
+                Some(text) => handle_request(&shared, &connection, &text).await,
+                None => break,
             },
             _ = disconnect.changed() => break,
         }
@@ -800,19 +864,20 @@ async fn emit_frames(
 /// Startup behaviour of a fake Chromium script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FakeChromium {
-    /// Write `DevToolsActivePort` for the server on `port`, fork a descendant, stay alive.
+    /// Relay the DevTools pipe to the fake server's [`FakeCdpServer::pipe_port`] `port`, fork a
+    /// descendant, stay alive.
     Ready {
-        /// Fake CDP server port.
+        /// Fake CDP server pipe port.
         port: u16,
     },
     /// Like `Ready` but ignore SIGTERM (exercises SIGKILL escalation).
     IgnoresSigterm {
-        /// Fake CDP server port.
+        /// Fake CDP server pipe port.
         port: u16,
     },
     /// Print to stderr and exit 1 without becoming ready.
     ExitsImmediately,
-    /// Stay alive without ever writing `DevToolsActivePort`.
+    /// Stay alive, keeping the DevTools pipe open, without ever answering on it.
     NeverReady,
 }
 
@@ -822,6 +887,26 @@ pub const FAKE_ARGV_FILE: &str = "fake-chromium-argv.txt";
 pub const FAKE_PID_FILE: &str = "fake-chromium.pid";
 /// File holding the fake's forked descendant pid.
 pub const FAKE_CHILD_PID_FILE: &str = "fake-chromium-child.pid";
+
+/// Relays fd 3 to a TCP connection to `127.0.0.1:<argv[1]>` and the connection back to fd 4,
+/// exiting when either side ends. No single quotes (it is quoted for the shell).
+const PIPE_RELAY: &str = r#"import os, socket, sys, threading
+peer = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+def requests():
+    while True:
+        data = os.read(3, 65536)
+        if not data:
+            break
+        peer.sendall(data)
+    peer.shutdown(socket.SHUT_WR)
+threading.Thread(target=requests, daemon=True).start()
+while True:
+    data = peer.recv(65536)
+    if not data:
+        break
+    while data:
+        data = data[os.write(4, data):]
+"#;
 
 /// Writes an executable fake Chromium script named `name` into `dir`.
 ///
@@ -842,9 +927,11 @@ if [ -z "$dir" ]; then echo "fake-chromium: missing --user-data-dir" >&2; exit 2
 printf '%s\n' "$@" > "$dir/fake-chromium-argv.txt"
 printf '%s' "$$" > "$dir/fake-chromium.pid"
 "#;
+    // Only the relay keeps fds 3 and 4, so its end (the server dropped the connection) is the
+    // end of the pipe for Yulius, as a crashed browser's would be.
     let ready = |port: u16, trap: &str| {
         format!(
-            "{trap}{parse_dir}sleep 600 &\nprintf '%s' \"$!\" > \"$dir/{FAKE_CHILD_PID_FILE}\"\nprintf '%s\\n%s\\n' {port} /devtools/browser/fake > \"$dir/DevToolsActivePort\"\nexec sleep 600\n"
+            "{trap}{parse_dir}python3 -I -c '{PIPE_RELAY}' {port} &\nsleep 600 3<&- 4>&- &\nprintf '%s' \"$!\" > \"$dir/{FAKE_CHILD_PID_FILE}\"\nexec sleep 600 3<&- 4>&-\n"
         )
     };
     let body = match behavior {

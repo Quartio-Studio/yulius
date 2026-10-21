@@ -3,7 +3,8 @@
 //!
 //! It serves a local page on loopback, then drives the browser through the adapter: open and
 //! load, title from target events, accessibility snapshot, type, click by selector, PNG
-//! screenshot, screencast frames, URL policy, and kill-and-reap on shutdown.
+//! screenshot, screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
+//! the pipe: the browser writes no `DevToolsActivePort` and (Linux) listens on no TCP port.
 
 use std::time::Duration;
 
@@ -37,6 +38,60 @@ async fn serve(listener: TcpListener) {
     }
 }
 
+/// The process group of `pid` (Linux `/proc/<pid>/stat`: the third field after the command).
+#[cfg(target_os = "linux")]
+fn process_group(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(')')?;
+    fields.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// Listening TCP sockets (IPv4 and IPv6) held by the processes `include` selects.
+#[cfg(target_os = "linux")]
+fn listening_sockets(
+    include: impl Fn(u32) -> bool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut listening = std::collections::HashSet::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(table) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.get(3) == Some(&"0A")
+                && let Some(inode) = fields.get(9)
+            {
+                listening.insert(format!("socket:[{inode}]"));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !include(pid) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                let target = target.to_string_lossy().into_owned();
+                if listening.contains(&target) {
+                    found.push(format!("pid {pid}: {target}"));
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
 #[tokio::test]
 async fn drives_a_real_chromium_when_configured() -> TestResult {
     let Some(exe) = std::env::var_os("YULIUS_TEST_CHROMIUM") else {
@@ -57,7 +112,24 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         .ensure(&sandbox, &manager.default_profile_dir(&sandbox))
         .await?;
     let pid = browser.pid().ok_or("no pid")?;
-    assert!(browser.cdp_ws_url().starts_with("ws://127.0.0.1:"));
+    // DevTools over the pipe only: nothing else can connect to the browser (#626, ADR-0191).
+    assert_eq!(browser.cdp().url(), yulius_browser::PIPE_URL);
+    #[cfg(target_os = "linux")]
+    {
+        let own = listening_sockets(|candidate| candidate == std::process::id())?;
+        assert!(!own.is_empty(), "the check sees this test's page server");
+        let group = listening_sockets(|candidate| process_group(candidate) == Some(pid))?;
+        assert!(
+            group.is_empty(),
+            "the browser listens on no TCP port: {group:?}"
+        );
+    }
+    assert!(
+        !manager
+            .default_profile_dir(&sandbox)
+            .join("DevToolsActivePort")
+            .exists()
+    );
 
     let opened = browser
         .tool_open(&OpenParams {

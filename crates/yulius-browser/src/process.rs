@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use command_fds::{CommandFdExt as _, FdMapping};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::AsyncReadExt;
@@ -61,6 +62,14 @@ pub(crate) struct Supervised {
     stderr_reader: Option<JoinHandle<()>>,
 }
 
+/// Yulius's ends of a child's DevTools pipe (Chromium's `--remote-debugging-pipe`, ADR-0191).
+pub(crate) struct DevToolsPipe {
+    /// The child's fd 4: responses and events.
+    pub(crate) from_child: tokio::net::unix::pipe::Receiver,
+    /// The child's fd 3: requests.
+    pub(crate) to_child: tokio::net::unix::pipe::Sender,
+}
+
 /// The allowlisted subset of the current environment.
 pub(crate) fn passed_env() -> Vec<(OsString, OsString)> {
     PASSED_ENV
@@ -77,7 +86,35 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> std::io::Result<Self> {
-        Self::spawn_with(program, args, env, false).map(|(process, _)| process)
+        Self::spawn_with(program, args, env, false, Vec::new()).map(|(process, _)| process)
+    }
+
+    /// [`Self::spawn`] with a DevTools pipe: the child reads fd 3 and writes fd 4. Yulius's
+    /// ends are close-on-exec, so no other child inherits them, and the child's ends are closed
+    /// here once it is spawned, so the child's exit is the pipe's end of file.
+    pub(crate) fn spawn_with_devtools_pipe(
+        program: &Path,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+    ) -> std::io::Result<(Self, DevToolsPipe)> {
+        let (child_reads, to_child) = std::io::pipe()?;
+        let (from_child, child_writes) = std::io::pipe()?;
+        let pipe = DevToolsPipe {
+            from_child: tokio::net::unix::pipe::Receiver::from_owned_fd(from_child.into())?,
+            to_child: tokio::net::unix::pipe::Sender::from_owned_fd(to_child.into())?,
+        };
+        let fds = vec![
+            FdMapping {
+                parent_fd: child_reads.into(),
+                child_fd: 3,
+            },
+            FdMapping {
+                parent_fd: child_writes.into(),
+                child_fd: 4,
+            },
+        ];
+        let (process, _) = Self::spawn_with(program, args, env, false, fds)?;
+        Ok((process, pipe))
     }
 
     /// [`Self::spawn`] with stdout piped to the caller (an encoder's output stream). The caller
@@ -87,7 +124,7 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> std::io::Result<(Self, tokio::process::ChildStdout)> {
-        let (process, stdout) = Self::spawn_with(program, args, env, true)?;
+        let (process, stdout) = Self::spawn_with(program, args, env, true, Vec::new())?;
         let stdout = stdout.ok_or_else(|| std::io::Error::other("child stdout is not piped"))?;
         Ok((process, stdout))
     }
@@ -97,6 +134,7 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
         pipe_stdout: bool,
+        fds: Vec<FdMapping>,
     ) -> std::io::Result<(Self, Option<tokio::process::ChildStdout>)> {
         let mut command = tokio::process::Command::new(program);
         command
@@ -112,7 +150,12 @@ impl Supervised {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .process_group(0);
+        if !fds.is_empty() {
+            command.fd_mappings(fds).map_err(std::io::Error::other)?;
+        }
         let mut child = command.spawn()?;
+        // The command owns the child's ends of any mapped pipe: close them in this process.
+        drop(command);
         let stdout = child.stdout.take();
         let pid = child
             .id()

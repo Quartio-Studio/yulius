@@ -2,24 +2,24 @@
 //! (SPEC-002 ADR-09, ADR-15; SPEC-001 BRW-001..008, U-10).
 //!
 //! - [`BrowserManager`] lazily starts one Chromium per sandbox ([`BrowserManager::ensure`]) with
-//!   `--remote-debugging-port=0` on loopback and a per-sandbox profile, learns the port from
-//!   `DevToolsActivePort`, restarts a crashed browser on next use, stops idle ones
+//!   `--remote-debugging-pipe` (DevTools on its fds 3 and 4) and a per-sandbox profile, waits
+//!   for its first answer, restarts a crashed browser on next use, stops idle ones
 //!   ([`BrowserManager::reap_idle`]) and kills and reaps the process group on
 //!   [`BrowserManager::shutdown`]. With [`DisplayMode::Virtual`] each browser is headful on its
 //!   own `Xvfb` ([`VirtualDisplay`]): users watch H.264 video ([`VideoHub`]) and their input is
 //!   real (XTest); otherwise it runs `--headless=new` and users get JPEG screencast frames.
 //! - [`BrowserInstance`] is the shared browser: tab list and events for viewers, video and
 //!   screencast subscriptions, input dispatch, the MCP tool functions (`tool_*`), the
-//!   user-action registry ([`BrowserInstance::request_user_action`]) and the raw DevTools
-//!   endpoint ([`BrowserInstance::cdp_ws_url`]).
-//! - [`CdpClient`] is the bounded JSON-RPC client underneath.
+//!   user-action registry ([`BrowserInstance::request_user_action`]) and, in process only, its
+//!   DevTools client ([`BrowserInstance::cdp`]).
+//! - [`CdpClient`] is the bounded JSON-RPC client underneath, over the pipe or a WebSocket.
 //! - [`normalize_url`] is the URL policy (http, https, about:blank only).
 //!
-//! Trust model: the DevTools endpoint has no authentication. It listens on 127.0.0.1, so any
-//! local process that finds the port can control the browser, including its logged-in
-//! sessions. Agents of the same sandbox are meant to (U-10); processes of other sandboxes
-//! share the loopback network under ADR-03 containment and could too. Treat the endpoint as
-//! sandbox-shared, not per-user. The virtual display is not reachable from containment at all
+//! Trust model: DevTools has no authentication, so the browser opens no DevTools socket at all
+//! (ADR-0191). Only Yulius holds the pipe's other ends (close-on-exec), so no other process, of
+//! this sandbox, another one or the host, can drive the browser or its logged-in sessions
+//! through DevTools, whatever the containment. Agents use it through Yulius's browser tools.
+//! The virtual display is not reachable from containment at all
 //! (no TCP or abstract socket, a private `/tmp`, a cookie outside the sandbox directories).
 //!
 //! The `fake` feature adds [`fake`]: an in-process fake CDP server, a fake Chromium launcher
@@ -60,7 +60,7 @@ pub use instance::{
     InstanceConfig, KeyInput, MouseInput, ScreencastConfig, ScreenshotStep, VIEWPORT_MAX,
     VIEWPORT_MIN,
 };
-pub use manager::{BrowserConfig, BrowserManager, DEVTOOLS_PORT_FILE, IdleReaper};
+pub use manager::{BrowserConfig, BrowserManager, IdleReaper};
 pub use process::StopTimeouts;
 pub use url_policy::{UrlDenyList, UrlRefused, normalize_url};
 pub use video::{

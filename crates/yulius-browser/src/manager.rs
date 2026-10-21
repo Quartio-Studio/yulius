@@ -11,18 +11,17 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use yulius_domain::ids::SandboxId;
 
-use crate::cdp::CdpConfig;
+use crate::cdp::{CdpClient, CdpConfig};
 use crate::discovery::resolve_executable;
 use crate::display::{DisplayMode, VirtualDisplay};
-use crate::error::BrowserError;
+use crate::error::{BrowserError, CdpError};
+
+/// Wait for a browser whose DevTools pipe ended to be reaped, to report its exit.
+const PIPE_END_GRACE: Duration = Duration::from_secs(1);
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig};
 use crate::process::{StopTimeouts, Supervised, passed_env};
 use crate::url_policy::UrlDenyList;
-
-/// File Chromium writes into the profile when started with `--remote-debugging-port=0`.
-pub const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
-/// Poll interval while waiting for [`DEVTOOLS_PORT_FILE`].
-const PORT_FILE_POLL: Duration = Duration::from_millis(50);
+use serde_json::json;
 
 /// Browser adapter configuration.
 #[derive(Debug, Clone)]
@@ -41,7 +40,7 @@ pub struct BrowserConfig {
     pub default_viewport: (u32, u32),
     /// Stop a browser after this long without activity and without viewers.
     pub idle_timeout: Duration,
-    /// Maximum wait for `DevToolsActivePort` after spawning.
+    /// Maximum wait for the browser's first DevTools answer after spawning.
     pub startup_timeout: Duration,
     /// Stop escalation deadlines.
     pub stop: StopTimeouts,
@@ -109,8 +108,8 @@ impl BrowserConfig {
         let mut user_data_dir = OsString::from("--user-data-dir=");
         user_data_dir.push(profile_dir.as_os_str());
         let mut args: Vec<OsString> = vec![
-            "--remote-debugging-port=0".into(),
-            "--remote-debugging-address=127.0.0.1".into(),
+            // DevTools on fds 3 and 4 only: no listener anyone else could reach (ADR-0191).
+            "--remote-debugging-pipe".into(),
             user_data_dir,
         ];
         match &self.display {
@@ -166,71 +165,38 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Parses `DevToolsActivePort` (`<port>\n/devtools/browser/<id>\n`) into the WebSocket URL.
-fn parse_port_file(text: &str) -> Result<String, String> {
-    let mut lines = text.lines();
-    let port = lines
-        .next()
-        .and_then(|line| line.trim().parse::<u16>().ok())
-        .filter(|port| *port != 0)
-        .ok_or_else(|| "first line is not a TCP port".to_owned())?;
-    let path = lines
-        .next()
-        .map(str::trim)
-        .filter(|path| {
-            path.starts_with("/devtools/browser/") && path.bytes().all(|b| b.is_ascii_graphic())
-        })
-        .ok_or_else(|| "second line is not a /devtools/browser/ path".to_owned())?;
-    Ok(format!("ws://127.0.0.1:{port}{path}"))
-}
-
-async fn wait_for_port_file(
-    port_file: &Path,
+/// Waits until the browser answers on its DevTools pipe, or exits, within `timeout`.
+async fn wait_until_ready(
+    cdp: &CdpClient,
     process: &Supervised,
     timeout: Duration,
-) -> Result<String, BrowserError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut last_problem = String::new();
-    loop {
-        if let Some(status) = process.exit_status() {
-            return Err(BrowserError::ExitedEarly {
-                status,
-                stderr: process.stderr_tail(),
-            });
-        }
-        match tokio::fs::read_to_string(port_file).await {
-            Ok(text) => match parse_port_file(&text) {
-                Ok(url) => return Ok(url),
-                // Possibly a partial write; retry until the deadline.
-                Err(problem) => last_problem = format!(": {DEVTOOLS_PORT_FILE} {problem}"),
+) -> Result<(), BrowserError> {
+    let exited = |process: &Supervised| BrowserError::ExitedEarly {
+        status: process.exit_status().unwrap_or_default(),
+        stderr: process.stderr_tail(),
+    };
+    tokio::select! {
+        answer = cdp.call_within("Browser.getVersion", json!({}), timeout) => match answer {
+            Ok(_) => Ok(()),
+            Err(CdpError::Timeout { .. }) => Err(BrowserError::StartupTimeout { timeout }),
+            // The pipe ends when the browser exits; give the exit a moment to be reaped.
+            Err(error) => match process.wait_exit(PIPE_END_GRACE).await {
+                Some(_) => Err(exited(process)),
+                None => Err(BrowserError::Cdp(error)),
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => last_problem = format!(": reading {DEVTOOLS_PORT_FILE}: {error}"),
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(BrowserError::StartupTimeout {
-                timeout,
-                detail: last_problem,
-            });
-        }
-        tokio::time::sleep(PORT_FILE_POLL).await;
+        },
+        () = process.exited() => Err(exited(process)),
     }
 }
 
-async fn prepare_profile(profile_dir: &Path) -> Result<PathBuf, BrowserError> {
+async fn prepare_profile(profile_dir: &Path) -> Result<(), BrowserError> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::create_dir_all(profile_dir)
         .await
         .map_err(BrowserError::Profile)?;
     tokio::fs::set_permissions(profile_dir, std::fs::Permissions::from_mode(0o700))
         .await
-        .map_err(BrowserError::Profile)?;
-    let port_file = profile_dir.join(DEVTOOLS_PORT_FILE);
-    match tokio::fs::remove_file(&port_file).await {
-        Ok(()) => Ok(port_file),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(port_file),
-        Err(error) => Err(BrowserError::Profile(error)),
-    }
+        .map_err(BrowserError::Profile)
 }
 
 impl BrowserManager {
@@ -302,19 +268,6 @@ impl BrowserManager {
         Ok(instance)
     }
 
-    /// DevTools ports of the running browsers (busy slots are skipped).
-    #[must_use]
-    pub fn devtools_ports(&self) -> Vec<u16> {
-        let slots: Vec<Slot> = lock(&self.slots).values().cloned().collect();
-        slots
-            .iter()
-            .filter_map(|slot| {
-                let guard = slot.try_lock().ok()?;
-                guard.as_ref().and_then(|instance| instance.devtools_port())
-            })
-            .collect()
-    }
-
     /// The sandbox's browser if it is running; never starts one.
     pub async fn get(&self, sandbox: &SandboxId) -> Option<Arc<BrowserInstance>> {
         let slot = lock(&self.slots).get(sandbox).cloned()?;
@@ -328,7 +281,7 @@ impl BrowserManager {
         profile_dir: &Path,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
-        let port_file = prepare_profile(profile_dir).await?;
+        prepare_profile(profile_dir).await?;
         let args = self.config.chromium_args(profile_dir);
         let quick = StopTimeouts {
             graceful: Duration::ZERO,
@@ -350,26 +303,23 @@ impl BrowserManager {
                 warn!(%error, "could not stop the display of a browser that failed to start");
             }
         };
-        let process = match Supervised::spawn(&exe, &args, &env) {
-            Ok(process) => process,
+        let (process, pipe) = match Supervised::spawn_with_devtools_pipe(&exe, &args, &env) {
+            Ok(spawned) => spawned,
             Err(error) => {
                 stop_display(display).await;
                 return Err(BrowserError::Spawn(error));
             }
         };
-        let ws_url =
-            match wait_for_port_file(&port_file, &process, self.config.startup_timeout).await {
-                Ok(url) => url,
-                Err(error) => {
-                    let _ = process.terminate(quick).await;
-                    stop_display(display).await;
-                    return Err(error);
-                }
-            };
+        let cdp = CdpClient::over_pipe(pipe.from_child, pipe.to_child, self.config.cdp);
+        if let Err(error) = wait_until_ready(&cdp, &process, self.config.startup_timeout).await {
+            let _ = process.terminate(quick).await;
+            stop_display(display).await;
+            return Err(error);
+        }
         let display_name = display.as_ref().map(VirtualDisplay::name);
         match BrowserInstance::attach_on(
             sandbox.clone(),
-            &ws_url,
+            cdp,
             self.config.instance_config(),
             display,
         )
@@ -488,21 +438,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn port_file_parsing_requires_port_and_browser_path() {
-        assert_eq!(
-            parse_port_file("40123\n/devtools/browser/abc-123\n"),
-            Ok("ws://127.0.0.1:40123/devtools/browser/abc-123".into())
-        );
-        assert!(parse_port_file("").is_err());
-        assert!(parse_port_file("40123\n").is_err());
-        assert!(parse_port_file("0\n/devtools/browser/x\n").is_err());
-        assert!(parse_port_file("70000\n/devtools/browser/x\n").is_err());
-        assert!(parse_port_file("40123\n/devtools/page/x\n").is_err());
-        assert!(parse_port_file("40123\n/devtools/browser/x y\n").is_err());
-    }
-
-    #[test]
-    fn chromium_args_are_loopback_isolated_and_sandboxed_by_default() {
+    fn chromium_args_use_the_devtools_pipe_and_are_sandboxed_by_default() {
         let config = BrowserConfig::new("chromium".into(), "/data/browsers".into());
         let args: Vec<String> = config
             .chromium_args(Path::new("/data/s1/browser"))
@@ -510,8 +446,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         for expected in [
-            "--remote-debugging-port=0",
-            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-pipe",
             "--user-data-dir=/data/s1/browser",
             "--headless=new",
             "--window-size=1280,800",
@@ -522,6 +457,14 @@ mod tests {
             );
         }
         assert!(!args.iter().any(|arg| arg.contains("no-sandbox")));
+        // No DevTools listener: any process on the network namespace could drive it (#626).
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.starts_with("--remote-debugging-port")
+                    || arg.starts_with("--remote-debugging-address")),
+            "{args:?}"
+        );
         assert_eq!(args.last().map(String::as_str), Some("about:blank"));
         let explicit = BrowserConfig {
             no_sandbox: true,
