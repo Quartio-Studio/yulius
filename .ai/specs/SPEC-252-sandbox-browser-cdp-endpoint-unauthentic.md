@@ -52,6 +52,9 @@ browser has no DevTools listener at all.
   `BrowserPort::devtools_ports`, `BrowserManager::devtools_ports`,
   `BrowserInstance::{cdp_ws_url, cdp_http_url, devtools_port}` and `DEVTOOLS_PORT_FILE`.
   In-process callers (tests) use `BrowserInstance::cdp()`.
+- CDP-006. The three `.config/vidoc.toml` ignores that pointed at #626 (`ports/browser.rs`
+  "Unauthenticated", `yulius-browser/src/lib.rs` "Unauthenticated CDP" and the suppression
+  finding on `vidoc.toml` itself) are removed, so the scanner reports a regression again.
 - CDP-005. The trust notes (`ports/browser.rs`, the browser crate docs), SPEC-002 R-07 and its
   mentions, `docs/operations.md`, `docs/architecture.md` and SPEC-001 U-10 say what is true now.
 
@@ -118,12 +121,6 @@ browser has no DevTools listener at all.
   message of exactly `max_message_bytes`; nits: constant placement, `Lagged` in the projects
   test, `deny.toml` names `command-fds`. Not changed: the fake's accept loop ending on an accept
   error (test-only, it never fails on loopback).
-- Merged `origin/dev` at `696eb6aa`. It conflicted in `crates/yulius/tests/projects.rs`, where
-  dev had fixed the same flaky test the same way (waiting for the notice), so dev's version was
-  kept and this change no longer carries that test fix. Yulius CI on `2c216e1d` once failed only
-  `yulius-git::git_ops ci_checkouts_created_at_once_all_succeed` (`git worktree list` read a
-  concurrent checkout's half-written `commondir`). That is open issue #666, outside this change;
-  the evidence was added there.
 - Confirmation review of `9c38e5fa`: APPROVE. One minor finding, fixed: the wording now names runs
   without containment (host mode) beside Yulius's user, and the ADR index line no longer
   overclaims. Nits, fixed: the `NeverReady` case no longer reads `ClosesPipe`'s pid file; SPEC-002's
@@ -156,3 +153,13 @@ browser has no DevTools listener at all.
 - Not tested here: the opt-in live display/UI tests (`live_display`, `live_ui_browser`, ignored;
   they need Xvfb, ffmpeg and a display stack). They compile against `ChromiumBrowsers::cdp`. A
   real Chromium on macOS was not run (`scripts/dev macos` compiles it).
+- Merged `origin/dev` at `696eb6aa`. It conflicted in `crates/yulius/tests/projects.rs`, where
+  dev had fixed the same flaky test the same way (waiting for the notice), so dev's version was
+  kept and this change no longer carries that test fix. Yulius CI on `2c216e1d` once failed only
+  `yulius-git::git_ops ci_checkouts_created_at_once_all_succeed` (`git worktree list` read a
+  concurrent checkout's half-written `commondir`). That is open issue #666, outside this change;
+  the evidence was added there.
+- Review of the merge head `d2abb68a`: the merge itself is correct, but it requested changes
+  because the #626 ignores were left in `.config/vidoc.toml`. They are removed (CDP-006).
+  `scripts/dev ci` on `d2abb68a`: passed, 2374/2374. The Vidoc scan still cannot run (exit 2,
+  HTTP 429, quota used up), so the scanner has not yet re-read the files these ignores covered.

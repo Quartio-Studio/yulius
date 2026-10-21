@@ -11,7 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   any local process, including a run of another sandbox under the fallback containment, could
   drive a sandbox's browser and its logged-in sessions. It now speaks DevTools only over a pipe
   that Yulius holds (`--remote-debugging-pipe`). Agents keep using Yulius's browser tools; the
-  unused raw CDP endpoint for a sandbox's MCP servers is gone.
+  unused raw CDP endpoint for a sandbox's MCP servers is gone. The Vidoc ignores that pointed at
+  #626 are removed.
 - The Claude config dir is prepared through handles (SPEC-253, ADR-0193, task #239, fixes #634).
   Before a launch, Yulius opens `<home>/.claude` from the folder above the home without following
   links. A home or config dir the agent replaced with a link now refuses the launch and names it,
