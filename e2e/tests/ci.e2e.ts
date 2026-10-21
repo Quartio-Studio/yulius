@@ -54,9 +54,60 @@ test('the CI page shows the jobs in force and opens a failed run at the failing 
   await expect(screen.getByRole('region', 'CI run')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
   await screen.getByRole('region', 'CI run').getByRole('link', 'All runs').click();
+});
 
-  await screen.getByRole('button', 'Run again: PR #218 at 0d7e5f3').click();
+// SPEC-258 (#774): "throw out run again lol what is even that". The list repeats no Run again;
+// the running card keeps Cancel, and a run is tested again from its own view.
+test('Run again lives in the run’s view, not on every card', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await expect(screen.getByRole('heading', 'Runs')).toBeVisible();
+  await expect(browser.locator('.item-list button:has-text("Run again")')).toHaveCount(0);
+  await expect(browser.locator('.item-list button:has-text("Cancel")')).toHaveCount(1);
+
+  await screen.getByRole('button', 'Open the run of PR #218 at 0d7e5f3').click();
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run.getByRole('button', 'Run again: PR #218 at 0d7e5f3')).toBeVisible();
+  await expect(run.getByRole('button', /^Cancel/)).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+  await run.getByRole('button', 'Run again: PR #218 at 0d7e5f3').click();
   await expect(screen.getByText('PR #218 queued again.')).toBeVisible();
+  // The new run opens in place of the old one, at its own address; Back returns to the old one.
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_\d+$/);
+  await expect(screen.getByRole('region', 'CI run').getByText('Running')).toBeVisible();
+  await expect(screen.getByRole('region', 'CI run').getByRole('button', 'Cancel: PR #218 at 0d7e5f3')).toBeVisible();
+  await browser.evaluate(() => history.back());
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_s2$/);
+});
+
+// Review round 1: another job's tab keeps the head's Run again and In Pipeline; a click while the
+// request is out sends no second one.
+test('Run again stays across job tabs and is off while it is being sent', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s2', '&holdpost=/api/sandboxes/sb_studio/ci/runs/ci_s2/rerun'));
+  const run = screen.getByRole('region', 'CI run');
+  await run.getByRole('tab', /lint/).click();
+  await expect(browser.locator('.run-output')).toHaveText(/no warnings/);
+  await expect(run.getByRole('link', 'In Pipeline')).toBeVisible();
+  const again = run.getByRole('button', 'Run again: PR #218 at 0d7e5f3');
+  await again.click();
+  await expect(again).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByText('PR #218 queued again.')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_\d+$/);
+  await expect(screen.getByText(/Couldn’t run it again/)).toBeHidden();
+});
+
+test('a running run is cancelled from its view and can then run again', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s4'));
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run.getByText('Running')).toBeVisible();
+  await expect(run.getByRole('button', /^Run again/)).toBeHidden();
+  await run.getByRole('button', /^Cancel: /).click();
+  const confirm = screen.getByRole('dialog', /^Cancel the run of /);
+  await confirm.getByRole('button', 'Cancel run').click();
+  await expect(run.getByText('Cancelled')).toBeVisible();
+  await expect(run.getByRole('button', /^Cancel: /)).toBeHidden();
+  // Review round 1: the keyboard goes from the Cancel it used to the Run again that replaced it.
+  await expect(run.getByRole('button', /^Run again: /)).toBeFocused();
 });
 
 test('a run opens from the link of its commit status', async ({ app, screen }) => {
@@ -152,6 +203,10 @@ test('people with read access watch but cannot run or clean up', async ({ app, s
   await app.open(mock('/s/sandbox-3/ci'));
   await expect(screen.getByRole('heading', '1 job from the sandbox’s delivery profile')).toBeVisible();
   await expect(screen.getByRole('button', 'Check for commits')).toBeDisabled();
-  await expect(screen.getByRole('button', 'Run again: dev at 77aa01b')).toBeHidden();
   await expect(screen.getByRole('button', 'Clean up')).toBeDisabled();
+  // SPEC-258 RRA-003: their run's view offers neither Run again nor Cancel.
+  await screen.getByRole('button', 'Open the run of dev at 77aa01b').click();
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run.getByRole('link', 'In Pipeline')).toBeVisible();
+  await expect(run.getByRole('button', /^(Run again|Cancel)/)).toBeHidden();
 });

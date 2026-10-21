@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-21
 
+- The CI page's run list no longer shows "Run again" on every card (SPEC-258, task #244, #774).
+  A run is tested again from its own view, which opens the new run; the view also has Cancel while
+  the run is queued or running, and an active card keeps Cancel. Read access sees neither.
 - "Onboard this into Yulius" to a person's local Claude Code is enough (SPEC-256, ADR-0194, task
   #242). The operate token made for their agent now also signs in `yulius onboard` and `yulius
   secrets import`, so no browser approval is needed. `yulius secrets import --yes` sends without
