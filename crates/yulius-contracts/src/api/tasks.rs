@@ -72,6 +72,10 @@ pub struct TaskSummary {
     pub archived: bool,
     /// Label of the account in use.
     pub account_label: Option<String>,
+    /// Email of the Claude account in use: in a task's detail for instance administrators only
+    /// (UI-022); absent otherwise and while unknown (SPEC-244).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
     /// `goal` or `prompt` (TSK-010).
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -79,6 +83,10 @@ pub struct TaskSummary {
     /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
     #[serde(default)]
     pub resumes_at: Option<String>,
+    /// While `waiting_capacity`: no Claude account is usable, so it waits for one to be connected
+    /// rather than for capacity (SPEC-246 CLA-004).
+    #[serde(default)]
+    pub waits_for_account: bool,
     /// While the agent is idle (`waiting` or `done`): background work it left running: shells, as
     /// last probed (TSK-014), and the background agents Claude Code still waited for at its last
     /// turn end (SPEC-032), whichever is more. Null when not known or not idle.
@@ -326,6 +334,10 @@ pub struct AttemptView {
     pub harness: String,
     /// Account label.
     pub account_label: Option<String>,
+    /// Email of the account's Claude account (instance administrators only, UI-022; absent while
+    /// unknown, SPEC-244).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
     /// `new` or `resume`.
     pub launch_kind: String,
     /// Attempt state wire name.

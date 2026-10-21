@@ -9,7 +9,8 @@
 //!   the local Git state through the `git` CLI (argv only, bounded output and time).
 //! * [`discover_claude_sessions`] finds sessions opened in the repository's checkouts within a
 //!   time window, with bounded transcript reading.
-//! * [`Uploader`], [`device_login`], [`TokenStore`] talk to the Yulius server.
+//! * [`Uploader`], [`device_login`], [`TokenStore`] talk to the Yulius server; [`RemoteClient`]
+//!   calls its remote MCP for `yulius remote` and its shortcuts (SPEC-247).
 //! * [`stage_redacted`] copies a transcript with secrets redacted and images left out.
 //! * [`run_import`] orchestrates one onboarding run behind the [`ImportIo`] boundary; [`Ui`]
 //!   is what it shows and asks ([`TerminalUi`] with progress bars, [`PlainUi`] for pipes).
@@ -22,6 +23,7 @@ mod http;
 mod jsonl;
 mod process;
 mod redact;
+mod remote;
 mod run;
 mod secret;
 mod secrets_import;
@@ -42,6 +44,7 @@ pub use git::{
 pub use http::{ApiError, RetryPolicy};
 pub use process::GitError;
 pub use redact::{IMAGE_PLACEHOLDER, MAX_STAGED_LINE_BYTES, RedactionReport, stage_redacted};
+pub use remote::{PROTOCOL_VERSION, RemoteClient, RemoteError, ToolOutcome};
 pub use reqwest::Url;
 pub use run::{
     ImportError, ImportIo, ImportOptions, OnboardOutcome, SessionChoice, SessionSources,
@@ -49,8 +52,9 @@ pub use run::{
 };
 pub use secret::Secret;
 pub use secrets_import::{
-    PreparedTarget, SecretsImportError, SecretsImportOptions, SecretsIo, SecretsSummary,
-    SecretsTarget, VaultClient, import_secrets, prepare_target, prompt_secrets,
+    MAX_SECRET_FILE_BYTES, PreparedTarget, SecretsImportError, SecretsImportOptions, SecretsIo,
+    SecretsSummary, SecretsTarget, VaultClient, import_secrets, prepare_target, prompt_secrets,
+    secret_file_entry,
 };
 pub use sessions::{DiscoveredSession, SessionFile, discover_claude_sessions};
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};

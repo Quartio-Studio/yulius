@@ -181,10 +181,45 @@ enum Command {
         action: LeftoversAction,
     },
     /// Manage the vault from this computer.
+    #[command(visible_alias = "secret")]
     Secrets {
         /// What to do.
         #[command(subcommand)]
         action: SecretsAction,
+    },
+    /// Drive a Yulius instance from this computer with a personal API token (SPEC-247): log in,
+    /// then call any tool its remote MCP serves.
+    Remote {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::RemoteAction,
+    },
+    /// A project of the instance `yulius remote login` stored: import, onboard, read and change
+    /// its files.
+    Project {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::ProjectAction,
+    },
+    /// The project's tasks: create, list, message, restart, stop, archive, delete.
+    Task {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::TaskAction,
+    },
+    /// The project's Yulius CI runs.
+    Ci {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::CiAction,
     },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
     Doctor {
@@ -250,10 +285,11 @@ enum LeftoversAction {
 
 #[derive(Debug, Subcommand)]
 enum SecretsAction {
-    /// Import secrets from a dotenv file, stdin or typed prompts (SPEC-205): team secrets for
-    /// people, or agent secrets, of a sandbox or team-wide (SPEC-216). Names are shown, values
-    /// never; a secret that exists is skipped, never overwritten; nothing is sent before you type
-    /// yes at the terminal.
+    /// Import secrets from a dotenv file, key files, stdin or typed prompts (SPEC-205): team
+    /// secrets for people, or agent secrets, of a sandbox or team-wide (SPEC-216). Names are
+    /// shown, values never; a secret that exists is skipped, never overwritten; nothing is sent
+    /// before you type yes at the terminal, or with --yes and your agent's operate token
+    /// (SPEC-256).
     Import {
         /// Team secrets (for people) or agent secrets (for agents, who never see them).
         #[arg(long, value_enum)]
@@ -265,19 +301,38 @@ enum SecretsAction {
         /// repository).
         #[arg(long)]
         sandbox: Option<String>,
-        /// Team-wide secrets, for every sandbox (agent secrets: instance administrators).
+        /// Team-wide team secrets; global agent secrets (instance administrators), switched on for
+        /// the sandbox.
         #[arg(long)]
         instance: bool,
         /// Agent secrets: you allow each host and production deploys on the Secrets page,
         /// instead of agents setting them up (the default).
         #[arg(long)]
         confirm_hosts: bool,
+        /// A whole file as one secret, `NAME=PATH` (a key such as `DEPLOY_SSH_KEY=~/.ssh/id_deploy`;
+        /// repeatable): the file is read here and never shown.
+        #[arg(long = "from-file", value_name = "NAME=PATH")]
+        from_files: Vec<String>,
+        /// Agent secrets: agents may copy them into the project's git-ignored `.env` files from
+        /// the start (ssh keys, deploy scripts), instead of you allowing it when a task asks.
+        #[arg(long)]
+        env_files: bool,
+        /// Send without asking: only with the operate token `yulius remote login` stored, made for
+        /// your agent on Settings → Connect your local agent.
+        #[arg(long)]
+        yes: bool,
         /// Yulius URL (default: the only server you signed in to).
         #[arg(long, env = "YULIUS_SERVER")]
         server: Option<String>,
         /// No colours (also NO_COLOR=1).
         #[arg(long)]
         no_color: bool,
+    },
+    /// The project's agent secrets through the remote MCP: names, descriptions and bound hosts,
+    /// never values (SPEC-247).
+    List {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
     },
 }
 
@@ -507,6 +562,9 @@ fn main() -> ExitCode {
                     sandbox,
                     instance,
                     confirm_hosts,
+                    from_files,
+                    env_files,
+                    yes,
                     server,
                     no_color,
                 },
@@ -517,8 +575,18 @@ fn main() -> ExitCode {
             instance,
             confirm_hosts,
             server,
+            yes,
+            from_files,
+            env_files,
             no_color,
         }),
+        Command::Secrets {
+            action: SecretsAction::List { opts },
+        } => yulius::remote_cli::secrets_list(&opts),
+        Command::Remote { opts, action } => yulius::remote_cli::remote(action, &opts),
+        Command::Project { opts, action } => yulius::remote_cli::project_cmd(action, &opts),
+        Command::Task { opts, action } => yulius::remote_cli::task_cmd(action, &opts),
+        Command::Ci { opts, action } => yulius::remote_cli::ci_cmd(action, &opts),
         Command::Doctor {
             docker_smoke: true,
             data,

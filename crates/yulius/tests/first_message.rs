@@ -215,6 +215,7 @@ async fn goal_in_a_continued_turn(
         user: app.deps.store.user(&user).await?.ok_or("user")?,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     app.switch_task(
         &ctx,
@@ -345,6 +346,7 @@ fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let attach = app
             .terminal_open(&ctx, id.as_str(), Some((120, 40)))
@@ -540,6 +542,7 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let attach = app
             .terminal_open(&ctx, id.as_str(), Some((120, 40)))
@@ -613,6 +616,7 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let attach = app
             .terminal_open(&ctx, id.as_str(), Some((120, 40)))
@@ -1094,6 +1098,7 @@ fn a_manual_switch_of_a_held_first_message_keeps_its_image() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.switch_task(
             &ctx,

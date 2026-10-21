@@ -629,7 +629,10 @@ async fn add_user(
         )
         .await?;
     h.github.set_perm(login, "Quartio-Studio/shop", perms);
-    let token = h.app.issue_api_token(&user, "test").await?;
+    let token = h
+        .app
+        .issue_api_token(&user, "test", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     Ok(Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()
@@ -2799,7 +2802,10 @@ async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
         disabled_at: None,
     };
     h.store.insert_user(&user).await?;
-    let token = h.app.issue_api_token(&user, "test").await?;
+    let token = h
+        .app
+        .issue_api_token(&user, "test", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     Ok(Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()

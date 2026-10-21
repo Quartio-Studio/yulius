@@ -171,8 +171,16 @@ impl App {
             steps: progress(&steps),
             archived: task.archived_at.is_some(),
             account_label,
+            // The sign-in email is for administrators (UI-022), and summaries go to everyone who
+            // sees the task: only `task_detail` adds it, for an administrator (SPEC-244).
+            account_email: None,
             mode: task.mode.as_str().to_owned(),
             resumes_at: self.capacity_returns_at(task).await.map(rfc3339),
+            waits_for_account: task.status == TaskStatus::WaitingCapacity
+                && self
+                    .agent_accounts(task.harness.provider())
+                    .await
+                    .is_ok_and(|a| a != crate::account_gate::AgentAccounts::Usable),
             after,
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
@@ -324,21 +332,33 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        let summary = self.task_summary(&task).await?;
+        let mut summary = self.task_summary(&task).await?;
+        // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
+        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        if admin
+            && let Some(attempt) = store.live_attempt(&task.id).await?
+            && let Some(id) = attempt.account_id
+        {
+            summary.account_email = store.account(&id).await?.and_then(|a| a.email);
+        }
         let mut attempts = Vec::new();
         let mut wall_ms: i64 = 0;
         let now = self.now();
         for a in store.attempts(&task.id).await? {
             wall_ms =
                 wall_ms.saturating_add(a.ended_at.unwrap_or(now).millis_since(a.started_at).max(0));
-            let label = match &a.account_id {
-                Some(id) => store.account(id).await?.map(|acc| acc.label),
+            let account = match &a.account_id {
+                Some(id) => store.account(id).await?,
                 None => None,
             };
+            let (account_label, account_email) = account.map_or((None, None), |acc| {
+                (Some(acc.label), acc.email.filter(|_| admin))
+            });
             attempts.push(AttemptView {
                 seq: a.seq,
                 harness: a.harness.as_str().to_owned(),
-                account_label: label,
+                account_label,
+                account_email,
                 launch_kind: a.launch_kind.as_str().to_owned(),
                 state: a.state.as_str().to_owned(),
                 started_at: rfc3339(a.started_at),

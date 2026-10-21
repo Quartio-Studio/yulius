@@ -3,7 +3,6 @@
 //! tools and safeguards; what differs is where a `.env` copy goes, how a person sees who asked,
 //! and whether a task is flagged as needing a person.
 
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -13,7 +12,7 @@ use yulius_domain::time::Timestamp;
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::AppResult;
-use crate::model::{SandboxRecord, TaskRecord};
+use crate::model::TaskRecord;
 use crate::ports::vault::EnvFiles;
 
 /// How often a secret request tries to flag a task whose state changes under it.
@@ -29,6 +28,14 @@ pub(crate) enum SecretUser<'a> {
 }
 
 impl SecretUser<'_> {
+    /// For whom it resolves its project's secrets (SPEC-245 RES-002).
+    pub(crate) fn holder(&self) -> super::Holder<'_> {
+        match self {
+            Self::Task(ctx) => super::Holder::of_task(&ctx.task),
+            Self::Superagent(caller) => super::Holder::Person(&caller.user),
+        }
+    }
+
     /// Its project's sandbox.
     pub(crate) fn sandbox(&self) -> &SandboxId {
         match self {
@@ -77,25 +84,6 @@ impl SecretUser<'_> {
 }
 
 impl App {
-    /// The folder a caller's `.env` copies go into: a task's worktree, or the sandbox repository
-    /// the Superagent runs in.
-    pub(super) async fn secret_user_folder(
-        &self,
-        user: SecretUser<'_>,
-        sandbox: &SandboxRecord,
-    ) -> AppResult<PathBuf> {
-        match user {
-            SecretUser::Task(ctx) => {
-                self.sandbox_worktree(sandbox, ctx.task.id.as_str(), None)
-                    .await
-            }
-            SecretUser::Superagent(_) => {
-                let repo = self.sandbox_repo(&sandbox.id);
-                Ok(std::fs::canonicalize(&repo).unwrap_or(repo))
-            }
-        }
-    }
-
     /// Flags a task whose agent waits for a person (`what` names it in the log); a Superagent's
     /// person is in front of it, so nothing is flagged. A flag it raises itself is remembered,
     /// so the person's answer ends it ([`Self::settle_secret_waits`]); one set before is not
@@ -231,7 +219,7 @@ impl App {
     /// among its askers (`#N`, `#N in <slug>` for a secret of every sandbox).
     async fn secret_waits_for(&self, task: &TaskRecord) -> AppResult<bool> {
         let store = &self.deps.store;
-        let records = store.vault_agent(Some(&task.sandbox_id)).await?;
+        let records = store.vault_agent_in(&task.sandbox_id).await?;
         let me = SecretUser::task_asker(task.number);
         // A secret of every sandbox names its askers with their sandbox.
         let everywhere = if records.iter().any(|r| r.sandbox_id.is_none()) {

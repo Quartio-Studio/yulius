@@ -9,8 +9,9 @@ Anthropic. The detailed contracts are in
 ```mermaid
 flowchart LR
   UI["Web UI (xterm.js, Monaco)"] <--> RP["Reverse proxy (TLS)"] <--> API
+  LA["A person's local agent or the yulius CLI"] -->|"remote MCP, API token"| RP
   subgraph Server["yulius serve"]
-    API["Public HTTP + WS API"]
+    API["Public HTTP + WS API, remote MCP"]
     INT["Internal loopback: MCP, hooks, git and gh credentials"]
     APP["Application services"]
     SUP["Session supervisor"]
@@ -169,6 +170,26 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Sandbox browser DevTools
+
+Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the
+pipe pair Yulius gives it at spawn (`--remote-debugging-pipe`, fds 3 and 4, NUL-terminated JSON;
+[ADR-0191](decisions/0191-the-sandbox-browser-speaks-devtools-over-a-pipe.md)). It opens no
+DevTools socket, and a contained run (isolated or the fallback bubblewrap, each with its own PID
+namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
+running as Yulius's user on the host, including an agent run without containment (host mode), or
+root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
+tools, viewers through the viewer WebSocket.
+
+```mermaid
+flowchart LR
+  A["Agent (any containment)"] -->|"browser_* MCP tools"| Y["Yulius (BrowserManager, CdpClient)"]
+  V["Viewer"] -->|"viewer WebSocket"| Y
+  Y -->|"fd 3: requests"| C["Sandbox Chromium"]
+  C -->|"fd 4: responses, events"| Y
+  O["Other local process"] -. "no DevTools port to connect to" .-x C
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -195,6 +216,31 @@ flowchart LR
   C -->|under| L
   N --> Q
   L -->|job refused for disk| Q
+```
+
+## Connecting a subscription
+
+An administrator connects a Claude subscription with Claude's own sign-in, `claude setup-token`.
+It runs in a server-owned PTY, and the web UI shows it in a dialog over the login terminal
+(SPEC-001 ROT-002, SPEC-002 ADR-05). The CLI stores no credential file. It prints the long-lived
+token once, so the server reads the token from the raw PTY stream and masks it for viewers. On
+the CLI's exit it seals the token into the account. A CLI that runs on more than 5 s after a
+complete token appeared is stopped and the token sealed (SPEC-243,
+[decision 0184](decisions/0184-a-captured-token-ends-the-sign-in-and-a-closed-dialog-cancels-it.md)).
+The dialog follows the terminal's ending. On `ok` it closes by itself and a toast names the
+subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
+sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
+waits for the end and keeps a token already printed, so a sign-in that succeeded is never lost.
+
+```mermaid
+stateDiagram-v2
+  [*] --> running: Add subscription / Sign in again
+  running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> error: no token at exit, or 15 min timeout
+  running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
+  ok --> [*]: dialog closes, toast "… is connected"
+  error --> running: Try again
+  cancelled --> running: Try again
 ```
 
 ## Usage limits
@@ -227,6 +273,28 @@ sequenceDiagram
     H->>T: step back: drop errors and notices, relink parentUuid
     H->>N: claude --resume id (flag set, no prompt)
     N->>T: the lost turn, redone
+```
+
+## Subscription names and emails
+
+A subscription (an `accounts` row) has the name a person gives it and the email of the Claude
+account behind its credential ([SPEC-244](../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md),
+[decision 0185](decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)).
+Administrators rename it in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}`).
+The email is read, never typed. After a sign-in stores a credential, the app asks Claude's profile
+with that credential through the usage adapter. The background usage round asks the same for
+every signed-in account whose email was never answered. A definite answer is stored with
+`email_checked_at`; a temporary failure backs that account off. A new credential clears both.
+Only administrators get the email in views (UI-022); task summaries never carry it.
+
+```mermaid
+flowchart LR
+  L["Sign-in (claude setup-token)"] -->|"set_account_credential: email, email_checked_at = NULL"| DB[("accounts")]
+  L -->|"record_account_email"| P["UsageProbe::account_email: GET /api/oauth/profile"]
+  R["Background usage round"] -->|"backfill_account_emails: email_checked_at IS NULL"| P
+  P -->|"address, none or 401/403: set_account_email(email, now)"| DB
+  P -->|"timeout, 5xx, 429: back off"| R
+  DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
 ```
 
 ## Full context
@@ -442,7 +510,11 @@ helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the 
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
 random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
-do the same and remove trees with `unlinkat`. Races are tested at pause points
+do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
+(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
+reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
+([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
+[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)). Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
 ```mermaid
@@ -569,11 +641,25 @@ onboarding task writes `pending` under the lock a skip takes, so it needs no con
 the onboarding task reads "Waits for Start onboarding" (or "Not started" after a skip), not Closed
 ([SPEC-153](../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
 [decision 0126](decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
+A repository with no commits has no branch for that task's worktree: a start whose clone has no
+branch of origin fetches it again and, when origin still has none, pushes `README.md` to the default branch GitHub reports
+(`main` when none), as the App, and records that branch. A sandbox recorded with a branch GitHub
+lacks (an empty clone's `master`) is corrected to GitHub's when someone pushed it since
+([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md),
+[decision 0187](decisions/0187-an-empty-repository-gets-its-first-commit-when-onboarding-starts.md)).
+Onboarding runs an agent, so it waits for a Claude account first: without a usable one (signed in,
+`ok` or `limited`) Start onboarding and a browser import's start are refused before anything is
+created or pushed and the sandbox stays `pending`; the same gate (`account_gate`, 409
+`claude_account_required`) refuses every other start a person asks for, while a start by a chain, a
+rule, an automation or a time waits `waiting_capacity` saying no account is connected
+([SPEC-246](../.ai/specs/SPEC-246-onboarding-requires-a-connected-claude-a.md),
+[decision 0190](decisions/0190-a-person-starts-no-agent-without-a-connected-claude-account.md)).
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending: import
-    pending --> preparing: Start onboarding (creates the task)
+    pending --> pending: Start onboarding without a Claude account (refused, nothing created)
+    pending --> preparing: Start onboarding (creates the task, after a first commit for an empty repository)
     preparing --> ready: task finished, format check passes
     preparing --> pending: onboarding task deleted (repair, also at server start)
     pending --> skipped: admin skip
@@ -651,6 +737,58 @@ flowchart LR
     W -->|PUT start: Start now / Supertask| Q[queued]
     C -->|evaluation of the same chain| Q
     X[queued, running, ended] -->|PUT start| N[409: keeps its start]
+```
+
+## Remote control
+
+A person drives the instance from their own computer ([guide](remote-control.md), SPEC-247,
+[ADR-0188](decisions/0188-remote-control-uses-scoped-personal-api-tokens.md),
+[ADR-0189](decisions/0189-remote-file-changes-are-commits-on-a-change-branch-with-a-pull-request.md)).
+On Settings they make a personal API token (`operate` or `read`, stored hashed). Their local
+Claude Code adds `https://<instance>/mcp` with it; the `yulius` CLI (`yulius remote login`, then
+`yulius project|task|ci …`) calls the same endpoint. `App::remote_mcp_handle`
+(`crates/yulius-app/src/remote.rs`) checks the token's scope, counts 120 requests a minute, and
+checks each project tool's action against the person's access to the project named in
+`project`. It then runs the Superagent's own tool (as `remote:<login>`) or the function the web
+UI's route calls, audits changes as `remote.tool` and redacts results as every MCP result. File
+changes never touch a sandbox: `project_change` commits in a fresh clone of GitHub, in a private
+directory outside every sandbox, and opens a
+pull request that Yulius CI tests, and `change_merge` merges it once green
+(`crates/yulius-app/src/remote_files.rs`).
+
+"Onboard this folder" needs nothing more from the person (SPEC-256,
+[ADR-0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)): the
+local agent signs the CLI in with the same `operate` token, which `yulius onboard` and
+`yulius secrets import` also use when there is no `yulius login` token. `yulius onboard --yes`
+uploads the checkout and sessions; `yulius secrets import --yes --env-files --from-file NAME=PATH`
+creates the keys it found (the CLI reads the files; values never reach the agent) already allowed
+into `.env` files (`AgentSecretInput.env_files`); and `yulius project onboard --notes` starts
+onboarding with the agent's hand-over, which `App::approve_onboarding` adds, redacted, to the
+resting onboarding task's request (`append_resting_prompt`) before the task starts.
+
+```mermaid
+flowchart LR
+  LA["Local agent (laptop)"] -->|"yulius onboard --yes"| UP["Import API: checkout + sessions"]
+  LA -->|"yulius secrets import --yes --env-files --from-file"| VA["Agent secrets (env_files allowed)"]
+  LA -->|"onboarding_start {notes}"| OT["Onboarding task request + hand-over"]
+  OT -->|"secrets_list, secret_copy_to_env"| VA
+```
+
+```mermaid
+sequenceDiagram
+  participant L as Local agent / yulius CLI
+  participant M as POST /mcp (public)
+  participant A as App (remote.rs)
+  participant G as GitHub
+  participant C as Yulius CI
+  L->>M: tools/call project_change {project, files}
+  M->>A: remote_caller(token): scope, 120/min
+  A->>A: require(person, project, Work)
+  A->>G: fresh clone, commit as the person, push yulius/change-…, open PR
+  C->>G: tests the pull request (its own [[ci.jobs]])
+  L->>M: tools/call change_merge {number}
+  A->>C: run at the exact head passed?
+  A->>G: merge, delete the branch
 ```
 
 ## Superagent (the Cockpit)
@@ -746,7 +884,12 @@ the CA bundle in its run directory, a placeholder per agent secret), and the pro
 a live Superagent's bearer as `EgressCaller::Superagent`, which never uses a production secret.
 `secret_copy_to_env` and `secret_request_hosts` take a `SecretUser` (a task's agent or the
 Superagent): the Superagent's copies go to the sandbox repository's ignored `.env`, and its asks
-are recorded as `<login>'s Superagent`. It has no project browser, so no `browser_fill_secret`.
+are recorded as `<login>'s Superagent`. The copy walks to its `.env` from the canonical sandbox
+folder, a folder the agent cannot replace (`secret_source_root`): `repo` for the Superagent, the
+worktree's folders for a task, then the folders named, one at a time without following links, and
+the folder reached must be inside that work folder; Git checks run in the anchored work folder. A
+Superagent that swapped `repo` for a link is refused and nothing is written
+([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It has no project browser, so no `browser_fill_secret`.
 `secrets_list` gives it a task's records with its own guidance, and `secret_verify`, the
 Superagent's only (a matching candidate's hash must not reach a task transcript other members
 read), compares the SHA-256 of a value the person holds with the stored value and its variants (a
@@ -765,7 +908,7 @@ Agents create agent secrets from a file with `secret_create_from_file` (`vault/c
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
 folder or `~/` for the caller's home (the sandbox home for a task, its person's home for the
 Superagent, shared by their projects). Yulius walks to it from a folder the agent cannot replace (the
-canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` opens
+canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` walks to
 its target (`open_folder`: one folder at a time without following links, real path checked), reads a regular
 file of at most 16 KiB, converts it with `dotenv::agent_value_from_file` (the CLI import's
 conversion too) and stores it through `App::insert_agent_secret`, the Secrets page's path. The
@@ -851,6 +994,41 @@ the team secrets (none had a sandbox) in `vault_scope_pending`; at the next star
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets an administrator made team-wide stay team-wide.
+
+## Agent secret scopes
+
+Since SPEC-245 ([decision 0186](decisions/0186-agent-secrets-are-project-global-or-personal.md))
+an agent secret is a project's (`sandbox_id`), global (no sandbox, no owner) or personal
+(`owner_id`, removed with the user's row). `vault_enabled (secret_id, sandbox_id)` switches a global or
+personal secret on for a project; a new one is on for the project it was added from. Names are
+unique within a scope. `VaultStore::vault_agent_in(sandbox)` lists the candidates (the project's,
+and the global and personal ones, of every owner, switched on there); `vault/reach.rs` resolves
+them for a `Holder`: one per name, project > personal > global, then the instance Vidoc key, and
+never another person's. A task's holder is its owner unless an automation started it
+(`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
+nobody, and a task an automation's task creates is an automation task too.
+The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
+its task's current holder on every request, so a hand-over or a deleted task applies also to
+connections opened before it, a hand-over (also one during a launch) rewrites the run's
+fingerprint file in place for the new owner (SPEC-248), and `task_message` from anyone but the
+owner refuses a task holding personal secrets. A personal secret is never copied
+into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
+production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
+gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by
+instance administrators, personal ones only by their owner (404 to everyone else), through
+`PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`; the store counts the 200 secrets a project
+may get in the transaction that adds or switches one on. Schema version 39 switched every team-wide
+agent secret on for every live sandbox.
+
+```mermaid
+flowchart LR
+  C["vault_agent_in(project): project + switched-on global + switched-on personal (all owners)"] --> H{"run's holder"}
+  H -->|"task (not automation) or Superagent: its person"| P["per name: project > own personal > global"]
+  H -->|"CI job, CD run, automation's task, MCP refs"| N["per name: project > global"]
+  P --> X["egress proxy, placeholders, tools"]
+  N --> X
+  C --> R["Yulius' redaction of the project (every candidate)"]
+```
 
 Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
 secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its
@@ -1647,6 +1825,11 @@ flowchart LR
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).
+- A stop always takes effect: its status change, and a run end's, is a compare-and-set that, lost
+  to a concurrent change (a switch completing, a stop landing), is made again from the status read
+  anew, in bounded rounds. A run that ends on a stop's intent rests its task even before the stop's
+  change lands, and a switch overtaken by a stop, a close or its old run's loss starts no new run
+  ([SPEC-250](../.ai/specs/SPEC-250-stop-during-a-switch-leaves-the-task-run.md)).
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
   are in SPEC-002 section 6; runtime contracts in section 7 and

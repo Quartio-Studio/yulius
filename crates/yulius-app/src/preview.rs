@@ -290,6 +290,8 @@ struct Pass {
     port: u16,
     user: UserId,
     session_hash: Option<String>,
+    /// The API token it was granted to (SPEC-247): revoking it ends the grant.
+    token: Option<String>,
     created: i64,
     expires: i64,
     checked: i64,
@@ -359,11 +361,10 @@ impl App {
             .is_some_and(|config| config.parse_host(host).is_some())
     }
 
-    /// Ports that are never reachable through a preview: Yulius's own listeners and the
-    /// sandbox browsers' DevTools endpoints.
-    pub async fn preview_excluded_ports(&self) -> Vec<u16> {
+    /// Ports that are never reachable through a preview: Yulius's own listeners (sandbox
+    /// browsers have no DevTools port, ADR-0191).
+    pub fn preview_excluded_ports(&self) -> Vec<u16> {
         let mut ports = self.config.own_ports.clone();
-        ports.extend(self.deps.browser.devtools_ports().await);
         ports.sort_unstable();
         ports.dedup();
         ports
@@ -424,7 +425,7 @@ impl App {
         if record.port_count == 0 || !(first..=last).contains(&port) {
             return Err(PreviewRefusal::OutsideRange { first, last });
         }
-        let excluded = self.preview_excluded_ports().await;
+        let excluded = self.preview_excluded_ports();
         if excluded.contains(&port) {
             return Err(PreviewRefusal::Yulius);
         }
@@ -449,7 +450,6 @@ impl App {
         let (_, first, last, listening) = self.sandbox_listening_ports(sandbox).await?;
         let excluded: Vec<u16> = self
             .preview_excluded_ports()
-            .await
             .into_iter()
             .filter(|p| (first..=last).contains(p))
             .collect();
@@ -491,6 +491,12 @@ impl App {
         host: &str,
         to: &str,
     ) -> AppResult<String> {
+        // A preview forwards every method: a read-only token gets none (SPEC-247 RMT-002).
+        if ctx.read_only() {
+            return Err(AppError::Forbidden(
+                "a read-only API token opens no preview".into(),
+            ));
+        }
         let target = self.preview_target(host).await.map_err(|refusal| {
             if refusal == PreviewRefusal::UnknownHost || refusal == PreviewRefusal::Disabled {
                 AppError::NotFound
@@ -518,6 +524,7 @@ impl App {
                     port: target.port,
                     user: ctx.user.id.clone(),
                     session_hash: ctx.session_hash.clone(),
+                    token: ctx.token.as_ref().map(|t| t.id.clone()),
                     created: now,
                     expires: now.saturating_add(HANDSHAKE_TTL_MS),
                     checked: now,
@@ -626,6 +633,15 @@ impl App {
         };
         if user.disabled_at.is_some() {
             return false;
+        }
+        if let Some(token) = &pass.token {
+            let live = matches!(
+                self.deps.store.api_tokens_of(&user.id).await,
+                Ok(tokens) if tokens.iter().any(|t| &t.id == token)
+            );
+            if !live {
+                return false;
+            }
         }
         if let Some(hash) = &pass.session_hash {
             let live = matches!(

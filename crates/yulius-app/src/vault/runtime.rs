@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
 use yulius_domain::vault::{
@@ -28,7 +28,7 @@ use crate::ports::egress::{
     EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
 };
 use crate::ports::session::{Containment, LaunchPlan, PlannedFile};
-use crate::ports::vault::VaultSecretRecord;
+use crate::ports::vault::{AgentScope, VaultSecretRecord};
 
 /// First argument of `yulius` that runs the Bash wrapper (`CLAUDE_CODE_SHELL_PREFIX`).
 pub const SCRUB_EXEC_FLAG: &str = "--scrub-exec";
@@ -163,6 +163,15 @@ struct FillArgs {
     selector: Option<String>,
 }
 
+/// For whom a vault tool's caller resolves its project's secrets: its task's holder, or the
+/// Superagent's person (SPEC-245 RES-002).
+pub(crate) fn caller_holder(caller: &ProjectCaller) -> super::Holder<'_> {
+    caller
+        .task
+        .as_ref()
+        .map_or(super::Holder::Person(&caller.user), super::Holder::of_task)
+}
+
 /// Name of the egress CA's sealed material in `vault_meta`.
 const EGRESS_CA_META: &str = "egress-ca";
 /// Associated data of the egress CA's envelope.
@@ -208,7 +217,9 @@ impl App {
     }
 
     /// The value of the agent secret `name` that applies to `sandbox` (MCP `${secret:NAME}`
-    /// references, VLT-009). A production secret (SPEC-134) never resolves: its value would reach
+    /// references, VLT-009): its project secret, else a global one switched on for it; never a
+    /// personal one, whose value would reach a file system every task of the sandbox reads
+    /// (SPEC-245 RES-005). A production secret (SPEC-134) never resolves: its value would reach
     /// an agent run's environment.
     ///
     /// # Errors
@@ -219,9 +230,7 @@ impl App {
         name: &str,
     ) -> AppResult<Option<zeroize::Zeroizing<String>>> {
         let Some(record) = self
-            .deps
-            .store
-            .vault_agent(Some(sandbox))
+            .resolved_agent_secrets(sandbox, super::Holder::Nobody)
             .await?
             .into_iter()
             .find(|r| r.name == name && !r.cd_prod)
@@ -230,6 +239,31 @@ impl App {
         };
         let payload: AgentPayload = self.open_payload(&record)?;
         Ok(Some(zeroize::Zeroizing::new(payload.value.clone())))
+    }
+
+    /// Whose personal secrets apply to `client` now: an agent run's task's current holder (read
+    /// per request, so a hand-over, a deleted task or an automation's origin applies also to
+    /// connections and cached credentials from before it), a Superagent's person, no CI job's.
+    async fn client_person(&self, client: &EgressClient) -> AppResult<Option<UserId>> {
+        match &client.caller {
+            EgressCaller::Agent { task_id, .. } => Ok(self
+                .deps
+                .store
+                .task(task_id)
+                .await?
+                .and_then(|task| super::Holder::of_task(&task).person().cloned())),
+            EgressCaller::Ci { .. } => Ok(None),
+            EgressCaller::Superagent { person, .. } => Ok(Some(person.clone())),
+        }
+    }
+
+    /// The agent secrets that apply to `client` now, by its current holder.
+    async fn client_secrets(&self, client: &EgressClient) -> AppResult<Vec<VaultSecretRecord>> {
+        let person = self.client_person(client).await?;
+        let holder = person
+            .as_ref()
+            .map_or(super::Holder::Nobody, super::Holder::Person);
+        self.applied_agent_secrets(&client.sandbox_id, holder).await
     }
 
     /// The agent secrets that apply to `client` and are bound to `host:port`, with their
@@ -241,7 +275,7 @@ impl App {
         port: u16,
     ) -> AppResult<Vec<(VaultSecretRecord, AgentPayload)>> {
         let mut out = Vec::new();
-        for record in self.applied_agent_secrets(&client.sandbox_id).await? {
+        for record in self.client_secrets(client).await? {
             if client.may_use(&record.name, record.cd_prod)
                 && bound_to(&record, host, port)
                 && let Some(payload) = self.agent_payload(&record)?
@@ -276,13 +310,17 @@ impl App {
         .await;
     }
 
-    /// The fingerprints of every agent secret that applies to `sandbox`, with a fresh salt and
-    /// rolling-hash base.
+    /// The fingerprints of every agent secret that can reach runs of `holder` in `sandbox`
+    /// (never another person's: SPEC-245, ADR-0186), with a fresh salt and rolling-hash base.
     ///
     /// # Errors
     /// Store or decryption failures.
-    pub async fn scrub_fingerprints_for(&self, sandbox: &SandboxId) -> AppResult<FingerprintSet> {
-        let matcher = self.agent_secret_matcher(sandbox).await?;
+    pub async fn scrub_fingerprints_for(
+        &self,
+        sandbox: &SandboxId,
+        holder: super::Holder<'_>,
+    ) -> AppResult<FingerprintSet> {
+        let matcher = self.matcher_for(sandbox, Some(holder)).await?;
         let random = self.deps.crypto.random_bytes();
         let mut base_bytes = [0u8; 8];
         base_bytes.copy_from_slice(&random[..8]);
@@ -313,19 +351,26 @@ impl App {
 
     /// Whose redaction calls with `token`: a live run's attempt (`task:<n>`), or a person's
     /// workspace, where their Superagent runs (SPEC-147 SAM-003). Answers the sandbox, the key a
-    /// redaction is audited once per, and the audit actor.
-    async fn scrub_caller(&self, token: &str) -> AppResult<(SandboxId, String, String)> {
+    /// redaction is audited once per, the audit actor and whose personal secrets apply.
+    async fn scrub_caller(
+        &self,
+        token: &str,
+    ) -> AppResult<(SandboxId, String, String, Option<UserId>)> {
         match self.agent_context(token).await {
             Ok(ctx) => Ok((
                 ctx.task.sandbox_id.clone(),
                 ctx.attempt.id.as_str().to_owned(),
                 ctx.actor(),
+                super::Holder::of_task(&ctx.task).person().cloned(),
             )),
             Err(AppError::Unauthenticated) => {
                 let (user, sandbox) = self.workspace_worker(token).await?;
                 let once = format!("ws:{}:{}", user.id.as_str(), sandbox.as_str());
-                let actor = user.github_login.unwrap_or_else(|| "superadmin".into());
-                Ok((sandbox, once, actor))
+                let actor = user
+                    .github_login
+                    .clone()
+                    .unwrap_or_else(|| "superadmin".into());
+                Ok((sandbox, once, actor, Some(user.id)))
             }
             Err(err) => Err(err),
         }
@@ -338,8 +383,11 @@ impl App {
     /// `Unauthenticated` for unknown or ended runs and for people who may no longer work in the
     /// workspace's sandbox; store failures.
     pub async fn scrub_fingerprints(&self, token: &str) -> AppResult<FingerprintSet> {
-        let (sandbox, _, _) = self.scrub_caller(token).await?;
-        self.scrub_fingerprints_for(&sandbox).await
+        let (sandbox, _, _, person) = self.scrub_caller(token).await?;
+        let holder = person
+            .as_ref()
+            .map_or(super::Holder::Nobody, super::Holder::Person);
+        self.scrub_fingerprints_for(&sandbox, holder).await
     }
 
     /// `POST /internal/scrub/report`: a sandbox process redacted these secrets (audited once
@@ -348,11 +396,14 @@ impl App {
     /// # Errors
     /// `Unauthenticated`, `Invalid` channel.
     pub async fn scrub_report(&self, token: &str, report: &RedactionReport) -> AppResult<()> {
-        let (sandbox, once, actor) = self.scrub_caller(token).await?;
+        let (sandbox, once, actor, person) = self.scrub_caller(token).await?;
         if !matches!(report.channel.as_str(), "bash" | "tool") {
             return Err(AppError::Invalid("channel must be bash or tool".into()));
         }
-        let records = self.applied_agent_secrets(&sandbox).await?;
+        let holder = person
+            .as_ref()
+            .map_or(super::Holder::Nobody, super::Holder::Person);
+        let records = self.redacted_agent_secrets(&sandbox, Some(holder)).await?;
         for name in report.names.iter().take(64) {
             if let Some(record) = records.iter().find(|r| &r.name == name) {
                 self.vault_audit_once(
@@ -369,7 +420,7 @@ impl App {
     }
 
     /// Adds the vault's part of an agent run's environment (SPEC-002 ADR-20): placeholders for
-    /// every agent secret that applies, the Bash wrapper (`CLAUDE_CODE_SHELL_PREFIX`) and its
+    /// every agent secret that applies to runs of `holder` (SPEC-245), the Bash wrapper (`CLAUDE_CODE_SHELL_PREFIX`) and its
     /// fingerprint file, and — when the egress proxy is wired — the proxy variables (with the
     /// run's task token, as secret environment) and the CA bundle.
     ///
@@ -378,11 +429,12 @@ impl App {
     pub(crate) async fn vault_run_setup(
         &self,
         sandbox: &SandboxRecord,
+        holder: super::Holder<'_>,
         run_dir: &Path,
         task_token: &str,
         launch: &mut LaunchPlan,
     ) -> AppResult<()> {
-        let records = self.applied_agent_secrets(&sandbox.id).await?;
+        let records = self.applied_agent_secrets(&sandbox.id, holder).await?;
         for record in &records {
             if let Ok(name) = SecretName::parse(&record.name) {
                 launch
@@ -390,7 +442,7 @@ impl App {
                     .push((name.as_str().to_owned(), placeholder(&name)));
             }
         }
-        let fingerprints = self.scrub_fingerprints_for(&sandbox.id).await?;
+        let fingerprints = self.scrub_fingerprints_for(&sandbox.id, holder).await?;
         let scrub_file = run_dir.join(FINGERPRINTS_FILE);
         launch.files.push(PlannedFile {
             path: scrub_file.clone(),
@@ -406,9 +458,51 @@ impl App {
         Ok(())
     }
 
+    /// Rewrites the fingerprint file of `task`'s live run for the task's holder as it is now
+    /// (SPEC-248 FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no
+    /// hashes of the previous owner's personal values. One rewrite at a time, each reading the
+    /// task afresh, so the last one is always the latest holder's. In place, as a contained
+    /// session binds the file read-only; a run without one, or a task that is gone, is left alone.
+    ///
+    /// # Errors
+    /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
+    /// file (opened without following a link or blocking, checked on the handle).
+    pub async fn rewrite_run_fingerprints(&self, task: &TaskId) -> AppResult<()> {
+        use nix::fcntl::OFlag;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
+        let Some(task) = self.deps.store.task(task).await? else {
+            return Ok(());
+        };
+        let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
+            return Ok(());
+        };
+        let file = Path::new(&attempt.run_dir).join(FINGERPRINTS_FILE);
+        let mut out = match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+            .open(&file)
+        {
+            Ok(out) => out,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(AppError::internal(err)),
+        };
+        if !out.metadata().map_err(AppError::internal)?.is_file() {
+            return Err(AppError::Internal(
+                "the run's fingerprint file is no regular file".into(),
+            ));
+        }
+        let set = self
+            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(&task))
+            .await?;
+        let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
+        out.set_len(0).map_err(AppError::internal)?;
+        std::io::Write::write_all(&mut out, &bytes).map_err(AppError::internal)
+    }
+
     /// Puts a Superagent behind the egress proxy as an agent run is, with its own bearer
-    /// (SPEC-186 SAV-001): a placeholder per agent secret of `sandbox` its environment does not
-    /// set already, and — when the proxy is wired — the proxy variables and the CA bundle,
+    /// (SPEC-186 SAV-001): a placeholder per agent secret of `sandbox` its person (`person`)
+    /// gets that its environment does not set already, and — when the proxy is wired — the proxy variables and the CA bundle,
     /// written to its shell's `run_dir` and bound read-only into a contained session.
     ///
     /// # Errors
@@ -416,11 +510,15 @@ impl App {
     pub(crate) async fn vault_superagent_setup(
         &self,
         sandbox: &SandboxRecord,
+        person: &UserId,
         run_dir: &Path,
         bearer: &str,
         launch: &mut LaunchPlan,
     ) -> AppResult<()> {
-        for record in self.applied_agent_secrets(&sandbox.id).await? {
+        for record in self
+            .applied_agent_secrets(&sandbox.id, super::Holder::Person(person))
+            .await?
+        {
             if let Ok(name) = SecretName::parse(&record.name) {
                 let set = |(key, _): &(String, String)| key == name.as_str();
                 if !launch.env.iter().any(set) && !launch.secret_env.iter().any(set) {
@@ -528,16 +626,22 @@ impl App {
     /// caller's project may use, and how a task's agent or the Superagent (SPEC-186 SAV-007) uses
     /// them; never a value.
     pub(crate) async fn tool_secrets_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
-        let records = self.applied_agent_secrets(&caller.sandbox).await?;
+        let records = self
+            .applied_agent_secrets(&caller.sandbox, caller_holder(caller))
+            .await?;
         let secrets: Vec<Value> = records
             .iter()
             .map(|r| {
                 let scope = if r.id == crate::vidoc_key::VIDOC_SECRET_ID {
                     "the instance (its Vidoc key, set by the superadmin)"
-                } else if r.sandbox_id.is_some() {
-                    "this project"
                 } else {
-                    "every project"
+                    match r.scope() {
+                        AgentScope::Project(_) => "this project",
+                        AgentScope::Global => "global (an administrator switched it on for this project)",
+                        AgentScope::Personal(_) => {
+                            "personal (your person's own: only the proxy sends it; never .env copies, MCP references or the browser)"
+                        }
+                    }
                 };
                 json!({
                     "name": r.name,
@@ -604,9 +708,7 @@ impl App {
             ));
         }
         let record = self
-            .deps
-            .store
-            .vault_agent(Some(&ctx.task.sandbox_id))
+            .resolved_agent_secrets(&ctx.task.sandbox_id, super::Holder::of_task(&ctx.task))
             .await?
             .into_iter()
             .find(|r| r.name == args.secret.trim())
@@ -616,6 +718,13 @@ impl App {
                     args.secret
                 ))
             })?;
+        if matches!(record.scope(), AgentScope::Personal(_)) {
+            return Err(AppError::Forbidden(format!(
+                "{}: {}",
+                record.name,
+                super::PERSONAL_SECRET_BROWSER
+            )));
+        }
         let browser = self.browser_session(&ctx.task.sandbox_id).await?;
         let tab = browser
             .tabs()
@@ -754,6 +863,7 @@ impl App {
                 caller: EgressCaller::Superagent {
                     shell_id: caller.detail["shell"].as_str()?.to_owned(),
                     actor: caller.actor,
+                    person: caller.user,
                 },
                 sandbox_id: caller.sandbox,
             }
@@ -786,7 +896,7 @@ impl EgressPolicy for App {
     }
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
-        match self.applied_agent_secrets(&client.sandbox_id).await {
+        match self.client_secrets(client).await {
             Ok(records) => records
                 .iter()
                 .any(|r| client.may_use(&r.name, r.cd_prod) && bound_to(r, host, port)),

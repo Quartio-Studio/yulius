@@ -12,14 +12,6 @@ enabled = true
 # location assignment): rendering stays in scanned code. Remove the exclusion if it gains one.
 exclude = ["crates/yulius-server/web/assets/mock.js"]
 
-# Reported against the browser port's documented trust model, not code of this file: the
-# endpoint is the adapter's Chromium launch (yulius-browser). The weakness is real and tracked in
-# #626; remove this entry with its fix. Reported when task #193 (SPEC-206) added `stop`.
-[[ignore]]
-path = "crates/yulius-app/src/ports/browser.rs"
-title = "Unauthenticated"
-reason = "pre-existing, documented trust model of the browser adapter; tracked in #626"
-
 # `yulius gh-token` holds no credential: it asks `/internal/git-credential` (loopback) with the
 # caller's own bearer (`YULIUS_TASK_TOKEN`, a shell's workspace token), and the server decides what
 # token that caller gets: a person's shell its own token (SPEC-004 GH-001), an agent run a narrowed
@@ -41,18 +33,6 @@ reason = "gh-token prints only what /internal/git-credential gives the caller's 
 path = "crates/yulius-app/src/vault/runtime.rs"
 title = "Instance Vidoc key leaked through MCP"
 reason = "agent_secret_value reads stored secrets only (vault_agent), never the virtual Vidoc record; tested by vidoc_key::the_instance_key_is_never_handed_out_in_clear"
-
-# The folder trust `ensure_claude_config` records (SPEC-106) is written into the sandbox's own
-# Claude config dir, which the contained agent can already edit: an agent that plants a `.git`
-# file to have some directory trusted could write that trust entry itself, and the trust only
-# skips Claude Code's folder prompt for sessions started from that config dir. The host-side
-# reads of that agent-owned dir (links, FIFOs) are tracked in #634. Reported on task #197's
-# change scan (SPEC-210), which sent claude_config.rs for the new output-style default; the code
-# predates it.
-[[ignore]]
-path = "crates/yulius-harness/src/claude_config.rs"
-title = "as trusted"
-reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); host-side reads tracked in #634"
 
 # `read_repo_doc` reads no link: `symlink_metadata(..).is_file()` is false for a symlink, whether it
 # names a file or a directory, and the resolved path and (on Linux) the opened fd's real path must
@@ -219,11 +199,6 @@ title = "substituted into proxied request headers"
 reason = "agent secret values with control characters are refused at every write (check_agent_value), and the proxy drops headers failing HeaderValue::from_bytes"
 
 [[ignore]]
-path = "crates/yulius-browser/src/lib.rs"
-title = "Unauthenticated CDP"
-reason = "pre-existing, documented trust model of the browser adapter; tracked in #626"
-
-[[ignore]]
 path = "crates/yulius-domain/src/vault/mod.rs"
 title = "Basic injection renders username"
 reason = "username:value is base64-encoded, and usernames with control characters are refused"
@@ -237,11 +212,6 @@ reason = "parity with the sandbox's direct slirp4netns egress; loopback and link
 path = "crates/yulius-egress/src/proxy.rs"
 title = "DNS rebinding"
 reason = "the upstream client resolves through PolicyResolver (the same filter), and bound hosts are reached over HTTPS with certificate validation"
-
-[[ignore]]
-path = "crates/yulius-harness/src/claude_config.rs"
-title = "trust arbitrary directories"
-reason = "trust entries land in the agent's own config dir, which it can edit anyway (SPEC-106); the host-side commondir canonicalize is tracked in #634"
 
 [[ignore]]
 path = "crates/yulius-harness/src/hook_client.rs"
@@ -405,9 +375,15 @@ path = "crates/yulius-app/src/ci/cd.rs"
 title = "Production CD runs execute without isolation when containment is disabled"
 reason = "uncontained is the development mode: agents and shells already run on the host as the service user"
 
-# Vidoc reports the reviewed entry for #626 above as a suppression when a change edits this
-# file. Only that entry, in the wording it used; any other "suppressed" finding still counts.
+# Every instance administrator may watch any Claude sign-in by design (SPEC-002 §7.2 "Login",
+# docs/api.md "Login terminal"): the subscription pool is the instance's, `App::login_terminal`
+# calls `require_instance_admin` before it looks the sign-in up, and every output chunk passes the
+# masker first, so no viewer ever sees the token
+# (accounts::claude_login_masks_the_token_for_viewers_and_seals_it,
+# accounts::login_terminal_websocket_streams_masked_output_and_accepts_input). Reported on task
+# #229's CI change scan (SPEC-243), which touched the handler to answer an unknown sign-in in band.
+# The independent reviewer of #229 agreed it is a false positive.
 [[ignore]]
-path = ".config/vidoc.toml"
-title = "Unauthenticated browser adapter endpoint suppressed"
-reason = "the reviewed entry for the browser adapter's trust model, tracked in open issue #626"
+path = "crates/yulius-server/src/routes/accounts.rs"
+title = "Login terminal WebSocket may lack ownership verification"
+reason = "by design every instance administrator may watch any sign-in (SPEC-002 §7.2); require_instance_admin first; output is masked so no viewer sees the token (claude_login_masks_the_token_for_viewers_and_seals_it)"

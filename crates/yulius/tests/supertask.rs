@@ -27,6 +27,7 @@ const CREATE: &str = "/api/sandboxes/s1/tasks";
 /// token `tok-agent`).
 async fn world(max_live_sessions: u32) -> Result<(Harness, Creds), Error> {
     let h = harness_configured(move |c| c.max_live_sessions = max_live_sessions)?;
+    support::exhausted_subscription(&h).await?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     let alice = user_with_token(&h, "u-alice", "alice", false).await?;
     h.github
@@ -427,6 +428,8 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
             last_error: None,
             created_at: yulius_domain::time::Timestamp(1),
             updated_at: yulius_domain::time::Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let s = create(

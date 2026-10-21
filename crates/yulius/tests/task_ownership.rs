@@ -115,6 +115,7 @@ async fn auth(h: &Harness, id: &str) -> Result<AuthContext, Box<dyn std::error::
         user,
         csrf_token: None,
         session_hash: None,
+        token: None,
     })
 }
 

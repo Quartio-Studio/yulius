@@ -88,6 +88,9 @@ pub struct AccountView {
     pub usage: AccountUsageView,
     /// Last error (no secrets).
     pub last_error: Option<String>,
+    /// Email of the Claude account behind it, read at sign-in; `null` while unknown (SPEC-244).
+    #[serde(default)]
+    pub email: Option<String>,
     /// Live tasks using it, except Done ones (SPEC-057).
     pub in_use_by: u32,
     /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).
@@ -137,6 +140,15 @@ pub struct AccountLoginStarted {
     pub login_id: String,
 }
 
+/// Response to `POST /api/admin/accounts/login/{login_id}/cancel` (SPEC-243 LGN-002): how the
+/// sign-in ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountLoginCancelled {
+    /// `cancelled`, `ok` (a captured token was sealed), `error`, or `running` when the process
+    /// had not ended within the wait.
+    pub status: String,
+}
+
 /// `PATCH /api/admin/accounts/{id}`: only the label. The pool has no priorities or switches
 /// (F 2026-10-10); any other field is refused (422).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -146,12 +158,16 @@ pub struct UpdateAccount {
     pub label: String,
 }
 
-/// One account in [`CapacityView`]. Everyone sees label, status and usage; `id` and
+/// One account in [`CapacityView`]. Everyone sees label, status and usage; `id`, `email` and
 /// `in_use_by` are for instance administrators only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapacityAccount {
     /// Label.
     pub label: String,
+    /// Email of the Claude account behind it (instance administrators only, UI-022; absent while
+    /// unknown, SPEC-244 SUB-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,
     /// Usage snapshot (unknown windows are `null`).

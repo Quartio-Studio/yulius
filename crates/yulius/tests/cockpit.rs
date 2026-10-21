@@ -158,6 +158,8 @@ async fn fixture_ending(
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
     }
@@ -676,6 +678,8 @@ async fn without_a_subscription_the_cockpit_says_so_and_nothing_runs() -> TestRe
     let f = fixture_with(false, None).await?;
     let resp = open_cockpit(&f, &f.alice).await?;
     assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
+    // The account gate's refusal, with where to connect one (SPEC-246 CLA-002).
+    assert_eq!(resp.body["error"]["code"], "claude_account_required");
     assert!(
         resp.body.to_string().contains("no Claude account"),
         "{:?}",
@@ -1196,6 +1200,8 @@ async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResul
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
     }
@@ -1212,6 +1218,7 @@ async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResul
 #[tokio::test]
 async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;
+    // Signed out: no usable account, so it asks for one to be signed in (SPEC-246 CLA-002).
     f.h.store
         .insert_account(&AccountRecord {
             id: AccountId::parse("acc-1")?,
@@ -1223,8 +1230,20 @@ async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
+    let resp = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
+    assert_eq!(resp.body["error"]["code"], "claude_account_required");
+    assert!(
+        resp.body.to_string().contains("must sign in again"),
+        "{:?}",
+        resp.body
+    );
+    // Connected but out of capacity: it waits for capacity.
+    support::exhausted_subscription(&f.h).await?;
     let resp = open_cockpit(&f, &f.alice).await?;
     assert_eq!(
         resp.status,
@@ -1334,6 +1353,8 @@ async fn contained_harness()
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     Ok((h, recorder, alice))
@@ -2157,6 +2178,8 @@ async fn insert_account(h: &Harness, id: &str, token: &str, used: f64) -> TestRe
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     Ok(())
@@ -3228,6 +3251,80 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     Ok(())
 }
 
+/// #635 (SPEC-254 ACR-001..ACR-003): the Superagent can write its sandbox folder, so it can swap
+/// its repository for a link to another folder (here another ignoring Git repository). Yulius walks
+/// to the `.env` from the canonical sandbox folder without links, so the copy of an allowed secret
+/// is refused and nothing is written, neither in the link's target nor in the moved repository.
+#[tokio::test]
+async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    let repo = ignoring_repo(&f)?;
+    let id = add_secret(&f, "SWAP_KEY", "swap-synthetic-value-0635").await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let copy = || {
+        cockpit_tool(
+            &f,
+            &token,
+            "secret_copy_to_env",
+            json!({"secrets": ["SWAP_KEY"]}),
+        )
+    };
+    let (asked, is_error) = copy().await?;
+    assert!(!is_error, "{asked}");
+    assert_eq!(asked["waiting"], json!(["SWAP_KEY"]), "{asked}");
+    let allowed = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{id}/env"),
+        Some(
+            json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
+
+    let other = f.data.join("other");
+    std::fs::create_dir_all(&other)?;
+    git(&other, &["init", "-q", "-b", "dev"])?;
+    std::fs::write(other.join(".gitignore"), ".env\n.env.*\n!.env.example\n")?;
+    git(&other, &["add", "."])?;
+    git(&other, &["commit", "-q", "-m", "init"])?;
+    let moved = f.data.join("sandboxes/s1/repo.old");
+    std::fs::rename(&repo, &moved)?;
+    std::os::unix::fs::symlink(&other, &repo)?;
+
+    let (refused, is_error) = copy().await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("the folder you work in is a link or not a folder: Yulius follows no links"),
+        "{refused}"
+    );
+    for dir in [&other, &moved] {
+        for name in [".env", ".env.example"] {
+            assert!(
+                !dir.join(name).exists(),
+                "{} was written",
+                dir.join(name).display()
+            );
+        }
+    }
+    assert!(
+        audited(&f, "vault.agent.env").await?.is_empty(),
+        "no copy is recorded"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// An HTTPS request to `host` as the proxy hands it to the egress policy.
 fn egress_request(
     host: &str,
@@ -3617,7 +3714,7 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
     }
     assert!(home.join(".ssh/operator").exists(), "kept unless asked");
 
-    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    let records = f.h.store.vault_agent_in(&sid()).await?;
     let record = records
         .iter()
         .find(|r| r.name == "DO_SSH_PRIVATE_KEY")
@@ -3667,7 +3764,7 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
         !refused.to_string().contains("outside-synthetic"),
         "{refused}"
     );
-    let records = f.h.store.vault_agent(Some(&sid())).await?;
+    let records = f.h.store.vault_agent_in(&sid()).await?;
     assert!(!records.iter().any(|r| r.name == "OUTSIDE_KEY"));
     f.h.app.end_all_shells().await;
     Ok(())

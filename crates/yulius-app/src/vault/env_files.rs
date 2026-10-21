@@ -25,6 +25,7 @@ use yulius_domain::redact::is_env_file;
 use yulius_domain::vault::dotenv;
 use zeroize::Zeroizing;
 
+use super::create::Root;
 use super::requests::{reason, requester};
 use super::{AgentPayload, SecretUser, invalid};
 use crate::auth::AuthContext;
@@ -98,14 +99,19 @@ pub(super) const WORK: Naming<'static> = Naming {
     prefix: "",
 };
 
-/// Opens `folders` below `worktree` one component at a time without following links, and checks
-/// that the folder reached is inside the worktree and out of `.git`.
+/// Opens `folders` below `anchor` one component at a time without following links, and checks
+/// that the folder reached is inside the root (`anchor` and the first `naming.hidden` folders)
+/// and out of `.git`; its [`Folder::path_of`] is relative to that root.
 pub(super) fn open_folder(
-    worktree: &Path,
+    anchor: &Path,
     folders: &[String],
     naming: &Naming<'_>,
 ) -> AppResult<Folder> {
     let within = naming.within;
+    let root = folders
+        .iter()
+        .take(naming.hidden)
+        .fold(anchor.to_path_buf(), |path, part| path.join(part));
     let visible = folders.get(naming.hidden..).unwrap_or_default().join("/");
     let shown = format!("{}{visible}", naming.prefix);
     let refused = |err: Errno| match err {
@@ -124,12 +130,12 @@ pub(super) fn open_folder(
         }
         other => os_error(other),
     };
-    let mut fd = nix::fcntl::open(worktree, DIR_FLAGS, Mode::empty()).map_err(refused)?;
+    let mut fd = nix::fcntl::open(anchor, DIR_FLAGS, Mode::empty()).map_err(refused)?;
     for part in folders {
         fd = openat(&fd, part.as_str(), DIR_FLAGS, Mode::empty()).map_err(refused)?;
     }
     let real = real_path(&fd)?;
-    if !inside(worktree, &real) {
+    if !inside(&root, &real) {
         return Err(AppError::Forbidden(if visible.is_empty() {
             format!("{within} is outside where Yulius looks")
         } else {
@@ -137,7 +143,7 @@ pub(super) fn open_folder(
         }));
     }
     let relative = real
-        .strip_prefix(worktree)
+        .strip_prefix(&root)
         .map_err(|_| AppError::Forbidden(format!("outside {within}")))?
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -270,8 +276,7 @@ impl App {
         answer: &EnvFilesAnswer,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
         let seen = EnvFiles::parse(&answer.env_files)
             .ok_or_else(|| AppError::Invalid("env_files is no, asked or allowed".into()))?;
         let seen_by = answer.env_requested_by.as_deref();
@@ -282,6 +287,9 @@ impl App {
         }
         if answer.allow && record.cd_prod {
             return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
+        if answer.allow && matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+            return Err(AppError::Conflict(super::PERSONAL_SECRET_ENV.into()));
         }
         let action = match (seen, answer.allow) {
             (EnvFiles::Asked, true) => "vault.agent.env_allow",
@@ -340,8 +348,14 @@ impl App {
         allow: bool,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
-        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
-            .await?;
+        self.require_manage_agent(ctx, &record.scope()).await?;
+        // CD runs belong to no person (SPEC-245 RES-005).
+        if allow && matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+            return Err(AppError::Conflict(
+                "production deploys never get a personal secret: add a project secret for them"
+                    .into(),
+            ));
+        }
         // Agents set it up: production already gets it (SPEC-216 SSA-004).
         if allow && record.auto_allow {
             return Err(AppError::Conflict(AUTO_PRODUCTION.into()));
@@ -410,7 +424,9 @@ impl App {
             )));
         }
         let store = &self.deps.store;
-        let all = store.vault_agent(Some(user.sandbox())).await?;
+        let all = self
+            .resolved_agent_secrets(user.sandbox(), user.holder())
+            .await?;
         let mut records: Vec<VaultSecretRecord> = Vec::with_capacity(names.len());
         for name in &names {
             let record = all.iter().find(|r| &r.name == name).ok_or_else(|| {
@@ -418,6 +434,12 @@ impl App {
                     "no agent secret named {name:?} applies to this project (see secrets_list)"
                 ))
             })?;
+            if matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+                return Err(AppError::Forbidden(format!(
+                    "{name}: {}",
+                    super::PERSONAL_SECRET_ENV
+                )));
+            }
             if record.cd_prod {
                 return Err(AppError::Forbidden(format!(
                     "{name}: {}",
@@ -443,8 +465,18 @@ impl App {
             .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
-        let worktree = self.secret_user_folder(user, &sandbox).await?;
-        let folder = open_folder(&worktree, folders, &WORK)?;
+        // Anchored on a folder the agent cannot replace, and walked down without links: the
+        // Superagent can swap its repository for a link (#635). Git runs in the anchored folder.
+        let (anchor, mut below) = self.secret_source_root(user, &sandbox, &Root::Work).await?;
+        let worktree = below
+            .iter()
+            .fold(anchor.clone(), |path, part| path.join(part));
+        let naming = Naming {
+            hidden: below.len(),
+            ..WORK
+        };
+        below.extend(folders.iter().cloned());
+        let folder = open_folder(&anchor, &below, &naming)?;
         let target = folder.path_of(file_name);
         let existing = read_in(&folder, file_name)?;
         if !self.deps.git.is_disposable(&worktree, &target).await? {
@@ -477,11 +509,15 @@ impl App {
                     .await?;
             }
             self.flag_secret_wait(user, "a .env request").await?;
+            let waiting_records = waiting.clone();
             let waiting: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             return Ok(json!({
                 "copied": [],
                 "waiting": waiting,
-                "link": self.agent_secrets_link(&sandbox.slug),
+                "link": match waiting_records.as_slice() {
+                    [only] => self.agent_secret_link(&sandbox.slug, only),
+                    _ => self.agent_secrets_link(&sandbox.slug),
+                },
                 "next": format!(
                     "Nothing was written. A person who manages {} allows copying it into .env files on the Secrets page: print the link so they can, go on with other work, and call secret_copy_to_env again once secrets_list shows env_files allowed.",
                     waiting.join(", ")
@@ -712,6 +748,34 @@ mod tests {
         assert_eq!(std::fs::read_to_string(wt.join("deploy/target"))?, "x");
         Ok(())
     }
+
+    /// #635: walked from an anchor, the folder's paths are relative to the root below the hidden
+    /// folders; a folder reached outside that root (even inside the anchor) is refused, and so is
+    /// a hidden folder that is a link, as the root itself.
+    #[test]
+    fn hidden_folders_root_the_walk_below_the_anchor() -> TestResult {
+        let (_dir, wt, outside) = worktree()?;
+        let anchor = wt.parent().ok_or("parent")?.to_path_buf();
+        let naming = Naming { hidden: 1, ..WORK };
+        let folder = open_folder(&anchor, &["wt".to_owned(), "deploy".to_owned()], &naming)?;
+        assert_eq!(folder.path_of(".env"), "deploy/.env");
+        let root = open_folder(&anchor, &["wt".to_owned()], &naming)?;
+        assert_eq!(root.path_of(".env"), ".env");
+        let up = open_folder(&anchor, &["wt".to_owned(), "..".to_owned()], &naming).err();
+        assert!(
+            matches!(&up, Some(AppError::Forbidden(m)) if m.contains("is outside")),
+            "{up:?}"
+        );
+
+        std::fs::rename(&wt, anchor.join("wt.old"))?;
+        std::os::unix::fs::symlink(&outside, &wt)?;
+        let refused = open_folder(&anchor, &["wt".to_owned()], &naming).err();
+        assert!(
+            matches!(&refused, Some(AppError::Forbidden(m)) if m.contains("the folder you work in is a link")),
+            "{refused:?}"
+        );
+        Ok(())
+    }
 }
 
 /// Where a secret a CD environment names stands (SPEC-134 CDR-002).
@@ -772,7 +836,9 @@ impl App {
         env: yulius_domain::cd::CdEnv,
         names: &[String],
     ) -> AppResult<Vec<(String, CdSecretState)>> {
-        let all = self.deps.store.vault_agent(Some(sandbox)).await?;
+        let all = self
+            .resolved_agent_secrets(sandbox, super::Holder::Nobody)
+            .await?;
         Ok(names
             .iter()
             .map(|name| {
@@ -807,7 +873,10 @@ impl App {
         asker: Option<&AgentContext>,
         why: &str,
     ) -> AppResult<Vec<(String, String)>> {
-        let all = self.deps.store.vault_agent(Some(&sandbox.id)).await?;
+        // CD runs belong to no person: never a personal secret (SPEC-245 RES-004).
+        let all = self
+            .resolved_agent_secrets(&sandbox.id, super::Holder::Nobody)
+            .await?;
         let link = self.agent_secrets_link(&sandbox.slug);
         let missing: Vec<&str> = names
             .iter()

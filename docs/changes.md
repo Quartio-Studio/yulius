@@ -4,7 +4,132 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-21
+
+- The CI page's run list no longer shows "Run again" on every card (SPEC-258, task #244, #774).
+  A run is tested again from its own view, which opens the new run; the view also has Cancel while
+  the run is queued or running, and an active card keeps Cancel. Read access sees neither.
+- "Onboard this into Yulius" to a person's local Claude Code is enough (SPEC-256, ADR-0194, task
+  #242). The operate token made for their agent now also signs in `yulius onboard` and `yulius
+  secrets import`, so no browser approval is needed. `yulius secrets import --yes` sends without
+  the typed yes, only with that token. `--from-file NAME=PATH` imports a key file by its path, so
+  the agent never reads the key. `--env-files` creates the secrets already allowed into `.env`
+  files (`env_files` on create), where ssh and deploy scripts read them. `yulius project onboard
+  --notes` (`onboarding_start {notes}`) adds the agent's hand-over, redacted, to the onboarding
+  task's request before it starts. The onboarding task reads `secrets_list` and that hand-over
+  before asking a person for a credential. The remote MCP's instructions and the
+  [guide](remote-control.md) describe the steps. Signed in to one instance with `yulius login`
+  and another with `yulius remote login`, pass `--server` to `yulius onboard`.
+- A stop during a switch always ends the task (SPEC-250, task #236, fixes #527). A stop that came
+  as a switch completed could leave the task `running` with every run ended, and a stop that came
+  as a run ended could leave it `stopping` with no run. Stop changes and run-end status changes
+  are now made again from the status read anew when they lose a race. A switch overtaken by a stop
+  starts no new run. This also fixes the intermittent `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn`
+  failure in Yulius CI.
+- The sandbox browser has no DevTools port any more (SPEC-252, ADR-0191, task #238, #626).
+  Chromium used to listen for the DevTools protocol on a loopback port without authentication, so
+  any local process, including a run of another sandbox under the fallback containment, could
+  drive a sandbox's browser and its logged-in sessions. It now speaks DevTools only over a pipe
+  that Yulius holds (`--remote-debugging-pipe`). Agents keep using Yulius's browser tools; the
+  unused raw CDP endpoint for a sandbox's MCP servers is gone. The Vidoc ignores that pointed at
+  #626 are removed.
+- The Claude config dir is prepared through handles (SPEC-253, ADR-0193, task #239, fixes #634).
+  Before a launch, Yulius opens `<home>/.claude` from the folder above the home without following
+  links. A home or config dir the agent replaced with a link now refuses the launch and names it,
+  where Yulius used to read and replace `.claude.json` and `settings.json` in the link's target.
+  `plugins/store` linked elsewhere is left alone. A linked worktree's main repository comes from
+  its `gitdir:` path alone, read lexically: the host no longer opens or resolves paths the agent
+  wrote there. The two Vidoc ignores that pointed at #634 are removed. Still by path: the
+  transcript step-back (#661).
+- "Work through open issues" no longer leaves out most of the core team's issues (SPEC-251,
+  ADR-0192, task #237, #594). GitHub reports `CONTRIBUTOR` for a repository admin outside the
+  organization, and an agent's issue filed with its person's token is not by a bot, so only 2 of
+  109 open issues were in scope here. A person with `write`, `maintain` or `admin` permission
+  (asked once per author) is now in scope, also for the issues agents file through the App on
+  their behalf, and so is an issue this project's Yulius App's bot opened with the
+  `Opened by task #<n> in Yulius.` footer; contributors and outsiders without write access stay
+  out, whatever App they file through. An issue showing exactly 100 comments is read in full.
+  Projects that added the automation earlier keep their copy of the prompt; this project's gets
+  the new one after the merge.
+- The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
+  (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
+  worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
+  another folder is refused and an allowed secret's value is written nowhere. Task copies are
+  unchanged.
+
 ## 2026-10-20
+
+- Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,
+  task #232, feedback from an early user whose first job failed without one). With no usable Claude
+  account, Home shows Connect Claude in place of the playground and Import, the composer and the
+  onboarding gate say so, and every start a person asks for (New task, Continue, Start now, Start
+  onboarding, the Superagent) is refused at once with `claude_account_required` and a link to
+  Subscriptions, instead of a task that waited as "no subscription has capacity left". A browser
+  import then adds the sandbox and waits for Start onboarding; an onboarding start that failed for
+  want of an account is offered as Retry onboarding once one is connected. Tasks started by a chain,
+  a rule or an automation still wait and now say no account is connected.
+- Yulius can be driven from a laptop by a local agent or the CLI (SPEC-247, ADR-0188, ADR-0189,
+  task #233; an early external user's most important point: "make a task, restart it" from their
+  own agent). Settings → Connect your local agent makes a personal API token, `operate` or
+  `read`. It is shown once with its `claude mcp add` and `yulius remote login` commands, stored
+  hashed, listed with its last use and revocable. The instance serves a remote MCP at `/mcp`. A
+  person's Claude Code imports a repository with it, starts its onboarding, reads files, sets up CI
+  through a change pull request merged once Yulius CI passed, and manages tasks, CI, CD (dev),
+  automations and secret bindings, within the person's own access to each project. Requests are
+  limited to 120 a minute per token, and changes are audited as `remote:<login>`. The new `yulius
+  remote|project|task|ci` commands call the same tools. `yulius login` tokens keep working as
+  before and cannot start onboarding. [Guide](remote-control.md).
+
+- Secrets scopes, review follow-ups (SPEC-248, task #234): a hand-over rewrites the run's
+  fingerprint file for the new owner, so no run keeps hashes of the previous owner's personal
+  values; the 200-secret limit per project is counted in the store transaction, so concurrent
+  switch-ons cannot pass it; an agent run's egress client no longer carries a frozen person
+  (`EgressClient::holder()` removed); tests for the new owner's secret after a hand-over and a
+  deleted task's client; SPEC-245 and the ADR index corrected.
+- Claude's sign-in confirms itself (SPEC-243, ADR-0184, task #229). After a successful sign-in
+  the dialog stayed open over the terminal, so it was unclear whether it had worked. Now the
+  dialog closes by itself and a toast says "Claude #3 is connected as …", with the email of the
+  Claude account read right after the sign-in (SPEC-244) when Claude shares it. A failed, cancelled or lost sign-in shows why, with Try again in the same
+  dialog. Closing a sign-in that still runs cancels it on the server
+  (`POST /api/admin/accounts/login/{lid}/cancel`) instead of leaving it running for 15 minutes.
+  A token Claude already printed is kept even then. A CLI that runs on after printing its token
+  is stopped after 5 seconds and the token is kept. A sign-in the server no longer has is said at
+  once instead of being reconnected to for minutes.
+  Failure reasons read "exit code 1" instead of "Some(1)".
+- Agent secrets have three scopes: Project, Global and Personal (SPEC-245, ADR-0186, task #231),
+  after an external user found the old scopes pointless. Global secrets are defined once by
+  instance administrators and switched on per project; personal ones belong to one person, are
+  switched on by them per project and reach only tasks they start (not other people's, not
+  automations, CI or deploys), only through the egress proxy. A name resolves project, then
+  personal, then global. Team-wide agent secrets became global ones switched on for every
+  project, so no run lost a secret. The Secrets page opens on Project; Team secrets is the fourth
+  tab (`?section=team`).
+- A new GitHub repository with no commits can be onboarded (SPEC-241, ADR-0187, task #227). Starting
+  its onboarding failed with "git: revision not found: origin/master": the empty clone named the
+  server's own default branch, and there was no branch for the onboarding task to start from. Import
+  now records GitHub's default branch, and starting onboarding pushes one commit adding `README.md`
+  to it first; a repository with commits is never written to, and a sandbox already recorded with
+  `master` is corrected to GitHub's branch. Creating a project now says what
+  GitHub refused: the App permission it lacks, in GitHub's words, with the App's permission and
+  installation pages, or, for an installation on only selected repositories, that the repository was
+  created and where to add it before importing it.
+
+- Subscriptions can be renamed, and administrators see the email of the Claude account behind each
+  one (SPEC-244, ADR-0185, task #230, feedback from an early user). On the Subscriptions page, the
+  pencil or a click on the name edits it in place; Enter saves and Escape cancels. The email is
+  read from Claude's profile with the subscription's own credential when it signs in. The
+  background usage round reads it once for subscriptions signed in before. Administrators see the
+  email next to the name on the Subscriptions page, in the Status panel, on the Dashboard, in Task
+  details and in the analytics. Everyone else sees the name only. Claude may refuse the profile to
+  `setup-token` sign-ins; such a subscription reads "email unknown", and the name tells it apart.
+
+- The superadmin password needs 8 characters instead of 12 (SPEC-242, ADR-0183, task #228). An
+  early external user could not set up an instance with the 8-character password they wanted.
+  Setup and recovery now accept 8 characters or more (NIST SP 800-63B) and refuse a 7-character
+  one with "the password needs at least 8 characters". The forms recommend 12 characters: a
+  shorter or repetitive password gets advice that does not block it. No composition rules or list
+  of common passwords. Login rate limiting and the recovery lockout are unchanged. The mock now
+  also serves "Forgot password?" while signed out.
 
 - A finished automation run is Done instead of waiting under Needs you (SPEC-240, ADR-0182, task
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run

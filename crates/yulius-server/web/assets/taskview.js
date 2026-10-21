@@ -22,6 +22,7 @@ import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY,
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
+import { claudeConnected, connectClaudeStep } from './claude.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 
@@ -59,7 +60,9 @@ function emptyTerminalMessage(task) {
     case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
     case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
-    case 'waiting_capacity': return { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
+    case 'waiting_capacity': return task.waits_for_account
+      ? { title: 'Waiting for Claude', text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one or signs one in again.` }
+      : { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
     case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.', busy: true };
     case 'chained': {
       const after = task.after;
@@ -627,7 +630,8 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.setAttribute('aria-label', `${done} of ${total} steps done, ${pct}% of the plan${active ? `, ${active}% in progress` : ''}`);
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
-    const reset = current.status === 'waiting_capacity' ? resetAround(current.resumes_at) : '';
+    // Waiting for a Claude account to be connected has no reset to wait for (SPEC-246).
+    const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? 'waits for a Claude account' : resetAround(current.resumes_at);
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
@@ -771,7 +775,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request'];
+  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
@@ -1282,7 +1286,8 @@ export function mountComposer(ctx, sandbox) {
     const shown = sb.onboarding === 'pending'
       ? [onboardingStarts.has(sb.id) || [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]]
       : [prep === undefined ? (ctx.store.tasksError(sb.id) ? 'unknown' : 'loading') : prep ? 'open' : 'missing'];
-    const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
+    const connected = claudeConnected(me);
+    const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, prep && prep.status, connected, ...shown]) : '';
     if (key !== gateKey) {
       const before = gateKey ? JSON.parse(gateKey)[0] : null;
       const hadFocus = gate.contains(document.activeElement);
@@ -1301,6 +1306,8 @@ export function mountComposer(ctx, sandbox) {
     card.hidden = preparing;
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
+    // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
+    else if (!connected && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
@@ -1388,6 +1395,12 @@ export function mountComposer(ctx, sandbox) {
     }
     const plan = plans.get(planKey(prep));
     const intro = 'Onboarding is one task an agent runs before any other in this sandbox';
+    // Onboarding runs an agent: connecting Claude is its first step (SPEC-246 CLA-006, CLA-007). A
+    // start that failed before (for want of an account, or for a reason from before it was told
+    // apart) is offered again once one is connected.
+    const connected = claudeConnected(ctx.store.state.me);
+    const failed = prep && typeof prep.status === 'string' && prep.status.startsWith('failed_');
+    const start = failed ? 'Retry onboarding' : 'Start onboarding';
     return [
       h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboard ${sb.name} first`),
       h('p', null, prep
@@ -1396,8 +1409,12 @@ export function mountComposer(ctx, sandbox) {
       plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.steps.map((step) => h('li', null, step)))
         : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
       h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
+      connected ? null : connectClaudeStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
+      failed ? h('p', { class: 'onboarding-gate-failed' }, prep.status === 'failed_no_account'
+        ? `Onboarding couldn’t start because no Claude account was usable.${connected ? ' One is usable now.' : ''}`
+        : 'Onboarding couldn’t start last time.') : null,
       allows(sb.access, 'write')
-        ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => approveOnboarding() }, 'Start onboarding')
+        ? h('button', { type: 'button', class: 'btn btn-primary', disabled: !connected, title: connected ? null : 'Connect Claude first', onClick: () => approveOnboarding() }, start)
         : h('p', { class: 'muted' }, 'Someone with write access to the repository starts it here.'),
     ];
   }
@@ -1621,6 +1638,7 @@ export function mountComposer(ctx, sandbox) {
   renderChips();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
+  destroyers.push(ctx.store.on('me', renderBanner));
   // A kept "Run after" shows once the sandbox's tasks are read.
   destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); if (afterTaskId) renderChips(); } }));
   destroyers.push(onDraftChange(userId, sandbox.id, draftChanged));

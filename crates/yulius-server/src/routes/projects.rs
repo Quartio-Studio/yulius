@@ -85,6 +85,11 @@ pub async fn approve_onboarding(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(sid): Path<String>,
+    body: Option<Json<yulius_contracts::api::sandboxes::ApproveOnboarding>>,
 ) -> ApiResult<Json<Sandbox>> {
-    Ok(Json(app.approve_onboarding(&ctx, &sid).await?))
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(
+        app.approve_onboarding(&ctx, &sid, req.notes.as_deref())
+            .await?,
+    ))
 }

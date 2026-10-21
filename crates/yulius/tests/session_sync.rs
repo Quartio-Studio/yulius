@@ -138,6 +138,8 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserRecord), BoxErro
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let origin = data.join("origin.git");
@@ -257,6 +259,7 @@ async fn ready(
         user: user.clone(),
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     let attach = viewer(app, &ctx, &id).await?;
     Ok((id, ctx, attach))

@@ -147,6 +147,7 @@ const ICONS = {
   // A secret value shown (SPEC-114): the eye struck through hides it again.
   'eye-off': [['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }], ['circle', { cx: 12, cy: 12, r: 3 }], ['path', { d: 'M4 4l16 16' }]],
   // Copy to the clipboard: two sheets.
+  pencil: [['path', { d: 'M4 20h4l10.5-10.5a2.12 2.12 0 0 0-4-4L4 16v4z' }], ['path', { d: 'M13.5 6.5l4 4' }]],
   copy: [['rect', { x: 8.5, y: 8.5, width: 11, height: 11, rx: 2 }], ['path', { d: 'M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2' }]],
 };
 
@@ -336,12 +337,17 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
   return close;
 }
 
+let errorAction = () => null;
+
+/** What a failed request's toast offers to do about it (`{label, run}` or null), by its error. */
+export function setErrorAction(fn) { errorAction = fn; }
+
 /** Toast for a failed request: shows the server's error message and code. */
 export function errorToast(error, prefix) {
   const message = error && error.message ? error.message : String(error);
   // The server's sentence is shown; its machine code is not (it stays in the console for support).
   if (error && error.code) console.warn(`${prefix || 'Error'}: ${error.code}`, error);
-  toast(prefix ? `${prefix}: ${message}` : message, { kind: 'error', timeout: 8000 });
+  toast(prefix ? `${prefix}: ${message}` : message, { kind: 'error', timeout: 8000, action: errorAction(error) || undefined });
 }
 
 // ---------------------------------------------------------------- dialogs

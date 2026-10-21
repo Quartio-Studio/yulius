@@ -797,7 +797,10 @@ pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::e
 pub async fn superadmin_bearer(h: &Harness) -> Result<Creds, Box<dyn std::error::Error>> {
     use yulius_app::ports::store::UserStore;
     let user = h.store.superadmin().await?.ok_or("no superadmin")?;
-    let token = h.app.issue_api_token(&user, "tests").await?;
+    let token = h
+        .app
+        .issue_api_token(&user, "tests", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     Ok(Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()
@@ -1176,7 +1179,9 @@ pub async fn user_with_token(
             user_id,
             token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),
             label: "test".into(),
+            scope: yulius_domain::permission::TokenScope::Cli,
             created_at: Timestamp(1),
+            last_used_at: None,
             revoked_at: None,
         })
         .await?;
@@ -1439,11 +1444,50 @@ pub async fn seed_github_user(
             h.app.now(),
         )
         .await?;
-    let token = h.app.issue_api_token(&user, "tests").await?;
+    let token = h
+        .app
+        .issue_api_token(&user, "tests", yulius_domain::permission::TokenScope::Cli)
+        .await?;
     Ok(Creds {
         bearer: Some(token.expose().to_owned()),
         ..Creds::default()
     })
+}
+
+/// A connected Claude subscription with no capacity left until a reset days away (past any clock a
+/// test advances): a start passes
+/// the account gate (SPEC-246) and then waits `waiting_capacity` without a process (ROT-010), as
+/// these harnesses have no process host.
+pub async fn exhausted_subscription(h: &Harness) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore;
+    let resets = h.app.now().plus_millis(6 * 24 * 3_600_000).0;
+    let usage = serde_json::json!({
+        "primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": resets},
+        "secondary": {"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets},
+        "observed_at": null,
+    });
+    h.store
+        .insert_account(&AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("a-exhausted")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Claude (exhausted)".into(),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(b"synthetic-subscription-credential")?,
+            ),
+            status: AccountStatus::Limited,
+            usage_json: Some(usage.to_string()),
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    Ok(())
 }
 
 /// Seeds a sandbox for the repository `acme/<slug>` (created by `created_by`).

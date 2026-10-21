@@ -57,6 +57,10 @@ pub struct SandboxStatus {
 pub struct StatusAccount {
     /// Label.
     pub label: String,
+    /// Email of the Claude account behind it (instance administrators only, UI-022; absent while
+    /// unknown, SPEC-244 SUB-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     /// Provider (`anthropic`).
     pub provider: String,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.

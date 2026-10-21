@@ -1,0 +1,153 @@
+---
+yulius-task: fa2040dd-83cb-48a7-8264-9027d1f0a806
+status: done
+---
+
+# SPEC-253: Claude config dir links and the commondir canonicalize (#634)
+
+Status: done
+Date: 2026-10-21
+Owner: Yulius task #239
+Scope authorization: task #239 (from task #235), the still-open part of #634. Applies
+[ADR-0174](../../docs/decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md);
+decided in [ADR-0193](../../docs/decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md).
+
+## Goal
+
+Before every task run and Superagent launch, Yulius prepares the agent's Claude Code config dir
+(`<home>/.claude`) and records folder trust for the worktree and its main repository
+(`ensure_claude_config`, SPEC-024, SPEC-106, SPEC-210). The host never writes through a link the
+agent put in that dir's path, and never resolves agent-written git files on the host filesystem.
+
+## Context
+
+- PR #641 (task #197) made every read there open the last component with
+  `O_NOFOLLOW | O_NONBLOCK` and use it only when `fstat` says regular file (`open_regular`).
+- Still open (verified by task #235 on `dev` at 4e796d87):
+  - **Linked config dir.** `ensure_claude_config` creates `config_dir` with a recursive
+    `DirBuilder`, which accepts an existing link to a directory; `.claude.json`, `settings.json` and
+    the diff-plugin stores (`plugins/store/*.json`) are then read and renamed over by path
+    (`PlannedFile::write`). A task's home is `<sandbox>/home`, inside the read-write sandbox mount, so
+    the agent can replace `home`, `home/.claude`, `plugins` or `store` with a link to any folder the
+    service user can write, and the next launch reads and replaces files there.
+  - **Host-side `canonicalize`.** `main_repository` resolves `<admin>/<commondir>` with
+    `canonicalize`, where both the admin dir (`gitdir:` line of `<worktree>/.git`) and `commondir`
+    are written by the agent. The host then stats any path the agent names and writes the result,
+    link targets resolved, into the agent's `.claude.json`: an oracle for host paths and links.
+    The trust keys are canonicalized a second time (`claude_config.rs:78-83`).
+- `.config/vidoc.toml` has two ignores pointing at #634 ("as trusted", "trust arbitrary
+  directories"), to be removed once this is fixed.
+- Root cause: the code predates ADR-0174 and kept path-based writes; the existing tests created
+  every directory themselves, so no test had a link on the way to the config dir.
+
+## Requirements
+
+- CFG-001. The config dir is opened from an anchor the agent cannot replace: the folder above its
+  home (a task's sandbox directory, a person's user folder for the Superagent). The home and the
+  config dir below it are opened one component at a time with `O_DIRECTORY | O_NOFOLLOW` and
+  created `0700` with `mkdirat` when missing.
+- CFG-002. A link (or a file) in place of the home or the config dir refuses the launch with an
+  error naming the component ("… is a link or not a folder: Yulius follows no links"); nothing is
+  created or written at the link's target.
+- CFG-003. `.claude.json`, `settings.json` and the diff-plugin stores are read with `openat`
+  (`O_NOFOLLOW | O_NONBLOCK`, regular files only) and replaced through the folder's handle: a new
+  file `O_CREAT | O_EXCL | O_NOFOLLOW` (mode `0600`), synced, `renameat` within the same handle,
+  the folder synced.
+- CFG-004. `plugins` and `store` are opened through the config dir's handle without links and
+  never created; a link (or anything else) there leaves the diff pane as it is and the launch goes
+  on, its target untouched.
+- CFG-005. The main repository of a linked worktree comes from the `gitdir:` path of
+  `<worktree>/.git` alone, resolved lexically (relative paths against the worktree's key, `.` and
+  `..` removed); nothing below it is opened, `commondir` included (Git always writes `../..`
+  there). It must read `<common>/worktrees/<name>`, as `git worktree add` lays it out; otherwise
+  the worktree alone is trusted. The trusted repository is `<common>`'s parent when `<common>` is
+  named `.git`, else `<common>` (bare). The keys therefore never depend on what exists at that
+  path or where its links lead.
+- CFG-006. The worktree's own trust key stays its real path: Claude Code keys trust by the real
+  path of its working directory, and the data directory may sit behind a host link. No other
+  path is canonicalized. Residual (pre-existing, noted on #634): the worktree folder is the
+  agent's, so a link it puts there is resolved for that key.
+- CFG-007. The two `.config/vidoc.toml` ignores citing #634 are removed.
+
+## Plan
+
+- [x] Spec SPEC-253 for the config dir walk and lexical commondir
+- [x] Regression tests for linked config dirs and commondir resolution
+- [x] Config dir walked and written through handles
+- [x] Main repository derived lexically from the git layout
+- [x] Docs, ADR and Vidoc entries updated
+- [x] Review round 1 findings fixed (commondir never opened)
+- [x] Gates green at the merged head
+- [x] Independent review approved
+- [x] Spec evidence recorded and status done
+
+## Acceptance criteria
+
+- `home/.claude` linked to an outside folder: `ensure_claude_config` fails naming `.claude`, and
+  the outside folder stays empty (no `.claude.json`, no `settings.json`). The same for `home`
+  itself linked.
+- `plugins` or `store` linked to an outside folder holding an open diff store: the launch
+  succeeds and the outside store still reads `"open": true`.
+- A swap of the config dir for a link after it was opened (test pause point) does not redirect
+  the writes: they land in the folder that was opened.
+- The trusted keys are exactly the worktree and the repository named by the `gitdir:` path: the
+  same for a path that does not exist, kept as written through a link, none for a path that is
+  not `<common>/worktrees/<name>`; a FIFO at `commondir` is never opened. A real `git worktree
+  add`, a relative `gitdir:` and a bare repository's worktree still trust their main repository.
+- Every existing `claude_config` test passes.
+
+## Test plan
+
+Unit tests in `crates/yulius-harness/src/claude_config.rs` (run by `scripts/dev test`):
+`a_linked_config_dir_is_refused_and_its_target_untouched`,
+`a_linked_plugin_folder_is_left_alone`, `writes_go_to_the_folder_that_was_opened` (pause point,
+`cfg(test)`, ADR-0174), `the_main_repository_comes_from_the_gitdir_path_alone`; the existing
+trust tests cover the git layouts (`git worktree add`, relative `gitdir:`, bare), and
+`host_reads_never_follow_a_link_or_wait_on_a_fifo` a FIFO at `commondir`. Not tested: Git's
+`--relative-paths` itself (Git 2.43 here lacks it; the synthetic relative layout stands in). Then the full gate (`scripts/dev ci`) and `scripts/dev
+security`.
+
+## Decisions
+
+- **Anchor = the folder above home**, derived inside `ensure_claude_config` from the config dir it
+  is given (`<anchor>/<home>/<config>`), so both callers keep passing `<home>/.claude`. Passing an
+  explicit anchor would make each caller repeat the same derivation. Recorded in ADR-0193.
+- **Refuse rather than replace a linked config dir.** Replacing would remove an entry the agent
+  made; a refusal names it and the agent (or a person) fixes it. Matches ADR-0174.
+- **Main repository from the `gitdir:` path alone, lexically, instead of a handle walk.** Git
+  writes the real absolute admin path (`git worktree add`) or a path relative to the worktree, and
+  `commondir` is `../..`; lexical resolution gives the same answer for every layout Git makes,
+  without touching paths the agent names. Reading `commondir` as a check (review round 1) still
+  opened it through links in the agent's path, an existence oracle; a trust entry for a path that
+  is no repository only lands in the agent's own config. A walk with `O_NOFOLLOW` from `/` would
+  refuse host links above the data directory (macOS `/var`), which the current code accepts.
+- **Keep resolving the worktree path.** Claude Code keys trust by the real path of its working
+  directory and `data_dir` is not canonicalized at startup, so the key must be resolved; resolving
+  only the host's prefix would need each caller to pass its sandbox directory. The residual (a
+  link the agent puts at its own worktree is resolved) is pre-existing and noted on #634.
+- **Out of scope:** the transcript step-back still reads `<home>/.claude/projects/…` by path
+  (#661).
+
+## Evidence
+
+- Regression tests first (commit ba7a0d74): `a_linked_config_dir_is_refused_and_its_target_untouched`,
+  `a_linked_plugin_folder_is_left_alone` and the first main-repository test failed on `dev`
+  (a linked `.claude` was written through, a linked `store` was rewritten, `commondir` `/` was
+  trusted). Review round 1's test `the_main_repository_comes_from_the_gitdir_path_alone` failed
+  on the first fix (a missing path got no key: the existence oracle) and passes since 95c9fc01.
+- `cargo test -p yulius-harness --lib claude_config`: 15 passed.
+- `scripts/dev ci` at 75cda697 (dev merged at dbafe015): exit 0, 2369 tests run, 2369 passed,
+  17 skipped; clippy, macOS compile, docs and the repository checks included.
+- Flaky test met on the way: `projects::a_scheduled_start_without_claude_waits_and_says_why`
+  (SPEC-246, #760) failed the full gate twice and 1 of 28 nextest stress runs; `capacity.rs`
+  records `waiting_capacity` before it sends the notice the test drained with `try_recv`. The test
+  now awaits the notice (20 s bound): 200 of 200 stress runs passed. Not filed as an issue (the
+  task forbids it).
+- `scripts/dev security`: exit 2, **unrun** (Vidoc HTTP 429: the instance key used its 50,000,000
+  tokens), not passed (ADR-0133, ADR-0157); the pull request's CI `security` job is the live scan.
+- Independent review (fresh session, `om-code-review`): round 1 at a38914f9 requested changes
+  (major: `commondir` still opened through links in the agent's path; minor/nits fixed or
+  documented); round 2 at 75cda697 approved. The worktree-path residual (CFG-006) and #661 are
+  noted on #634 (comment 6306023317).
+- Not tested here: Git's own `--relative-paths` (Git 2.43 lacks it; a synthetic relative layout
+  stands in); a live contained launch on the instance.

@@ -244,6 +244,20 @@ impl App {
                 ),
                 other => other,
             })?;
+        // A project secret of a name that reaches the project already (a global or the person's
+        // own) would replace it for the project's runs (SPEC-245 RES-001): never an agent's doing.
+        if self
+            .resolved_agent_secrets(user.sandbox(), user.holder())
+            .await?
+            .iter()
+            .any(|r| r.name == name.as_str())
+        {
+            return Err(AppError::Conflict(format!(
+                "an agent secret named {} already applies to this project (see secrets_list); it \
+                 is never replaced: pick another name, or a person rotates it on the Secrets page",
+                name.as_str()
+            )));
+        }
 
         // Anchored on a folder the agent cannot replace, and walked down without links: the
         // home or repository itself may be a link the agent planted (review of SPEC-211, 1).
@@ -276,7 +290,7 @@ impl App {
         let record = self
             .insert_agent_secret(NewAgentSecret {
                 sandbox: &sandbox.id,
-                scope: Some(sandbox.id.clone()),
+                scope: crate::ports::vault::AgentScope::Project(sandbox.id.clone()),
                 meta: Meta {
                     name: name.as_str().to_owned(),
                     hosts: Vec::new(),
@@ -290,6 +304,7 @@ impl App {
                 // An agent's secret waits for a person (SPEC-211), never set up by agents
                 // (SPEC-216).
                 auto_allow: false,
+                env_files: false,
             })
             .await?;
         drop(payload);
@@ -333,8 +348,9 @@ impl App {
     /// Superagent's person's folder, canonical) and the folders below it, to be opened one at a
     /// time without following links. The folder the caller works in is a task's worktree or the
     /// sandbox repository; the home is the sandbox home for a task, its person's home (shared by
-    /// their projects) for the Superagent.
-    async fn secret_source_root(
+    /// their projects) for the Superagent. `secret_copy_to_env` opens its target from the work
+    /// folder's anchor too (#635).
+    pub(super) async fn secret_source_root(
         &self,
         user: SecretUser<'_>,
         sandbox: &SandboxRecord,

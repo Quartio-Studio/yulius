@@ -499,6 +499,7 @@ impl App {
             user,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let id = task.id.to_string();
         let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {

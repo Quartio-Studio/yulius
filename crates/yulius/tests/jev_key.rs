@@ -267,6 +267,7 @@ async fn the_superadmin_manages_the_key_and_intake_follows_at_once() -> TestResu
         user: i.h.store.superadmin().await?.ok_or("superadmin")?,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     assert_eq!(
         restarted.jev_key_view(&ctx).await?.source.as_deref(),

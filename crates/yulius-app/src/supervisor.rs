@@ -21,7 +21,7 @@ use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
-    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
+    Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
@@ -57,6 +57,9 @@ const CLOSE_SETTLE_MS: u64 = 5_000;
 /// How long asking a run to shut down may take: one frame on a local socket; a host that takes
 /// longer is stuck, which the escalation handles (SPEC-065 END-005).
 const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
+/// How many times a stop makes its status change: each lost one means another writer changed the
+/// status, and the status machine has no cycle a stop can keep losing to (SPEC-250 STW-001).
+const STOP_ROUNDS: usize = 4;
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
@@ -66,8 +69,30 @@ enum EndIntent {
     Cancel,
     /// A finished task is closed (archived when Done): it ends as a clean exit, `closed`.
     Close,
-    /// Account/provider switch; the sender is told when the old run has exited.
-    Switch(oneshot::Sender<()>),
+    /// Account/provider switch; the sender is told when the old run has exited, or why the switch
+    /// was overtaken.
+    Switch(oneshot::Sender<SwitchEnd>),
+}
+
+/// How the wait of a switch for its old run ended (SPEC-250 STW-006).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchEnd {
+    /// The old run exited: the switch goes on.
+    Ended,
+    /// A stop took over the old run's end.
+    Stopped,
+    /// A close took over the old run's end.
+    Closed,
+    /// The old run was lost.
+    Lost,
+}
+
+/// Puts `next` in a task's end intent slot. A switch whose intent it replaces is told `why` it was
+/// overtaken, so it says so whatever the run's end has recorded yet (SPEC-250 STW-006).
+fn replace_intent(slot: &mut Option<EndIntent>, next: Option<EndIntent>, why: SwitchEnd) {
+    if let Some(EndIntent::Switch(waiting)) = std::mem::replace(slot, next) {
+        let _ = waiting.send(why);
+    }
 }
 
 struct ActiveRun {
@@ -946,18 +971,22 @@ impl App {
         start: RunStart,
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
-        self.start_run_if(task_id, start, account, None)
+        Box::pin(async move {
+            self.start_run_if(task_id, start, account, None)
+                .await
+                .map(|_| ())
+        })
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
-    /// under the launch lock.
+    /// under the launch lock: `false` when it no longer has it, so nothing was done.
     fn start_run_if<'a>(
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
         only: Option<TaskStatus>,
-    ) -> BoxFuture<'a, AppResult<()>> {
+    ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             let guard = self.supervisor.launch.lock().await;
             let task = self
@@ -967,12 +996,12 @@ impl App {
                 .await?
                 .ok_or(AppError::NotFound)?;
             if only.is_some_and(|status| status != task.status) {
-                return Ok(());
+                return Ok(false);
             }
             // Already running: another start won the race (the queue and a direct start).
             if task.status == TaskStatus::Running {
                 tracing::info!(task = %task.id, "start of a running task skipped");
-                return Ok(());
+                return Ok(true);
             }
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
@@ -983,7 +1012,7 @@ impl App {
                     status = task.status.as_str(),
                     "fresh start of an ended task skipped"
                 );
-                return Ok(());
+                return Ok(true);
             }
             // A pending supertask of the project, or the running work a supertask waits for,
             // keeps a new run queued (SPEC-071); a live run is never held.
@@ -1016,17 +1045,12 @@ impl App {
                         .await?;
                     self.publish_task(&task.id).await;
                 }
-                return Ok(());
+                return Ok(true);
             }
             let result = self.launch_attempt(&task, start, account).await;
             drop(guard);
             if let Err(err) = &result {
-                let reason = match err {
-                    AppError::Conflict(_) | AppError::Capacity(_) | AppError::Invalid(_) => {
-                        FailReason::Precondition
-                    }
-                    _ => FailReason::SpawnError,
-                };
+                let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
                     && matches!(current.status, TaskStatus::Starting | TaskStatus::Queued)
                 {
@@ -1049,7 +1073,7 @@ impl App {
                 // A supertask that could not start no longer holds its project (SUP-005).
                 self.drain_queue().await;
             }
-            result
+            result.map(|()| true)
         })
     }
 
@@ -1252,8 +1276,14 @@ impl App {
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
         // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
         // redaction.
-        self.vault_run_setup(&sandbox, &run_dir, &task_token, &mut launch)
-            .await?;
+        self.vault_run_setup(
+            &sandbox,
+            crate::vault::Holder::of_task(&task),
+            &run_dir,
+            &task_token,
+            &mut launch,
+        )
+        .await?;
         let (join, _lease) = self.isolation_join(&sandbox).await?.unzip();
         if join.is_some() {
             // Root of its sandbox (ADR-22): Claude Code accepts --dangerously-skip-permissions as
@@ -1383,6 +1413,13 @@ impl App {
             )
             .await?;
         let current = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+        // Control passed during the launch, after its fingerprint file was computed: the file a
+        // hand-over found nothing of yet becomes the new holder's (SPEC-248 FUP-002).
+        if crate::vault::Holder::of_task(&current) != crate::vault::Holder::of_task(&task)
+            && let Err(err) = self.rewrite_run_fingerprints(&task.id).await
+        {
+            tracing::warn!(task = %task.id, error = %err, "run's fingerprint file not rewritten");
+        }
         let event = if current.status == TaskStatus::Switching {
             TaskEvent::SwitchCompleted
         } else {
@@ -1898,8 +1935,14 @@ impl App {
     }
 
     pub(crate) fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
+        // Signed out since it was chosen: the start needs a connected account (SPEC-246 CLA-005).
         let sealed = account.credential.as_ref().ok_or_else(|| {
-            AppError::Conflict(format!("account {} has no credential", account.label))
+            AppError::AccountRequired(format!(
+                "Connect a Claude account first: {} is not signed in. An instance administrator \
+                 signs it in again in Subscriptions ({}).",
+                account.label,
+                crate::account_gate::CONNECT_PATH
+            ))
         })?;
         String::from_utf8(self.deps.crypto.open(sealed)?)
             .map(Secret)
@@ -2214,18 +2257,13 @@ impl App {
             && let Ok(mut intent) = rt.intent.lock()
         {
             // No exit will consume it: the next run must not inherit it.
-            *intent = None;
+            replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
         // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Ok(next) = task.status.after_loss(task.activity, reason)
-        {
-            let _ = self
-                .deps
-                .store
-                .transition_task(task_id, Some(task.status), next, None, now)
-                .await;
-        }
+        self.settle_ended(task_id, now, |task| {
+            task.status.after_loss(task.activity, reason).ok()
+        })
+        .await;
         self.end_pause(task_id, "ended").await;
         if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
@@ -2240,6 +2278,41 @@ impl App {
         self.publish_task(task_id).await;
         self.advance_chains(task_id).await;
         self.drain_queue().await;
+    }
+
+    /// Moves the task whose run ended to `next` of the status read (`None`: no change). A change
+    /// that loses to a concurrent one (a stop landing meanwhile) is made again from the status read
+    /// anew, so an ended run never leaves its task live (SPEC-250 STW-005); the rounds are bounded
+    /// like a stop's.
+    async fn settle_ended(
+        &self,
+        task_id: &TaskId,
+        now: Timestamp,
+        next: impl Fn(&TaskRecord) -> Option<TaskStatus>,
+    ) {
+        for _ in 0..STOP_ROUNDS {
+            let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+                return;
+            };
+            let Some(to) = next(&task) else {
+                return;
+            };
+            crate::race::reached(crate::race::Point::EndDecided, Path::new(task_id.as_str()));
+            match self
+                .deps
+                .store
+                .transition_task(task_id, Some(task.status), to, None, now)
+                .await
+            {
+                Ok(false) => {}
+                Ok(true) => return,
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error = %err, "the ended run's task was not moved");
+                    return;
+                }
+            }
+        }
+        tracing::warn!(task = %task_id, "the ended run's task kept changing; left as it is");
     }
 
     /// Records the end of a run exactly once and moves the task to its next state.
@@ -2304,38 +2377,47 @@ impl App {
         }
         match intent {
             Some(EndIntent::Switch(done)) => {
-                let _ = done.send(());
+                let _ = done.send(SwitchEnd::Ended);
                 return; // the switch controller launches the next run and drains the queue
             }
             Some(EndIntent::Close) => {
                 // The task was finished: whatever the exit code of the ended session, it is
                 // closed, like a session the user left.
-                if let Ok(Some(task)) = store.task(task_id).await
-                    && let Ok(next) = task.status.apply(TaskEvent::Exited { normal: true })
-                {
-                    let _ = store
-                        .transition_task(task_id, Some(task.status), next, None, now)
-                        .await;
-                }
+                // A switch the close overtook gave up: its task is closed from `Switching` too
+                // (SPEC-250 STW-006).
+                self.settle_ended(task_id, now, |task| {
+                    task.status
+                        .apply(TaskEvent::Exited { normal: true })
+                        .or_else(|_| {
+                            task.status
+                                .apply(TaskEvent::SwitchCompleted)
+                                .and_then(|running| {
+                                    running.apply(TaskEvent::Exited { normal: true })
+                                })
+                        })
+                        .ok()
+                })
+                .await;
             }
             Some(EndIntent::Cancel) => {
-                if let Ok(Some(task)) = store.task(task_id).await
-                    && let Ok(next) = task.status.apply(TaskEvent::Reaped)
-                {
-                    let _ = store
-                        .transition_task(task_id, Some(task.status), next, None, now)
-                        .await;
-                }
+                // A stop's run ended: its task is stopped, also while still live when the run ended
+                // before the stop's status change was made (SPEC-250 STW-003).
+                self.settle_ended(task_id, now, |task| {
+                    task.status
+                        .apply(TaskEvent::Reaped)
+                        .or_else(|_| {
+                            task.status
+                                .apply(TaskEvent::CancelRequested)
+                                .and_then(|stopping| stopping.apply(TaskEvent::Reaped))
+                        })
+                        .ok()
+                })
+                .await;
             }
             None => {
-                if let Ok(Some(task)) = store.task(task_id).await {
-                    let event = exit_event(&exit, session_end.as_deref());
-                    if let Ok(next) = task.status.apply(event) {
-                        let _ = store
-                            .transition_task(task_id, Some(task.status), next, None, now)
-                            .await;
-                    }
-                }
+                let event = exit_event(&exit, session_end.as_deref());
+                self.settle_ended(task_id, now, |task| task.status.apply(event).ok())
+                    .await;
             }
         }
         // A paused run that ended (the user left the session, or it was stopped) is no longer
@@ -2499,10 +2581,14 @@ impl App {
                 task.status.as_str()
             )));
         }
+        crate::race::reached(
+            crate::race::Point::CloseDecided,
+            Path::new(task_id.as_str()),
+        );
         let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
-            *intent = Some(EndIntent::Close);
+            replace_intent(&mut intent, Some(EndIntent::Close), SwitchEnd::Closed);
         }
         self.arm_escalation(task_id, closed);
         self.end_person_pause(task_id).await;
@@ -2637,19 +2723,48 @@ impl App {
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
+    /// A status change that loses to a concurrent one (a switch or a start completing) is made
+    /// again from the status read anew, so the stop always takes effect (SPEC-250 STW-001).
     ///
     /// # Errors
-    /// `Conflict` when the task is not live.
+    /// `Conflict` when the task is not live, or still changes after `STOP_ROUNDS` rounds.
     pub async fn stop_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        for round in 0..STOP_ROUNDS {
+            if self.stop_round(task_id, round > 0).await? {
+                return Ok(());
+            }
+        }
+        // The stop failed: its intent goes, so no run ends later as if stopped.
+        if let Ok(mut intent) = self.runtime(task_id).intent.lock()
+            && matches!(*intent, Some(EndIntent::Cancel))
+        {
+            *intent = None;
+        }
+        Err(AppError::Conflict(
+            "the task kept changing while it was stopped; try again".into(),
+        ))
+    }
+
+    /// One round of [`Self::stop_task_now`]: `false` when its status change lost to a concurrent
+    /// one. After a lost round (`again`), a task that rests was ended meanwhile, by this stop's
+    /// intent or by its run's own end: the stop is done (STW-002).
+    async fn stop_round(self: &Arc<Self>, task_id: &TaskId, again: bool) -> AppResult<bool> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        if again && task.status.is_resting() {
+            // A run still live is ended all the same: the intent set is this stop's.
+            if store.live_attempt(task_id).await?.is_some() {
+                self.end_stopped_run(task_id).await;
+            }
+            return Ok(true);
+        }
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
             || task.status == TaskStatus::Prepared
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {
-            store
+            if !store
                 .transition_task(
                     task_id,
                     Some(task.status),
@@ -2657,13 +2772,16 @@ impl App {
                     None,
                     self.now(),
                 )
-                .await?;
+                .await?
+            {
+                return Ok(false);
+            }
             self.end_pause(task_id, "cancelled").await;
             self.publish_task(task_id).await;
             self.advance_chains(task_id).await;
             // A cancelled supertask no longer holds its project (SUP-005).
             self.drain_queue().await;
-            return Ok(());
+            return Ok(true);
         }
         // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One
         // whose run has ended gets no intent (nothing would consume it): it rests by itself while
@@ -2689,7 +2807,7 @@ impl App {
                     self.publish_task(task_id).await;
                     self.advance_chains(task_id).await;
                 }
-                return Ok(());
+                return Ok(true);
             }
             TaskStatus::Stopping
         } else {
@@ -2699,21 +2817,31 @@ impl App {
         };
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
-            *intent = Some(EndIntent::Cancel);
+            replace_intent(&mut intent, Some(EndIntent::Cancel), SwitchEnd::Stopped);
         }
-        if task.status != TaskStatus::Stopping {
-            store
+        crate::race::reached(crate::race::Point::StopDecided, Path::new(task_id.as_str()));
+        // Lost to a concurrent change: the task is read again. The intent stays: it is this
+        // stop's, and a run that ends on it meanwhile rests its task (STW-003).
+        if task.status != TaskStatus::Stopping
+            && !store
                 .transition_task(task_id, Some(task.status), next, None, self.now())
-                .await?;
+                .await?
+        {
+            return Ok(false);
         }
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
+        self.end_stopped_run(task_id).await;
+        Ok(true)
+    }
+
+    /// Ends the run of a task a stop decided to end: graceful shutdown, with the escalation armed.
+    async fn end_stopped_run(self: &Arc<Self>, task_id: &TaskId) {
         // The run this stop ends; without it (a store error) nothing is escalated.
         let stopped = self.live_attempt_id(task_id).await;
         self.arm_escalation(task_id, stopped);
         self.end_person_pause(task_id).await;
-        request_shutdown(&runtime).await;
-        Ok(())
+        request_shutdown(&self.runtime(task_id)).await;
     }
 
     /// Switches a running task to another account (manual or rotation-driven).
@@ -2908,8 +3036,30 @@ impl App {
             // A paused run takes the end as it would unpaused (SPEC-191 PER-004).
             self.end_person_pause(task_id).await;
             let (tx, rx) = oneshot::channel();
-            if let Ok(mut intent) = runtime.intent.lock() {
-                *intent = Some(EndIntent::Switch(tx));
+            crate::race::reached(
+                crate::race::Point::SwitchDecided,
+                Path::new(task_id.as_str()),
+            );
+            // A stop or close that came since the status change owns the old run's end: its intent
+            // is kept, and the switch gives up (SPEC-250 STW-006).
+            let taken = match runtime.intent.lock() {
+                Ok(mut intent) => match *intent {
+                    Some(EndIntent::Cancel) => Some(SwitchEnd::Stopped),
+                    Some(EndIntent::Close) => Some(SwitchEnd::Closed),
+                    _ => {
+                        *intent = Some(EndIntent::Switch(tx));
+                        None
+                    }
+                },
+                Err(_) => Some(SwitchEnd::Lost),
+            };
+            if taken.is_some() || self.switch_goes_on(task_id).await.is_none() {
+                if let Ok(mut intent) = runtime.intent.lock()
+                    && matches!(*intent, Some(EndIntent::Switch(_)))
+                {
+                    *intent = None;
+                }
+                return self.switch_overtaken(task_id, &decision_id, taken).await;
             }
             if let Some(run) = runtime.run.lock().await.as_mut() {
                 // An automatic switch happens at a boundary (or a held hook, or a limit): the
@@ -2930,23 +3080,54 @@ impl App {
             let budget = Duration::from_millis(
                 u64::try_from(yulius_domain::task::SWITCH_TIMEOUT_MS / 2).unwrap_or(60_000),
             );
-            if tokio::time::timeout(budget, rx).await.is_err() {
-                let _ = self
-                    .deps
-                    .session_host
-                    .terminate(Path::new(&attempt.run_dir));
-                let update = AttemptUpdate {
-                    ended_at: Some(self.now()),
-                    exit_reason: Some("switch_timeout".into()),
-                    ..AttemptUpdate::default()
-                };
-                let _ = store
-                    .transition_attempt(&attempt.id, AttemptState::Lost, &update)
-                    .await;
+            match tokio::time::timeout(budget, rx).await {
+                Ok(Ok(SwitchEnd::Ended)) => {}
+                // The switch's intent was replaced: a stop or close took over the old run's end,
+                // or its loss dropped it. No new run starts (SPEC-250 STW-006).
+                Ok(Ok(why)) => {
+                    return self
+                        .switch_overtaken(task_id, &decision_id, Some(why))
+                        .await;
+                }
+                Ok(Err(_)) => return self.switch_overtaken(task_id, &decision_id, None).await,
+                Err(_) => {
+                    let _ = self
+                        .deps
+                        .session_host
+                        .terminate(Path::new(&attempt.run_dir));
+                    let update = AttemptUpdate {
+                        ended_at: Some(self.now()),
+                        exit_reason: Some("switch_timeout".into()),
+                        ..AttemptUpdate::default()
+                    };
+                    let _ = store
+                        .transition_attempt(&attempt.id, AttemptState::Lost, &update)
+                        .await;
+                }
             }
         }
-        match self.start_run(task_id, start, account).await {
-            Ok(()) => {
+        // Only while the task is still switching, checked under the launch lock: one stopped or
+        // closed meanwhile is not started again, nor queued (STW-006).
+        let Some(from) = self.switch_goes_on(task_id).await else {
+            return self.switch_overtaken(task_id, &decision_id, None).await;
+        };
+        crate::race::reached(
+            crate::race::Point::SwitchLaunching,
+            Path::new(task_id.as_str()),
+        );
+        match self.start_run_if(task_id, start, account, Some(from)).await {
+            // Another start (the capacity loop's) ran the paused task first: it won, the switch
+            // is made.
+            Ok(false)
+                if from != TaskStatus::WaitingCapacity
+                    || !matches!(
+                        store.task(task_id).await,
+                        Ok(Some(t)) if t.status == TaskStatus::Running
+                    ) =>
+            {
+                self.switch_overtaken(task_id, &decision_id, None).await
+            }
+            Ok(_) => {
                 // The switch found no subscription with capacity: the task paused instead.
                 let paused = matches!(
                     store.task(task_id).await,
@@ -2989,6 +3170,89 @@ impl App {
                 Err(err)
             }
         }
+    }
+
+    /// The status a switch goes on from: still `Switching`, or paused for capacity meanwhile (a
+    /// Stop hook's wait, which the launch takes as before). `None` once a stop, a close or the
+    /// old run's loss moved the task on, or the store cannot say.
+    async fn switch_goes_on(&self, task_id: &TaskId) -> Option<TaskStatus> {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task))
+                if matches!(
+                    task.status,
+                    TaskStatus::Switching | TaskStatus::WaitingCapacity
+                ) =>
+            {
+                Some(task.status)
+            }
+            _ => None,
+        }
+    }
+
+    /// Ends a switch that a stop, a close or the old run's loss overtook (SPEC-250 STW-006): no
+    /// new run starts, a task left stopping with no run rests, the decision is recorded
+    /// `cancelled` and viewers are told why.
+    ///
+    /// # Errors
+    /// Always `Conflict`, saying what overtook the switch; a store error when recording it.
+    async fn switch_overtaken(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        decision_id: &str,
+        told: Option<SwitchEnd>,
+    ) -> AppResult<()> {
+        crate::race::reached(
+            crate::race::Point::SwitchOvertaken,
+            Path::new(task_id.as_str()),
+        );
+        self.deps
+            .store
+            .set_switch_outcome(decision_id, "cancelled")
+            .await?;
+        // A stop that came once the old run had ended found no run to end: the task is stopping
+        // with no run, and rests now, as a stop of it would rest it (one that a concurrent stop
+        // rested first is left as it is).
+        if matches!(
+            self.deps.store.task(task_id).await,
+            Ok(Some(task)) if task.status == TaskStatus::Stopping
+        ) && matches!(self.deps.store.live_attempt(task_id).await, Ok(None))
+            && let Err(err) = self.stop_round(task_id, true).await
+        {
+            tracing::warn!(task = %task_id, error = %err, "the overtaken switch's task was not rested");
+        }
+        let status = self
+            .deps
+            .store
+            .task(task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.status);
+        let intent = self
+            .runtime(task_id)
+            .intent
+            .lock()
+            .map(|intent| match *intent {
+                Some(EndIntent::Close) => Some(true),
+                Some(EndIntent::Cancel) => Some(false),
+                _ => None,
+            })
+            .unwrap_or(None);
+        // What overtook it says so; without word, the status and the intent tell.
+        let why = match (told, status, intent) {
+            (Some(SwitchEnd::Closed), _, _)
+            | (None, Some(TaskStatus::Closed), _)
+            | (None, _, Some(true)) => "the task was closed",
+            (Some(SwitchEnd::Stopped), _, _)
+            | (None, Some(TaskStatus::Stopping | TaskStatus::Stopped(StopReason::Cancelled)), _)
+            | (None, _, Some(false)) => "the task was stopped",
+            _ => "the session ended",
+        };
+        self.runtime(task_id)
+            .hub
+            .notice(format!("↻ The session was not switched: {why}."));
+        self.publish_task(task_id).await;
+        Err(AppError::Conflict(format!("{why} during the switch")))
     }
 
     /// What a launch would need, checked without changing anything: the repository, a usable

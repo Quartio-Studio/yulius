@@ -176,6 +176,11 @@ function seed(params) {
     failedPosts: 0,
 
     nextId: 100,
+    // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
+    logins: new Map(),
+    loginCancels: [],
+    // Accounts added here that never signed in: they hold no credential.
+    unsignedAccounts: new Set(),
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -261,13 +266,14 @@ function seed(params) {
     }
   }
   db.accounts = [
-    { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
-    { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
-    { id: 'acc_c3', provider: 'anthropic', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
-    { id: 'acc_x1', provider: 'anthropic', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'anthropic', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
-    { id: 'acc_x3', provider: 'anthropic', label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_c1', provider: 'anthropic', email: 'mkarp@example.com', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
+    { id: 'acc_c2', provider: 'anthropic', email: 'team@example.com', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
+    { id: 'acc_c3', provider: 'anthropic', email: 'ops@example.com', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
+    { id: 'acc_x1', provider: 'anthropic', email: 'pawel@example.com', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
+    { id: 'acc_x2', provider: 'anthropic', email: 'studio@example.com', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x3', provider: 'anthropic', email: null, label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
+  seededDb = db;
   // The default workflows ship with the server (catalog/workflows/*.md, AUT-006): read-only, first.
   db.workflows = [
     { id: 'wf-feature', sandbox: null, name: 'Feature', description: 'New or changed behaviour, from a spec through review and tests to production.', when_to_use: 'The task adds or changes behaviour that users or other code rely on.', steps: ['Write the spec', 'Implement', 'Review the change', 'Test', 'Deliver to the integration branch', 'Release to production'], instructions: 'Start with the task spec. Implement only what it describes, prove it with tests, review your own diff, then deliver through the delivery profile.', gates: { require_spec: true, require_tests: true }, scope: 'instance', builtin: true },
@@ -319,6 +325,14 @@ function seed(params) {
   }
   // `onboarding=preparing`: `product` is being onboarded (SPEC-096); its onboarding task is #1.
   if (params.get('onboarding') === 'preparing') db.sandboxes.find((s) => s.id === 'sb_product').onboarding = 'preparing';
+  // `claude=0`: no Claude account is connected (SPEC-246): nothing that runs an agent starts.
+  // `onboarding=failed`: `product` waits for onboarding, whose start failed for want of one.
+  if (params.get('claude') === '0') db.accounts = [];
+  if (params.get('onboarding') === 'failed') {
+    const product = db.sandboxes.find((s) => s.id === 'sb_product');
+    product.onboarding = 'pending';
+    Object.assign(preparationTask(db, product), { status: 'failed_no_account', neverRan: false, awaitsStart: false });
+  }
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
@@ -378,6 +392,15 @@ function stepsSummary(task) {
   return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
 }
 
+/** The mock's database, for views built without it (a subscription's email by its label). */
+let seededDb = null;
+
+/** The email of the subscription named `label` (SPEC-244), `null` while unknown. */
+function accountEmailOf(label) {
+  const account = label && seededDb ? seededDb.accounts.find((a) => a.label === label) : null;
+  return account ? account.email ?? null : null;
+}
+
 function summary(task) {
   return {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
@@ -391,6 +414,8 @@ function summary(task) {
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
+    // No Claude account usable (SPEC-246): it waits for one, not for capacity.
+    waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !claudeUsable(seededDb),
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
     next: (task.nextLinks || []).map((link) => ({ ...link })),
@@ -540,14 +565,18 @@ const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 /** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
 const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].includes(task.status);
 
+/** Whether the mock's person administers the instance: subscription emails are theirs (UI-022). */
+const isAdmin = (db) => Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
+
 function detail(db, task) {
   const live = LIVE.has(task.status);
   const ran = hasStarted(task) && (task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done'));
   return {
     ...summary(task),
+    ...(isAdmin(db) && task.account_label && accountEmailOf(task.account_label) ? { account_email: accountEmailOf(task.account_label) } : {}),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
@@ -714,12 +743,17 @@ const R = [];
 const route = (method, pattern, handler) => R.push([method, new RegExp(`^${pattern}$`), handler]);
 const ID = '([^/]+)';
 
+// The server's validate_new_password (SPEC-242 PWM-001): the repeat matches, 8 code points.
+function checkNewPassword(body) {
+  if (body.password !== body.password_confirm) fail(422, 'invalid', 'passwords do not match');
+  if ([...(body.password || '')].length < 8) fail(422, 'invalid', 'the password needs at least 8 characters');
+}
 route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired }));
 route('POST', '/api/setup', ({ db, body }) => {
   if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
   if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
-  if (body.password !== body.password_confirm) fail(422, 'invalid', 'Passwords do not match.');
   if (!body.confirm_saved) fail(422, 'invalid', 'Confirm that the password is stored safely.');
+  checkNewPassword(body);
   db.setupRequired = false;
   db.signedIn = true;
   db.me.user = { id: 'usr_root', login: 'superadmin', display_name: 'Superadmin', avatar_url: null, is_superadmin: true, is_instance_admin: true, github_linked: false };
@@ -735,7 +769,13 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 // Mock only: stands in for the GitHub OAuth round trip (/api/auth/github/start → callback).
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
-route('GET', '/api/me', ({ db }) => db.me);
+// Whether agents can start (SPEC-246 CLA-001): an account signed in and `ok` or `limited`.
+const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.status === 'limited');
+// A person's start of an agent without one is refused, with where to connect one (CLA-002).
+const needClaude = (db) => {
+  if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
+};
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db) } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).
@@ -747,6 +787,7 @@ route('GET', '/api/auth/recovery', async ({ db }) => {
   return clone(db.recovery);
 });
 route('POST', '/api/auth/recover', ({ db, body }) => {
+  checkNewPassword(body || {});
   if (db.recovery.locked) fail(403, 'forbidden', 'recovery is locked');
   if (!body || body.code !== '123456') {
     db.recovery.attempts_left = Math.max(0, db.recovery.attempts_left - 1);
@@ -771,6 +812,36 @@ route('POST', '/api/admin/github/manifest', ({ db, body }) => {
 });
 route('POST', '/api/device/approve', ({ body }) => {
   if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(body.user_code || '')) fail(404, 'not_found', 'not found');
+  return json(204);
+});
+
+// Personal API tokens (SPEC-247): one `yulius login` token to start with; a new token is shown once.
+const apiTokens = (db) => {
+  if (!db.apiTokens) db.apiTokens = [{ id: 'tok_cli', label: 'yulius CLI', scope: 'cli', created_at: new Date(Date.now() - 3 * 86400000).toISOString(), last_used_at: new Date(Date.now() - 3600000).toISOString() }];
+  return db.apiTokens;
+};
+route('GET', '/api/me/tokens', ({ db }) => apiTokens(db));
+route('POST', '/api/me/tokens', ({ db, body }) => {
+  const label = String((body && body.label) || '').trim();
+  if (!label || label.length > 80) fail(422, 'invalid', 'a label of 1-80 characters is required');
+  if (!['operate', 'read'].includes(body.scope)) fail(422, 'invalid', 'scope must be operate or read');
+  const tokens = apiTokens(db);
+  const view = { id: `tok_${tokens.length + 1}`, label, scope: body.scope, created_at: new Date().toISOString(), last_used_at: null };
+  tokens.unshift(view);
+  const token = `yul_mock${String(tokens.length).padStart(4, '0')}`;
+  return json(201, {
+    token,
+    view,
+    mcp_url: `${ORIGIN}/mcp`,
+    claude_command: `claude mcp add --transport http yulius ${ORIGIN}/mcp --header "Authorization: Bearer ${token}"`,
+    cli_command: `yulius remote login ${ORIGIN}`,
+  });
+});
+route('DELETE', `/api/me/tokens/${ID}`, ({ db, p }) => {
+  const tokens = apiTokens(db);
+  const at = tokens.findIndex((t) => t.id === p[0]);
+  if (at < 0) fail(404, 'not_found', 'not found');
+  tokens.splice(at, 1);
   return json(204);
 });
 
@@ -990,6 +1061,7 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
+  needClaude(db);
   // In the server's order (`start_onboarding`): the task is created and its run started, and only
   // then is the sandbox `preparing`. A test can hold the start in between
   // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
@@ -1084,6 +1156,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  if (!prepared) needClaude(db);
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -1183,6 +1256,8 @@ route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) =>
   need(sandboxOf(db, p[0]), 'write');
   // A test can hold the answer (`__yuliusMock.holdProposal = promise`) to look at the waiting card.
   await (db.holdProposal || delay(900));
+  // Then refused, as the server refuses the proposal's Claude call without an account (SPEC-246).
+  needClaude(db);
   const lines = String(body.prompt || '').split('\n').filter((l) => /^\s*(\d+[.)]|[-*•])\s/.test(l)).map((l) => l.trim());
   const backend = lines.filter((l) => MOCK_BACKEND.test(l));
   const ux = lines.filter((l) => !MOCK_BACKEND.test(l));
@@ -1196,6 +1271,7 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain or prepared`);
+  needClaude(db);
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
@@ -1236,6 +1312,7 @@ route('PUT', `/api/tasks/${ID}/start`, ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  if (!prepared) needClaude(db);
   const tasks = db.tasks.filter((x) => x.sandbox_id === task.sandbox_id);
   const numbersOf = (text) => [...text.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
   let before = null;
@@ -1388,6 +1465,7 @@ const continueHandler = ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (LIVE.has(task.status)) fail(409, 'conflict', 'The task is already running.');
+  needClaude(db);
   touch(db, task, { status: 'starting', activity: null });
   const account = db.accounts.find((a) => body && a.id === body.account_id);
   later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' }), 1300);
@@ -2386,7 +2464,11 @@ function vaultOf(db) {
         { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null },
         // SPEC-204: a production secret (SPEC-134) an agent asked to send to a host and copy into
         // .env before it became one; for every sandbox, so a member sees it without managing it.
-        { id: 'as_prodtoken', sandbox: null, scope: 'instance', name: 'PROD_API_TOKEN', description: 'Token production deploys use', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-4', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: ['api.prod.test'], requested_by: '#112', env_files: 'asked', env_requested_by: '#112', cd_prod: true },
+        { id: 'as_prodtoken', sandbox: null, scope: 'instance', name: 'PROD_API_TOKEN', description: 'Token production deploys use', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-4', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: ['api.prod.test'], requested_by: '#112', env_files: 'asked', env_requested_by: '#112', cd_prod: true, on: ['sb_studio'] },
+        // SPEC-245: a global secret no project has switched on yet.
+        { id: 'as_argo', sandbox: null, scope: 'instance', name: 'ARGO_TOKEN', description: 'Pulls private packages from Argo', hosts: ['pkg.argo.test'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-5', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, on: [] },
+        // SPEC-245 MAN-003: another person's personal secret, which nobody else ever sees.
+        { id: 'as_annas', sandbox: null, scope: 'personal', owner: 'anna', name: 'ANNAS_TOKEN', description: 'Anna’s own token', hosts: ['api.anna.test'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-6', created_by: 'anna', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, on: ['sb_studio'] },
         // SPEC-193 MLK-003: a key pasted before #591 was fixed, its line breaks turned into spaces.
         { id: 'as_olddeploy', sandbox: 'sb_studio', scope: 'sandbox', name: 'OLD_DEPLOY_KEY', description: 'Deploy key for the staging server', hosts: [], injection: 'none', header_name: null, username: null, value: '-----BEGIN MOCK OPENSSH PRIVATE KEY----- bW9jay1mbGF0LTAx bW9jay1mbGF0LTAy -----END MOCK OPENSSH PRIVATE KEY-----', created_by: 'mkarp', updated_at: iso(2 * DAY), value_updated_at: iso(2 * DAY), last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
@@ -2403,9 +2485,36 @@ function teamView(s) {
   return { id: s.id, title: s.title, scope: s.sandbox ? 'sandbox' : 'instance', has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
 }
 
+/** Whether `s` is shown to the caller at all: another person's personal secret never is (SPEC-245). */
+function agentVisible(db, s) {
+  return s.scope !== 'personal' || s.owner === db.me.user.login;
+}
+
+/** The agent secret `id`, as the caller may see it (another person's answers 404). */
+function agentSecret(db, id) {
+  const secret = vaultOf(db).agent.find((s) => s.id === id && agentVisible(db, s));
+  return secret || fail(404, 'not_found', 'not found');
+}
+
+/** Whether `s` reaches `sandbox`'s runs: its own, or switched on there. */
+function agentOn(s, sandbox) {
+  return s.scope === 'sandbox' ? s.sandbox === sandbox.id : (s.on || []).includes(sandbox.id);
+}
+
+/** The scope of the secret of `s`'s name that wins in `sandbox` for the caller, when not `s` (project > personal > global). */
+function agentShadow(db, s, sandbox) {
+  if (!agentOn(s, sandbox)) return null;
+  const rank = { sandbox: 0, personal: 1, instance: 2 };
+  const winner = vaultOf(db).agent
+    .filter((o) => o.name === s.name && agentVisible(db, o) && agentOn(o, sandbox))
+    .sort((a, b) => rank[a.scope] - rank[b.scope])[0];
+  return winner && winner !== s ? winner.scope : null;
+}
+
 function agentView(db, s, sandbox) {
-  const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
+  const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
+  const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2525,22 +2634,40 @@ route('POST', '/api/auth/unlock', ({ db, body }) => {
 route('GET', '/api/secrets/activity', ({ db }) => vaultOf(db).activity.slice(0, 100));
 route('GET', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
-  return vaultOf(db).agent.filter((s) => s.scope === 'instance' || s.sandbox === sandbox.id).map((s) => agentView(db, s, sandbox));
+  return vaultOf(db).agent.filter((s) => (s.scope === 'sandbox' ? s.sandbox === sandbox.id : agentVisible(db, s))).map((s) => agentView(db, s, sandbox));
+});
+route('PUT', `/api/sandboxes/${ID}/agent-secrets/${ID}/enabled`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const secret = agentSecret(db, p[1]);
+  if (secret.scope === 'sandbox') fail(422, 'invalid', 'a project secret always applies to its project; only global and personal secrets are switched on or off');
+  if (secret.scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'global secrets are managed by instance administrators');
+  if (secret.scope === 'personal') need(sandbox, 'write');
+  const on = new Set(secret.on || []);
+  if (body.enabled !== on.has(sandbox.id)) {
+    if (body.enabled) on.add(sandbox.id);
+    else on.delete(sandbox.id);
+    secret.on = [...on];
+    audit(db, body.enabled ? 'vault.agent.enable' : 'vault.agent.disable', secret.id, `${secret.name} → ${sandbox.slug}`);
+  }
+  return agentView(db, secret, sandbox);
 });
 route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const scope = body.scope || 'sandbox';
-  if (scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'secrets for every sandbox are managed by instance administrators');
-  if (scope === 'sandbox') need(sandbox, 'write');
+  if (!['sandbox', 'instance', 'personal'].includes(scope)) fail(422, 'invalid', 'scope must be sandbox, instance or personal');
+  if (scope === 'instance' && !(db.me.user.is_instance_admin || db.me.user.is_superadmin)) fail(403, 'forbidden', 'global secrets are managed by instance administrators');
+  if (scope !== 'instance') need(sandbox, 'write');
   validateAgent(body, true);
-  if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
+  const me = db.me.user.login;
+  const sameScope = (s) => s.scope === scope && (scope === 'sandbox' ? s.sandbox === sandbox.id : scope === 'personal' ? s.owner === me : true);
+  if (vaultOf(db).agent.some((s) => s.name === body.name && sameScope(s))) fail(409, 'conflict', `an agent secret named ${body.name} already exists in this scope`);
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, owner: scope === 'personal' ? me : undefined, on: scope === 'sandbox' ? undefined : [sandbox.id], name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
 });
 route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, false);
@@ -2556,7 +2683,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret read it');
   const refused = needFresh(db);
@@ -2565,7 +2692,7 @@ route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
   return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
 });
 route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   if (!secret.requested_hosts.length) fail(409, 'conflict', 'no hosts wait to be allowed for this secret');
@@ -2583,7 +2710,7 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   const state = secret.env_files || 'no';
@@ -2597,7 +2724,7 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret allow it for production deploys');
   if (body.allow && secret.auto_allow) fail(409, 'conflict', 'agents set this secret up, so production deploys already get it: turn that off in Edit first to keep it for production deploys only');
@@ -2610,7 +2737,7 @@ route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
   return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
-  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const secret = agentSecret(db, p[0]);
   if (secret.scope === 'sandbox') need(sandboxOf(db, secret.sandbox), 'write');
   vaultOf(db).agent = vaultOf(db).agent.filter((s) => s !== secret);
   audit(db, 'vault.agent.delete', secret.id, secret.name);
@@ -2699,6 +2826,7 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
 // another subscription (SPEC-074).
 route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
+  needClaude(db);
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
   if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
@@ -2917,9 +3045,10 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
-  return json(201, { account, login_id: `login_${account.id}` });
+  db.unsignedAccounts.add(account.id);
+  return json(201, { account, login_id: startLogin(db, account.id) });
 });
 route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   adminOnly(db);
@@ -2928,7 +3057,10 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   // Only the name: the pool has no priorities or switches (F 2026-10-10).
   if (Object.keys(body).some((key) => key !== 'label')) fail(422, 'invalid', 'unknown field; only `label` can change');
   if (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
+  // Tasks name their subscription by label here (the server joins by id): a rename follows.
+  const previous = account.label;
   account.label = body.label.trim();
+  for (const task of db.tasks) if (task.account_label === previous) task.account_label = account.label;
   emit(db, { type: 'account.updated', account });
   return account;
 });
@@ -2937,6 +3069,7 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
   if (account.in_use_by > 0) fail(409, 'conflict', `${account.label} is used by ${account.in_use_by} live task(s)`);
+  for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
   db.accounts = db.accounts.filter((a) => a.id !== p[0]);
   return json(204);
 });
@@ -2945,6 +3078,9 @@ route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
+  // Like the server: an account that never signed in has no credential to ask with (409), and
+  // its sign-in error stays.
+  if (db.unsignedAccounts.has(account.id)) fail(409, 'conflict', 'the account is not signed in yet');
   if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
   account.usage = { ...account.usage, observed_at: new Date().toISOString() };
   account.last_error = null;
@@ -2954,7 +3090,19 @@ route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
-  return { account, login_id: `login_${account.id}` };
+  return { account, login_id: startLogin(db, account.id) };
+});
+// Stops a running sign-in and says how it ended (SPEC-243 LGN-002); `loginCancels` records the
+// cancelled ids.
+route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
+  adminOnly(db);
+  const session = db.logins.get(p[0]);
+  if (!session) fail(404, 'not_found', 'not found');
+  if (!session.done) {
+    db.loginCancels.push(p[0]);
+    session.end('cancelled', null);
+  }
+  return { status: session.status };
 });
 // GET /api/admin/github and POST /api/admin/github/manifest are documented in docs/api.md but
 // not routed by the server yet: like the server, the mock answers 404 (the page falls back
@@ -3008,7 +3156,7 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
     ],
     tokens_by_account: [
-      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
+      ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...(isAdmin(db) && a.email ? { account_email: a.email } : {}), ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
       { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
     ],
     switches: { total: Math.round(total * 0.15) },
@@ -3264,7 +3412,7 @@ route('GET', '/api/status', ({ db }) => {
     // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
-      ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
+      ? { label: a.label, ...(a.email ? { email: a.email } : {}), provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),
     contained: db.me.instance.contained,
   };
@@ -3647,7 +3795,7 @@ route('GET', '/api/capacity', ({ db }) => {
     resumes_at: null,
     accounts: db.accounts.map((a) => ({
       label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
-      ...(admin ? { id: a.id, in_use_by: a.in_use_by } : {}),
+      ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),
   };
@@ -3855,6 +4003,7 @@ route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
   if (sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing') fail(409, 'conflict', 'this project is being prepared; tasks can start once the preparation task has made it ready (or an admin skips it)');
   const existing = doc.continued_in ? db.tasks.find((t) => t.id === doc.continued_in) : null;
   if (existing) return summary(existing);
+  needClaude(db);
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
@@ -3879,7 +4028,7 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 
 // ------------------------------------------------------------------ fetch
 
-const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];
+const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github', '/api/auth/recovery', '/api/auth/recover'];
 
 async function handleFetch(db, url, init = {}) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
@@ -4532,18 +4681,30 @@ class ShellSession {
   closed(ws) { this.viewers.delete(ws); }
 }
 
+/** Starts a sign-in for `accountId`, replacing (cancelling) one still running, as the server does. */
+function startLogin(db, accountId) {
+  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) session.end('cancelled', null);
+  db.nextId += 1;
+  const loginId = `login_${accountId}_${db.nextId}`;
+  db.logins.set(loginId, new LoginSession(db, accountId));
+  return loginId;
+}
+
 /**
  * Fake provider login for the account login terminal: a fixed 500×40 PTY; `state.status`
- * goes running → ok and the exit frame carries the same status. Tokens are masked.
+ * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
+ * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
  */
 class LoginSession {
-  constructor(db, loginId) {
+  constructor(db, accountId) {
     this.db = db;
-    this.accountId = loginId.replace(/^login_/, '');
+    this.accountId = accountId;
     this.seq = 0;
     this.input = '';
     this.ws = null;
     this.done = false;
+    this.status = 'running';
+    this.code = null;
   }
 
   out(text) {
@@ -4566,9 +4727,10 @@ class LoginSession {
         'Open this URL in your browser and approve access:',
         c(39, 'https://claude.ai/oauth/authorize?code=true&client_id=mock&state=xyz'),
         '',
-        'Paste the authorization code here (any text in mock mode), then press Enter:',
+        'Paste the authorization code here (any text in mock mode; "fail" fails), then press Enter:',
         '> ',
       ].join('\r\n')));
+      if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code }));
     } else if (msg.type === 'input' && !this.done) {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') { this.finish(); return; }
@@ -4578,20 +4740,48 @@ class LoginSession {
   }
 
   state() {
-    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.done ? 'ok' : 'running' };
+    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.status };
   }
 
   finish() {
-    this.done = true;
-    this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     const account = this.db.accounts.find((a) => a.id === this.accountId);
+    if (this.input === 'fail') {
+      this.out(`\r\n${c(203, 'OAuth error: the authorization code was not accepted.')}\r\n`);
+      if (account) {
+        // Like the server: a working account keeps its state and notes the failed re-login.
+        const working = account.status === 'ok' || account.status === 'limited';
+        Object.assign(account, working
+          ? { last_error: 're-login failed: the sign-in ended without producing a token (exit code 1)' }
+          : { status: 'error', last_error: 'the sign-in ended without producing a token (exit code 1)' });
+        emit(this.db, { type: 'account.updated', account });
+      }
+      this.end('error', 1);
+      return;
+    }
+    this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
+      this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
       emit(this.db, { type: 'account.updated', account });
+      // Like the server, the email of the Claude account is read right after the sign-in ended
+      // and arrives as a later update (SPEC-244 SUB-003).
+      setTimeout(() => {
+        if (!account.email) account.email = 'signed-in@example.com';
+        emit(this.db, { type: 'account.updated', account });
+      }, 300);
     }
+    this.end('ok', 0);
+  }
+
+  /** Ends the sign-in with `status` (ok | error | cancelled) and tells the viewer. */
+  end(status, code) {
+    if (this.done) return;
+    this.done = true;
+    this.status = status;
+    this.code = code;
     if (this.ws) {
       this.ws.push(JSON.stringify(this.state()));
-      this.ws.push(JSON.stringify({ type: 'exit', status: 'ok', code: 0 }));
+      this.ws.push(JSON.stringify({ type: 'exit', status, code }));
     }
   }
 
@@ -4867,8 +5057,8 @@ function openSocket(db, path) {
     setTimeout(() => { if (ws.onerror) ws.onerror({}); if (ws.onclose) ws.onclose({ code: 1006, reason: '', wasClean: false }); }, 30);
     return ws;
   }
-  const fatal = (code, message) => {
-    ws.server = { open: () => { ws.push(JSON.stringify({ type: 'error', code, message })); ws.serverClose(1008, code); } };
+  const fatal = (code, message, closeCode = 1008) => {
+    ws.server = { open: () => { ws.push(JSON.stringify({ type: 'error', code, message })); ws.serverClose(closeCode, code); } };
   };
   if (!db.signedIn) { fatal('unauthenticated', 'Sign in first.'); return ws; }
   let m;
@@ -4900,7 +5090,9 @@ function openSocket(db, path) {
     }
     ws.server = shell.session;
   } else if ((m = route_.match(/^\/api\/admin\/accounts\/login\/([^/]+)\/terminal$/))) {
-    ws.server = new LoginSession(db, decodeURIComponent(m[1]));
+    const session = db.logins.get(decodeURIComponent(m[1]));
+    if (!session) { fatal('not_found', 'this sign-in has ended or expired', 4003); return ws; }
+    ws.server = session;
   } else if ((m = route_.match(/^\/api\/sandboxes\/([^/]+)\/browser$/))) {
     const sandbox = db.sandboxes.find((s) => s.id === decodeURIComponent(m[1]));
     if (!sandbox) { fatal('not_found', 'No such sandbox.'); return ws; }
@@ -4995,6 +5187,13 @@ export function createMockTransport(params) {
     db.appendTranscript(sandboxId, number, items);
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
+  // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.
+  db.connectClaude = () => {
+    db.nextId += 1;
+    const account = { id: `acc_${db.nextId}`, provider: 'anthropic', label: 'Claude', email: 'signed-in@example.com', status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    db.accounts.push(account);
+    emit(db, { type: 'account.updated', account });
+  };
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).
   db.changePull = (sandboxId, number, changes, announce = true) => {
@@ -5080,6 +5279,17 @@ export function createMockTransport(params) {
   // A file's text in the mock repository (`repoFile('sb_studio', 'long.md', text)`), before it is opened.
   db.repoFile = (sandboxId, path, text, root = 'sandbox') => { repoTree(db, sandboxId, root).files.set(path, text); };
   db.resyncNow = () => resync(db);
+  // Another administrator signs a subscription in again: its running sign-in ends `cancelled`.
+  db.startLogin = (accountId) => startLogin(db, accountId);
+  // The server forgets the sign-ins of `accountId` (ended and expired, or a restart) and drops
+  // their viewers, who reconnect to a terminal it no longer has.
+  db.forgetLogins = (accountId) => {
+    for (const [id, session] of db.logins) {
+      if (session.accountId !== accountId) continue;
+      db.logins.delete(id);
+      if (session.ws) session.ws.serverClose(1001, 'going away');
+    }
+  };
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';

@@ -187,6 +187,10 @@ pub struct App {
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// CLI device sign-in starts per client key (rate limiting, #169).
     pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Remote MCP requests per API token in the last minute (SPEC-247 RMT-014).
+    pub(crate) remote_calls: Mutex<HashMap<String, Vec<i64>>>,
+    /// Remote file changes being committed at once (SPEC-247 RMT-025).
+    pub(crate) change_slots: tokio::sync::Semaphore,
     /// Notepad presence updates per person and notepad (rate limiting, SPEC-112 NOT-019).
     pub(crate) note_presence: Mutex<HashMap<String, Vec<i64>>>,
     /// Session supervisor runtime state.
@@ -206,6 +210,9 @@ pub struct App {
     /// Serializes creating a sandbox's onboarding task so Start onboarding and a waiting new task
     /// never create two (SPEC-097).
     pub(crate) onboarding_task_lock: tokio::sync::Mutex<()>,
+    /// Serializes giving an empty repository its first commit, so two starts never share its
+    /// scratch clone or push twice (SPEC-241).
+    pub(crate) repository_seed_lock: tokio::sync::Mutex<()>,
     /// Serializes changes of how waiting tasks start, so two never make tasks wait for each other
     /// (SPEC-126).
     pub(crate) start_change_lock: tokio::sync::Mutex<()>,
@@ -257,6 +264,8 @@ impl App {
             events: EventBus::new(1024),
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
+            remote_calls: Mutex::new(HashMap::new()),
+            change_slots: tokio::sync::Semaphore::new(crate::remote_files::MAX_CONCURRENT_CHANGES),
             note_presence: Mutex::new(HashMap::new()),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
@@ -266,6 +275,7 @@ impl App {
             recovery_lock: tokio::sync::Mutex::new(()),
             automation_template_lock: tokio::sync::Mutex::new(()),
             onboarding_task_lock: tokio::sync::Mutex::new(()),
+            repository_seed_lock: tokio::sync::Mutex::new(()),
             start_change_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),

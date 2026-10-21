@@ -137,7 +137,11 @@ async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::erro
     let second = support::Creds {
         bearer: Some(
             h.app
-                .issue_api_token(&alice, "second device")
+                .issue_api_token(
+                    &alice,
+                    "second device",
+                    yulius_domain::permission::TokenScope::Cli,
+                )
                 .await?
                 .expose()
                 .to_owned(),
@@ -157,6 +161,8 @@ async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::erro
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
 

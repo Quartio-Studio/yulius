@@ -728,10 +728,11 @@ YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
 
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
-2. Open the public URL, enter the token, choose the superadmin password (twice) and confirm both
-   warnings: **the password cannot be recovered** (SPEC-001 ACC-002). Store the recovery code
-   shown next. The last two steps ask for the Jev API key and the Vidoc API key (both optional;
-   skip them to add them later in Settings → Instance).
+2. Open the public URL, enter the token, choose the superadmin password (twice; at least 8
+   characters, 12 or more recommended) and confirm both warnings: **the password can be recovered
+   only with the recovery code** (SPEC-001 ACC-002, ACC-011). Store the recovery code shown next.
+   The last two steps ask for the Jev API key and the Vidoc API key (both optional; skip them to
+   add them later in Settings → Instance).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
@@ -790,7 +791,7 @@ The manifest flow requests these repository permissions:
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
 | Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
 | Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |
-| Administration | Read and write | Create repositories in an organization (New sandbox) and add branch rulesets to them. |
+| Administration | Read and write | Create repositories (New sandbox, in an organization or a personal account) and add branch rulesets to them. Repository creation (Read and write) also lets GitHub create them, without the rest of Administration. |
 | Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
 | Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |
 
@@ -809,6 +810,20 @@ integration" means the App lacks the permission. For checks, Yulius keeps workin
 sources it can read. It names the missing permission on the Git page, as one line for instance
 administrators, with a link to the App's permission page. Checks it cannot read never count as
 passed, so merges and releases that require checks wait.
+
+**Creating a project fails.** Yulius says which of these it is
+([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md)):
+
+- "GitHub refused to create …: the Yulius GitHub App lacks the repository permission
+  Administration: Read and write …": add it as below. Nothing was created.
+- "… was created on GitHub, but the Yulius GitHub App cannot reach it: its installation covers
+  only selected repositories": open the installation page the message links (Settings → GitHub
+  Apps, or Applications for a personal account, → the App → Configure), add the repository under
+  Repository access (or choose All repositories), then add it in Yulius with Import repository.
+
+**An empty repository** (created on GitHub without a README) can be imported as it is. When its
+onboarding starts, Yulius pushes one commit adding `README.md` to the default branch GitHub reports,
+then onboards it as any other repository.
 
 **Adding a permission to an existing App** (for example Commit statuses on an App created before
 2026-10-10):
@@ -1384,17 +1399,17 @@ up. Queued tasks start when capacity allows.
   `master.key`), with re-authenticated, audited reveals (ADR-20).
 - Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
   every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
-  in another form, misuse on its hosts, weak values, raw CDP): SPEC-002 ADR-20.
+  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20.
 - Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
   their task creator's GitHub token (8 h, capped by that person's access within the App's
   installation; an agent could read it and act as them there until it expires), or without one a
   token restricted to their sandbox repository; provider credentials reach the agent process
   only through its environment (SPEC-002 §8, R-08).
-- Known open risks are listed in SPEC-002 §12 (notably R-07: Chromium's DevTools port is
-  unauthenticated on loopback, which isolated sandboxes cannot reach; R-09, environment commands
-  outside containment, is closed by ADR-0175).
+- Known open risks are listed in SPEC-002 §12 (R-07, Chromium's unauthenticated DevTools port, is
+  closed by ADR-0191: the sandbox browser speaks DevTools over a pipe and listens on no port; R-09,
+  environment commands outside containment, is closed by ADR-0175).
 - Isolated sandboxes cannot reach the host's loopback services (Yulius's public listener, Caddy's
-  admin API, DevTools ports, databases bound to 127.0.0.1). Services bound to the host's public
+  admin API, databases bound to 127.0.0.1). Services bound to the host's public
   addresses remain reachable like any internet host.
 - Password sign-in is limited per client only with the proxy's shared secret configured
   (`YULIUS_PROXY_SECRET_FILE`, §4 "Per-client sign-in limits"); without it every client behind the

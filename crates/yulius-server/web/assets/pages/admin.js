@@ -2,10 +2,11 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar } from '../dom.js';
+import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar } from '../dom.js';
 import { compact } from '../format.js';
 import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
+import { CLOSE_REVOKED } from '../termsocket.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
@@ -163,39 +164,178 @@ export function recoveryCard(ctx) {
 
 // ---------------------------------------------------------------- accounts
 
-/** Account login terminal modal (ROT-002): the provider's own sign-in over the terminal protocol. */
-export function openLoginTerminal(ctx, loginId, label, onFinish) {
+/** What the sign-in dialog says while Claude's sign-in runs. */
+const SIGN_IN_RUNNING = 'Finish Claude’s sign-in in the terminal below: open the link, approve, and paste the code if Claude asks for it. This window closes by itself once the subscription is connected. Secrets are masked for other viewers.';
+
+/** A server sentence as the start of a sentence. */
+const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * Account login terminal modal (ROT-002, SPEC-243): Claude's own sign-in over the terminal
+ * protocol. Success closes the dialog by itself and a toast names the subscription (with its
+ * email once the account reports one); a failed, cancelled or lost sign-in says so with Try
+ * again; closing a sign-in that still runs cancels it on the server.
+ */
+export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   let terminal = null;
-  const status = h('span', { class: 'muted small' }, 'Complete the provider sign-in in the terminal below. Secrets are masked for other viewers.');
+  let current = loginId;
+  // running → ok | error | cancelled | lost (the server no longer has the sign-in) |
+  // connection (reconnecting gave up; the sign-in may still run).
+  let phase = 'running';
+  let closed = false;
+  const status = h('span', { class: 'muted small' }, SIGN_IN_RUNNING);
+  const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
-    title: `Sign in · ${label}`,
+    title: `Sign in · ${account.label}`,
     full: true,
-    body: h('div', { class: 'stack fill-column' }, status, host),
-    actions: [{ label: 'Close' }],
-    onClose: () => { if (terminal) terminal.destroy(); onFinish(); },
-  });
-  // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
-  // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
-  terminal = createTerminalView({
-    transport: ctx.transport,
-    path: `/api/admin/accounts/login/${enc(loginId)}/terminal`,
-    onLink: (uri, event) => ctx.openLink(uri, event),
-    readOnlyLabel: () => 'The login has finished.',
-    followServerSize: true,
-    onExit: (exit) => {
-      const ok = exit.status === 'ok';
-      const code = exit.code !== undefined && exit.code !== null ? `, exit code ${exit.code}` : '';
-      status.textContent = ok
-        ? 'Signed in: the credential is stored encrypted for this subscription. You can close this window.'
-        : exit.status === 'cancelled'
-          ? `The login was cancelled${code}.`
-          : `The login ended without a credential (${exit.status}${code}). See the subscription's last error.`;
-      status.className = ok ? 'small' : 'field-error';
+    body: h('div', { class: 'stack fill-column' }, status, outcome, host),
+    onClose: () => {
+      closed = true;
+      if (terminal) terminal.destroy();
+      // A sign-in that may still run is cancelled; one lost to the connection too, best effort.
+      if (phase === 'running' || phase === 'connection') cancel(current);
+      onFinish();
     },
   });
-  host.append(terminal.el);
-  requestAnimationFrame(() => { terminal.start(); terminal.focus(); });
+
+  /** The account as the server has it now (its email, status and last error), or null. */
+  const fresh = () => ctx.api.get('/api/admin/accounts')
+    .then((list) => (Array.isArray(list) ? list.find((a) => a.id === account.id) : null) || null)
+    .catch(() => null);
+
+  /**
+   * The account once an update reports its email: the server reads it from Claude right after
+   * the sign-in ended (SPEC-244 SUB-003). Resolves null after `ms`.
+   */
+  function emailUpdate(ms) {
+    let off = () => {};
+    let timer = 0;
+    const promise = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+      off = ctx.store.on('account', (a) => { if (a && a.id === account.id && a.email) resolve(a); });
+    });
+    return { promise, stop: () => { clearTimeout(timer); off(); } };
+  }
+
+  /** The success toast, naming the subscription and its email (LGN-003), waiting at most 5 s for it. */
+  async function connectedToast() {
+    const update = emailUpdate(5000);
+    let now = await fresh();
+    if (!now || !now.email) now = (await update.promise) || now;
+    update.stop();
+    const email = now && now.email ? ` as ${now.email}` : '';
+    toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
+  }
+
+  /** Cancels sign-in `id` and says how it ended, from the server's answer (LGN-006). */
+  async function cancel(id) {
+    phase = 'cancelled';
+    let ended = null;
+    try {
+      ended = (await ctx.api.post(`/api/admin/accounts/login/${enc(id)}/cancel`)).status;
+    } catch (error) {
+      // Already gone (ended and expired): the account says where it stands.
+      if (!error || error.code !== 'not_found') { errorToast(error, 'Couldn’t cancel the sign-in'); return; }
+    }
+    if (ended === 'ok') { await connectedToast(); return; }
+    if (ended === 'running') { toast(`Sign-in of ${account.label} is still stopping; its card shows how it ended.`); return; }
+    const now = await fresh();
+    if (!now) return;
+    toast(['ok', 'limited'].includes(now.status)
+      ? `Sign-in cancelled: ${account.label} keeps its current sign-in.`
+      : `Sign-in cancelled: ${account.label} is not signed in. Sign it in again from its card when you are ready.`);
+  }
+
+  function succeeded() {
+    phase = 'ok';
+    modal.close();
+    connectedToast();
+  }
+
+  /** Shows why the sign-in ended without a credential, with Try again (LGN-004, LGN-007). */
+  function ended(title, text, retry = true) {
+    status.hidden = true;
+    setChildren(outcome, icon('warn', { size: 16 }), h('div', { class: 'banner-text' }, h('strong', null, title), text ? h('div', { class: 'small' }, text) : null));
+    outcome.hidden = false;
+    modal.setActions([{ label: 'Close' }, ...(retry ? [{ label: 'Try again', kind: 'primary', run: async () => { await again(); return false; } }] : [])]);
+  }
+
+  async function failed() {
+    phase = 'error';
+    ended('Sign-in failed', '');
+    const now = await fresh();
+    if (phase !== 'error' || closed) return;
+    const reason = now && now.last_error ? sentence(now.last_error.replace(/^re-login failed: /, '')).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
+    ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
+  }
+
+  async function cancelledElsewhere() {
+    phase = 'cancelled';
+    ended('This sign-in was cancelled', 'Another sign-in of this subscription replaced it.');
+    const now = await fresh();
+    if (phase !== 'cancelled' || closed || now) return;
+    ended('This sign-in was cancelled', 'The subscription was removed.', false);
+  }
+
+  /** Try again: a new sign-in of the same subscription in this dialog (LGN-005). */
+  async function again() {
+    const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
+    // Closed while the new sign-in was starting: nobody watches it, so it is cancelled.
+    if (closed) { cancel(result.login_id); return; }
+    current = result.login_id;
+    phase = 'running';
+    outcome.hidden = true;
+    status.hidden = false;
+    if (terminal) terminal.destroy();
+    host.replaceChildren();
+    start();
+  }
+
+  function start() {
+    modal.setActions([{ label: 'Cancel sign-in' }]);
+    // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
+    // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
+    const view = createTerminalView({
+      transport: ctx.transport,
+      path: `/api/admin/accounts/login/${enc(current)}/terminal`,
+      onLink: (uri, event) => ctx.openLink(uri, event),
+      readOnlyLabel: () => 'The sign-in has ended.',
+      followServerSize: true,
+      onExit: (exit) => {
+        if (terminal !== view || phase !== 'running') return;
+        if (exit.status === 'ok') succeeded();
+        else if (exit.status === 'cancelled') cancelledElsewhere();
+        else failed();
+      },
+      // The server refused the terminal for good: `not_found` (ended and expired) or
+      // `unauthenticated` (signed out of Yulius).
+      onFatal: (error) => {
+        if (terminal !== view || phase !== 'running') return;
+        phase = 'lost';
+        if (error && error.code === 'unauthenticated') ended(`You are signed out of ${BRAND.name}`, 'Sign in again, then sign the subscription in from its card.', false);
+        else ended('This sign-in is no longer available', 'It ended or expired.');
+      },
+      // The socket gave up: closed for good by the server (4003, the sign-in is gone; it may
+      // arrive before its error frame), or reconnecting failed and the sign-in is out of reach.
+      onConnection: (state, detail) => {
+        if (state !== 'failed' || terminal !== view || phase !== 'running') return;
+        if (detail && detail.code === CLOSE_REVOKED) {
+          phase = 'lost';
+          ended('This sign-in is no longer available', 'It ended or expired.');
+        } else {
+          // The sign-in may still run on the server: closing the dialog still cancels it.
+          phase = 'connection';
+          ended('The connection to this sign-in was lost', 'Try again to start a new sign-in.');
+        }
+      },
+    });
+    terminal = view;
+    host.append(view.el);
+    requestAnimationFrame(() => { if (terminal === view) { view.start(); view.focus(); } });
+  }
+
+  start();
   return modal;
 }
 
@@ -234,13 +374,20 @@ export function mountAccountsPage(ctx, route) {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
     if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
+      // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
+      const rename = async (label) => {
+        const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { label });
+        Object.assign(account, fresh);
+        toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
+      };
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
-      const usageHost = h('div', null, accountUsage(account), tokenTotals(account));
+      const usageHost = h('div', null, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
       const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
-          setChildren(usageHost, accountUsage(account), tokenTotals(account));
+          if (usageHost.querySelector('.account-rename-input')) pendingReload = true;
+          else setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
@@ -252,7 +399,7 @@ export function mountAccountsPage(ctx, route) {
           broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: async () => {
             try {
               const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
-              openLoginTerminal(ctx, result.login_id, account.label, reload);
+              openLoginTerminal(ctx, { loginId: result.login_id, account, onFinish: reload });
             } catch (error) {
               errorToast(error, 'Couldn’t start the sign-in');
             }
@@ -275,21 +422,33 @@ export function mountAccountsPage(ctx, route) {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     openModal({
       title: 'Add a Claude subscription',
-      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
+      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Continue to sign-in', kind: 'primary', run: async () => {
           if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
           const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
           reload();
-          openLoginTerminal(ctx, result.login_id, result.account ? result.account.label : label.value.trim(), reload);
+          openLoginTerminal(ctx, { loginId: result.login_id, account: result.account || { id: null, label: label.value.trim(), status: 'pending_login' }, onFinish: reload });
           return true;
         } },
       ],
     });
   }
 
-  const off = ctx.store.on('account', () => reload({ quiet: true }));
+  // A name being edited is not redrawn away by an update: the reload waits until the field
+  // closes (the reload keeps focus on the same control).
+  let pendingReload = false;
+  const off = ctx.store.on('account', () => {
+    if (host.querySelector('.account-rename-input')) pendingReload = true;
+    else reload({ quiet: true });
+  });
+  host.addEventListener('focusout', () => setTimeout(() => {
+    if (pendingReload && !host.querySelector('.account-rename-input')) {
+      pendingReload = false;
+      reload({ quiet: true });
+    }
+  }, 0));
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);

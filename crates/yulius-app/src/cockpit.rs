@@ -257,9 +257,9 @@ impl App {
     /// conversation) when it is not running.
     ///
     /// # Errors
-    /// `NotFound`/`Forbidden` without write access, `Conflict` before the repository is cloned
-    /// or without a Claude subscription, `Capacity` while none has capacity, `Upstream` when the
-    /// session cannot start.
+    /// `NotFound`/`Forbidden` without write access, `Conflict` before the repository is cloned,
+    /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity,
+    /// `Upstream` when the session cannot start.
     pub async fn cockpit_open(
         self: &Arc<Self>,
         ctx: &AuthContext,
@@ -755,7 +755,7 @@ impl App {
         plan.env = env;
         plan.containment = space.containment.clone();
         // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
-        self.vault_superagent_setup(record, &runtime.run_dir, &bearer, &mut plan)
+        self.vault_superagent_setup(record, &user.id, &runtime.run_dir, &bearer, &mut plan)
             .await?;
         let reader = self.spawn_shell(runtime, &plan).await;
         drop(lease);

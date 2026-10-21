@@ -26,14 +26,30 @@ watching, steering and unblocking.
   browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
   layer, a done task's build cache) are deleted by themselves after every start and hourly, and
   the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
-  `yulius leftovers` (SPEC-215). The CLI
+  `yulius leftovers` (SPEC-215). `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
-  and started when someone clicks Start onboarding on the sandbox page. It also lays the
+  and started when someone clicks Start onboarding on the sandbox page, or when the person's own
+  agent calls `onboarding_start` with an operate token (SPEC-247). It also lays the
   project's gate in its own pull request: tests, lint and format, a dead-code and
   unused-dependency check, and a Yulius CI job for every project, with existing findings
   baselined. The first task therefore starts in the discipline. Onboarding is mandatory:
   until it has finished, the sandbox's new-task page shows only what it will do and its button,
   no task input. A playground needs none.
+- **Remote control from a laptop** (SPEC-247, [guide](remote-control.md)): a person makes an API
+  token on Settings → Connect your local agent (operate or read only, shown once, revocable, last
+  use shown) and adds Yulius to their own Claude Code with one `claude mcp add` command, or signs
+  the `yulius` CLI in with `yulius remote login`. From there, without the web UI, they import a
+  repository, start its onboarding, read its files, set up its CI with a change pull request
+  merged once Yulius CI passed, create, message, restart, pause, stop, archive and delete tasks,
+  follow their transcripts, pull requests and CI, run dev deploys and manage automations and
+  agent secrets' bindings, always within their own access to each project. Production deploys
+  and secret values stay with the web UI (and `yulius secrets import`).
+- **Onboard a laptop project with one request** (SPEC-256): "onboard this into Yulius" to the
+  local agent is enough. With the operate token it uploads the checkout and Claude Code sessions,
+  finds the keys the project builds and deploys with and imports them by file, unattended and
+  already usable by agents in `.env` files (values never pass through the agent), and starts
+  onboarding with its hand-over (which key is which, where deploys run). The onboarding task uses
+  those keys before asking anyone.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -126,7 +142,12 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
-  prices, with a 7-day chart for each.
+  prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
+  Max", "personal") and see the email of its Claude account wherever it is named. Connecting one
+  is the first step on a fresh instance: until a Claude account is usable, Home, the composer and
+  the onboarding gate show Connect Claude, and every start a person asks for is refused at once
+  with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why
+  (SPEC-246).
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
@@ -186,9 +207,9 @@ watching, steering and unblocking.
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
   its Defaults (as the default workflows do), each off until a person switches it on: "Keep the
-  docs up to date", "Work through open issues" (the core team's issues ranked, and the 5 most
-  important actionable ones that no running task owns verified in parallel and given a task each,
-  no new issues) and
+  docs up to date", "Work through open issues" (the issues of the core team, of people with write
+  access and of this project's agents, ranked, and the 5 most important actionable ones that no
+  running task owns verified in parallel and given a task each, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
@@ -223,9 +244,17 @@ watching, steering and unblocking.
   notes do (SPEC-207). An agent secret is added with a name, a value
   and a description: agents find the service's host and bind it themselves, and production deploys
   get the secret, unless the person turns "Let agents set it up" off when adding it; then a person
-  allows each host with one click and production separately (SPEC-121, SPEC-216). Every secret
-  belongs to the sandbox it was added in, or is team-wide when the person picks that; team secrets
-  from before were copied into each sandbox (SPEC-216). A project's keys live in a git-ignored
+  allows each host with one click and production separately (SPEC-121, SPEC-216). Team secrets
+  belong to the sandbox they were added in, or are team-wide when the person picks that; team
+  secrets from before were copied into each sandbox (SPEC-216). Agent secrets ("keys and logins
+  agents use without seeing them") are on three tabs (SPEC-245): **Project** (this project's),
+  **Global** (defined once by instance administrators, who switch each on per project — e.g. a
+  token for private packages many repositories need) and **Personal** (one person's own, switched
+  on per project by them, used only by tasks they start: never by other people's tasks,
+  automations, CI or deploys, never seen by anyone else, and sent only by the proxy; co-writers
+  who can get code run in the person's tasks are trusted, ADR-0186). A name
+  resolves to the project's secret, else the person's, else the global one; a card says when
+  another wins. A project's keys live in a git-ignored
   `.env` beside a tracked `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
   there, and a person allows that once per secret (SPEC-129). A multi-line key (PEM, OpenSSH) is
   pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands

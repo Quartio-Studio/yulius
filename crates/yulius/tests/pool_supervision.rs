@@ -239,6 +239,8 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     Ok(account)
@@ -249,6 +251,7 @@ pub(crate) async fn refresh(app: &App, user: &UserId, account: &str) -> TestResu
         user: app.deps.store.user(user).await?.ok_or("user")?,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     app.refresh_account_usage(&ctx, account).await?;
     Ok(())
@@ -633,6 +636,7 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         let mut quartio = mcp_input("quartio", "http");
         quartio.scope = Some("instance".into());
@@ -852,6 +856,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         std::fs::write(
             data.join("sandboxes")
@@ -1222,6 +1227,7 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.switch_task(
             &ctx,
@@ -1404,6 +1410,7 @@ fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> Test
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.switch_task(
             &ctx,
@@ -1578,6 +1585,7 @@ fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.switch_task(
             &ctx,

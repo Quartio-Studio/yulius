@@ -25,6 +25,7 @@ fake = []
 yulius-contracts = { workspace = true }
 yulius-domain = { workspace = true }
 base64 = { workspace = true }
+command-fds = { workspace = true }
 futures = { workspace = true }
 nix = { workspace = true }
 rand = { workspace = true }

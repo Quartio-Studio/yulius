@@ -168,9 +168,7 @@ impl App {
         // Read before the record: a rotation landing meanwhile audits the next check again.
         let generation = self.vault_generation();
         let record = self
-            .deps
-            .store
-            .vault_agent(Some(&caller.sandbox))
+            .resolved_agent_secrets(&caller.sandbox, super::runtime::caller_holder(caller))
             .await?
             .into_iter()
             .find(|r| r.name == args.secret.trim())

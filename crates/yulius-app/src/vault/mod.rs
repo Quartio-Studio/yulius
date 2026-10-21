@@ -1,11 +1,12 @@
 //! Secrets vault (SPEC-001 VLT-001..009, SPEC-002 ADR-20).
 //!
-//! Two sections, each secret of one sandbox or team-wide (SPEC-216): **team secrets** (the
-//! people who can view its sandbox, or every member, list and edit them; revealing a value or
-//! notes needs the person's two-factor unlock within 10 minutes, and is audited) and
-//! **agent secrets** (agents use them without seeing them: the egress proxy adds them to
-//! requests for their bound hosts, `browser_fill_secret` types them into pages of those hosts,
-//! and every channel through which an agent reads is redacted of their values and encodings).
+//! Two sections: **team secrets**, each of one sandbox or team-wide (SPEC-216; the people who can
+//! view its sandbox, or every member, list and edit them; revealing a value or notes needs the
+//! person's two-factor unlock within 10 minutes, and is audited), and **agent secrets** (agents
+//! use them without seeing them: the egress proxy adds them to requests for their bound hosts,
+//! `browser_fill_secret` types them into pages of those hosts, and every channel through which an
+//! agent reads is redacted of their values and encodings), each a project's, global or one
+//! person's (SPEC-245, [`Holder`]).
 //!
 //! Every value is stored under envelope encryption ([`crate::ports::Crypto::envelope_seal`])
 //! with the row's id and section as associated data; plaintexts are zeroed when dropped.
@@ -13,6 +14,7 @@
 mod agents;
 mod create;
 mod env_files;
+pub(crate) mod reach;
 mod requests;
 mod runtime;
 mod scopes;
@@ -33,6 +35,7 @@ use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 use yulius_domain::vault::{MAX_FIELD_BYTES, VaultError};
 use zeroize::{Zeroize, Zeroizing};
 
+pub use reach::Holder;
 pub use runtime::{EGRESS_CA_FILE, FINGERPRINTS_FILE, SCRUB_EXEC_FLAG, SCRUB_FILE_ENV};
 pub use team::Revealed;
 pub use terminal::TerminalScrub;
@@ -52,7 +55,8 @@ const AUDITED_KEYS_MAX: usize = 10_000;
 pub struct VaultState {
     /// Bumped on every agent-secret change (redaction caches follow it).
     generation: AtomicU64,
-    /// Plain matchers of agent secrets per sandbox (decrypted needles, in memory only).
+    /// Plain matchers of agent secrets per sandbox and holder (decrypted needles, in memory
+    /// only).
     matchers: Mutex<HashMap<String, (u64, Arc<PlainMatcher>)>>,
     /// The egress proxy is wired (composition): runs get the proxy environment.
     egress: AtomicBool,
@@ -64,6 +68,8 @@ pub struct VaultState {
     clients: runtime::ClientCache,
     /// Proxy credentials of running CI jobs (SPEC-142).
     ci_clients: runtime::CiClients,
+    /// Held while a run's fingerprint file is rewritten: two never overlap (SPEC-248 FUP-002).
+    fingerprint_rewrites: tokio::sync::Mutex<()>,
 }
 
 impl VaultState {
@@ -203,6 +209,16 @@ impl From<StoredTeamPayload> for TeamPayload {
 pub(crate) const PRODUCTION_SECRET: &str = "this is a production secret: production deploys get it \
 and agents never do. Add a separate secret for agents";
 
+/// Why `browser_fill_secret` refuses a personal secret (SPEC-245 RES-005).
+pub(crate) const PERSONAL_SECRET_BROWSER: &str = "a personal secret is never typed into the \
+project browser: every task of this project shares it and would be signed in as its person. Only \
+the proxy sends a personal secret, to its hosts; a website sign-in needs a project secret";
+
+/// Why `secret_copy_to_env` refuses a personal secret (SPEC-245 RES-005).
+pub(crate) const PERSONAL_SECRET_ENV: &str = "a personal secret is never copied into .env files: \
+every task of this project can read them. Only the proxy sends a personal secret, to its hosts; \
+code that needs the value outside the proxy needs a project secret";
+
 /// Agent secret payload (sealed as JSON).
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct AgentPayload {
@@ -309,20 +325,68 @@ impl App {
             .unwrap_or_else(|| "superadmin".into())
     }
 
+    /// The agent secrets of `sandbox` that runs of `holder` get (SPEC-245 RES-001..004): one per
+    /// name, the project's before the holder's personal one before a global one switched on for
+    /// the project. Not the instance Vidoc key: CD and MCP references never get it.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn resolved_agent_secrets(
+        &self,
+        sandbox: &SandboxId,
+        holder: Holder<'_>,
+    ) -> AppResult<Vec<VaultSecretRecord>> {
+        let candidates = self.deps.store.vault_agent_in(sandbox).await?;
+        Ok(reach::resolve(candidates, holder))
+    }
+
     /// The agent secrets an agent run, the Superagent or a granted CI job uses through the egress
-    /// proxy: the stored ones that apply to `sandbox` and, when the instance has a Vidoc key and
-    /// the sandbox no `VIDOC_API_KEY` of its own, the instance key as that virtual secret
-    /// (SPEC-195 VDK-005). Never for MCP references, `.env` copies or browser filling, which
-    /// would hand out its value.
+    /// proxy: [`Self::resolved_agent_secrets`] and, when the instance has a Vidoc key and none of
+    /// them is a `VIDOC_API_KEY`, the instance key as that virtual secret (SPEC-195 VDK-005).
+    /// Never for MCP references, `.env` copies or browser filling, which would hand out its value.
     ///
     /// # Errors
     /// Store failures.
     pub(crate) async fn applied_agent_secrets(
         &self,
         sandbox: &SandboxId,
+        holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
-        let mut records = self.deps.store.vault_agent(Some(sandbox)).await?;
+        let mut records = self.resolved_agent_secrets(sandbox, holder).await?;
         if self.vidoc_key().is_some() && !records.iter().any(|r| r.name == VIDOC_SECRET) {
+            records.push(instance_vidoc_record());
+        }
+        Ok(records)
+    }
+
+    /// Whether runs of `task` get a personal secret (its owner's, switched on for its project).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn holds_personal_secrets(
+        &self,
+        task: &crate::model::TaskRecord,
+    ) -> AppResult<bool> {
+        Ok(self
+            .resolved_agent_secrets(&task.sandbox_id, Holder::of_task(task))
+            .await?
+            .iter()
+            .any(|r| matches!(r.scope(), crate::ports::vault::AgentScope::Personal(_))))
+    }
+
+    /// Every agent secret that can reach some run of `sandbox` (`holder: None`: every person's
+    /// personal ones switched on for it, RES-006), or a run of `holder` (its own personal ones,
+    /// never another person's), with the instance Vidoc key: what redaction covers.
+    async fn redacted_agent_secrets(
+        &self,
+        sandbox: &SandboxId,
+        holder: Option<Holder<'_>>,
+    ) -> AppResult<Vec<VaultSecretRecord>> {
+        let mut records = self.deps.store.vault_agent_in(sandbox).await?;
+        if let Some(holder) = holder {
+            records.retain(|r| holder.may_hold(r));
+        }
+        if self.vidoc_key().is_some() {
             records.push(instance_vidoc_record());
         }
         Ok(records)
@@ -353,20 +417,40 @@ impl App {
         self.vault.bump();
     }
 
-    /// The redaction matcher of every agent secret that applies to `sandbox` (values, TOTP
-    /// seeds and their encodings), cached until an agent secret changes.
+    /// The redaction matcher of every agent secret that can reach a run of `sandbox` (values,
+    /// TOTP seeds and their encodings), cached until an agent secret changes. Yulius' own
+    /// redaction of the project's text uses it (RES-006).
     ///
     /// # Errors
     /// Store or decryption failures.
     pub async fn agent_secret_matcher(&self, sandbox: &SandboxId) -> AppResult<Arc<PlainMatcher>> {
+        self.matcher_for(sandbox, None).await
+    }
+
+    /// The redaction matcher of `sandbox` for runs of `holder` (`None`: for every run), cached
+    /// until an agent secret changes. A run's own fingerprint file is made from its holder's, so
+    /// it never holds hashes of another person's values (ADR-0186).
+    ///
+    /// # Errors
+    /// Store or decryption failures.
+    pub(crate) async fn matcher_for(
+        &self,
+        sandbox: &SandboxId,
+        holder: Option<Holder<'_>>,
+    ) -> AppResult<Arc<PlainMatcher>> {
         let generation = self.vault.generation.load(Ordering::SeqCst);
+        let key = format!(
+            "{}|{}",
+            sandbox.as_str(),
+            holder.map_or_else(|| "*".to_owned(), Holder::cache_key)
+        );
         if let Ok(cache) = self.vault.matchers.lock()
-            && let Some((cached, matcher)) = cache.get(sandbox.as_str())
+            && let Some((cached, matcher)) = cache.get(&key)
             && *cached == generation
         {
             return Ok(matcher.clone());
         }
-        let records = self.applied_agent_secrets(sandbox).await?;
+        let records = self.redacted_agent_secrets(sandbox, holder).await?;
         let mut secrets = Vec::with_capacity(records.len());
         for record in &records {
             let Some(payload) = self.agent_payload(record)? else {
@@ -387,7 +471,7 @@ impl App {
             if cache.len() > 256 {
                 cache.clear();
             }
-            cache.insert(sandbox.as_str().to_owned(), (generation, matcher.clone()));
+            cache.insert(key, (generation, matcher.clone()));
         }
         Ok(matcher)
     }
@@ -428,6 +512,7 @@ fn instance_vidoc_record() -> VaultSecretRecord {
         id: VIDOC_SECRET_ID.into(),
         section: VaultSection::Agent,
         sandbox_id: None,
+        owner_id: None,
         name: VIDOC_SECRET.into(),
         description: "The instance's Vidoc key (Settings, Instance): Vidoc's vidoc-1 security \
                       scan, `yulius security-scan`"

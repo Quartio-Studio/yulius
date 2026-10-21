@@ -164,13 +164,42 @@ impl GitPort for LocalGit {
         Ok(())
     }
 
+    /// As the real adapter: `origin/HEAD`, else the branch the clone's `HEAD` names (an empty
+    /// clone's local default, not GitHub's).
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
-        let head = git(
+        if let Ok(head) = git(
             repo,
             &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        ) {
+            return Ok(head.trim().trim_start_matches("origin/").to_owned());
+        }
+        let head = git(repo, &["symbolic-ref", "--short", "HEAD"]).map_err(upstream)?;
+        Ok(head.trim().to_owned())
+    }
+
+    async fn remote_branches(
+        &self,
+        repo: &Path,
+    ) -> AppResult<Vec<yulius_app::ports::git::BranchInfo>> {
+        let refs = git(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:lstrip=3) %(objectname)",
+                "refs/remotes/origin/",
+            ],
         )
         .map_err(upstream)?;
-        Ok(head.trim().trim_start_matches("origin/").to_owned())
+        Ok(refs
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(name, _)| *name != "HEAD")
+            .map(|(name, sha)| yulius_app::ports::git::BranchInfo {
+                name: name.to_owned(),
+                sha: sha.to_owned(),
+                committed_ms: 0,
+            })
+            .collect())
     }
 
     async fn branch_exists(&self, repo: &Path, branch: &str) -> AppResult<bool> {
@@ -279,6 +308,37 @@ impl GitPort for LocalGit {
 
     async fn log(&self, _: &Path, _: &str, _: u32) -> AppResult<Vec<CommitInfo>> {
         Err(AppError::Upstream("log is not used by these tests".into()))
+    }
+
+    async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        Ok(git(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{rev}^{{commit}}"),
+            ],
+        )
+        .ok()
+        .map(|sha| sha.trim().to_owned()))
+    }
+
+    async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
+        Ok(git(repo, &["show", &format!("{rev}:{path}")]).ok())
+    }
+
+    async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
+        let mut args = vec!["ls-tree", "--name-only", rev];
+        let filter = format!("{dir}/");
+        if !dir.is_empty() {
+            args.extend(["--", filter.as_str()]);
+        }
+        Ok(git(repo, &args)
+            .map_err(upstream)?
+            .lines()
+            .map(str::to_owned)
+            .collect())
     }
 
     async fn commit_all(
@@ -400,6 +460,14 @@ pub struct RepoGitHub {
     pub installation_lookups: AtomicU32,
     /// GitHub refuses every new ruleset (a private repository on a free plan).
     pub refuse_rulesets: AtomicBool,
+    /// GitHub refuses to create repositories for a missing App permission, accepting these
+    /// (`X-Accepted-GitHub-Permissions`, the `create_repo` contract).
+    pub refuse_creation: Mutex<Option<String>>,
+    /// The App's installation covers only selected repositories, and a created repository is
+    /// not among them: it is neither listed nor reachable over Git.
+    pub selected_only: AtomicBool,
+    /// GitHub fails every repository read with an installation token (an outage).
+    pub fail_installation_reads: AtomicBool,
 }
 
 impl RepoGitHub {
@@ -462,7 +530,29 @@ impl GitHubPort for RepoGitHub {
     async fn current_user(&self, token: &Secret) -> AppResult<GhUser> {
         self.base.current_user(token).await
     }
+    /// An installation token sees the installation's repositories (with no person's
+    /// permissions); a person's token goes to the fake.
     async fn repo_access(&self, token: &Secret, owner: &str, name: &str) -> AppResult<RepoAccess> {
+        if token.expose().starts_with("inst-") {
+            if self.fail_installation_reads.load(Ordering::SeqCst) {
+                return Err(AppError::Upstream(
+                    "GitHub upstream error (HTTP 503)".into(),
+                ));
+            }
+            let listed = self
+                .installation_repos
+                .lock()
+                .map_err(AppError::internal)?
+                .iter()
+                .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
+                .cloned();
+            return Ok(
+                listed.map_or(RepoAccess::NoAccess, |repo| RepoAccess::Access {
+                    permissions: GitHubPermissions::default(),
+                    repo,
+                }),
+            );
+        }
         self.base.repo_access(token, owner, name).await
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {
@@ -490,11 +580,22 @@ impl GitHubPort for RepoGitHub {
         name: &str,
         _description: &str,
     ) -> AppResult<GhRepo> {
+        if let Some(accepted) = self
+            .refuse_creation
+            .lock()
+            .map_err(AppError::internal)?
+            .clone()
+        {
+            return Err(AppError::Forbidden(accepted));
+        }
         let path = self.remotes_dir.join(owner).join(format!("{name}.git"));
         std::fs::create_dir_all(&path).map_err(AppError::internal)?;
         git(&path, &["init", "--quiet", "--bare"]).map_err(AppError::Upstream)?;
         let repo = gh_repo(owner, name, true);
-        self.git.add_remote(&repo.clone_url, &path);
+        if !self.selected_only.load(Ordering::SeqCst) {
+            self.git.add_remote(&repo.clone_url, &path);
+            self.add_installation_repo(owner, name, true);
+        }
         if let Ok(mut created) = self.created.lock() {
             created.push(CreatedRepo {
                 owner: owner.to_owned(),
@@ -619,6 +720,9 @@ impl GitHubPort for RepoGitHub {
     ) -> AppResult<()> {
         self.base.fast_forward(t, o, r, b, sha).await
     }
+    async fn delete_branch(&self, t: &Secret, o: &str, r: &str, b: &str) -> AppResult<bool> {
+        self.base.delete_branch(t, o, r, b).await
+    }
     async fn branch_sha(&self, t: &Secret, o: &str, r: &str, b: &str) -> AppResult<Option<String>> {
         self.base.branch_sha(t, o, r, b).await
     }
@@ -640,8 +744,17 @@ pub struct World {
 pub const OWNER: &str = "Quartio-Studio";
 
 impl World {
-    /// A configured instance owned by [`OWNER`] (`org` or `user`).
+    /// A configured instance owned by [`OWNER`] (`org` or `user`), with a connected Claude
+    /// subscription that has no capacity left: starts pass the account gate (SPEC-246) and then
+    /// wait without a process, as there is no process host here.
     pub async fn new(owner_kind: &str) -> Result<Self, BoxError> {
+        let world = Self::without_claude(owner_kind).await?;
+        super::exhausted_subscription(&world.h).await?;
+        Ok(world)
+    }
+
+    /// [`World::new`] with no Claude account connected: a person's start of an agent is refused.
+    pub async fn without_claude(owner_kind: &str) -> Result<Self, BoxError> {
         let dir = tempfile::tempdir()?;
         let scratch = tempfile::tempdir()?;
         let store = SqliteStore::open_in_memory()?;
@@ -656,6 +769,9 @@ impl World {
             rulesets: Mutex::new(Vec::new()),
             installation_lookups: AtomicU32::new(0),
             refuse_rulesets: AtomicBool::new(false),
+            refuse_creation: Mutex::new(None),
+            selected_only: AtomicBool::new(false),
+            fail_installation_reads: AtomicBool::new(false),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(
@@ -751,7 +867,11 @@ impl World {
                 Timestamp(1),
             )
             .await?;
-        let token = self.h.app.issue_api_token(&user, "test").await?;
+        let token = self
+            .h
+            .app
+            .issue_api_token(&user, "test", yulius_domain::permission::TokenScope::Cli)
+            .await?;
         Ok((
             user,
             Creds {
@@ -799,6 +919,30 @@ impl World {
             pull: level != "none",
         };
         self.h.github.set_perm(login, &full, perms);
+    }
+
+    /// A bare remote `owner/name` with no commits whose `HEAD` names `head` (what a clone of it
+    /// then calls its branch), registered with the Git fake. Returns its path.
+    pub fn empty_remote(&self, owner: &str, name: &str, head: &str) -> Result<PathBuf, BoxError> {
+        let bare = self
+            .scratch
+            .path()
+            .join("remotes")
+            .join(owner)
+            .join(format!("{name}.git"));
+        std::fs::create_dir_all(&bare)?;
+        git(
+            &bare,
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                &format!("--initial-branch={head}"),
+            ],
+        )?;
+        self.git
+            .add_remote(&format!("https://github.com/{owner}/{name}.git"), &bare);
+        Ok(bare)
     }
 
     /// A bare remote `owner/name` with `files` committed on `main` and extra branches pointing

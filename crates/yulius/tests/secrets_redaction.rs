@@ -73,6 +73,7 @@ async fn add_stripe_key(app: &App, user: &UserRecord, sandbox: &SandboxId) -> Te
         user: user.clone(),
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     app.create_agent_secret(
         &ctx,
@@ -97,7 +98,10 @@ async fn fingerprint_file(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Err
     let sandbox = sandbox_record(&user)?;
     h.store.insert_sandbox(&sandbox).await?;
     add_stripe_key(&h.app, &user, &sandbox.id).await?;
-    let set = h.app.scrub_fingerprints_for(&sandbox.id).await?;
+    let set = h
+        .app
+        .scrub_fingerprints_for(&sandbox.id, yulius_app::vault::Holder::Person(&user.id))
+        .await?;
     let path = dir.join("scrub.json");
     let text = serde_json::to_string(&set)?;
     assert!(!text.contains(VALUE), "fingerprints hold no value");
@@ -376,6 +380,8 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
                 last_error: None,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
             })
             .await?;
         seed_repo(&data, &sandbox.id)?;

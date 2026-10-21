@@ -8,6 +8,7 @@
 
 mod support;
 
+mod account_email;
 mod account_usage;
 mod accounts;
 mod agent_hooks;
@@ -17,6 +18,7 @@ mod automation_start;
 mod automations;
 mod browser;
 mod cd;
+mod claude_gate;
 mod cli;
 mod cockpit;
 mod context_full;
@@ -56,12 +58,14 @@ mod production_branch;
 mod projects;
 mod queued_messages;
 mod recovery;
+mod remote_mcp;
 mod run_metrics;
 mod sandbox_docker;
 mod secrets;
 mod secrets_create;
 mod secrets_env;
 mod secrets_redaction;
+mod secrets_scopes;
 mod self_update;
 mod session_sync;
 mod sessions;

@@ -2,11 +2,14 @@
 //! adapters (SPEC-002 §3). Use cases are `impl App` blocks grouped by area.
 
 pub mod access;
+mod account_email;
+pub mod account_gate;
 pub mod accounts;
 pub mod admin;
 pub mod agent_delivery;
 pub mod agent_wait;
 pub mod analytics;
+pub mod api_tokens;
 pub mod auth;
 pub mod auto_choice;
 pub mod automations;
@@ -19,9 +22,11 @@ pub mod cockpit;
 pub mod context;
 pub mod context_full;
 pub mod coordination;
+mod creation_refusals;
 pub mod delivery;
 pub mod discipline;
 pub mod disk;
+mod empty_repo;
 pub mod error;
 pub mod events;
 pub mod files;
@@ -58,6 +63,8 @@ pub mod queued_messages;
 pub mod race;
 pub mod record_numbers;
 pub mod recovery;
+pub mod remote;
+pub mod remote_files;
 pub mod resources;
 pub mod sandbox_docker;
 pub mod sandboxes;

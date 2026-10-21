@@ -8,8 +8,10 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 
 - JSON bodies (`Content-Type: application/json`), ≤ 1 MiB; uploads (import chunks, dropped files)
   are raw bodies with their own limits. Timestamps are RFC 3339 UTC strings.
-- Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (CLI
-  tokens). The cookie is `__Host-yulius_session` when the public URL is HTTPS (host-only and
+- Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (personal API
+  tokens: `cli` from `yulius login`, `operate` or `read` from Settings, SPEC-247; a `read` token
+  gets 403 for anything but GET and HEAD, and for every WebSocket). The cookie is
+  `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
   State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
   `GET /api/me`. A cookie session is refused (403) for a request that announces an `Origin` other
@@ -19,7 +21,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
 - WebSockets require a valid session and an `Origin` equal to the public URL.
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
   `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
-  `conflict` (409; racing state changes), `invalid` (422), `capacity` (429), `upstream` (502,
+  `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
+  agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
+  SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
   GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
   is missing or disabled, the message says which), `internal` (500).
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
@@ -34,10 +38,10 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/setup/status` | → `{"setup_required": bool}` |
-| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
+| POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. 422 when the repeat differs or the password has fewer than 8 characters (`the password needs at least 8 characters`; SPEC-242). Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
-| POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left); 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
+| POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left), and, before the code is checked (no attempt spent), for a repeat that differs or a password under 8 characters; 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
 | GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account) |
 | GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
@@ -51,16 +55,48 @@ Me = {
   "csrf_token": "…",
   "instance": {"owner_login": "Quartio-Studio", "owner_kind": "org|user|null",
                "public_url": "https://yulius.quartio.ai", "github_configured": true,
-               "contained": true}
+               "contained": true, "claude_connected": true}
 }
 ```
+
+`instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
+while false the UI shows Connect Claude first and a person's start of an agent answers `409`
+`claude_account_required` (SPEC-246).
 
 CLI device approval: `POST /api/device/start` → `{"device_code","user_code","verification_url",
 "interval_s","expires_in_s"}`; `POST /api/device/poll {"device_code"}` →
 `{"status":"pending|approved|denied|expired","token":"yul_…|null"}`; `POST /api/device/approve
-{"user_code","approve":bool}` (web session) → 204.
+{"user_code","approve":bool}` (web session only; a bearer token is 403, SPEC-247) → 204.
 Device start needs no session and is limited per client: 5 starts a minute, at most 10 live
 grants per client and 1000 per instance; past either it answers 429.
+
+## API tokens and the remote MCP (SPEC-247)
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/me/tokens` | → `[ApiTokenView]`: the caller's live tokens, newest first |
+| POST | `/api/me/tokens` | browser session only (a bearer request is 403), `{"label": "1-80 chars", "scope": "operate|read"}` → 201 `{"token": "yul_…" (shown once), "view": ApiTokenView, "mcp_url", "claude_command", "cli_command"}`; 422 for another scope or label, 429 past 50 live tokens |
+| DELETE | `/api/me/tokens/{id}` | → 204; 404 for an id that is not a live token of the caller. Revoked tokens are refused at once |
+| POST | `/mcp` | the remote MCP: JSON-RPC 2.0 (`initialize`, `ping`, `tools/list`, `tools/call`; notifications → 202), MCP streamable HTTP with JSON answers (`GET`/`DELETE` → 405); bodies up to 32 MiB (a `project_change` of 50 files of 256 KiB), larger → 413. `Authorization: Bearer yul_…` of scope `operate` or `read` only: none or an unknown, revoked, task or `ck_` token → 401 (`WWW-Authenticate: Bearer`), a `cli` token → 403, past 120 requests a minute per token → 429 (`Retry-After: 60`); the body of a refusal is a JSON-RPC error. Cookies are not read |
+
+```json
+ApiTokenView = {"id": "…", "label": "laptop Claude Code", "scope": "cli|read|operate",
+                "created_at": "…", "last_used_at": "…|null"}
+```
+
+The remote MCP's tools are listed by `tools/list` (a `read` token is served those that need view
+access only). Instance tools: `projects_list`, `repositories_list`, `project_import {repo}`.
+Every other tool takes `project` (`owner/name`, slug or id) and needs, on that project, the
+person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `task_delivery`,
+`sessions_search`, `session_read`, `ci_runs`, `ci_run`, `cd_status`, `project_files`,
+`project_file_read`, `automations_list`, `workflows_list`, `secrets_list`), work
+(`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
+`task_unpause`, `task_start_now`, `task_archive`, `task_delete`, `ci_rerun`, `ci_cancel`,
+`cd_deploy` (dev only), `project_change`, `change_merge`), configure (`automation_*`,
+`secret_update`, `secret_hosts_answer`) or administer (`onboarding_skip`). A project the person
+cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
+true}` adds the tool's record as `structuredContent`. `initialize` answers
+`_meta: {"yulius/person": login, "yulius/scope": scope}`. See [remote-control.md](remote-control.md).
 
 ## Sandboxes
 
@@ -75,7 +111,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session or `operate` token | Optional body `{notes?}`: the hand-over of the person's agent (≤ 24 KiB, 422 beyond; redacted) added to the onboarding task's request before it starts; 409 with notes once onboarding started (SPEC-256). Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing` without notes; 403 for a `cli` token (`yulius onboard` only uploads, SPEC-051; an `operate` token is the person's own agent, SPEC-247); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 | POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
 | POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
@@ -242,7 +278,7 @@ limited to the agent's sandbox.
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
 | POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false,"prepared?":false,"start_at?":"<RFC 3339>"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). With `"prepared": true` the task waits as `prepared` until Start now, and with `start_at` (implies prepared; at most 60 s past and 366 days ahead, else 422) until that time, shown as `start_at` (TSK-019, SPEC-105; 422 together with `after_task_id`, `start_rule` or `supertask`, 429 beyond 32 prepared tasks in the sandbox). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool,"supertask":bool}`: whether a new task mixes separate workstreams (TSK-011; prompts of 40 words or more), and whether to propose it as a supertask (SPEC-188, ADR-0152): Jev is sure it is broad work and the verdict is not `several`. Both questions are asked at once, each within 2.5 s. `checked` says whether Jev answered either; it is false — the verdict `one`, `supertask` false — for prompts under 3 words, without a Jev key and when Jev fails or is slow |
-| POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
+| POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured, or `claude_account_required` when no Claude account is usable (none connected, or every one must sign in again; SPEC-246), 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does, a `prepared` one whatever its time (409 otherwise, also while onboarding blocks the sandbox's tasks). Cancel it with `/stop` |
 | PUT | `/api/tasks/{tid}/schedule` | write | `{"start_at":"<RFC 3339>"|null}` → `TaskSummary`; when a `prepared` task starts by itself, or null: when a person starts it (SPEC-105; 422 outside the window of `CreateTask.start_at`, 409 when the task is not prepared). A time already due starts it at once |
 | PUT | `/api/tasks/{tid}/start` | write | `ChangeStart` (`after_task_id`, `start_rule`, `supertask`, `prepared`, `start_at`, as `CreateTask`; none: Start now) → `TaskSummary`; how a task waiting to start (`chained` or `prepared`) starts instead (SPEC-126). 409 once the task has started (also `queued`), 422 for a choice `CreateTask` refuses or a wait on itself, 429 beyond the sandbox's bound of chained or prepared tasks; the owner only (SPEC-070) |
@@ -286,6 +322,7 @@ TaskSummary = {
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
+  "waits_for_account": false,
   "supertask": false, "held_by": [3, 5],
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
@@ -307,7 +344,10 @@ the harness holds the agent at its turn boundary (or the task waits to start); n
 the agent, and the task continues by itself. `resumes_at` is set only then: the earliest known
 time a subscription has capacity for it again. The UI shows "Paused: waiting for subscription
 capacity (resets ~14:20)" outside Needs you. A Continue with no capacity answers `200` with the
-task paused, not an error.
+task paused, not an error. A task started by itself (a chain, a rule, an automation, a time) while
+no Claude account is usable waits the same way with `waits_for_account: true` (no reset to wait
+for; the UI says "Waiting for a Claude account"); a person's start then answers `409`
+`claude_account_required` instead (SPEC-246).
 
 `steps.done` counts finished steps (done or skipped, STP-005); `steps.percent` is the finished
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
@@ -334,8 +374,9 @@ otherwise), and applies the same shell condition to Done by a tested pull reques
 
 ```json
 TaskDetail = TaskSummary + {
+  "account_email?": "…",
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
-  "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
+  "worktree": "…", "attempts": [{"seq","harness","account_label","account_email?","account_id (proposed)","launch_kind","state",
                                   "started_at","ended_at","exit_code","exit_reason"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
@@ -354,7 +395,7 @@ turn records. A restart or a resume reads the run's own lines again, so they nev
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
 `stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
-`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `chained`, `prepared`.
+`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `failed_no_account`, `chained`, `prepared`.
 
 How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
 Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)
@@ -1160,10 +1201,11 @@ resolves to nothing, the run gets the server without that variable or token.
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
-| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (1–80 chars) → `Account`; the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
+| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (trimmed, 1–80 printable chars) → `Account`: renames the subscription (the Subscriptions page edits the name in place, SPEC-244; audited `account.updated`); the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a task that is not Done uses it; Done tasks' idle sessions on it are closed first (`closed`, as archiving does; 409 if one is still closing), SPEC-057; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
+| POST | `/api/admin/accounts/login/{login_id}/cancel` | instance admin | → `{"status":"cancelled|ok|error|running"}`: stops a running login and waits (at most 15 s) for its end. Its process is stopped and its temporary directory removed; the account keeps its state (`cancelled`), unless the output already held a complete token, which is sealed (`ok`). `running` when it had not ended within the wait. Audited `account.login_cancelled`. Once ended, nothing changes and the answer is how it ended; 404 for an unknown or expired login (SPEC-243) |
 | POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null","cost_usd|null"}` observed by Yulius (ROT-009; runs started in the window; `cost_usd` is their estimate at Claude API list prices, SPEC-110) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
 | GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
@@ -1202,11 +1244,18 @@ Account = {"id","provider","label",
 
 `primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
 per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
-never returned. `email` (the provider sign-in,
-administrators only) and `plan` (the subscription tier) are planned for UI-022: the web UI shows
-them when present, but **the server does not report them yet** (and the mock does not either, so
-it looks like production), so today they are absent and the UI shows the label and provider. A
-task's overview names each session's subscription by its label (`TaskDetail.attempts[].account_label`).
+never returned. `email` is the email of the Claude account behind the subscription (SPEC-244,
+ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's profile
+(`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round
+reads it once for subscriptions signed in before. It is `null` until Claude gives one: Claude may
+refuse the profile to a `setup-token` sign-in, and the page then reads "email unknown" until the
+next sign-in. A new sign-in drops the previous email. Emails are for administrators (UI-022).
+`StatusAccount.email`, `CapacityAccount.email`, `TaskDetail.account_email`,
+`attempts[].account_email` and `tokens_by_account[].account_email` are present only for an
+instance administrator or the superadmin, and only when known. A task summary (lists, events)
+never carries one. `plan` (the subscription tier) is planned for UI-022: the server does not
+report it yet. A task's overview names each session's subscription by its label, with the email
+for administrators (`TaskDetail.attempts[].account_label`, `account_email`).
 `in_use_by` counts the live tasks on the subscription except Done ones by the session limit's
 rule (SES-101: goal achieved, or plan complete with the change merged; SPEC-057): a Done task
 keeps its idle session but no longer holds the subscription.
@@ -1223,6 +1272,12 @@ is overwritten and removed. A login that ends without a credential sets `error` 
 an account that still holds a working credential keeps its status and records
 `re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
 login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
+Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
+(`claude setup-token` does after 500 ms); one still running then is stopped and the token sealed,
+so the login ends `ok` (SPEC-243). The web UI closes the login dialog on `ok`, and cancels a
+login that is still running when its dialog is closed. A terminal for an unknown or expired login
+is refused in band: an `error` frame `not_found`, then close code 4003, which the browser does not
+retry (non-administrators and other origins are still refused at the handshake).
 
 **Analytics.** `sandbox` is optional (default: every sandbox the caller can see; an invisible
 one is `not_found`); `from`/`to` are inclusive UTC days `YYYY-MM-DD` that select tasks by
@@ -1246,7 +1301,7 @@ AnalyticsSummary = {
   "tokens": Tokens,
   "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
   "tokens_by_harness": [{"harness": "claude", …Tokens}],
-  "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", …Tokens}],
+  "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", "account_email?": "…", …Tokens}],
   "switches": {"total": 2},
   "feedback": {"correct": 1, "incorrect": 1},
   "truncated": false
@@ -1276,15 +1331,15 @@ Status = {
   "sessions": {"live": 2, "limit": 8, "queued": 1},
   "sandboxes": [{"id", "slug", "name", "live_sessions": 1}],
   "accounts": [{"label", "provider", "status", "usage",
-                "id?", "last_error?", "in_use_by?"}],
+                "id?", "email?", "last_error?", "in_use_by?"}],
   "contained": true
 }
 ```
 
 VM fields are `null` when unknown (CPU needs two readings). Disk figures describe the volume
 holding the data directory. `sandboxes` lists only sandboxes the caller can see; `sessions` is
-instance-wide. Account `id`, `last_error` and `in_use_by` are present only for instance
-administrators.
+instance-wide. Account `id`, `email` (when known, SPEC-244), `last_error` and `in_use_by` are
+present only for instance administrators.
 
 ```json
 CapacityView = {
@@ -1295,7 +1350,7 @@ CapacityView = {
   "paused_hours_7d": 8.0, "active_hours_7d": 32.0,
   "needed": 4, "add": 1, "recommendation": "Add about 1 subscription to stop pausing",
   "paused_tasks": 0, "resumes_at": "…|null",
-  "accounts": [{"label", "status", "usage", "available", "id?", "in_use_by?"}],
+  "accounts": [{"label", "status", "usage", "available", "id?", "email?", "in_use_by?"}],
   "burn_per_day": [null, 1.2, …, 2.0], "paused_hours_per_day": [0.0, …, 8.0],
   "tokens": {"last_24h": Spend, "last_7d": Spend, "per_day": [Spend, …],
              "unknown_usage_runs": 0, "unpriced_runs": 0}
@@ -1391,7 +1446,7 @@ after an unlock.
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
-| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts or `auto_allow` changed since it was read (reload). Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |

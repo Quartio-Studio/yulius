@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use yulius_contracts::api::auth::{DevicePoll, DeviceStart, InstanceInfo, Me, MeUser};
 use yulius_domain::ids::UserId;
+use yulius_domain::permission::TokenScope;
 use yulius_domain::time::Timestamp;
 
 use crate::context::App;
@@ -15,8 +16,9 @@ use crate::model::{
 };
 use crate::ports::github::{GhUserToken, GitHubAppConfig};
 
-/// Minimum superadmin password length.
-pub const MIN_PASSWORD_LEN: usize = 12;
+/// Minimum superadmin password length in Unicode code points: NIST SP 800-63B's minimum for a
+/// chosen secret (SPEC-242, ADR-0183). The web UI recommends 12 without requiring it.
+pub const MIN_PASSWORD_LEN: usize = 8;
 /// Password-login attempts allowed per client key per minute (SPEC-001 ACC-013).
 pub const LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
 /// Clients the sign-in limiter tracks at once. Clients without an attempt in the last minute are
@@ -35,6 +37,24 @@ const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
 
+/// Checks a new superadmin password (setup, recovery) and its repeat: they match and the password
+/// has at least [`MIN_PASSWORD_LEN`] code points. No composition or blocklist rules (SPEC-242
+/// PWM-002).
+///
+/// # Errors
+/// `Invalid` when the two differ or the password is too short.
+pub fn validate_new_password(password: &Secret, confirm: &Secret) -> AppResult<()> {
+    if password.expose() != confirm.expose() {
+        return Err(AppError::Invalid("passwords do not match".into()));
+    }
+    if password.expose().chars().count() < MIN_PASSWORD_LEN {
+        return Err(AppError::Invalid(format!(
+            "the password needs at least {MIN_PASSWORD_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
 /// An authenticated caller.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
@@ -44,6 +64,17 @@ pub struct AuthContext {
     pub csrf_token: Option<String>,
     /// Cookie hash for logout.
     pub session_hash: Option<String>,
+    /// The API token of a bearer request (`None` for a cookie session).
+    pub token: Option<TokenGrant>,
+}
+
+/// The API token a bearer request was made with (SPEC-247).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenGrant {
+    /// The token's id (never the token).
+    pub id: String,
+    /// What it may do.
+    pub scope: TokenScope,
 }
 
 impl AuthContext {
@@ -52,6 +83,30 @@ impl AuthContext {
     #[must_use]
     pub fn is_browser(&self) -> bool {
         self.csrf_token.is_some()
+    }
+
+    /// Whether the caller may take an action only a person decides, such as starting
+    /// onboarding (SPEC-051 OBD-002): a browser session, or an `operate` token the person made on
+    /// purpose for their own agent (SPEC-247 RMT-021, ADR-0188); never a `yulius login` token.
+    #[must_use]
+    pub fn acts_for_person(&self) -> bool {
+        self.is_browser()
+            || self
+                .token
+                .as_ref()
+                .is_some_and(|t| t.scope == TokenScope::Operate)
+    }
+
+    /// Whether the caller holds a read-only token.
+    #[must_use]
+    pub fn read_only(&self) -> bool {
+        self.scope() == Some(TokenScope::Read)
+    }
+
+    /// The token's scope; `None` for a cookie session.
+    #[must_use]
+    pub fn scope(&self) -> Option<TokenScope> {
+        self.token.as_ref().map(|t| t.scope)
     }
 }
 
@@ -114,7 +169,7 @@ impl GitHubSignInError {
 ///
 /// # Errors
 /// `Capacity` with `refusal` past `per_minute` attempts or a full table.
-fn count_client_attempt(
+pub(crate) fn count_client_attempt(
     attempts: &Mutex<HashMap<String, Vec<i64>>>,
     client_key: &str,
     now: Timestamp,
@@ -222,14 +277,7 @@ impl App {
                 "confirm that you stored the password safely".into(),
             ));
         }
-        if password.expose() != confirm.expose() {
-            return Err(AppError::Invalid("passwords do not match".into()));
-        }
-        if password.expose().chars().count() < MIN_PASSWORD_LEN {
-            return Err(AppError::Invalid(format!(
-                "use at least {MIN_PASSWORD_LEN} characters"
-            )));
-        }
+        validate_new_password(password, confirm)?;
         let now = self.now();
         let user = UserRecord {
             id: UserId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
@@ -337,18 +385,26 @@ impl App {
             user,
             csrf_token: Some(session.csrf_token),
             session_hash: Some(hash),
+            token: None,
         }))
     }
 
-    /// Whether an authenticated context still holds: the user exists and is not disabled, and a
-    /// cookie session is neither revoked nor expired. Open WebSockets re-check it, so logout,
-    /// disabling and session expiry end them as they end new requests (#66).
+    /// Whether an authenticated context still holds: the user exists and is not disabled, a
+    /// cookie session is neither revoked nor expired, and an API token is not revoked. Open
+    /// WebSockets re-check it, so logout, disabling, session expiry and revoking a token end them
+    /// as they end new requests (#66, SPEC-247 RMT-001).
     pub async fn still_signed_in(&self, ctx: &AuthContext) -> bool {
         let Ok(Some(user)) = self.deps.store.user(&ctx.user.id).await else {
             return false;
         };
         if user.disabled_at.is_some() {
             return false;
+        }
+        if let Some(grant) = &ctx.token {
+            return matches!(
+                self.deps.store.api_tokens_of(&user.id).await,
+                Ok(tokens) if tokens.iter().any(|t| t.id == grant.id)
+            );
         }
         match &ctx.session_hash {
             Some(hash) => matches!(
@@ -374,10 +430,15 @@ impl App {
         if user.disabled_at.is_some() {
             return Ok(None);
         }
+        self.note_token_use(&record).await;
         Ok(Some(AuthContext {
             user,
             csrf_token: None,
             session_hash: None,
+            token: Some(TokenGrant {
+                id: record.id,
+                scope: record.scope,
+            }),
         }))
     }
 
@@ -419,6 +480,7 @@ impl App {
                 github_configured: instance.as_ref().is_some_and(|i| i.github_app.is_some()),
                 contained: self.config.contained,
                 upload_max_bytes: self.config.upload_max_bytes,
+                claude_connected: self.claude_connected().await?,
             },
         })
     }
@@ -622,16 +684,24 @@ impl App {
         self.deps.store.purge_device_grants(self.now()).await
     }
 
-    /// Approves or denies a device grant as the signed-in user; approval issues an API token.
+    /// Approves or denies a device grant as the person in the browser; approval issues a `cli`
+    /// API token.
     ///
     /// # Errors
-    /// `NotFound` for unknown/expired codes, `Conflict` when already resolved.
+    /// `Forbidden` for a bearer token, `NotFound` for unknown/expired codes, `Conflict` when
+    /// already resolved.
     pub async fn device_approve(
         &self,
         ctx: &AuthContext,
         user_code: &str,
         approve: bool,
     ) -> AppResult<()> {
+        // A token cannot mint a token that would outlive it (SPEC-247): the person approves.
+        if !ctx.is_browser() {
+            return Err(AppError::Forbidden(
+                "approve a CLI sign-in in the browser, signed in as yourself".into(),
+            ));
+        }
         let now = self.now();
         let grant = self
             .deps
@@ -643,7 +713,9 @@ impl App {
             return Err(AppError::NotFound);
         }
         let (status, sealed) = if approve {
-            let token = self.issue_api_token(&ctx.user, "yulius CLI").await?;
+            let token = self
+                .issue_api_token(&ctx.user, "yulius CLI", TokenScope::Cli)
+                .await?;
             (
                 "approved",
                 Some(self.deps.crypto.seal(token.expose().as_bytes())?),
@@ -716,20 +788,35 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub async fn issue_api_token(&self, user: &UserRecord, label: &str) -> AppResult<Secret> {
+    pub async fn issue_api_token(
+        &self,
+        user: &UserRecord,
+        label: &str,
+        scope: TokenScope,
+    ) -> AppResult<Secret> {
+        Ok(self.insert_token(user, label, scope).await?.0)
+    }
+
+    /// Inserts a new token; returns it and its record.
+    pub(crate) async fn insert_token(
+        &self,
+        user: &UserRecord,
+        label: &str,
+        scope: TokenScope,
+    ) -> AppResult<(Secret, ApiTokenRecord)> {
         let token = format!("yul_{}", hex_token(&self.deps.crypto.random_bytes()));
-        self.deps
-            .store
-            .insert_api_token(&ApiTokenRecord {
-                id: self.deps.crypto.new_id(),
-                user_id: user.id.clone(),
-                token_hash: self.deps.crypto.sha256_hex(token.as_bytes()),
-                label: label.to_owned(),
-                created_at: self.now(),
-                revoked_at: None,
-            })
-            .await?;
-        Ok(Secret(token))
+        let record = ApiTokenRecord {
+            id: self.deps.crypto.new_id(),
+            user_id: user.id.clone(),
+            token_hash: self.deps.crypto.sha256_hex(token.as_bytes()),
+            label: label.to_owned(),
+            scope,
+            created_at: self.now(),
+            last_used_at: None,
+            revoked_at: None,
+        };
+        self.deps.store.insert_api_token(&record).await?;
+        Ok((Secret(token), record))
     }
 
     /// Requires the superadmin.
@@ -815,6 +902,21 @@ mod tests {
             rfc3339(Timestamp(1_791_331_200_000)),
             "2026-10-07T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn a_new_password_needs_eight_code_points_after_matching() {
+        let check = |p: &str, c: &str| {
+            validate_new_password(&Secret(p.into()), &Secret(c.into())).map_err(|e| e.to_string())
+        };
+        assert!(check("zaq1@WSX", "zaq1@WSX").is_ok());
+        assert!(check("zaq1@WS", "zaq1@WS").is_err_and(|e| e.contains("at least 8 characters")));
+        // Code points, not bytes or UTF-16 units: 8 emoji are 32 bytes and 16 units.
+        assert!(check(&"🔑".repeat(8), &"🔑".repeat(8)).is_ok());
+        assert!(check(&"🔑".repeat(7), &"🔑".repeat(7)).is_err());
+        // No composition or pattern rules (PWM-002).
+        assert!(check("12345678", "12345678").is_ok());
+        assert!(check("short", "other").is_err_and(|e| e.contains("do not match")));
     }
 
     #[test]

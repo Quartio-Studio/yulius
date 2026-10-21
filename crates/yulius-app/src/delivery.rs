@@ -377,7 +377,7 @@ fn refusal(err: &DeliveryError) -> AppError {
     }
 }
 
-fn domain_checks(state: gh::ChecksState) -> ChecksState {
+pub(crate) fn domain_checks(state: gh::ChecksState) -> ChecksState {
     match state {
         gh::ChecksState::None => ChecksState::None,
         gh::ChecksState::Pending => ChecksState::Pending,
@@ -1108,7 +1108,7 @@ impl App {
     /// Token that authors a pull request a person opens: their own GitHub token; the
     /// superadmin without a GitHub identity opens it through the App, as Yulius does for a ready
     /// task (ACC-012).
-    async fn dlv_author_token(
+    pub(crate) async fn dlv_author_token(
         &self,
         user: &UserRecord,
         sandbox: &SandboxRecord,
@@ -1600,25 +1600,13 @@ impl App {
         let app = self.github_app().await.ok()?;
         let instance = self.deps.store.instance().await.ok()??;
         let owner = instance.owner_login?;
-        let slug = &app.slug;
-        let ok = |text: &str| {
-            !text.is_empty()
-                && text
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        let is_org = match instance.owner_kind.as_deref() {
+            Some("org") => true,
+            Some("user") => false,
+            _ => return None,
         };
-        if !ok(&owner) || !ok(slug) {
-            return None;
-        }
-        match instance.owner_kind.as_deref() {
-            Some("org") => Some(format!(
-                "https://github.com/organizations/{owner}/settings/apps/{slug}/permissions"
-            )),
-            Some("user") => Some(format!(
-                "https://github.com/settings/apps/{slug}/permissions"
-            )),
-            _ => None,
-        }
+        crate::creation_refusals::app_pages(&owner, is_org, &app.slug, None)
+            .map(|pages| pages.permissions)
     }
 
     /// [`checks_access`] for the sandbox's repository, with the settings link for `user`.

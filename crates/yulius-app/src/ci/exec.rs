@@ -768,7 +768,12 @@ impl App {
             );
             return None;
         }
-        let records = match self.applied_agent_secrets(&sandbox.id).await {
+        // A CI job belongs to no person: its grant resolves among the project's and the global
+        // secrets switched on for it (SPEC-245 RES-004).
+        let records = match self
+            .applied_agent_secrets(&sandbox.id, crate::vault::Holder::Nobody)
+            .await
+        {
             Ok(records) => records,
             Err(err) => {
                 tracing::warn!(job = %job.id, error = %err, "agent secrets could not be read for a CI job");

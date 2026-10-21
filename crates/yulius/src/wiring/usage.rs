@@ -10,18 +10,24 @@
 //! re-login changes it: the running sessions report the usage (Claude Code's status line,
 //! SPEC-002 ADR-17). Failures carry one plain sentence for people, never the credential, the
 //! response body or an HTTP code.
+//!
+//! The account's email comes from `GET https://api.anthropic.com/api/oauth/profile`
+//! (`account.email`), the request Claude Code itself makes after a `setup-token` exchange
+//! (SPEC-244, ADR-0185). It may answer 403 for the same missing scope; that is a definite
+//! "unknown", never retried for the same sign-in.
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
-use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe};
+use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe, plausible_email};
 use yulius_domain::harness::Provider;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 const CLAUDE_API: &str = "https://api.anthropic.com";
 const USAGE_PATH: &str = "/api/oauth/usage";
+const PROFILE_PATH: &str = "/api/oauth/profile";
 const MESSAGES_PATH: &str = "/v1/messages";
 /// The cheapest model, for the one-token request that reads the rate-limit headers.
 const PROBE_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -135,6 +141,16 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
     Ok(usage)
 }
 
+/// The account's email in Claude's profile answer: `account.email` (also `email_address`, the
+/// token exchange's name for it), when it is an address.
+pub fn parse_profile_email(body: &Value) -> Option<String> {
+    let account = body.get("account")?;
+    ["email", "email_address"]
+        .into_iter()
+        .find_map(|key| account.get(key).and_then(Value::as_str))
+        .and_then(plausible_email)
+}
+
 /// Claude's `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` headers: utilization is a
 /// fraction (0.37 = 37 %), reset is Unix seconds. The same numbers Claude Code's status line shows.
 pub fn parse_rate_limit_headers(headers: &reqwest::header::HeaderMap) -> Option<AccountUsage> {
@@ -242,6 +258,24 @@ impl UsageProbe for ProviderUsage {
                     }
                     Err(f) => Err(f),
                 }
+            }
+        }
+    }
+
+    async fn account_email(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+    ) -> Result<Option<String>, UsageFailure> {
+        match provider {
+            Provider::Anthropic => {
+                let request = self
+                    .http
+                    .get(format!("{}{PROFILE_PATH}", self.base))
+                    .bearer_auth(credential.expose().trim())
+                    .header("anthropic-beta", "oauth-2025-04-20")
+                    .header("accept", "application/json");
+                Ok(parse_profile_email(&self.get_json(request).await?))
             }
         }
     }
@@ -385,6 +419,98 @@ mod tests {
             .map_err(|f| f.message)?;
         assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(25.0));
         assert_eq!(usage.secondary.and_then(|w| w.used_percent), Some(50.0));
+        Ok(())
+    }
+
+    #[test]
+    fn the_profile_email_is_read_when_it_is_an_address() {
+        let profile = |account: Value| json!({"account": account, "organization": {"uuid": "o"}});
+        assert_eq!(
+            parse_profile_email(&profile(json!({"uuid": "u", "email": "pawel@example.com"})))
+                .as_deref(),
+            Some("pawel@example.com")
+        );
+        assert_eq!(
+            parse_profile_email(&profile(json!({"email_address": "p@example.com"}))).as_deref(),
+            Some("p@example.com")
+        );
+        assert_eq!(
+            parse_profile_email(&profile(json!({"email": "not an address"}))),
+            None
+        );
+        assert_eq!(parse_profile_email(&profile(json!({"email": 7}))), None);
+        assert_eq!(parse_profile_email(&json!({})), None);
+    }
+
+    /// One answer per request path; everything else is 404.
+    async fn serve_profile(reply: &'static str) -> Result<String, Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let authorized = head
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer token");
+                let answer = if head.starts_with("GET /api/oauth/profile") && authorized {
+                    reply
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                };
+                let _ = sock.write_all(answer.as_bytes()).await;
+            }
+        });
+        Ok(base)
+    }
+
+    async fn email_from(
+        reply: &'static str,
+    ) -> Result<Result<Option<String>, UsageFailure>, Box<dyn std::error::Error>> {
+        let mut probe = ProviderUsage::new()?;
+        probe.base = serve_profile(reply).await?;
+        Ok(probe
+            .account_email(Provider::Anthropic, &Secret(" token\n".into()))
+            .await)
+    }
+
+    /// The profile's email, the scope refusal every `setup-token` may get, a refused sign-in and
+    /// a server error, each as the app needs it (SPEC-244 SUB-003, SUB-004).
+    #[tokio::test]
+    async fn the_account_email_comes_from_the_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let body = r#"{"account":{"uuid":"u","email":"pawel@example.com"}}"#;
+        let ok: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        assert_eq!(
+            email_from(ok).await?.map_err(|f| f.message)?.as_deref(),
+            Some("pawel@example.com")
+        );
+        let none = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}";
+        assert_eq!(email_from(none).await?.map_err(|f| f.message)?, None);
+        for (reply, kind) in [
+            (
+                "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                UsageFailureKind::NotShared,
+            ),
+            (
+                "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                UsageFailureKind::Rejected,
+            ),
+            (
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                UsageFailureKind::Unavailable,
+            ),
+        ] {
+            let failure = email_from(reply).await?.err().ok_or("a failure")?;
+            assert_eq!(failure.kind, kind);
+        }
         Ok(())
     }
 

@@ -21,6 +21,10 @@ pub enum AppError {
     /// A capacity bound was reached.
     #[error("{0}")]
     Capacity(String),
+    /// An agent cannot start: no Claude account is usable (SPEC-246 CLA-002). The message says
+    /// who connects one and where.
+    #[error("{0}")]
+    AccountRequired(String),
     /// GitHub, a provider or another dependency failed.
     #[error("{0}")]
     Upstream(String),
@@ -40,6 +44,7 @@ impl AppError {
             Self::Conflict(_) => "conflict",
             Self::Invalid(_) => "invalid",
             Self::Capacity(_) => "capacity",
+            Self::AccountRequired(_) => "claude_account_required",
             Self::Upstream(_) => "upstream",
             Self::Internal(_) => "internal",
         }

@@ -374,6 +374,7 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
                 .ok_or("user")?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         };
         app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
             .await?;

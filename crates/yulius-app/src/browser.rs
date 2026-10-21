@@ -190,8 +190,8 @@ impl App {
             });
         }
         let mut open: Vec<u16> = probes.join_all().await.into_iter().flatten().collect();
-        // Yulius's own listeners and DevTools endpoints are never offered as dev servers.
-        let excluded = self.preview_excluded_ports().await;
+        // Yulius's own listeners are never offered as dev servers.
+        let excluded = self.preview_excluded_ports();
         open.retain(|port| !excluded.contains(port));
         open.sort_unstable();
         Ok((record.slug, first, last, open))

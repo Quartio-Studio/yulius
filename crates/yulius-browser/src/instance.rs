@@ -485,7 +485,6 @@ pub struct BrowserInstance {
     cdp: CdpClient,
     /// Viewers' wheel input, coalesced so it never queues up behind Chrome (F 2026-10-10).
     wheel: WheelDispatcher,
-    http_url: Option<String>,
     config: InstanceConfig,
     state: Mutex<State>,
     tabs_tx: watch::Sender<Vec<TabInfo>>,
@@ -608,8 +607,8 @@ async fn wait_for_load(
 }
 
 impl BrowserInstance {
-    /// Attaches to a DevTools endpoint without owning a process (tests, externally managed
-    /// browsers). [`crate::BrowserManager::ensure`] uses this after launching Chromium.
+    /// Attaches to a DevTools WebSocket without owning a process (tests, externally managed
+    /// browsers). [`crate::BrowserManager::ensure`] attaches over the browser's pipe instead.
     ///
     /// # Errors
     /// CDP connection or target discovery failures.
@@ -618,14 +617,15 @@ impl BrowserInstance {
         ws_url: &str,
         config: InstanceConfig,
     ) -> Result<Arc<Self>, BrowserError> {
-        Self::attach_on(sandbox, ws_url, config, None).await
+        let cdp = CdpClient::connect(ws_url, config.cdp).await?;
+        Self::attach_on(sandbox, cdp, config, None).await
     }
 
-    /// [`Self::attach`] to a browser running on `display` (the instance owns the display and
-    /// stops it after the browser).
+    /// Attaches over a connected client to a browser running on `display` (the instance owns
+    /// the display and stops it after the browser, or at once when attaching fails).
     pub(crate) async fn attach_on(
         sandbox: SandboxId,
-        ws_url: &str,
+        cdp: CdpClient,
         config: InstanceConfig,
         display: Option<VirtualDisplay>,
     ) -> Result<Arc<Self>, BrowserError> {
@@ -634,7 +634,6 @@ impl BrowserInstance {
             None => config.viewport,
         };
         let connected = async {
-            let cdp = CdpClient::connect(ws_url, config.cdp).await?;
             let events = cdp.subscribe_events();
             cdp.call("Target.setDiscoverTargets", json!({"discover": true}))
                 .await?;
@@ -649,10 +648,6 @@ impl BrowserInstance {
                 return Err(error);
             }
         };
-        let http_url = ws_url
-            .strip_prefix("ws://")
-            .and_then(|rest| rest.split('/').next())
-            .map(|authority| format!("http://{authority}"));
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE);
         let (events_tx, _) = broadcast::channel(EVENT_QUEUE);
         let closed = cdp.close_signal();
@@ -661,7 +656,6 @@ impl BrowserInstance {
             sandbox,
             cdp,
             wheel,
-            http_url,
             config,
             state: Mutex::new(State {
                 tabs: Vec::new(),
@@ -718,34 +712,8 @@ impl BrowserInstance {
         &self.sandbox
     }
 
-    /// Browser-level DevTools WebSocket URL for CDP-capable MCP servers (SPEC-001 U-10).
-    /// Loopback only; see the crate documentation for its trust implications.
-    #[must_use]
-    pub fn cdp_ws_url(&self) -> &str {
-        self.cdp.url()
-    }
-
-    /// `http://127.0.0.1:<port>` form of the DevTools endpoint (for tools taking a browser URL).
-    #[must_use]
-    pub fn cdp_http_url(&self) -> Option<&str> {
-        self.http_url.as_deref()
-    }
-
-    /// The loopback port of the DevTools endpoint.
-    #[must_use]
-    pub fn devtools_port(&self) -> Option<u16> {
-        self.cdp
-            .url()
-            .strip_prefix("ws://")?
-            .split('/')
-            .next()?
-            .rsplit_once(':')?
-            .1
-            .parse()
-            .ok()
-    }
-
-    /// The underlying CDP client, for callers needing methods this adapter does not wrap.
+    /// The underlying CDP client, for in-process callers needing methods this adapter does not
+    /// wrap. Nothing outside Yulius can reach the browser's DevTools (ADR-0191).
     #[must_use]
     pub fn cdp(&self) -> &CdpClient {
         &self.cdp

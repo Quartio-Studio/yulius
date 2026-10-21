@@ -12,8 +12,8 @@ use yulius_app::ports::browser::{
     BrowserSession, BrowserVideo, Screenshot, VideoNetworkReport, VideoUpdate,
 };
 use yulius_browser::{
-    BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, FrameSubscription,
-    NetworkReport, VideoPacket, VideoSubscription,
+    BrowserConfig, BrowserError, BrowserEvent, BrowserInstance, BrowserManager, CdpClient,
+    FrameSubscription, NetworkReport, VideoPacket, VideoSubscription,
 };
 use yulius_contracts::browser::{
     ActionRequest, ClickParams, ClickResult, NavigateParams, NavigationResult, OpenParams,
@@ -59,6 +59,12 @@ impl ChromiumBrowsers {
             manager: Arc::new(BrowserManager::new(config)),
         }
     }
+
+    /// The DevTools client of `sandbox`'s running browser, for in-process callers (tests); the
+    /// browser has no endpoint anything else could reach (ADR-0191).
+    pub async fn cdp(&self, sandbox: &SandboxId) -> Option<CdpClient> {
+        Some(self.manager.get(sandbox).await?.cdp().clone())
+    }
 }
 
 #[async_trait]
@@ -97,10 +103,6 @@ impl BrowserPort for ChromiumBrowsers {
 
     async fn shutdown_all(&self) -> Vec<SandboxId> {
         self.manager.shutdown_all().await
-    }
-
-    async fn devtools_ports(&self) -> Vec<u16> {
-        self.manager.devtools_ports()
     }
 }
 
@@ -331,10 +333,6 @@ impl BrowserSession for Session {
         self.0
             .request_user_action(tab, reason, task)
             .map_err(failure)
-    }
-
-    fn cdp_endpoint(&self) -> String {
-        self.0.cdp_ws_url().to_owned()
     }
 }
 

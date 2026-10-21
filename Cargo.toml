@@ -60,6 +60,9 @@ portable-pty = "0.9.0"
 vt100 = "0.16.2"
 # The width vt100 gives text (the same version vt100 uses).
 unicode-width = "0.2.2"
+# Maps the sandbox browser's DevTools pipe to the child's fds 3 and 4 (ADR-0191) without our own
+# `unsafe` (its `pre_exec` is the dependency's); uses the `nix` above.
+command-fds = { version = "0.3.3", default-features = false, features = ["tokio"] }
 nix = { version = "0.31.3", features = ["signal", "process", "fs", "dir", "user", "resource"] }
 rustix = { version = "1.1.5", default-features = false, features = ["std", "fs", "mount"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }

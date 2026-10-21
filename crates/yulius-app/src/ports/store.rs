@@ -110,6 +110,12 @@ pub trait SessionStore: Send + Sync {
     async fn insert_api_token(&self, token: &ApiTokenRecord) -> AppResult<()>;
     /// API token by hash (not revoked).
     async fn api_token(&self, token_hash: &str) -> AppResult<Option<ApiTokenRecord>>;
+    /// A user's live (not revoked) API tokens, newest first.
+    async fn api_tokens_of(&self, user: &UserId) -> AppResult<Vec<ApiTokenRecord>>;
+    /// Revokes the user's token `id`; `false` when they have no such live token.
+    async fn revoke_api_token(&self, user: &UserId, id: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records a token's last use.
+    async fn touch_api_token(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Inserts a device grant unless its client or the instance already holds `bounds` live
     /// grants (not expired at `grant.created_at`, not consumed); deletes expired and consumed
     /// grants first, in the same transaction.
@@ -199,6 +205,8 @@ pub trait SandboxStore: Send + Sync {
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16>;
     /// Replaces the profile JSON.
     async fn set_profile(&self, id: &SandboxId, profile_json: &str) -> AppResult<()>;
+    /// Replaces the recorded default branch (an empty repository's, SPEC-241 EMP-002).
+    async fn set_default_branch(&self, id: &SandboxId, branch: &str) -> AppResult<()>;
     /// Sets onboarding state and task.
     async fn set_onboarding(
         &self,
@@ -382,6 +390,18 @@ pub trait TaskStore: Send + Sync {
         max_bytes: usize,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Appends `addition` to the prompt of a task created resting that never ran (SPEC-256
+    /// LOB-005: the onboarding task before Start onboarding): it is `closed` with no attempt and no
+    /// provider session, the prompt does not hold `addition` already, and it stays within
+    /// `max_bytes`. One statement, as
+    /// [`Self::append_unstarted_prompt`]. Returns whether it appended.
+    async fn append_resting_prompt(
+        &self,
+        id: &TaskId,
+        addition: &str,
+        max_bytes: usize,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Updates fields.
     async fn update_task(
         &self,
@@ -475,7 +495,20 @@ pub trait AccountStore: Send + Sync {
     async fn accounts(&self) -> AppResult<Vec<AccountRecord>>;
     /// Renames an account.
     async fn update_account(&self, id: &AccountId, label: &str, at: Timestamp) -> AppResult<()>;
-    /// Stores the sealed credential and status.
+    /// Stores the email of the account's Claude account (`None`: unknown) and when Claude answered
+    /// for it definitely (`None`: never, the background round asks again) (SPEC-244), only while
+    /// the account still holds `credential`, the one the answer is for. `false` when it does not
+    /// (signed in again meanwhile) and nothing was written.
+    async fn set_account_email(
+        &self,
+        id: &AccountId,
+        credential: &Sealed,
+        email: Option<&str>,
+        checked_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Stores the sealed credential and status. A new credential is a new sign-in, perhaps of
+    /// another Claude account: the email and its check are cleared.
     async fn set_account_credential(
         &self,
         id: &AccountId,
@@ -590,6 +623,9 @@ pub trait AuditStore: Send + Sync {
         target: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()>;
+    /// The details of the newest `limit` entries of `action` about `target`, newest first.
+    async fn audit_details(&self, target: &str, action: &str, limit: u32)
+    -> AppResult<Vec<String>>;
 }
 
 /// Every store area; the SQLite adapter implements this.

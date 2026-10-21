@@ -1,6 +1,8 @@
-// Secrets page (SPEC-001 VLT-001..009, SPEC-002 ADR-20, SPEC-040): two sections.
-// Team secrets: a title, a value and notes shared by every member. Agent secrets: agents use them
-// through Yulius' proxy and browser filling and never see them. People read a value only after
+// Secrets page (SPEC-001 VLT-001..009, SPEC-002 ADR-20, SPEC-040, SPEC-245): keys and logins
+// agents use without seeing them, in three tabs by scope — Project (this project's), Global
+// (defined once by administrators, switched on per project) and Personal (yours alone, switched on
+// per project, only for tasks you start) — and Team secrets: a title, a value and notes shared by
+// people. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
 // entering their own two-factor code (set up once, mandatory; it unlocks the vault for 10
 // minutes), and every reveal is audited.
 
@@ -140,7 +142,7 @@ function namedIcon(name) {
  * copy here (VLT-002), then shows a check and the tooltip "Copied" for a moment. Its name stays
  * `label`; the toast announces the copy.
  */
-function copyButton(label, text, what) {
+export function copyButton(label, text, what) {
   let timer = null;
   const draw = (copied) => {
     setChildren(button, namedIcon(copied ? 'check' : 'copy'));
@@ -426,7 +428,7 @@ function pasteKeysEscaped(input) {
  * scope under More options. Editing keeps the hosts, and the request style of an older secret
  * that has one.
  */
-function agentForm(ctx, secret) {
+function agentForm(ctx, secret, scope = 'sandbox') {
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
   const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
   pasteKeysEscaped(value);
@@ -443,12 +445,7 @@ function agentForm(ctx, secret) {
     form.auto = toggle({ checked: secret ? secret.auto_allow : true, label: 'Let agents set it up', onChange: () => {} }).querySelector('input');
     parts.push(h('label', { class: 'row-wrap' }, form.auto.parentElement,
       h('span', { class: 'stack-tight' }, h('span', null, 'Let agents set it up'),
-        h('span', { class: 'muted small' }, 'Agents bind the hosts they work out and production deploys get it, without asking you. Turn off to allow each yourself.'))));
-  }
-  if (!secret && ctx.isInstanceAdmin()) {
-    const scope = scopeChoice();
-    form.scope = scope.select;
-    parts.push(scope.part);
+        h('span', { class: 'muted small' }, scope === 'personal' ? 'Agents in your tasks bind the hosts they work out, without asking you. Turn off to allow each yourself.' : 'Agents bind the hosts they work out and production deploys get it, without asking you. Turn off to allow each yourself.'))));
   }
   if (secret) {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
@@ -476,7 +473,7 @@ function agentForm(ctx, secret) {
   form.body = h('div', { class: 'stack' }, ...parts);
   form.values = () => {
     const out = { name: name.value.trim(), description: notes.value.trim() };
-    if (form.scope) out.scope = form.scope.value;
+    if (!secret && scope !== 'sandbox') out.scope = scope;
     if (form.auto && (!secret || form.auto.checked !== secret.auto_allow)) out.auto_allow = form.auto.checked;
     if (form.hosts) {
       // Hosts go only when changed, with those the dialog showed: an agent may have bound one
@@ -583,8 +580,8 @@ function agentEnvFiles(ctx, secret, act) {
     secret.cd_prod ? null : smallButton('Allow', `Allow copying ${secret.name} into .env files`, () => answer(true), { class: 'btn-primary' }),
     smallButton('Dismiss', `Dismiss copying ${secret.name} into .env files`, () => answer(false)),
   ].filter(Boolean) : [smallButton('Revoke', `Stop agents copying ${secret.name} into .env files`, () => answer(false))];
-  // One answer covers every task, and for a secret of every sandbox every sandbox.
-  const where = secret.scope === 'instance' ? 'every sandbox' : 'this sandbox';
+  // One answer covers every task, and for a global secret every project it is on for.
+  const where = secret.scope === 'instance' ? 'every project it is on for' : 'this sandbox';
   const text = asked
     ? `${secret.env_requested_by ? `Task ${secret.env_requested_by} asks` : 'An agent asks'} to copy its value into the project’s git-ignored .env, for code that runs outside ${BRAND.name}.${secret.cd_prod ? '' : ` Allowing lets every task in ${where} copy it.`}`
     : `Agents in ${where} may copy its value into git-ignored .env files`;
@@ -599,6 +596,8 @@ function agentEnvFiles(ctx, secret, act) {
  * copies (which any agent of the project could then use). Only people who manage it change it.
  */
 function agentCdProd(ctx, secret, act) {
+  // A deploy belongs to no person: production never gets a personal secret (SPEC-245 RES-005).
+  if (secret.scope === 'personal') return [];
   // Agents set it up: production gets it, nothing to allow here (SPEC-216 SSA-006).
   if (secret.auto_allow) {
     return [h('div', { class: 'row-wrap' },
@@ -631,17 +630,73 @@ function agentCdProd(ctx, secret, act) {
     button ? h('span', { class: 'row-wrap' }, button) : null)];
 }
 
-function mountAgents(ctx, sandbox, host, actions) {
+/** What each agent tab holds and says (SPEC-245). */
+const AGENT_TABS = {
+  sandbox: {
+    add: 'Add agent secret',
+    intro: (sandbox) => `Agents in ${sandbox.name} use this project’s secrets and the global and personal ones switched on here. A project secret of a name wins over a personal one, and that over a global one.`,
+    empty: { iconName: 'key', title: 'No project secrets yet', text: 'Add an API key or a login an agent needs: its name, value and what it is for. Agents find where it goes and ask you to allow it.' },
+  },
+  instance: {
+    add: 'Add global secret',
+    intro: (sandbox) => `Defined once for the instance by its administrators, such as a token many repositories need. Each project switches each one on; agents in ${sandbox.name} use those that are on here.`,
+    empty: { iconName: 'globe', title: 'No global secrets yet', text: 'Instance administrators add a secret here once and switch it on for the projects that need it.' },
+  },
+  personal: {
+    add: 'Add personal secret',
+    intro: (sandbox) => `Yours alone: nobody else sees them, and only tasks you start get them — not other people’s, not automations, CI or deploys. Switch each on for the projects you want; agents in ${sandbox.name} use those that are on here, through ${BRAND.name}’s proxy only (never .env files or the browser).`,
+    empty: { iconName: 'user', title: 'No personal secrets yet', text: 'Add a key of your own, such as your personal access token. It is defined once and switched on per project.' },
+  },
+};
+
+/** Who may add a secret to a tab: project and personal ones need write access, global ones an administrator. */
+function canAdd(ctx, sandbox, scope) {
+  return scope === 'instance' ? ctx.isInstanceAdmin() : allows(sandbox.access, 'write');
+}
+
+/**
+ * The switch of a global or personal secret for this project (SPEC-245 MAN-004), and why a
+ * secret switched on is not used: another scope's secret of its name wins (MAN-005).
+ */
+function agentSwitch(ctx, sandbox, secret, act) {
+  const parts = [];
+  if (secret.scope !== 'sandbox') {
+    const may = secret.scope === 'instance' ? ctx.isInstanceAdmin() : allows(sandbox.access, 'write');
+    const label = `${secret.name} on for ${sandbox.name}`;
+    const control = toggle({ checked: Boolean(secret.enabled), label, disabled: !may, onChange: (on, input) => act(async () => {
+      input.disabled = true;
+      try {
+        await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets/${enc(secret.id)}/enabled`, { enabled: on });
+        toast(on ? `${secret.name} is on for ${sandbox.name}. New agent sessions get its placeholder.` : `${secret.name} is off for ${sandbox.name}.`, { kind: 'ok' });
+      } catch (error) {
+        input.checked = !on;
+        errorToast(error, 'Couldn’t switch it');
+      }
+    }) });
+    parts.push(h('div', { class: 'row-wrap' }, control,
+      h('span', { class: 'small' }, secret.enabled ? 'On for this project' : 'Off for this project'),
+      may ? null : h('span', { class: 'muted small' }, secret.scope === 'instance' ? 'Instance administrators switch it.' : 'Needs write access to this project.')));
+  }
+  if (secret.enabled && secret.shadowed_by) {
+    parts.push(h('span', { class: 'small' }, secret.shadowed_by === 'sandbox'
+      ? `Not used here: this project’s own ${secret.name} wins.`
+      : `Not used here: your personal ${secret.name} wins.`));
+  }
+  return parts;
+}
+
+function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
   if (!sandbox) {
     setChildren(actions);
-    setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a sandbox (or are team-wide). Open one to see and add them.' }));
+    setChildren(host, emptyState({ iconName: 'lock', title: 'Open a sandbox', text: 'Agent secrets belong to a project, or are global or personal and switched on per project. Open one to see and add them.' }));
     return () => {};
   }
-  const write = allows(sandbox.access, 'write');
+  const tab = AGENT_TABS[scope];
+  const write = canAdd(ctx, sandbox, scope);
   const list = h('div');
-  setChildren(actions, createButton('Add agent secret', () => edit(null), { disabled: !write, title: write ? null : 'Requires write access' }));
+  setChildren(actions, createButton(tab.add, () => edit(null), { disabled: !write, title: write ? null : (scope === 'instance' ? 'Instance administrators add global secrets' : 'Requires write access') }));
   setChildren(host,
-    h('p', { class: 'muted small' }, `Agents in ${sandbox.name} use this sandbox’s secrets and the team-wide ones.`),
+    h('p', { class: 'muted small' }, tab.intro(sandbox)),
     h('div', { class: 'banner banner-info' }, icon('shield'), h('div', { class: 'banner-text small' },
       `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Agents find the hosts and bind them for a secret they set up, or ask you to allow them here. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
       h('code', null, '[secret:NAME]'), ' instead.')),
@@ -663,14 +718,16 @@ function mountAgents(ctx, sandbox, host, actions) {
     return view;
   }
 
-  function draw(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'key', title: 'No agent secrets yet', text: 'Add an API key or a login an agent needs: its name, value and what it is for. Agents find where it goes and ask you to allow it.', action: write ? createButton('Add agent secret', () => edit(null)) : null });
+  function draw(all) {
+    const secrets = all.filter((secret) => secret.scope === scope);
+    if (secrets.length === 0) return emptyState({ ...tab.empty, action: write ? createButton(tab.add, () => edit(null)) : null });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: h('span', { class: 'mono' }, secret.name),
+      dim: scope !== 'sandbox' && !secret.enabled,
       badges: [
-        scopeBadge(secret),
-        secret.auto_allow ? iconBadge('zap', 'Agents set it up', '', 'Agents bind its hosts and production deploys get it') : null,
+        secret.enabled && secret.shadowed_by ? badge('Not used here', 'warn', 'A secret of this name in another scope wins') : null,
+        secret.auto_allow ? iconBadge('zap', 'Agents set it up', '', secret.scope === 'personal' ? 'Agents bind its hosts' : 'Agents bind its hosts and production deploys get it') : null,
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
         secret.flattened ? badge('Paste again', 'warn', 'Its line breaks were lost') : null,
       ].filter(Boolean),
@@ -679,6 +736,7 @@ function mountAgents(ctx, sandbox, host, actions) {
         // SPEC-193 MLK-003: saved before #591, a key whose line breaks became spaces; it is not
         // rewritten, since the spaces cannot all be told from the key's own.
         secret.flattened ? h('span', { class: 'small' }, 'Its line breaks were lost when it was saved, so it no longer works as a key file. Edit it and paste the key again: they are kept now.') : null,
+        ...agentSwitch(ctx, sandbox, secret, act),
         ...agentHosts(ctx, secret, act, changedRequest(secret)),
         ...agentEnvFiles(ctx, secret, act),
         ...agentProductionOnly(secret),
@@ -717,8 +775,8 @@ function mountAgents(ctx, sandbox, host, actions) {
   ];
 
   function edit(secret) {
-    const form = agentForm(ctx, secret);
-    openModal({ title: secret ? `Edit ${secret.name}` : 'Add agent secret', wide: true, body: form.body, actions: [
+    const form = agentForm(ctx, secret, scope);
+    openModal({ title: secret ? `Edit ${secret.name}` : tab.add, wide: true, body: form.body, actions: [
       { label: 'Cancel', value: false },
       { label: secret ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
         const values = form.values();
@@ -729,7 +787,7 @@ function mountAgents(ctx, sandbox, host, actions) {
         if (values.injection === 'basic' && !secret.has_username && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
         if (secret) await ctx.api.patch(`/api/agent-secrets/${enc(secret.id)}`, values);
         else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`, values);
-        toast(secret ? 'Saved.' : 'Agent secret added. New agent sessions get its placeholder.', { kind: 'ok' });
+        toast(secret ? 'Saved.' : `${scope === 'sandbox' ? 'Agent' : scope === 'instance' ? 'Global' : 'Personal'} secret added${scope === 'sandbox' ? '' : ` and switched on for ${sandbox.name}`}. New agent sessions get its placeholder.`, { kind: 'ok' });
         reload();
         return true;
       } },
@@ -748,30 +806,39 @@ function mountAgents(ctx, sandbox, host, actions) {
   return () => offs.forEach((off) => off());
 }
 
-/** Mount the Secrets page: `/s/<slug>/secrets` (with the sandbox's agent secrets) or `/secrets`. */
+/** The tabs of the Secrets page (SPEC-245 WUI-001): `section` in the address, `agents` being Project. */
+const SECTIONS = [
+  { value: 'agents', label: 'Project', icon: 'folder', scope: 'sandbox' },
+  { value: 'global', label: 'Global', icon: 'globe', scope: 'instance' },
+  { value: 'personal', label: 'Personal', icon: 'user', scope: 'personal' },
+  { value: 'team', label: 'Team secrets', icon: 'users' },
+];
+
+/** Mount the Secrets page: `/s/<slug>/secrets` (Project first) or `/secrets` (Team secrets first). */
 export function mountSecretsPage(ctx, sandbox, route) {
-  const frame = pageFrame({ title: 'Secrets', sub: 'team logins for people, keys agents use without seeing them' });
+  const frame = pageFrame({ title: 'Secrets', sub: 'keys and logins agents use without seeing them, and team logins for people' });
   const base = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}/secrets` : '/secrets';
   const host = h('div', { class: 'stack' });
-  let current = route.query.get('section') === 'agents' ? 'agents' : '';
+  const asked = route.query.get('section');
+  let current = SECTIONS.some((o) => o.value === asked) ? asked : (sandbox ? 'agents' : 'team');
   const tabs = h('div', { class: 'tl-tabs ftabs', role: 'radiogroup', 'aria-label': 'Section' });
-  const options = [{ value: '', label: 'Team secrets', icon: 'users' }, { value: 'agents', label: 'Agent secrets', icon: 'key' }];
   function renderTabs() {
     const focused = tabs.contains(document.activeElement);
-    setChildren(tabs, options.map((o) => h('button', {
+    setChildren(tabs, SECTIONS.map((o, index) => h('button', {
       type: 'button', role: 'radio', 'aria-checked': String(o.value === current), tabindex: o.value === current ? '0' : '-1', class: ['tl-tab', o.value === current && 'active'],
       onClick: () => {
         if (current === o.value) return;
         current = o.value;
-        replaceQuietly(current ? `${base}?section=${current}` : base);
+        replaceQuietly(`${base}?section=${current}`);
         renderTabs();
         show();
       },
       onKeydown: (event) => {
-        if (!['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+        if (!step) return;
         event.preventDefault();
-        const other = [...tabs.children].find((b) => b !== event.currentTarget);
-        if (other) other.click();
+        const next = tabs.children[(index + step + SECTIONS.length) % SECTIONS.length];
+        if (next) next.click();
       },
     }, h('span', { class: 'tl-tab-icon' }, icon(o.icon, { size: 14 })), o.label)));
     if (focused) tabs.querySelector('[aria-checked="true"]')?.focus();
@@ -782,10 +849,10 @@ export function mountSecretsPage(ctx, sandbox, route) {
   function show() {
     unmount();
     unmount = () => {};
-    if (current === 'agents') unmount = mountAgents(ctx, sandbox, host, frame.actions);
+    const section = SECTIONS.find((o) => o.value === current);
+    if (section.scope) unmount = mountAgents(ctx, sandbox, host, frame.actions, section.scope);
     else mountTeam(ctx, sandbox, host, frame.actions);
   }
   show();
   return { el: frame.el, key: `secrets:${sandbox ? sandbox.id : ''}`, destroy: () => unmount() };
 }
-

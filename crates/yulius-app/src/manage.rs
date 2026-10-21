@@ -186,8 +186,19 @@ impl App {
                      the next one is possible in {minutes} min"
                 ))
             })?;
+        // A task an automation's task creates is an automation's too: it holds nobody's
+        // personal secrets (SPEC-245 RES-002), though its owner is the automation's creator.
+        let origin = if caller
+            .task
+            .as_ref()
+            .is_some_and(|t| crate::vault::Holder::of_task(t) == crate::vault::Holder::Nobody)
+        {
+            TaskOrigin::Automation
+        } else {
+            TaskOrigin::Agent
+        };
         let task = match self
-            .create_task_as(&user, &caller.sandbox, &request, TaskOrigin::Agent)
+            .create_task_as(&user, &caller.sandbox, &request, origin)
             .await
         {
             Ok(task) => task,
@@ -243,6 +254,7 @@ impl App {
             user: self.manage_authority(caller).await?,
             csrf_token: None,
             session_hash: None,
+            token: None,
         })
     }
 

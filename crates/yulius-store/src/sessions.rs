@@ -9,7 +9,7 @@ use yulius_app::model::{
 };
 use yulius_app::ports::store::{PermissionStore, SessionStore};
 use yulius_domain::ids::{SandboxId, UserId};
-use yulius_domain::permission::AccessLevel;
+use yulius_domain::permission::{AccessLevel, TokenScope};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
@@ -117,8 +117,8 @@ impl SessionStore for SqliteStore {
         let t = t.clone();
         self.call(move |c| {
             c.execute(
-                "INSERT INTO api_tokens (id, user_id, token_hash, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![t.id, t.user_id.as_str(), t.token_hash, t.label, t.created_at.0],
+                "INSERT INTO api_tokens (id, user_id, token_hash, label, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![t.id, t.user_id.as_str(), t.token_hash, t.label, t.scope.as_str(), t.created_at.0],
             )
             .map_err(db)?;
             Ok(())
@@ -130,22 +130,53 @@ impl SessionStore for SqliteStore {
         let h = token_hash.to_owned();
         self.call(move |c| {
             c.query_row(
-                "SELECT id, user_id, token_hash, label, created_at, revoked_at FROM api_tokens WHERE token_hash = ?1 AND revoked_at IS NULL",
+                &format!("SELECT {API_TOKEN_COLUMNS} FROM api_tokens WHERE token_hash = ?1 AND revoked_at IS NULL"),
                 [h],
-                |r| {
-                    let uid: String = r.get(1)?;
-                    Ok(ApiTokenRecord {
-                        id: r.get(0)?,
-                        user_id: user_id(&uid)?,
-                        token_hash: r.get(2)?,
-                        label: r.get(3)?,
-                        created_at: Timestamp(r.get(4)?),
-                        revoked_at: r.get::<_, Option<i64>>(5)?.map(Timestamp),
-                    })
-                },
+                api_token_row,
             )
             .optional()
             .map_err(db)
+        })
+        .await
+    }
+
+    async fn api_tokens_of(&self, user: &UserId) -> AppResult<Vec<ApiTokenRecord>> {
+        let u = user.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {API_TOKEN_COLUMNS} FROM api_tokens WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY created_at DESC, id"
+                ))
+                .map_err(db)?;
+            let rows = stmt.query_map([u], api_token_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn revoke_api_token(&self, user: &UserId, id: &str, at: Timestamp) -> AppResult<bool> {
+        let (u, id) = (user.as_str().to_owned(), id.to_owned());
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE api_tokens SET revoked_at = ?1 WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL",
+                    params![at.0, id, u],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn touch_api_token(&self, id: &str, at: Timestamp) -> AppResult<()> {
+        let id = id.to_owned();
+        self.call(move |c| {
+            c.execute(
+                "UPDATE api_tokens SET last_used_at = ?1 WHERE id = ?2",
+                params![at.0, id],
+            )
+            .map_err(db)?;
+            Ok(())
         })
         .await
     }
@@ -392,4 +423,24 @@ impl PermissionStore for SqliteStore {
     fn access_epoch(&self) -> u64 {
         self.current_access_epoch()
     }
+}
+
+/// The columns [`api_token_row`] reads, in order.
+const API_TOKEN_COLUMNS: &str =
+    "id, user_id, token_hash, label, scope, created_at, last_used_at, revoked_at";
+
+/// An `api_tokens` row; an unknown scope reads as `read`, the narrowest (fail closed).
+fn api_token_row(r: &Row<'_>) -> rusqlite::Result<ApiTokenRecord> {
+    let uid: String = r.get(1)?;
+    let scope: String = r.get(4)?;
+    Ok(ApiTokenRecord {
+        id: r.get(0)?,
+        user_id: user_id(&uid)?,
+        token_hash: r.get(2)?,
+        label: r.get(3)?,
+        scope: TokenScope::parse(&scope).unwrap_or(TokenScope::Read),
+        created_at: Timestamp(r.get(5)?),
+        last_used_at: r.get::<_, Option<i64>>(6)?.map(Timestamp),
+        revoked_at: r.get::<_, Option<i64>>(7)?.map(Timestamp),
+    })
 }

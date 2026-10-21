@@ -172,6 +172,7 @@ impl GitHubClient {
             return Err(GitHubError::Forbidden {
                 message: "the GitHub App has no Contents: write permission; agents get no token"
                     .into(),
+                accepted_permissions: Some("contents=write".into()),
             });
         }
         Ok(asked.into())

@@ -5,7 +5,8 @@
 Accepted. Specified in [SPEC-042](../../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md).
 Follows the default-workflow catalog of AUT-006 (`catalog/workflows/`). How the page shows them is
 amended by [0159](0159-shipped-automations-are-the-automations-page-defaults.md): every shipped
-automation is listed first as a default, switched on in place.
+automation is listed first as a default, switched on in place. The scope of "Work through open
+issues" is amended by [0192](0192-open-issues-scope-by-repository-permission-and-the-app.md).
 
 ## Context
 

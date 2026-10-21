@@ -8,7 +8,7 @@ use yulius_app::ports::Envelope;
 use yulius_app::ports::vault::{
     EnvFiles, TwoFactorRecord, VaultAuditEntry, VaultSecretRecord, VaultSection, VaultStore,
 };
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
@@ -16,7 +16,7 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
      value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by, \
-     auto_allow";
+     auto_allow, owner_id";
 
 fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
     let text: String = row.get(column)?;
@@ -26,12 +26,17 @@ fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
 fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
     let section: String = row.get("section")?;
     let sandbox: Option<String> = row.get("sandbox_id")?;
+    let owner: Option<String> = row.get("owner_id")?;
     Ok(VaultSecretRecord {
         id: row.get("id")?,
         section: VaultSection::parse(&section).ok_or_else(|| bad_column("section", &section))?,
         sandbox_id: sandbox
             .as_deref()
             .map(|s| SandboxId::parse(s).map_err(|_| bad_column("sandbox id", s)))
+            .transpose()?,
+        owner_id: owner
+            .as_deref()
+            .map(|u| UserId::parse(u).map_err(|_| bad_column("user id", u)))
             .transpose()?,
         name: row.get("name")?,
         description: row.get("description")?,
@@ -66,35 +71,36 @@ fn to_json(list: &[String]) -> String {
     serde_json::to_string(list).unwrap_or_else(|_| "[]".into())
 }
 
-/// An agent secret's name must be unique wherever it applies: a sandbox secret may not share a
-/// name with an instance-wide one, and an instance-wide name may not exist in any sandbox.
+/// An agent secret's name must be unique within its scope (SPEC-245 SCP-002): one project's, the
+/// global ones, or one person's. Secrets of different scopes may share a name: a run resolves
+/// it by precedence.
 fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppResult<()> {
     if record.section != VaultSection::Agent {
         return Ok(());
     }
-    let clash: Option<String> = match &record.sandbox_id {
-        Some(sandbox) => tx
-            .query_row(
-                "SELECT id FROM vault_secrets WHERE section = 'agent' AND name = ?1 AND id <> ?2 \
-                 AND (sandbox_id IS NULL OR sandbox_id = ?3) LIMIT 1",
-                params![record.name, record.id, sandbox.as_str()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db)?,
-        None => tx
-            .query_row(
-                "SELECT id FROM vault_secrets WHERE section = 'agent' AND name = ?1 AND id <> ?2 LIMIT 1",
-                params![record.name, record.id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db)?,
-    };
+    let clash: Option<String> = tx
+        .query_row(
+            "SELECT id FROM vault_secrets WHERE section = 'agent' AND name = ?1 AND id <> ?2 \
+             AND sandbox_id IS ?3 AND owner_id IS ?4 LIMIT 1",
+            params![
+                record.name,
+                record.id,
+                record.sandbox_id.as_ref().map(SandboxId::as_str),
+                record.owner_id.as_ref().map(UserId::as_str),
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db)?;
     match clash {
         Some(_) => Err(AppError::Conflict(format!(
-            "an agent secret named {} already applies here",
-            record.name
+            "an agent secret named {} already exists {}",
+            record.name,
+            match record.scope() {
+                yulius_app::ports::vault::AgentScope::Project(_) => "in this project",
+                yulius_app::ports::vault::AgentScope::Global => "among the global secrets",
+                yulius_app::ports::vault::AgentScope::Personal(_) => "among your personal secrets",
+            }
         ))),
         None => Ok(()),
     }
@@ -106,7 +112,7 @@ fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
     tx.execute(
         &format!(
             "INSERT INTO vault_secrets ({COLS}, cd_prod) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)"
+             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
         ),
         params![
             r.id,
@@ -132,10 +138,32 @@ fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
             r.env_files.as_str(),
             r.env_requested_by,
             i64::from(r.auto_allow),
+            r.owner_id.as_ref().map(UserId::as_str),
             i64::from(r.cd_prod),
         ],
     )
     .map_err(db)?;
+    Ok(())
+}
+
+/// `Capacity` when `cap` agent secrets already reach `sandbox`: its project secrets and the
+/// global and personal ones switched on for it (SPEC-248 FUP-003). Called in the transaction that
+/// adds one, so concurrent writes cannot pass it.
+fn ensure_room(c: &rusqlite::Connection, sandbox: &str, cap: usize) -> AppResult<()> {
+    let reaching: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM vault_secrets WHERE section = 'agent' \
+             AND (sandbox_id = ?1 OR (sandbox_id IS NULL AND id IN \
+             (SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1)))",
+            [sandbox],
+            |r| r.get(0),
+        )
+        .map_err(db)?;
+    if usize::try_from(reaching).unwrap_or(usize::MAX) >= cap {
+        return Err(AppError::Capacity(format!(
+            "at most {cap} agent secrets apply to one sandbox"
+        )));
+    }
     Ok(())
 }
 
@@ -146,6 +174,32 @@ impl VaultStore for SqliteStore {
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             insert_row(&tx, &r)?;
+            tx.commit().map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn vault_insert_agent(
+        &self,
+        record: &VaultSecretRecord,
+        sandbox: &SandboxId,
+        (by, at): (&str, Timestamp),
+        cap: usize,
+    ) -> AppResult<()> {
+        let (r, sandbox, by) = (record.clone(), sandbox.as_str().to_owned(), by.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            ensure_room(&tx, &sandbox, cap)?;
+            insert_row(&tx, &r)?;
+            if r.sandbox_id.is_none() {
+                tx.execute(
+                    "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![r.id, sandbox, by, at.0],
+                )
+                .map_err(db)?;
+            }
             tx.commit().map_err(db)?;
             Ok(())
         })
@@ -236,21 +290,92 @@ impl VaultStore for SqliteStore {
         .await
     }
 
-    async fn vault_agent(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>> {
-        let sandbox = sandbox.map(|s| s.as_str().to_owned());
+    async fn vault_agent_in(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultSecretRecord>> {
+        let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let sql = match sandbox {
-                Some(_) => format!(
+            let mut stmt = c
+                .prepare(&format!(
                     "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
-                     AND (sandbox_id IS NULL OR sandbox_id = ?1) ORDER BY name"
-                ),
-                None => format!(
-                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' AND ?1 IS NULL ORDER BY name"
-                ),
-            };
-            let mut stmt = c.prepare(&sql).map_err(db)?;
+                     AND (sandbox_id = ?1 OR (sandbox_id IS NULL AND id IN \
+                     (SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1))) \
+                     ORDER BY name, created_at"
+                ))
+                .map_err(db)?;
             let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_agent_all(&self) -> AppResult<Vec<VaultSecretRecord>> {
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
+                     ORDER BY name, created_at"
+                ))
+                .map_err(db)?;
+            let rows = stmt.query_map([], from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_switched_on(&self, sandbox: &SandboxId) -> AppResult<Vec<String>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1 ORDER BY secret_id",
+                )
+                .map_err(db)?;
+            let rows = stmt.query_map([sandbox], |r| r.get(0)).map_err(db)?;
+            rows.collect::<Result<Vec<String>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_switch(
+        &self,
+        id: &str,
+        sandbox: &SandboxId,
+        on: bool,
+        (by, at): (&str, Timestamp),
+        cap: usize,
+    ) -> AppResult<bool> {
+        let (id, sandbox, by) = (id.to_owned(), sandbox.as_str().to_owned(), by.to_owned());
+        self.call(move |c| {
+            if !on {
+                let n = c
+                    .execute(
+                        "DELETE FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2",
+                        params![id, sandbox],
+                    )
+                    .map_err(db)?;
+                return Ok(n == 1);
+            }
+            let tx = c.transaction().map_err(db)?;
+            let switchable: bool = tx
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM vault_secrets WHERE id = ?1 \
+                     AND section = 'agent' AND sandbox_id IS NULL) AND NOT EXISTS \
+                     (SELECT 1 FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2)",
+                    params![id, sandbox],
+                    |r| r.get(0),
+                )
+                .map_err(db)?;
+            if !switchable {
+                return Ok(false);
+            }
+            ensure_room(&tx, &sandbox, cap)?;
+            tx.execute(
+                "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, sandbox, by, at.0],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -703,6 +828,9 @@ mod tests {
     use super::*;
     use yulius_app::ports::store::AuditStore as _;
 
+    /// The application's limit of agent secrets reaching a sandbox.
+    const CAP: usize = 200;
+
     fn record(
         id: &str,
         section: VaultSection,
@@ -713,6 +841,7 @@ mod tests {
             id: id.into(),
             section,
             sandbox_id: sandbox.and_then(|s| SandboxId::parse(s).ok()),
+            owner_id: None,
             name: name.into(),
             description: String::new(),
             hosts: vec!["api.example.com".into()],
@@ -817,7 +946,7 @@ mod tests {
         assert!(store.vault_assign("g", &copies).await?);
         assert!(store.vault_get("g").await?.is_none());
         assert_eq!(
-            store.vault_agent(Some(&SandboxId::parse("s2")?)).await?[0].id,
+            store.vault_agent_in(&SandboxId::parse("s2")?).await?[0].id,
             "g2"
         );
         assert!(!store.vault_assign("g", &copies).await?, "only once");
@@ -939,54 +1068,293 @@ mod tests {
         Ok(())
     }
 
+    fn personal(id: &str, owner: &str, name: &str) -> VaultSecretRecord {
+        let mut r = record(id, VaultSection::Agent, None, name);
+        r.owner_id = UserId::parse(owner).ok();
+        r
+    }
+
+    /// SPEC-245 SCP-002: a name is unique within its scope only.
     #[tokio::test]
-    async fn agent_names_are_unique_where_they_apply() -> Result<(), Box<dyn std::error::Error>> {
+    async fn agent_names_are_unique_within_their_scope() -> Result<(), Box<dyn std::error::Error>> {
         let store = store_with_sandboxes().await?;
-        store
-            .vault_insert(&record("a", VaultSection::Agent, Some("s1"), "KEY"))
-            .await?;
-        // The same name in another sandbox is fine; instance-wide or in s1 again is not.
-        store
-            .vault_insert(&record("b", VaultSection::Agent, Some("s2"), "KEY"))
-            .await?;
-        assert!(matches!(
-            store
-                .vault_insert(&record("c", VaultSection::Agent, None, "KEY"))
-                .await,
-            Err(AppError::Conflict(_))
-        ));
-        assert!(matches!(
-            store
-                .vault_insert(&record("d", VaultSection::Agent, Some("s1"), "KEY"))
-                .await,
-            Err(AppError::Conflict(_))
-        ));
-        store
-            .vault_insert(&record("e", VaultSection::Agent, None, "GLOBAL"))
-            .await?;
-        assert!(matches!(
-            store
-                .vault_insert(&record("f", VaultSection::Agent, Some("s2"), "GLOBAL"))
-                .await,
-            Err(AppError::Conflict(_))
-        ));
-        // Team titles may repeat.
-        store
-            .vault_insert(&record("t1", VaultSection::Team, None, "KEY"))
-            .await?;
-        store
-            .vault_insert(&record("t2", VaultSection::Team, None, "KEY"))
-            .await?;
-        let s1 = SandboxId::parse("s1")?;
-        let names: Vec<String> = store
-            .vault_agent(Some(&s1))
-            .await?
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
-        assert_eq!(names, vec!["e".to_owned(), "a".to_owned()]);
-        assert_eq!(store.vault_agent(None).await?.len(), 3);
+        add_user(&store, "u2").await?;
+        for r in [
+            record("a", VaultSection::Agent, Some("s1"), "KEY"),
+            record("b", VaultSection::Agent, Some("s2"), "KEY"),
+            record("c", VaultSection::Agent, None, "KEY"),
+            personal("p1", "u1", "KEY"),
+            personal("p2", "u2", "KEY"),
+            // Team titles may repeat.
+            record("t1", VaultSection::Team, None, "KEY"),
+            record("t2", VaultSection::Team, None, "KEY"),
+        ] {
+            store.vault_insert(&r).await?;
+        }
+        for clash in [
+            record("d", VaultSection::Agent, Some("s1"), "KEY"),
+            record("e", VaultSection::Agent, None, "KEY"),
+            personal("p3", "u1", "KEY"),
+        ] {
+            assert!(
+                matches!(store.vault_insert(&clash).await, Err(AppError::Conflict(_))),
+                "{} clashes in its scope",
+                clash.id
+            );
+        }
+        let mut renamed = store.vault_get("p2").await?.ok_or("p2")?;
+        let seen = renamed.clone();
+        renamed.owner_id = UserId::parse("u1").ok();
+        assert!(
+            matches!(
+                store.vault_update(&renamed, &seen).await,
+                Err(AppError::Conflict(_))
+            ),
+            "an edit checks the names of the scope it writes"
+        );
+        assert_eq!(
+            store.vault_get("p1").await?.ok_or("p1")?.owner_id,
+            UserId::parse("u1").ok()
+        );
+        assert_eq!(store.vault_agent_all().await?.len(), 5);
         assert_eq!(store.vault_team(None).await?.len(), 2);
+        Ok(())
+    }
+
+    async fn add_user(
+        store: &SqliteStore,
+        id: &'static str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        store
+            .call(move |c| {
+                c.execute(
+                    "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES (?1, 'P', 0, 0, 1)",
+                    [id],
+                )
+                .map_err(db)
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// SPEC-248 FUP-003: adding or switching on a secret counts those reaching the sandbox in its
+    /// own transaction; one already on is never refused.
+    #[tokio::test]
+    async fn adding_and_switching_on_stop_at_the_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let s1 = SandboxId::parse("s1")?;
+        let at = ("u1", Timestamp(2));
+        store
+            .vault_insert_agent(
+                &record("own", VaultSection::Agent, Some("s1"), "OWN"),
+                &s1,
+                at,
+                2,
+            )
+            .await?;
+        store
+            .vault_insert(&record("g", VaultSection::Agent, None, "GLOBAL"))
+            .await?;
+        store
+            .vault_insert_agent(&personal("p", "u1", "MINE"), &s1, at, 2)
+            .await?;
+        // A project secret is no switch; the personal one is switched on with its insert.
+        assert_eq!(store.vault_switched_on(&s1).await?, ["p"]);
+        // Two reach s1: neither a project secret nor a switch-on fits a cap of two.
+        assert!(matches!(
+            store
+                .vault_insert_agent(
+                    &record("more", VaultSection::Agent, Some("s1"), "MORE"),
+                    &s1,
+                    at,
+                    2
+                )
+                .await,
+            Err(AppError::Capacity(_))
+        ));
+        assert!(matches!(
+            store.vault_switch("g", &s1, true, at, 2).await,
+            Err(AppError::Capacity(_))
+        ));
+        assert!(store.vault_get("more").await?.is_none());
+        assert!(
+            !store.vault_switch("p", &s1, true, at, 2).await?,
+            "already on"
+        );
+        assert!(store.vault_switch("p", &s1, false, at, 2).await?);
+        assert!(store.vault_switch("g", &s1, true, at, 2).await?);
+        assert_eq!(store.vault_agent_in(&s1).await?.len(), 2);
+        Ok(())
+    }
+
+    /// SPEC-245 SCP-003, MAN-004: global and personal secrets reach a project only while switched
+    /// on there; project secrets cannot be switched; removing the person, the sandbox or the
+    /// secret removes the switch.
+    #[tokio::test]
+    async fn global_and_personal_secrets_reach_the_projects_they_are_on_for()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        add_user(&store, "u2").await?;
+        for r in [
+            record("own", VaultSection::Agent, Some("s1"), "OWN"),
+            record("other", VaultSection::Agent, Some("s2"), "OTHER"),
+            record("g", VaultSection::Agent, None, "GLOBAL"),
+            personal("p", "u2", "MINE"),
+            record("t", VaultSection::Team, None, "Gmail"),
+        ] {
+            store.vault_insert(&r).await?;
+        }
+        let (s1, s2) = (SandboxId::parse("s1")?, SandboxId::parse("s2")?);
+        let ids = |records: Vec<VaultSecretRecord>| -> Vec<String> {
+            records.into_iter().map(|r| r.id).collect()
+        };
+        assert_eq!(ids(store.vault_agent_in(&s1).await?), ["own"]);
+        // Added switched on, in one step; a clash adds neither the row nor the switch.
+        store
+            .vault_insert_agent(
+                &personal("on", "u1", "ON_HERE"),
+                &s2,
+                ("u1", Timestamp(2)),
+                CAP,
+            )
+            .await?;
+        assert_eq!(ids(store.vault_agent_in(&s2).await?), ["on", "other"]);
+        assert!(matches!(
+            store
+                .vault_insert_agent(
+                    &personal("again", "u1", "ON_HERE"),
+                    &s1,
+                    ("u1", Timestamp(2)),
+                    CAP
+                )
+                .await,
+            Err(AppError::Conflict(_))
+        ));
+        assert!(store.vault_switched_on(&s1).await?.is_empty());
+        assert!(store.vault_delete("on").await?);
+        assert!(
+            store
+                .vault_switch("g", &s1, true, ("u1", Timestamp(2)), CAP)
+                .await?
+        );
+        assert!(
+            !store
+                .vault_switch("g", &s1, true, ("u1", Timestamp(3)), CAP)
+                .await?,
+            "already on"
+        );
+        assert!(
+            store
+                .vault_switch("p", &s1, true, ("u2", Timestamp(2)), CAP)
+                .await?
+        );
+        assert!(
+            !store
+                .vault_switch("own", &s2, true, ("u1", Timestamp(2)), CAP)
+                .await?,
+            "a project's"
+        );
+        assert!(
+            !store
+                .vault_switch("t", &s1, true, ("u1", Timestamp(2)), CAP)
+                .await?,
+            "a team secret"
+        );
+        assert!(
+            !store
+                .vault_switch("missing", &s1, true, ("u1", Timestamp(2)), CAP)
+                .await?
+        );
+        assert_eq!(ids(store.vault_agent_in(&s1).await?), ["g", "p", "own"]);
+        assert_eq!(ids(store.vault_agent_in(&s2).await?), ["other"]);
+        assert_eq!(store.vault_switched_on(&s1).await?, ["g", "p"]);
+        assert!(
+            store
+                .vault_switch("g", &s1, false, ("u1", Timestamp(4)), CAP)
+                .await?
+        );
+        assert!(
+            !store
+                .vault_switch("g", &s1, false, ("u1", Timestamp(4)), CAP)
+                .await?
+        );
+        assert_eq!(ids(store.vault_agent_in(&s1).await?), ["p", "own"]);
+        store
+            .call(|c| {
+                c.execute("DELETE FROM users WHERE id = 'u2'", [])
+                    .map_err(db)
+            })
+            .await?;
+        assert!(
+            store.vault_get("p").await?.is_none(),
+            "a person's secrets go with them"
+        );
+        assert!(store.vault_switched_on(&s1).await?.is_empty());
+        assert!(
+            store
+                .vault_switch("g", &s2, true, ("u1", Timestamp(5)), CAP)
+                .await?
+        );
+        store
+            .call(|c| {
+                c.execute("DELETE FROM sandboxes WHERE id = 's2'", [])
+                    .map_err(db)
+            })
+            .await?;
+        assert!(
+            store.vault_get("g").await?.is_some(),
+            "a global secret outlives a project"
+        );
+        Ok(())
+    }
+
+    /// SPEC-245 MIG-001: the upgrade to version 39 keeps every secret; a team-wide agent secret
+    /// becomes a global one switched on for every live sandbox.
+    #[tokio::test]
+    async fn the_upgrade_switches_team_wide_agent_secrets_on_everywhere()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v38.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &crate::MIGRATIONS[..38] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 38)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s2', 't', 'o', 't', 'main', '{}', 20010, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at, removed_at) VALUES ('s3', 'u', 'o', 'u', 'main', '{}', 20020, 10, 'u1', 'not_needed', 1, 5);
+                 INSERT INTO vault_secrets (id, section, sandbox_id, name, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, value_updated_at) VALUES
+                   ('team', 'team', NULL, 'Gmail', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1),
+                   ('wide', 'agent', NULL, 'WIDE', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1),
+                   ('own', 'agent', 's1', 'OWN', 1, x'00', x'00', 'u1', 1, 'u1', 1, 1);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let (s1, s2) = (SandboxId::parse("s1")?, SandboxId::parse("s2")?);
+        let ids = |records: Vec<VaultSecretRecord>| -> Vec<String> {
+            records.into_iter().map(|r| r.id).collect()
+        };
+        assert_eq!(ids(store.vault_agent_in(&s1).await?), ["own", "wide"]);
+        assert_eq!(ids(store.vault_agent_in(&s2).await?), ["wide"]);
+        assert_eq!(
+            store.vault_switched_on(&SandboxId::parse("s3")?).await?,
+            Vec::<String>::new()
+        );
+        let wide = store.vault_get("wide").await?.ok_or("wide")?;
+        assert_eq!(wide.scope(), yulius_app::ports::vault::AgentScope::Global);
+        assert_eq!(
+            store.vault_get("own").await?.ok_or("own")?.scope(),
+            yulius_app::ports::vault::AgentScope::Project(s1)
+        );
+        assert!(
+            store
+                .vault_get("team")
+                .await?
+                .is_some_and(|t| t.owner_id.is_none())
+        );
         Ok(())
     }
 

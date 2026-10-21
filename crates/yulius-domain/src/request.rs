@@ -485,6 +485,21 @@ pub fn queued_addition(login: &str, at: &str, text: &str) -> Option<String> {
     })
 }
 
+/// What the person's own agent hands over to the onboarding task it starts (SPEC-256 LOB-005):
+/// what it learned on their computer (which secret is which, deploy hosts, how a deploy runs),
+/// added to the request as a queued message is. `None` for notes with no text.
+#[must_use]
+pub fn handover_addition(login: &str, notes: &str) -> Option<String> {
+    let notes = notes.trim();
+    (!notes.is_empty()).then(|| {
+        format!(
+            "\n\n**Hand-over from {}'s agent on their computer (it started this onboarding; use \
+             it before asking anyone):**\n\n{notes}",
+            one_line(login)
+        )
+    })
+}
+
 /// The request file a task's agent reads first.
 #[must_use]
 pub fn request_markdown(
@@ -603,6 +618,23 @@ fn take_units(text: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hand_over_follows_the_request_under_whose_agent_wrote_it() {
+        let added =
+            handover_addition("alice", "  deploy@203.0.113.7 runs it\n").unwrap_or_default();
+        assert!(
+            added.starts_with("\n\n**Hand-over from alice's agent on their computer")
+                && added.ends_with(":**\n\ndeploy@203.0.113.7 runs it"),
+            "{added}"
+        );
+        assert_eq!(handover_addition("alice", "\n "), None);
+        assert!(
+            handover_addition("a\nb", "x")
+                .unwrap_or_default()
+                .contains("from a b's agent")
+        );
+    }
 
     #[test]
     fn a_queued_message_follows_the_request_under_who_added_it_and_when() {

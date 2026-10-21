@@ -23,7 +23,7 @@ pub fn status_for(err: &AppError) -> StatusCode {
         AppError::Unauthenticated => StatusCode::UNAUTHORIZED,
         AppError::Forbidden(_) => StatusCode::FORBIDDEN,
         AppError::NotFound => StatusCode::NOT_FOUND,
-        AppError::Conflict(_) => StatusCode::CONFLICT,
+        AppError::Conflict(_) | AppError::AccountRequired(_) => StatusCode::CONFLICT,
         AppError::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
         AppError::Capacity(_) => StatusCode::TOO_MANY_REQUESTS,
         AppError::Upstream(_) => StatusCode::BAD_GATEWAY,

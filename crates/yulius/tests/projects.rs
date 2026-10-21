@@ -7,9 +7,12 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::repos::{OWNER, World, git};
 use support::{TestResult, call};
-use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
-use yulius_app::ports::store::CoordinationStore;
+use yulius_app::model::{
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord,
+};
+use yulius_app::ports::store::{AccountStore, CoordinationStore};
 use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskFieldUpdate, TaskStore};
+use yulius_app::supervisor::RunStart;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::spec_format::{TemplateKind, scaffold_files};
@@ -1310,5 +1313,534 @@ async fn onboarding_adds_the_security_scan_when_the_instance_has_a_vidoc_key() -
         !prep.prompt.contains("vidoc-instance-key"),
         "the key never reaches a prompt"
     );
+    Ok(())
+}
+
+/// A Claude subscription with capacity, so an onboarding task's run gets as far as its worktree.
+async fn subscription(w: &World) -> TestResult {
+    w.h.store
+        .insert_account(&AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("a-empty")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Claude".into(),
+            credential: Some(
+                w.h.app
+                    .deps
+                    .crypto
+                    .seal(b"synthetic-subscription-credential")?,
+            ),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    Ok(())
+}
+
+/// The remote's branches, `name sha` per line.
+fn remote_heads(remote: &std::path::Path) -> Result<String, Error> {
+    Ok(git(
+        remote,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )?)
+}
+
+// SPEC-241 EMP-001: an empty clone's HEAD names the host's local default (here `master`), not
+// GitHub's default branch (`main`).
+#[tokio::test]
+async fn an_empty_repository_records_githubs_default_branch() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+    let fresh = import(&w, &alice, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["default_branch"], "main", "{}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "pending");
+    assert_eq!(
+        remote_heads(&remote)?,
+        "",
+        "adding a repository writes nothing to it"
+    );
+    Ok(())
+}
+
+// SPEC-241 EMP-002: "Couldn't start onboarding: git: revision not found: origin/master" on a new
+// GitHub repository with no commits.
+#[tokio::test]
+async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["default_branch"], "main");
+    assert_eq!(fresh.body["onboarding"], "preparing", "{}", fresh.body);
+
+    // GitHub's default branch holds one commit adding only README.md, pushed as the App.
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    assert_eq!(git(&remote, &["rev-list", "--count", "main"])?.trim(), "1");
+    assert_eq!(
+        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        "README.md"
+    );
+    assert_eq!(git(&remote, &["show", "main:README.md"])?, "# fresh\n");
+    assert_eq!(
+        git(&remote, &["log", "-1", "--format=%an", "main"])?.trim(),
+        "ALICE",
+        "authored by the person who started onboarding"
+    );
+    let calls = w.git.calls();
+    assert!(
+        calls.iter().any(|c| c == "push main->main token=inst-7"),
+        "{calls:?}"
+    );
+
+    // With a subscription its run gets a worktree from that commit: where "revision not found:
+    // origin/master" was. This harness has no process host, so the run stops right after.
+    let sid = SandboxId::parse(text(&fresh.body["id"]))?;
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let task_id = record.onboarding_task_id.ok_or("onboarding task")?;
+    subscription(&w).await?;
+    let run =
+        w.h.app
+            .start_run(&task_id, RunStart::Fresh { prompt: None }, None)
+            .await;
+    let Err(err) = run else {
+        return Err("this harness has no process host".into());
+    };
+    assert!(err.to_string().contains("process host"), "{err}");
+    let task = w.h.store.task(&task_id).await?.ok_or("task")?;
+    let worktree = task
+        .worktree_path
+        .ok_or("the onboarding task has a worktree")?;
+    assert_eq!(
+        git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
+        git(&remote, &["rev-parse", "main"])?
+    );
+    assert!(std::path::Path::new(&worktree).join("README.md").exists());
+    Ok(())
+}
+
+// SPEC-241 EMP-002/003: a sandbox added before (recorded with the empty clone's `master`) is set
+// up on GitHub's branch when Start onboarding is pressed; a repository with commits is untouched.
+#[tokio::test]
+async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commits() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    let shop = w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    for repo in ["fresh", "shop"] {
+        w.grant("alice", repo, "admin");
+    }
+    let fresh = import(&w, &alice, "Quartio-Studio/fresh").await?.body;
+    let sid = SandboxId::parse(text(&fresh["id"]))?;
+    // As recorded before this fix.
+    w.h.store.set_default_branch(&sid, "master").await?;
+
+    let started = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/onboarding/approve"),
+        None,
+        &alice_browser,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    assert_eq!(started.body["default_branch"], "main", "{}", started.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+
+    let pushes = |calls: Vec<String>| calls.iter().filter(|c| c.starts_with("push")).count();
+    let (shop_before, pushed_before) = (git(&shop, &["for-each-ref"])?, pushes(w.git.calls()));
+    let shop_box = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
+    assert_eq!(shop_box.status, StatusCode::CREATED, "{:?}", shop_box.body);
+    assert_eq!(shop_box.body["onboarding"], "preparing");
+    assert_eq!(
+        git(&shop, &["for-each-ref"])?,
+        shop_before,
+        "nothing pushed"
+    );
+    assert_eq!(pushes(w.git.calls()), pushed_before, "{:?}", w.git.calls());
+    Ok(())
+}
+
+// SPEC-241 EMP-003: a first commit the remote refuses fails the start with the reason; the
+// sandbox stays pending and starts once the remote accepts it.
+#[tokio::test]
+async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "main")?;
+    git(&remote, &["config", "receive.maxInputSize", "1"])?;
+    w.grant("alice", "fresh", "admin");
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "pending", "{}", fresh.body);
+    let approve = format!(
+        "/api/sandboxes/{}/onboarding/approve",
+        text(&fresh.body["id"])
+    );
+    let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_GATEWAY,
+        "{:?}",
+        refused.body
+    );
+    assert!(
+        text(&refused.body["error"]["message"]).contains("maximum allowed size"),
+        "{:?}",
+        refused.body
+    );
+    assert_eq!(remote_heads(&remote)?, "");
+
+    git(&remote, &["config", "--unset", "receive.maxInputSize"])?;
+    let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
+
+// SPEC-241 CRT-001: "some permissions" error when creating a repository from Yulius: GitHub's
+// 403 names what the App lacks, and the message says it with the pages that grant it.
+#[tokio::test]
+async fn a_create_github_refuses_names_the_missing_app_permission() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, admin) = w.user("alice", true).await?;
+    *w.github.refuse_creation.lock().map_err(|e| e.to_string())? =
+        Some("administration=write; repository_creation=write".into());
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "new-shop", "template": "web"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
+    for part in [
+        "GitHub refused to create Quartio-Studio/new-shop",
+        "Administration: Read and write (or Repository creation: Read and write)",
+        "Nothing was created",
+        "https://github.com/organizations/Quartio-Studio/settings/apps/yulius-test/permissions",
+        "https://github.com/organizations/Quartio-Studio/settings/installations/7",
+    ] {
+        assert!(message.contains(part), "{part:?} missing from {message}");
+    }
+    assert!(w.h.store.sandboxes().await?.is_empty());
+    assert!(!w.git.calls().iter().any(|c| c.starts_with("clone")));
+    Ok(())
+}
+
+// SPEC-241 CRT-002 with EMP-002: the App's installation covers only selected repositories, so the
+// repository it created is out of its reach. The message says where to add it; once added, Import
+// and onboarding set the empty repository up.
+#[tokio::test]
+async fn a_created_repository_out_of_the_installations_reach_is_explained() -> TestResult {
+    let w = World::new("user").await?;
+    let (admin_user, admin) = w.user("alice", true).await?;
+    let admin_browser = w.browser(&admin_user).await?;
+    w.user(OWNER, false).await?;
+    w.github
+        .selected_only
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "tool", "template": "empty"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
+    for part in [
+        "Quartio-Studio/tool was created on GitHub",
+        "only selected repositories",
+        "https://github.com/settings/installations/7",
+        "Import repository",
+    ] {
+        assert!(message.contains(part), "{part:?} missing from {message}");
+    }
+    assert!(w.h.store.sandboxes().await?.is_empty());
+    let sandboxes = w.data_dir().join("sandboxes");
+    assert!(
+        !sandboxes.exists() || std::fs::read_dir(&sandboxes)?.next().is_none(),
+        "nothing left on disk"
+    );
+
+    // The owner adds it to the installation; Import and onboarding take it from there.
+    let remote = w
+        .scratch
+        .path()
+        .join("remotes")
+        .join(OWNER)
+        .join("tool.git");
+    w.git
+        .add_remote(&format!("https://github.com/{OWNER}/tool.git"), &remote);
+    w.github.add_installation_repo(OWNER, "tool", true);
+    w.grant("alice", "tool", "admin");
+    let imported = import(&w, &admin_browser, "Quartio-Studio/tool").await?;
+    assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
+    assert_eq!(
+        imported.body["onboarding"], "preparing",
+        "{}",
+        imported.body
+    );
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
+
+// Review of SPEC-241: a sandbox recorded with an empty clone's `master` heals at Start onboarding
+// once someone pushed `main` to GitHub, and Yulius then writes nothing to the repository.
+#[tokio::test]
+async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+    w.github.add_installation_repo(OWNER, "fresh", true);
+    let fresh = import(&w, &alice, "Quartio-Studio/fresh").await?.body;
+    let sid = SandboxId::parse(text(&fresh["id"]))?;
+    w.h.store.set_default_branch(&sid, "master").await?;
+
+    // Someone pushes a first commit to GitHub's `main` (and a feature branch) themselves.
+    let seed = w.scratch.path().join("someone");
+    git(
+        w.scratch.path(),
+        &[
+            "clone",
+            "--quiet",
+            &remote.to_string_lossy(),
+            &seed.to_string_lossy(),
+        ],
+    )?;
+    std::fs::write(seed.join("app.txt"), "theirs\n")?;
+    git(&seed, &["checkout", "--quiet", "-b", "main"])?;
+    git(&seed, &["add", "-A"])?;
+    git(&seed, &["commit", "--quiet", "-m", "theirs"])?;
+    git(
+        &seed,
+        &["push", "--quiet", "origin", "main", "main:feature"],
+    )?;
+    let theirs = git(&remote, &["rev-parse", "main"])?;
+
+    let started = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/onboarding/approve"),
+        None,
+        &alice_browser,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["default_branch"], "main", "{}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    assert_eq!(
+        git(&remote, &["rev-parse", "main"])?,
+        theirs,
+        "nothing pushed"
+    );
+    assert!(
+        !w.git.calls().iter().any(|c| c.starts_with("push")),
+        "{:?}",
+        w.git.calls()
+    );
+    Ok(())
+}
+
+// Review of SPEC-241: GitHub failing to say the default branch does not stop an empty repository's
+// onboarding; its first commit goes to `main`.
+#[tokio::test]
+async fn an_unreadable_default_branch_falls_back_to_main() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+    w.github
+        .fail_installation_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "preparing", "{}", fresh.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
+
+/// Onboarding of `sid` has not started: `pending`, with no onboarding task.
+async fn unstarted(w: &World, sid: &SandboxId) -> TestResult {
+    let record = w.h.store.sandbox(sid).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "pending");
+    assert_eq!(record.onboarding_task_id, None, "no onboarding task");
+    Ok(())
+}
+
+// SPEC-246 CLA-003 (an early user: "probably because I didn't connect Claude and the first job
+// failed"): a browser import with no Claude account adds the sandbox but starts nothing and writes
+// nothing to the repository; Start onboarding asks to connect Claude first and starts once one is.
+#[tokio::test]
+async fn a_browser_import_without_claude_waits_for_the_connection() -> TestResult {
+    let w = World::without_claude("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let remote = w.empty_remote(OWNER, "fresh", "master")?;
+    w.grant("alice", "fresh", "admin");
+
+    let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
+    assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
+    assert_eq!(fresh.body["onboarding"], "pending", "{}", fresh.body);
+    let sid = SandboxId::parse(text(&fresh.body["id"]))?;
+    unstarted(&w, &sid).await?;
+    assert_eq!(remote_heads(&remote)?, "", "no first commit");
+
+    let approve = format!("/api/sandboxes/{sid}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert_eq!(refused.body["error"]["code"], "claude_account_required");
+    assert!(
+        text(&refused.body["error"]["message"]).contains("/admin/accounts"),
+        "{:?}",
+        refused.body
+    );
+    unstarted(&w, &sid).await?;
+    assert_eq!(remote_heads(&remote)?, "", "still no first commit");
+
+    support::exhausted_subscription(&w.h).await?;
+    let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing", "{}", started.body);
+    assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
+
+// SPEC-246 CLA-006: an onboarding whose task failed to start for want of an account stays
+// `pending`; Start onboarding (the gate's Retry onboarding) is refused until an account is
+// connected, then starts the same task again.
+#[tokio::test]
+async fn a_failed_onboarding_start_is_retried_once_claude_is_connected() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    // A token import leaves onboarding pending; a new task creates its (resting) task.
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    assert_eq!(shop.body["onboarding"], "pending", "{:?}", shop.body);
+    let sid = SandboxId::parse(text(&shop.body["id"]))?;
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "add a cart"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let prep = record.onboarding_task_id.ok_or("onboarding task")?;
+    let task = w.h.store.task(&prep).await?.ok_or("task")?;
+    // As a start that found its account signed out ends it (CLA-005).
+    let failed = TaskStatus::Failed(yulius_domain::task::FailReason::NoAccount);
+    assert!(
+        w.h.store
+            .transition_task(&prep, Some(task.status), failed, None, w.h.app.now())
+            .await?
+    );
+    // Signed out meanwhile: the retry is refused and changes nothing.
+    w.h.store
+        .delete_account(&yulius_domain::ids::AccountId::parse("a-exhausted")?)
+        .await?;
+    let approve = format!("/api/sandboxes/{sid}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert_eq!(refused.body["error"]["code"], "claude_account_required");
+    assert_eq!(w.h.store.task(&prep).await?.ok_or("task")?.status, failed);
+
+    support::exhausted_subscription(&w.h).await?;
+    let retried = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(retried.status, StatusCode::OK, "{:?}", retried.body);
+    assert_eq!(retried.body["onboarding"], "preparing", "{}", retried.body);
+    let again = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    assert_eq!(
+        again.onboarding_task_id.as_ref(),
+        Some(&prep),
+        "the same task"
+    );
+    // It started again and waits for capacity on the connected subscription.
+    assert_eq!(
+        w.h.store.task(&prep).await?.ok_or("task")?.status,
+        TaskStatus::WaitingCapacity
+    );
+    Ok(())
+}
+
+// SPEC-246 CLA-004: a start by machinery (here a prepared task's time) with no Claude account is
+// not refused and does not fail: the task waits `waiting_capacity` and its viewers are told that
+// no Claude account is connected.
+#[tokio::test]
+async fn a_scheduled_start_without_claude_waits_and_says_why() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let w = World::without_claude("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    let sid = SandboxId::parse(text(&shop.body["id"]))?;
+    w.h.store.set_onboarding(&sid, "ready", None).await?;
+    let at = w.h.app.now().plus_millis(3_600_000);
+    let prepared = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "Nightly sweep", "start_at": yulius_app::auth::rfc3339(at)})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(prepared.status, StatusCode::CREATED, "{:?}", prepared.body);
+    let id = TaskId::parse(text(&prepared.body["id"]))?;
+    let mut frames = w.h.app.runtime(&id).hub.watch();
+
+    w.h.clock.0.store(at.0 + 1_000, Ordering::SeqCst);
+    w.h.app.release_due_prepared().await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let status = w.h.store.task(&id).await?.ok_or("task")?.status;
+        if status == TaskStatus::WaitingCapacity {
+            break;
+        }
+        assert!(
+            !matches!(status, TaskStatus::Failed(_)),
+            "it waits, it does not fail: {status:?}"
+        );
+        assert!(tokio::time::Instant::now() < deadline, "still {status:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // The pause is recorded before its notice is sent, so the notice is waited for, not drained.
+    let said = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            match frames.recv().await {
+                Ok(yulius_app::hub::HubFrame::Notice(text)) => return Ok(text),
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(err) => return Err(err),
+            }
+        }
+    })
+    .await??;
+    assert!(said.contains("no Claude account is connected"), "{said}");
+    assert!(said.contains("/admin/accounts"), "{said}");
     Ok(())
 }

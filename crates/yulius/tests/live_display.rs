@@ -41,9 +41,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::browser::ChromiumBrowsers;
-use yulius_browser::{
-    BrowserConfig, CdpClient, CdpConfig, DisplayConfig, DisplayMode, UrlDenyList,
-};
+use yulius_browser::{BrowserConfig, CdpClient, DisplayConfig, DisplayMode, UrlDenyList};
 use yulius_contracts::browser::decode_video_frame;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::task::TaskStatus;
@@ -156,6 +154,7 @@ fn fixture_site() -> Router {
 
 struct Live {
     h: Harness,
+    browsers: Arc<ChromiumBrowsers>,
     served: support::Served,
     site: SocketAddr,
     writer: support::Creds,
@@ -180,8 +179,9 @@ async fn live(chrome: &Path) -> Result<Live, Box<dyn std::error::Error>> {
     config.display = DisplayMode::Virtual(display);
     config.startup_timeout = Duration::from_secs(60);
     config.deny = UrlDenyList::yulius(ORIGIN, &[], Vec::new());
+    let browsers = Arc::new(ChromiumBrowsers::new(config));
     let h = harness_with(HarnessOptions {
-        browser: Some(Arc::new(ChromiumBrowsers::new(config))),
+        browser: Some(Arc::clone(&browsers) as _),
         dir: Some(dir),
         ..HarnessOptions::default()
     })?;
@@ -201,6 +201,7 @@ async fn live(chrome: &Path) -> Result<Live, Box<dyn std::error::Error>> {
     });
     Ok(Live {
         h,
+        browsers,
         served,
         site,
         writer,
@@ -582,8 +583,9 @@ async fn open_page(
     viewer
         .send(json!({"type": "navigate", "tab_id": tab, "url": url}))
         .await?;
-    let session = live.h.app.browser_session(&SandboxId::parse("s1")?).await?;
-    let cdp = CdpClient::connect(&session.cdp_endpoint(), CdpConfig::default()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    live.h.app.browser_session(&sandbox).await?;
+    let cdp = live.browsers.cdp(&sandbox).await.ok_or("no browser")?;
     until(&cdp, &url, "the page", "document.readyState === 'complete'").await?;
     Ok((tab, cdp, url))
 }
@@ -1239,8 +1241,9 @@ async fn captchas(live: &Live) -> TestResult {
         .send(json!({"type": "viewport", "width": 1280, "height": 800}))
         .await?;
     let tab = viewer.active_tab().ok_or("no active tab")?;
-    let session = live.h.app.browser_session(&SandboxId::parse("s1")?).await?;
-    let cdp = CdpClient::connect(&session.cdp_endpoint(), CdpConfig::default()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    live.h.app.browser_session(&sandbox).await?;
+    let cdp = live.browsers.cdp(&sandbox).await.ok_or("no browser")?;
     let pages = [
         (
             "recaptcha",

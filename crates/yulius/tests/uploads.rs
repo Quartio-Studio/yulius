@@ -425,6 +425,7 @@ async fn uploads_are_bounded_and_leave_nothing_behind() -> TestResult {
         user,
         csrf_token: None,
         session_hash: None,
+        token: None,
     };
     let mut open = Vec::new();
     for n in 0..MAX_CONCURRENT_UPLOADS {
@@ -803,6 +804,8 @@ async fn agent_task(
             last_error: None,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
         })
         .await?;
     let data = h.app.config.data_dir.clone();

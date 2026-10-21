@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::vault::redact::PlainMatcher;
 
 /// The run behind a proxy credential.
@@ -13,11 +13,13 @@ use yulius_domain::vault::redact::PlainMatcher;
 pub struct EgressClient {
     /// An agent run, a CI job or a person's Superagent.
     pub caller: EgressCaller,
-    /// Its sandbox: the sandbox's secrets and the instance-wide ones apply.
+    /// Its sandbox: the sandbox's secrets and the global ones switched on for it apply.
     pub sandbox_id: SandboxId,
 }
 
-/// Who holds a proxy credential.
+/// Who holds a proxy credential. Whose personal secrets apply (SPEC-245 RES-002) is no field of
+/// an agent run's: the policy reads its task's current holder per request, so a hand-over or a
+/// deleted task applies also to credentials resolved before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressCaller {
     /// An agent run: every agent secret of its sandbox applies.
@@ -46,6 +48,8 @@ pub enum EgressCaller {
         shell_id: String,
         /// Audit actor `cockpit:<login>`.
         actor: String,
+        /// Its person, whose personal secrets switched on for the sandbox apply.
+        person: UserId,
     },
 }
 

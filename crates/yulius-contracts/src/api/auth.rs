@@ -75,6 +75,9 @@ pub struct InstanceInfo {
     /// Largest file one upload may carry, in bytes (EDT-006, UI-048; `YULIUS_UPLOAD_MAX_MB`).
     #[serde(default)]
     pub upload_max_bytes: u64,
+    /// Whether a Claude account is usable, so agents can start (SPEC-246 CLA-001).
+    #[serde(default)]
+    pub claude_connected: bool,
 }
 
 /// `POST /api/device/start` response.
@@ -151,4 +154,44 @@ pub struct RecoveryCode {
 pub struct RegenerateRecovery {
     /// Current superadmin password.
     pub password: String,
+}
+
+/// One of the caller's personal API tokens (SPEC-247 RMT-001): never the token itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiTokenView {
+    /// Id (for revoking).
+    pub id: String,
+    /// The person's label for it.
+    pub label: String,
+    /// `cli`, `read` or `operate`.
+    pub scope: String,
+    /// When it was made (RFC 3339).
+    pub created_at: String,
+    /// Its last request, to the minute (RFC 3339); `None` while never used.
+    pub last_used_at: Option<String>,
+}
+
+/// `POST /api/me/tokens` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateApiToken {
+    /// A label, 1-80 characters (e.g. "laptop Claude Code").
+    pub label: String,
+    /// `operate` or `read`.
+    pub scope: String,
+}
+
+/// `POST /api/me/tokens` answer: the token, shown this once, and how to connect with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedApiToken {
+    /// The token (`yul_…`); only its SHA-256 is stored.
+    pub token: String,
+    /// The stored token.
+    pub view: ApiTokenView,
+    /// The instance's remote MCP endpoint.
+    pub mcp_url: String,
+    /// `claude mcp add …` for this token.
+    pub claude_command: String,
+    /// `yulius remote login …` for this instance.
+    pub cli_command: String,
 }

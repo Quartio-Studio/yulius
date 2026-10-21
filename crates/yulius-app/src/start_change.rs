@@ -189,6 +189,10 @@ impl App {
             self.refuse_waiting_for_itself(&task, anchor, rule.as_ref())
                 .await?;
         }
+        // A start that is not left to a person needs an agent (SPEC-246 CLA-002).
+        if !matches!(choice, Choice::Prepared(_)) {
+            self.ensure_agent_account(task.harness.provider()).await?;
+        }
         // Start now waits after the sandbox's preparation while onboarding blocks tasks, a
         // supertask as one (U-08, as `create_task_held`).
         if let Choice::Now { supertask } = choice
