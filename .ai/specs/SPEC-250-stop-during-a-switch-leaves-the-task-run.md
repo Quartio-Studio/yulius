@@ -156,6 +156,13 @@ the stop's read and its compare-and-set is a few awaits wide.
     A reattach that loses to a stop leaves `Stopping` with its run live, which the stop ends. A
     loss that loses to a stop leaves `Stopping` with no run, which the next stop rests. Both stay
     as they are: a window of one store round trip, once per restart, already recoverable.
+- **A flaky test met on the way is fixed here, test-only**: the gate failed once in
+  `projects::a_scheduled_start_without_claude_waits_and_says_why` (SPEC-246, #760, on dev before
+  this change; 4 of 30 runs failed on this branch's base code path, which this change does not
+  touch). The pause moves the task to `waiting_capacity` before it records the pause and sends the
+  notice, and the test read the notices at once. It now waits for the notice (bounded, 20 s): 40 of
+  40 passed. This task may not file issues, and a merge needs green CI without retries, so it is
+  fixed in its own commit rather than left to fail this pull request's checks.
 - **Pause points keyed by task**: `race::reached` takes the task id as its key path for the stop's
   points, so tests running in parallel do not take each other's hooks (ADR-0174's contract). No new
   ADR: this applies ADR-0174 and SPEC-065's stop contract; it decides nothing lasting.
