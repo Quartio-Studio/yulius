@@ -1399,7 +1399,7 @@ up. Queued tasks start when capacity allows.
   `master.key`), with re-authenticated, audited reveals (ADR-20).
 - Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
   every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
-  in another form, misuse on its hosts, weak values, raw CDP): SPEC-002 ADR-20.
+  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20.
 - Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
   their task creator's GitHub token (8 h, capped by that person's access within the App's
   installation; an agent could read it and act as them there until it expires), or without one a

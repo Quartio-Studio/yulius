@@ -1836,7 +1836,7 @@ async fn a_scheduled_start_without_claude_waits_and_says_why() -> TestResult {
             Ok(Ok(yulius_app::hub::HubFrame::Notice(text))) if text.contains("Claude") => {
                 break text;
             }
-            Ok(Ok(_)) => {}
+            Ok(Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
             other => return Err(format!("no account notice: {other:?}").into()),
         }
     };

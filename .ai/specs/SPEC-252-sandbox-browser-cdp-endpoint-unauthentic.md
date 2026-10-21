@@ -63,12 +63,14 @@ browser has no DevTools listener at all.
 - [x] Sandbox Chromium launches with --remote-debugging-pipe and no TCP listener
 - [x] Raw DevTools endpoint accessors removed from the port, wiring and previews
 - [x] Trust notes, R-07 and operations docs say the endpoint is gone
-- [x] Independent review answered, gates green, delivered
+- [x] Independent review answered and gates green
 
 ## Acceptance criteria
 
-- Another sandbox's process (isolated or not), or any host process, cannot drive a sandbox's
-  browser through DevTools: there is no DevTools socket to connect to (CDP-001).
+- Another sandbox's process (isolated or not), or a host process of another user, cannot drive a
+  sandbox's browser through DevTools: there is no DevTools socket to connect to (CDP-001), and
+  contained runs cannot see the browser's process to open its pipe (own PID namespace). Yulius's
+  own user or root still could through `/proc/<pid>/fd` (accepted: it owns the profile).
 - The sandbox's own browser tooling keeps working: Yulius's browser MCP tools and viewers run over
   the pipe (the manager, instance and server browser tests pass against the fake through the pipe;
   the opt-in real-Chromium smoke test passes). No sandbox MCP server consumed the raw endpoint, so
