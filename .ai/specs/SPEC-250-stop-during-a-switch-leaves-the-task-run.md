@@ -43,6 +43,17 @@ set its `Cancel` intent but before its status change. The end handler then finds
 run left: nothing escalates (no live run) and nothing records an end. Retrying the stop (point 1)
 widens this window, since the intent of a lost round stays set.
 
+Two more windows of the same race were found while reviewing the other ignored results:
+
+- The end of a run (`mark_lost`, `finalize_attempt`) reads the task, then makes its status change
+  and ignores the result. A stop landing in between moves the task to `Stopping`; the end's change
+  then fails and the task stays `Stopping` with no run.
+- A stop that lands while a switch waits for its old run to end replaces the switch's intent
+  (`EndIntent::Switch`), which drops the switch's channel: the switch wakes at once and launches a
+  new run while the old one is still ending. On dev that launch failed and rested the task as
+  `stopped_switch_failed` with the old run still live; with the stop's retry alone, the task could
+  rest with a new run that nobody ends.
+
 The existing tests missed it because they stop a task whose status is stable: the window between
 the stop's read and its compare-and-set is a few awaits wide.
 
@@ -59,8 +70,16 @@ the stop's read and its compare-and-set is a few awaits wide.
 - STW-003: a run that ends with the `Cancel` intent while its task is still live (`Starting`,
   `Running`, `Switching`; the stop's status change not made yet) ends its task
   `Stopped(Cancelled)`, as it would from `Stopping`.
+- STW-005: the end of a run (lost or exited, with or without an intent) whose status change loses
+  to a concurrent one makes it again from the status read anew (bounded like a stop), so a stop
+  landing meanwhile still ends `Stopped`.
+- STW-006: a switch whose intent is replaced while it waits for its old run to end (a stop or a
+  close took over that end, or the run's loss dropped it) starts no new run: its outcome is
+  recorded as `cancelled` and it returns `Conflict`. A stop that finds the task resting after a lost
+  round still ends a run that is live.
 - STW-004: test-only pause points (ADR-0174) let a test change the world exactly between the
-  stop's read and its status change; production builds do nothing there.
+  stop's read and its status change (`StopDecided`) and between a run end's read and its change
+  (`EndDecided`); production builds do nothing there.
 
 ## Plan
 
@@ -80,17 +99,28 @@ the stop's read and its compare-and-set is a few awaits wide.
   compare-and-set: it fails on dev (the task stays `Stopping` with no run) and passes with the fix.
 - `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` passes repeatedly under
   probe delays and CPU load.
+- A deterministic test lands a stop between a run end's read and its change: it fails on dev
+  (`Stopping`, no run) and passes with the fix.
+- A deterministic test stops a task while its switch waits for the old run to end: it fails on dev
+  (`stopped_switch_failed`, the old run live) and passes with the fix (`Stopped(Cancelled)`, one
+  run, the switch refused).
 - The other ignored `transition_task` results in `supervisor.rs` are reviewed; the review is
-  recorded below.
+  recorded under Decisions.
 
 ## Test plan
 
 - `task_done::a_stop_that_loses_to_a_completing_switch_still_ends_the_task`: `GatedHost` holds the
-  switch's new run at attach; the stop pause point releases it and waits until the task is
-  `Running`; the stop must end the task `Stopped(Cancelled)`.
+  switch's new run at its spawn (`Switching`) and at its attach; the stop pause point releases the
+  spawn and waits until the attach is held (`Running`); the stop must leave the task `Stopping`, and
+  once the attach goes on, `Stopped(Cancelled)` with no live run.
 - `task_done::a_run_that_ends_before_the_stops_change_still_ends_the_task`: the stop pause point
-  terminates the run's host and waits for its end to be recorded; the stop must end the task
+  makes the agent exit (`/exit`) and waits for its end to be recorded; the stop must end the task
   `Stopped(Cancelled)` with no live run.
+- `task_done::a_stop_while_a_runs_end_is_recorded_still_ends_the_task`: the end pause point stops
+  the task; the task must end `Stopped(Cancelled)`.
+- `task_done::a_stop_while_a_switch_ends_its_old_run_starts_no_new_run`: the host refuses to end
+  the old run, so the switch waits; the stop pause point waits until the switch gave up (or started
+  a run); the task must end `Stopped(Cancelled)` with one run, the switch refused.
 - The flaky test under probe delays at the stop's pause point and under CPU load, many runs.
 - `scripts/dev ci` (the gate) and `scripts/dev security`.
 
@@ -106,6 +136,26 @@ the stop's read and its compare-and-set is a few awaits wide.
   the stop re-checking for a run that is gone after its change: the stop cannot see an end being
   recorded (the `finalizing` window), the end handler is where the end is known. The `Cancel`
   intent is set only by `stop_task_now`, so it always means a person's stop.
+- **A switch overtaken by a stop gives up** (STW-006) rather than continuing when its intent
+  is replaced: the old run's end belongs to the stop (or close) then, and a new run started beside
+  it would outlive the stop. A switch whose old run was lost gives up too (the task rests
+  `Stopped(lost)`; Continue resumes it), the conservative choice: no run starts that no request
+  asked for after the loss.
+- **Review of the other ignored `transition_task` results** (`supervisor.rs`, dev at 4e796d87):
+  - fixed here: `stop_task_now`'s two status changes (STW-001), `mark_lost` and the three
+    `finalize_attempt` branches (STW-005, through `settle_ended`);
+  - a start that queues at the session limit (`ContinueQueued`) and a failed start or switch
+    (`Failed`, `Stopped(SwitchFailed)`, each guarded by a re-read): a lost change there lost to a
+    stop or close that owns the task from then on, and the start has no run to strand. A stop that
+    wins against a failed launch leaves `Stopping` with no run, which the next stop rests
+    (SPEC-140 STP-002, unchanged);
+  - the launch's `Spawned` / `SwitchCompleted`: it loses only to a stop, close or loss, which ends
+    the run once attached (SPEC-140 STP-001);
+  - the boot recovery (`reconcile`: a reattached run back to `Running`; a live task without a run
+    to its loss). It runs in the background once the listeners are bound, so a stop can race it.
+    A reattach that loses to a stop leaves `Stopping` with its run live, which the stop ends. A
+    loss that loses to a stop leaves `Stopping` with no run, which the next stop rests. Both stay
+    as they are: a window of one store round trip, once per restart, already recoverable.
 - **Pause points keyed by task**: `race::reached` takes the task id as its key path for the stop's
   points, so tests running in parallel do not take each other's hooks (ADR-0174's contract). No new
   ADR: this applies ADR-0174 and SPEC-065's stop contract; it decides nothing lasting.
