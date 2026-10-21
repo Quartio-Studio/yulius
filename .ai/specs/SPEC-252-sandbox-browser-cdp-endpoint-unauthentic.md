@@ -1,11 +1,11 @@
 ---
 yulius-task: f6b06114-c5ec-41b6-92cc-f541df959716
-status: in-progress
+status: done
 ---
 
 # SPEC-252: Sandbox browser DevTools over a pipe, not a loopback port
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #238
 Scope authorization: task #238 (started by task #235), GitHub issue #626; closes SPEC-002 risk
@@ -57,13 +57,13 @@ browser has no DevTools listener at all.
 
 ## Plan
 
-- [ ] Spec and ADR-0191 record the pipe decision
-- [ ] CdpClient speaks CDP over a pipe pair
-- [ ] The fake Chromium answers over its pipe
-- [ ] Sandbox Chromium launches with --remote-debugging-pipe and no TCP listener
-- [ ] Raw DevTools endpoint accessors removed from the port, wiring and previews
-- [ ] Trust notes, R-07 and operations docs say the endpoint is gone
-- [ ] Independent review answered, gates green, delivered
+- [x] Spec and ADR-0191 record the pipe decision
+- [x] CdpClient speaks CDP over a pipe pair
+- [x] The fake Chromium answers over its pipe
+- [x] Sandbox Chromium launches with --remote-debugging-pipe and no TCP listener
+- [x] Raw DevTools endpoint accessors removed from the port, wiring and previews
+- [x] Trust notes, R-07 and operations docs say the endpoint is gone
+- [x] Independent review answered, gates green, delivered
 
 ## Acceptance criteria
 
@@ -102,3 +102,31 @@ browser has no DevTools listener at all.
   no extra process image or shell in the launch path.
 - Not done here (said on #626): a per-sandbox authenticated CDP endpoint for CDP-capable MCP
   servers (U-10); nothing consumes one today.
+
+## Evidence
+
+- `scripts/dev ci` (the whole gate) on `aef4c8c6`: passed, `exit=0`, nextest 2367 run, 2367
+  passed, 17 skipped. The first run (on `4b5c986f`) failed one test outside this change,
+  `projects::a_scheduled_start_without_claude_waits_and_says_why` (added by #760). It failed 1 of
+  8 isolated runs. Cause: `pause` sets `waiting_capacity` (`capacity.rs`) before it publishes the
+  notice, and the test drained notices once with `try_recv`. Fixed in the test (it waits for the
+  notice; commit `aef4c8c6`). With a 200 ms delay injected before the notice, the old test fails
+  and the fixed one passes; 12 of 12 isolated runs passed.
+- `cargo test -p yulius-browser --features fake`: unit 52, cdp 10 (5 new pipe tests), instance
+  15, manager 7, all passed. The manager tests drive the fake Chromium through its relayed pipe:
+  `--remote-debugging-pipe` in argv, no port/address flag, no `DevToolsActivePort`, one
+  `Browser.getVersion` per start; early exit → `ExitedEarly` with stderr, a silent pipe →
+  `StartupTimeout`, no process left behind.
+- Real browser (opt-in, local, Google Chrome 155.0.8059.39 through a `--no-sandbox` wrapper,
+  since the host runs as root): `YULIUS_TEST_CHROMIUM=… cargo test -p yulius-browser --test
+  real_chromium`: passed over the pipe; no process of the browser's group holds a listening TCP
+  socket. Negative control: the same test with `--remote-debugging-port=0` added fails on that
+  check (`the browser listens on no TCP port: ["pid …: socket:[…]"]`). Without `--no-sandbox` as
+  root, Chrome exits and the manager reports `ExitedEarly` with its stderr.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/browser/)'`: 21 passed.
+  Preview tests: 25 passed.
+- `scripts/dev security`: **not run** (exit 2). Vidoc answered HTTP 429: the instance key has used
+  its 50,000,000 tokens. Unrun, not passed.
+- Not tested here: the opt-in live display/UI tests (`live_display`, `live_ui_browser`, ignored;
+  they need Xvfb, ffmpeg and a display stack). They compile against `ChromiumBrowsers::cdp`. A
+  real Chromium on macOS was not run (`scripts/dev macos` compiles it).
