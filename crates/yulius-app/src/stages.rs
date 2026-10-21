@@ -88,6 +88,16 @@ impl SpanRecord {
             .unwrap_or_else(|| Value::Object(Map::new()))
     }
 
+    /// A CD run's stage (SPEC-257): its `detail.stage`, else its environment's name (`dev` or
+    /// `prod`, the stages of runs from before stages existed).
+    fn cd_stage(&self) -> Option<String> {
+        self.detail_value()
+            .get("stage")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| self.environment.clone())
+    }
+
     fn reused(&self) -> bool {
         self.detail_value().get("reused") == Some(&Value::Bool(true))
     }
@@ -983,12 +993,13 @@ pub fn summarize(
         })
         .collect();
     let (range_from, range_to) = (from_day * DAY_MS, (to_day + 1) * DAY_MS);
+    // Per stage: every environment of a stage counts as its deployments.
     let delivery = ["dev", "prod"]
         .into_iter()
         .map(|env| {
             let all: Vec<Deployment> = cd
                 .iter()
-                .filter(|span| span.environment.as_deref() == Some(env))
+                .filter(|span| span.cd_stage().as_deref() == Some(env))
                 .filter_map(|span| {
                     Some(Deployment {
                         started_at: span.started_at.0,
@@ -1411,6 +1422,32 @@ mod tests {
         assert_eq!(dev.lead_time_p50_ms, Some(2 * h));
         assert_eq!(dev.time_to_restore_p50_ms, Some(h));
         assert_eq!(summary.delivery[1].deployments, 0);
+    }
+
+    /// SPEC-257 (review L1): delivery figures are per stage, so a named production-stage
+    /// environment's deploys count as production's; a span without a stage is its name's.
+    #[test]
+    fn delivery_figures_count_every_environment_of_a_stage() {
+        let h = 3_600_000;
+        let mut runs = Vec::new();
+        for (start, environment, stage) in [
+            (DAY_MS + 2 * h, "prod", None),
+            (DAY_MS + 3 * h, "platform", Some("prod")),
+            (DAY_MS + 4 * h, "staging", Some("dev")),
+        ] {
+            let mut run = span("run", "run", start, Some(start + h), Some("passed"));
+            run.subject_kind = SubjectKind::CdRun;
+            run.environment = Some(environment.into());
+            run.detail = stage.map(|stage| serde_json::json!({ "stage": stage }).to_string());
+            runs.push(run);
+        }
+        let summary = summarize(&[], &runs, &[], (1, 1), None, false);
+        let counted: Vec<(&str, u64)> = summary
+            .delivery
+            .iter()
+            .map(|d| (d.environment.as_str(), d.deployments))
+            .collect();
+        assert_eq!(counted, [("dev", 1), ("prod", 2)]);
     }
 
     #[test]

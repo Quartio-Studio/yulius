@@ -124,7 +124,10 @@ vercel.json, netlify.toml, Procfile, k8s/, Helm, Terraform, Ansible), deploy job
 under scripts/cd/ (keep working conventions; machines and credentials come from agent secrets, \
 never the repository), and an environment with nothing to deploy yet is an empty table with an \
 `about` line saying so. A production deploy that pushes or promotes the production branch is \
-`promote = true`. Yulius reads them from the protected branches and only a person deploys \
+`promote = true`. A repository that deploys more than one thing (a self-hosted release and the \
+hosted platform, a staging machine) gets one more [cd.<name>] table per target, with \
+`stage = \"dev\"` or `stage = \"prod\"`, which decides its rules as for dev and production. \
+Yulius reads them from the protected branches and only a person deploys \
 production. Before asking anyone for a credential or a machine, read secrets_list and any \
 hand-over in your request: the person's own agent may have imported the keys (described) and said \
 where and how deploys run; a key used outside the proxy (ssh, a deploy script) reaches the ignored \

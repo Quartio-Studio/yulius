@@ -859,8 +859,11 @@ impl App {
             cd_run: cd.as_ref().map(|run| run.id.clone()),
             cd_state: cd.as_ref().map(|run| run.state.as_str().to_owned()),
             cd_detail: cd.map(|run| match run.reason {
-                Some(reason) => format!("{}: {reason}", run.environment.label()),
-                None => run.environment.label().to_owned(),
+                Some(reason) => format!(
+                    "{}: {reason}",
+                    yulius_domain::cd::env_label(&run.environment)
+                ),
+                None => yulius_domain::cd::env_label(&run.environment).to_owned(),
             }),
             head,
             checks,

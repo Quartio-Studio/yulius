@@ -1855,12 +1855,12 @@ function cdRun(id, environment, branch, sha, state, minutesAgo, by, extra = {}) 
   const started = Date.now() - minutesAgo * 60000;
   const ended = state === 'running' ? null : started + 95000;
   return {
-    run_id: id, environment, state, branch, commit: sha, requested_by: by,
-    deploy: environment === 'dev' ? 'scripts/cd/deploy.sh dev' : 'scripts/cd/deploy.sh prod',
-    verify: environment === 'dev' ? 'scripts/cd/verify.sh dev' : 'scripts/cd/verify.sh prod',
+    run_id: id, environment, stage: extra.stage || (environment === 'dev' ? 'dev' : 'prod'), state, branch, commit: sha, requested_by: by,
+    deploy: `scripts/cd/deploy.sh ${environment}`,
+    verify: `scripts/cd/verify.sh ${environment}`,
     note: extra.note || null, reason: extra.reason || null, exit_code: state === 'passed' ? 0 : (state === 'failed' ? 3 : null),
     started_at: new Date(started).toISOString(), ended_at: ended ? new Date(ended).toISOString() : null, created: Date.now(),
-    output: extra.output || `[yulius] deploying ${branch} at ${sha} to ${environment === 'dev' ? 'dev' : 'production'}\n[yulius] deploy: scripts/cd/deploy.sh ${environment}\nrsync to app-dev… done\n[yulius] verify: scripts/cd/verify.sh ${environment}\nGET /health 200\n[yulius] done\n`,
+    output: extra.output || `[yulius] deploying ${branch} at ${sha} to ${environment === 'prod' ? 'production' : environment}\n[yulius] deploy: scripts/cd/deploy.sh ${environment}\nrsync to app-dev… done\n[yulius] verify: scripts/cd/verify.sh ${environment}\nGET /health 200\n[yulius] done\n`,
   };
 }
 
@@ -1868,8 +1868,8 @@ function seedCd() {
   return {
     sb_studio: {
       environments: [
-        { name: 'dev', label: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }] },
-        { name: 'prod', label: 'production', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [] },
+        { name: 'dev', label: 'dev', stage: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }] },
+        { name: 'prod', label: 'production', stage: 'prod', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [] },
       ],
       runs: [
         cdRun('cd_s2', 'dev', 'quartio', '7d1e0c9b8a7f6e5d', 'failed', 90, 'task #12', { reason: null, output: '[yulius] deploy: scripts/cd/deploy.sh dev\nssh: connect to host [secret:DEV_HOST] port 22: timed out\n[yulius] deploy failed with status 3; verify skipped\n' }),
@@ -1878,8 +1878,8 @@ function seedCd() {
     },
     sb_product: {
       environments: [
-        { name: 'dev', label: 'dev', state: 'empty', branch: 'quartio', head: 'b7e9f01c2d3e4f5a', problem: null, about: 'no dev machine yet', deploy: null, verify: null, promote: false, secrets: [] },
-        { name: 'prod', label: 'production', state: 'not_defined', branch: 'main', head: 'a0b1c2d3e4f5a6b7', problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] },
+        { name: 'dev', label: 'dev', stage: 'dev', state: 'empty', branch: 'quartio', head: 'b7e9f01c2d3e4f5a', problem: null, about: 'no dev machine yet', deploy: null, verify: null, promote: false, secrets: [] },
+        { name: 'prod', label: 'production', stage: 'prod', state: 'not_defined', branch: 'main', head: 'a0b1c2d3e4f5a6b7', problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] },
       ],
       runs: [],
     },
@@ -1889,7 +1889,7 @@ function seedCd() {
 function cdOf(db, sid) {
   sandboxOf(db, sid);
   if (!db.cd[sid]) {
-    db.cd[sid] = { environments: ['dev', 'prod'].map((name) => ({ name, label: name === 'dev' ? 'dev' : 'production', state: 'not_defined', branch: name === 'dev' ? 'dev' : 'main', head: null, problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] })), runs: [] };
+    db.cd[sid] = { environments: ['dev', 'prod'].map((name) => ({ name, label: name === 'dev' ? 'dev' : 'production', stage: name, state: 'not_defined', branch: name === 'dev' ? 'dev' : 'main', head: null, problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] })), runs: [] };
   }
   return db.cd[sid];
 }
@@ -1929,21 +1929,23 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   const cd = cdOf(db, p[0]);
   const name = p[1] === 'production' ? 'prod' : p[1];
   const env = cd.environments.find((e) => e.name === name);
-  if (!env) fail(422, 'invalid', 'the environment is dev or prod');
-  need(sandbox, name === 'prod' ? 'admin' : 'write');
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(name)) fail(422, 'invalid', "the environment is a [cd.<name>] of yulius.toml: dev, prod or another name of lowercase letters, digits and '-'");
+  if (!env) fail(409, 'conflict', `CD ${name} is not defined: add [cd.${name}] to yulius.toml on the protected branch`);
+  const prod = env.stage === 'prod';
+  need(sandbox, prod ? 'admin' : 'write');
   db.lastCdDeploy = body || {}; // what the page sent (SPEC-137: `confirm_ms` of a production deploy)
   // A test can hold the answer (`__yuliusMock.holdCdDeploy = promise`): the checks and a promotion
   // take a while, and a refusal comes after them (SPEC-189).
   if (db.holdCdDeploy) { await db.holdCdDeploy; db.holdCdDeploy = null; }
-  if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
+  if (prod && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   const used = env.secrets.filter((s) => s.state === 'agents_use').map((s) => s.name);
   const it = used.length === 1 ? 'it' : 'them';
-  if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends ${it} to), so production deploys never get ${it} and nobody can allow ${it} for them. Production names a separate secret of its own in [cd.prod] secrets of yulius.toml`);
+  if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends ${it} to), so production deploys never get ${it} and nobody can allow ${it} for them. Production names a separate secret of its own in [cd.${name}] secrets of yulius.toml`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
   if (cd.runs.some((r) => r.environment === name && progressCd(r, db.cdRunMs).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
   db.nextId += 1;
-  const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, name === 'prod' && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {});
+  const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, { stage: env.stage, ...(prod && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {}) });
   cd.runs.unshift(run);
   return cdSummary(run);
 });
@@ -1956,7 +1958,7 @@ route('POST', `/api/sandboxes/${ID}/cd/runs/${ID}/cancel`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   const run = cdOf(db, p[0]).runs.find((r) => r.run_id === p[1]);
   if (!run) fail(404, 'not_found', 'not found');
-  need(sandbox, run.environment === 'prod' ? 'admin' : 'write');
+  need(sandbox, run.stage === 'prod' ? 'admin' : 'write');
   if (progressCd(run, db.cdRunMs).state !== 'running') fail(409, 'conflict', 'the run already ended');
   run.state = 'cancelled';
   run.reason = `cancelled by ${db.me.user.login}`;

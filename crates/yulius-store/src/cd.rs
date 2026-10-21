@@ -1,30 +1,30 @@
-//! CD (deployment) runs (SPEC-134, table `cd_runs`).
+//! CD (deployment) runs (SPEC-134, SPEC-257, table `cd_runs`).
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::ci::cd::{CdRunEnd, CdRunRecord};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CdStore;
-use yulius_domain::cd::CdEnv;
+use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
-const COLS: &str = "id, sandbox_id, environment, branch, sha, state, reason, requested_by, \
+const COLS: &str = "id, sandbox_id, environment, stage, branch, sha, state, reason, requested_by, \
     task_id, deploy, verify, note, exit_code, started_at, ended_at";
 
 fn run_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CdRunRecord> {
     let sandbox: String = row.get("sandbox_id")?;
-    let environment: String = row.get("environment")?;
+    let stage: String = row.get("stage")?;
     let state: String = row.get("state")?;
     let task: Option<String> = row.get("task_id")?;
     Ok(CdRunRecord {
         id: row.get("id")?,
         sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
-        environment: CdEnv::parse(&environment)
-            .ok_or_else(|| bad_column("CD environment", &environment))?,
+        environment: row.get("environment")?,
+        stage: CdStage::parse(&stage).ok_or_else(|| bad_column("CD stage", &stage))?,
         branch: row.get("branch")?,
         sha: row.get("sha")?,
         state: RunState::parse(&state).ok_or_else(|| bad_column("CD state", &state))?,
@@ -71,12 +71,13 @@ impl CdStore for SqliteStore {
             let inserted = c.execute(
                 &format!(
                     "INSERT INTO cd_runs ({COLS}, output) VALUES \
-                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
                 ),
                 params![
                     run.id,
                     run.sandbox_id.as_str(),
-                    run.environment.as_str(),
+                    run.environment,
+                    run.stage.as_str(),
                     run.branch,
                     run.sha,
                     run.state.as_str(),
@@ -136,15 +137,17 @@ impl CdStore for SqliteStore {
     async fn last_passed_cd_run(
         &self,
         sandbox: &SandboxId,
-        environment: CdEnv,
+        environment: &str,
+        stage: CdStage,
     ) -> AppResult<Option<CdRunRecord>> {
-        let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.as_str());
+        let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
+        let stage = stage.as_str();
         self.call(move |c| {
             Ok(select(
                 c,
-                "sandbox_id = ?1 AND environment = ?2 AND state = 'passed' \
+                "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND state = 'passed' \
                  ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                &[&sandbox, &environment],
+                &[&sandbox, &environment, &stage],
             )?
             .into_iter()
             .next())
@@ -258,11 +261,12 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn run(id: &str, env: CdEnv, at: i64) -> Result<CdRunRecord, Box<dyn std::error::Error>> {
+    fn run(id: &str, env: &str, at: i64) -> Result<CdRunRecord, Box<dyn std::error::Error>> {
         Ok(CdRunRecord {
             id: id.into(),
             sandbox_id: SandboxId::parse("s1")?,
-            environment: env,
+            environment: env.into(),
+            stage: yulius_domain::cd::fixed_stage(env).unwrap_or(CdStage::Prod),
             branch: "dev".into(),
             sha: "a".repeat(40),
             state: RunState::Running,
@@ -294,12 +298,12 @@ mod tests {
     #[tokio::test]
     async fn one_running_run_per_environment_ends_once() -> TestResult {
         let store = SqliteStore::open_in_memory()?;
-        store.insert_cd_run(&run("d1", CdEnv::Dev, 1)?).await?;
+        store.insert_cd_run(&run("d1", "dev", 1)?).await?;
         assert!(matches!(
-            store.insert_cd_run(&run("d2", CdEnv::Dev, 2)?).await,
+            store.insert_cd_run(&run("d2", "dev", 2)?).await,
             Err(AppError::Conflict(_))
         ));
-        store.insert_cd_run(&run("p1", CdEnv::Prod, 3)?).await?;
+        store.insert_cd_run(&run("p1", "prod", 3)?).await?;
         assert_eq!(store.running_cd_runs().await?.len(), 2);
         store.set_cd_run_output("d1", "partial").await?;
         assert_eq!(
@@ -316,10 +320,86 @@ mod tests {
         );
         assert_eq!(done.task_id.as_ref().map(TaskId::as_str), Some("t1"));
         // The environment is free again.
-        store.insert_cd_run(&run("d2", CdEnv::Dev, 7)?).await?;
+        store.insert_cd_run(&run("d2", "dev", 7)?).await?;
         let listed = store.cd_runs(&SandboxId::parse("s1")?, 10).await?;
         let ids: Vec<&str> = listed.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["d2", "p1", "d1"], "newest first");
+        Ok(())
+    }
+
+    /// SPEC-257 CDN-006: a named environment keeps its name and stage, and runs one at a time
+    /// on its own, beside the default of its stage.
+    #[tokio::test]
+    async fn named_environments_keep_their_name_and_stage() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store.insert_cd_run(&run("x1", "platform", 1)?).await?;
+        assert!(matches!(
+            store.insert_cd_run(&run("x2", "platform", 2)?).await,
+            Err(AppError::Conflict(_))
+        ));
+        store.insert_cd_run(&run("p1", "prod", 3)?).await?;
+        let platform = store.cd_run("x1", false).await?.ok_or("x1")?;
+        assert_eq!(
+            (platform.environment.as_str(), platform.stage),
+            ("platform", CdStage::Prod)
+        );
+        store.finish_cd_run("x1", &end(RunState::Passed, 4)).await?;
+        let sandbox = SandboxId::parse("s1")?;
+        let deployed = store
+            .last_passed_cd_run(&sandbox, "platform", CdStage::Prod)
+            .await?;
+        assert_eq!(deployed.map(|r| r.id), Some("x1".to_owned()));
+        assert!(
+            store
+                .last_passed_cd_run(&sandbox, "platform", CdStage::Dev)
+                .await?
+                .is_none(),
+            "a run of the other stage is not what is deployed there"
+        );
+        assert!(
+            store
+                .last_passed_cd_run(&sandbox, "prod", CdStage::Prod)
+                .await?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    /// SPEC-257 CDN-006: runs written before stages existed read back with their name's stage.
+    #[tokio::test]
+    async fn runs_from_before_stages_take_their_names_stage() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let migration = include_str!("migrations/0041_cd_run_stage.sql");
+        store
+            .call(move |c| {
+                c.execute_batch(
+                    "DROP TRIGGER spans_cd_run_insert; ALTER TABLE cd_runs DROP COLUMN stage;\
+                     INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) \
+                     VALUES ('d', 's1', 'dev', 'dev', 'a', 'passed', 'x', 1), \
+                            ('p', 's1', 'prod', 'main', 'b', 'passed', 'x', 2); \
+                     CREATE TRIGGER spans_cd_run_insert AFTER INSERT ON cd_runs BEGIN SELECT 1; END;",
+                )
+                .map_err(db)?;
+                c.execute_batch(migration).map_err(db)
+            })
+            .await?;
+        let dev = store.cd_run("d", false).await?.ok_or("d")?;
+        let prod = store.cd_run("p", false).await?.ok_or("p")?;
+        assert_eq!((dev.stage, prod.stage), (CdStage::Dev, CdStage::Prod));
+        // A run's span carries its stage (review L1: delivery figures per stage).
+        store.insert_cd_run(&run("x1", "platform", 3)?).await?;
+        let stage: String = store
+            .call(|c| {
+                c.query_row(
+                    "SELECT json_extract(detail, '$.stage') FROM spans \
+                     WHERE subject_kind = 'cd_run' AND subject_id = 'x1' AND key = 'run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert_eq!(stage, "prod");
         Ok(())
     }
 
@@ -332,10 +412,10 @@ mod tests {
             ("d2", 2, RunState::Failed),
             ("d3", 3, RunState::Failed),
         ] {
-            store.insert_cd_run(&run(id, CdEnv::Dev, at)?).await?;
+            store.insert_cd_run(&run(id, "dev", at)?).await?;
             store.finish_cd_run(id, &end(state, at)).await?;
         }
-        store.insert_cd_run(&run("d4", CdEnv::Dev, 4)?).await?;
+        store.insert_cd_run(&run("d4", "dev", 4)?).await?;
         // Keep one, delete everything started before 100: d1 (deployed) and d4 (running) stay.
         assert_eq!(store.prune_cd_runs(1, Timestamp(100)).await?, 2);
         assert!(store.cd_run("d1", false).await?.is_some());

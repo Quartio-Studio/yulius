@@ -128,7 +128,7 @@ pub struct StageTrend {
 /// time to restore).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeliveryFiguresView {
-    /// `dev` or `prod`.
+    /// The stage, `dev` or `prod`: every environment of it counts (SPEC-257).
     pub environment: String,
     /// Finished deployments in the range.
     pub deployments: u64,

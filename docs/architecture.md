@@ -1144,7 +1144,12 @@ tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/c
 A CI run or a deploy is a view of its tab at its own address (`?run=<id>`, `runview.js`), with a
 sticky live summary, and the Now summary above both tabs (`pages/cinow.js`) lists what runs and
 links to it ([decision 0180](decisions/0180-ci-and-cd-runs-are-views-of-the-ci-cd-page.md)).
-`yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
+`yulius.toml` defines `[cd.dev]` and `[cd.prod]` and any other `[cd.<name>]` with its `stage`
+(`dev` or `prod`, [SPEC-257](../.ai/specs/SPEC-257-current-ci-cd-is-too-strict-dev-prod-is.md),
+[decision 0195](decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)):
+the stage carries every rule below, so "dev" and "production" mean the stages. A name's stage is
+resolved at the verified integration head first, else at the production head
+(`yulius_domain::cd::resolve_stage`). Yulius reads them only at the heads of the
 protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
 changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
@@ -1182,8 +1187,8 @@ sequenceDiagram
 ```mermaid
 flowchart LR
   M["merge into dev"] -->|"deploys nothing"| DEV
-  DEV["dev: [cd.dev] at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
-  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod: [cd.prod] at the main head"] --> RUN2["CD run"]
+  DEV["dev stage: [cd.dev], [cd.staging] … at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
 ```
 
