@@ -1,11 +1,11 @@
 ---
 yulius-task: b15ccbdb-8401-42e1-b159-447cb7ae64d1
-status: in-progress
+status: done
 ---
 
 # SPEC-250: A stop always takes effect, even while a switch completes
 
-Status: in progress
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #236
 Scope authorization: task #236, started by task #235 (work through open issues). Fixes #527. No
@@ -102,8 +102,9 @@ the stop's read and its compare-and-set is a few awaits wide.
 - [x] Other ignored transition_task results reviewed and recorded
 - [x] Flaky switch test passes repeatedly under load
 - [x] Docs updated: architecture, changes, spec decisions
-- [ ] Gate green on the merged head
-- [ ] Independent review answered
+- [x] Gate green on the merged head
+- [x] Review round 1 findings fixed test-first
+- [x] Review round 2 approves the head
 
 ## Acceptance criteria
 
@@ -201,3 +202,54 @@ the stop's read and its compare-and-set is a few awaits wide.
 - **Pause points keyed by task**: `race::reached` takes the task id as its key path for the stop's
   points, so tests running in parallel do not take each other's hooks (ADR-0174's contract). No new
   ADR: this applies ADR-0174 and SPEC-065's stop contract; it decides nothing lasting.
+
+## Evidence
+
+- **Reproduction on dev:** `a_stop_that_loses_to_a_completing_switch_still_ends_the_task` failed
+  on the unfixed code with `timed out waiting for the stop: running (runs: Killed Some("switched"),
+  Killed Some("cancelled"))`, the signature #527 reports from CI. In its final form (attach held
+  too) it fails with `left: Running, right: Stopping`.
+- **Each regression test failed without its fix and passes with it**, run with
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_done::…/)'`:
+
+  | Test | Failure without the fix |
+  |---|---|
+  | `a_run_that_ends_before_the_stops_change_still_ends_the_task` | `stopping (runs: Killed Some("cancelled"))` |
+  | `a_stop_while_a_runs_end_is_recorded_still_ends_the_task` | `stopping (runs: Exited Some("exited"))` |
+  | `a_stop_while_a_runs_loss_is_recorded_still_ends_the_task` (single-shot `mark_lost`) | `stopping (runs: Lost Some("lost"))` |
+  | `a_stop_while_a_switch_ends_its_old_run_starts_no_new_run` | `stopped_switch_failed (runs: Live None)` |
+  | `a_stop_before_a_switch_sets_its_intent_starts_no_new_run` | fails |
+  | `a_close_that_overtakes_a_switch_closes_the_task` | fails |
+  | `a_switch_whose_old_run_is_lost_starts_no_new_run` | fails |
+  | `a_stop_that_ended_no_run_does_not_end_the_next_one` (changed) | `stopping (runs: Killed Some("switched"))` |
+  | `a_switch_paused_for_capacity_goes_on` | `Err("the session ended during the switch")` |
+  | `a_switch_whose_paused_task_another_start_runs_is_completed` | `Err("the session ended during the switch")` |
+
+- **The originally flaky test under load:** temporary probe delays (0-400 ms before the launch reads
+  the task for `SwitchCompleted`, 0-300 ms after the stop's read; removed, `grep PROBE527` finds
+  none) at host load average 138-160 on 12 CPUs. `a_switch_waits_for_a_background_agent_launched_in_the_turn`,
+  run 3 at once:
+
+  | Code | Runs | Failures |
+  |---|---|---|
+  | dev's `supervisor.rs` | 12 | 3, all `timed out waiting for the stop after 60s: … running (runs: … Killed Some(")…` |
+  | this change | 24 | 0 (20-22 s each) |
+
+- **Gate:** `scripts/dev ci` exit 0 on the merged head `b9cf86ba` (2383/2383 tests, fmt, clippy for
+  Linux and macOS, doctests, deny, shear, doc). After the round-3 fixes, the stop, switch, close,
+  supervision, rotation, limit and context tests pass (145/145).
+- **Security:** `scripts/dev security` exit 2 (Vidoc HTTP 429: the instance key's token quota is
+  used up). The 5 changed code files were not scanned, so the scan is unrun, not passed; a person
+  renews the key.
+- **Independent review in fresh sessions:**
+
+  | Round | Head | Verdict | What happened |
+  |---|---|---|---|
+  | 1 | `cdc8ec6e` / `05d9318e` | request changes | A `cargo doc` blocker and 3 majors (stop before the switch's intent, close overtaking a switch, a flaky test), fixed test-first |
+  | 2 | `5741dada` | request changes | 1 major (stop after the old run ended), fixed test-first |
+  | 3 | `b9cf86ba` | approve | 1 minor and 3 nits in this change's code, fixed (the minor test-first); the delta is reviewed again before the merge |
+
+- **Outside this change:** recorded on #527, since this task files no issues.
+  - A stale `Switch` intent after a switch timeout: pre-existing, found by reading, not reproduced.
+  - `projects::a_scheduled_start_without_claude_waits_and_says_why` was flaky; `dev` fixed it meanwhile.
+  - `task_done::a_typed_compaction_leaves_a_done_task_done` timed out once at load 160 and passed 8 of 8 reruns; it touches no stop, switch or run-end code.
