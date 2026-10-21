@@ -83,12 +83,14 @@ the stop's read and its compare-and-set is a few awaits wide.
 
 ## Plan
 
-- [ ] Spec SPEC-250 written and validated
-- [ ] Regression test reproduces the lost stop (fails on dev)
-- [ ] stop_task_now retries a lost compare-and-set from the re-read status
-- [ ] Other ignored transition_task results reviewed and recorded
-- [ ] Flaky switch test passes repeatedly under load
-- [ ] Independent review answered, gates green, docs updated
+- [x] Spec SPEC-250 written and validated
+- [x] Regression test reproduces the lost stop (fails on dev)
+- [x] stop_task_now retries a lost compare-and-set from the re-read status
+- [x] Other ignored transition_task results reviewed and recorded
+- [x] Flaky switch test passes repeatedly under load
+- [x] Docs updated: architecture, changes, spec decisions
+- [ ] Gate green on the merged head
+- [ ] Independent review answered
 
 ## Acceptance criteria
 
