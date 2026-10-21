@@ -9,13 +9,21 @@
 //! Code 2.1.292 looks a worktree's trust up there when `.claude/settings.json` pre-approves tools
 //! (SPEC-106, verified live). It also defaults the user settings (`settings.json`) to the Concise
 //! output style (SPEC-210).
+//!
+//! The config dir belongs to the agent, which can replace anything in it, or the dir itself, with
+//! a link at any moment. The host opens it once from the folder above the agent's home and reads
+//! and writes only through that handle, never through a link (ADR-0174, SPEC-253).
 
-use std::io::{self, Read};
-use std::path::Path;
+use std::ffi::OsStr;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, OwnedFd};
+use std::path::{Path, PathBuf};
 
+use nix::errno::Errno;
+use nix::fcntl::{AtFlags, OFlag, openat, renameat};
+use nix::sys::stat::{Mode, fstatat, mkdirat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use serde_json::{Map, Value};
-
-use crate::launch::PlannedFile;
 
 /// File name inside the config dir.
 pub const CLAUDE_GLOBAL_CONFIG: &str = ".claude.json";
@@ -32,30 +40,34 @@ const DIFF_PLUGIN_STORE_IDS: [&str; 2] = ["cc-plugin-diff@builtin", "diff@builti
 const DIFF_PANE_OPEN: &str = "open";
 /// Largest existing config read; a larger file is treated as corrupt and left untouched.
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
+/// How a folder in the config dir is opened: never through a link.
+const DIR_FLAGS: OFlag = OFlag::O_RDONLY
+    .union(OFlag::O_DIRECTORY)
+    .union(OFlag::O_NOFOLLOW)
+    .union(OFlag::O_CLOEXEC);
 
 /// Merges onboarding completion, trust for `worktree` (and, for a linked git worktree, its main
-/// repository) and a closed diff side panel into the
-/// Claude global config of `config_dir` (created 0700 when missing), and defaults its user settings
-/// to the Concise output style. `bypass_permissions` also
-/// records acceptance of the `--dangerously-skip-permissions` warning (contained runs only).
-/// Idempotent.
+/// repository) and a closed diff side panel into the Claude global config of `config_dir`, and
+/// defaults its user settings to the Concise output style. `bypass_permissions` also records
+/// acceptance of the `--dangerously-skip-permissions` warning (contained runs only). Idempotent.
+///
+/// `config_dir` is `<anchor>/<home>/<config>`: the agent's home and its config dir below the
+/// folder above that home (a task's sandbox directory, a person's user folder), which the agent
+/// cannot replace. Home and config dir are opened from it without following links and made 0700
+/// when missing (SPEC-253 CFG-001).
 ///
 /// # Errors
-/// I/O failures, or an existing config that is not a regular file (a link, a FIFO), not a JSON
-/// object, or larger than 8 MiB.
+/// I/O failures; a home or config dir that is a link or not a folder; an existing config that is
+/// not a regular file (a link, a FIFO), not a JSON object, or larger than 8 MiB.
 pub fn ensure_claude_config(
     config_dir: &Path,
     worktree: &Path,
     bypass_permissions: bool,
 ) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(config_dir)?;
-    let path = config_dir.join(CLAUDE_GLOBAL_CONFIG);
-    let mut root = match open_regular(&path) {
-        Ok(Some(file)) => {
+    let config = open_config_dir(config_dir)?;
+    opened(&config);
+    let mut root = match open_regular(&config, OsStr::new(CLAUDE_GLOBAL_CONFIG))? {
+        Some(file) => {
             let mut text = String::new();
             file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
             if text.len() as u64 > MAX_CONFIG_BYTES {
@@ -70,8 +82,7 @@ pub fn ensure_claude_config(
                 }
             }
         }
-        Ok(None) => Map::new(),
-        Err(err) => return Err(err),
+        None => Map::new(),
     };
     let keys: Vec<String> = std::iter::once(worktree.to_path_buf())
         .chain(main_repository(worktree))
@@ -115,16 +126,103 @@ pub fn ensure_claude_config(
     }
     if root != before {
         let contents = serde_json::to_vec_pretty(&Value::Object(root)).map_err(io::Error::other)?;
-        PlannedFile {
-            path,
-            contents,
-            mode: 0o600,
-        }
-        .write()?;
+        replace(&config, CLAUDE_GLOBAL_CONFIG, &contents)?;
     }
-    close_diff_pane(config_dir);
-    default_output_style(config_dir);
+    close_diff_pane(&config);
+    default_output_style(&config);
     Ok(())
+}
+
+/// Opens `config_dir` (`<anchor>/<home>/<config>`, see [`ensure_claude_config`]): the anchor by
+/// path, then home and config dir one at a time with `O_DIRECTORY | O_NOFOLLOW`, each made 0700
+/// when missing. A link or a file on the way fails, naming it (SPEC-253 CFG-002).
+fn open_config_dir(config_dir: &Path) -> io::Result<OwnedFd> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the Claude config dir is not a folder in a home",
+        )
+    };
+    let config = config_dir.file_name().ok_or_else(invalid)?;
+    let home = config_dir.parent().ok_or_else(invalid)?;
+    let anchor = home
+        .parent()
+        .filter(|anchor| !anchor.as_os_str().is_empty())
+        .ok_or_else(invalid)?;
+    let home = home.file_name().ok_or_else(invalid)?;
+    let mut dir = nix::fcntl::open(
+        anchor,
+        DIR_FLAGS.difference(OFlag::O_NOFOLLOW),
+        Mode::empty(),
+    )?;
+    for name in [home, config] {
+        dir = open_dir_at(&dir, name, true).map_err(|err| match err {
+            Errno::ELOOP | Errno::ENOTDIR => io::Error::other(format!(
+                "{} on the way to the Claude config dir is a link or not a folder: Yulius follows \
+                 no links",
+                name.to_string_lossy()
+            )),
+            other => other.into(),
+        })?;
+    }
+    Ok(dir)
+}
+
+/// Opens the folder `name` in `dir` without following a link, making it 0700 first when it is
+/// missing and `create`.
+fn open_dir_at(dir: &OwnedFd, name: &OsStr, create: bool) -> Result<OwnedFd, Errno> {
+    match openat(dir, name, DIR_FLAGS, Mode::empty()) {
+        Err(Errno::ENOENT) if create => {
+            match mkdirat(dir, name, Mode::S_IRWXU) {
+                Ok(()) | Err(Errno::EEXIST) => {}
+                Err(err) => return Err(err),
+            }
+            openat(dir, name, DIR_FLAGS, Mode::empty())
+        }
+        other => other,
+    }
+}
+
+/// A test hook run once the config dir is open, before anything in it is read (ADR-0174).
+#[cfg(test)]
+type OpenedHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+thread_local! {
+    static OPENED: std::cell::RefCell<Option<OpenedHook>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only pause point: the config dir is open; nothing in it is read or written yet.
+fn opened(config: &OwnedFd) {
+    #[cfg(test)]
+    if let Some(hook) = OPENED.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+    let _ = config;
+}
+
+/// Replaces `name` in the folder `dir` whole, mode 0600: a new file created through the handle
+/// under a random name (`O_EXCL | O_NOFOLLOW`, so nothing planted there is opened), synced and
+/// renamed over `name` within the same handle, then the folder synced. A link at `name` is
+/// replaced, never followed. The new file is removed when anything fails.
+fn replace(dir: &OwnedFd, name: &str, contents: &[u8]) -> io::Result<()> {
+    let temporary = format!("{name}.tmp-{}", uuid::Uuid::new_v4().simple());
+    let fd = openat(
+        dir,
+        temporary.as_str(),
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?;
+    let mut file = std::fs::File::from(fd);
+    let result = file
+        .write_all(contents)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| Ok(renameat(dir, temporary.as_str(), dir, name)?))
+        .and_then(|()| Ok(nix::unistd::fsync(dir)?));
+    if result.is_err() {
+        let _ = unlinkat(dir, temporary.as_str(), UnlinkatFlags::NoRemoveDir);
+    }
+    result
 }
 
 /// Adds `"outputStyle": "Concise"` to the user settings when they name no style (SPEC-210,
@@ -132,9 +230,8 @@ pub fn ensure_claude_config(
 /// repository commits still win; forced through `--settings`, `/output-style` would report a switch
 /// that never happens (measured on 2.1.292). A chosen style, `default` included, is kept, and a
 /// file that is not a JSON object is left to Claude Code: the style never blocks a launch.
-fn default_output_style(config_dir: &Path) {
-    let path = config_dir.join(CLAUDE_USER_SETTINGS);
-    let Some(text) = read_regular(&path) else {
+fn default_output_style(config: &OwnedFd) {
+    let Some(text) = read_regular(config, CLAUDE_USER_SETTINGS) else {
         return;
     };
     let mut map = if text.trim().is_empty() {
@@ -153,12 +250,7 @@ fn default_output_style(config_dir: &Path) {
     if let Ok(mut contents) = serde_json::to_vec_pretty(&Value::Object(map)) {
         contents.push(b'\n');
         // Best effort, like the read: a failed write leaves the session in its current style.
-        let _ = PlannedFile {
-            path,
-            contents,
-            mode: 0o600,
-        }
-        .write();
+        let _ = replace(config, CLAUDE_USER_SETTINGS, &contents);
     }
 }
 
@@ -167,10 +259,10 @@ fn default_output_style(config_dir: &Path) {
 /// leads to the common git directory. That directory's parent when it is a `.git`, else the
 /// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
 /// that do not read like that.
-fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
+fn main_repository(worktree: &Path) -> Option<PathBuf> {
     // Regular files only (`read_small`): a link would make the host read a file outside the
     // worktree, a FIFO block the launch.
-    let small_file = |path: &Path| read_small(path).ok().flatten();
+    let small_file = |path: &Path| read_small(nix::fcntl::AT_FDCWD, path).ok().flatten();
     let dot_git = small_file(&worktree.join(".git"))?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
     let admin = worktree.join(admin);
@@ -189,13 +281,17 @@ fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
 /// Stores `"open": false` in every existing store of Claude Code's built-in diff plugin
 /// (SPEC-024). Since 2.1.292 that plugin draws the panel and keeps its own `"open"`, which `/diff`
 /// sets to `true`; `diffSidebarOpen` only seeds a store that does not exist yet. A missing store
-/// is left missing, and an unreadable one is left to Claude Code: the panel is cosmetic and never
-/// blocks a launch.
-fn close_diff_pane(config_dir: &Path) {
-    let store = config_dir.join("plugins").join("store");
+/// is left missing, and an unreadable one, or a `plugins` or `store` that is not a folder (a link),
+/// is left to Claude Code: the panel is cosmetic and never blocks a launch (SPEC-253 CFG-004).
+fn close_diff_pane(config: &OwnedFd) {
+    let Ok(store) = open_dir_at(config, OsStr::new("plugins"), false)
+        .and_then(|plugins| open_dir_at(&plugins, OsStr::new("store"), false))
+    else {
+        return;
+    };
     for id in DIFF_PLUGIN_STORE_IDS {
-        let path = store.join(plugin_store_file(id));
-        let Some(Value::Object(mut map)) = read_small(&path)
+        let name = plugin_store_file(id);
+        let Some(Value::Object(mut map)) = read_small(&store, name.as_str())
             .ok()
             .flatten()
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -209,12 +305,7 @@ fn close_diff_pane(config_dir: &Path) {
         if let Ok(mut contents) = serde_json::to_vec_pretty(&Value::Object(map)) {
             contents.push(b'\n');
             // Best effort, like the read: a failed write leaves the pane as Claude Code had it.
-            let _ = PlannedFile {
-                path,
-                contents,
-                mode: 0o600,
-            }
-            .write();
+            let _ = replace(&store, &name, &contents);
         }
     }
 }
@@ -249,22 +340,30 @@ fn plugin_store_file(id: &str) -> String {
     format!("{name}-{hex}.json")
 }
 
-/// The text of the regular file at `path`, empty when there is none; `None` for anything else (a
-/// link, a FIFO, a directory, a file that is not UTF-8 or larger than [`MAX_CONFIG_BYTES`]).
-fn read_regular(path: &Path) -> Option<String> {
-    match read_small(path) {
+/// The text of the regular file `name` in `dir`, empty when there is none; `None` for anything
+/// else (a link, a FIFO, a directory, a file that is not UTF-8 or larger than
+/// [`MAX_CONFIG_BYTES`]).
+fn read_regular(dir: &OwnedFd, name: &str) -> Option<String> {
+    match read_small(dir, name) {
         Ok(Some(text)) => Some(text),
         // Absent at the open, yet there now (a link planted just after it), or oversized: left
         // alone. A dangling link at the open already fails with ELOOP under `O_NOFOLLOW`.
-        Ok(None) => path.symlink_metadata().is_err().then(String::new),
+        Ok(None) => matches!(
+            fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW),
+            Err(Errno::ENOENT)
+        )
+        .then(String::new),
         Err(_) => None,
     }
 }
 
-/// The regular file at `path` when it fits in [`MAX_CONFIG_BYTES`]; `None` when it is missing or
-/// larger. Anything but a regular file is an error ([`open_regular`]).
-fn read_small(path: &Path) -> io::Result<Option<String>> {
-    let Some(file) = open_regular(path)? else {
+/// The regular file `name` in `dir` when it fits in [`MAX_CONFIG_BYTES`]; `None` when it is
+/// missing or larger. Anything but a regular file is an error ([`open_regular`]).
+fn read_small<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
+    dir: impl AsFd,
+    name: &P,
+) -> io::Result<Option<String>> {
+    let Some(file) = open_regular(dir, name)? else {
         return Ok(None);
     };
     let mut text = String::new();
@@ -272,29 +371,31 @@ fn read_small(path: &Path) -> io::Result<Option<String>> {
     Ok((text.len() as u64 <= MAX_CONFIG_BYTES).then_some(text))
 }
 
-/// Opens the regular file at `path` for reading; `None` when it is missing. The agent owns its
-/// config dir and worktree, which the host reads before a launch (#634): the file is opened
+/// Opens the regular file `name` in `dir` for reading; `None` when it is missing. The agent owns
+/// its config dir and worktree, which the host reads before a launch (#634): the file is opened
 /// without following a link (ELOOP) and without blocking, so a link cannot make the host copy
 /// another file into the sandbox or trust another directory, and a FIFO cannot hold the launch.
-fn open_regular(path: &Path) -> io::Result<Option<std::fs::File>> {
-    use nix::fcntl::OFlag;
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) if err.raw_os_error() == Some(nix::errno::Errno::ELOOP as i32) => {
-            return Err(io::Error::other(format!("{} is a link", path.display())));
-        }
-        Err(err) => return Err(err),
+fn open_regular<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
+    dir: impl AsFd,
+    name: &P,
+) -> io::Result<Option<std::fs::File>> {
+    let shown = || Path::new(name.as_ref()).display().to_string();
+    let fd = match openat(
+        dir,
+        name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::ENOENT) => return Ok(None),
+        Err(Errno::ELOOP) => return Err(io::Error::other(format!("{} is a link", shown()))),
+        Err(err) => return Err(err.into()),
     };
+    let file = std::fs::File::from(fd);
     if !file.metadata()?.is_file() {
         return Err(io::Error::other(format!(
             "{} is not a regular file",
-            path.display()
+            shown()
         )));
     }
     Ok(Some(file))
@@ -736,6 +837,32 @@ mod tests {
             "{refused}"
         );
         assert_eq!(std::fs::read_dir(&outside)?.count(), 0, "nothing written");
+        Ok(())
+    }
+
+    /// SPEC-253 CFG-003, ADR-0174: the config dir swapped for a link once it is open does not
+    /// steer the reads and writes; they stay in the folder that was opened.
+    #[test]
+    fn writes_go_to_the_folder_that_was_opened() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        let config = dir.path().join("home").join(".claude");
+        std::fs::create_dir_all(&config)?;
+        let moved = dir.path().join("home").join("moved");
+        let (from, to, target) = (config.clone(), moved.clone(), outside.clone());
+        super::OPENED.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                std::fs::rename(&from, &to).ok();
+                symlink(&target, &from).ok();
+            }));
+        });
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert!(config.symlink_metadata()?.file_type().is_symlink());
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0, "nothing written");
+        assert!(moved.join(CLAUDE_GLOBAL_CONFIG).is_file());
+        assert!(moved.join(CLAUDE_USER_SETTINGS).is_file());
         Ok(())
     }
 
