@@ -76,7 +76,9 @@ agent put in that dir's path, and never resolves agent-written git files on the 
 - [x] Config dir walked and written through handles
 - [x] Main repository derived lexically from the git layout
 - [x] Docs, ADR and Vidoc entries updated
-- [ ] Gates green and independent review approved
+- [x] Review round 1 findings fixed (commondir never opened)
+- [ ] Gates green at the merged head
+- [ ] Independent review approved
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
