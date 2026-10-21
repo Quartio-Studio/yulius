@@ -704,6 +704,112 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-253 CFG-001, CFG-002 (#634): the agent can replace its home or its config dir with a
+    /// link to a folder the service user writes; the launch is refused and nothing lands there.
+    #[test]
+    fn a_linked_config_dir_is_refused_and_its_target_untouched() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home)?;
+        symlink(&outside, home.join(".claude"))?;
+        let refused = ensure_claude_config(&home.join(".claude"), dir.path(), false)
+            .err()
+            .ok_or("a linked config dir is refused")?;
+        assert!(
+            refused
+                .to_string()
+                .starts_with(".claude on the way to the Claude config dir is a link"),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0, "nothing written");
+        // The home itself linked: refused too, and no `.claude` made in the target.
+        let linked_home = dir.path().join("linked-home");
+        symlink(&outside, &linked_home)?;
+        let refused = ensure_claude_config(&linked_home.join(".claude"), dir.path(), false)
+            .err()
+            .ok_or("a linked home is refused")?;
+        assert!(
+            refused.to_string().starts_with("linked-home on the way"),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0, "nothing written");
+        Ok(())
+    }
+
+    /// SPEC-253 CFG-004: `plugins` or `store` linked elsewhere leaves the diff pane as it is; the
+    /// store the link leads to is not rewritten.
+    #[test]
+    fn a_linked_plugin_folder_is_left_alone() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let outside = dir.path().join("outside");
+        let outside_store = outside.join("store");
+        std::fs::create_dir_all(&outside_store)?;
+        let store_file = outside_store.join("cc-plugin-diff_builtin-3903e77c01b1.json");
+        std::fs::write(&store_file, r#"{"open":true}"#)?;
+        let config = dir.path().join("home").join(".claude");
+        std::fs::create_dir_all(&config)?;
+        symlink(&outside, config.join("plugins"))?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(std::fs::read_to_string(&store_file)?, r#"{"open":true}"#);
+        std::fs::remove_file(config.join("plugins"))?;
+        std::fs::create_dir(config.join("plugins"))?;
+        symlink(&outside_store, config.join("plugins").join("store"))?;
+        ensure_claude_config(&config, dir.path(), false)?;
+        assert_eq!(std::fs::read_to_string(&store_file)?, r#"{"open":true}"#);
+        Ok(())
+    }
+
+    /// SPEC-253 CFG-005 (#634): the main repository comes from the paths alone, as Git lays a
+    /// linked worktree out; the host resolves nothing the agent wrote. A `commondir` leading
+    /// anywhere but two folders up, or an admin dir reached through a link, trusts no repository
+    /// the host would have found by following it.
+    #[test]
+    fn the_main_repository_comes_from_the_git_layout_alone() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().canonicalize()?;
+        let repo = root.join("repo");
+        let common = repo.join(".git");
+        let worktree = linked_worktree(&root, &common, |admin| {
+            format!("gitdir: {}\n", admin.display())
+        })?;
+        let admin = common.join("worktrees").join("w1");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir(&elsewhere)?;
+        let projects = |config: &std::path::Path| -> Result<usize, Box<dyn std::error::Error>> {
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
+            Ok(value["projects"].as_object().ok_or("projects")?.len())
+        };
+        for (n, commondir) in ["/\n", "../../../../elsewhere\n", "..\n"]
+            .into_iter()
+            .enumerate()
+        {
+            std::fs::write(admin.join("commondir"), commondir)?;
+            let config = root.join(format!(".claude-{n}"));
+            ensure_claude_config(&config, &worktree, false)?;
+            assert!(trusted(&config, &worktree)?, "{commondir:?}");
+            assert_eq!(projects(&config)?, 1, "{commondir:?}: the worktree alone");
+        }
+        // The admin dir reached through a link: the link is not resolved on the host.
+        std::fs::write(admin.join("commondir"), "../..\n")?;
+        let link = root.join("link");
+        symlink(&common, &link)?;
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", link.join("worktrees").join("w1").display()),
+        )?;
+        let config = root.join(".claude-link");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(!trusted(&config, &repo)?, "the link is not followed");
+        Ok(())
+    }
+
     #[test]
     fn creates_a_missing_config_and_refuses_corrupt_ones() -> TestResult {
         let dir = tempfile::tempdir()?;
