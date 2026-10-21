@@ -21,12 +21,13 @@ fn parse_server(server: &str) -> Result<Url, String> {
     Url::parse(server.trim_end_matches('/')).map_err(|e| format!("invalid --server URL: {e}"))
 }
 
-/// The server to talk to: `--server`/`YULIUS_SERVER`, else the only one signed in to.
+/// The server to talk to: `--server`/`YULIUS_SERVER`, else the only one signed in to with
+/// `yulius login` or `yulius remote login` (SPEC-256 LOB-001).
 fn resolve_server(server: Option<&str>, store: &TokenStore) -> Result<Url, String> {
     if let Some(server) = server.filter(|s| !s.trim().is_empty()) {
         return parse_server(server);
     }
-    let known = store.servers().map_err(|e| e.to_string())?;
+    let known = store.known_servers().map_err(|e| e.to_string())?;
     match known.as_slice() {
         [only] => parse_server(only),
         [] => Err("pass --server <url> (for example --server https://yulius.example.com)".into()),
@@ -269,10 +270,13 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
         let store = TokenStore::default_location().map_err(|e| e.to_string())?;
         let server = resolve_server(args.server.as_deref(), &store)?;
         let token = store
-            .load(&server)
+            .load_or_remote(&server)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| {
-                format!("not signed in to {server}; run `yulius login --server {server}`")
+                format!(
+                    "not signed in to {server}; run `yulius remote login {server}` with a token \
+                     from Settings → Connect your local agent, or `yulius login --server {server}`"
+                )
             })?;
         let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
         let options = SecretsImportOptions {
