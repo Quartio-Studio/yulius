@@ -2113,7 +2113,7 @@ fn a_stop_while_a_switch_ends_its_old_run_starts_no_new_run() -> TestResult {
                 yulius_app::race::Point::StopDecided,
                 Path::new(key.as_str()),
                 move || {
-                    let settled = wait_in_hook(&handle, async {
+                    wait_in_hook(&handle, async {
                         let new_run = wait_for("a new run", Duration::from_secs(30), || async {
                             app.deps.store.attempts(&id).await.unwrap_or_default().len() >= 2
                         });
@@ -2122,7 +2122,6 @@ fn a_stop_while_a_switch_ends_its_old_run_starts_no_new_run() -> TestResult {
                             _ = new_run => {}
                         }
                     });
-                    let () = settled;
                     host.refuse_ends(false);
                 },
             );
