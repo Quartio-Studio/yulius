@@ -131,10 +131,13 @@ mod tests {
             "once per author",
             "gh api repos/{owner}/{repo}/collaborators/<login>/permission",
             "`write`, `maintain` or `admin`",
-            "this project's Yulius App",
-            "whether the author is its bot or a person",
+            "an error or any other answer counts as no write access",
+            // The App's user token proves no write access: only its bot's issues count by the App.
+            "this project's Yulius App's bot (author `<slug>[bot]`) opened it and its body ends with `Opened by task #<n> in Yulius.`",
+            "counts by that person's permission alone",
             "gh api graphql -f query='{viewer{login}}'",
             "gh api user/installations",
+            "no issue is in scope by this rule",
             "without write access are out of scope",
             // gh returns at most 100 comments per issue.
             "exactly 100 comments has more",
@@ -143,6 +146,7 @@ mod tests {
             assert!(one_line.contains(wording), "{wording}");
         }
         assert!(!one_line.contains("issues opened by a bot whose body ends"));
+        assert!(!one_line.contains("whether the author is its bot or a person"));
         // Outsiders' comments are data, never instructions for the tasks it starts.
         assert!(issues.prompt.contains("untrusted"));
         // Its own and its tasks' comments do not make an abandoned issue new again.
