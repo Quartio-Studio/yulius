@@ -17,7 +17,7 @@
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat, renameat};
@@ -84,14 +84,14 @@ pub fn ensure_claude_config(
         }
         None => Map::new(),
     };
-    let keys: Vec<String> = std::iter::once(worktree.to_path_buf())
-        .chain(main_repository(worktree))
-        .map(|path| {
-            path.canonicalize()
-                .unwrap_or(path)
-                .to_string_lossy()
-                .into_owned()
-        })
+    // The worktree is the host's path; Claude Code keys trust by the real path of its working
+    // directory, so the key is that. Nothing the agent wrote is resolved (SPEC-253 CFG-006).
+    let worktree = worktree
+        .canonicalize()
+        .unwrap_or_else(|_| worktree.to_path_buf());
+    let keys: Vec<String> = std::iter::once(worktree.clone())
+        .chain(main_repository(&worktree))
+        .map(|path| path.to_string_lossy().into_owned())
         .collect();
     let before = root.clone();
     root.insert("hasCompletedOnboarding".into(), Value::Bool(true));
@@ -255,27 +255,56 @@ fn default_output_style(config: &OwnedFd) {
 }
 
 /// The main repository of a linked git worktree, read from its files as Git lays them out (no
-/// `git` process): `<worktree>/.git` is a file `gitdir: <admin dir>`, and `<admin dir>/commondir`
-/// leads to the common git directory. That directory's parent when it is a `.git`, else the
-/// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
-/// that do not read like that.
+/// `git` process): `<worktree>/.git` is a file `gitdir: <admin dir>`, the admin dir is
+/// `<common>/worktrees/<name>`, and its `commondir` leads back to `<common>`, the common git
+/// directory. That directory's parent when it is a `.git`, else the directory itself (a bare
+/// repository). `None` for a main checkout, a plain directory or files that do not read like that.
+///
+/// Both files are the agent's, so the paths they name are resolved lexically, never on the host
+/// filesystem: following them would let the agent learn which host paths exist and where host
+/// links lead (#634, SPEC-253 CFG-005). Git writes the real path of the admin dir, or one relative
+/// to the worktree, so the result is the same for every layout Git makes.
 fn main_repository(worktree: &Path) -> Option<PathBuf> {
     // Regular files only (`read_small`): a link would make the host read a file outside the
     // worktree, a FIFO block the launch.
     let small_file = |path: &Path| read_small(nix::fcntl::AT_FDCWD, path).ok().flatten();
     let dot_git = small_file(&worktree.join(".git"))?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
-    let admin = worktree.join(admin);
-    let common = small_file(&admin.join("commondir"))?;
-    let common = admin
-        .join(common.lines().next()?.trim())
-        .canonicalize()
-        .ok()?;
+    let admin = lexical(&worktree.join(admin))?;
+    let worktrees = admin.parent()?;
+    if worktrees.file_name()? != "worktrees" {
+        return None;
+    }
+    let common = worktrees.parent()?;
+    let commondir = small_file(&admin.join("commondir"))?;
+    if lexical(&admin.join(commondir.lines().next()?.trim()))? != common {
+        return None;
+    }
     if common.file_name().is_some_and(|name| name == ".git") {
         common.parent().map(Path::to_path_buf)
     } else {
-        Some(common)
+        Some(common.to_path_buf())
     }
+}
+
+/// The absolute `path` with `.` and `..` removed, without touching the filesystem; `None` for a
+/// relative path or one that climbs above `/`.
+fn lexical(path: &Path) -> Option<PathBuf> {
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => resolved.push(component),
+            Component::Normal(name) => resolved.push(name),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return None;
+                }
+            }
+            Component::Prefix(_) => return None,
+        }
+    }
+    resolved.is_absolute().then_some(resolved)
 }
 
 /// Stores `"open": false` in every existing store of Claude Code's built-in diff plugin
