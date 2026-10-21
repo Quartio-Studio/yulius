@@ -62,7 +62,7 @@ the stop's read and its compare-and-set is a few awaits wide.
 - STW-001: when `stop_task_now`'s status change loses to a concurrent one, it reads the task again
   and stops it from the new status: a live status goes to `Stopping` and its run is ended; a status
   that waits (queued, chained, prepared, waiting for capacity with no run) goes to `Stopped`. The
-  rounds are bounded ([`STOP_ROUNDS`]); a task still changing after them is refused with
+  rounds are bounded (`STOP_ROUNDS`); a task still changing after them is refused with
   `Conflict` (try again).
 - STW-002: a task that rests when a lost round reads it again was ended meanwhile (by this stop's
   intent, or by its run's own end): the stop succeeds. A stop of a task that already rests at its
@@ -76,11 +76,14 @@ the stop's read and its compare-and-set is a few awaits wide.
 - STW-006: a switch never takes over the end of a run that a stop or a close owns, and starts no
   new run once overtaken:
   - it sets its intent for the old run only when the slot holds no stop's or close's intent, and
-    only while the task is still `Switching`;
+    goes on only while the task is still `Switching` (or paused for capacity meanwhile, which the
+    launch takes as before);
   - an intent replaced while it waits (a stop, a close, or the run's loss dropping it) ends the
     switch;
-  - it launches only while the task is still `Switching`, checked under the launch lock (a stopped
+  - it launches only from the status it goes on from, checked under the launch lock (a stopped
     task is neither started again nor queued);
+  - a task its stop left `Stopping` with no run (the stop came once the old run had ended) rests
+    `Stopped(Cancelled)` when the switch gives up, as a second stop would rest it;
   - an overtaken switch records its outcome as `cancelled`, tells the viewers why ("the task was
     stopped", "the task was closed", "the session ended") and returns `Conflict`;
   - the end of a run closed during a switch closes the task from `Switching`.
@@ -142,6 +145,11 @@ the stop's read and its compare-and-set is a few awaits wide.
 - `task_done::a_switch_whose_old_run_is_lost_starts_no_new_run`: the old run's host is killed
   while the switch waits; the switch must give up ("the session ended") and the task rest
   `Stopped(Lost)` with one run.
+- `task_done::a_stop_that_ended_no_run_does_not_end_the_next_one` (SPEC-140, changed): the stop
+  that comes once the switch's old run ended, while another task's launch holds the lock, now
+  rests the task when the switch gives up (`Stopped(Cancelled)`, no second stop).
+- `task_done::a_switch_paused_for_capacity_goes_on`: the switch pause point moves the task to
+  `WaitingCapacity`; the switch must go on and launch (two runs).
 - `task_done::a_stop_while_a_runs_loss_is_recorded_still_ends_the_task`: the run's host is killed
   and the end pause point stops the task during `mark_lost`; the task must rest `Stopped(Lost)`.
 - The flaky test under probe delays at the stop's pause point and under CPU load, many runs.

@@ -3027,7 +3027,7 @@ impl App {
                 }
                 !taken
             });
-            if !installed || !self.still_switching(task_id).await {
+            if !installed || self.switch_goes_on(task_id).await.is_none() {
                 if let Ok(mut intent) = runtime.intent.lock()
                     && matches!(*intent, Some(EndIntent::Switch(_)))
                 {
@@ -3077,10 +3077,10 @@ impl App {
         }
         // Only while the task is still switching, checked under the launch lock: one stopped or
         // closed meanwhile is not started again, nor queued (STW-006).
-        match self
-            .start_run_if(task_id, start, account, Some(TaskStatus::Switching))
-            .await
-        {
+        let Some(from) = self.switch_goes_on(task_id).await else {
+            return self.switch_overtaken(task_id, &decision_id).await;
+        };
+        match self.start_run_if(task_id, start, account, Some(from)).await {
             Ok(false) => self.switch_overtaken(task_id, &decision_id).await,
             Ok(true) => {
                 // The switch found no subscription with capacity: the task paused instead.
@@ -3127,24 +3127,48 @@ impl App {
         }
     }
 
-    /// Whether the task is still `Switching` (a store error reads as not).
-    async fn still_switching(&self, task_id: &TaskId) -> bool {
-        matches!(
-            self.deps.store.task(task_id).await,
-            Ok(Some(task)) if task.status == TaskStatus::Switching
-        )
+    /// The status a switch goes on from: still `Switching`, or paused for capacity meanwhile (a
+    /// Stop hook's wait, which the launch takes as before). `None` once a stop, a close or the
+    /// old run's loss moved the task on, or the store cannot say.
+    async fn switch_goes_on(&self, task_id: &TaskId) -> Option<TaskStatus> {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task))
+                if matches!(
+                    task.status,
+                    TaskStatus::Switching | TaskStatus::WaitingCapacity
+                ) =>
+            {
+                Some(task.status)
+            }
+            _ => None,
+        }
     }
 
     /// Ends a switch that a stop, a close or the old run's loss overtook (SPEC-250 STW-006): no
-    /// new run starts, the decision is recorded `cancelled` and viewers are told why.
+    /// new run starts, a task left stopping with no run rests, the decision is recorded
+    /// `cancelled` and viewers are told why.
     ///
     /// # Errors
     /// Always `Conflict`, saying what overtook the switch; a store error when recording it.
-    async fn switch_overtaken(&self, task_id: &TaskId, decision_id: &str) -> AppResult<()> {
+    async fn switch_overtaken(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        decision_id: &str,
+    ) -> AppResult<()> {
         self.deps
             .store
             .set_switch_outcome(decision_id, "cancelled")
             .await?;
+        // A stop that came once the old run had ended found no run to end: the task is stopping
+        // with no run, and rests now, as a stop of it would rest it.
+        if matches!(
+            self.deps.store.task(task_id).await,
+            Ok(Some(task)) if task.status == TaskStatus::Stopping
+        ) && matches!(self.deps.store.live_attempt(task_id).await, Ok(None))
+            && let Err(err) = self.stop_round(task_id, false).await
+        {
+            tracing::warn!(task = %task_id, error = %err, "the overtaken switch's task was not rested");
+        }
         let status = self
             .deps
             .store
