@@ -1,11 +1,11 @@
 ---
 yulius-task: c2e208f5-5f87-4e62-a54d-db846db56189
-status: in-progress
+status: done
 ---
 
 # SPEC-254: Superagent secret_copy_to_env follows a sandbox repo swapped for a link
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #240
 Scope authorization: task #240, started by task #235 (work through open issues): fix
@@ -60,7 +60,7 @@ is written anywhere.
 - [x] Regression test: a swapped repo is refused and nothing is written
 - [x] Superagent copies open from the canonical sandbox folder
 - [x] Architecture and changes describe the anchored root
-- [ ] Gates green and independent review approved
+- [x] Gates green and independent review approved
 
 ## Acceptance criteria
 
@@ -94,3 +94,21 @@ is written anywhere.
   Git check could make Git answer for another folder. The write still goes through the opened
   handle into the real repository, so at worst the Superagent's own repository gets a `.env` its
   `.gitignore` may not cover, which it could cause by editing `.gitignore` itself.
+
+## Evidence
+
+- Regression test first (commit e786f60a), before the fix:
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/cockpit::the_superagent_never_copies_into_a_repo_swapped_for_a_link/)'`
+  failed: the copy answered `{"copied":["SWAP_KEY"],"file":".env",...}`, the value written into
+  the link's target. After the fix it passes.
+- `cargo nextest run -p yulius-app -E 'test(/env_files::tests::/)'`: 3 passed, including
+  `hidden_folders_root_the_walk_below_the_anchor`.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^cockpit::/) | test(/^secrets_/))'`:
+  76 passed (the Superagent and task copy tests unchanged).
+- `scripts/dev ci` (at 4e796d87 + this branch): exit 0; check, fmt, clippy (Linux and
+  aarch64-apple-darwin), nextest 2365 passed / 17 skipped, doctests, deny, shear, doc.
+- `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 ("This API key has used its
+  50,000,000 tokens"), so the 4 changed code files were not scanned. Unrun, not passed.
+- Not tested: a swap racing between the walk and the Git check (see Decisions); the containment
+  that makes the sandbox folder writable is taken from `yulius-ptyhost/src/containment.rs`, not
+  exercised here (the test swaps the folder directly).
