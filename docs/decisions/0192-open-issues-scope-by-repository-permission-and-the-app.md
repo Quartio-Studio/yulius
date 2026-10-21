@@ -21,11 +21,15 @@ On this repository 2 of 109 open issues were in scope on 2026-10-21, while 50 we
 - The collect command lists each issue's author login and `performed_via_github_app.slug`.
 - A person whose repository permission is `write`, `maintain` or `admin`
   (`gh api repos/{owner}/{repo}/collaborators/<login>/permission`, asked once per author) is the
-  core team whatever the association says; `OWNER`, `MEMBER` and `COLLABORATOR` still count.
-- An issue this project's Yulius App opened (author `<slug>[bot]`, or `performed_via_github_app`
-  `<slug>` on a person's behalf) whose body ends with the footer is an agent's issue. The prompt
-  finds the slug from the App `gh` works through: the GraphQL `viewer` is its bot with the
-  installation token; with a person's App user token, `user/installations` names the App.
+  core team whatever the association says; `OWNER`, `MEMBER` and `COLLABORATOR` still count. A
+  failed lookup (an unknown login, a refused call) or any other answer counts as no write access.
+- An issue this project's Yulius App's bot (`<slug>[bot]`) opened whose body ends with the footer
+  is an agent's issue. An issue an agent filed through the App on a person's behalf
+  (`performed_via_github_app` `<slug>`) counts by that person's permission alone: every person on
+  any project of the instance holds a user token of the same App, so it proves no write access
+  here, and the footer is plain text. The prompt finds the slug from the App `gh` works through:
+  the GraphQL `viewer` is its bot with the installation token; with a person's App user token,
+  `user/installations` names the App. Without a slug no issue is in scope by this rule.
 - Everyone else (contributors and outsiders without write access) stays out, untouched.
 
 ## Alternatives
@@ -34,12 +38,18 @@ On this repository 2 of 109 open issues were in scope on 2026-10-21, while 50 we
   automation; refused.
 - Keep "any bot with the footer" and add "any App with the footer": the footer is plain text and
   any installed App could carry it; pinning this project's App costs one command.
+- Take an issue filed through this project's App on a person's behalf with the footer, whoever the
+  person (as #594 first asked): a person with write access on another project of the instance, or
+  read access only, could steer the automation here; writers' issues are in scope by permission
+  anyway.
 - Expose the App slug through `project_context`: exact, but a server and MCP change larger than the
   defect, while `gh` already names the App.
 
 ## Consequences
 
 - A run asks GitHub one permission call per distinct human author (one on this repository).
+- `MEMBER` and `COLLABORATOR` still count without a permission check, as before, although GitHub
+  reports them for read and triage access too; tightening that is outside #594.
 - Bot-authored issues without the footer, such as Yulius's security findings
   ([ADR-0172](0172-medium-findings-in-the-change-block-and-the-rest-become-issues.md)), stay out
   as before; taking them in is a separate decision.

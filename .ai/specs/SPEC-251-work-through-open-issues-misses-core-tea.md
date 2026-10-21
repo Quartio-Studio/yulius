@@ -53,8 +53,8 @@ leaves contributors' and outsiders' issues untouched.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OIS-001 | The collect command lists each issue's author login and the slug of the App that opened it (`performed_via_github_app`). | `templates.rs` unit test |
-| OIS-002 | An issue whose author is a person with repository permission `write`, `maintain` or `admin` is in scope even when the association reads `CONTRIBUTOR` or `NONE`; the permission is asked once per author with `gh api repos/{owner}/{repo}/collaborators/<login>/permission`. | `templates.rs` unit test |
-| OIS-003 | An issue this project's Yulius App opened whose body ends with `Opened by task #<n> in Yulius.` is in scope whether its author is the App's bot or a person; the prompt says how to tell this project's App's slug. | `templates.rs` unit test |
+| OIS-002 | An issue whose author is a person with repository permission `write`, `maintain` or `admin` is in scope even when the association reads `CONTRIBUTOR` or `NONE`; the permission is asked once per author with `gh api repos/{owner}/{repo}/collaborators/<login>/permission`, and a failed lookup counts as no write access. | `templates.rs` unit test |
+| OIS-003 | An issue this project's Yulius App's bot opened whose body ends with `Opened by task #<n> in Yulius.` is in scope; an issue filed through the App on a person's behalf counts by that person's permission alone (OIS-002); the prompt says how to tell this project's App's slug, and without it no issue is in scope by this rule. | `templates.rs` unit test |
 | OIS-004 | Associations `OWNER`, `MEMBER`, `COLLABORATOR` stay in scope; contributors and outsiders without write access stay out, untouched. | `templates.rs` unit test |
 | OIS-005 | The prompt says that an issue showing exactly 100 comments has more, read with `gh issue view <number> --json comments`. | `templates.rs` unit test |
 | OIS-006 | This project's "Work through open issues" automation carries the new prompt. | `automations_list` after the merge |
@@ -72,7 +72,7 @@ leaves contributors' and outsiders' issues untouched.
 ## Acceptance criteria
 
 - `catalog/automations/open-issues.md` step 1 collects `author` and `app`, puts writers and this
-  project's App issues with the footer in scope, keeps the old association rule, and leaves
+  project's App's bot issues with the footer in scope, keeps the old association rule, and leaves
   contributors and outsiders without write access out; it still parses and fits
   `MAX_PROMPT_BYTES`, and its first paragraph is unchanged (SPEC-240 test).
 - Applied by hand to today's open issues, the rule puts the 50 issues of MrFishPL (admin) and the
@@ -95,9 +95,14 @@ leaves contributors' and outsiders' issues untouched.
   association cannot tell an admin from a one-time contributor (both read `CONTRIBUTOR`), while
   `collaborators/<login>/permission` is exact and needs one call per distinct author
   ([ADR-0192](../../docs/decisions/0192-open-issues-scope-by-repository-permission-and-the-app.md)).
-- The App issues need both this project's App (bot login or `performed_via_github_app`) and the
-  footer: the footer alone is plain text anyone can type, and any installed App's bot is not
-  necessarily Yulius. The bot rule narrows from "a bot" to "this project's App's bot".
+- The App rule needs this project's App's bot and the footer: the footer alone is plain text
+  anyone can type, and any installed App's bot is not necessarily Yulius. The bot rule narrows
+  from "a bot" to "this project's App's bot".
+- An issue filed through the App on a person's behalf counts by the person's permission, not by
+  the App (independent review, round 1): every person on any project of this instance holds a
+  user token of the same App, so `performed_via_github_app` proves no write access here. #594's
+  first criterion asked for it "whether the author is the bot or a user"; its third criterion
+  (no outsiders) wins, and every writer's App issue is in scope by permission anyway.
 - Yulius's security-finding issues (bot-authored, no footer, ADR-0172) stay out of scope as before:
   putting them in would change what the automation ranks every night, a product decision outside
   #594. Recorded on #594.

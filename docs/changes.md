@@ -10,11 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ADR-0192, task #237, #594). GitHub reports `CONTRIBUTOR` for a repository admin outside the
   organization, and an agent's issue filed with its person's token is not by a bot, so only 2 of
   109 open issues were in scope here. A person with `write`, `maintain` or `admin` permission
-  (asked once per author) is now in scope, and so is an issue this project's Yulius App opened
-  with the `Opened by task #<n> in Yulius.` footer, as its bot or on a person's behalf;
-  contributors and outsiders without write access stay out. An issue showing exactly 100 comments
-  is read in full. Projects that added the automation earlier keep their copy of the prompt; this
-  project's was updated.
+  (asked once per author) is now in scope, also for the issues agents file through the App on
+  their behalf, and so is an issue this project's Yulius App's bot opened with the
+  `Opened by task #<n> in Yulius.` footer; contributors and outsiders without write access stay
+  out, whatever App they file through. An issue showing exactly 100 comments is read in full.
+  Projects that added the automation earlier keep their copy of the prompt; this project's gets
+  the new one after the merge.
 
 ## 2026-10-20
 

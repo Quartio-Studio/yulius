@@ -201,9 +201,8 @@ watching, steering and unblocking.
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
   its Defaults (as the default workflows do), each off until a person switches it on: "Keep the
-  docs up to date", "Work through open issues" (the core team's issues, those of people with write access and of
-  this project's agents, ranked, and the 5 most
-  important actionable ones that no running task owns verified in parallel and given a task each,
+  docs up to date", "Work through open issues" (the issues of the core team, of people with write access and of
+  this project's agents ranked, and the 5 most important actionable ones that no running task owns verified in parallel and given a task each,
   no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after

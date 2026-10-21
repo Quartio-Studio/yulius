@@ -20,12 +20,14 @@ it starts to finish, changes no repository file itself and opens no pull request
    - or the author is a person with write access although the association reads `CONTRIBUTOR` or
      `NONE` (GitHub says `CONTRIBUTOR` for an admin outside the organization): ask once per author,
      `gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission`, and count
-     `write`, `maintain` or `admin`;
-   - or this project's Yulius App opened it and its body ends with `Opened by task #<n> in Yulius.`,
-     whether the author is its bot or a person (author `<slug>[bot]`, or `app` `<slug>`). The App is the
-     one `gh` works through: `gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login`
-     names its bot; when it names a person, `gh api user/installations --jq '.installations[0].app_slug'`
-     gives the slug.
+     `write`, `maintain` or `admin`; an error or any other answer counts as no write access;
+   - or this project's Yulius App's bot (author `<slug>[bot]`) opened it and its body ends with
+     `Opened by task #<n> in Yulius.`. An issue an agent filed through the App on a person's behalf
+     (`app` is `<slug>`) counts by that person's permission alone: the App's token proves no write
+     access. The App is the one `gh` works through:
+     `gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login` names its bot; when it
+     names a person, `gh api user/installations --jq '.installations[0].app_slug'` gives the slug.
+     When the slug cannot be found, no issue is in scope by this rule.
    Issues from contributors and outsiders without write access are out of scope; leave them
    untouched.
 2. Drop every issue a running task owns: those never count toward the 5 and get no comment. The
