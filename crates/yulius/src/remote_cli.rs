@@ -70,7 +70,12 @@ pub enum ProjectAction {
     /// The project, its onboarding state and plan.
     Get,
     /// Start the project's onboarding.
-    Onboard,
+    Onboard {
+        /// A file (`-`: stdin) your agent wrote for the onboarding task: which secret is which,
+        /// where and how deploys run; added to its request (SPEC-256).
+        #[arg(long, value_name = "FILE")]
+        notes: Option<String>,
+    },
     /// List a directory of the integration branch.
     Files {
         /// Directory (default: the root).
@@ -256,6 +261,18 @@ fn text_arg(text: &str) -> Result<String, String> {
         .take(1 << 20)
         .read_to_string(&mut out)
         .map_err(|e| format!("cannot read stdin: {e}"))?;
+    Ok(out)
+}
+
+/// The text of the file at `path`, or stdin for `-`, at most 1 MiB.
+fn file_arg(path: &str) -> Result<String, String> {
+    if path == "-" {
+        return text_arg(path);
+    }
+    let mut out = String::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(1 << 20).read_to_string(&mut out))
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
     Ok(out)
 }
 
@@ -459,7 +476,19 @@ pub fn project_cmd(action: ProjectAction, opts: &RemoteOpts) -> ExitCode {
             )
         }
         ProjectAction::Get => run(command, opts, "project_get", Value::Null, true),
-        ProjectAction::Onboard => run(command, opts, "onboarding_start", Value::Null, true),
+        ProjectAction::Onboard { notes } => {
+            let notes = match notes.as_deref().map(file_arg).transpose() {
+                Ok(notes) => notes,
+                Err(err) => return fail(command, err),
+            };
+            run(
+                command,
+                opts,
+                "onboarding_start",
+                notes.map_or(Value::Null, |notes| json!({"notes": notes})),
+                true,
+            )
+        }
         ProjectAction::Files { path, reference } => run(
             command,
             opts,

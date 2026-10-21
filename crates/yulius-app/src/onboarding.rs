@@ -125,7 +125,11 @@ under scripts/cd/ (keep working conventions; machines and credentials come from 
 never the repository), and an environment with nothing to deploy yet is an empty table with an \
 `about` line saying so. A production deploy that pushes or promotes the production branch is \
 `promote = true`. Yulius reads them from the protected branches and only a person deploys \
-production. A credential or machine only a person can give: ask with needs_you and go on.";
+production. Before asking anyone for a credential or a machine, read secrets_list and any \
+hand-over in your request: the person's own agent may have imported the keys (described) and said \
+where and how deploys run; a key used outside the proxy (ssh, a deploy script) reaches the ignored \
+.env through secret_copy_to_env. Only a credential or machine nobody gave: ask with needs_you and \
+go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
 /// with an instance Vidoc key, the rule to scan before delivery (Yulius CI runs the built-in
@@ -1288,12 +1292,23 @@ impl App {
         self: &Arc<Self>,
         ctx: &AuthContext,
         sid: &str,
+        notes: Option<&str>,
     ) -> AppResult<Sandbox> {
         ensure_browser(ctx)?;
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (record, level) = self.require(&ctx.user, &id, Action::Work).await?;
+        let notes = notes.map(str::trim).filter(|n| !n.is_empty());
+        if notes.is_some_and(|n| n.len() > MAX_HANDOVER_BYTES) {
+            return Err(AppError::Invalid(format!(
+                "the hand-over is longer than {} KiB: keep what the onboarding task needs",
+                MAX_HANDOVER_BYTES / 1024
+            )));
+        }
         match OnboardingState::parse(&record.onboarding_state) {
             Some(OnboardingState::Pending) => {}
+            Some(OnboardingState::Preparing) if notes.is_some() => {
+                return Err(AppError::Conflict(ALREADY_STARTED.into()));
+            }
             Some(OnboardingState::Preparing) => return self.sandbox_view(&record, level).await,
             _ => {
                 return Err(AppError::Conflict(format!(
@@ -1303,6 +1318,9 @@ impl App {
             }
         }
         let actor = self.login_of(&ctx.user.id).await;
+        if let Some(notes) = notes {
+            self.add_handover(&id, &actor, notes).await?;
+        }
         self.start_onboarding(&id, &actor).await?;
         let record = self
             .deps
@@ -1311,6 +1329,62 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.sandbox_view(&record, level).await
+    }
+}
+
+/// Longest hand-over a person's agent gives the onboarding task (SPEC-256 LOB-005).
+pub const MAX_HANDOVER_BYTES: usize = 24 * 1024;
+
+/// Why a hand-over is refused once onboarding started.
+const ALREADY_STARTED: &str = "onboarding already started, so its request is read: tell its task \
+     with task_message instead";
+
+impl App {
+    /// Adds the hand-over of the person's agent to the onboarding task's request before it starts
+    /// (SPEC-256 LOB-005), redacted of secrets, as a queued message is (SPEC-052). The account
+    /// check comes first, so nothing is created that could not start.
+    ///
+    /// # Errors
+    /// `AccountRequired` without a usable Claude account; `Conflict` once the task started or
+    /// onboarding is no longer pending; `Invalid` past the request's size; store failures.
+    async fn add_handover(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+        login: &str,
+        notes: &str,
+    ) -> AppResult<()> {
+        self.ensure_agent_account(Harness::ClaudeCode.provider())
+            .await?;
+        let task = self
+            .onboarding_task(sandbox)
+            .await?
+            .ok_or_else(|| AppError::Conflict(ALREADY_STARTED.into()))?;
+        let redacted = yulius_domain::redact::redact(notes).map(|r| r.text);
+        let addition = yulius_domain::request::handover_addition(
+            login,
+            redacted.as_deref().unwrap_or(notes),
+        )
+        .ok_or_else(|| AppError::Invalid("the hand-over is empty".into()))?;
+        if task.prompt.len() + addition.len() > crate::lifecycle::MAX_PROMPT_BYTES {
+            return Err(AppError::Invalid(
+                "the hand-over does not fit the onboarding task's request: shorten it".into(),
+            ));
+        }
+        if !self
+            .deps
+            .store
+            .append_resting_prompt(
+                &task.id,
+                &addition,
+                crate::lifecycle::MAX_PROMPT_BYTES,
+                self.now(),
+            )
+            .await?
+        {
+            return Err(AppError::Conflict(ALREADY_STARTED.into()));
+        }
+        self.publish_task(&task.id).await;
+        Ok(())
     }
 }
 
@@ -1404,6 +1478,8 @@ mod tests {
         assert!(prompt.contains("into quartio"));
         assert!(prompt.contains("git-crypt"));
         assert!(prompt.contains("Reverse-engineer"));
+        // SPEC-256 LOB-006: the keys and hand-over of the person's agent come before a person.
+        assert!(prompt.contains("read secrets_list and any hand-over"), "{prompt}");
         assert!(prompt.contains("nobody needs to approve"));
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));

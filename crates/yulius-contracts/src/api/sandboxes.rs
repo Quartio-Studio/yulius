@@ -43,6 +43,16 @@ pub struct RepoRef {
     pub url: String,
 }
 
+/// `POST /api/sandboxes/{sid}/onboarding/approve` body, optional (SPEC-256 LOB-005).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveOnboarding {
+    /// The hand-over of the person's own agent, added to the onboarding task's request before it
+    /// starts (at most 24 KiB, redacted of secrets); refused once onboarding started.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 /// What a sandbox's onboarding does: its task's plan, or the one that task would get while it does
 /// not exist yet (SPEC-097).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

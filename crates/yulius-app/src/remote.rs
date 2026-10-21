@@ -219,8 +219,8 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "onboarding_start",
-            "Start a pending project's onboarding, as Start onboarding on its page: its onboarding task starts and adapts the repository (docs, gates, Yulius CI); other tasks wait until it is done. Only when the person asks.",
-            json!({}),
+            "Start a pending project's onboarding, as Start onboarding on its page: its onboarding task starts and adapts the repository (docs, gates, Yulius CI, CD); other tasks wait until it is done. Only when the person asks. Pass `notes` to hand over what you learned on the person's computer: which agent secret is which, the hosts and commands deploys use, what runs only there. Never put a secret's value in them.",
+            json!({"notes": {"type": "string", "description": "Hand-over for the onboarding task (at most 24 KiB), added to its request; refused once onboarding started"}}),
             &[],
         ),
         tool(
@@ -749,7 +749,14 @@ impl App {
                 }
                 Ok(out)
             }
-            "onboarding_start" => record(&self.approve_onboarding(ctx, sid).await?),
+            "onboarding_start" => {
+                let notes = match args.get("notes") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(notes)) => Some(notes.as_str()),
+                    Some(_) => return Err(AppError::Invalid("`notes` must be text".into())),
+                };
+                record(&self.approve_onboarding(ctx, sid, notes).await?)
+            }
             "onboarding_skip" => record(&self.skip_onboarding(ctx, sid).await?),
             "task_delivery" => {
                 let task = self.agent_task_ref(project, args).await?;
