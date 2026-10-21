@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-21
 
+- "Work through open issues" no longer leaves out most of the core team's issues (SPEC-251,
+  ADR-0192, task #237, #594). GitHub reports `CONTRIBUTOR` for a repository admin outside the
+  organization, and an agent's issue filed with its person's token is not by a bot, so only 2 of
+  109 open issues were in scope here. A person with `write`, `maintain` or `admin` permission
+  (asked once per author) is now in scope, also for the issues agents file through the App on
+  their behalf, and so is an issue this project's Yulius App's bot opened with the
+  `Opened by task #<n> in Yulius.` footer; contributors and outsiders without write access stay
+  out, whatever App they file through. An issue showing exactly 100 comments is read in full.
+  Projects that added the automation earlier keep their copy of the prompt; this project's gets
+  the new one after the merge.
 - The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
   (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
   worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
