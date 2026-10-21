@@ -15,13 +15,14 @@ use crate::cdp::{CdpClient, CdpConfig};
 use crate::discovery::resolve_executable;
 use crate::display::{DisplayMode, VirtualDisplay};
 use crate::error::{BrowserError, CdpError};
-
-/// Wait for a browser whose DevTools pipe ended to be reaped, to report its exit.
-const PIPE_END_GRACE: Duration = Duration::from_secs(1);
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig};
 use crate::process::{StopTimeouts, Supervised, passed_env};
 use crate::url_policy::UrlDenyList;
 use serde_json::json;
+
+/// Wait for a browser whose DevTools pipe ended to be reaped, and for an exited browser's stderr
+/// to end, before reporting how it failed.
+const PIPE_END_GRACE: Duration = Duration::from_secs(1);
 
 /// Browser adapter configuration.
 #[derive(Debug, Clone)]
@@ -171,9 +172,9 @@ async fn wait_until_ready(
     process: &Supervised,
     timeout: Duration,
 ) -> Result<(), BrowserError> {
-    let exited = |process: &Supervised| BrowserError::ExitedEarly {
+    let exited = async |process: &Supervised| BrowserError::ExitedEarly {
         status: process.exit_status().unwrap_or_default(),
-        stderr: process.stderr_tail(),
+        stderr: process.stderr_tail_within(PIPE_END_GRACE).await,
     };
     tokio::select! {
         answer = cdp.call_within("Browser.getVersion", json!({}), timeout) => match answer {
@@ -181,11 +182,11 @@ async fn wait_until_ready(
             Err(CdpError::Timeout { .. }) => Err(BrowserError::StartupTimeout { timeout }),
             // The pipe ends when the browser exits; give the exit a moment to be reaped.
             Err(error) => match process.wait_exit(PIPE_END_GRACE).await {
-                Some(_) => Err(exited(process)),
+                Some(_) => Err(exited(process).await),
                 None => Err(BrowserError::Cdp(error)),
             },
         },
-        () = process.exited() => Err(exited(process)),
+        () = process.exited() => Err(exited(process).await),
     }
 }
 

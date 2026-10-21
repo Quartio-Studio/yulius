@@ -60,6 +60,8 @@ pub(crate) struct Supervised {
     stderr: Arc<Mutex<Vec<u8>>>,
     _monitor: JoinHandle<()>,
     stderr_reader: Option<JoinHandle<()>>,
+    /// Turns `true` once stderr reached its end (every holder closed it) or failed.
+    stderr_closed: watch::Receiver<bool>,
 }
 
 /// Yulius's ends of a child's DevTools pipe (Chromium's `--remote-debugging-pipe`, ADR-0191).
@@ -161,6 +163,7 @@ impl Supervised {
             .id()
             .ok_or_else(|| std::io::Error::other("spawned child has no pid"))?;
         let stderr = Arc::new(Mutex::new(Vec::new()));
+        let (stderr_done, stderr_closed) = watch::channel(child.stderr.is_none());
         let stderr_reader = child.stderr.take().map(|mut pipe| {
             let tail = Arc::clone(&stderr);
             tokio::spawn(async move {
@@ -176,6 +179,7 @@ impl Supervised {
                         }
                     }
                 }
+                stderr_done.send_replace(true);
             })
         });
         let (tx, exit) = watch::channel(None);
@@ -193,6 +197,7 @@ impl Supervised {
                 stderr,
                 _monitor: monitor,
                 stderr_reader,
+                stderr_closed,
             },
             stdout,
         ))
@@ -224,6 +229,14 @@ impl Supervised {
     pub(crate) async fn exited(&self) {
         let mut exit = self.exit.clone();
         let _ = exit.wait_for(Option::is_some).await;
+    }
+
+    /// [`Self::stderr_tail`] once stderr has ended, waiting at most `timeout` for it (a reader
+    /// behind the exit, or a descendant still holding stderr).
+    pub(crate) async fn stderr_tail_within(&self, timeout: Duration) -> String {
+        let mut closed = self.stderr_closed.clone();
+        let _ = tokio::time::timeout(timeout, closed.wait_for(|closed| *closed)).await;
+        self.stderr_tail()
     }
 
     /// Lossy UTF-8 of the last stderr bytes.
