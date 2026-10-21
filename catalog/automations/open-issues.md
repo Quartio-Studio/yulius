@@ -20,8 +20,7 @@ it starts to finish, changes no repository file itself and opens no pull request
    - or the author is a person (`bot` is false) with write access although the association reads
      anything else (GitHub says `CONTRIBUTOR` or `NONE` for an admin outside the organization): ask
      once per author, `gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission`,
-     and count
-     `write`, `maintain` or `admin`; an error or any other answer counts as no write access;
+     and count `write`, `maintain` or `admin`; an error or any other answer counts as no write access;
    - or this project's Yulius App's bot (author `<slug>[bot]`) opened it and its body ends with
      `Opened by task #<n> in Yulius.`. An issue an agent filed through the App on a person's behalf
      (`app` is `<slug>`) counts as that person's own issue, by the two rules above: the App's token

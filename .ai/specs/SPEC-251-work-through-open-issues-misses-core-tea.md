@@ -103,16 +103,16 @@ After the merge (outside the steps, which a merge needs done): this project's au
   anyone can type, and any installed App's bot is not necessarily Yulius. The bot rule narrows
   from "a bot" to "this project's App's bot".
 - An issue filed through the App on a person's behalf counts by the person's association or
-  permission, not by the App (independent review, round 1): every person on any project of this instance holds a
-  user token of the same App, so `performed_via_github_app` proves no write access here. #594's
-  first criterion asked for it "whether the author is the bot or a user"; its third criterion
-  (no outsiders) wins, and every writer's App issue is in scope by permission anyway.
+  permission, not by the App (independent review, round 1): every person on any project of this
+  instance holds a user token of the same App, so `performed_via_github_app` proves no write access
+  here. #594's first criterion asked for it "whether the author is the bot or a user"; its third
+  criterion (no outsiders) wins, and every writer's App issue is in scope by permission anyway.
 - Yulius's security-finding issues (bot-authored, no footer, ADR-0172) stay out of scope as before:
   putting them in would change what the automation ranks every night, a product decision outside
   #594. Recorded on #594.
 - The fix is a prompt change only; exposing the App slug through `project_context` was weighed and
-  left out: `gh` already names the App it works through, and a new MCP field is a bigger change
-  than the defect.
+  left out: `gh` already names the App it works through, and a new MCP field is a bigger change than
+  the defect.
 
 ## Evidence
 
@@ -127,8 +127,12 @@ After the merge (outside the steps, which a merge needs done): this project's au
   write access`) and at 76aaa690 (round 2: `although the association reads anything else`); passes
   after each fix (3 passed).
 - Gate: `scripts/dev ci` exit 0 at 0ff5c03a (2363 tests run, 2363 passed, 17 skipped) and at
-  9a1d10d9 after the dev merge (2365 run, 2365 passed, 17 skipped); rerun at the delivered head,
-  whose last commits change only the prompt wording, the test and this spec.
+  9a1d10d9 after the dev merge (2365 run, 2365 passed, 17 skipped); Yulius CI passed at 9a1d10d9
+  (run dab97b53: quality, e2e; security skipped, exit 78). At 492ca797 the local gate had one
+  failure outside this change: `task_done::a_goal_the_tui_dropped_is_submitted_again` timed out
+  waiting for Done after 64 s with the host's load average at ~160; alone it passed 3 of 3 times
+  (~20 s). It is the load flake once tracked as #243 (closed), noted on #594 (this task opens no
+  issues). The delivered head is merged only on green Yulius CI at that exact head.
 - `scripts/dev security`: not run, exit 2: Vidoc HTTP 429, the instance key's quota is used up
   (needs a person; known since 2026-10-20).
 - Independent review: round 1 (dd33aa40) requested changes: a person's App-filed issue let a
