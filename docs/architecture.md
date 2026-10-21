@@ -842,7 +842,12 @@ the CA bundle in its run directory, a placeholder per agent secret), and the pro
 a live Superagent's bearer as `EgressCaller::Superagent`, which never uses a production secret.
 `secret_copy_to_env` and `secret_request_hosts` take a `SecretUser` (a task's agent or the
 Superagent): the Superagent's copies go to the sandbox repository's ignored `.env`, and its asks
-are recorded as `<login>'s Superagent`. It has no project browser, so no `browser_fill_secret`.
+are recorded as `<login>'s Superagent`. The copy walks to its `.env` from the canonical sandbox
+folder, a folder the agent cannot replace (`secret_source_root`): `repo` for the Superagent, the
+worktree's folders for a task, then the folders named, one at a time without following links, and
+the folder reached must be inside that work folder; Git checks run in the anchored work folder. A
+Superagent that swapped `repo` for a link is refused and nothing is written
+([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It has no project browser, so no `browser_fill_secret`.
 `secrets_list` gives it a task's records with its own guidance, and `secret_verify`, the
 Superagent's only (a matching candidate's hash must not reach a task transcript other members
 read), compares the SHA-256 of a value the person holds with the stored value and its variants (a
@@ -861,7 +866,7 @@ Agents create agent secrets from a file with `secret_create_from_file` (`vault/c
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
 folder or `~/` for the caller's home (the sandbox home for a task, its person's home for the
 Superagent, shared by their projects). Yulius walks to it from a folder the agent cannot replace (the
-canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` opens
+canonical sandbox folder, or `users/<id>` for the Superagent's home) as `secret_copy_to_env` walks to
 its target (`open_folder`: one folder at a time without following links, real path checked), reads a regular
 file of at most 16 KiB, converts it with `dotenv::agent_value_from_file` (the CLI import's
 conversion too) and stores it through `App::insert_agent_secret`, the Secrets page's path. The
