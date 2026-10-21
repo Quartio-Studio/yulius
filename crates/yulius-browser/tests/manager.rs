@@ -1,4 +1,5 @@
-//! `BrowserManager` with the fake Chromium launcher: one browser per sandbox, launch flags,
+//! `BrowserManager` with the fake Chromium launcher: one browser per sandbox, launch flags and
+//! the DevTools pipe (no TCP endpoint, ADR-0191),
 //! crash detection and restart, kill-and-reap of the whole process group (including a
 //! SIGTERM-ignoring child and a forked descendant), typed startup failures and idle reaping.
 
@@ -13,7 +14,7 @@ use yulius_browser::fake::{
     write_fake_chromium,
 };
 use yulius_browser::{
-    BrowserConfig, BrowserError, BrowserManager, DEVTOOLS_PORT_FILE, StopTimeouts,
+    BrowserConfig, BrowserError, BrowserManager, CdpError, PIPE_URL, StopTimeouts,
 };
 use yulius_domain::ids::SandboxId;
 
@@ -69,7 +70,9 @@ async fn one_browser_per_sandbox_with_isolated_profiles_and_full_shutdown() -> T
     let exe = write_fake_chromium(
         dir.path(),
         "fake-chromium",
-        FakeChromium::Ready { port: fake.port() },
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
     )?;
     let manager = BrowserManager::new(config(exe, dir.path()));
     let (s1, s2) = (SandboxId::parse("sbx-a")?, SandboxId::parse("sbx-b")?);
@@ -85,20 +88,26 @@ async fn one_browser_per_sandbox_with_isolated_profiles_and_full_shutdown() -> T
     let b = manager.ensure(&s2, &p2).await?;
     let (pid_a, pid_b) = (a.pid().ok_or("no pid")?, b.pid().ok_or("no pid")?);
     assert_ne!(pid_a, pid_b);
-    assert_eq!(a.cdp_ws_url(), fake.ws_url());
+    assert_eq!(a.cdp().url(), PIPE_URL, "Yulius speaks to it over the pipe");
+    assert_eq!(fake.connections(), 2, "one relayed pipe per browser");
+    assert_eq!(
+        fake.calls_for("Browser.getVersion").len(),
+        2,
+        "startup waits for an answer"
+    );
     assert_eq!(a.tabs().len(), 1);
     assert!(manager.get(&s1).await.is_some());
 
     let argv = std::fs::read_to_string(p1.join(FAKE_ARGV_FILE))?;
     let args: Vec<&str> = argv.lines().collect();
-    for expected in [
-        "--remote-debugging-port=0",
-        "--remote-debugging-address=127.0.0.1",
-        "--headless=new",
-        "about:blank",
-    ] {
+    for expected in ["--remote-debugging-pipe", "--headless=new", "about:blank"] {
         assert!(args.contains(&expected), "{expected} in {args:?}");
     }
+    assert!(
+        !argv.contains("--remote-debugging-port") && !argv.contains("--remote-debugging-address"),
+        "no DevTools listener is asked for: {args:?}"
+    );
+    assert!(!p1.join("DevToolsActivePort").exists());
     assert!(args.contains(&format!("--user-data-dir={}", p1.display()).as_str()));
     assert!(!argv.contains("--no-sandbox"));
     use std::os::unix::fs::PermissionsExt;
@@ -132,7 +141,9 @@ async fn crash_is_detected_and_the_next_use_restarts() -> TestResult {
     let exe = write_fake_chromium(
         dir.path(),
         "fake-chromium",
-        FakeChromium::Ready { port: fake.port() },
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
     )?;
     let manager = BrowserManager::new(config(exe, dir.path()));
     let sandbox = SandboxId::parse("sbx-crash")?;
@@ -174,7 +185,9 @@ async fn shutdown_escalates_to_sigkill_for_a_browser_ignoring_sigterm() -> TestR
     let exe = write_fake_chromium(
         dir.path(),
         "stubborn",
-        FakeChromium::IgnoresSigterm { port: fake.port() },
+        FakeChromium::IgnoresSigterm {
+            port: fake.pipe_port(),
+        },
     )?;
     let mut settings = config(exe, dir.path());
     settings.stop = StopTimeouts {
@@ -225,6 +238,7 @@ async fn startup_failures_are_typed_and_leave_no_process() -> TestResult {
     match manager.ensure(&sandbox, &profile).await {
         Err(BrowserError::ExitedEarly { status, stderr }) => {
             assert!(status.contains('1'), "{status}");
+            // Written by a descendant after the exit: the error waits for stderr's end.
             assert!(
                 stderr.contains("cannot open shared object file"),
                 "{stderr}"
@@ -233,28 +247,29 @@ async fn startup_failures_are_typed_and_leave_no_process() -> TestResult {
         other => return Err(format!("expected an early exit, got {other:?}").into()),
     }
 
-    // A stale DevToolsActivePort from a previous run must not be trusted.
-    let stale_server = FakeCdpServer::start().await?;
-    std::fs::create_dir_all(&profile)?;
-    std::fs::write(
-        profile.join(DEVTOOLS_PORT_FILE),
-        format!("{}\n/devtools/browser/stale\n", stale_server.port()),
-    )?;
+    // A browser that closes its DevTools pipe and stays alive is a DevTools failure, reaped.
+    let closing = write_fake_chromium(dir.path(), "closing", FakeChromium::ClosesPipe)?;
+    let manager = BrowserManager::new(config(closing, dir.path()));
+    match manager.ensure(&sandbox, &profile).await {
+        Err(BrowserError::Cdp(CdpError::Closed)) => {}
+        other => return Err(format!("expected a closed pipe, got {other:?}").into()),
+    }
+    let pid = read_pid(&profile, FAKE_PID_FILE)?;
+    assert!(!pid_alive(pid), "a failed start reaps its process");
+    // The next case checks its own pid, not this one.
+    std::fs::remove_file(profile.join(FAKE_PID_FILE))?;
+
+    // A browser that keeps its pipe open but never answers.
     let hanging = write_fake_chromium(dir.path(), "hanging", FakeChromium::NeverReady)?;
     let mut settings = config(hanging, dir.path());
     settings.startup_timeout = Duration::from_secs(1);
     let manager = BrowserManager::new(settings);
     match manager.ensure(&sandbox, &profile).await {
-        Err(BrowserError::StartupTimeout { timeout, .. }) => {
+        Err(BrowserError::StartupTimeout { timeout }) => {
             assert_eq!(timeout, Duration::from_secs(1));
         }
         other => return Err(format!("expected a startup timeout, got {other:?}").into()),
     }
-    assert_eq!(
-        stale_server.connections(),
-        0,
-        "the stale port file was ignored"
-    );
     // The process is reaped before `ensure` returns, so no pid file can appear later. If the
     // script ran far enough to record its pid, that pid must be gone.
     if let Ok(pid) = read_pid(&profile, FAKE_PID_FILE) {
@@ -271,7 +286,9 @@ async fn idle_browsers_are_reaped_unless_a_viewer_watches() -> TestResult {
     let exe = write_fake_chromium(
         dir.path(),
         "fake-chromium",
-        FakeChromium::Ready { port: fake.port() },
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
     )?;
     let settings = config(exe, dir.path());
     let idle = settings.idle_timeout;
@@ -320,7 +337,9 @@ async fn background_reaper_stops_idle_browsers() -> TestResult {
     let exe = write_fake_chromium(
         dir.path(),
         "fake-chromium",
-        FakeChromium::Ready { port: fake.port() },
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
     )?;
     let mut settings = config(exe, dir.path());
     settings.idle_timeout = Duration::ZERO;
@@ -338,7 +357,7 @@ async fn background_reaper_stops_idle_browsers() -> TestResult {
 }
 
 /// BRW-008: a started browser refuses Yulius before any page loads, and a browser whose guard
-/// cannot be enabled is not used; its DevTools port is reported (never previewed).
+/// cannot be enabled is not used.
 #[tokio::test]
 async fn the_address_guard_is_on_before_use_or_the_browser_is_not_used() -> TestResult {
     let fake = FakeCdpServer::start().await?;
@@ -346,7 +365,9 @@ async fn the_address_guard_is_on_before_use_or_the_browser_is_not_used() -> Test
     let exe = write_fake_chromium(
         dir.path(),
         "fake-chromium",
-        FakeChromium::Ready { port: fake.port() },
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
     )?;
     let listeners: Vec<std::net::SocketAddr> = vec!["127.0.0.1:8080".parse()?];
     let manager = BrowserManager::new(BrowserConfig {
@@ -363,7 +384,6 @@ async fn the_address_guard_is_on_before_use_or_the_browser_is_not_used() -> Test
         .await?;
     assert_eq!(fake.calls_for("Fetch.enable").len(), 1);
     assert!(instance.open("http://localhost:8080/").await.is_err());
-    assert_eq!(manager.devtools_ports(), vec![fake.port()]);
     assert!(manager.shutdown(&sandbox).await?);
 
     fake.fail("Fetch.enable", -32000, "not supported");

@@ -170,6 +170,26 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Sandbox browser DevTools
+
+Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the
+pipe pair Yulius gives it at spawn (`--remote-debugging-pipe`, fds 3 and 4, NUL-terminated JSON;
+[ADR-0191](decisions/0191-the-sandbox-browser-speaks-devtools-over-a-pipe.md)). It opens no
+DevTools socket, and a contained run (isolated or the fallback bubblewrap, each with its own PID
+namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
+running as Yulius's user on the host, including an agent run without containment (host mode), or
+root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
+tools, viewers through the viewer WebSocket.
+
+```mermaid
+flowchart LR
+  A["Agent (any containment)"] -->|"browser_* MCP tools"| Y["Yulius (BrowserManager, CdpClient)"]
+  V["Viewer"] -->|"viewer WebSocket"| Y
+  Y -->|"fd 3: requests"| C["Sandbox Chromium"]
+  C -->|"fd 4: responses, events"| Y
+  O["Other local process"] -. "no DevTools port to connect to" .-x C
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not

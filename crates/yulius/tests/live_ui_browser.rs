@@ -271,8 +271,9 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
     } else {
         config.no_sandbox = true;
     }
+    let browsers = Arc::new(ChromiumBrowsers::new(config));
     let h = harness_with(HarnessOptions {
-        browser: Some(Arc::new(ChromiumBrowsers::new(config))),
+        browser: Some(Arc::clone(&browsers) as _),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.allowed_origins.push(format!("http://{addr}"));
@@ -345,7 +346,7 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
         }
         // An agent opens the fixture: it comes to the front and shows in the panel.
         let agent = h.app.browser_session(&SandboxId::parse("s1")?).await?;
-        let browser = CdpClient::connect(&agent.cdp_endpoint(), CdpConfig::default()).await?;
+        let browser = browsers.cdp(&SandboxId::parse("s1")?).await.ok_or("no browser")?;
         let opened = agent.tool_open(&OpenParams { url: page.clone() }).await?;
         until(&cdp, session, "the agent's tab selected", &format!("document.querySelector('.bp-bar input').value === 'localhost:{}/'", site.port())).await?;
         // The page's canvas turns green after 1.5 s: the stream shows it.
