@@ -44,7 +44,9 @@ mod xserver;
 #[cfg(feature = "fake")]
 pub mod fake;
 
-pub use cdp::{CdpClient, CdpConfig, CdpEvent, FrameMetadata, FrameSink, ScreencastFrame};
+pub use cdp::{
+    CdpClient, CdpConfig, CdpEvent, FrameMetadata, FrameSink, PIPE_URL, ScreencastFrame,
+};
 pub use discovery::{
     CHROMIUM_FIXED_PATHS, CHROMIUM_NAMES, discover_chromium, discover_in, resolve_executable,
 };
