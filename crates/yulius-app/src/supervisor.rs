@@ -2234,15 +2234,10 @@ impl App {
             *intent = None;
         }
         // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Ok(next) = task.status.after_loss(task.activity, reason)
-        {
-            let _ = self
-                .deps
-                .store
-                .transition_task(task_id, Some(task.status), next, None, now)
-                .await;
-        }
+        self.settle_ended(task_id, now, |task| {
+            task.status.after_loss(task.activity, reason).ok()
+        })
+        .await;
         self.end_pause(task_id, "ended").await;
         if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
@@ -2257,6 +2252,41 @@ impl App {
         self.publish_task(task_id).await;
         self.advance_chains(task_id).await;
         self.drain_queue().await;
+    }
+
+    /// Moves the task whose run ended to `next` of the status read (`None`: no change). A change
+    /// that loses to a concurrent one (a stop landing meanwhile) is made again from the status read
+    /// anew, so an ended run never leaves its task live (SPEC-250 STW-005); the rounds are bounded
+    /// like a stop's.
+    async fn settle_ended(
+        &self,
+        task_id: &TaskId,
+        now: Timestamp,
+        next: impl Fn(&TaskRecord) -> Option<TaskStatus>,
+    ) {
+        for _ in 0..STOP_ROUNDS {
+            let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+                return;
+            };
+            let Some(to) = next(&task) else {
+                return;
+            };
+            crate::race::reached(crate::race::Point::EndDecided, Path::new(task_id.as_str()));
+            match self
+                .deps
+                .store
+                .transition_task(task_id, Some(task.status), to, None, now)
+                .await
+            {
+                Ok(false) => {}
+                Ok(true) => return,
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error = %err, "the ended run's task was not moved");
+                    return;
+                }
+            }
+        }
+        tracing::warn!(task = %task_id, "the ended run's task kept changing; left as it is");
     }
 
     /// Records the end of a run exactly once and moves the task to its next state.
@@ -2327,42 +2357,30 @@ impl App {
             Some(EndIntent::Close) => {
                 // The task was finished: whatever the exit code of the ended session, it is
                 // closed, like a session the user left.
-                if let Ok(Some(task)) = store.task(task_id).await
-                    && let Ok(next) = task.status.apply(TaskEvent::Exited { normal: true })
-                {
-                    let _ = store
-                        .transition_task(task_id, Some(task.status), next, None, now)
-                        .await;
-                }
+                self.settle_ended(task_id, now, |task| {
+                    task.status.apply(TaskEvent::Exited { normal: true }).ok()
+                })
+                .await;
             }
             Some(EndIntent::Cancel) => {
                 // A stop's run ended: its task is stopped, also while still live when the run ended
                 // before the stop's status change was made (SPEC-250 STW-003).
-                if let Ok(Some(task)) = store.task(task_id).await
-                    && let Ok(next) = task.status.apply(TaskEvent::Reaped).or_else(|_| {
-                        task.status
-                            .apply(TaskEvent::CancelRequested)
-                            .and_then(|stopping| stopping.apply(TaskEvent::Reaped))
-                    })
-                {
-                    let _ = store
-                        .transition_task(task_id, Some(task.status), next, None, now)
-                        .await;
-                }
+                self.settle_ended(task_id, now, |task| {
+                    task.status
+                        .apply(TaskEvent::Reaped)
+                        .or_else(|_| {
+                            task.status
+                                .apply(TaskEvent::CancelRequested)
+                                .and_then(|stopping| stopping.apply(TaskEvent::Reaped))
+                        })
+                        .ok()
+                })
+                .await;
             }
             None => {
-                if let Ok(Some(task)) = store.task(task_id).await {
-                    let event = exit_event(&exit, session_end.as_deref());
-                    if let Ok(next) = task.status.apply(event) {
-                        crate::race::reached(
-                            crate::race::Point::EndDecided,
-                            Path::new(task_id.as_str()),
-                        );
-                        let _ = store
-                            .transition_task(task_id, Some(task.status), next, None, now)
-                            .await;
-                    }
-                }
+                let event = exit_event(&exit, session_end.as_deref());
+                self.settle_ended(task_id, now, |task| task.status.apply(event).ok())
+                    .await;
             }
         }
         // A paused run that ended (the user left the session, or it was stopped) is no longer
