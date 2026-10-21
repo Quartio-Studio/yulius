@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-21
+
+- A stop during a switch always ends the task (SPEC-250, task #236, fixes #527). A stop that came
+  as a switch completed could leave the task `running` with every run ended, and a stop that came
+  as a run ended could leave it `stopping` with no run. Stop changes and run-end status changes
+  are now made again from the status read anew when they lose a race. A switch overtaken by a stop
+  starts no new run. This also fixes the intermittent `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn`
+  failure in Yulius CI.
+
 ## 2026-10-20
 
 - Connecting a Claude account is the first step before anything runs an agent (SPEC-246, ADR-0190,
