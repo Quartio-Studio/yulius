@@ -919,50 +919,55 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-253 CFG-005 (#634): the main repository comes from the paths alone, as Git lays a
-    /// linked worktree out; the host resolves nothing the agent wrote. A `commondir` leading
-    /// anywhere but two folders up, or an admin dir reached through a link, trusts no repository
-    /// the host would have found by following it.
+    /// SPEC-253 CFG-005 (#634): the main repository comes from the `gitdir:` path alone, as Git
+    /// lays a linked worktree out (`<common>/worktrees/<name>`). The host opens nothing below that
+    /// path, so the trust keys never tell the agent what exists there or where a link leads.
     #[test]
-    fn the_main_repository_comes_from_the_git_layout_alone() -> TestResult {
+    fn the_main_repository_comes_from_the_gitdir_path_alone() -> TestResult {
         use std::os::unix::fs::symlink;
         let dir = tempfile::tempdir()?;
         let root = dir.path().canonicalize()?;
-        let repo = root.join("repo");
-        let common = repo.join(".git");
-        let worktree = linked_worktree(&root, &common, |admin| {
-            format!("gitdir: {}\n", admin.display())
-        })?;
-        let admin = common.join("worktrees").join("w1");
-        let elsewhere = root.join("elsewhere");
-        std::fs::create_dir(&elsewhere)?;
-        let projects = |config: &std::path::Path| -> Result<usize, Box<dyn std::error::Error>> {
-            let value: Value =
-                serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
-            Ok(value["projects"].as_object().ok_or("projects")?.len())
-        };
-        for (n, commondir) in ["/\n", "../../../../elsewhere\n", "..\n"]
-            .into_iter()
-            .enumerate()
-        {
-            std::fs::write(admin.join("commondir"), commondir)?;
+        let admin = root.join("repo").join(".git").join("worktrees").join("w1");
+        std::fs::create_dir_all(&admin)?;
+        std::fs::write(admin.join("commondir"), "../..\n")?;
+        symlink(root.join("repo").join(".git"), root.join("link"))?;
+        let worktree = root.join("wt");
+        std::fs::create_dir(&worktree)?;
+        let key = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        let cases = [
+            // Missing: the same answer as if it existed.
+            (
+                root.join("missing/.git/worktrees/w1"),
+                Some(root.join("missing")),
+            ),
+            // Through a link: kept as written, never resolved to `repo`.
+            (root.join("link/worktrees/w1"), Some(root.join("link"))),
+            // Not a worktree's admin dir (a submodule's).
+            (root.join("repo/.git/modules/m"), None),
+            (root.join("repo/.git/worktrees"), None),
+        ];
+        for (n, (gitdir, main)) in cases.into_iter().enumerate() {
+            std::fs::write(
+                worktree.join(".git"),
+                format!("gitdir: {}\n", gitdir.display()),
+            )?;
             let config = root.join(format!(".claude-{n}"));
             ensure_claude_config(&config, &worktree, false)?;
-            assert!(trusted(&config, &worktree)?, "{commondir:?}");
-            assert_eq!(projects(&config)?, 1, "{commondir:?}: the worktree alone");
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
+            let mut keys: Vec<String> = value["projects"]
+                .as_object()
+                .ok_or("projects")?
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            let mut expected: Vec<String> = std::iter::once(key(&worktree))
+                .chain(main.as_deref().map(key))
+                .collect();
+            expected.sort();
+            assert_eq!(keys, expected, "{}", gitdir.display());
         }
-        // The admin dir reached through a link: the link is not resolved on the host.
-        std::fs::write(admin.join("commondir"), "../..\n")?;
-        let link = root.join("link");
-        symlink(&common, &link)?;
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", link.join("worktrees").join("w1").display()),
-        )?;
-        let config = root.join(".claude-link");
-        ensure_claude_config(&config, &worktree, false)?;
-        assert!(trusted(&config, &worktree)?);
-        assert!(!trusted(&config, &repo)?, "the link is not followed");
         Ok(())
     }
 
