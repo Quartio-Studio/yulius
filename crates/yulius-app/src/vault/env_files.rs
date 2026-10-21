@@ -467,10 +467,10 @@ impl App {
             .ok_or(AppError::NotFound)?;
         // Anchored on a folder the agent cannot replace, and walked down without links: the
         // Superagent can swap its repository for a link (#635). Git runs in the anchored folder.
-        let (anchor, mut below) = self
-            .secret_source_root(user, &sandbox, &Root::Work)
-            .await?;
-        let worktree = below.iter().fold(anchor.clone(), |path, part| path.join(part));
+        let (anchor, mut below) = self.secret_source_root(user, &sandbox, &Root::Work).await?;
+        let worktree = below
+            .iter()
+            .fold(anchor.clone(), |path, part| path.join(part));
         let naming = Naming {
             hidden: below.len(),
             ..WORK
@@ -756,10 +756,7 @@ mod tests {
     fn hidden_folders_root_the_walk_below_the_anchor() -> TestResult {
         let (_dir, wt, outside) = worktree()?;
         let anchor = wt.parent().ok_or("parent")?.to_path_buf();
-        let naming = Naming {
-            hidden: 1,
-            ..WORK
-        };
+        let naming = Naming { hidden: 1, ..WORK };
         let folder = open_folder(&anchor, &["wt".to_owned(), "deploy".to_owned()], &naming)?;
         assert_eq!(folder.path_of(".env"), "deploy/.env");
         let root = open_folder(&anchor, &["wt".to_owned()], &naming)?;

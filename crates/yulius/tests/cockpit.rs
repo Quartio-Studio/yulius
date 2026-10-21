@@ -3267,7 +3267,14 @@ async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestRes
         f.h.app
             .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
             .ok_or("token")?;
-    let copy = || cockpit_tool(&f, &token, "secret_copy_to_env", json!({"secrets": ["SWAP_KEY"]}));
+    let copy = || {
+        cockpit_tool(
+            &f,
+            &token,
+            "secret_copy_to_env",
+            json!({"secrets": ["SWAP_KEY"]}),
+        )
+    };
     let (asked, is_error) = copy().await?;
     assert!(!is_error, "{asked}");
     assert_eq!(asked["waiting"], json!(["SWAP_KEY"]), "{asked}");
@@ -3303,10 +3310,17 @@ async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestRes
     );
     for dir in [&other, &moved] {
         for name in [".env", ".env.example"] {
-            assert!(!dir.join(name).exists(), "{} was written", dir.join(name).display());
+            assert!(
+                !dir.join(name).exists(),
+                "{} was written",
+                dir.join(name).display()
+            );
         }
     }
-    assert!(audited(&f, "vault.agent.env").await?.is_empty(), "no copy is recorded");
+    assert!(
+        audited(&f, "vault.agent.env").await?.is_empty(),
+        "no copy is recorded"
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }
